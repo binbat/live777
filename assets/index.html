@@ -1,0 +1,61 @@
+<button onclick="window.startWebrtc()"> WebRTC Start </button>
+<br />
+Video<br />
+<div id="remoteVideos"></div> <br />
+
+Logs<br />
+<div id="div"></div>
+
+<script>
+let log = msg => {
+  document.getElementById('div').innerHTML += msg + '<br>'
+}
+
+window.startWebrtc = async () => {
+		let pc = new RTCPeerConnection({
+			iceServers: [
+				{
+					urls: 'stun:stun.l.google.com:19302'
+				}
+			]
+		})
+
+		pc.ontrack = function (event) {
+			var el = document.createElement(event.track.kind)
+			el.srcObject = event.streams[0]
+			el.autoplay = true
+			el.controls = true
+
+			document.getElementById('remoteVideos').appendChild(el)
+		}
+
+		pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
+		pc.onicecandidate = event => {
+			if (event.candidate === null) {
+				console.log(pc.localDescription)
+			}
+		}
+
+		// Offer to receive 1 audio, and 2 video tracks
+		//pc.addTransceiver('audio', {'direction': 'recvonly'})
+		pc.addTransceiver('video', {'direction': 'recvonly'})
+		//pc.addTransceiver('video', {'direction': 'recvonly'})
+		const offer = await pc.createOffer()
+		await pc.setLocalDescription(offer)
+
+		const res = await reqSdp(offer)
+		pc.setRemoteDescription(await res.json())
+
+	}
+
+	async function reqSdp(offer) {
+		return fetch('/webrtc', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify(offer),
+		})
+	}
+
+</script>

@@ -1,0 +1,11 @@
+[package]
+name = "live777"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { git = "https://github.com/tokio-rs/axum", package = "axum", rev = "b0eb7a2", features = ["multipart"] }
+tower-http = { version = "0.4.0", features = ["fs", "trace"] }
+webrtc = "0.8.0"
+anyhow = "1.0"
+tokio = { version = "1.15", features = ["full"] }
