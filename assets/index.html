@@ -42,7 +42,6 @@ window.startWebrtc = async () => {
 		//pc.addTransceiver('video', {'direction': 'recvonly'})
 		const offer = await pc.createOffer()
 		await pc.setLocalDescription(offer)
-
 		const res = await reqSdp(offer)
 		sdp_data = await res.text()
 		const data = new RTCSessionDescription(
@@ -52,7 +51,6 @@ window.startWebrtc = async () => {
 			}
 		)
 		pc.setRemoteDescription(await data)
-
 	}
 
 	async function reqSdp(offer) {
