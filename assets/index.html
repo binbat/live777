@@ -42,19 +42,24 @@ window.startWebrtc = async () => {
 		//pc.addTransceiver('video', {'direction': 'recvonly'})
 		const offer = await pc.createOffer()
 		await pc.setLocalDescription(offer)
-
 		const res = await reqSdp(offer)
-		pc.setRemoteDescription(await res.json())
-
+		sdp_data = await res.text()
+		const data = new RTCSessionDescription(
+			{
+				type:"answer",
+				sdp:sdp_data
+			}
+		)
+		pc.setRemoteDescription(await data)
 	}
 
 	async function reqSdp(offer) {
-		return fetch('/webrtc', {
+		return fetch('/whep/endpoint', {
 			method: 'POST',
 			headers: {
-				'Content-Type': 'application/json'
+				'Content-Type': 'application/sdp'
 			},
-			body: JSON.stringify(offer),
+			body: offer.sdp,
 		})
 	}
 

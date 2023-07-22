@@ -1080,6 +1080,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "hyper 0.14.27",
  "tokio",
  "tower-http",
  "webrtc",

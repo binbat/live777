@@ -1,5 +1,12 @@
 use anyhow::Result;
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    extract::{Request, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::post,
+    Router,
+};
+use hyper::header;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{channel, Sender};
@@ -173,7 +180,7 @@ async fn main() {
 
     // build our application with a route
     let app = Router::new()
-        .route("/webrtc", post(webrtc_handler))
+        .route("/whep/endpoint", post(webrtc_handler))
         .nest_service("/", serve_dir.clone())
         .with_state(Arc::clone(&shared_state));
 
@@ -182,13 +189,21 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn webrtc_handler(
-    State(state): State<SharedState>,
-    Json(offer): Json<RTCSessionDescription>,
-) -> Json<RTCSessionDescription> {
-    let (answer, sender) = start_webrtc(offer).await;
+//ToString -> RTCSessionDescription
+async fn webrtc_handler(State(state): State<SharedState>, request: Request) -> impl IntoResponse {
+    let body = request.into_body();
+    let body_bytes = hyper::body::to_bytes(body).await.unwrap();
+    let body_string = String::from_utf8_lossy(&body_bytes).to_string();
+    //new RTCSessionDescription
+    let whep_offer = RTCSessionDescription::offer(body_string).unwrap();
+    let (answer, sender) = start_webrtc(whep_offer).await;
     state.write().unwrap().ch.lock().unwrap().push(sender);
-    Json(answer)
+    (
+        StatusCode::CREATED,
+        [(header::CONTENT_TYPE, "application/sdp")],
+        //[(header::LOCATION, url+"whep/endpoint")],
+        answer.sdp,
+    )
 }
 
 type SharedState = Arc<RwLock<AppState>>;
@@ -196,8 +211,7 @@ type SharedState = Arc<RwLock<AppState>>;
 #[derive(Default)]
 struct AppState {
     ch: Mutex<Vec<Sender<Vec<u8>>>>,
-}
-
+} //监听rtp
 async fn rtp_listener(state: SharedState) {
     let listener = UdpSocket::bind("127.0.0.1:5004").await.unwrap();
     println!("=== RTP listener started ===");
