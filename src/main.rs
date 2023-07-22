@@ -1,5 +1,14 @@
 use anyhow::Result;
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    //body::Body,
+    extract::{State,Request}, 
+    http::StatusCode,
+    routing::post, 
+    //Json, use axum::response::Response;
+    Router,
+    response::IntoResponse
+};
+use hyper::header;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{channel, Sender};
@@ -14,6 +23,7 @@ use webrtc::{
     peer_connection::configuration::RTCConfiguration,
     peer_connection::peer_connection_state::RTCPeerConnectionState,
     peer_connection::sdp::session_description::RTCSessionDescription,
+    //peer_connection::sdp::sdp_type::RTCSdpType,
     rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::track_local::track_local_static_rtp::TrackLocalStaticRTP,
     track::track_local::{TrackLocal, TrackLocalWriter},
@@ -173,7 +183,7 @@ async fn main() {
 
     // build our application with a route
     let app = Router::new()
-        .route("/webrtc", post(webrtc_handler))
+        .route("/whep/endpoint", post(webrtc_handler))
         .nest_service("/", serve_dir.clone())
         .with_state(Arc::clone(&shared_state));
 
@@ -182,13 +192,32 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+
+//ToString -> RTCSessionDescription
 async fn webrtc_handler(
     State(state): State<SharedState>,
-    Json(offer): Json<RTCSessionDescription>,
-) -> Json<RTCSessionDescription> {
-    let (answer, sender) = start_webrtc(offer).await;
+    request:Request,
+) -> 
+   // Result<(),(StatusCode,String)>
+   impl IntoResponse
+       {
+    //body
+    let body=request.into_body();
+    //bytes
+    let body_bytes = hyper::body::to_bytes(body).await.unwrap();
+    //String
+    let body_string = String::from_utf8_lossy(&body_bytes).to_string();
+    //new RTCSessionDescription
+    let  whep_offer = RTCSessionDescription::offer(body_string).unwrap(); 
+    let (answer, sender) = start_webrtc(whep_offer).await;
     state.write().unwrap().ch.lock().unwrap().push(sender);
-    Json(answer)
+    (
+        StatusCode::CREATED,
+        [(header::CONTENT_TYPE,"application/sdp")],
+        [(header::LOCATION,"http://localhost:3000/whep/endpoint")],
+        answer.sdp,
+    )
+    
 }
 
 type SharedState = Arc<RwLock<AppState>>;
@@ -196,8 +225,7 @@ type SharedState = Arc<RwLock<AppState>>;
 #[derive(Default)]
 struct AppState {
     ch: Mutex<Vec<Sender<Vec<u8>>>>,
-}
-
+}//监听rtp
 async fn rtp_listener(state: SharedState) {
     let listener = UdpSocket::bind("127.0.0.1:5004").await.unwrap();
     println!("=== RTP listener started ===");
