@@ -18,9 +18,13 @@ open http://localhost:3000/
 You can use any software to send VP8 packets to port 5004.
 
 #### GStreamer
-
+Analog Video Streaming
 ```shell
-gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc error-resilient=partitions keyframe-max-dist=10 auto-alt-ref=true cpu-used=5 deadline=1 ! rtpvp8pay ! udpsink host=127.0.0.1 port=5004
+gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! decodebin name=decoder ! queue ! video/x-raw ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! queue ! whipsink name=ws use-link-headers=true auth-token="hellothere" whip-endpoint="ws://localhost:5004" decoder. ! queue ! audio/x-raw ! opusenc ! rtpopuspay ! queue ! ws.
+```
+Local video streaming
+```shell
+gst-launch-1.0 -e uridecodebin uri=file:///home/meh/Videos/spring-blender.mkv ! videoconvert ! whipwebrtcsink name=ws signaller::whip-endpoint="http://127.0.0.1:5004"
 ```
 
 #### ffmpeg
