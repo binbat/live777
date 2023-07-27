@@ -1,14 +1,10 @@
+use std::borrow::Borrow;
+use std::net::SocketAddr;
 use anyhow::Result;
-use axum::{
-    extract::{Request, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Router,
-};
-use hyper::header;
 use std::sync::{Arc, Mutex, RwLock};
-use tokio::net::UdpSocket;
+use axum::{extract::Json, handler::post, response::IntoResponse, AddExtensionLayer, Router};
+use axum::extract::State;
+use tokio::net::{UdpSocket, ToSocketAddrs};
 use tokio::sync::mpsc::{channel, Sender};
 use tower_http::services::{ServeDir, ServeFile};
 use webrtc::{
@@ -18,14 +14,32 @@ use webrtc::{
     ice_transport::ice_connection_state::RTCIceConnectionState,
     ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
+    media::rtp::{rtp_receiver::RTPReceiver, rtp_transceiver::RTPTransceiverDirection},
     peer_connection::configuration::RTCConfiguration,
     peer_connection::peer_connection_state::RTCPeerConnectionState,
     peer_connection::sdp::session_description::RTCSessionDescription,
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    rtp_transceiver::RTPTransceiverInit,
     track::track_local::track_local_static_rtp::TrackLocalStaticRTP,
     track::track_local::{TrackLocal, TrackLocalWriter},
     Error,
 };
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use rocket::http::hyper::Server;
+use rocket::{Data, Response, State};
+use rocket::http::Status;
+use rocket::Data;
+use rocket::Response;
+use rocket::State;
+use serde::{Deserialize, Serialize};
+use axum::handler::{post, Handler};
+use axum::http::Response;
+use webrtc::turn::proto::data::Data;
+use serde::Deserialize;
+use webrtc_rs::sdp::RTCSessionDescription;
+use webrtc_rs::start_webrtc;
+
+
+
 
 async fn start_webrtc(offer: RTCSessionDescription) -> (RTCSessionDescription, Sender<Vec<u8>>) {
     // Create a MediaEngine object to configure the supported codec
@@ -85,33 +99,22 @@ async fn start_webrtc(offer: RTCSessionDescription) -> (RTCSessionDescription, S
         Result::<()>::Ok(())
     });
 
-    //let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<()>(1);
-
-    //let done_tx1 = done_tx.clone();
     // Set the handler for ICE connection state
     // This will notify you when the peer has connected/disconnected
     peer_connection.on_ice_connection_state_change(Box::new(
         move |connection_state: RTCIceConnectionState| {
-            println!("Connection State has changed {connection_state}");
-            //if connection_state == RTCIceConnectionState::Failed {
-            //    let _ = done_tx1.try_send(());
-            //}
+            println!("Connection State has changed: {:?}", connection_state);
             Box::pin(async {})
         },
     ));
 
-    //let done_tx2 = done_tx.clone();
     // Set the handler for Peer connection state
     // This will notify you when the peer has connected/disconnected
     peer_connection.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        println!("Peer Connection State has changed: {s}");
+        println!("Peer Connection State has changed: {:?}", s);
 
         if s == RTCPeerConnectionState::Failed {
-            // Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
-            // Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
-            // Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
             println!("Peer Connection has gone to failed exiting: Done forwarding");
-            //let _ = done_tx2.try_send(());
         }
 
         Box::pin(async {})
@@ -127,7 +130,7 @@ async fn start_webrtc(offer: RTCSessionDescription) -> (RTCSessionDescription, S
     let mut gather_complete = peer_connection.gathering_complete_promise().await;
 
     // Sets the LocalDescription, and starts our UDP listeners
-    peer_connection.set_local_description(answer).await.unwrap();
+    peer_connection.set_local_description(answer.clone()).await.unwrap();
 
     // Block until ICE Gathering is complete, disabling trickle ICE
     // we do this because we only can exchange one signaling message
@@ -136,35 +139,20 @@ async fn start_webrtc(offer: RTCSessionDescription) -> (RTCSessionDescription, S
 
     let (tx, mut rx) = channel::<Vec<u8>>(32);
 
-    //let done_tx3 = done_tx.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if let Err(err) = video_track.write(&msg).await {
                 if Error::ErrClosedPipe == err {
                     // The peerConnection has been closed.
                 } else {
-                    println!("video_track write err: {err}");
+                    println!("video_track write err: {:?}", err);
                 }
-                //let _ = done_tx3.try_send(());
                 return;
             }
         }
     });
 
-    //println!("Press ctrl-c to stop");
-    //tokio::select! {
-    //    _ = done_rx.recv() => {
-    //        println!("received done signal!");
-    //    }
-    //    _ = tokio::signal::ctrl_c() => {
-    //        println!();
-    //    }
-    //};
-
-    // TODO:
-    // peer_connection.close().await?;
-
-    (peer_connection.local_description().await.unwrap(), tx)
+    (answer, tx)
 }
 
 #[tokio::main]
@@ -180,30 +168,40 @@ async fn main() {
 
     // build our application with a route
     let app = Router::new()
-        .route("/whep/endpoint", post(webrtc_handler))
+        .route("/webrtc", post(webrtc_handler))
+        .route("/whip", post(webrtc_handler))
         .nest_service("/", serve_dir.clone())
-        .with_state(Arc::clone(&shared_state));
+        .layer(AddExtensionLayer::new(shared_state));
 
     // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    axum::Server::bind(&addr.into())
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 }
 
-//ToString -> RTCSessionDescription
-async fn webrtc_handler(State(state): State<SharedState>, request: Request) -> impl IntoResponse {
-    let body = request.into_body();
-    let body_bytes = hyper::body::to_bytes(body).await.unwrap();
-    let body_string = String::from_utf8_lossy(&body_bytes).to_string();
-    //new RTCSessionDescription
-    let whep_offer = RTCSessionDescription::offer(body_string).unwrap();
-    let (answer, sender) = start_webrtc(whep_offer).await;
+async fn webrtc_handler(
+    State(state): State<SharedState>,
+    Data(offer): Data,
+) -> Response<'static> {
+    let offer_str = String::from_utf8_lossy(&offer).to_string();
+
+    let offer = RTCSessionDescription::new(offer_str.clone(), "offer".to_string());
+    let (mut answer, sender) = start_webrtc(offer).await;
+
+    if let Some(media) = answer.sdp.media.get_mut(0) {
+        media.attribute.push("recvonly".to_owned());
+    }
     state.write().unwrap().ch.lock().unwrap().push(sender);
-    (
-        StatusCode::CREATED,
-        [(header::CONTENT_TYPE, "application/sdp")],
-        //[(header::LOCATION, url+"whep/endpoint")],
-        answer.sdp,
-    )
+
+    let sdp_answer = answer.to_string();
+
+    Response::build()
+        .status(Status::Created)
+        .header(rocket::http::ContentType::new("application", "sdp")) // 修改Content-Type
+        .sized_body((sdp_answer.len(), std::io::Cursor::new(sdp_answer)))
+        .finalize()
 }
 
 type SharedState = Arc<RwLock<AppState>>;
@@ -211,10 +209,11 @@ type SharedState = Arc<RwLock<AppState>>;
 #[derive(Default)]
 struct AppState {
     ch: Mutex<Vec<Sender<Vec<u8>>>>,
-} //监听rtp
+}
+
 async fn rtp_listener(state: SharedState) {
-    let listener = UdpSocket::bind("127.0.0.1:5004").await.unwrap();
-    println!("=== RTP listener started ===");
+    let socket_addr = "0.0.0.0:5000".parse().unwrap();
+    let mut listener = UdpSocket::bind(socket_addr).await.unwrap();
 
     let mut inbound_rtp_packet = vec![0u8; 1600]; // UDP MTU
     while let Ok((n, _)) = listener.recv_from(&mut inbound_rtp_packet).await {

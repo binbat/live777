@@ -9,4 +9,8 @@ tower-http = { version = "0.4.0", features = ["fs", "trace"] }
 webrtc = "0.8.0"
 anyhow = "1.0"
 tokio = { version = "1.15", features = ["full"] }
-hyper = "0.14"
+rocket = "0.4.11"
+sdp = "0.4"
+serde = { version = "1", features = ["derive"] }
+
+
