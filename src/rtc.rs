@@ -204,8 +204,18 @@ impl PeerForward {
         println!("anchor_up_track : {kind}");
         let anchor_set = anchor.as_mut().unwrap();
         match kind {
-            VIDEO_KIND => anchor_set.1 = true,
-            AUDIO_KIND => anchor_set.2 = true,
+            VIDEO_KIND => {
+                if anchor_set.1 {
+                    return Err(anyhow::anyhow!("video already online"));
+                }
+                anchor_set.1 = true;
+            }
+            AUDIO_KIND => {
+                if anchor_set.2 {
+                    return Err(anyhow::anyhow!("audio already online"));
+                }
+                anchor_set.2 = true;
+            }
             _ => return Err(anyhow::anyhow!("kind error")),
         };
         drop(anchor);
