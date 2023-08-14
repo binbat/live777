@@ -196,7 +196,19 @@ impl PeerForward {
         track: Arc<TrackRemote>,
     ) -> Result<()> {
         let kind = track.kind().to_string();
+        let kind = kind.as_str();
+        let mut anchor = self.anchor.write().await;
+        if anchor.is_none() {
+            return Err(anyhow::anyhow!("anchor is none"));
+        }
         println!("anchor_up_track : {kind}");
+        let anchor_set = anchor.as_mut().unwrap();
+        match kind {
+            VIDEO_KIND => anchor_set.1 = true,
+            AUDIO_KIND => anchor_set.2 = true,
+            _ => return Err(anyhow::anyhow!("kind error")),
+        };
+        drop(anchor);
         tokio::spawn(PeerForward::publish_track_remote_pli(
             peer.clone(),
             track.clone(),
@@ -205,7 +217,7 @@ impl PeerForward {
         tokio::spawn(async move {
             self_arc.publish_track_remote(track.clone()).await;
         });
-        let _ = self.subscribe_refresh(kind.as_str()).await;
+        let _ = self.subscribe_refresh(kind).await;
         Ok(())
     }
 
@@ -214,7 +226,12 @@ impl PeerForward {
         if anchor.is_none() {
             return Ok(());
         }
+        let anchor_up = anchor.as_ref().unwrap();
+        if (kind == VIDEO_KIND && !anchor_up.1) || (kind == AUDIO_KIND && !anchor_up.2) {
+            return Ok(());
+        }
         drop(anchor);
+        println!("subscribe refresh {kind}");
         let mut peers = self.subscription_map.write().await;
         let subscribe_refresh_peers: Vec<Peer> = peers
             .iter()
