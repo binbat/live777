@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::mpsc::{channel, Sender};
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::RwLock;
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
@@ -31,16 +31,13 @@ pub const AUDIO_KIND: &str = "audio";
 pub const VIDEO_PAYLOAD_TYPE: PayloadType = 96;
 pub const AUDIO_PAYLOAD_TYPE: PayloadType = 111;
 
-pub type ForwardData = Arc<Packet>;
+type ForwardData = Arc<Packet>;
 
-pub struct Peer(pub Arc<RTCPeerConnection>);
+struct Peer(Arc<RTCPeerConnection>);
 
-pub struct Anchor(Arc<RTCPeerConnection>, bool, bool);
+struct Anchor(Arc<RTCPeerConnection>, bool, bool);
 
-pub struct Subscribe(Option<Sender<ForwardData>>, Option<Sender<ForwardData>>);
-
-#[derive(Default)]
-pub struct Subscription(Option<Sender<ForwardData>>, Option<Sender<ForwardData>>);
+struct Subscribe(Option<Sender<ForwardData>>, Option<Sender<ForwardData>>);
 
 impl From<Arc<RTCPeerConnection>> for Peer {
     fn from(value: Arc<RTCPeerConnection>) -> Self {
@@ -75,7 +72,7 @@ impl Hash for Peer {
 #[derive(Default)]
 pub struct PeerForward {
     anchor: Arc<RwLock<Option<Anchor>>>,
-    subscription_map: Arc<RwLock<HashMap<Peer, Subscription>>>,
+    subscription_map: Arc<RwLock<HashMap<Peer, Subscribe>>>,
 }
 
 impl Clone for PeerForward {
@@ -123,9 +120,9 @@ impl PeerForward {
         let pc = peer.clone();
         peer.on_track(Box::new(move |track, _, _| {
             let self_arc = self_arc.clone();
-            let pc2 = pc.clone();
+            let pc = pc.clone();
             tokio::spawn(async move {
-                let _ = self_arc.anchor_up_track(pc2, track).await;
+                let _ = self_arc.anchor_up_track(pc, track).await;
             });
             Box::pin(async {})
         }));
@@ -169,7 +166,7 @@ impl PeerForward {
                     }
                     RTCPeerConnectionState::Connected => {
                         let mut subscribe_peers = subscription_map.write().await;
-                        subscribe_peers.insert(pc.into(), Subscription(None, None));
+                        subscribe_peers.insert(pc.into(), Subscribe(None, None));
                         drop(subscribe_peers);
                         let _ = self_arc.subscribe_refresh(VIDEO_KIND).await;
                         let _ = self_arc.subscribe_refresh(AUDIO_KIND).await;
@@ -257,7 +254,7 @@ impl PeerForward {
         for peer in subscribe_refresh_peers {
             match PeerForward::peer_add_track(peer.0.clone(), kind).await {
                 Ok(sender) => {
-                    let mut subscription = peers.get_mut(&peer).unwrap();
+                    let subscription = peers.get_mut(&peer).unwrap();
                     match kind {
                         VIDEO_KIND => subscription.0 = Some(sender),
                         AUDIO_KIND => subscription.1 = Some(sender),
