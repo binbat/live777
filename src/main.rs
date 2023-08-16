@@ -2,21 +2,22 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::response::Response;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::post,
     Router,
+    routing::post,
 };
+use axum::http::{HeaderMap, Uri};
+use axum::response::Response;
 use tokio::sync::RwLock;
 use tower_http::services::{ServeDir, ServeFile};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use crate::rtc::PeerForward;
+use crate::forward::PeerForward;
 
-mod rtc;
+mod forward;
 
 #[tokio::main]
 async fn main() {
@@ -39,6 +40,8 @@ type SharedState = Arc<RwLock<HashMap<String, PeerForward>>>;
 async fn whip(
     State(state): State<SharedState>,
     Path(id): Path<String>,
+    header: HeaderMap,
+    uri: Uri,
     body: String,
 ) -> Result<Response<String>, AppError> {
     let offer = RTCSessionDescription::offer(body)?;
@@ -46,7 +49,12 @@ async fn whip(
     let original_forward = map.get(&id);
     let is_none = original_forward.is_none();
     let forward = if is_none {
-        PeerForward::new(id.clone(), false)
+        let mut kind_many = false;
+        let support_track_id = header.get("Support-TrackId");
+        if support_track_id.is_some() && support_track_id.unwrap().as_bytes() == b"true" {
+            kind_many = true;
+        }
+        PeerForward::new(id.clone(), kind_many)
     } else {
         original_forward.unwrap().clone()
     };
@@ -64,12 +72,14 @@ async fn whip(
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
         .header("E-Tag", id)
+        .header("Location", uri.to_string())
         .body(answer.sdp)?)
 }
 
 async fn whep(
     State(state): State<SharedState>,
     Path(id): Path<String>,
+    uri: Uri,
     body: String,
 ) -> Result<Response<String>, AppError> {
     let offer = RTCSessionDescription::offer(body)?;
@@ -86,6 +96,7 @@ async fn whep(
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
         .header("E-Tag", forward.get_id())
+        .header("Location", uri.to_string())
         .body(answer.sdp)?)
 }
 
@@ -98,8 +109,8 @@ impl IntoResponse for AppError {
 }
 
 impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
+    where
+        E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
         Self(err.into())
