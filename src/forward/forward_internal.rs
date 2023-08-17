@@ -4,22 +4,24 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::{Mutex, RwLock};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use uuid::Uuid;
 use webrtc::api::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
 const VIDEO_KIND: &str = "video";
 const AUDIO_KIND: &str = "audio";
 
 type ForwardData = Arc<Packet>;
+
+type SenderForwardData = UnboundedSender<ForwardData>;
 
 struct PeerWrap(Arc<RTCPeerConnection>);
 
@@ -79,9 +81,9 @@ pub struct PeerForwardInternal {
     anchor: Arc<RwLock<Option<Arc<RTCPeerConnection>>>>,
     subscribe_group: Arc<RwLock<Vec<PeerWrap>>>,
     anchor_track_forward_map:
-        Arc<RwLock<HashMap<TrackRemoteWrap, Arc<RwLock<HashMap<PeerWrap, Sender<ForwardData>>>>>>>,
+    Arc<RwLock<HashMap<TrackRemoteWrap, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>>,
     anchor_track_forward_map_retain:
-        Arc<Mutex<HashMap<String, Arc<RwLock<HashMap<PeerWrap, Sender<ForwardData>>>>>>>,
+    Arc<Mutex<HashMap<String, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>>,
 }
 
 impl PeerForwardInternal {
@@ -284,14 +286,14 @@ impl PeerForwardInternal {
                 break;
             }
             let anchor_track_forward = anchor_track_forward.unwrap().read().await;
-            let senders: Vec<Sender<ForwardData>> = anchor_track_forward
+            let senders: Vec<SenderForwardData> = anchor_track_forward
                 .iter()
                 .map(|(_, sender)| sender.clone())
                 .collect();
             drop(anchor_track_forward);
             let packet = Arc::new(rtp_packet);
             for sender in senders.iter() {
-                let _ = sender.send(packet.clone()).await;
+                let _ = sender.send(packet.clone());
             }
         }
         println!("[{}] [anchor] [track-{}] forward down", self.id, track.id());
@@ -301,7 +303,7 @@ impl PeerForwardInternal {
         &self,
         peer: Arc<RTCPeerConnection>,
         kind: &str,
-    ) -> Result<Sender<ForwardData>> {
+    ) -> Result<SenderForwardData> {
         let uuid = Uuid::new_v4().to_string();
         let (mime_type, id, stream_id) = match kind {
             VIDEO_KIND => (
@@ -327,7 +329,7 @@ impl PeerForwardInternal {
         let sender = peer
             .add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
-        let (send, mut recv) = channel::<ForwardData>(32);
+        let (send, mut recv) = unbounded_channel::<ForwardData>();
         let self_id = self.id.clone();
         tokio::spawn(async move {
             println!(
@@ -342,7 +344,7 @@ impl PeerForwardInternal {
                 if let Err(err) = track.write_rtp(&packet).await {
                     println!("video_track.write err: {}", err);
                 }
-                sequence_number += 1;
+                sequence_number = (sequence_number + 1) % 65535;
             }
             let _ = peer.remove_track(&sender).await;
             println!(
