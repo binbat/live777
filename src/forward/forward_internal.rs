@@ -335,10 +335,14 @@ impl PeerForwardInternal {
                 self_id,
                 peer.get_stats_id()
             );
+            let mut sequence_number: u16 = 0;
             while let Some(packet) = recv.recv().await {
+                let mut packet = packet.as_ref().clone();
+                packet.header.sequence_number = sequence_number;
                 if let Err(err) = track.write_rtp(&packet).await {
                     println!("video_track.write err: {}", err);
                 }
+                sequence_number += 1;
             }
             let _ = peer.remove_track(&sender).await;
             println!(
