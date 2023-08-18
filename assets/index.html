@@ -27,10 +27,7 @@ Logs<br/>
                 }
             ]
         })
-        let uri = "/whip/" + resource
-        if (!whip) {
-            uri = "/whep/endpoint/" + resource;
-        }
+        let uri = (whip ? "/whip" : "/whep") + "/endpoint/" + resource
         if (whip) {
             const screenStream = await navigator.mediaDevices.getDisplayMedia({video: true});
             screenStream.getTracks().forEach(track => {

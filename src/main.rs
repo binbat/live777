@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, Uri};
-use axum::response::Response;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::post,
     Router,
+    routing::post,
 };
+use axum::http::{HeaderMap, Uri};
+use axum::response::Response;
 use tokio::sync::RwLock;
 use tower_http::services::{ServeDir, ServeFile};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -24,7 +24,7 @@ async fn main() {
     let shared_state = SharedState::default();
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
     let app = Router::new()
-        .route("/whip/:id", post(whip))
+        .route("/whip/endpoint/:id", post(whip))
         .route("/whep/endpoint/:id", post(whep))
         .nest_service("/", serve_dir.clone())
         .with_state(Arc::clone(&shared_state));
@@ -109,8 +109,8 @@ impl IntoResponse for AppError {
 }
 
 impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
+    where
+        E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
         Self(err.into())
