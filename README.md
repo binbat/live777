@@ -13,6 +13,13 @@ Current: Only supports rtp send, browser playing
 open http://localhost:3000/
 ```
 
+### Use Cli WHIP / WHEP
+
+```bash
+docker build -t gstwebrtchttp .
+docker run --network=host -it gstwebrtchttp gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc error-resilient=partitions keyframe-max-dist=100 auto-alt-ref=true cpu-used=5 deadline=1 ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/123"
+```
+
 ### Send RTP to listening socket
 
 You can use any software to send VP8 packets to port 5004.
