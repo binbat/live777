@@ -16,8 +16,7 @@ use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
-const VIDEO_KIND: &str = "video";
-const AUDIO_KIND: &str = "audio";
+use super::constant::*;
 
 type ForwardData = Arc<Packet>;
 
@@ -172,9 +171,6 @@ impl PeerForwardInternal {
             track.id(),
             track.kind().to_string()
         );
-        if !PeerForwardInternal::track_kind_support(track.clone()) {
-            return Err(anyhow::anyhow!("track kind not support"));
-        }
         let anchor = self.anchor.read().await;
         if anchor.is_none() {
             return Err(anyhow::anyhow!("anchor is none"));
@@ -376,10 +372,5 @@ impl PeerForwardInternal {
             }
         }
     }
-
-    fn track_kind_support(track: Arc<TrackRemote>) -> bool {
-        let kind = track.kind().to_string();
-        let kind = kind.as_str();
-        return kind == VIDEO_KIND || kind == AUDIO_KIND;
-    }
 }
+

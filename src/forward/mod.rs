@@ -10,17 +10,17 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::PayloadType;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
+use webrtc::sdp::{MediaDescription, SessionDescription};
+
+use constant::*;
 
 use crate::forward::forward_internal::PeerForwardInternal;
 
 mod forward_internal;
-
-const VIDEO_PAYLOAD_TYPE: PayloadType = 96;
-const AUDIO_PAYLOAD_TYPE: PayloadType = 111;
+pub(crate) mod constant;
 
 #[derive(Clone)]
 pub struct PeerForward {
@@ -48,6 +48,7 @@ impl PeerForward {
         if self.internal.anchor_is_some().await {
             return Err(anyhow::anyhow!("anchor is set"));
         }
+        let _ = check_session_description(self.internal.kind_many, offer.unmarshal()?)?;
         let peer = new_peer().await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
@@ -168,7 +169,7 @@ async fn new_peer() -> Result<Arc<RTCPeerConnection>> {
                 sdp_fmtp_line: "".to_owned(),
                 rtcp_feedback: vec![],
             },
-            payload_type: VIDEO_PAYLOAD_TYPE,
+            payload_type: 96,
             ..Default::default()
         },
         RTPCodecType::Video,
@@ -183,7 +184,7 @@ async fn new_peer() -> Result<Arc<RTCPeerConnection>> {
                 sdp_fmtp_line: "".to_owned(),
                 rtcp_feedback: vec![],
             },
-            payload_type: AUDIO_PAYLOAD_TYPE,
+            payload_type: 111,
             ..Default::default()
         },
         RTPCodecType::Audio,
@@ -206,4 +207,31 @@ async fn new_peer() -> Result<Arc<RTCPeerConnection>> {
         ..Default::default()
     };
     return Ok(Arc::new(api.new_peer_connection(config).await?));
+}
+
+fn check_session_description(kind_many: bool, sd: SessionDescription) -> Result<Vec<MediaDescription>> {
+    let mut video = false;
+    let mut audio = false;
+    for md in &sd.media_descriptions {
+        let media = md.media_name.media.clone();
+        match media.as_str() {
+            VIDEO_KIND => {
+                if !kind_many && video {
+                    return Err(anyhow::anyhow!("only one video media is supported"));
+                }
+                video = true;
+            }
+            AUDIO_KIND => {
+                if !kind_many && audio {
+                    return Err(anyhow::anyhow!("only one audio media is supported"));
+                }
+                audio = true;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("unknown media kind: {}", media));
+            }
+        }
+    }
+
+    Ok(sd.media_descriptions)
 }
