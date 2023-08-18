@@ -17,7 +17,7 @@ use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use constant::*;
 
-use crate::forward::forward_internal::PeerForwardInternal;
+use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
 
 mod forward_internal;
 pub(crate) mod constant;
@@ -40,7 +40,7 @@ impl PeerForward {
         self.internal.id.clone()
     }
 
-    pub async fn set_anchor(&self, offer: RTCSessionDescription) -> Result<RTCSessionDescription> {
+    pub async fn set_anchor(&self, offer: RTCSessionDescription) -> Result<(RTCSessionDescription, String)> {
         if self.internal.anchor_is_some().await {
             return Err(anyhow::anyhow!("anchor is set"));
         }
@@ -103,14 +103,14 @@ impl PeerForward {
             .local_description()
             .await
             .ok_or(anyhow::anyhow!("failed to get local description"))?;
-        self.internal.set_anchor(peer).await?;
-        Ok(description)
+        self.internal.set_anchor(peer.clone()).await?;
+        Ok((description, get_peer_key(peer)))
     }
 
     pub async fn add_subscribe(
         &self,
         offer: RTCSessionDescription,
-    ) -> Result<RTCSessionDescription> {
+    ) -> Result<(RTCSessionDescription, String)> {
         let peer = new_peer().await?;
         let internal = self.internal.clone();
         let pc = peer.clone();
@@ -154,7 +154,7 @@ impl PeerForward {
             .local_description()
             .await
             .ok_or(anyhow::anyhow!("failed to get local description"))?;
-        Ok(description)
+        Ok((description, get_peer_key(peer)))
     }
 }
 

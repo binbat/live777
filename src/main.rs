@@ -59,7 +59,7 @@ async fn whip(
         original_forward.unwrap().clone()
     };
     drop(map);
-    let answer = forward.set_anchor(offer).await?;
+    let (answer, key) = forward.set_anchor(offer).await?;
     if is_none {
         let mut map = state.write().await;
         if map.contains_key(&id) {
@@ -71,7 +71,7 @@ async fn whip(
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("E-Tag", id)
+        .header("E-Tag", key)
         .header("Location", uri.to_string())
         .body(answer.sdp)?)
 }
@@ -90,12 +90,12 @@ async fn whep(
     }
     let forward = forward.unwrap().clone();
     drop(map);
-    let answer = forward.add_subscribe(offer).await?;
+    let (answer, key) = forward.add_subscribe(offer).await?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("E-Tag", forward.get_id())
+        .header("E-Tag", key)
         .header("Location", uri.to_string())
         .body(answer.sdp)?)
 }

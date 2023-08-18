@@ -24,6 +24,16 @@ type SenderForwardData = UnboundedSender<ForwardData>;
 
 struct PeerWrap(Arc<RTCPeerConnection>);
 
+pub(crate) fn get_peer_key(peer: Arc<RTCPeerConnection>) -> String {
+    PeerWrap(peer).get_key().to_string()
+}
+
+impl PeerWrap {
+    fn get_key(&self) -> &str {
+        self.0.get_stats_id()
+    }
+}
+
 impl Clone for PeerWrap {
     fn clone(&self) -> Self {
         PeerWrap(self.0.clone())
@@ -34,17 +44,17 @@ impl Eq for PeerWrap {}
 
 impl PartialEq for PeerWrap {
     fn eq(&self, other: &Self) -> bool {
-        self.0.get_stats_id() == other.0.get_stats_id()
+        self.get_key() == other.get_key()
     }
 
     fn ne(&self, other: &Self) -> bool {
-        self.0.get_stats_id() != other.0.get_stats_id()
+        self.get_key() != other.get_key()
     }
 }
 
 impl Hash for PeerWrap {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.get_stats_id().hash(state);
+        self.get_key().hash(state);
     }
 }
 
