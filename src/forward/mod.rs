@@ -94,15 +94,7 @@ impl PeerForward {
             };
             Box::pin(async {})
         }));
-        let _ = peer.set_remote_description(offer).await?;
-        let answer = peer.create_answer(None).await?;
-        let mut gather_complete = peer.gathering_complete_promise().await;
-        let _ = peer.set_local_description(answer).await?;
-        let _ = gather_complete.recv().await;
-        let description = peer
-            .local_description()
-            .await
-            .ok_or(anyhow::anyhow!("failed to get local description"))?;
+        let description = Self::peer_complete(offer, peer.clone()).await?;
         self.internal.set_anchor(peer.clone()).await?;
         Ok((description, get_peer_key(peer)))
     }
@@ -145,6 +137,10 @@ impl PeerForward {
             });
             Box::pin(async {})
         }));
+        Ok((Self::peer_complete(offer, peer.clone()).await?, get_peer_key(peer)))
+    }
+
+    async fn peer_complete(offer: RTCSessionDescription, peer: Arc<RTCPeerConnection>) -> Result<RTCSessionDescription> {
         let _ = peer.set_remote_description(offer).await?;
         let answer = peer.create_answer(None).await?;
         let mut gather_complete = peer.gathering_complete_promise().await;
@@ -154,7 +150,7 @@ impl PeerForward {
             .local_description()
             .await
             .ok_or(anyhow::anyhow!("failed to get local description"))?;
-        Ok((description, get_peer_key(peer)))
+        Ok(description)
     }
 }
 
