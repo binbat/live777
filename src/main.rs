@@ -44,16 +44,17 @@ async fn whip(
     uri: Uri,
     body: String,
 ) -> Result<Response<String>, AppError> {
+    let content_type = header.get("Content-Type").ok_or(anyhow::anyhow!("Content-Type is required"))?;
+    if content_type.as_bytes() != b"application/sdp" {
+        return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
+    }
     let offer = RTCSessionDescription::offer(body)?;
     let map = state.read().await;
     let original_forward = map.get(&id);
     let is_none = original_forward.is_none();
     let forward = if is_none {
-        let mut kind_many = false;
         let support_track_id = header.get("Support-TrackId");
-        if support_track_id.is_some() && support_track_id.unwrap().as_bytes() == b"true" {
-            kind_many = true;
-        }
+        let kind_many = support_track_id.is_some() && support_track_id.unwrap().as_bytes() == b"true";
         PeerForward::new(id.clone(), kind_many)
     } else {
         original_forward.unwrap().clone()
@@ -79,9 +80,14 @@ async fn whip(
 async fn whep(
     State(state): State<SharedState>,
     Path(id): Path<String>,
+    header: HeaderMap,
     uri: Uri,
     body: String,
 ) -> Result<Response<String>, AppError> {
+    let content_type = header.get("Content-Type").ok_or(anyhow::anyhow!("Content-Type is required"))?;
+    if content_type.as_bytes() != b"application/sdp" {
+        return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
+    }
     let offer = RTCSessionDescription::offer(body)?;
     let map = state.read().await;
     let forward = map.get(&id);
