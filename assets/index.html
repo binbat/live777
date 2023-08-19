@@ -1,6 +1,6 @@
 <input id="resource" type="text">
-<button onclick="window.startWebrtc(true)"> WebRTC Start Whip</button>
-<button onclick="window.startWebrtc(false)"> WebRTC Start Whep</button>
+<button onclick="startWhip()"> WebRTC Start Whip</button>
+<button onclick="startWhep()"> WebRTC Start Whep</button>
 
 <br/>
 Video<br/>
@@ -8,35 +8,40 @@ Video<br/>
 
 Logs<br/>
 <div id="div"></div>
+<script src="whip.js"></script>
+<script src="whep.js"></script>
+
 
 <script>
-    let log = msg => {
-        document.getElementById('div').innerHTML += msg + '<br>'
-    }
-
-    window.startWebrtc = async (whip) => {
+    async function startWhip() {
         const resource = document.getElementById("resource").value;
         if (!resource) {
             alert("input resource")
             return
         }
-        let pc = new RTCPeerConnection({
-            iceServers: [
-                {
-                    urls: 'stun:stun.l.google.com:19302'
-                }
-            ]
-        })
-        let uri = (whip ? "/whip" : "/whep") + "/endpoint/" + resource
-        if (whip) {
-            const screenStream = await navigator.mediaDevices.getDisplayMedia({video: true});
-            screenStream.getTracks().forEach(track => {
-                track.id = "c1861bb6-f6fc-46ad-965a-e53f24403212";
-                pc.addTrack(track, screenStream);
-            });
-        } else {
-            pc.addTransceiver('video', {'direction': 'recvonly'})
-            pc.ontrack = function (event) {
+        const stream = await navigator.mediaDevices.getDisplayMedia({audio: false, video: true})
+        const pc = new RTCPeerConnection();
+        for (const track of stream.getTracks()) {
+            pc.addTrack(track);
+        }
+        const whip = new WHIPClient();
+        const url = "http://localhost:3000/whip/endpoint/" + resource;
+        const token = ""
+        whip.publish(pc, url, token);
+    }
+
+    async function startWhep() {
+        const resource = document.getElementById("resource").value;
+        if (!resource) {
+            alert("input resource")
+            return
+        }
+        const pc = window.pc = new RTCPeerConnection();
+        pc.addTransceiver('video', {'direction': 'recvonly'})
+        pc.addTransceiver('audio', {'direction': 'recvonly'})
+        pc.ontrack = (event) => {
+            console.log(event)
+            if (event.track.kind == "video") {
                 var el = document.createElement(event.track.kind)
                 el.srcObject = event.streams[0]
                 el.autoplay = true
@@ -44,38 +49,11 @@ Logs<br/>
                 document.getElementById('remoteVideos').appendChild(el)
             }
         }
-        pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
-        pc.onicecandidate = event => {
-            if (event.candidate === null) {
-                console.log(pc.localDescription)
-            }
-        }
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-        const res = await reqSdp(offer, uri)
-        body = await res.text()
-        if (res.status !== 201) {
-            alert(body)
-            pc.close()
-            return
-        }
-        const data = new RTCSessionDescription(
-            {
-                type: "answer",
-                sdp: body
-            }
-        )
-        pc.setRemoteDescription(await data)
+        const whep = new WHEPClient();
+        const url = "http://localhost:3000/whep/endpoint/" + resource;
+        const token = ""
+        whep.view(pc, url, token);
     }
 
-    async function reqSdp(offer, uri) {
-        return fetch(uri, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/sdp'
-            },
-            body: offer.sdp,
-        })
-    }
 
 </script>
