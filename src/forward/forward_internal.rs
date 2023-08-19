@@ -14,8 +14,8 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_remote::TrackRemote;
 
 use super::constant::*;
@@ -91,7 +91,7 @@ pub struct PeerForwardInternal {
     anchor: Arc<RwLock<Option<Arc<RTCPeerConnection>>>>,
     subscribe_group: Arc<RwLock<Vec<PeerWrap>>>,
     anchor_track_forward_map:
-    Arc<HashMap<String, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>,
+        Arc<HashMap<String, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>,
 }
 
 impl PeerForwardInternal {
@@ -202,16 +202,11 @@ impl PeerForwardInternal {
         while let Ok((rtp_packet, _)) = track.read(&mut b).await {
             let anchor_track_forward = self.anchor_track_forward_map.get(&track_key).unwrap();
             let anchor_track_forward = anchor_track_forward.read().await;
-            let senders: Vec<SenderForwardData> = anchor_track_forward
-                .iter()
-                .filter(|(peer_wrap, _)| {
-                    peer_wrap.0.connection_state() == RTCPeerConnectionState::Connected
-                })
-                .map(|(_, sender)| sender.clone())
-                .collect();
-            drop(anchor_track_forward);
             let packet = Arc::new(rtp_packet);
-            for sender in senders.iter() {
+            for (peer_wrap, sender) in anchor_track_forward.iter() {
+                if peer_wrap.0.connection_state() != RTCPeerConnectionState::Connected {
+                    continue;
+                }
                 let _ = sender.send(packet.clone());
             }
         }
