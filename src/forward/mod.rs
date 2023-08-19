@@ -1,26 +1,30 @@
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use constant::*;
 
 use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
 
-mod forward_internal;
 pub(crate) mod constant;
+mod forward_internal;
 
 #[derive(Clone)]
 pub struct PeerForward {
@@ -29,10 +33,10 @@ pub struct PeerForward {
 }
 
 impl PeerForward {
-    pub fn new(id: impl ToString, kind_many: bool) -> Self {
+    pub fn new(id: impl ToString) -> Self {
         PeerForward {
             anchor_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(id, kind_many)),
+            internal: Arc::new(PeerForwardInternal::new(id)),
         }
     }
 
@@ -40,7 +44,10 @@ impl PeerForward {
         self.internal.id.clone()
     }
 
-    pub async fn set_anchor(&self, offer: RTCSessionDescription) -> Result<(RTCSessionDescription, String)> {
+    pub async fn set_anchor(
+        &self,
+        offer: RTCSessionDescription,
+    ) -> Result<(RTCSessionDescription, String)> {
         if self.internal.anchor_is_some().await {
             return Err(anyhow::anyhow!("anchor is set"));
         }
@@ -48,8 +55,8 @@ impl PeerForward {
         if self.internal.anchor_is_some().await {
             return Err(anyhow::anyhow!("anchor is set"));
         }
-        let _ = check_session_description(self.internal.kind_many, offer.unmarshal()?)?;
-        let peer = new_peer().await?;
+        let _ = check_session_description(offer.unmarshal()?)?;
+        let peer = new_peer(true).await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -88,13 +95,14 @@ impl PeerForward {
                 let internal = internal.unwrap();
                 let peer = peer.unwrap();
                 tokio::spawn(async move {
-                    let _ = internal.anchor_track_up(peer, track.clone()).await;
-                    let _ = internal.anchor_track_forward(track).await;
+                    if let Ok(_) = internal.anchor_track_up(peer, track.clone()).await {
+                        let _ = internal.anchor_track_forward(track).await;
+                    }
                 });
             };
             Box::pin(async {})
         }));
-        let description = Self::peer_complete(offer, peer.clone()).await?;
+        let description = peer_complete(offer, peer.clone()).await?;
         self.internal.set_anchor(peer.clone()).await?;
         Ok((description, get_peer_key(peer)))
     }
@@ -103,7 +111,7 @@ impl PeerForward {
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        let peer = new_peer().await?;
+        let peer = new_peer(false).await?;
         let internal = self.internal.clone();
         let pc = peer.clone();
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -128,33 +136,82 @@ impl PeerForward {
                         RTCPeerConnectionState::Closed => {
                             let _ = internal.remove_subscribe(pc).await;
                         }
-                        RTCPeerConnectionState::Connected => {
-                            let _ = internal.add_subscribe(pc).await;
-                        }
                         _ => {}
                     }
                 }
             });
             Box::pin(async {})
         }));
-        Ok((Self::peer_complete(offer, peer.clone()).await?, get_peer_key(peer)))
+        let _ = self.internal.add_subscribe(peer.clone()).await;
+        Ok((
+            peer_complete(offer, peer.clone()).await?,
+            get_peer_key(peer),
+        ))
     }
 
-    async fn peer_complete(offer: RTCSessionDescription, peer: Arc<RTCPeerConnection>) -> Result<RTCSessionDescription> {
-        let _ = peer.set_remote_description(offer).await?;
-        let answer = peer.create_answer(None).await?;
-        let mut gather_complete = peer.gathering_complete_promise().await;
-        let _ = peer.set_local_description(answer).await?;
-        let _ = gather_complete.recv().await;
-        let description = peer
-            .local_description()
+    pub async fn add_ice_candidate(&self, key: String, body: String, whip: bool) -> Result<()> {
+        let ice_candidates = parse_ice_candidate(body)?;
+        if ice_candidates.is_empty() {
+            return Ok(());
+        }
+        self.internal
+            .add_ice_candidate(key, ice_candidates, whip)
             .await
-            .ok_or(anyhow::anyhow!("failed to get local description"))?;
-        Ok(description)
     }
 }
 
-async fn new_peer() -> Result<Arc<RTCPeerConnection>> {
+async fn peer_complete(
+    offer: RTCSessionDescription,
+    peer: Arc<RTCPeerConnection>,
+) -> Result<RTCSessionDescription> {
+    let _ = peer.set_remote_description(offer).await?;
+    let answer = peer.create_answer(None).await?;
+    let mut gather_complete = peer.gathering_complete_promise().await;
+    let _ = peer.set_local_description(answer).await?;
+    let _ = gather_complete.recv().await;
+    let description = peer
+        .local_description()
+        .await
+        .ok_or(anyhow::anyhow!("failed to get local description"))?;
+    Ok(description)
+}
+
+fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
+    let content = format!(
+        "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{}",
+        content
+    );
+    let mut reader = Cursor::new(content);
+    let session_desc = SessionDescription::unmarshal(&mut reader)?;
+    let mut ice_candidates = Vec::new();
+    for media_descriptions in session_desc.media_descriptions {
+        let attributes = media_descriptions.attributes;
+        let mid = attributes
+            .iter()
+            .filter(|attr| attr.key == "mid")
+            .map(|attr| attr.value.clone())
+            .last();
+        let mid = mid
+            .ok_or_else(|| anyhow::anyhow!("no mid"))?
+            .ok_or_else(|| anyhow::anyhow!("no mid"))?;
+        let mline_index = mid.parse::<u16>()?;
+        for attr in attributes {
+            if attr.is_ice_candidate() {
+                if let Some(value) = attr.value {
+                    ice_candidates.push(RTCIceCandidateInit {
+                        candidate: value,
+                        sdp_mid: Some(mid.clone()),
+                        sdp_mline_index: Some(mline_index),
+                        username_fragment: None,
+                    });
+                }
+            }
+        }
+    }
+    Ok(ice_candidates)
+}
+
+async fn new_peer(publish: bool) -> Result<Arc<RTCPeerConnection>> {
     let mut m = MediaEngine::default();
     m.register_codec(
         RTCRtpCodecParameters {
@@ -202,23 +259,42 @@ async fn new_peer() -> Result<Arc<RTCPeerConnection>> {
         }],
         ..Default::default()
     };
-    return Ok(Arc::new(api.new_peer_connection(config).await?));
+    let peer = Arc::new(api.new_peer_connection(config).await?);
+    if publish {
+        peer.add_transceiver_from_kind(
+            RTPCodecType::Video,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                send_encodings: Vec::new(),
+            }),
+        )
+            .await?;
+        peer.add_transceiver_from_kind(
+            RTPCodecType::Audio,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                send_encodings: Vec::new(),
+            }),
+        )
+            .await?;
+    }
+    Ok(peer)
 }
 
-fn check_session_description(kind_many: bool, sd: SessionDescription) -> Result<Vec<MediaDescription>> {
+fn check_session_description(sd: SessionDescription) -> Result<Vec<MediaDescription>> {
     let mut video = false;
     let mut audio = false;
     for md in &sd.media_descriptions {
         let media = md.media_name.media.clone();
         match media.as_str() {
             VIDEO_KIND => {
-                if !kind_many && video {
+                if video {
                     return Err(anyhow::anyhow!("only one video media is supported"));
                 }
                 video = true;
             }
             AUDIO_KIND => {
-                if !kind_many && audio {
+                if audio {
                     return Err(anyhow::anyhow!("only one audio media is supported"));
                 }
                 audio = true;
@@ -230,4 +306,24 @@ fn check_session_description(kind_many: bool, sd: SessionDescription) -> Result<
     }
 
     Ok(sd.media_descriptions)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::forward::parse_ice_candidate;
+
+    #[test]
+    fn test_parse_ice_candidate() -> anyhow::Result<()> {
+        let body = "a=ice-ufrag:EsAw
+a=ice-pwd:P2uYro0UCOQ4zxjKXaWCBui1
+m=audio 9 RTP/AVP 0
+a=mid:0
+a=candidate:1387637174 1 udp 2122260223 192.0.2.1 61764 typ host generation 0 ufrag EsAw network-id 1
+a=candidate:3471623853 1 udp 2122194687 198.51.100.1 61765 typ host generation 0 ufrag EsAw network-id 2
+a=candidate:473322822 1 tcp 1518280447 192.0.2.1 9 typ host tcptype active generation 0 ufrag EsAw network-id 1
+a=candidate:2154773085 1 tcp 1518214911 198.51.100.2 9 typ host tcptype active generation 0 ufrag EsAw network-id 2
+a=end-of-candidates";
+        parse_ice_candidate(body.to_owned())?;
+        Ok(())
+    }
 }

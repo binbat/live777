@@ -4,10 +4,12 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 use webrtc::api::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
@@ -86,32 +88,27 @@ impl Hash for TrackRemoteWrap {
 
 pub struct PeerForwardInternal {
     pub(crate) id: String,
-    pub(crate) kind_many: bool,
     anchor: Arc<RwLock<Option<Arc<RTCPeerConnection>>>>,
     subscribe_group: Arc<RwLock<Vec<PeerWrap>>>,
     anchor_track_forward_map:
-    Arc<RwLock<HashMap<TrackRemoteWrap, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>>,
-    anchor_track_forward_map_retain:
-    Arc<Mutex<HashMap<String, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>>,
+    Arc<HashMap<String, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>,
 }
 
 impl PeerForwardInternal {
-    pub(crate) fn new(id: impl ToString, kind_many: bool) -> Self {
+    pub(crate) fn new(id: impl ToString) -> Self {
+        let mut anchor_track_forward_map = HashMap::new();
+        anchor_track_forward_map.insert(VIDEO_KIND.to_owned(), Arc::new(Default::default()));
+        anchor_track_forward_map.insert(AUDIO_KIND.to_owned(), Arc::new(Default::default()));
         PeerForwardInternal {
             id: id.to_string(),
-            kind_many,
             anchor: Arc::new(Default::default()),
             subscribe_group: Arc::new(Default::default()),
-            anchor_track_forward_map: Arc::new(Default::default()),
-            anchor_track_forward_map_retain: Arc::new(Default::default()),
+            anchor_track_forward_map: Arc::new(anchor_track_forward_map),
         }
     }
 
-    fn get_anchor_track_retain_key(&self, track: Arc<TrackRemote>) -> String {
-        match self.kind_many {
-            true => track.id(),
-            false => track.kind().to_string(),
-        }
+    fn get_anchor_track_key(&self, track: Arc<TrackRemote>) -> String {
+        track.kind().to_string()
     }
 
     pub(crate) async fn anchor_is_some(&self) -> bool {
@@ -137,15 +134,6 @@ impl PeerForwardInternal {
         if anchor.as_ref().unwrap().get_stats_id() != peer.get_stats_id() {
             return Err(anyhow::anyhow!("anchor not myself"));
         }
-        let mut anchor_track_forward_map = self.anchor_track_forward_map.write().await;
-        let mut anchor_track_forward_map_retain = self.anchor_track_forward_map_retain.lock().await;
-        for (track_wrap, track_forward) in anchor_track_forward_map.iter() {
-            anchor_track_forward_map_retain.insert(
-                self.get_anchor_track_retain_key(track_wrap.0.clone()),
-                track_forward.clone(),
-            );
-        }
-        anchor_track_forward_map.clear();
         *anchor = None;
         println!("[{}] [anchor] set none", self.id);
         Ok(())
@@ -156,7 +144,7 @@ impl PeerForwardInternal {
         subscribe_peers.push(PeerWrap(peer.clone()));
         drop(subscribe_peers);
         println!("[{}] [subscribe] [{}] up", self.id, peer.get_stats_id());
-        let _ = self.refresh_subscribe_peers().await?;
+        let _ = self.refresh_subscribe().await?;
         Ok(())
     }
 
@@ -165,7 +153,7 @@ impl PeerForwardInternal {
         subscribe_peers.retain(|x| x != &PeerWrap(peer.clone()));
         drop(subscribe_peers);
         println!("[{}] [subscribe] [{}] down", self.id, peer.get_stats_id());
-        let _ = self.refresh_subscribe_peers().await;
+        let _ = self.refresh_subscribe().await?;
         Ok(())
     }
 
@@ -174,13 +162,6 @@ impl PeerForwardInternal {
         peer: Arc<RTCPeerConnection>,
         track: Arc<TrackRemote>,
     ) -> Result<()> {
-        println!(
-            "[{}] [anchor] [{}] [track-{}] kind : {}",
-            self.id,
-            peer.get_stats_id(),
-            track.id(),
-            track.kind().to_string()
-        );
         let anchor = self.anchor.read().await;
         if anchor.is_none() {
             return Err(anyhow::anyhow!("anchor is none"));
@@ -188,112 +169,44 @@ impl PeerForwardInternal {
         if anchor.as_ref().unwrap().get_stats_id() != peer.get_stats_id() {
             return Err(anyhow::anyhow!("anchor is not self"));
         }
-        let mut anchor_track_forward = self.anchor_track_forward_map.write().await;
-        if !self.kind_many {
-            for (track_wrap, _) in anchor_track_forward.iter() {
-                if track_wrap.0.kind() == track.kind() {
-                    return Err(anyhow::anyhow!("track kind exist"));
-                }
-            }
-        }
-        let mut anchor_track_forward_map_retain = self.anchor_track_forward_map_retain.lock().await;
-        let track_forward = anchor_track_forward_map_retain
-            .remove(&self.get_anchor_track_retain_key(track.clone()))
-            .map_or_else(
-                || Arc::new(RwLock::default()),
-                |track_forward| track_forward,
-            );
-        anchor_track_forward.insert(TrackRemoteWrap(track.clone()), track_forward);
-        drop(anchor_track_forward_map_retain);
-        drop(anchor_track_forward);
         tokio::spawn(PeerForwardInternal::anchor_track_pli(
             Arc::downgrade(&peer),
             track.ssrc(),
         ));
-        let _ = self.refresh_track_forward(track).await;
         Ok(())
     }
 
-    async fn refresh_subscribe_peers(&self) -> Result<()> {
-        let anchor_track_forward_map_retain = self.anchor_track_forward_map_retain.lock().await;
-        let peers = self.subscribe_group.read().await;
-        for (_, peers_forwards) in anchor_track_forward_map_retain.iter() {
-            let mut peers_forwards = peers_forwards.write().await;
-            let remove_peer_keys: Vec<PeerWrap> = peers_forwards
-                .iter()
-                .map(|(p, _)| p.clone())
-                .filter(|p| !peers.contains(p))
-                .collect();
-            for peer_wrap in remove_peer_keys.iter() {
-                peers_forwards.remove(peer_wrap);
-            }
-        }
-        drop(peers);
-        drop(anchor_track_forward_map_retain);
-        let anchor = self.anchor.read().await;
-        if anchor.is_none() {
-            return Ok(());
-        }
-        drop(anchor);
-        let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
-        let tracks: Vec<Arc<TrackRemote>> = anchor_track_forward_map
-            .iter()
-            .map(|(track, _)| track.0.clone())
-            .collect();
-        drop(anchor_track_forward_map);
-        for track in tracks {
-            let _ = self.refresh_track_forward(track.clone()).await;
-        }
-        Ok(())
-    }
-
-    async fn refresh_track_forward(&self, track: Arc<TrackRemote>) {
-        println!(
-            "[{}] [anchor] [track-{}] refresh forward",
-            self.id,
-            track.id()
-        );
-        let kind = track.kind().to_string();
-        let kind = kind.as_str();
-        let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
-        let anchor_track_forward = anchor_track_forward_map.get(&TrackRemoteWrap(track.clone()));
-        if anchor_track_forward.is_none() {
-            return;
-        }
-        let anchor_track_forward = anchor_track_forward.unwrap().clone();
-        drop(anchor_track_forward_map);
-        let mut anchor_track_forward = anchor_track_forward.write().await;
-        let peers = self.subscribe_group.read().await;
-        for peer in peers.iter() {
-            if anchor_track_forward.get(peer).is_none() {
-                if let Ok(sender) = self.peer_add_track(peer.0.clone(), kind).await {
-                    anchor_track_forward.insert(peer.clone(), sender);
+    pub(crate) async fn refresh_subscribe(&self) -> Result<()> {
+        let subscribe_group = self.subscribe_group.read().await;
+        for (kind, track_forward_map) in self.anchor_track_forward_map.iter() {
+            let mut track_forward_map = track_forward_map.write().await;
+            track_forward_map.retain(|k, _| subscribe_group.contains(k));
+            for peer_wrap in subscribe_group.iter() {
+                if !track_forward_map.contains_key(peer_wrap) {
+                    if let Ok(sender) = self
+                        .peer_add_track(peer_wrap.0.clone(), kind.as_str())
+                        .await
+                    {
+                        track_forward_map.insert(peer_wrap.clone(), sender);
+                    }
                 }
             }
         }
-        let sile: Vec<PeerWrap> = anchor_track_forward
-            .iter()
-            .filter(|(p, _)| !peers.contains(*p))
-            .map(|(p, _)| (*p).clone())
-            .collect();
-        for x in sile {
-            anchor_track_forward.remove(&x);
-        }
+        Ok(())
     }
 
     pub(crate) async fn anchor_track_forward(&self, track: Arc<TrackRemote>) {
         let mut b = vec![0u8; 1500];
-        println!("[{}] [anchor] [track-{}] forward up", self.id, track.id());
+        let track_key = self.get_anchor_track_key(track.clone());
+        println!("[{}] [anchor] [track-{}] forward up", self.id, track_key);
         while let Ok((rtp_packet, _)) = track.read(&mut b).await {
-            let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
-            let anchor_track_forward =
-                anchor_track_forward_map.get(&TrackRemoteWrap(track.clone()));
-            if anchor_track_forward.is_none() {
-                break;
-            }
-            let anchor_track_forward = anchor_track_forward.unwrap().read().await;
+            let anchor_track_forward = self.anchor_track_forward_map.get(&track_key).unwrap();
+            let anchor_track_forward = anchor_track_forward.read().await;
             let senders: Vec<SenderForwardData> = anchor_track_forward
                 .iter()
+                .filter(|(peer_wrap, _)| {
+                    peer_wrap.0.connection_state() == RTCPeerConnectionState::Connected
+                })
                 .map(|(_, sender)| sender.clone())
                 .collect();
             drop(anchor_track_forward);
@@ -302,7 +215,7 @@ impl PeerForwardInternal {
                 let _ = sender.send(packet.clone());
             }
         }
-        println!("[{}] [anchor] [track-{}] forward down", self.id, track.id());
+        println!("[{}] [anchor] [track-{}] forward down", self.id, track_key);
     }
 
     async fn peer_add_track(
@@ -337,11 +250,13 @@ impl PeerForwardInternal {
             .await?;
         let (send, mut recv) = unbounded_channel::<ForwardData>();
         let self_id = self.id.clone();
+        let kind = kind.to_owned();
         tokio::spawn(async move {
             println!(
-                "[{}] [subscribe] [{}] forward up",
+                "[{}] [subscribe] [{}] {} forward up",
                 self_id,
-                peer.get_stats_id()
+                peer.get_stats_id(),
+                kind
             );
             let mut sequence_number: u16 = 0;
             while let Some(packet) = recv.recv().await {
@@ -354,12 +269,50 @@ impl PeerForwardInternal {
             }
             let _ = peer.remove_track(&sender).await;
             println!(
-                "[{}] [subscribe] [{}] forward down",
+                "[{}] [subscribe] [{}] {} forward down",
                 self_id,
-                peer.get_stats_id()
+                peer.get_stats_id(),
+                kind
             );
         });
         Ok(send)
+    }
+
+    pub(crate) async fn add_ice_candidate(
+        &self,
+        key: String,
+        ice_candidates: Vec<RTCIceCandidateInit>,
+        whip: bool,
+    ) -> Result<()> {
+        let peer = match whip {
+            true => {
+                let anchor = self.anchor.read().await;
+                if anchor.is_none() {
+                    return Err(anyhow::anyhow!("anchor is none"));
+                }
+                let peer = anchor.as_ref().unwrap().clone();
+                if PeerWrap(peer.clone()).get_key() != key.as_str() {
+                    return Err(anyhow::anyhow!("key not match"));
+                }
+                peer
+            }
+            false => {
+                let subscribe_peers = self.subscribe_group.read().await;
+                let mut peers: Vec<Arc<RTCPeerConnection>> = subscribe_peers
+                    .iter()
+                    .filter(|peer_warap| peer_warap.get_key() == key.as_str())
+                    .map(|peer_warap| peer_warap.0.clone())
+                    .collect();
+                if peers.len() != 1 {
+                    return Err(anyhow::anyhow!("peer not found"));
+                }
+                peers.pop().unwrap()
+            }
+        };
+        for ice_candidate in ice_candidates {
+            peer.add_ice_candidate(ice_candidate).await?;
+        }
+        Ok(())
     }
 
     async fn anchor_track_pli(peer: Weak<RTCPeerConnection>, media_ssrc: u32) {
@@ -383,4 +336,3 @@ impl PeerForwardInternal {
         }
     }
 }
-
