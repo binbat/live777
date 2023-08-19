@@ -24,19 +24,11 @@ RUN tar -xf gst-plugins-rs-gstreamer.tar.gz --strip-components 1
 #    cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr --libdir=/usr/lib/${archLibPath}
 RUN cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
 
+# rtpav1pay / rtpav1depay: RTP (de)payloader for the AV1 video codec.
+RUN cargo cinstall -p gst-plugin-rtp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
+
 #FROM rust:alpine
-#
-#RUN apk add --no-cache openssl-dev musl-dev cargo-c wget gstreamer gstreamer-dev libnice-gstreamer gstreamer-tools gst-plugins-good gst-plugins-base gst-plugins-base-dev gst-plugins-bad gst-plugins-bad-dev
-#
-##RUN cargo install cargo-c
-#
+#RUN apk add --no-cache openssl-dev musl-dev cargo-c gstreamer gstreamer-dev libnice-gstreamer gstreamer-tools gst-plugins-good gst-plugins-base gst-plugins-base-dev gst-plugins-bad gst-plugins-bad-dev
 #WORKDIR /src
-#
-#RUN wget https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.5/gst-plugins-rs-gstreamer-1.22.5.tar.gz
-#
-#RUN tar -xf gst-plugins-rs-gstreamer-1.22.5.tar.gz --strip-components 1
-
-#RUN cargo cbuild -p gst-plugin-webrtchttp
-
 #RUN cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr
 
