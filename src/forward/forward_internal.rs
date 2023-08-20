@@ -88,22 +88,21 @@ impl Hash for TrackRemoteWrap {
 
 pub struct PeerForwardInternal {
     pub(crate) id: String,
-    anchor: Arc<RwLock<Option<Arc<RTCPeerConnection>>>>,
-    subscribe_group: Arc<RwLock<Vec<PeerWrap>>>,
-    anchor_track_forward_map:
-        Arc<HashMap<String, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>,
+    anchor: RwLock<Option<Arc<RTCPeerConnection>>>,
+    subscribe_group: RwLock<Vec<PeerWrap>>,
+    anchor_track_forward_map: HashMap<String, RwLock<HashMap<PeerWrap, SenderForwardData>>>,
 }
 
 impl PeerForwardInternal {
     pub(crate) fn new(id: impl ToString) -> Self {
         let mut anchor_track_forward_map = HashMap::new();
-        anchor_track_forward_map.insert(VIDEO_KIND.to_owned(), Arc::new(Default::default()));
-        anchor_track_forward_map.insert(AUDIO_KIND.to_owned(), Arc::new(Default::default()));
+        anchor_track_forward_map.insert(VIDEO_KIND.to_owned(), Default::default());
+        anchor_track_forward_map.insert(AUDIO_KIND.to_owned(), Default::default());
         PeerForwardInternal {
             id: id.to_string(),
-            anchor: Arc::new(Default::default()),
-            subscribe_group: Arc::new(Default::default()),
-            anchor_track_forward_map: Arc::new(anchor_track_forward_map),
+            anchor: Default::default(),
+            subscribe_group: Default::default(),
+            anchor_track_forward_map,
         }
     }
 
