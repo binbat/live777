@@ -29,6 +29,7 @@ async fn main() {
         .nest_service("/", serve_dir.clone())
         .with_state(Arc::clone(&shared_state));
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    println!("Server listening on {}", addr.to_string());
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await

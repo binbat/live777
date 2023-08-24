@@ -19,7 +19,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ghcr.io/binbat/live777-client
+          images: ghcr.io/binbat/live777-server
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -46,6 +46,7 @@ jobs:
         with:
           context: .
           push: true
+          file: Dockerfile.server
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

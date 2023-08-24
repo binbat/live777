@@ -1,0 +1,8 @@
+target
+Dockerfile
+Dockerfile.client
+Dockerfile.server
+README.md
+.dockerignore
+.git
+.gitignore

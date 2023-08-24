@@ -1,0 +1,9 @@
+FROM rust:slim-bookworm
+
+WORKDIR /app
+
+COPY . .
+
+RUN cargo build --release
+
+CMD ["/app/target/release/live777"]
