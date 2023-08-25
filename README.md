@@ -9,6 +9,12 @@ A very simple, high performance, support WHIP/WHEP edge WebRTC SFU (Selective Fo
 |WHIP|VP8|Opus|
 |WHEP|VP8|Opus|
 
+### Live777 Server
+
+```bash
+docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:main live777
+```
+
 ### Browser Demo Page
 
 ```shell
@@ -23,7 +29,7 @@ open http://localhost:3000/
 ### Use GStreamer WHIP/WHEP
 
 ```bash
-docker build -t gstwebrtchttp .
-docker run --network=host -it gstwebrtchttp gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+
+docker run --name live777-client --rm --network host ghcr.io/binbat/live777-client:main gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
 ```
 
