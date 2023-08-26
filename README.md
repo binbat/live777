@@ -6,18 +6,19 @@ A very simple, high performance, support WHIP/WHEP edge WebRTC SFU (Selective Fo
 
 |protocol|video codecs|audio codecs|
 |--------|------------|------------|
-|WHIP|VP8,VP9,H264|Opus|
-|WHEP|VP8,VP9,H264|Opus|
+|`WHIP`|`VP8`,`VP9`,`H264`|`Opus`,`G722`|
+|`WHEP`|`VP8`,`VP9`,`H264`|`Opus`,`G722`|
 
 ### Live777 Server
 
 ```bash
-docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:main live777
+docker run --name live777-server --rm --network host \
+ghcr.io/binbat/live777-server:main live777
 ```
 
 ### Browser Demo Page
 
-```shell
+```bash
 # open your browser
 open http://localhost:3000/
 ```
@@ -32,21 +33,45 @@ open http://localhost:3000/
 
 ## Use GStreamer WHIP/WHEP
 
-### VP8
+### Video: VP8
 
 ```bash
-docker run --name live777-client --rm --network host ghcr.io/binbat/live777-client:main gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+docker run --name live777-client --rm --network host \
+ghcr.io/binbat/live777-client:main \
+gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
 ```
 
-### VP9
+### Video: VP9
 
 ``` bash
-docker run --name live777-client --rm --network host ghcr.io/binbat/live777-client:main gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp9enc ! rtpvp9pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+docker run --name live777-client --rm --network host \
+ghcr.io/binbat/live777-client:main \
+gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
 ```
 
-### H264
+### Video: H264
 
 ```bash
-docker run --name live777-client --rm --network host ghcr.io/binbat/live777-client:main gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! x264enc tune=zerolatency ! rtph264pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+docker run --name live777-client --rm --network host \
+ghcr.io/binbat/live777-client:main \
+gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+```
+
+### Audio: Opus
+
+```bash
+docker run --name live777-client --rm --network host \
+ghcr.io/binbat/live777-client:main \
+gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+```
+
+### Audio: G722
+
+**GStreamer G722 need `avenc_g722` in `gstreamer-libav`**
+
+```bash
+docker run --name live777-client --rm --network host \
+ghcr.io/binbat/live777-client:main \
+gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777
 ```
 

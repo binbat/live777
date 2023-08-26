@@ -11,7 +11,6 @@ Logs<br/>
 <script src="whip.js"></script>
 <script src="whep.js"></script>
 
-
 <script>
     async function startWhip() {
         const resource = document.getElementById("resource").value;
@@ -48,12 +47,18 @@ Logs<br/>
                 el.controls = true
                 document.getElementById('remoteVideos').appendChild(el)
             }
+            if (event.track.kind == "audio") {
+                var el = document.createElement(event.track.kind)
+                el.srcObject = event.streams[0]
+                el.autoplay = true
+                el.controls = true
+                document.getElementById('remoteVideos').appendChild(el)
+            }
         }
         const whep = new WHEPClient();
         const url = location.origin + "/whep/endpoint/" + resource;
         const token = ""
         whep.view(pc, url, token);
     }
-
 
 </script>
