@@ -3,21 +3,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
-use webrtc::api::APIBuilder;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
-use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
-};
-use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use constant::*;
@@ -57,7 +46,7 @@ impl PeerForward {
             return Err(anyhow::anyhow!("anchor is set"));
         }
         let _ = check_session_description(offer.unmarshal()?)?;
-        let peer = new_peer(true).await?;
+        let peer = self.internal.new_peer(true).await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -112,7 +101,10 @@ impl PeerForward {
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        let peer = new_peer(false).await?;
+        if !self.internal.anchor_is_some().await {
+            return Err(anyhow::anyhow!("anchor is not set"));
+        }
+        let peer = self.internal.new_peer(false).await?;
         let internal = self.internal.clone();
         let pc = peer.clone();
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -210,76 +202,6 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
         }
     }
     Ok(ice_candidates)
-}
-
-async fn new_peer(publish: bool) -> Result<Arc<RTCPeerConnection>> {
-    let mut m = MediaEngine::default();
-    m.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_VP8.to_owned(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "".to_owned(),
-                rtcp_feedback: vec![],
-            },
-            payload_type: 96,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    )?;
-
-    m.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_OPUS.to_owned(),
-                clock_rate: 48000,
-                channels: 2,
-                sdp_fmtp_line: "".to_owned(),
-                rtcp_feedback: vec![],
-            },
-            payload_type: 111,
-            ..Default::default()
-        },
-        RTPCodecType::Audio,
-    )?;
-
-    let mut registry = Registry::new();
-
-    registry = register_default_interceptors(registry, &mut m)?;
-
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry)
-        .build();
-
-    let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let peer = Arc::new(api.new_peer_connection(config).await?);
-    if publish {
-        peer.add_transceiver_from_kind(
-            RTPCodecType::Video,
-            Some(RTCRtpTransceiverInit {
-                direction: RTCRtpTransceiverDirection::Recvonly,
-                send_encodings: Vec::new(),
-            }),
-        )
-            .await?;
-        peer.add_transceiver_from_kind(
-            RTPCodecType::Audio,
-            Some(RTCRtpTransceiverInit {
-                direction: RTCRtpTransceiverDirection::Recvonly,
-                send_encodings: Vec::new(),
-            }),
-        )
-            .await?;
-    }
-    Ok(peer)
 }
 
 fn check_session_description(sd: SessionDescription) -> Result<Vec<MediaDescription>> {
