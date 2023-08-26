@@ -6,16 +6,22 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
-use uuid::Uuid;
-use webrtc::api::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
+use webrtc::api::APIBuilder;
+use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::media_engine::MediaEngine;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::interceptor::registry::Registry;
+use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
 use super::constant::*;
@@ -48,10 +54,6 @@ impl PartialEq for PeerWrap {
     fn eq(&self, other: &Self) -> bool {
         self.get_key() == other.get_key()
     }
-
-    fn ne(&self, other: &Self) -> bool {
-        self.get_key() != other.get_key()
-    }
 }
 
 impl Hash for PeerWrap {
@@ -74,10 +76,6 @@ impl PartialEq for TrackRemoteWrap {
     fn eq(&self, other: &Self) -> bool {
         self.0.id() == other.0.id()
     }
-
-    fn ne(&self, other: &Self) -> bool {
-        self.0.id() != other.0.id()
-    }
 }
 
 impl Hash for TrackRemoteWrap {
@@ -90,6 +88,7 @@ pub struct PeerForwardInternal {
     pub(crate) id: String,
     anchor: RwLock<Option<Arc<RTCPeerConnection>>>,
     subscribe_group: RwLock<Vec<PeerWrap>>,
+    anchor_track_codec_map: RwLock<HashMap<String, RTCRtpCodecParameters>>,
     anchor_track_forward_map: HashMap<String, RwLock<HashMap<PeerWrap, SenderForwardData>>>,
 }
 
@@ -102,6 +101,7 @@ impl PeerForwardInternal {
             id: id.to_string(),
             anchor: Default::default(),
             subscribe_group: Default::default(),
+            anchor_track_codec_map: Default::default(),
             anchor_track_forward_map,
         }
     }
@@ -132,6 +132,11 @@ impl PeerForwardInternal {
         }
         if anchor.as_ref().unwrap().get_stats_id() != peer.get_stats_id() {
             return Err(anyhow::anyhow!("anchor not myself"));
+        }
+        let subscribe_group = self.subscribe_group.read().await;
+        if subscribe_group.is_empty() {
+            let mut anchor_track_type_map = self.anchor_track_codec_map.write().await;
+            anchor_track_type_map.clear();
         }
         *anchor = None;
         println!("[{}] [anchor] set none", self.id);
@@ -172,6 +177,9 @@ impl PeerForwardInternal {
             Arc::downgrade(&peer),
             track.ssrc(),
         ));
+        let track_key = self.get_anchor_track_key(track.clone());
+        let mut anchor_track_type_map = self.anchor_track_codec_map.write().await;
+        anchor_track_type_map.insert(track_key, track.codec());
         Ok(())
     }
 
@@ -212,32 +220,66 @@ impl PeerForwardInternal {
         println!("[{}] [anchor] [track-{}] forward down", self.id, track_key);
     }
 
+    pub(crate) async fn new_peer(&self, publish: bool) -> Result<Arc<RTCPeerConnection>> {
+        let mut m = MediaEngine::default();
+        m.register_default_codecs()?;
+        let mut registry = Registry::new();
+        registry = register_default_interceptors(registry, &mut m)?;
+        let api = APIBuilder::new()
+            .with_media_engine(m)
+            .with_interceptor_registry(registry)
+            .build();
+        let config = RTCConfiguration {
+            ice_servers: vec![RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let peer = Arc::new(api.new_peer_connection(config).await?);
+        if publish {
+            let video_transceiver = peer
+                .add_transceiver_from_kind(
+                    RTPCodecType::Video,
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Recvonly,
+                        send_encodings: Vec::new(),
+                    }),
+                )
+                .await?;
+            let audio_transceiver = peer.add_transceiver_from_kind(
+                RTPCodecType::Audio,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    send_encodings: Vec::new(),
+                }),
+            ).await?;
+            let track_codec_map = self.anchor_track_codec_map.read().await;
+            if let Some(codec) = track_codec_map.get(VIDEO_KIND) {
+                video_transceiver.set_codec_preferences(vec![codec.clone()]).await?;
+            }
+            if let Some(codec) = track_codec_map.get(AUDIO_KIND) {
+                audio_transceiver.set_codec_preferences(vec![codec.clone()]).await?;
+            }
+        }
+        Ok(peer)
+    }
     async fn peer_add_track(
         &self,
         peer: Arc<RTCPeerConnection>,
         kind: &str,
     ) -> Result<SenderForwardData> {
-        let uuid = Uuid::new_v4().to_string();
-        let (mime_type, id, stream_id) = match kind {
-            VIDEO_KIND => (
-                MIME_TYPE_VP8.to_owned(),
-                format!("{}-{}", VIDEO_KIND, uuid),
-                format!("webrtc-rs-video-{}", uuid),
-            ),
-            AUDIO_KIND => (
-                MIME_TYPE_OPUS.to_owned(),
-                format!("{}-{}", AUDIO_KIND, uuid),
-                format!("webrtc-rs-audio-{}", uuid),
-            ),
-            _ => return Err(anyhow::anyhow!("kind error")),
-        };
+        let anchor_track_codec_map = self.anchor_track_codec_map.read().await;
+        let codec = anchor_track_codec_map.get(kind);
+        if codec.is_none() {
+            return Err(anyhow::anyhow!("kind codec not found"));
+        }
+        let codec = codec.unwrap().clone().capability;
+        drop(anchor_track_codec_map);
         let track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type,
-                ..Default::default()
-            },
-            id,
-            stream_id,
+            codec,
+            kind.to_owned(),
+            "webrtc-rs".to_owned(),
         ));
         let sender = peer
             .add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>)
