@@ -4,6 +4,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::Result;
+use log::info;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
 use webrtc::api::APIBuilder;
@@ -120,7 +121,7 @@ impl PeerForwardInternal {
         if anchor.is_some() {
             return Err(anyhow::anyhow!("anchor is set"));
         }
-        println!("[{}] [anchor] set {}", self.id, peer.get_stats_id());
+        info!("[{}] [anchor] set {}", self.id, peer.get_stats_id());
         *anchor = Some(peer);
         Ok(())
     }
@@ -139,7 +140,7 @@ impl PeerForwardInternal {
             anchor_track_type_map.clear();
         }
         *anchor = None;
-        println!("[{}] [anchor] set none", self.id);
+        info!("[{}] [anchor] set none", self.id);
         Ok(())
     }
 
@@ -147,7 +148,7 @@ impl PeerForwardInternal {
         let mut subscribe_peers = self.subscribe_group.write().await;
         subscribe_peers.push(PeerWrap(peer.clone()));
         drop(subscribe_peers);
-        println!("[{}] [subscribe] [{}] up", self.id, peer.get_stats_id());
+        info!("[{}] [subscribe] [{}] up", self.id, peer.get_stats_id());
         let _ = self.refresh_subscribe().await?;
         Ok(())
     }
@@ -156,7 +157,7 @@ impl PeerForwardInternal {
         let mut subscribe_peers = self.subscribe_group.write().await;
         subscribe_peers.retain(|x| x != &PeerWrap(peer.clone()));
         drop(subscribe_peers);
-        println!("[{}] [subscribe] [{}] down", self.id, peer.get_stats_id());
+        info!("[{}] [subscribe] [{}] down", self.id, peer.get_stats_id());
         let _ = self.refresh_subscribe().await?;
         Ok(())
     }
@@ -205,7 +206,7 @@ impl PeerForwardInternal {
     pub(crate) async fn anchor_track_forward(&self, track: Arc<TrackRemote>) {
         let mut b = vec![0u8; 1500];
         let track_key = self.get_anchor_track_key(track.clone());
-        println!("[{}] [anchor] [track-{}] forward up", self.id, track_key);
+        info!("[{}] [anchor] [track-{}] forward up", self.id, track_key);
         while let Ok((rtp_packet, _)) = track.read(&mut b).await {
             let anchor_track_forward = self.anchor_track_forward_map.get(&track_key).unwrap();
             let anchor_track_forward = anchor_track_forward.read().await;
@@ -217,7 +218,7 @@ impl PeerForwardInternal {
                 let _ = sender.send(packet.clone());
             }
         }
-        println!("[{}] [anchor] [track-{}] forward down", self.id, track_key);
+        info!("[{}] [anchor] [track-{}] forward down", self.id, track_key);
     }
 
     pub(crate) async fn new_peer(&self, publish: bool) -> Result<Arc<RTCPeerConnection>> {
@@ -288,7 +289,7 @@ impl PeerForwardInternal {
         let self_id = self.id.clone();
         let kind = kind.to_owned();
         tokio::spawn(async move {
-            println!(
+            info!(
                 "[{}] [subscribe] [{}] {} forward up",
                 self_id,
                 peer.get_stats_id(),
@@ -299,12 +300,12 @@ impl PeerForwardInternal {
                 let mut packet = packet.as_ref().clone();
                 packet.header.sequence_number = sequence_number;
                 if let Err(err) = track.write_rtp(&packet).await {
-                    println!("track write err: {}", err);
+                    info!("track write err: {}", err);
                 }
                 sequence_number = sequence_number.wrapping_add(1);
             }
             let _ = peer.remove_track(&sender).await;
-            println!(
+            info!(
                 "[{}] [subscribe] [{}] {} forward down",
                 self_id,
                 peer.get_stats_id(),

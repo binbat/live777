@@ -11,3 +11,5 @@ anyhow = "1.0"
 tokio = { version = "1.30", features = ["full"] }
 hyper = "0.14"
 uuid = { version = "1.4.1", features = ["v4"] }
+log = "0.4.20"
+env_logger = "0.10.0"

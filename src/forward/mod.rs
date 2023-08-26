@@ -2,11 +2,12 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::Result;
+use log::info;
 use tokio::sync::Mutex;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use constant::*;
@@ -56,7 +57,7 @@ impl PeerForward {
                 let internal = internal.unwrap();
                 let peer = pc.unwrap();
                 tokio::spawn(async move {
-                    println!(
+                    info!(
                         "[{}] [anchor] [{}] connection state changed: {}",
                         internal.id,
                         peer.get_stats_id(),
@@ -116,7 +117,7 @@ impl PeerForward {
                 if internal.is_some() && pc.is_some() {
                     let internal = internal.unwrap();
                     let pc = pc.unwrap();
-                    println!(
+                    info!(
                         "[{}] [subscribe] [{}] connection state changed: {}",
                         internal.id,
                         pc.get_stats_id(),
