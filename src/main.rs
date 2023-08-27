@@ -1,16 +1,17 @@
-use std::{collections::HashMap, str::FromStr};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::{collections::HashMap, str::FromStr};
 
+use axum::http::{HeaderMap, Uri};
+use axum::response::Response;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Router,
     routing::post,
+    Router,
 };
-use axum::http::{HeaderMap, Uri};
-use axum::response::Response;
+use config::IceServer;
 use log::info;
 use tokio::sync::RwLock;
 use tower_http::services::{ServeDir, ServeFile};
@@ -39,8 +40,18 @@ async fn main() {
     };
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
     let app = Router::new()
-        .route("/whip/endpoint/:id", post(whip).patch(add_ice_candidate))
-        .route("/whep/endpoint/:id", post(whep).patch(add_ice_candidate))
+        .route(
+            "/whip/endpoint/:id",
+            post(whip)
+                .patch(add_ice_candidate)
+                .options(ice_server_config),
+        )
+        .route(
+            "/whep/endpoint/:id",
+            post(whep)
+                .patch(add_ice_candidate)
+                .options(ice_server_config),
+        )
         .nest_service("/", serve_dir.clone())
         .with_state(app_state);
     axum::Server::bind(&addr)
@@ -73,7 +84,15 @@ async fn whip(
     let original_forward = map.get(&id);
     let is_none = original_forward.is_none();
     let forward = if is_none {
-        PeerForward::new(id.clone(), state.config.ice_servers.into_iter().map(|ice| ice.into()).collect())
+        PeerForward::new(
+            id.clone(),
+            state
+                .config
+                .ice_servers
+                .into_iter()
+                .map(|ice| ice.into())
+                .collect(),
+        )
     } else {
         original_forward.unwrap().clone()
     };
@@ -159,6 +178,38 @@ async fn add_ice_candidate(
         .body("".to_string())?)
 }
 
+async fn ice_server_config(State(state): State<AppState>) -> Result<Response<String>, AppError> {
+    let mut builder = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, If-Match",
+        );
+    for link in link_header(state.config.ice_servers.clone()) {
+        builder = builder.header("Link", link);
+    }
+    Ok(builder.body("".to_owned())?)
+}
+
+fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
+    ice_servers
+        .into_iter()
+        .flat_map(|server| {
+            server.urls.into_iter().map(move |url| {
+                let mut link = format!(">{}; rel=\"ice-server\"", url);
+                if server.username != "" {
+                    link = format!(
+                        "{}; username=\"{}\"; credential=\"{}\"; credential-type=\"{}\"",
+                        link, server.username, server.credential, server.credential_type
+                    );
+                }
+                link
+            })
+        })
+        .collect()
+}
+
 struct AppError(anyhow::Error);
 
 impl IntoResponse for AppError {
@@ -168,8 +219,8 @@ impl IntoResponse for AppError {
 }
 
 impl<E> From<E> for AppError
-    where
-        E: Into<anyhow::Error>,
+where
+    E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
         Self(err.into())
