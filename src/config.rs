@@ -7,12 +7,21 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 pub struct Config {
     #[serde(default = "default_listen")]
     pub listen: String,
-    #[serde(default)]
+    #[serde(default = "default_ice_servers")]
     pub ice_servers: Vec<IceServer>,
 }
 
 fn default_listen() -> String {
     "0.0.0.0:3000".to_string()
+}
+
+fn default_ice_servers() -> Vec<IceServer> {
+    vec![IceServer {
+        urls: vec!["stun:stun.l.google.com:19302".to_string()],
+        username: "".to_string(),
+        credential: "".to_string(),
+        credential_type: "".to_string(),
+    }]
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -38,7 +47,6 @@ impl Into<RTCIceServer> for IceServer {
     }
 }
 
-
 impl Config {
     pub(crate) fn parse() -> Self {
         let mut result = fs::read_to_string("config.toml");
@@ -49,12 +57,7 @@ impl Config {
             toml::from_str(cfg.as_str()).expect("config parse error")
         } else {
             Config {
-                ice_servers: vec![IceServer {
-                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                    username: "".to_string(),
-                    credential: "".to_string(),
-                    credential_type: "".to_string(),
-                }],
+                ice_servers: default_ice_servers(),
                 listen: default_listen(),
             }
         }
