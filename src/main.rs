@@ -31,14 +31,8 @@ async fn main() {
         .target(env_logger::Target::Stdout)
         .init();
     let cfg = Config::parse();
-    let addr: SocketAddr;
-    if let Ok(result) = SocketAddr::from_str(&cfg.listen) {
-        addr = result;
-    } else {
-        addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    }
+    let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
-
     let app_state = AppState {
         forwards: Arc::new(RwLock::new(HashMap::new())),
         config: cfg,

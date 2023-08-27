@@ -5,10 +5,14 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
-    #[serde(default)]
+    #[serde(default = "default_listen")]
     pub listen: String,
     #[serde(default)]
     pub ice_servers: Vec<IceServer>,
+}
+
+fn default_listen() -> String {
+    "0.0.0.0:3000".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -51,7 +55,7 @@ impl Config {
                     credential: "".to_string(),
                     credential_type: "".to_string(),
                 }],
-                ..Default::default()
+                listen: default_listen(),
             }
         }
     }
