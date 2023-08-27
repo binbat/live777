@@ -5,9 +5,10 @@ use anyhow::Result;
 use log::info;
 use tokio::sync::Mutex;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use constant::*;
@@ -24,10 +25,10 @@ pub struct PeerForward {
 }
 
 impl PeerForward {
-    pub fn new(id: impl ToString) -> Self {
+    pub fn new(id: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         PeerForward {
             anchor_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(id)),
+            internal: Arc::new(PeerForwardInternal::new(id, ice_server)),
         }
     }
 

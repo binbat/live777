@@ -7,9 +7,9 @@ use anyhow::Result;
 use log::info;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
+use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -18,13 +18,13 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
 use super::constant::*;
@@ -93,10 +93,11 @@ pub struct PeerForwardInternal {
     subscribe_group: RwLock<Vec<PeerWrap>>,
     anchor_track_codec_map: RwLock<HashMap<String, RTCRtpCodecParameters>>,
     anchor_track_forward_map: HashMap<String, RwLock<HashMap<PeerWrap, SenderForwardData>>>,
+    ice_server: Vec<RTCIceServer>,
 }
 
 impl PeerForwardInternal {
-    pub(crate) fn new(id: impl ToString) -> Self {
+    pub(crate) fn new(id: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         let mut anchor_track_forward_map = HashMap::new();
         anchor_track_forward_map.insert(VIDEO_KIND.to_owned(), Default::default());
         anchor_track_forward_map.insert(AUDIO_KIND.to_owned(), Default::default());
@@ -106,6 +107,7 @@ impl PeerForwardInternal {
             subscribe_group: Default::default(),
             anchor_track_codec_map: Default::default(),
             anchor_track_forward_map,
+            ice_server,
         }
     }
 
@@ -233,10 +235,7 @@ impl PeerForwardInternal {
             .with_interceptor_registry(registry)
             .build();
         let config = RTCConfiguration {
-            ice_servers: vec![RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-                ..Default::default()
-            }],
+            ice_servers: self.ice_server.clone(),
             ..Default::default()
         };
         let peer = Arc::new(api.new_peer_connection(config).await?);
