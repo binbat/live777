@@ -3,13 +3,15 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
+    #[serde(default)]
+    pub listen: String,
     #[serde(default)]
     pub ice_servers: Vec<IceServer>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IceServer {
     #[serde(default)]
     pub urls: Vec<String>,
@@ -35,12 +37,12 @@ impl Into<RTCIceServer> for IceServer {
 
 impl Config {
     pub(crate) fn parse() -> Self {
-        let mut result = fs::read_to_string("config.json");
+        let mut result = fs::read_to_string("config.toml");
         if result.is_err() {
-            result = fs::read_to_string("/etc/live777/config.json");
+            result = fs::read_to_string("/etc/live777/config.toml");
         }
         if let Ok(cfg) = result {
-            serde_json::from_str(cfg.as_str()).expect("config parse error")
+            toml::from_str(cfg.as_str()).expect("config parse error")
         } else {
             Config {
                 ice_servers: vec![IceServer {
@@ -49,6 +51,7 @@ impl Config {
                     credential: "".to_string(),
                     credential_type: "".to_string(),
                 }],
+                ..Default::default()
             }
         }
     }

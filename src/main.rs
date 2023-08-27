@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -30,9 +30,18 @@ async fn main() {
         .write_style(env_logger::WriteStyle::Auto)
         .target(env_logger::Target::Stdout)
         .init();
+    let cfg = Config::parse();
+    let addr: SocketAddr;
+    if let Ok(result) = SocketAddr::from_str(&cfg.listen) {
+        addr = result;
+    } else {
+        addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    }
+    info!("Server listening on {}", addr);
+
     let app_state = AppState {
         forwards: Arc::new(RwLock::new(HashMap::new())),
-        config: Config::parse(),
+        config: cfg,
     };
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
     let app = Router::new()
@@ -40,8 +49,6 @@ async fn main() {
         .route("/whep/endpoint/:id", post(whep).patch(add_ice_candidate))
         .nest_service("/", serve_dir.clone())
         .with_state(app_state);
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    info!("Server listening on {}", addr.to_string());
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
