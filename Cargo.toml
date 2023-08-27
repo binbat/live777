@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 axum = { version = "0.6.20", features = ["multipart"] }
 tower-http = { version = "0.4.3", features = ["fs", "trace"] }
-webrtc = "0.8.0"
+webrtc = { git = "https://github.com/webrtc-rs/webrtc" }
 anyhow = "1.0"
 tokio = { version = "1.30", features = ["full"] }
 hyper = "0.14"
