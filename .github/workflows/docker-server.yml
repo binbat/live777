@@ -2,8 +2,6 @@ name: Docker Server
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
 

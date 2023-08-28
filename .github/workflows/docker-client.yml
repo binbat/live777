@@ -2,8 +2,6 @@ name: Docker Client
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
 
