@@ -19,4 +19,4 @@ RUN cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr --libdir=/usr/lib/$(gc
 # rtpav1pay / rtpav1depay: RTP (de)payloader for the AV1 video codec.
 RUN cargo cinstall -p gst-plugin-rtp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
 
-CMD ["sh", "-c", "gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint=http://localhost:3000/whip/endpoint/777"]
+CMD ["sh", "-c", "gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint=http://localhost:3000/whip/777"]

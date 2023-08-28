@@ -41,13 +41,13 @@ async fn main() {
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
     let app = Router::new()
         .route(
-            "/whip/endpoint/:id",
+            "/whip/:id",
             post(whip)
                 .patch(add_ice_candidate)
                 .options(ice_server_config),
         )
         .route(
-            "/whep/endpoint/:id",
+            "/whep/:id",
             post(whep)
                 .patch(add_ice_candidate)
                 .options(ice_server_config),

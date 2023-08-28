@@ -24,7 +24,7 @@ Logs<br/>
             pc.addTrack(track);
         }
         const whip = new WHIPClient();
-        const url = location.origin + "/whip/endpoint/" + resource;
+        const url = location.origin + "/whip/" + resource;
         const token = ""
         whip.publish(pc, url, token);
     }
@@ -56,7 +56,7 @@ Logs<br/>
             }
         }
         const whep = new WHEPClient();
-        const url = location.origin + "/whep/endpoint/" + resource;
+        const url = location.origin + "/whep/" + resource;
         const token = ""
         whep.view(pc, url, token);
     }

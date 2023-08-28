@@ -38,7 +38,7 @@ open http://localhost:3000/
 ```bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:main \
-gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
 ### Video: VP9
@@ -46,7 +46,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-
 ``` bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:main \
-gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
 ### Video: H264
@@ -54,7 +54,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-
 ```bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:main \
-gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
 ### Audio: Opus
@@ -62,7 +62,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whi
 ```bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:main \
-gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777"
+gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
 ### Audio: G722
@@ -72,6 +72,6 @@ gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whi
 ```bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:main \
-gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink whip-endpoint="http://localhost:3000/whip/endpoint/777
+gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink whip-endpoint="http://localhost:3000/whip/777
 ```
 
