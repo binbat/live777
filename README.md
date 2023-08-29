@@ -13,7 +13,7 @@ A very simple, high performance, support WHIP/WHEP edge WebRTC SFU (Selective Fo
 
 ```bash
 docker run --name live777-server --rm --network host \
-ghcr.io/binbat/live777-server:main live777
+ghcr.io/binbat/live777-server:latest live777
 ```
 
 ### Browser Demo Page
@@ -37,7 +37,7 @@ open http://localhost:3000/
 
 ```bash
 docker run --name live777-client --rm --network host \
-ghcr.io/binbat/live777-client:main \
+ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
@@ -45,7 +45,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-
 
 ``` bash
 docker run --name live777-client --rm --network host \
-ghcr.io/binbat/live777-client:main \
+ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
@@ -53,7 +53,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-
 
 ```bash
 docker run --name live777-client --rm --network host \
-ghcr.io/binbat/live777-client:main \
+ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
@@ -61,7 +61,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whi
 
 ```bash
 docker run --name live777-client --rm --network host \
-ghcr.io/binbat/live777-client:main \
+ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
@@ -71,7 +71,7 @@ gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whi
 
 ```bash
 docker run --name live777-client --rm --network host \
-ghcr.io/binbat/live777-client:main \
+ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink whip-endpoint="http://localhost:3000/whip/777
 ```
 
