@@ -2,11 +2,11 @@
 <button onclick="startWhip()"> WebRTC Start Whip</button>
 <button onclick="startWhep()"> WebRTC Start Whep</button>
 
-<br/>
-Video<br/>
-<div id="remoteVideos"></div> <br/>
+<br />
+Video<br />
+<div id="remoteVideos"></div> <br />
 
-Logs<br/>
+Logs<br />
 <div id="div"></div>
 <script src="whip.js"></script>
 <script src="whep.js"></script>
@@ -18,11 +18,16 @@ Logs<br/>
             alert("input resource")
             return
         }
-        const stream = await navigator.mediaDevices.getDisplayMedia({audio: false, video: true})
+        const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
         const pc = new RTCPeerConnection();
-        for (const track of stream.getTracks()) {
-            pc.addTrack(track);
-        }
+        pc.addTransceiver(stream.getVideoTracks()[0], {
+            direction: 'sendonly',
+            sendEncodings: [
+                { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
+                { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
+                { rid: 'f', scalabilityMode: 'L1T3' }
+            ]
+        });
         const whip = new WHIPClient();
         const url = location.origin + "/whip/" + resource;
         const token = ""
@@ -36,8 +41,8 @@ Logs<br/>
             return
         }
         const pc = window.pc = new RTCPeerConnection();
-        pc.addTransceiver('video', {'direction': 'recvonly'})
-        pc.addTransceiver('audio', {'direction': 'recvonly'})
+        pc.addTransceiver('video', { 'direction': 'recvonly' })
+        pc.addTransceiver('audio', { 'direction': 'recvonly' })
         pc.ontrack = (event) => {
             console.log(event)
             if (event.track.kind == "video") {

@@ -19,15 +19,17 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+    RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
+use webrtc::sdp::MediaDescription;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_remote::TrackRemote;
 
-use super::constant::*;
+use super::track_match;
 
 type ForwardData = Arc<Packet>;
 
@@ -67,6 +69,12 @@ impl Hash for PeerWrap {
 
 struct TrackRemoteWrap(Arc<TrackRemote>);
 
+impl TrackRemoteWrap {
+    fn get_key(&self) -> String {
+        self.0.ssrc().to_string()
+    }
+}
+
 impl Clone for TrackRemoteWrap {
     fn clone(&self) -> Self {
         TrackRemoteWrap(self.0.clone())
@@ -77,47 +85,47 @@ impl Eq for TrackRemoteWrap {}
 
 impl PartialEq for TrackRemoteWrap {
     fn eq(&self, other: &Self) -> bool {
-        self.0.id() == other.0.id()
+        self.get_key() == other.get_key()
     }
 }
 
 impl Hash for TrackRemoteWrap {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.id().hash(state);
+        self.get_key().hash(state);
     }
 }
 
-pub struct PeerForwardInternal {
+pub(crate) struct PeerForwardInternal {
     pub(crate) id: String,
     anchor: RwLock<Option<Arc<RTCPeerConnection>>>,
     subscribe_group: RwLock<Vec<PeerWrap>>,
-    anchor_track_codec_map: RwLock<HashMap<String, RTCRtpCodecParameters>>,
-    anchor_track_forward_map: HashMap<String, RwLock<HashMap<PeerWrap, SenderForwardData>>>,
+    anchor_track_forward_map:
+        RwLock<HashMap<TrackRemoteWrap, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>,
     ice_server: Vec<RTCIceServer>,
 }
 
 impl PeerForwardInternal {
     pub(crate) fn new(id: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
-        let mut anchor_track_forward_map = HashMap::new();
-        anchor_track_forward_map.insert(VIDEO_KIND.to_owned(), Default::default());
-        anchor_track_forward_map.insert(AUDIO_KIND.to_owned(), Default::default());
         PeerForwardInternal {
             id: id.to_string(),
             anchor: Default::default(),
             subscribe_group: Default::default(),
-            anchor_track_codec_map: Default::default(),
-            anchor_track_forward_map,
+            anchor_track_forward_map: Default::default(),
             ice_server,
         }
-    }
-
-    fn get_anchor_track_key(&self, track: Arc<TrackRemote>) -> String {
-        track.kind().to_string()
     }
 
     pub(crate) async fn anchor_is_some(&self) -> bool {
         let anchor = self.anchor.read().await;
         anchor.is_some()
+    }
+
+    pub(crate) async fn anchor_is_ok(&self) -> bool {
+        let anchor = self.anchor.read().await;
+        let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
+        anchor.is_some()
+            && !anchor_track_forward_map.is_empty()
+            && anchor.as_ref().unwrap().connection_state() == RTCPeerConnectionState::Connected
     }
 
     pub(crate) async fn set_anchor(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
@@ -138,35 +146,21 @@ impl PeerForwardInternal {
         if anchor.as_ref().unwrap().get_stats_id() != peer.get_stats_id() {
             return Err(anyhow::anyhow!("anchor not myself"));
         }
-        let subscribe_group = self.subscribe_group.read().await;
-        if subscribe_group.is_empty() {
-            let mut anchor_track_type_map = self.anchor_track_codec_map.write().await;
-            anchor_track_type_map.clear();
+        let mut anchor_track_forward_map = self.anchor_track_forward_map.write().await;
+        anchor_track_forward_map.clear();
+        let mut subscribe_group = self.subscribe_group.write().await;
+        for peer_wrap in subscribe_group.iter() {
+            let _ = peer_wrap.0.close().await;
         }
+        subscribe_group.clear();
         *anchor = None;
         info!("[{}] [anchor] set none", self.id);
         Ok(())
     }
 
     pub async fn add_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
-        let peer_wrap = PeerWrap(peer.clone());
-        let anchor_track_codec_map = self.anchor_track_codec_map.read().await;
-        if anchor_track_codec_map.is_empty() {
-            return Err(anyhow::anyhow!("anchor not push track"));
-        }
-        for (kind, codec) in anchor_track_codec_map.iter() {
-            let sender = self
-                .peer_add_track(peer.clone(), kind.as_str(), codec.capability.clone())
-                .await?;
-            self.anchor_track_forward_map
-                .get(kind)
-                .unwrap()
-                .write()
-                .await
-                .insert(peer_wrap.clone(), sender);
-        }
         let mut subscribe_peers = self.subscribe_group.write().await;
-        subscribe_peers.push(peer_wrap);
+        subscribe_peers.push(PeerWrap(peer.clone()));
         drop(subscribe_peers);
         info!("[{}] [subscribe] [{}] up", self.id, peer.get_stats_id());
         Ok(())
@@ -174,7 +168,7 @@ impl PeerForwardInternal {
 
     pub async fn remove_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
         let peer_wrap = PeerWrap(peer.clone());
-        for (_, track_forward_map) in self.anchor_track_forward_map.iter() {
+        for (_, track_forward_map) in self.anchor_track_forward_map.write().await.iter() {
             let mut track_forward_map = track_forward_map.write().await;
             track_forward_map.remove(&peer_wrap);
         }
@@ -185,47 +179,55 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    pub(crate) async fn anchor_track_up(
+    pub(crate) async fn new_publish_peer(
         &self,
-        peer: Arc<RTCPeerConnection>,
-        track: Arc<TrackRemote>,
-    ) -> Result<()> {
-        let anchor = self.anchor.read().await;
-        if anchor.is_none() {
-            return Err(anyhow::anyhow!("anchor is none"));
+        media_descriptions: Vec<MediaDescription>,
+    ) -> Result<Arc<RTCPeerConnection>> {
+        let mut m = MediaEngine::default();
+        m.register_default_codecs()?;
+        m.register_header_extension(
+            RTCRtpHeaderExtensionCapability {
+                uri: SDES_MID_URI.to_owned(),
+            },
+            RTPCodecType::Video,
+            Some(RTCRtpTransceiverDirection::Recvonly),
+        )?;
+        m.register_header_extension(
+            RTCRtpHeaderExtensionCapability {
+                uri: SDES_RTP_STREAM_ID_URI.to_owned(),
+            },
+            RTPCodecType::Video,
+            Some(RTCRtpTransceiverDirection::Recvonly),
+        )?;
+        let mut registry = Registry::new();
+        registry = register_default_interceptors(registry, &mut m)?;
+        let api = APIBuilder::new()
+            .with_media_engine(m)
+            .with_interceptor_registry(registry)
+            .build();
+        let config = RTCConfiguration {
+            ice_servers: self.ice_server.clone(),
+            ..Default::default()
+        };
+        let peer = Arc::new(api.new_peer_connection(config).await?);
+        for media_description in &media_descriptions {
+            let _ = peer
+                .add_transceiver_from_kind(
+                    RTPCodecType::from(media_description.media_name.media.as_str()),
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Recvonly,
+                        send_encodings: Vec::new(),
+                    }),
+                )
+                .await?;
         }
-        if anchor.as_ref().unwrap().get_stats_id() != peer.get_stats_id() {
-            return Err(anyhow::anyhow!("anchor is not self"));
-        }
-        tokio::spawn(PeerForwardInternal::anchor_track_pli(
-            Arc::downgrade(&peer),
-            track.ssrc(),
-        ));
-        let track_key = self.get_anchor_track_key(track.clone());
-        let mut anchor_track_type_map = self.anchor_track_codec_map.write().await;
-        anchor_track_type_map.insert(track_key, track.codec());
-        Ok(())
+        Ok(peer)
     }
 
-    pub(crate) async fn anchor_track_forward(&self, track: Arc<TrackRemote>) {
-        let mut b = vec![0u8; 1500];
-        let track_key = self.get_anchor_track_key(track.clone());
-        info!("[{}] [anchor] [track-{}] forward up", self.id, track_key);
-        while let Ok((rtp_packet, _)) = track.read(&mut b).await {
-            let anchor_track_forward = self.anchor_track_forward_map.get(&track_key).unwrap();
-            let anchor_track_forward = anchor_track_forward.read().await;
-            let packet = Arc::new(rtp_packet);
-            for (peer_wrap, sender) in anchor_track_forward.iter() {
-                if peer_wrap.0.connection_state() != RTCPeerConnectionState::Connected {
-                    continue;
-                }
-                let _ = sender.send(packet.clone());
-            }
-        }
-        info!("[{}] [anchor] [track-{}] forward down", self.id, track_key);
-    }
-
-    pub(crate) async fn new_peer(&self, publish: bool) -> Result<Arc<RTCPeerConnection>> {
+    pub(crate) async fn new_subscription_peer(
+        &self,
+        media_descriptions: Vec<MediaDescription>,
+    ) -> Result<Arc<RTCPeerConnection>> {
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
         let mut registry = Registry::new();
@@ -239,48 +241,42 @@ impl PeerForwardInternal {
             ..Default::default()
         };
         let peer = Arc::new(api.new_peer_connection(config).await?);
-        if publish {
-            let video_transceiver = peer
-                .add_transceiver_from_kind(
-                    RTPCodecType::Video,
-                    Some(RTCRtpTransceiverInit {
-                        direction: RTCRtpTransceiverDirection::Recvonly,
-                        send_encodings: Vec::new(),
-                    }),
-                )
-                .await?;
-            let audio_transceiver = peer
-                .add_transceiver_from_kind(
-                    RTPCodecType::Audio,
-                    Some(RTCRtpTransceiverInit {
-                        direction: RTCRtpTransceiverDirection::Recvonly,
-                        send_encodings: Vec::new(),
-                    }),
-                )
-                .await?;
-            let track_codec_map = self.anchor_track_codec_map.read().await;
-            if let Some(codec) = track_codec_map.get(VIDEO_KIND) {
-                video_transceiver
-                    .set_codec_preferences(vec![codec.clone()])
-                    .await?;
-            }
-            if let Some(codec) = track_codec_map.get(AUDIO_KIND) {
-                audio_transceiver
-                    .set_codec_preferences(vec![codec.clone()])
-                    .await?;
+        let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
+        let tracks: Vec<Arc<TrackRemote>> = anchor_track_forward_map
+            .iter()
+            .map(|(t, _)| t.0.clone())
+            .collect();
+        for media_description in media_descriptions {
+            if let Some(track) = track_match::track_match(&media_description, &tracks) {
+                if let Ok(sender) = self
+                    .new_subscription_peer_track(
+                        peer.clone(),
+                        track.kind(),
+                        track.codec().capability,
+                    )
+                    .await
+                {
+                    let mut subscription_map = anchor_track_forward_map
+                        .get(&TrackRemoteWrap(track))
+                        .unwrap()
+                        .write()
+                        .await;
+                    subscription_map.insert(PeerWrap(peer.clone()), sender);
+                }
             }
         }
         Ok(peer)
     }
-    async fn peer_add_track(
+
+    async fn new_subscription_peer_track(
         &self,
         peer: Arc<RTCPeerConnection>,
-        kind: &str,
+        code_type: RTPCodecType,
         codec: RTCRtpCodecCapability,
     ) -> Result<SenderForwardData> {
         let track = Arc::new(TrackLocalStaticRTP::new(
             codec,
-            kind.to_owned(),
+            code_type.to_string(),
             "webrtc-rs".to_owned(),
         ));
         let sender = peer
@@ -288,13 +284,12 @@ impl PeerForwardInternal {
             .await?;
         let (send, mut recv) = unbounded_channel::<ForwardData>();
         let self_id = self.id.clone();
-        let kind = kind.to_owned();
         tokio::spawn(async move {
             info!(
                 "[{}] [subscribe] [{}] {} forward up",
                 self_id,
                 peer.get_stats_id(),
-                kind
+                code_type.to_string()
             );
             let mut sequence_number: u16 = 0;
             while let Some(packet) = recv.recv().await {
@@ -310,7 +305,7 @@ impl PeerForwardInternal {
                 "[{}] [subscribe] [{}] {} forward down",
                 self_id,
                 peer.get_stats_id(),
-                kind
+                code_type.to_string()
             );
         });
         Ok(send)
@@ -353,23 +348,78 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    pub(crate) async fn anchor_track_up(
+        &self,
+        peer: Arc<RTCPeerConnection>,
+        track: Arc<TrackRemote>,
+    ) -> Result<()> {
+        let anchor = self.anchor.read().await;
+        if anchor.is_none() {
+            return Err(anyhow::anyhow!("anchor is none"));
+        }
+        if anchor.as_ref().unwrap().get_stats_id() != peer.get_stats_id() {
+            return Err(anyhow::anyhow!("anchor is not self"));
+        }
+        tokio::spawn(Self::anchor_track_pli(Arc::downgrade(&peer), track.ssrc()));
+        let mut anchor_track_forward_map = self.anchor_track_forward_map.write().await;
+        let subscription: Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>> = Default::default();
+        anchor_track_forward_map.insert(TrackRemoteWrap(track.clone()), subscription.clone());
+        tokio::spawn(Self::anchor_track_forward(
+            self.id.clone(),
+            track,
+            subscription,
+        ));
+        Ok(())
+    }
+
+    async fn anchor_track_forward(
+        id: String,
+        track: Arc<TrackRemote>,
+        subscription: Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>,
+    ) {
+        let mut b = vec![0u8; 1500];
+        info!(
+            "[{}] [anchor] [track-{}-{}] forward up",
+            id,
+            track.kind(),
+            track.ssrc()
+        );
+        while let Ok((rtp_packet, _)) = track.read(&mut b).await {
+            let anchor_track_forward = subscription.read().await;
+            let packet = Arc::new(rtp_packet);
+            for (peer_wrap, sender) in anchor_track_forward.iter() {
+                if peer_wrap.0.connection_state() != RTCPeerConnectionState::Connected {
+                    continue;
+                }
+                let _ = sender.send(packet.clone());
+            }
+        }
+        info!(
+            "[{}] [anchor] [track-{}-{}] forward down",
+            id,
+            track.kind(),
+            track.ssrc()
+        );
+    }
+
     async fn anchor_track_pli(peer: Weak<RTCPeerConnection>, media_ssrc: u32) {
-        // Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
-        let mut result = Result::<usize>::Ok(0);
-        while result.is_ok() {
+        loop {
             let timeout = tokio::time::sleep(Duration::from_secs(1));
             tokio::pin!(timeout);
-            tokio::select! {
-                _ = timeout.as_mut() =>{
-                    if let Some(pc) = peer.upgrade(){
-                        result = pc.write_rtcp(&[Box::new(PictureLossIndication{
-                            sender_ssrc: 0,
-                            media_ssrc,
-                        })]).await.map_err(Into::into);
-                    }else{
-                        break;
-                    }
+            let _ = timeout.as_mut().await;
+            if let Some(pc) = peer.upgrade() {
+                if pc
+                    .write_rtcp(&[Box::new(PictureLossIndication {
+                        sender_ssrc: 0,
+                        media_ssrc,
+                    })])
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
+            } else {
+                break;
             }
         }
     }

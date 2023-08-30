@@ -22,12 +22,13 @@ use crate::forward::PeerForward;
 
 mod config;
 mod forward;
+mod media;
 
 #[tokio::main]
 async fn main() {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
-        .filter_module("webrtc_ice", log::LevelFilter::Error)
+        .filter_module("webrtc", log::LevelFilter::Error)
         .write_style(env_logger::WriteStyle::Auto)
         .target(env_logger::Target::Stdout)
         .init();

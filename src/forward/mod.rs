@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
+use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
 use anyhow::Result;
 use log::info;
 use tokio::sync::Mutex;
@@ -9,14 +10,10 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::{MediaDescription, SessionDescription};
-
-use constant::*;
-
-use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
-
-pub(crate) mod constant;
 mod forward_internal;
+mod track_match;
 
 #[derive(Clone)]
 pub struct PeerForward {
@@ -47,8 +44,10 @@ impl PeerForward {
         if self.internal.anchor_is_some().await {
             return Err(anyhow::anyhow!("anchor is set"));
         }
-        let _ = check_session_description(offer.unmarshal()?)?;
-        let peer = self.internal.new_peer(true).await?;
+        let peer = self
+            .internal
+            .new_publish_peer(get_media_descriptions(offer.unmarshal()?, true)?)
+            .await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -56,20 +55,20 @@ impl PeerForward {
             let pc = pc.upgrade();
             if internal.is_some() && pc.is_some() {
                 let internal = internal.unwrap();
-                let peer = pc.unwrap();
+                let pc: Arc<RTCPeerConnection> = pc.unwrap();
                 tokio::spawn(async move {
                     info!(
                         "[{}] [anchor] [{}] connection state changed: {}",
                         internal.id,
-                        peer.get_stats_id(),
+                        pc.get_stats_id(),
                         s
                     );
                     match s {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            let _ = peer.close().await;
+                            let _ = pc.close().await;
                         }
                         RTCPeerConnectionState::Closed => {
-                            let _ = internal.remove_anchor(peer).await;
+                            let _ = internal.remove_anchor(pc).await;
                         }
                         _ => {}
                     };
@@ -87,9 +86,7 @@ impl PeerForward {
                 let internal = internal.unwrap();
                 let peer = peer.unwrap();
                 tokio::spawn(async move {
-                    if let Ok(_) = internal.anchor_track_up(peer, track.clone()).await {
-                        let _ = internal.anchor_track_forward(track).await;
-                    }
+                    let _ = internal.anchor_track_up(peer, track).await;
                 });
             };
             Box::pin(async {})
@@ -103,10 +100,13 @@ impl PeerForward {
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        if !self.internal.anchor_is_some().await {
-            return Err(anyhow::anyhow!("anchor is not set"));
+        if !self.internal.anchor_is_ok().await {
+            return Err(anyhow::anyhow!("anchor is not ok"));
         }
-        let peer = self.internal.new_peer(false).await?;
+        let peer = self
+            .internal
+            .new_subscription_peer(get_media_descriptions(offer.unmarshal()?, false)?)
+            .await?;
         let internal = self.internal.clone();
         let pc = peer.clone();
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -206,31 +206,44 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
     Ok(ice_candidates)
 }
 
-fn check_session_description(sd: SessionDescription) -> Result<Vec<MediaDescription>> {
+fn get_media_descriptions(sd: SessionDescription, publish: bool) -> Result<Vec<MediaDescription>> {
+    let mut media_descriptions = sd.media_descriptions;
+    media_descriptions.retain(|media_description| {
+        let mut is_publish = false;
+        for attribute in &media_description.attributes {
+            match attribute.key.as_str() {
+                "sendonly" | "simulcast:send" => {
+                    is_publish = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        publish == is_publish
+    });
     let mut video = false;
     let mut audio = false;
-    for md in &sd.media_descriptions {
+    for md in &media_descriptions {
         let media = md.media_name.media.clone();
-        match media.as_str() {
-            VIDEO_KIND => {
+        match RTPCodecType::from(media.as_str()) {
+            RTPCodecType::Video => {
                 if video {
                     return Err(anyhow::anyhow!("only one video media is supported"));
                 }
                 video = true;
             }
-            AUDIO_KIND => {
+            RTPCodecType::Audio => {
                 if audio {
                     return Err(anyhow::anyhow!("only one audio media is supported"));
                 }
                 audio = true;
             }
-            _ => {
+            RTPCodecType::Unspecified => {
                 return Err(anyhow::anyhow!("unknown media kind: {}", media));
             }
         }
     }
-
-    Ok(sd.media_descriptions)
+    Ok(media_descriptions)
 }
 
 #[cfg(test)]
