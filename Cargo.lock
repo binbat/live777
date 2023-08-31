@@ -1877,6 +1877,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtp2whip"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cli",
+ "shellwords",
+ "tokio",
+ "webrtc",
+ "whip-whep",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2098,6 +2111,16 @@ dependencies = [
  "cfg-if 1.0.0",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "shellwords"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89e515aa4699a88148ed5ef96413ceef0048ce95b43fbc955a33bde0a70fcae6"
+dependencies = [
+ "lazy_static",
+ "regex",
 ]
 
 [[package]]
