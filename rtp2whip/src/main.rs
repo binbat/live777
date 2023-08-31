@@ -15,7 +15,7 @@ use webrtc::{
     interceptor::registry::Registry,
     peer_connection::{configuration::RTCConfiguration, RTCPeerConnection},
     rtp,
-    rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType},
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
     },
@@ -73,11 +73,11 @@ async fn rtp_listener(socker: UdpSocket, sender: UnboundedSender<Vec<u8>>) {
 }
 
 async fn new_peer(
-    codec: RTCRtpCodecParameters,
+    codec: RTCRtpCodecCapability,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<(RTCPeerConnection, UnboundedSender<Vec<u8>>)> {
     let mut m = MediaEngine::default();
-    m.register_codec(codec.clone(), RTPCodecType::Video)?;
+    m.register_default_codecs()?;
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
     let api = APIBuilder::new()
@@ -90,7 +90,7 @@ async fn new_peer(
     };
     let peer = api.new_peer_connection(config).await?;
     let track = Arc::new(TrackLocalStaticRTP::new(
-        codec.capability,
+        codec,
         "webrtc".to_owned(),
         "webrtc-rs".to_owned(),
     ));
