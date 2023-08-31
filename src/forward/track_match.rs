@@ -29,7 +29,17 @@ fn track_match_codec(
 ) -> Vec<Arc<TrackRemote>> {
     tracks
         .iter()
-        .filter(|track| codecs.contains(&track.codec().capability))
+        .filter(|track| {
+            let capability = track.codec().capability;
+            for codec in codecs {
+                if codec.mime_type.clone() == capability.mime_type
+                    && codec.clock_rate == capability.clock_rate
+                {
+                    return true;
+                }
+            }
+            false
+        })
         .map(|t| t.clone())
         .collect()
 }
