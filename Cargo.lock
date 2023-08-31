@@ -2971,7 +2971,6 @@ name = "whip-whep"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytes",
  "parse_link_header",
  "reqwest",
  "webrtc",
