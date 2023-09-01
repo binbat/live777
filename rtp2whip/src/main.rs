@@ -1,16 +1,16 @@
-use std::{process::Stdio, sync::Arc, time::Duration};
+use std::{
+    process::Child,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use anyhow::Result;
 use clap::Parser;
-use cli::Codec;
+use cli::{create_child, Codec};
 
 use tokio::{
     net::UdpSocket,
-    process::Command,
-    sync::{
-        mpsc::{unbounded_channel, UnboundedSender},
-        RwLock,
-    },
+    sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
@@ -44,45 +44,17 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let ide_servers = get_ide_servers(args.url.clone()).await?;
-    let (peer, sender) = new_peer(args.codec.into(), ide_servers).await?;
     let listener = UdpSocket::bind(format!("0.0.0.0:{}", args.port)).await?;
     let port = listener.local_addr()?.port();
     println!("=== RTP listener started : {} ===", port);
+    let ide_servers = get_ide_servers(args.url.clone()).await?;
     let child = if let Some(command) = args.command {
         let command = command.replace("{port}", &port.to_string());
-        let mut args = shellwords::split(&command)?;
-        Arc::new(Some(RwLock::new(
-            Command::new(args.remove(0))
-                .args(args)
-                .stdout(Stdio::inherit())
-                .spawn()?,
-        )))
+        create_child(Some(command))?
     } else {
-        Arc::new(Default::default())
+        Default::default()
     };
-    let pc = peer.clone();
-    let child_arc = child.clone();
-    peer.on_peer_connection_state_change(Box::new(move |s| {
-        let pc = pc.clone();
-        let child = child_arc.clone();
-        tokio::spawn(async move {
-            println!("connection state changed: {}", s);
-            match s {
-                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                    let _ = pc.close().await;
-                }
-                RTCPeerConnectionState::Closed => {
-                    if let Some(child) = child.as_ref() {
-                        let _ = child.write().await.kill().await;
-                    }
-                    std::process::exit(1);
-                }
-                _ => {}
-            };
-        });
-        Box::pin(async {})
-    }));
+    let (peer, sender) = new_peer(args.codec.into(), ide_servers, child.clone()).await?;
     let offser = peer.create_offer(None).await?;
     let _ = peer.set_local_description(offser.clone()).await?;
     let (answer, _etag) = get_answer(args.url.clone(), offser.sdp).await?;
@@ -90,10 +62,12 @@ async fn main() -> Result<()> {
     if let Some(child) = child.as_ref() {
         tokio::spawn(rtp_listener(listener, sender));
         loop {
-            if let Ok(exit) = child.write().await.try_wait() {
-                if let Some(exit) = exit {
-                    let _ = peer.close().await;
-                    std::process::exit(exit.code().unwrap())
+            if let Ok(mut child) = child.write() {
+                if let Ok(exit) = child.try_wait() {
+                    if let Some(exit) = exit {
+                        let _ = peer.close().await;
+                        std::process::exit(exit.code().unwrap_or(1))
+                    }
                 }
             }
             let timeout = tokio::time::sleep(Duration::from_secs(1));
@@ -117,6 +91,7 @@ async fn rtp_listener(socker: UdpSocket, sender: UnboundedSender<Vec<u8>>) {
 async fn new_peer(
     codec: RTCRtpCodecCapability,
     ice_servers: Vec<RTCIceServer>,
+    child: Arc<Option<RwLock<Child>>>,
 ) -> Result<(Arc<RTCPeerConnection>, UnboundedSender<Vec<u8>>)> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -130,7 +105,31 @@ async fn new_peer(
         ice_servers,
         ..Default::default()
     };
-    let peer = api.new_peer_connection(config).await?;
+    let peer = Arc::new(api.new_peer_connection(config).await?);
+    let pc = peer.clone();
+    peer.on_peer_connection_state_change(Box::new(move |s| {
+        let pc = pc.clone();
+        let child = child.clone();
+        tokio::spawn(async move {
+            println!("connection state changed: {}", s);
+            match s {
+                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
+                    let _ = pc.close().await;
+                }
+                RTCPeerConnectionState::Closed => {
+                    if let Some(child) = child.as_ref() {
+                        if let Ok(mut child) = child.write() {
+                            let _ = child.kill();
+                        }
+                    } else {
+                        std::process::exit(1);
+                    }
+                }
+                _ => {}
+            };
+        });
+        Box::pin(async {})
+    }));
     let track = Arc::new(TrackLocalStaticRTP::new(
         codec,
         "webrtc".to_owned(),
@@ -150,5 +149,5 @@ async fn new_peer(
             }
         }
     });
-    Ok((Arc::new(peer), send))
+    Ok((peer, send))
 }

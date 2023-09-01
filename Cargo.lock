@@ -1885,7 +1885,6 @@ dependencies = [
  "anyhow",
  "clap",
  "cli",
- "shellwords",
  "tokio",
  "webrtc",
  "whip-whep",
