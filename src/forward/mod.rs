@@ -29,10 +29,6 @@ impl PeerForward {
         }
     }
 
-    pub fn get_id(&self) -> String {
-        self.internal.id.clone()
-    }
-
     pub async fn set_anchor(
         &self,
         offer: RTCSessionDescription,
@@ -144,14 +140,12 @@ impl PeerForward {
         ))
     }
 
-    pub async fn add_ice_candidate(&self, key: String, body: String, whip: bool) -> Result<()> {
-        let ice_candidates = parse_ice_candidate(body)?;
+    pub async fn add_ice_candidate(&self, key: String, ice_candidates: String) -> Result<()> {
+        let ice_candidates = parse_ice_candidate(ice_candidates)?;
         if ice_candidates.is_empty() {
             return Ok(());
         }
-        self.internal
-            .add_ice_candidate(key, ice_candidates, whip)
-            .await
+        self.internal.add_ice_candidate(key, ice_candidates).await
     }
 }
 

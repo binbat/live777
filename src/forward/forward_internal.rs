@@ -315,35 +315,19 @@ impl PeerForwardInternal {
         &self,
         key: String,
         ice_candidates: Vec<RTCIceCandidateInit>,
-        whip: bool,
     ) -> Result<()> {
-        let peer = match whip {
-            true => {
-                let anchor = self.anchor.read().await;
-                if anchor.is_none() {
-                    return Err(anyhow::anyhow!("anchor is none"));
-                }
-                let peer = anchor.as_ref().unwrap().clone();
-                if PeerWrap(peer.clone()).get_key() != key.as_str() {
-                    return Err(anyhow::anyhow!("key not match"));
-                }
-                peer
-            }
-            false => {
-                let subscribe_peers = self.subscribe_group.read().await;
-                let mut peers: Vec<Arc<RTCPeerConnection>> = subscribe_peers
-                    .iter()
-                    .filter(|peer_warap| peer_warap.get_key() == key.as_str())
-                    .map(|peer_warap| peer_warap.0.clone())
-                    .collect();
-                if peers.len() != 1 {
-                    return Err(anyhow::anyhow!("peer not found"));
-                }
-                peers.pop().unwrap()
-            }
-        };
+        let mut peers = self.subscribe_group.read().await.clone();
+        let anchor = self.anchor.read().await.as_ref().cloned();
+        if let Some(anchor) = anchor {
+            peers.push(PeerWrap(anchor))
+        }
+        let mut peers: Vec<PeerWrap> = peers.into_iter().filter(|p| p.get_key() == key).collect();
+        if peers.len() != 1 {
+            return Err(anyhow::anyhow!("find key peers size : {}", peers.len()));
+        }
+        let peer = peers.pop().unwrap();
         for ice_candidate in ice_candidates {
-            peer.add_ice_candidate(ice_candidate).await?;
+            peer.0.add_ice_candidate(ice_candidate).await?;
         }
         Ok(())
     }

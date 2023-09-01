@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
-use std::{collections::HashMap, str::FromStr};
 
 use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
@@ -13,16 +13,16 @@ use axum::{
 };
 use config::IceServer;
 use log::info;
-use tokio::sync::RwLock;
+use path::manager::Manager;
 use tower_http::services::{ServeDir, ServeFile};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::config::Config;
-use crate::forward::PeerForward;
 
 mod config;
 mod forward;
 mod media;
+mod path;
 
 #[tokio::main]
 async fn main() {
@@ -35,8 +35,14 @@ async fn main() {
     let cfg = Config::parse();
     let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
+    let ice_servers = cfg
+        .ice_servers
+        .clone()
+        .into_iter()
+        .map(|i| i.into())
+        .collect();
     let app_state = AppState {
-        forwards: Arc::new(RwLock::new(HashMap::new())),
+        paths: Arc::new(Manager::new(ice_servers)),
         config: cfg,
     };
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
@@ -63,8 +69,8 @@ async fn main() {
 
 #[derive(Clone)]
 struct AppState {
-    forwards: Arc<RwLock<HashMap<String, PeerForward>>>,
     config: Config,
+    paths: Arc<Manager>,
 }
 
 async fn whip(
@@ -77,35 +83,11 @@ async fn whip(
     let content_type = header
         .get("Content-Type")
         .ok_or(anyhow::anyhow!("Content-Type is required"))?;
-    if content_type.as_bytes() != b"application/sdp" {
+    if content_type.to_str()? != "application/sdp" {
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let map = state.forwards.read().await;
-    let original_forward = map.get(&id);
-    let is_none = original_forward.is_none();
-    let forward = if is_none {
-        PeerForward::new(
-            id.clone(),
-            state
-                .config
-                .ice_servers
-                .into_iter()
-                .map(|ice| ice.into())
-                .collect(),
-        )
-    } else {
-        original_forward.unwrap().clone()
-    };
-    drop(map);
-    let (answer, key) = forward.set_anchor(offer).await?;
-    if is_none {
-        let mut map = state.forwards.write().await;
-        if map.contains_key(&id) {
-            return Err(anyhow::anyhow!("resource already exists").into());
-        }
-        map.insert(forward.get_id(), forward);
-    }
+    let (answer, key) = state.paths.publish(id, offer).await?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
@@ -129,14 +111,7 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let map = state.forwards.read().await;
-    let forward = map.get(&id);
-    if forward.is_none() {
-        return Err(anyhow::anyhow!("resource not found").into());
-    }
-    let forward = forward.unwrap().clone();
-    drop(map);
-    let (answer, key) = forward.add_subscribe(offer).await?;
+    let (answer, key) = state.paths.subscribe(id, offer).await?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
@@ -150,7 +125,6 @@ async fn add_ice_candidate(
     State(state): State<AppState>,
     Path(id): Path<String>,
     header: HeaderMap,
-    uri: Uri,
     body: String,
 ) -> Result<Response<String>, AppError> {
     let content_type = header
@@ -164,16 +138,7 @@ async fn add_ice_candidate(
         .ok_or(AppError::from(anyhow::anyhow!("If-Match is required")))?
         .to_str()?
         .to_string();
-    let map = state.forwards.read().await;
-    let forward = map.get(&id);
-    if forward.is_none() {
-        return Err(anyhow::anyhow!("resource not found").into());
-    }
-    let forward = forward.unwrap().clone();
-    drop(map);
-    forward
-        .add_ice_candidate(key, body, uri.to_string().contains("whip"))
-        .await?;
+    state.paths.add_ice_candidate(id, key, body).await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)
