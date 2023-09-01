@@ -1,7 +1,10 @@
 use clap::ValueEnum;
 use webrtc::{
     api::media_engine::*,
-    rtp_transceiver::{rtp_codec::RTCRtpCodecCapability, RTCPFeedback},
+    rtp_transceiver::{
+        rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
+        RTCPFeedback,
+    },
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -96,5 +99,16 @@ impl Into<RTCRtpCodecCapability> for Codec {
                 rtcp_feedback: vec![],
             },
         }
+    }
+}
+
+pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
+    let mime_type = &codec.mime_type;
+    if mime_type.starts_with("video") {
+        RTPCodecType::Video
+    } else if mime_type.starts_with("audio") {
+        RTPCodecType::Audio
+    } else {
+        RTPCodecType::Unspecified
     }
 }
