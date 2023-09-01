@@ -1,0 +1,15 @@
+[package]
+name = "whep2rtp"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.4.1", features = ["derive"] }
+shellwords = "1.1.0"
+webrtc = { git = "https://github.com/webrtc-rs/webrtc" }
+anyhow = "1.0"
+tokio = { version = "1.30", features = ["full"] }
+cli = { path = "../libs/cli" }
+whip-whep = { path = "../libs/whip-whep" }
