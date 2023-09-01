@@ -51,7 +51,7 @@ pub async fn get_ide_servers(url: String) -> Result<Vec<RTCIceServer>> {
                 credential: link.queries.remove("credential").unwrap_or("".to_owned()),
                 credential_type: link
                     .queries
-                    .remove("credential_type")
+                    .remove("credential-type")
                     .unwrap_or("".to_owned())
                     .as_str()
                     .into(),
