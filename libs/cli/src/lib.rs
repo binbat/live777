@@ -1,3 +1,9 @@
+use std::{
+    process::{Child, Command, Stdio},
+    sync::{Arc, RwLock},
+};
+
+use anyhow::Result;
 use clap::ValueEnum;
 use webrtc::{
     api::media_engine::*,
@@ -111,4 +117,32 @@ pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
     } else {
         RTPCodecType::Unspecified
     }
+}
+
+pub fn create_child(command: Option<String>) -> Result<Arc<Option<RwLock<Child>>>> {
+    let child = if let Some(command) = command {
+        let mut args = shellwords::split(&command)?;
+        let child = Arc::new(Some(RwLock::new(
+            Command::new(args.remove(0))
+                .args(args)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .spawn()?,
+        )));
+        let painc_child = child.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            println!("{:?}", info);
+            if let Some(child) = painc_child.as_ref() {
+                if let Ok(mut child) = child.write() {
+                    let _ = child.kill();
+                }
+            }
+            std::process::exit(1);
+        }));
+        child
+    } else {
+        Arc::new(None)
+    };
+    Ok(child)
 }
