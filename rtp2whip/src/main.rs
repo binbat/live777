@@ -54,11 +54,13 @@ async fn main() -> Result<()> {
     } else {
         Default::default()
     };
-    let (peer, sender) = new_peer(args.codec.into(), ide_servers, child.clone()).await?;
-    let offser = peer.create_offer(None).await?;
-    let _ = peer.set_local_description(offser.clone()).await?;
-    let (answer, _etag) = get_answer(args.url.clone(), offser.sdp).await?;
-    peer.set_remote_description(answer).await?;
+    let (peer, sender) = new_peer(args.codec.into(), ide_servers, child.clone())
+        .await
+        .unwrap();
+    let offser = peer.create_offer(None).await.unwrap();
+    let _ = peer.set_local_description(offser.clone()).await.unwrap();
+    let (answer, _etag) = get_answer(args.url.clone(), offser.sdp).await.unwrap();
+    peer.set_remote_description(answer).await.unwrap();
     if let Some(child) = child.as_ref() {
         tokio::spawn(rtp_listener(listener, sender));
         loop {
