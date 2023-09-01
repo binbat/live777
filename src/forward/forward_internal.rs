@@ -333,7 +333,7 @@ impl PeerForwardInternal {
     }
 
     pub(crate) async fn remove_peer(&self, key: String) -> Result<bool> {
-        let anchor = self.anchor.write().await;
+        let anchor = self.anchor.read().await;
         if let Some(anchor) = anchor.as_ref() {
             if get_peer_key(anchor.clone()) == key {
                 let _ = anchor.close().await?;
@@ -341,8 +341,8 @@ impl PeerForwardInternal {
             }
         }
         drop(anchor);
-        let peers = self.subscribe_group.write().await.clone();
-        for peer in peers {
+        let peers = self.subscribe_group.read().await;
+        for peer in peers.iter() {
             if peer.get_key() == key {
                 let _ = peer.0.close().await?;
                 break;
