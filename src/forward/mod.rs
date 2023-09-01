@@ -147,6 +147,10 @@ impl PeerForward {
         }
         self.internal.add_ice_candidate(key, ice_candidates).await
     }
+
+    pub async fn remove_peer(&self, key: String) -> Result<bool> {
+        self.internal.remove_peer(key).await
+    }
 }
 
 async fn peer_complete(

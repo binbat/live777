@@ -51,13 +51,15 @@ async fn main() {
             "/whip/:id",
             post(whip)
                 .patch(add_ice_candidate)
-                .options(ice_server_config),
+                .options(ice_server_config)
+                .delete(remove_path_key),
         )
         .route(
             "/whep/:id",
             post(whep)
                 .patch(add_ice_candidate)
-                .options(ice_server_config),
+                .options(ice_server_config)
+                .delete(remove_path_key),
         )
         .nest_service("/", serve_dir.clone())
         .with_state(app_state);
@@ -139,6 +141,22 @@ async fn add_ice_candidate(
         .to_str()?
         .to_string();
     state.paths.add_ice_candidate(id, key, body).await?;
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body("".to_string())?)
+}
+
+async fn remove_path_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    header: HeaderMap,
+) -> Result<Response<String>, AppError> {
+    let key = header
+        .get("If-Match")
+        .ok_or(AppError::from(anyhow::anyhow!("If-Match is required")))?
+        .to_str()?
+        .to_string();
+    state.paths.remove_path_key(id, key).await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)

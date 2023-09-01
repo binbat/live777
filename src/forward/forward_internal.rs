@@ -332,6 +332,25 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    pub(crate) async fn remove_peer(&self, key: String) -> Result<bool> {
+        let anchor = self.anchor.write().await;
+        if let Some(anchor) = anchor.as_ref() {
+            if get_peer_key(anchor.clone()) == key {
+                let _ = anchor.close().await?;
+                return Ok(true);
+            }
+        }
+        drop(anchor);
+        let peers = self.subscribe_group.write().await.clone();
+        for peer in peers {
+            if peer.get_key() == key {
+                let _ = peer.0.close().await?;
+                break;
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) async fn anchor_track_up(
         &self,
         peer: Arc<RTCPeerConnection>,
