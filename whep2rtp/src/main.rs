@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
                 if let Ok(exit) = child.try_wait() {
                     if let Some(exit) = exit {
                         let _ = peer.close().await;
-                        std::process::exit(exit.code().unwrap())
+                        std::process::exit(exit.code().unwrap_or(1))
                     }
                 }
             }
@@ -133,8 +133,9 @@ async fn new_peer(
                         if let Ok(mut child) = child.write() {
                             let _ = child.kill();
                         }
+                    } else {
+                        std::process::exit(1);
                     }
-                    std::process::exit(1);
                 }
                 _ => {}
             };
