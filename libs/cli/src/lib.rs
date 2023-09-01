@@ -127,7 +127,7 @@ pub fn create_child(command: Option<String>) -> Result<Arc<Option<RwLock<Child>>
                 .args(args)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
-                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
                 .spawn()?,
         )));
         let painc_child = child.clone();
