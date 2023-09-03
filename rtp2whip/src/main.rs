@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         if let Some(child) = wait_child.as_ref() {
             loop {
-                if let Ok(mut child) = child.write() {
+                if let Ok(mut child) = child.lock() {
                     if let Ok(wait) = child.try_wait() {
                         if wait.is_some() {
                             let _ = complete_tx.send(());
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let _ = remove_resource(args.url, etag).await;
     let _ = peer.close().await;
     if let Some(child) = child.as_ref() {
-        if let Ok(mut child) = child.write() {
+        if let Ok(mut child) = child.lock() {
             let _ = child.kill();
         }
     }
