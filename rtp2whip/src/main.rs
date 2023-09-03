@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use clap::Parser;
@@ -7,7 +7,7 @@ use cli::{create_child, Codec};
 use tokio::{
     net::UdpSocket,
     signal,
-    sync::mpsc::{self, unbounded_channel, Sender, UnboundedSender},
+    sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
     } else {
         Default::default()
     };
-    let (complete_tx, mut complete_rx) = mpsc::channel(1);
+    let (complete_tx, mut complete_rx) = unbounded_channel();
     let (peer, sender) = new_peer(args.codec.into(), ide_servers, complete_tx.clone())
         .await
         .unwrap();
@@ -63,11 +63,18 @@ async fn main() -> Result<()> {
     let wait_child = child.clone();
     tokio::spawn(async move {
         if let Some(child) = wait_child.as_ref() {
-            if let Ok(mut child) = child.write() {
-                if let Ok(_) = child.wait() {
-                    let _ = complete_tx.send(());
-                    return;
+            loop {
+                if let Ok(mut child) = child.write() {
+                    if let Ok(wait) = child.try_wait() {
+                        if wait.is_some() {
+                            let _ = complete_tx.send(());
+                            return;
+                        }
+                    }
                 }
+                let timeout = tokio::time::sleep(Duration::from_secs(1));
+                tokio::pin!(timeout);
+                let _ = timeout.as_mut().await;
             }
         }
     });
@@ -97,7 +104,7 @@ async fn rtp_listener(socker: UdpSocket, sender: UnboundedSender<Vec<u8>>) {
 async fn new_peer(
     codec: RTCRtpCodecCapability,
     ice_servers: Vec<RTCIceServer>,
-    complete_tx: Sender<()>,
+    complete_tx: UnboundedSender<()>,
 ) -> Result<(Arc<RTCPeerConnection>, UnboundedSender<Vec<u8>>)> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -123,7 +130,7 @@ async fn new_peer(
                     let _ = pc.close().await;
                 }
                 RTCPeerConnectionState::Closed => {
-                    let _ = complete_tx.send(()).await;
+                    let _ = complete_tx.send(());
                 }
                 _ => {}
             };
