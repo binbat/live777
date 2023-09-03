@@ -81,7 +81,7 @@ impl Manager {
             if is_publish {
                 let mut paths = self.paths.write().await;
                 info!("remove path : {}", path);
-                paths.remove(&key);
+                paths.remove(&path);
             }
         }
         Ok(())
