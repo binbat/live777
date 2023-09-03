@@ -61,6 +61,16 @@ pub async fn get_ide_servers(url: String) -> Result<Vec<RTCIceServer>> {
     Ok(_ice_servers)
 }
 
+pub async fn remove_resource(url: String, key: String) -> Result<()> {
+    let mut header_map = HeaderMap::new();
+    header_map.insert("If-Match", HeaderValue::from_str(&key)?);
+    let response = request(url, "DELETE", header_map, "").await?;
+    if response.status() != 204 {
+        return Err(anyhow::anyhow!("response statsu not is 204"));
+    }
+    Ok(())
+}
+
 pub async fn request<T: Into<Body>>(
     url: String,
     method: &str,
