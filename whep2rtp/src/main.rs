@@ -1,8 +1,4 @@
-use std::{
-    process::Child,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use clap::Parser;
@@ -10,6 +6,7 @@ use cli::{create_child, get_codec_type, Codec};
 
 use tokio::{
     net::UdpSocket,
+    signal,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use webrtc::{
@@ -27,7 +24,7 @@ use webrtc::{
     },
     util::MarshalSize,
 };
-use whip_whep::{get_answer, get_ide_servers};
+use whip_whep::{get_answer, get_ide_servers, remove_resource};
 #[derive(Parser)]
 #[command(author, version, about,long_about = None)]
 struct Args {
@@ -46,38 +43,50 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     udp_socket.connect(&args.target).await?;
-    let (send, mut recv) = unbounded_channel::<Vec<u8>>();
     let ide_servers = get_ide_servers(args.url.clone()).await?;
     let child = create_child(args.command)?;
-    let peer = new_peer(args.codec.into(), ide_servers, child.clone(), send)
+    let (complete_tx, mut complete_rx) = unbounded_channel();
+    let (send, mut recv) = unbounded_channel::<Vec<u8>>();
+    let peer = new_peer(args.codec.into(), ide_servers, complete_tx.clone(), send)
         .await
         .unwrap();
     let offser = peer.create_offer(None).await.unwrap();
     let _ = peer.set_local_description(offser.clone()).await.unwrap();
-    let (answer, _etag) = get_answer(args.url.clone(), offser.sdp).await.unwrap();
+    let (answer, etag) = get_answer(args.url.clone(), offser.sdp).await.unwrap();
     peer.set_remote_description(answer).await.unwrap();
-    let rtp_sender = async move {
+    tokio::spawn(async move {
         while let Some(data) = recv.recv().await {
             let _ = udp_socket.send(&data).await;
         }
-    };
-    if let Some(child) = child.as_ref() {
-        tokio::spawn(rtp_sender);
-        loop {
-            if let Ok(mut child) = child.write() {
-                if let Ok(exit) = child.try_wait() {
-                    if let Some(exit) = exit {
-                        let _ = peer.close().await;
-                        std::process::exit(exit.code().unwrap_or(1))
+    });
+    let wait_child = child.clone();
+    tokio::spawn(async move {
+        if let Some(child) = wait_child.as_ref() {
+            loop {
+                if let Ok(mut child) = child.write() {
+                    if let Ok(wait) = child.try_wait() {
+                        if wait.is_some() {
+                            let _ = complete_tx.send(());
+                            return;
+                        }
                     }
                 }
+                let timeout = tokio::time::sleep(Duration::from_secs(1));
+                tokio::pin!(timeout);
+                let _ = timeout.as_mut().await;
             }
-            let timeout = tokio::time::sleep(Duration::from_secs(1));
-            tokio::pin!(timeout);
-            let _ = timeout.as_mut().await;
         }
-    } else {
-        rtp_sender.await;
+    });
+    tokio::select! {
+        _= complete_rx.recv() => { }
+        _= signal::ctrl_c() => {}
+    }
+    let _ = remove_resource(args.url, etag).await;
+    let _ = peer.close().await;
+    if let Some(child) = child.as_ref() {
+        if let Ok(mut child) = child.write() {
+            let _ = child.kill();
+        }
     }
     Ok(())
 }
@@ -85,7 +94,7 @@ async fn main() -> Result<()> {
 async fn new_peer(
     codec: RTCRtpCodecCapability,
     ice_servers: Vec<RTCIceServer>,
-    child: Arc<Option<RwLock<Child>>>,
+    complete_tx: UnboundedSender<()>,
     sender: UnboundedSender<Vec<u8>>,
 ) -> Result<Arc<RTCPeerConnection>> {
     let ct = get_codec_type(&codec);
@@ -121,7 +130,7 @@ async fn new_peer(
     let pc = peer.clone();
     peer.on_peer_connection_state_change(Box::new(move |s| {
         let pc = pc.clone();
-        let child = child.clone();
+        let complete_tx = complete_tx.clone();
         tokio::spawn(async move {
             println!("connection state changed: {}", s);
             match s {
@@ -129,13 +138,7 @@ async fn new_peer(
                     let _ = pc.close().await;
                 }
                 RTCPeerConnectionState::Closed => {
-                    if let Some(child) = child.as_ref() {
-                        if let Ok(mut child) = child.write() {
-                            let _ = child.kill();
-                        }
-                    } else {
-                        std::process::exit(1);
-                    }
+                    let _ = complete_tx.send(());
                 }
                 _ => {}
             };
