@@ -75,7 +75,7 @@ where
             Auth::Basic { username, password } => {
                 router.layer(ValidateRequestHeaderLayer::basic(username, password))
             }
-            Auth::Bearer { token } => router.layer(ValidateRequestHeaderLayer::bearer(&token)),
+            Auth::Bearer { token } => router.layer(ValidateRequestHeaderLayer::bearer(token)),
         }
     } else {
         router
