@@ -8,7 +8,7 @@ members = [".", "libs/whip-whep", "libs/cli", "rtp2whip", "whep2rtp"]
 
 [dependencies]
 axum = { version = "0.6.20", features = ["multipart"] }
-tower-http = { version = "0.4.3", features = ["fs", "trace"] }
+tower-http = { version = "0.4.3", features = ["fs", "trace", "auth"] }
 webrtc = { git = "https://github.com/webrtc-rs/webrtc" }
 anyhow = "1.0"
 tokio = { version = "1.30", features = ["full"] }

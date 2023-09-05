@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
+use axum::routing::MethodRouter;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -11,13 +12,15 @@ use axum::{
     routing::post,
     Router,
 };
-use config::IceServer;
 use log::info;
-use path::manager::Manager;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use crate::config::Config;
+use config::IceServer;
+use path::manager::Manager;
+
+use crate::config::{Auth, Config};
 
 mod config;
 mod forward;
@@ -43,30 +46,40 @@ async fn main() {
         .collect();
     let app_state = AppState {
         paths: Arc::new(Manager::new(ice_servers)),
-        config: cfg,
+        config: cfg.clone(),
     };
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
-    let app = Router::new()
-        .route(
-            "/whip/:id",
-            post(whip)
-                .patch(add_ice_candidate)
-                .options(ice_server_config)
-                .delete(remove_path_key),
-        )
-        .route(
-            "/whep/:id",
-            post(whep)
-                .patch(add_ice_candidate)
-                .options(ice_server_config)
-                .delete(remove_path_key),
-        )
-        .nest_service("/", serve_dir.clone())
+    let mut app = Router::new()
+        .route("/whip/:id", {
+            let router = post(whip).patch(add_ice_candidate).delete(remove_path_key);
+            router_auth_layer(cfg.auth.clone(), router).options(ice_server_config)
+        })
+        .route("/whep/:id", {
+            let router = post(whep).patch(add_ice_candidate).delete(remove_path_key);
+            router_auth_layer(cfg.auth.clone(), router).options(ice_server_config)
+        })
         .with_state(app_state);
+    app = app.nest_service("/", serve_dir.clone());
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
         .unwrap();
+}
+
+fn router_auth_layer<S>(auth: Option<Auth>, router: MethodRouter<S>) -> MethodRouter<S>
+where
+    S: Clone + 'static,
+{
+    if let Some(auth) = &auth {
+        match auth {
+            Auth::Basic { username, password } => {
+                router.layer(ValidateRequestHeaderLayer::basic(username, password))
+            }
+            Auth::Bearer { token } => router.layer(ValidateRequestHeaderLayer::bearer(&token)),
+        }
+    } else {
+        router
+    }
 }
 
 #[derive(Clone)]

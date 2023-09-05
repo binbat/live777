@@ -2,9 +2,16 @@
 # listen = "0.0.0.0:3000"
 
 [[ice_servers]]
-urls = [ "stun:stun.22333.fun", "stun:cn.22333.fun", "stun:stun.l.google.com:19302" ]
+urls = [
+    "stun:stun.22333.fun",
+    "stun:cn.22333.fun",
+    "stun:stun.l.google.com:19302",
+]
 
 # [[ice_servers]]
 # urls = [ "turn:turn.22333.fun", "turn:cn.22333.fun" ]
 # username = "live777"
 # credential = "live777"
+
+[auth.bearer]
+token = "live777"
