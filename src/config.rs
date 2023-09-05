@@ -1,4 +1,4 @@
-use std::fs;
+use std::{env, fs};
 
 use serde::{Deserialize, Serialize};
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -20,7 +20,10 @@ pub enum Auth {
 }
 
 fn default_listen() -> String {
-    "0.0.0.0:3000".to_string()
+    format!(
+        "0.0.0.0:{}",
+        env::var("PORT").unwrap_or(String::from("3000"))
+    )
 }
 
 fn default_ice_servers() -> Vec<IceServer> {
