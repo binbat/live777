@@ -32,13 +32,16 @@ struct Args {
     port: u16,
     #[arg(short, long, value_enum)]
     codec: Codec,
+    /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
     #[arg(short, long)]
     url: String,
+    /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
-    /// auth account, value is username:password,example:  admin:123456
+    /// Authentication basic to use, will be sent in the HTTP Header as 'Basic ' e.g.: admin:public
     #[arg(long)]
-    auth_account: Option<String>,
+    auth_basic: Option<String>,
+    /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
     #[arg(long)]
     auth_token: Option<String>,
 }
@@ -51,7 +54,7 @@ async fn main() -> Result<()> {
     println!("=== RTP listener started : {} ===", port);
     let client = Client::new(
         args.url,
-        Client::get_auth_header_map(args.auth_account, args.auth_token),
+        Client::get_auth_header_map(args.auth_basic, args.auth_token),
     );
     let ide_servers = client.get_ide_servers().await?;
     let child = if let Some(command) = args.command {

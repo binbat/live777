@@ -17,12 +17,12 @@ pub struct Client {
 
 impl Client {
     pub fn get_auth_header_map(
-        account: Option<String>,
+        basic: Option<String>,
         token: Option<String>,
     ) -> Option<HeaderMap> {
         let mut header_map = HeaderMap::new();
-        if let Some(auth_account) = account {
-            let encoded = STANDARD.encode(auth_account);
+        if let Some(auth_basic) = basic {
+            let encoded = STANDARD.encode(auth_basic);
             header_map.insert(
                 "Authorization",
                 format!("Basic {}", encoded).parse().unwrap(),

@@ -13,5 +13,10 @@ urls = [
 # username = "live777"
 # credential = "live777"
 
+# [auth.basic]
+# username = "admin"
+# password = "public"
+
 [auth.bearer]
 token = "live777"
+

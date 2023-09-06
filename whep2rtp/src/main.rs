@@ -32,13 +32,16 @@ struct Args {
     target: String,
     #[arg(short, long, value_enum)]
     codec: Codec,
+    /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
     #[arg(short, long)]
     url: String,
+    /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
-    /// auth account, value is username:password,example:  admin:123456
+    /// Authentication basic to use, will be sent in the HTTP Header as 'Basic ' e.g.: admin:public
     #[arg(long)]
-    auth_account: Option<String>,
+    auth_basic: Option<String>,
+    /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
     #[arg(long)]
     auth_token: Option<String>,
 }
@@ -50,7 +53,7 @@ async fn main() -> Result<()> {
     udp_socket.connect(&args.target).await?;
     let client = Client::new(
         args.url,
-        Client::get_auth_header_map(args.auth_account, args.auth_token),
+        Client::get_auth_header_map(args.auth_basic, args.auth_token),
     );
     let ide_servers = client.get_ide_servers().await?;
     let child = create_child(args.command)?;
