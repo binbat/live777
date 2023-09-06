@@ -50,15 +50,14 @@ async fn main() {
         config: cfg.clone(),
     };
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
     let mut app = Router::new()
         .route(
             "/whip/:id",
             post(whip)
                 .patch(add_ice_candidate)
                 .delete(remove_path_key)
-                .layer(ValidateRequestHeaderLayer::custom(ManyValidate::new(
-                    cfg.auth.clone(),
-                )))
+                .layer(auth_layer.clone())
                 .options(ice_server_config),
         )
         .route(
@@ -66,9 +65,7 @@ async fn main() {
             post(whep)
                 .patch(add_ice_candidate)
                 .delete(remove_path_key)
-                .layer(ValidateRequestHeaderLayer::custom(ManyValidate::new(
-                    cfg.auth.clone(),
-                )))
+                .layer(auth_layer)
                 .options(ice_server_config),
         )
         .with_state(app_state);
