@@ -24,7 +24,7 @@ use webrtc::{
     },
     util::MarshalSize,
 };
-use whip_whep::{get_answer, get_ide_servers, remove_resource};
+use whip_whep::Client;
 #[derive(Parser)]
 #[command(author, version, about,long_about = None)]
 struct Args {
@@ -43,7 +43,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     udp_socket.connect(&args.target).await?;
-    let ide_servers = get_ide_servers(args.url.clone()).await?;
+    let client = Client::new(args.url, None);
+    let ide_servers = client.get_ide_servers().await?;
     let child = create_child(args.command)?;
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
@@ -52,7 +53,7 @@ async fn main() -> Result<()> {
         .unwrap();
     let offser = peer.create_offer(None).await.unwrap();
     let _ = peer.set_local_description(offser.clone()).await.unwrap();
-    let (answer, etag) = get_answer(args.url.clone(), offser.sdp).await.unwrap();
+    let (answer, etag) = client.get_answer(offser.sdp).await.unwrap();
     peer.set_remote_description(answer).await.unwrap();
     tokio::spawn(async move {
         while let Some(data) = recv.recv().await {
@@ -81,7 +82,7 @@ async fn main() -> Result<()> {
         _= complete_rx.recv() => { }
         _= signal::ctrl_c() => {}
     }
-    let _ = remove_resource(args.url, etag).await;
+    let _ = client.remove_resource(etag).await;
     let _ = peer.close().await;
     if let Some(child) = child.as_ref() {
         if let Ok(mut child) = child.lock() {

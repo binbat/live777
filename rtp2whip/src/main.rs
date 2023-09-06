@@ -24,7 +24,7 @@ use webrtc::{
     },
     util::Unmarshal,
 };
-use whip_whep::{get_answer, get_ide_servers, remove_resource};
+use whip_whep::Client;
 #[derive(Parser)]
 #[command(author, version, about,long_about = None)]
 struct Args {
@@ -44,7 +44,8 @@ async fn main() -> Result<()> {
     let listener = UdpSocket::bind(format!("0.0.0.0:{}", args.port)).await?;
     let port = listener.local_addr()?.port();
     println!("=== RTP listener started : {} ===", port);
-    let ide_servers = get_ide_servers(args.url.clone()).await?;
+    let client = Client::new(args.url, None);
+    let ide_servers = client.get_ide_servers().await?;
     let child = if let Some(command) = args.command {
         let command = command.replace("{port}", &port.to_string());
         create_child(Some(command))?
@@ -57,7 +58,7 @@ async fn main() -> Result<()> {
         .unwrap();
     let offser = peer.create_offer(None).await.unwrap();
     let _ = peer.set_local_description(offser.clone()).await.unwrap();
-    let (answer, etag) = get_answer(args.url.clone(), offser.sdp).await.unwrap();
+    let (answer, etag) = client.get_answer(offser.sdp).await.unwrap();
     peer.set_remote_description(answer).await.unwrap();
     tokio::spawn(rtp_listener(listener, sender));
     let wait_child = child.clone();
@@ -83,7 +84,7 @@ async fn main() -> Result<()> {
         _= signal::ctrl_c() => {}
     }
     println!("RTP listener closed");
-    let _ = remove_resource(args.url, etag).await;
+    let _ = client.remove_resource(etag).await;
     let _ = peer.close().await;
     if let Some(child) = child.as_ref() {
         if let Ok(mut child) = child.lock() {
