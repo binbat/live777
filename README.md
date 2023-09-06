@@ -100,7 +100,7 @@ ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -f rtp 'rtp:/
 So. We support parameter `command`, You can use this:
 
 ```bash
-cargo run --package=rtp2whip -- -c vp8 -u http://localhost:3000/whip/777 --command
+cargo run --package=rtp2whip -- -c vp8 -u http://localhost:3000/whip/777 --command \
 "ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -cpu-used 5 -deadline 1 -g 10 -error-resilient 1 -auto-alt-ref 1 -f rtp 'rtp://127.0.0.1:{port}?pkt_size=1200'"
 ```
 
