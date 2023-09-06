@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
-use axum::routing::MethodRouter;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -20,8 +19,10 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use config::IceServer;
 use path::manager::Manager;
 
-use crate::config::{Auth, Config};
+use crate::auth::ManyValidate;
+use crate::config::Config;
 
+mod auth;
 mod config;
 mod forward;
 mod media;
@@ -50,36 +51,32 @@ async fn main() {
     };
     let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
     let mut app = Router::new()
-        .route("/whip/:id", {
-            let router = post(whip).patch(add_ice_candidate).delete(remove_path_key);
-            router_auth_layer(cfg.auth.clone(), router).options(ice_server_config)
-        })
-        .route("/whep/:id", {
-            let router = post(whep).patch(add_ice_candidate).delete(remove_path_key);
-            router_auth_layer(cfg.auth.clone(), router).options(ice_server_config)
-        })
+        .route(
+            "/whip/:id",
+            post(whip)
+                .patch(add_ice_candidate)
+                .delete(remove_path_key)
+                .layer(ValidateRequestHeaderLayer::custom(ManyValidate::new(
+                    cfg.auth.clone(),
+                )))
+                .options(ice_server_config),
+        )
+        .route(
+            "/whep/:id",
+            post(whep)
+                .patch(add_ice_candidate)
+                .delete(remove_path_key)
+                .layer(ValidateRequestHeaderLayer::custom(ManyValidate::new(
+                    cfg.auth.clone(),
+                )))
+                .options(ice_server_config),
+        )
         .with_state(app_state);
     app = app.nest_service("/", serve_dir.clone());
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
         .unwrap();
-}
-
-fn router_auth_layer<S>(auth: Option<Auth>, router: MethodRouter<S>) -> MethodRouter<S>
-where
-    S: Clone + 'static,
-{
-    if let Some(auth) = &auth {
-        match auth {
-            Auth::Basic { username, password } => {
-                router.layer(ValidateRequestHeaderLayer::basic(username, password))
-            }
-            Auth::Bearer { token } => router.layer(ValidateRequestHeaderLayer::bearer(token)),
-        }
-    } else {
-        router
-    }
 }
 
 #[derive(Clone)]

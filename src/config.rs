@@ -9,14 +9,19 @@ pub struct Config {
     pub listen: String,
     #[serde(default = "default_ice_servers")]
     pub ice_servers: Vec<IceServer>,
-    pub auth: Option<Auth>,
+    #[serde(default)]
+    pub auth: Auth,
 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Auth {
+    pub accounts: Vec<Account>,
+    pub tokens: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Auth {
-    #[serde(rename = "basic")]
-    Basic { username: String, password: String },
-    #[serde(rename = "bearer")]
-    Bearer { token: String },
+pub struct Account {
+    pub username: String,
+    pub password: String,
 }
 
 fn default_listen() -> String {
@@ -70,7 +75,7 @@ impl Config {
             Config {
                 ice_servers: default_ice_servers(),
                 listen: default_listen(),
-                auth: None,
+                auth: Default::default(),
             }
         }
     }
