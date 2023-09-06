@@ -1,7 +1,7 @@
 ID: <input id="resource" type="text">
 <button onclick="startWhip()"> WebRTC Start Whip</button>
 <button onclick="startWhep()"> WebRTC Start Whep</button>
-<br/>
+<br />
 Bearer token: <input id="token" type="text">
 
 <br />
@@ -64,7 +64,7 @@ Logs<br />
         }
         const whep = new WHEPClient();
         const url = location.origin + "/whep/" + resource;
-        const token = "live777"
+        const token = document.getElementById("token").value;
         whep.view(pc, url, token);
     }
 
