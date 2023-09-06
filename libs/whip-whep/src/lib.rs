@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Body, Method, Response,
@@ -15,6 +16,29 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn get_auth_header_map(
+        account: Option<String>,
+        token: Option<String>,
+    ) -> Option<HeaderMap> {
+        let mut header_map = HeaderMap::new();
+        if let Some(auth_account) = account {
+            let encoded = STANDARD.encode(auth_account);
+            header_map.insert(
+                "Authorization",
+                format!("Basic {}", encoded).parse().unwrap(),
+            );
+            Some(header_map)
+        } else if let Some(auth_token) = token {
+            header_map.insert(
+                "Authorization",
+                format!("Bearer {}", auth_token).parse().unwrap(),
+            );
+            Some(header_map)
+        } else {
+            None
+        }
+    }
+
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
         Client {
             url,
