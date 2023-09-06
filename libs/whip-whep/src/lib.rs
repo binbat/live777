@@ -16,10 +16,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn get_auth_header_map(
-        basic: Option<String>,
-        token: Option<String>,
-    ) -> Option<HeaderMap> {
+    pub fn get_auth_header_map(basic: Option<String>, token: Option<String>) -> Option<HeaderMap> {
         let mut header_map = HeaderMap::new();
         if let Some(auth_basic) = basic {
             let encoded = STANDARD.encode(auth_basic);
