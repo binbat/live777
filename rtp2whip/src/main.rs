@@ -36,6 +36,11 @@ struct Args {
     url: String,
     #[arg(long)]
     command: Option<String>,
+    /// auth account, value is username:password,example:  admin:123456
+    #[arg(long)]
+    auth_account: Option<String>,
+    #[arg(long)]
+    auth_token: Option<String>,
 }
 
 #[tokio::main]
@@ -44,7 +49,10 @@ async fn main() -> Result<()> {
     let listener = UdpSocket::bind(format!("0.0.0.0:{}", args.port)).await?;
     let port = listener.local_addr()?.port();
     println!("=== RTP listener started : {} ===", port);
-    let client = Client::new(args.url, None);
+    let client = Client::new(
+        args.url,
+        Client::get_auth_header_map(args.auth_account, args.auth_token),
+    );
     let ide_servers = client.get_ide_servers().await?;
     let child = if let Some(command) = args.command {
         let command = command.replace("{port}", &port.to_string());
