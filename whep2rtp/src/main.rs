@@ -36,6 +36,11 @@ struct Args {
     url: String,
     #[arg(long)]
     command: Option<String>,
+    /// auth account, value is username:password,example:  admin:123456
+    #[arg(long)]
+    auth_account: Option<String>,
+    #[arg(long)]
+    auth_token: Option<String>,
 }
 
 #[tokio::main]
@@ -43,7 +48,10 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     udp_socket.connect(&args.target).await?;
-    let client = Client::new(args.url, None);
+    let client = Client::new(
+        args.url,
+        Client::get_auth_header_map(args.auth_account, args.auth_token),
+    );
     let ide_servers = client.get_ide_servers().await?;
     let child = create_child(args.command)?;
     let (complete_tx, mut complete_rx) = unbounded_channel();
