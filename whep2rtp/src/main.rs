@@ -18,8 +18,7 @@ use webrtc::{
         RTCPeerConnection,
     },
     rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters},
-        rtp_transceiver_direction::RTCRtpTransceiverDirection,
+        rtp_codec::RTCRtpCodecParameters, rtp_transceiver_direction::RTCRtpTransceiverDirection,
         RTCRtpTransceiverInit,
     },
     util::MarshalSize,
@@ -32,6 +31,9 @@ struct Args {
     target: String,
     #[arg(short, long, value_enum)]
     codec: Codec,
+    /// value: [96, 127]
+    #[arg(short, long, default_value_t = 96)]
+    payload_type: u8,
     /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
     #[arg(short, long)]
     url: String,
@@ -49,6 +51,8 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let payload_type = args.payload_type;
+    assert!(payload_type >= 96 && payload_type <= 127);
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     udp_socket.connect(&args.target).await?;
     let client = Client::new(
@@ -59,9 +63,18 @@ async fn main() -> Result<()> {
     let child = create_child(args.command)?;
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
-    let peer = new_peer(args.codec.into(), ide_servers, complete_tx.clone(), send)
-        .await
-        .unwrap();
+    let peer = new_peer(
+        RTCRtpCodecParameters {
+            capability: args.codec.into(),
+            payload_type,
+            stats_id: Default::default(),
+        },
+        ide_servers,
+        complete_tx.clone(),
+        send,
+    )
+    .await
+    .unwrap();
     let offser = peer.create_offer(None).await.unwrap();
     let _ = peer.set_local_description(offser.clone()).await.unwrap();
     let (answer, etag) = client.get_answer(offser.sdp).await.unwrap();
@@ -104,21 +117,14 @@ async fn main() -> Result<()> {
 }
 
 async fn new_peer(
-    codec: RTCRtpCodecCapability,
+    codec: RTCRtpCodecParameters,
     ice_servers: Vec<RTCIceServer>,
     complete_tx: UnboundedSender<()>,
     sender: UnboundedSender<Vec<u8>>,
 ) -> Result<Arc<RTCPeerConnection>> {
-    let ct = get_codec_type(&codec);
+    let ct = get_codec_type(&codec.capability);
     let mut m = MediaEngine::default();
-    m.register_codec(
-        RTCRtpCodecParameters {
-            capability: codec,
-            payload_type: 96,
-            ..Default::default()
-        },
-        ct,
-    )?;
+    m.register_codec(codec, ct)?;
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
     let api = APIBuilder::new()
