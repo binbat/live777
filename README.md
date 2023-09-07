@@ -133,3 +133,9 @@ So. You can use this:
 cargo run --package=whep2rtp -- -c vp8 -u http://localhost:3000/whep/777 -t 127.0.0.1:5004 --command 'ffplay -protocol_whitelist rtp,file,udp -i stream.sdp'
 ```
 
+## Sponsors
+
+<p align="center">
+  <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg" alt="JetBrains Logo (Main) logo.">
+</p>
+
