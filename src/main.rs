@@ -1,23 +1,20 @@
+use axum::http::{HeaderMap, Uri};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+    Router,
+};
+use config::IceServer;
+use log::info;
+use path::manager::Manager;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, Uri};
-use axum::response::Response;
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Router,
-};
-use log::info;
-use tower_http::services::{ServeDir, ServeFile};
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-
-use config::IceServer;
-use path::manager::Manager;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
@@ -49,7 +46,6 @@ async fn main() {
         paths: Arc::new(Manager::new(ice_servers)),
         config: cfg.clone(),
     };
-    let serve_dir = ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
     let mut app = Router::new()
         .route(
@@ -69,11 +65,48 @@ async fn main() {
                 .options(ice_server_config),
         )
         .with_state(app_state);
-    app = app.nest_service("/", serve_dir.clone());
+    app = static_server(app);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
         .unwrap();
+}
+
+#[cfg(debug_assertions)]
+use tower_http::services::{ServeDir, ServeFile};
+#[cfg(not(debug_assertions))]
+use {http::header, rust_embed::RustEmbed};
+#[cfg(not(debug_assertions))]
+#[derive(RustEmbed)]
+#[folder = "assets/"]
+struct Assets;
+
+fn static_server(router: Router) -> Router {
+    #[cfg(debug_assertions)]
+    {
+        let serve_dir =
+            ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
+        router.nest_service("/", serve_dir.clone())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        router.fallback(static_handler)
+    }
+}
+
+#[cfg(not(debug_assertions))]
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let mut path = uri.path().trim_start_matches('/');
+    if path.is_empty() {
+        path = "index.html";
+    }
+    match Assets::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
 #[derive(Clone)]
