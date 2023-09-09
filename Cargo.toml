@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = [".", "libs/whip-whep", "libs/cli", "rtp2whip", "whep2rtp"]
+members = [
+    ".",
+    "libs/whip-whep",
+    "libs/cli",
+    "tools/rtp2whip",
+    "tools/whep2rtp",
+]
 
 [dependencies]
 axum = { version = "0.6.20", features = ["multipart"] }
