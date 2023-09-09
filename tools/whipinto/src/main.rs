@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{create_child, get_codec_type, Codec};
+use cli::{create_child, Codec};
 
 use tokio::{
     net::UdpSocket,
@@ -17,24 +17,22 @@ use webrtc::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
         RTCPeerConnection,
     },
-    rtp_transceiver::{
-        rtp_codec::RTCRtpCodecParameters, rtp_transceiver_direction::RTCRtpTransceiverDirection,
-        RTCRtpTransceiverInit,
+    rtp,
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    track::track_local::{
+        track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
     },
-    util::MarshalSize,
+    util::Unmarshal,
 };
-use whip_whep::Client;
+use libwish::Client;
 #[derive(Parser)]
 #[command(author, version, about,long_about = None)]
 struct Args {
-    #[arg(short, long)]
-    target: String,
+    #[arg(short, long, default_value_t = 0)]
+    port: u16,
     #[arg(short, long, value_enum)]
     codec: Codec,
-    /// value: [96, 127]
-    #[arg(short, long, default_value_t = 96)]
-    payload_type: u8,
-    /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
+    /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
     #[arg(short, long)]
     url: String,
     /// Run a command as childprocess
@@ -51,39 +49,29 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let payload_type = args.payload_type;
-    assert!(payload_type >= 96 && payload_type <= 127);
-    let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
-    udp_socket.connect(&args.target).await?;
+    let listener = UdpSocket::bind(format!("0.0.0.0:{}", args.port)).await?;
+    let port = listener.local_addr()?.port();
+    println!("=== RTP listener started : {} ===", port);
     let client = Client::new(
         args.url,
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
     );
     let ide_servers = client.get_ide_servers().await?;
-    let child = create_child(args.command)?;
+    let child = if let Some(command) = args.command {
+        let command = command.replace("{port}", &port.to_string());
+        create_child(Some(command))?
+    } else {
+        Default::default()
+    };
     let (complete_tx, mut complete_rx) = unbounded_channel();
-    let (send, mut recv) = unbounded_channel::<Vec<u8>>();
-    let peer = new_peer(
-        RTCRtpCodecParameters {
-            capability: args.codec.into(),
-            payload_type,
-            stats_id: Default::default(),
-        },
-        ide_servers,
-        complete_tx.clone(),
-        send,
-    )
-    .await
-    .unwrap();
+    let (peer, sender) = new_peer(args.codec.into(), ide_servers, complete_tx.clone())
+        .await
+        .unwrap();
     let offser = peer.create_offer(None).await.unwrap();
     let _ = peer.set_local_description(offser.clone()).await.unwrap();
     let (answer, etag) = client.get_answer(offser.sdp).await.unwrap();
     peer.set_remote_description(answer).await.unwrap();
-    tokio::spawn(async move {
-        while let Some(data) = recv.recv().await {
-            let _ = udp_socket.send(&data).await;
-        }
-    });
+    tokio::spawn(rtp_listener(listener, sender));
     let wait_child = child.clone();
     tokio::spawn(async move {
         if let Some(child) = wait_child.as_ref() {
@@ -106,6 +94,7 @@ async fn main() -> Result<()> {
         _= complete_rx.recv() => { }
         _= signal::ctrl_c() => {}
     }
+    println!("RTP listener closed");
     let _ = client.remove_resource(etag).await;
     let _ = peer.close().await;
     if let Some(child) = child.as_ref() {
@@ -116,15 +105,21 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn rtp_listener(socker: UdpSocket, sender: UnboundedSender<Vec<u8>>) {
+    let mut inbound_rtp_packet = vec![0u8; 1600];
+    while let Ok((n, _)) = socker.recv_from(&mut inbound_rtp_packet).await {
+        let data = inbound_rtp_packet[..n].to_vec();
+        let _ = sender.send(data);
+    }
+}
+
 async fn new_peer(
-    codec: RTCRtpCodecParameters,
+    codec: RTCRtpCodecCapability,
     ice_servers: Vec<RTCIceServer>,
     complete_tx: UnboundedSender<()>,
-    sender: UnboundedSender<Vec<u8>>,
-) -> Result<Arc<RTCPeerConnection>> {
-    let ct = get_codec_type(&codec.capability);
+) -> Result<(Arc<RTCPeerConnection>, UnboundedSender<Vec<u8>>)> {
     let mut m = MediaEngine::default();
-    m.register_codec(codec, ct)?;
+    m.register_default_codecs()?;
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
     let api = APIBuilder::new()
@@ -136,15 +131,6 @@ async fn new_peer(
         ..Default::default()
     };
     let peer = Arc::new(api.new_peer_connection(config).await?);
-    let _ = peer
-        .add_transceiver_from_kind(
-            ct,
-            Some(RTCRtpTransceiverInit {
-                direction: RTCRtpTransceiverDirection::Recvonly,
-                send_encodings: vec![],
-            }),
-        )
-        .await?;
     let pc = peer.clone();
     peer.on_peer_connection_state_change(Box::new(move |s| {
         let pc = pc.clone();
@@ -163,17 +149,24 @@ async fn new_peer(
         });
         Box::pin(async {})
     }));
-    peer.on_track(Box::new(move |track, _, _| {
-        let sender = sender.clone();
-        tokio::spawn(async move {
-            let mut b = [0u8; 1500];
-            while let Ok((rtp_packet, _)) = track.read(&mut b).await {
-                let size = rtp_packet.marshal_size();
-                let data = b[0..size].to_vec();
-                let _ = sender.send(data);
+    let track = Arc::new(TrackLocalStaticRTP::new(
+        codec,
+        "webrtc".to_owned(),
+        "webrtc-rs".to_owned(),
+    ));
+    let _ = peer
+        .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+        .await?;
+    let (send, mut recv) = unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        let mut sequence_number: u16 = 0;
+        while let Some(data) = recv.recv().await {
+            if let Ok(mut packet) = rtp::packet::Packet::unmarshal(&mut data.as_slice()) {
+                packet.header.sequence_number = sequence_number;
+                let _ = track.write_rtp(&packet).await;
+                sequence_number = sequence_number.wrapping_add(1);
             }
-        });
-        Box::pin(async {})
-    }));
-    Ok(peer)
+        }
+    });
+    Ok((peer, send))
 }
