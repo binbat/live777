@@ -1,5 +1,5 @@
 [package]
-name = "rtp2whip"
+name = "whipinto"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,4 +11,4 @@ webrtc = { git = "https://github.com/webrtc-rs/webrtc" }
 anyhow = "1.0"
 tokio = { version = "1.30", features = ["full"] }
 cli = { path = "../../libs/cli" }
-whip-whep = { path = "../../libs/whip-whep" }
+libwish = { path = "../../libs/libwish" }

@@ -1260,6 +1260,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4668fb0ea861c1df094127ac5f1da3409a82116a4ba74fca2e58ef927159bb3"
 
 [[package]]
+name = "libwish"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.21.3",
+ "parse_link_header",
+ "reqwest",
+ "webrtc",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1881,18 +1892,6 @@ dependencies = [
  "serde",
  "thiserror",
  "webrtc-util",
-]
-
-[[package]]
-name = "rtp2whip"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cli",
- "tokio",
- "webrtc",
- "whip-whep",
 ]
 
 [[package]]
@@ -3030,25 +3029,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "whep2rtp"
+name = "whepfrom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "cli",
+ "libwish",
  "tokio",
  "webrtc",
- "whip-whep",
 ]
 
 [[package]]
-name = "whip-whep"
+name = "whipinto"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.21.3",
- "parse_link_header",
- "reqwest",
+ "clap",
+ "cli",
+ "libwish",
+ "tokio",
  "webrtc",
 ]
 
