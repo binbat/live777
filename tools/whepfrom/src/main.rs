@@ -4,6 +4,8 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{create_child, get_codec_type, Codec};
 
+use libwish::Client;
+use scopeguard::defer;
 use tokio::{
     net::UdpSocket,
     signal,
@@ -23,7 +25,6 @@ use webrtc::{
     },
     util::MarshalSize,
 };
-use libwish::Client;
 #[derive(Parser)]
 #[command(author, version, about,long_about = None)]
 struct Args {
@@ -60,7 +61,14 @@ async fn main() -> Result<()> {
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
     );
     let ide_servers = client.get_ide_servers().await?;
-    let child = create_child(args.command)?;
+    let child = Arc::new(create_child(args.command)?);
+    defer!({
+        if let Some(child) = child.as_ref() {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+            }
+        }
+    });
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
     let peer = new_peer(
@@ -73,12 +81,11 @@ async fn main() -> Result<()> {
         complete_tx.clone(),
         send,
     )
-    .await
-    .unwrap();
-    let offser = peer.create_offer(None).await.unwrap();
-    let _ = peer.set_local_description(offser.clone()).await.unwrap();
-    let (answer, etag) = client.get_answer(offser.sdp).await.unwrap();
-    peer.set_remote_description(answer).await.unwrap();
+    .await?;
+    let offser = peer.create_offer(None).await?;
+    let _ = peer.set_local_description(offser.clone()).await?;
+    let (answer, etag) = client.get_answer(offser.sdp).await?;
+    peer.set_remote_description(answer).await?;
     tokio::spawn(async move {
         while let Some(data) = recv.recv().await {
             let _ = udp_socket.send(&data).await;
@@ -108,11 +115,6 @@ async fn main() -> Result<()> {
     }
     let _ = client.remove_resource(etag).await;
     let _ = peer.close().await;
-    if let Some(child) = child.as_ref() {
-        if let Ok(mut child) = child.lock() {
-            let _ = child.kill();
-        }
-    }
     Ok(())
 }
 

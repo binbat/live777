@@ -1,6 +1,6 @@
 use std::{
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use anyhow::Result;
@@ -119,30 +119,19 @@ pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
     }
 }
 
-pub fn create_child(command: Option<String>) -> Result<Arc<Option<Mutex<Child>>>> {
+pub fn create_child(command: Option<String>) -> Result<Option<Mutex<Child>>> {
     let child = if let Some(command) = command {
         let mut args = shellwords::split(&command)?;
-        let child = Arc::new(Some(Mutex::new(
+        Some(Mutex::new(
             Command::new(args.remove(0))
                 .args(args)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .spawn()?,
-        )));
-        let painc_child = child.clone();
-        std::panic::set_hook(Box::new(move |info| {
-            println!("{:?}", info);
-            if let Some(child) = painc_child.as_ref() {
-                if let Ok(mut child) = child.lock() {
-                    let _ = child.kill();
-                }
-            }
-            std::process::exit(1);
-        }));
-        child
+        ))
     } else {
-        Arc::new(None)
+        None
     };
     Ok(child)
 }
