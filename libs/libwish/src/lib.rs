@@ -2,7 +2,7 @@ use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::{
     header::{HeaderMap, HeaderValue},
-    Body, Method, Response,
+    Body, Method, Response, StatusCode,
 };
 use std::str::FromStr;
 use webrtc::{
@@ -47,8 +47,8 @@ impl Client {
         let mut header_map = self.defulat_headers.clone();
         header_map.insert("Content-Type", HeaderValue::from_str("application/sdp")?);
         let response = request(self.url.clone(), "POST", header_map, sdp).await?;
-        if response.status() != 201 {
-            return Err(anyhow::anyhow!("get answer error"));
+        if response.status() != StatusCode::CREATED {
+            return Err(anyhow::anyhow!(get_response_error(response).await));
         }
         let etag = response
             .headers()
@@ -62,17 +62,17 @@ impl Client {
     }
 
     pub async fn get_ide_servers(&self) -> Result<Vec<RTCIceServer>> {
-        let respone = request(
+        let response = request(
             self.url.clone(),
             "OPTIONS",
             self.defulat_headers.clone(),
             "",
         )
         .await?;
-        if respone.status() != 204 {
-            return Err(anyhow::anyhow!("get ide servers error"));
+        if response.status() != StatusCode::NO_CONTENT {
+            return Err(anyhow::anyhow!(get_response_error(response).await));
         }
-        let links = respone.headers().get_all("Link");
+        let links = response.headers().get_all("Link");
         let mut _ice_servers = vec![];
         for link in links {
             let link_header = parse_link_header::parse_with_rel(link.to_str()?)?;
@@ -104,10 +104,21 @@ impl Client {
         let mut header_map = self.defulat_headers.clone();
         header_map.insert("If-Match", HeaderValue::from_str(&key)?);
         let response = request(self.url.clone(), "DELETE", header_map, "").await?;
-        if response.status() != 204 {
-            return Err(anyhow::anyhow!("response statsu not is 204"));
+        if response.status() != StatusCode::NO_CONTENT {
+            Err(anyhow::anyhow!(get_response_error(response).await))
+        } else {
+            Ok(())
         }
-        Ok(())
+    }
+}
+
+async fn get_response_error(response: Response) -> String {
+    match response.status() {
+        StatusCode::UNAUTHORIZED => "identity authentication failed".to_owned(),
+        StatusCode::INTERNAL_SERVER_ERROR => {
+            response.text().await.unwrap_or("server error".to_owned())
+        }
+        _ => format!("{}", response.status()),
     }
 }
 
