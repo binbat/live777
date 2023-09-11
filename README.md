@@ -1,13 +1,24 @@
 # Live777
 
+[![Rust](https://github.com/binbat/live777/actions/workflows/rust.yml/badge.svg)](https://github.com/binbat/live777/actions/workflows/rust.yml)
+[![GitHub release](https://img.shields.io/github/tag/binbat/live777.svg?label=release)](https://github.com/binbat/live777/releases)
+
 A very simple, high performance, support WHIP/WHEP edge WebRTC SFU (Selective Forwarding Unit)
+
+![live777-arch](./docs/live777-arch.excalidraw.svg#gh-light-mode-only)
+![live777-arch](./docs/live777-arch.dark.svg#gh-dark-mode-only)
 
 ## Current
 
-|protocol|video codecs|audio codecs|
-|--------|------------|------------|
-|`WHIP`|`VP8`,`VP9`,`H264`|`Opus`,`G722`|
-|`WHEP`|`VP8`,`VP9`,`H264`|`Opus`,`G722`|
+| protocol | video codecs | audio codecs |
+| -------- | ------------ | ------------ |
+| `WHIP` | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
+| `WHEP` | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
+
+## Supports `WHIP`/`WHEP` applications
+
+![live777-apps](./docs/live777-apps.excalidraw.svg#gh-light-mode-only)
+![live777-apps](./docs/live777-apps.dark.svg#gh-dark-mode-only)
 
 ### Live777 Server
 
@@ -82,7 +93,7 @@ We have tools for support rtp -> whip/whep convert
 For Example:
 
 ```bash
-ffmpeg -> rtp2whip -> live777 -> whep2rtp -> ffplay
+ffmpeg -> whipinto -> live777 -> whepfrom -> ffplay
 ```
 
 ### whipinto
@@ -112,7 +123,15 @@ cargo run --package=whipinto -- -c vp8 -u http://localhost:3000/whip/777 --comma
 "ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -cpu-used 5 -deadline 1 -g 10 -error-resilient 1 -auto-alt-ref 1 -f rtp 'rtp://127.0.0.1:{port}?pkt_size=1200'"
 ```
 
+VLC RTP stream, **NOTE: VLC can't support all video codec**
+
+```bash
+vlc -vvv <INPUT_FILE> --sout '#transcode{vcodec=h264}:rtp{dst=127.0.0.1,port=5003}'
+```
+
 ### whepfrom
+
+This tool is `whep2rtp`
 
 Build:
 
@@ -147,6 +166,12 @@ So. You can use this:
 
 ```bash
 cargo run --package=whepfrom -- -c vp8 -u http://localhost:3000/whep/777 -t 127.0.0.1:5004 --command 'ffplay -protocol_whitelist rtp,file,udp -i stream.sdp'
+```
+
+Use VLC player
+
+```bash
+vlc stream.sdp
 ```
 
 ## Sponsors
