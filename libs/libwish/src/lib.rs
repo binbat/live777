@@ -113,13 +113,11 @@ impl Client {
 }
 
 async fn get_response_error(response: Response) -> String {
-    match response.status() {
-        StatusCode::UNAUTHORIZED => "identity authentication failed".to_owned(),
-        StatusCode::INTERNAL_SERVER_ERROR => {
-            response.text().await.unwrap_or("server error".to_owned())
-        }
-        _ => format!("{}", response.status()),
-    }
+    format!(
+        "[HTTP] {}\n==> Body BEGIN\n{}\n==> Body END",
+        response.status(),
+        response.text().await.unwrap(),
+    )
 }
 
 async fn request<T: Into<Body>>(
