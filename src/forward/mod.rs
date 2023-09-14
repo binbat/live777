@@ -47,11 +47,7 @@ impl PeerForward {
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            let internal = internal.upgrade();
-            let pc = pc.upgrade();
-            if internal.is_some() && pc.is_some() {
-                let internal = internal.unwrap();
-                let pc: Arc<RTCPeerConnection> = pc.unwrap();
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
                     info!(
                         "[{}] [anchor] [{}] connection state changed: {}",
@@ -70,21 +66,16 @@ impl PeerForward {
                     };
                 });
             }
-
             Box::pin(async {})
         }));
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
         peer.on_track(Box::new(move |track, _, _| {
-            let internal = internal.upgrade();
-            let peer = pc.upgrade();
-            if internal.is_some() && peer.is_some() {
-                let internal = internal.unwrap();
-                let peer = peer.unwrap();
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
-                    let _ = internal.anchor_track_up(peer, track).await;
+                    let _ = internal.anchor_track_up(pc, track).await;
                 });
-            };
+            }
             Box::pin(async {})
         }));
         let description = peer_complete(offer, peer.clone()).await?;
@@ -103,17 +94,11 @@ impl PeerForward {
             .internal
             .new_subscription_peer(get_media_descriptions(offer.unmarshal()?, false)?)
             .await?;
-        let internal = self.internal.clone();
-        let pc = peer.clone();
+        let internal = Arc::downgrade(&self.internal);
+        let pc = Arc::downgrade(&peer);
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            let internal = Arc::downgrade(&internal);
-            let pc = Arc::downgrade(&pc);
-            tokio::spawn(async move {
-                let internal = internal.upgrade();
-                let pc = pc.upgrade();
-                if internal.is_some() && pc.is_some() {
-                    let internal = internal.unwrap();
-                    let pc = pc.unwrap();
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
+                tokio::spawn(async move {
                     info!(
                         "[{}] [subscribe] [{}] connection state changed: {}",
                         internal.id,
@@ -129,8 +114,8 @@ impl PeerForward {
                         }
                         _ => {}
                     }
-                }
-            });
+                });
+            }
             Box::pin(async {})
         }));
         let _ = self.internal.add_subscribe(peer.clone()).await;
