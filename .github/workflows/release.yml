@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - "feat-ci"
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: ${{ matrix.job.target }} (${{ matrix.job.os }})
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: aarch64-apple-darwin        , os: macos-13                      }
+          - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
+          - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
+          - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
+          - { target: i686-pc-windows-msvc        , os: windows-2022                  }
+          - { target: i686-unknown-linux-gnu      , os: ubuntu-22.04, use-cross: true }
+          - { target: i686-unknown-linux-musl     , os: ubuntu-22.04, use-cross: true }
+          - { target: x86_64-apple-darwin         , os: macos-13                      }
+          - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
+          - { target: x86_64-pc-windows-msvc      , os: windows-2022                  }
+          - { target: x86_64-unknown-linux-gnu    , os: ubuntu-22.04, use-cross: true }
+          - { target: x86_64-unknown-linux-musl   , os: ubuntu-22.04, use-cross: true }
+    env:
+      BUILD_CMD: cargo
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v3
+
+    - name: Install prerequisites
+      shell: bash
+      run: |
+        case ${{ matrix.job.target }} in
+          arm-unknown-linux-*) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
+          aarch64-unknown-linux-gnu) sudo apt-get -y update ; sudo apt-get -y install gcc-aarch64-linux-gnu ;;
+        esac
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.job.target }}
+
+    - name: Install cross
+      if: matrix.job.use-cross
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cross
+
+    - name: Overwrite build command env variable
+      if: matrix.job.use-cross
+      shell: bash
+      run: echo "BUILD_CMD=cross" >> $GITHUB_ENV
+
+    - name: Show version information (Rust, cargo, GCC)
+      shell: bash
+      run: |
+        gcc --version || true
+        rustup -V
+        rustup toolchain list
+        rustup default
+        cargo -V
+        rustc -V
+
+    - name: Build
+      shell: bash
+      run: |
+          $BUILD_CMD build --locked --release --target=${{ matrix.job.target }}
+          $BUILD_CMD build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
+          $BUILD_CMD build --locked --package=whipinto --release --target=${{ matrix.job.target }}
+
+    - name: Artifact Upload
+      uses: actions/upload-artifact@v3
+      with:
+        name: live777-${{ matrix.job.target }}
+        path: target/${{ matrix.job.target }}/release/live777
+
+    - name: Artifact Upload Whepfrom
+      uses: actions/upload-artifact@v3
+      with:
+        name: live777-${{ matrix.job.target }}
+        path: target/${{ matrix.job.target }}/release/whepfrom
+
+    - name: Artifact Upload Whipinto
+      uses: actions/upload-artifact@v3
+      with:
+        name: live777-${{ matrix.job.target }}
+        path: target/${{ matrix.job.target }}/release/whipinto
+
