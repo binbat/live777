@@ -3,9 +3,9 @@ name: Release
 on:
   push:
     branches:
-      - "feat-ci"
+    - "feat-ci"
     tags:
-      - 'v*'
+    - 'v*'
 
 jobs:
   build:
@@ -15,20 +15,21 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          - { target: aarch64-apple-darwin        , os: macos-13                      }
-          - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
-          - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
-          - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
-          - { target: i686-pc-windows-msvc        , os: windows-2022                  }
-          - { target: i686-unknown-linux-gnu      , os: ubuntu-22.04, use-cross: true }
-          - { target: i686-unknown-linux-musl     , os: ubuntu-22.04, use-cross: true }
-          - { target: x86_64-apple-darwin         , os: macos-13                      }
-          - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
-          - { target: x86_64-pc-windows-msvc      , os: windows-2022                  }
-          - { target: x86_64-unknown-linux-gnu    , os: ubuntu-22.04, use-cross: true }
-          - { target: x86_64-unknown-linux-musl   , os: ubuntu-22.04, use-cross: true }
+        - { target: aarch64-apple-darwin        , os: macos-13                      }
+        - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
+        - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
+        - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
+        - { target: i686-pc-windows-msvc        , os: windows-2022                  }
+        - { target: i686-unknown-linux-gnu      , os: ubuntu-22.04, use-cross: true }
+        - { target: i686-unknown-linux-musl     , os: ubuntu-22.04, use-cross: true }
+        - { target: x86_64-apple-darwin         , os: macos-13                      }
+        - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
+        - { target: x86_64-pc-windows-msvc      , os: windows-2022                  }
+        - { target: x86_64-unknown-linux-gnu    , os: ubuntu-22.04, use-cross: true }
+        - { target: x86_64-unknown-linux-musl   , os: ubuntu-22.04, use-cross: true }
     env:
       BUILD_CMD: cargo
+      EXE_SUFFIX: ""
     steps:
     - name: Checkout source code
       uses: actions/checkout@v3
@@ -57,6 +58,11 @@ jobs:
       shell: bash
       run: echo "BUILD_CMD=cross" >> $GITHUB_ENV
 
+    - name: Overwrite suffix env variable
+      if: runner.os == 'Windows'
+      shell: bash
+      run: echo "EXE_SUFFIX=.exe" >> $GITHUB_ENV
+
     - name: Show version information (Rust, cargo, GCC)
       shell: bash
       run: |
@@ -78,17 +84,17 @@ jobs:
       uses: actions/upload-artifact@v3
       with:
         name: live777-${{ matrix.job.target }}
-        path: target/${{ matrix.job.target }}/release/live777
+        path: target/${{ matrix.job.target }}/release/live777${{ env.EXE_SUFFIX }}
 
     - name: Artifact Upload Whepfrom
       uses: actions/upload-artifact@v3
       with:
-        name: live777-${{ matrix.job.target }}
-        path: target/${{ matrix.job.target }}/release/whepfrom
+        name: whepfrom-${{ matrix.job.target }}
+        path: target/${{ matrix.job.target }}/release/whepfrom${{ env.EXE_SUFFIX }}
 
     - name: Artifact Upload Whipinto
       uses: actions/upload-artifact@v3
       with:
-        name: live777-${{ matrix.job.target }}
-        path: target/${{ matrix.job.target }}/release/whipinto
+        name: whipinto-${{ matrix.job.target }}
+        path: target/${{ matrix.job.target }}/release/whipinto${{ env.EXE_SUFFIX }}
 
