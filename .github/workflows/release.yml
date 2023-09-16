@@ -16,6 +16,7 @@ jobs:
       matrix:
         job:
         - { target: aarch64-apple-darwin        , os: macos-13                      }
+        - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: true }
         - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
@@ -29,10 +30,17 @@ jobs:
         - { target: x86_64-unknown-linux-musl   , os: ubuntu-22.04, use-cross: true }
     env:
       BUILD_CMD: cargo
+      BUILD_NDK: ""
       EXE_SUFFIX: ""
     steps:
     - name: Checkout source code
       uses: actions/checkout@v3
+
+    - name: Install cargo-ndk
+      if: contains(matrix.job.target, 'android')
+      run: |
+        cargo install cargo-ndk
+        echo "BUILD_NDK=ndk -t arm64-v8a" >> $GITHUB_ENV
 
     - name: Install prerequisites
       shell: bash
@@ -76,9 +84,9 @@ jobs:
     - name: Build
       shell: bash
       run: |
-          $BUILD_CMD build --locked --release --target=${{ matrix.job.target }}
-          $BUILD_CMD build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
-          $BUILD_CMD build --locked --package=whipinto --release --target=${{ matrix.job.target }}
+        $BUILD_CMD $BUILD_NDK build --locked --release --target=${{ matrix.job.target }}
+        $BUILD_CMD $BUILD_NDK build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
+        $BUILD_CMD $BUILD_NDK build --locked --package=whipinto --release --target=${{ matrix.job.target }}
 
     - name: Artifact Upload
       uses: actions/upload-artifact@v3
