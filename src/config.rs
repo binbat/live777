@@ -1,7 +1,10 @@
-use std::{env, fs};
-
 use serde::{Deserialize, Serialize};
-use webrtc::ice_transport::ice_server::RTCIceServer;
+use std::{env, fs};
+use webrtc::{
+    ice,
+    ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
+    Error,
+};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -52,6 +55,54 @@ pub struct IceServer {
     pub credential_type: String,
 }
 
+// from https://github.com/webrtc-rs/webrtc/blob/71157ba2153a891a8cfd819f3cf1441a7a0808d8/webrtc/src/ice_transport/ice_server.rs
+impl IceServer {
+    pub(crate) fn parse_url(&self, url_str: &str) -> webrtc::error::Result<ice::url::Url> {
+        Ok(ice::url::Url::parse_url(url_str)?)
+    }
+
+    pub(crate) fn validate(&self) -> webrtc::error::Result<()> {
+        self.urls()?;
+        Ok(())
+    }
+
+    pub(crate) fn urls(&self) -> webrtc::error::Result<Vec<ice::url::Url>> {
+        let mut urls = vec![];
+
+        for url_str in &self.urls {
+            let mut url = self.parse_url(url_str)?;
+            if url.scheme == ice::url::SchemeType::Turn || url.scheme == ice::url::SchemeType::Turns
+            {
+                // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.2)
+                if self.username.is_empty() || self.credential.is_empty() {
+                    return Err(Error::ErrNoTurnCredentials);
+                }
+                url.username = self.username.clone();
+
+                match self.credential_type.as_str().into() {
+                    RTCIceCredentialType::Password => {
+                        // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.3)
+                        url.password = self.credential.clone();
+                    }
+                    RTCIceCredentialType::Oauth => {
+                        // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.4)
+                        /*if _, ok: = s.Credential.(OAuthCredential); !ok {
+                                return nil,
+                                &rtcerr.InvalidAccessError{Err: ErrTurnCredentials
+                            }
+                        }*/
+                    }
+                    _ => return Err(Error::ErrTurnCredentials),
+                };
+            }
+
+            urls.push(url);
+        }
+
+        Ok(urls)
+    }
+}
+
 impl Into<RTCIceServer> for IceServer {
     fn into(self) -> RTCIceServer {
         RTCIceServer {
@@ -70,7 +121,11 @@ impl Config {
             result = fs::read_to_string("/etc/live777/config.toml");
         }
         if let Ok(cfg) = result {
-            toml::from_str(cfg.as_str()).expect("config parse error")
+            let cfg: Self = toml::from_str(cfg.as_str()).expect("config parse error");
+            match cfg.validate() {
+                Ok(_) => cfg,
+                Err(err) => panic!("config validate [{}]", err),
+            }
         } else {
             Config {
                 ice_servers: default_ice_servers(),
@@ -78,5 +133,14 @@ impl Config {
                 auth: Default::default(),
             }
         }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        for ice_server in self.ice_servers.iter() {
+            ice_server
+                .validate()
+                .map_err(|e| anyhow::anyhow!(format!("ice_server error : {}", e)))?;
+        }
+        Ok(())
     }
 }
