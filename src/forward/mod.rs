@@ -36,7 +36,7 @@ impl PeerForward {
         if self.internal.anchor_is_some().await {
             return Err(anyhow::anyhow!("anchor is set"));
         }
-        let _ = self.anchor_lock.lock();
+        let _ = self.anchor_lock.lock().await;
         if self.internal.anchor_is_some().await {
             return Err(anyhow::anyhow!("anchor is set"));
         }

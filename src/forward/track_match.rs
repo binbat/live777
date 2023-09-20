@@ -10,7 +10,7 @@ use crate::media;
 
 pub fn track_match(
     md: &MediaDescription,
-    tracks: &Vec<Arc<TrackRemote>>,
+    tracks: &[Arc<TrackRemote>],
 ) -> Option<Arc<TrackRemote>> {
     if let Ok(codecs) = media::codecs_capability_from_media_description(md) {
         let mut tracks = track_match_codec(&codecs, tracks);
@@ -24,8 +24,8 @@ pub fn track_match(
 }
 
 fn track_match_codec(
-    codecs: &Vec<RTCRtpCodecCapability>,
-    tracks: &Vec<Arc<TrackRemote>>,
+    codecs: &[RTCRtpCodecCapability],
+    tracks: &[Arc<TrackRemote>],
 ) -> Vec<Arc<TrackRemote>> {
     tracks
         .iter()
