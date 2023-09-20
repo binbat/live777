@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use cli::{create_child, get_codec_type, Codec};
 
@@ -20,11 +20,17 @@ use webrtc::{
         RTCPeerConnection,
     },
     rtp_transceiver::{
-        rtp_codec::RTCRtpCodecParameters, rtp_transceiver_direction::RTCRtpTransceiverDirection,
+        rtp_codec::{
+            RTCRtpCodecCapability,
+            RTCRtpCodecParameters,
+        }, rtp_transceiver_direction::RTCRtpTransceiverDirection,
         RTCRtpTransceiverInit,
     },
     util::MarshalSize,
 };
+
+const PREFIX_LIB: &str = "WEBRTC";
+
 #[derive(Parser)]
 #[command(author, version, about,long_about = None)]
 struct Args {
@@ -60,7 +66,6 @@ async fn main() -> Result<()> {
         args.url,
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
     );
-    let ide_servers = client.get_ide_servers().await?;
     let child = Arc::new(create_child(args.command)?);
     defer!({
         if let Some(child) = child.as_ref() {
@@ -71,9 +76,57 @@ async fn main() -> Result<()> {
     });
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
+
+    let (peer, etag) = webrtc_start(client.clone(), args.codec.into(), send, payload_type, complete_tx.clone())
+        .await
+        .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
+
+    tokio::spawn(async move {
+        while let Some(data) = recv.recv().await {
+            let _ = udp_socket.send(&data).await;
+        }
+    });
+    let wait_child = child.clone();
+    tokio::spawn(async move {
+        match wait_child.as_ref() {
+            Some(child) => {
+                loop {
+                    if let Ok(mut child) = child.lock() {
+                        if let Ok(wait) = child.try_wait() {
+                            if wait.is_some() {
+                                let _ = complete_tx.send(());
+                                return;
+                            }
+                        }
+                    }
+                    let timeout = tokio::time::sleep(Duration::from_secs(1));
+                    tokio::pin!(timeout);
+                    let _ = timeout.as_mut().await;
+                }
+            },
+            None => println!("No child process"),
+        }
+    });
+    tokio::select! {
+        _= complete_rx.recv() => { }
+        _= signal::ctrl_c() => {}
+    }
+    let _ = client.remove_resource(etag).await;
+    let _ = peer.close().await;
+    Ok(())
+}
+
+async fn webrtc_start(
+    client: Client,
+    codec: RTCRtpCodecCapability,
+    send: UnboundedSender<Vec<u8>>,
+    payload_type: u8,
+    complete_tx: UnboundedSender<()>,
+) -> Result<(Arc<RTCPeerConnection>, String)> {
+    let ide_servers = client.get_ide_servers().await?;
     let peer = new_peer(
         RTCRtpCodecParameters {
-            capability: args.codec.into(),
+            capability: codec,
             payload_type,
             stats_id: Default::default(),
         },
@@ -86,36 +139,7 @@ async fn main() -> Result<()> {
     let _ = peer.set_local_description(offser.clone()).await?;
     let (answer, etag) = client.get_answer(offser.sdp).await?;
     peer.set_remote_description(answer).await?;
-    tokio::spawn(async move {
-        while let Some(data) = recv.recv().await {
-            let _ = udp_socket.send(&data).await;
-        }
-    });
-    let wait_child = child.clone();
-    tokio::spawn(async move {
-        if let Some(child) = wait_child.as_ref() {
-            loop {
-                if let Ok(mut child) = child.lock() {
-                    if let Ok(wait) = child.try_wait() {
-                        if wait.is_some() {
-                            let _ = complete_tx.send(());
-                            return;
-                        }
-                    }
-                }
-                let timeout = tokio::time::sleep(Duration::from_secs(1));
-                tokio::pin!(timeout);
-                let _ = timeout.as_mut().await;
-            }
-        }
-    });
-    tokio::select! {
-        _= complete_rx.recv() => { }
-        _= signal::ctrl_c() => {}
-    }
-    let _ = client.remove_resource(etag).await;
-    let _ = peer.close().await;
-    Ok(())
+    Ok((peer, etag))
 }
 
 async fn new_peer(
@@ -137,7 +161,8 @@ async fn new_peer(
         ice_servers,
         ..Default::default()
     };
-    let peer = Arc::new(api.new_peer_connection(config).await?);
+    let peer = Arc::new(api.new_peer_connection(config).await
+        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?);
     let _ = peer
         .add_transceiver_from_kind(
             ct,
@@ -146,7 +171,8 @@ async fn new_peer(
                 send_encodings: vec![],
             }),
         )
-        .await?;
+        .await
+        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
     let pc = peer.clone();
     peer.on_peer_connection_state_change(Box::new(move |s| {
         let pc = pc.clone();
