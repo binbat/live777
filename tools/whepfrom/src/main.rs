@@ -59,7 +59,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let payload_type = args.payload_type;
-    assert!(payload_type >= 96 && payload_type <= 127);
+    assert!((96..=127).contains(&payload_type));
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     udp_socket.connect(&args.target).await?;
     let client = Client::new(
@@ -136,7 +136,7 @@ async fn webrtc_start(
     )
     .await?;
     let offser = peer.create_offer(None).await?;
-    let _ = peer.set_local_description(offser.clone()).await?;
+    peer.set_local_description(offser.clone()).await?;
     let (answer, etag) = client.get_answer(offser.sdp).await?;
     peer.set_remote_description(answer).await?;
     Ok((peer, etag))

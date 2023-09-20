@@ -125,7 +125,7 @@ async fn webrtc_start(
     let ide_servers = client.get_ide_servers().await?;
     let (peer, sender) = new_peer(codec, ide_servers, complete_tx.clone()).await?;
     let offser = peer.create_offer(None).await?;
-    let _ = peer.set_local_description(offser.clone()).await?;
+    peer.set_local_description(offser.clone()).await?;
     let (answer, etag) = client.get_answer(offser.sdp).await?;
     peer.set_remote_description(answer).await?;
     Ok((peer, sender, etag))

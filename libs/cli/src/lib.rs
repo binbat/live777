@@ -25,8 +25,8 @@ pub enum Codec {
     PCMA,
 }
 
-impl Into<RTCRtpCodecCapability> for Codec {
-    fn into(self) -> RTCRtpCodecCapability {
+impl From<Codec> for RTCRtpCodecCapability {
+    fn from(val: Codec) -> Self {
         let video_rtcp_feedback = vec![
             RTCPFeedback {
                 typ: "goog-remb".to_owned(),
@@ -45,7 +45,7 @@ impl Into<RTCRtpCodecCapability> for Codec {
                 parameter: "pli".to_owned(),
             },
         ];
-        match self {
+        match val {
             Codec::Vp8 => RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_VP8.to_owned(),
                 clock_rate: 90000,
