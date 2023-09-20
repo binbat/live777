@@ -222,13 +222,13 @@ fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
         .flat_map(|server| {
             let mut username = server.username;
             let mut credential = server.credential;
-            if username != "" {
+            if !username.is_empty() {
                 username = string_encoder(&username);
                 credential = string_encoder(&credential);
             }
             server.urls.into_iter().map(move |url| {
-                let mut link = format!("<{}>; rel=\"ice-server\"", url.replacen(":", "://", 1));
-                if username != "" {
+                let mut link = format!("<{}>; rel=\"ice-server\"", url.replacen(':', "://", 1));
+                if !username.is_empty() {
                     link = format!(
                         "{}; username=\"{}\"; credential=\"{}\"; credential-type=\"{}\"",
                         link, username, credential, server.credential_type

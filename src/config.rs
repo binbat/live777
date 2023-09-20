@@ -103,13 +103,13 @@ impl IceServer {
     }
 }
 
-impl Into<RTCIceServer> for IceServer {
-    fn into(self) -> RTCIceServer {
+impl From<IceServer> for RTCIceServer {
+    fn from(val: IceServer) -> Self {
         RTCIceServer {
-            urls: self.urls,
-            username: self.username,
-            credential: self.credential,
-            credential_type: self.credential_type.as_str().into(),
+            urls: val.urls,
+            username: val.username,
+            credential: val.credential,
+            credential_type: val.credential_type.as_str().into(),
         }
     }
 }

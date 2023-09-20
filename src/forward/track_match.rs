@@ -14,7 +14,7 @@ pub fn track_match(
 ) -> Option<Arc<TrackRemote>> {
     if let Ok(codecs) = media::codecs_capability_from_media_description(md) {
         let mut tracks = track_match_codec(&codecs, tracks);
-        if tracks.len() != 0 {
+        if !tracks.is_empty() {
             // TODO The current strategy is just to randomly select a
             let mut rng = rand::thread_rng();
             return Some(tracks.remove(rng.gen_range(0..tracks.len())));
@@ -39,7 +39,6 @@ fn track_match_codec(
                 }
             }
             false
-        })
-        .map(|t| t.clone())
+        }).cloned()
         .collect()
 }

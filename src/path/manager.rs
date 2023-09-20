@@ -52,7 +52,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_subscribe(offer).await
         } else {
-            Err(anyhow::anyhow!("resource not exists").into())
+            Err(anyhow::anyhow!("resource not exists"))
         }
     }
 
@@ -68,7 +68,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_ice_candidate(key, ice_candidates).await
         } else {
-            Err(anyhow::anyhow!("resource not exists").into())
+            Err(anyhow::anyhow!("resource not exists"))
         }
     }
 

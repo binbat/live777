@@ -142,10 +142,10 @@ async fn peer_complete(
     offer: RTCSessionDescription,
     peer: Arc<RTCPeerConnection>,
 ) -> Result<RTCSessionDescription> {
-    let _ = peer.set_remote_description(offer).await?;
+    peer.set_remote_description(offer).await?;
     let answer = peer.create_answer(None).await?;
     let mut gather_complete = peer.gathering_complete_promise().await;
-    let _ = peer.set_local_description(answer).await?;
+    peer.set_local_description(answer).await?;
     let _ = gather_complete.recv().await;
     let description = peer
         .local_description()

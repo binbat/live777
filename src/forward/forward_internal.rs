@@ -336,7 +336,7 @@ impl PeerForwardInternal {
         let anchor = self.anchor.read().await;
         if let Some(anchor) = anchor.as_ref() {
             if get_peer_key(anchor.clone()) == key {
-                let _ = anchor.close().await?;
+                anchor.close().await?;
                 return Ok(true);
             }
         }
@@ -344,7 +344,7 @@ impl PeerForwardInternal {
         let peers = self.subscribe_group.read().await;
         for peer in peers.iter() {
             if peer.get_key() == key {
-                let _ = peer.0.close().await?;
+                peer.0.close().await?;
                 break;
             }
         }

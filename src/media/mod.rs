@@ -34,7 +34,7 @@ pub fn codecs_from_media_description(
                 if payload_type == 0 {
                     continue;
                 }
-                return Err(err.into());
+                return Err(err);
             }
         };
 
