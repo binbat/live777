@@ -95,12 +95,14 @@ impl Hash for TrackRemoteWrap {
     }
 }
 
+type ForwardHandle = Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>;
+
 pub(crate) struct PeerForwardInternal {
     pub(crate) id: String,
     anchor: RwLock<Option<Arc<RTCPeerConnection>>>,
     subscribe_group: RwLock<Vec<PeerWrap>>,
     anchor_track_forward_map:
-        RwLock<HashMap<TrackRemoteWrap, Arc<RwLock<HashMap<PeerWrap, SenderForwardData>>>>>,
+        RwLock<HashMap<TrackRemoteWrap, ForwardHandle>>,
     ice_server: Vec<RTCIceServer>,
 }
 

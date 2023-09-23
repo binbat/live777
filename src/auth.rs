@@ -2,13 +2,13 @@ use std::{collections::HashSet, marker::PhantomData};
 
 use crate::config::Auth;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use http::{header, HeaderValue, Request, Response, StatusCode};
+use http::{header, Request, Response, StatusCode};
 use http_body::Body;
 use tower_http::validate_request::ValidateRequest;
 
 #[derive(Debug)]
 pub struct ManyValidate<ResBody> {
-    header_values: HashSet<HeaderValue>,
+    header_values: HashSet<String>,
     _ty: PhantomData<fn() -> ResBody>,
 }
 
@@ -52,7 +52,7 @@ where
             return Ok(());
         }
         match request.headers().get(header::AUTHORIZATION) {
-            Some(actual) if self.header_values.contains(actual) => Ok(()),
+            Some(actual) if self.header_values.contains(actual.to_str().unwrap()) => Ok(()),
             _ => {
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
