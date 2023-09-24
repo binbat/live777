@@ -1,10 +1,12 @@
 name: Release
 
 on:
+  push:
+    branches:
+    - test
   release:
     types:
     - 'published'
-
 
 jobs:
   build:
@@ -96,6 +98,7 @@ jobs:
         $BUILD_CMD $BUILD_NDK build --locked --package=whipinto --release --target=${{ matrix.job.target }}
 
     - name: Archive
+      shell: bash
       run: |
         PKG_BUILDNAME=${{ env.VERSION }}-${{ matrix.job.target }}${{ env.EXE_SUFFIX }}
         echo "BUILD_PATH=target/${{ matrix.job.target }}/release" >> $GITHUB_ENV
@@ -122,12 +125,14 @@ jobs:
         path: ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }}
 
     - name: Rename binary
+      shell: bash
       run: |
         mv ${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }} ${{ env.PKG_LIVE777_NAME }}
         mv ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }} ${{ env.PKG_WHEPFROM_NAME }}
         mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
 
     - name: Upload release archive
+      if: github.ref_type == 'tag'
       run: gh release upload ${{ env.VERSION }} ${{ env.PKG_LIVE777_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
       env:
         GH_TOKEN: ${{ github.token }}
