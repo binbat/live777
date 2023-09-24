@@ -1,11 +1,10 @@
 name: Release
 
 on:
-  push:
-    branches:
-    - "feat-ci"
-    tags:
-    - 'v*'
+  release:
+    types:
+    - 'published'
+
 
 jobs:
   build:
@@ -29,12 +28,20 @@ jobs:
         - { target: x86_64-unknown-linux-gnu    , os: ubuntu-22.04, use-cross: true }
         - { target: x86_64-unknown-linux-musl   , os: ubuntu-22.04, use-cross: true }
     env:
+      VERSION: $GITHUB_REF_NAME
       BUILD_CMD: cargo
       BUILD_NDK: ""
       EXE_SUFFIX: ""
+      PKG_LIVE777_NAME: ""
+      PKG_WHEPFROM_NAME: ""
+      PKG_WHIPINTO_NAME: ""
     steps:
     - name: Checkout source code
       uses: actions/checkout@v3
+
+    - name: Get the release version from the tag
+      run: |
+        echo "version is: ${{ env.VERSION }}"
 
     - name: Install cargo-ndk
       if: contains(matrix.job.target, 'android')
@@ -88,21 +95,40 @@ jobs:
         $BUILD_CMD $BUILD_NDK build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
         $BUILD_CMD $BUILD_NDK build --locked --package=whipinto --release --target=${{ matrix.job.target }}
 
+    - name: Archive
+      run: |
+        PKG_BUILDNAME=${{ env.VERSION }}-${{ matrix.job.target }}${{ env.EXE_SUFFIX }}
+        echo "BUILD_PATH=target/${{ matrix.job.target }}/release" >> $GITHUB_ENV
+        echo "PKG_LIVE777_NAME=live777-${PKG_BUILDNAME}" >> $GITHUB_ENV
+        echo "PKG_WHEPFROM_NAME=whepfrom-${PKG_BUILDNAME}" >> $GITHUB_ENV
+        echo "PKG_WHIPINTO_NAME=whipinto-${PKG_BUILDNAME}" >> $GITHUB_ENV
+
     - name: Artifact Upload
       uses: actions/upload-artifact@v3
       with:
-        name: live777-${{ matrix.job.target }}
-        path: target/${{ matrix.job.target }}/release/live777${{ env.EXE_SUFFIX }}
+        name: ${{ env.PKG_LIVE777_NAME }}
+        path: ${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}
 
     - name: Artifact Upload Whepfrom
       uses: actions/upload-artifact@v3
       with:
-        name: whepfrom-${{ matrix.job.target }}
-        path: target/${{ matrix.job.target }}/release/whepfrom${{ env.EXE_SUFFIX }}
+        name: ${{ env.PKG_WHEPFROM_NAME }}
+        path: ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }}
 
     - name: Artifact Upload Whipinto
       uses: actions/upload-artifact@v3
       with:
-        name: whipinto-${{ matrix.job.target }}
-        path: target/${{ matrix.job.target }}/release/whipinto${{ env.EXE_SUFFIX }}
+        name: ${{ env.PKG_WHIPINTO_NAME }}
+        path: ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }}
+
+    - name: Rename binary
+      run: |
+        mv ${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }} ${{ env.PKG_LIVE777_NAME }}
+        mv ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }} ${{ env.PKG_WHEPFROM_NAME }}
+        mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
+
+    - name: Upload release archive
+      run: gh release upload ${{ env.VERSION }} ${{ env.PKG_LIVE777_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
+      env:
+        GH_TOKEN: ${{ github.token }}
 
