@@ -25,9 +25,9 @@ Logs<br />
         pc.addTransceiver(stream.getVideoTracks()[0], {
             direction: 'sendonly',
             sendEncodings: [
-                { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
-                { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
-                { rid: 'f', scalabilityMode: 'L1T3' }
+                { rid: 'a', scaleResolutionDownBy: 2.0 },
+                { rid: 'b', scaleResolutionDownBy: 1.0, },
+                { rid: 'c' }
             ]
         });
         const whip = new WHIPClient();

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use rand::Rng;
 use webrtc::{
     rtp_transceiver::rtp_codec::RTCRtpCodecCapability, sdp::MediaDescription,
     track::track_remote::TrackRemote,
@@ -8,22 +7,21 @@ use webrtc::{
 
 use crate::media;
 
-pub fn track_match(
-    md: &MediaDescription,
-    tracks: &[Arc<TrackRemote>],
-) -> Option<Arc<TrackRemote>> {
-    if let Ok(codecs) = media::codecs_capability_from_media_description(md) {
-        let mut tracks = track_match_codec(&codecs, tracks);
-        if !tracks.is_empty() {
-            // TODO The current strategy is just to randomly select a
-            let mut rng = rand::thread_rng();
-            return Some(tracks.remove(rng.gen_range(0..tracks.len())));
-        }
-    }
-    None
+pub fn track_sort(tracks: &mut [Arc<TrackRemote>]) {
+    tracks.sort_by(|t1, t2| t1.rid().cmp(t2.rid()))
 }
 
-fn track_match_codec(
+pub fn track_match(md: &MediaDescription, tracks: &[Arc<TrackRemote>]) -> Option<Arc<TrackRemote>> {
+    if let Ok(codecs) = media::codecs_capability_from_media_description(md) {
+        let mut tracks = track_match_codec(&codecs, tracks);
+        track_sort(&mut tracks);
+        tracks.first().cloned()
+    } else {
+        None
+    }
+}
+
+pub fn track_match_codec(
     codecs: &[RTCRtpCodecCapability],
     tracks: &[Arc<TrackRemote>],
 ) -> Vec<Arc<TrackRemote>> {
@@ -39,6 +37,7 @@ fn track_match_codec(
                 }
             }
             false
-        }).cloned()
+        })
+        .cloned()
         .collect()
 }
