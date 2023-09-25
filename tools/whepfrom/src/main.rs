@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use cli::{create_child, get_codec_type, Codec};
 
@@ -20,10 +20,8 @@ use webrtc::{
         RTCPeerConnection,
     },
     rtp_transceiver::{
-        rtp_codec::{
-            RTCRtpCodecCapability,
-            RTCRtpCodecParameters,
-        }, rtp_transceiver_direction::RTCRtpTransceiverDirection,
+        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters},
+        rtp_transceiver_direction::RTCRtpTransceiverDirection,
         RTCRtpTransceiverInit,
     },
     util::MarshalSize,
@@ -77,9 +75,15 @@ async fn main() -> Result<()> {
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
 
-    let (peer, etag) = webrtc_start(client.clone(), args.codec.into(), send, payload_type, complete_tx.clone())
-        .await
-        .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
+    let (peer, etag) = webrtc_start(
+        client.clone(),
+        args.codec.into(),
+        send,
+        payload_type,
+        complete_tx.clone(),
+    )
+    .await
+    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
 
     tokio::spawn(async move {
         while let Some(data) = recv.recv().await {
@@ -89,20 +93,18 @@ async fn main() -> Result<()> {
     let wait_child = child.clone();
     tokio::spawn(async move {
         match wait_child.as_ref() {
-            Some(child) => {
-                loop {
-                    if let Ok(mut child) = child.lock() {
-                        if let Ok(wait) = child.try_wait() {
-                            if wait.is_some() {
-                                let _ = complete_tx.send(());
-                                return;
-                            }
+            Some(child) => loop {
+                if let Ok(mut child) = child.lock() {
+                    if let Ok(wait) = child.try_wait() {
+                        if wait.is_some() {
+                            let _ = complete_tx.send(());
+                            return;
                         }
                     }
-                    let timeout = tokio::time::sleep(Duration::from_secs(1));
-                    tokio::pin!(timeout);
-                    let _ = timeout.as_mut().await;
                 }
+                let timeout = tokio::time::sleep(Duration::from_secs(1));
+                tokio::pin!(timeout);
+                let _ = timeout.as_mut().await;
             },
             None => println!("No child process"),
         }
@@ -161,8 +163,11 @@ async fn new_peer(
         ice_servers,
         ..Default::default()
     };
-    let peer = Arc::new(api.new_peer_connection(config).await
-        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?);
+    let peer = Arc::new(
+        api.new_peer_connection(config)
+            .await
+            .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
+    );
     let _ = peer
         .add_transceiver_from_kind(
             ct,

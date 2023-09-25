@@ -81,20 +81,18 @@ async fn main() -> Result<()> {
     let wait_child = child.clone();
     tokio::spawn(async move {
         match wait_child.as_ref() {
-            Some(child) => {
-                loop {
-                    if let Ok(mut child) = child.lock() {
-                        if let Ok(wait) = child.try_wait() {
-                            if wait.is_some() {
-                                let _ = complete_tx.send(());
-                                return;
-                            }
+            Some(child) => loop {
+                if let Ok(mut child) = child.lock() {
+                    if let Ok(wait) = child.try_wait() {
+                        if wait.is_some() {
+                            let _ = complete_tx.send(());
+                            return;
                         }
                     }
-                    let timeout = tokio::time::sleep(Duration::from_secs(1));
-                    tokio::pin!(timeout);
-                    let _ = timeout.as_mut().await;
                 }
+                let timeout = tokio::time::sleep(Duration::from_secs(1));
+                tokio::pin!(timeout);
+                let _ = timeout.as_mut().await;
             },
             None => println!("No child process"),
         }
@@ -149,8 +147,11 @@ async fn new_peer(
         ..Default::default()
     };
 
-    let peer = Arc::new(api.new_peer_connection(config).await
-        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?);
+    let peer = Arc::new(
+        api.new_peer_connection(config)
+            .await
+            .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
+    );
     let pc = peer.clone();
     peer.on_peer_connection_state_change(Box::new(move |s| {
         let pc = pc.clone();
@@ -176,7 +177,8 @@ async fn new_peer(
     ));
     let _ = peer
         .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-        .await.map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+        .await
+        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
     tokio::spawn(async move {
         let mut sequence_number: u16 = 0;
