@@ -46,6 +46,43 @@ open http://localhost:3000/
 
 This plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
 
+### Video: AV1
+
+**NOTE: AV1 has a lot of problem**
+
+- [ ] browser whip av1
+- [ ] browser whep av1
+- [x] gstreamer whip av1
+- [ ] gstreamer whep av1
+- [ ] gstreamer rtp av1 src
+- [x] gstreamer rtp av1 sink
+- [ ] ffmpeg rtp av1 src
+- [ ] ffmpeg rtp av1 sink
+
+`WHIP`:
+
+```bash
+docker run --name live777-client-whip --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
+```
+
+`WHEP`:
+
+I don't know why av1 and whep error
+
+But, you can:
+
+```bash
+cargo run --package=whepfrom -- -c av1 -u http://localhost:3000/whep/777 -t 127.0.0.1:5004
+```
+
+```bash
+docker run --name live777-client-whep --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 udpsrc port=5004 caps="application/x-rtp, media=(string)video, encoding-name=(string)AV1" ! rtpjitterbuffer ! rtpav1depay ! av1parse ! av1dec ! videoconvert ! aasink
+```
+
 ### Video: VP8
 
 `WHIP`:
