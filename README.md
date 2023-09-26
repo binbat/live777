@@ -42,17 +42,31 @@ open http://localhost:3000/
 
 ![obs whip](./obs-whip.avif)
 
-## Use GStreamer WHIP/WHEP
+## Use GStreamer `WHIP`/`WHEP`
+
+This plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
 
 ### Video: VP8
 
+`WHIP`:
+
 ```bash
-docker run --name live777-client --rm --network host \
+docker run --name live777-client-whip --rm --network host \
 ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
+`WHEP`:
+
+```bash
+docker run --name live777-client-whep --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=96,encoding-name=VP8,media=video,clock-rate=90000" ! rtpvp8depay ! vp8dec ! videoconvert ! aasink
+```
+
 ### Video: VP9
+
+`WHIP`:
 
 ``` bash
 docker run --name live777-client --rm --network host \
@@ -60,7 +74,17 @@ ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
+`WHEP`:
+
+```bash
+docker run --name live777-client-whep --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=98,encoding-name=VP9,media=video,clock-rate=90000" ! rtpvp9depay ! vp9dec ! videoconvert ! aasink
+```
+
 ### Video: H264
+
+`WHIP`:
 
 ```bash
 docker run --name live777-client --rm --network host \
@@ -68,12 +92,42 @@ ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
+`WHEP`:
+
+```bash
+docker run --name live777-client-whep --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtph264depay ! decodebin ! videoconvert ! aasink
+```
+
+Use `libav`
+
+```bash
+docker run --name live777-client-whep --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtph264depay ! avdec_h264 ! videoconvert ! aasink
+```
+
 ### Audio: Opus
+
+`WHIP`:
 
 ```bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
+```
+
+`WHEP`:
+
+```bash
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtpopusdepay ! opusdec ! audioconvert ! autoaudiosink
+```
+
+Maybe you can't play audio, we can audio to video display for ascii
+
+```bash
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtpopusdepay ! opusdec ! audioconvert ! wavescope ! videoconvert ! aasink
 ```
 
 ### Audio: G722
