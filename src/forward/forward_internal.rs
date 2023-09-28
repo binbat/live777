@@ -205,16 +205,14 @@ impl PeerForwardInternal {
             if let Some(pc) = peer.upgrade() {
                 for (_, report) in pc.get_stats().await.reports {
                     if let StatsReportType::RemoteInboundRTP(remote_inbound) = report {
-                        if RTPCodecType::from(remote_inbound.kind) != RTPCodecType::Video
-                            || remote_inbound.packets_received == 0
-                        {
+                        if RTPCodecType::from(remote_inbound.kind) != RTPCodecType::Video {
                             continue;
                         }
                         let mut packets_received = remote_inbound.packets_received;
                         let mut packets_lost = remote_inbound.packets_lost;
                         if let Some(pre_report) = &pre_report {
                             packets_received -= pre_report.packets_received;
-                            packets_lost -=  pre_report.packets_lost;
+                            packets_lost -= pre_report.packets_lost;
                         }
                         if packets_received < 1000 {
                             continue;
@@ -266,8 +264,7 @@ impl PeerForwardInternal {
                 &track_remotes,
             );
             track_sort(&mut tracks);
-            let tracks: Vec<TrackRemoteWrap> =
-                tracks.into_iter().map(TrackRemoteWrap).collect();
+            let tracks: Vec<TrackRemoteWrap> = tracks.into_iter().map(TrackRemoteWrap).collect();
             let mut original_index = None;
             for (index, item) in tracks.iter().enumerate() {
                 if item == &original_track_remote_wrap {
@@ -429,7 +426,7 @@ impl PeerForwardInternal {
                 ..Default::default()
             })])
             .await;
-        tokio::spawn(async move { while(sender.read_rtcp().await).is_ok() {}});
+        tokio::spawn(async move { while (sender.read_rtcp().await).is_ok() {} });
         let (send, mut recv) = unbounded_channel::<ForwardData>();
         let self_id = self.id.clone();
         let peer_stats_id = peer.get_stats_id().to_string();
