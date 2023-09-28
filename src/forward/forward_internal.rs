@@ -221,15 +221,13 @@ impl PeerForwardInternal {
                         if (0.05..=0.2).contains(&packet_loss_rate) {
                             continue;
                         }
-                        if Self::subscribe_track_reallocate(
+                        Self::subscribe_track_reallocate(
                             pc.clone(),
                             anchor_track_forward_map.clone(),
                             packet_loss_rate < 0.05,
                         )
-                        .await
-                        {
-                            pre_report = Some(remote_inbound);
-                        }
+                        .await;
+                        pre_report = Some(remote_inbound);
                     }
                 }
             } else {
@@ -242,38 +240,38 @@ impl PeerForwardInternal {
         pc: Arc<RTCPeerConnection>,
         anchor_track_forward_map: Arc<RwLock<HashMap<TrackRemoteWrap, ForwardHandle>>>,
         upgrade: bool,
-    ) -> bool {
+    ) {
         let peer_wrap = PeerWrap(pc);
         let anchor_track_forward_map = anchor_track_forward_map.read().await;
-        let track_remotes: Vec<Arc<TrackRemote>> = anchor_track_forward_map
+        let tracks: Vec<TrackRemoteWrap> = anchor_track_forward_map
             .keys()
             .cloned()
-            .map(|t| t.0)
+            .filter(|t| t.0.kind() == RTPCodecType::Video)
             .collect();
-        let mut original_track_remote_wrap = None;
-        for (track_remote_wrap, subscribes) in anchor_track_forward_map.iter() {
-            let subscribes = subscribes.read().await;
-            if subscribes.contains_key(&peer_wrap) {
-                original_track_remote_wrap = Some(track_remote_wrap.clone());
-                break;
+        let mut original_track = None;
+        for track in tracks.iter() {
+            if let Some(subscribes) = anchor_track_forward_map.get(track) {
+                let subscribes = subscribes.read().await;
+                if subscribes.contains_key(&peer_wrap) {
+                    original_track = Some(track.clone());
+                    break;
+                }
             }
         }
-        if let Some(original_track_remote_wrap) = original_track_remote_wrap {
-            let mut tracks = track_match_codec(
-                &[original_track_remote_wrap.0.codec().capability],
-                &track_remotes,
-            );
+        if let Some(original_track) = original_track {
+            let tracks: Vec<Arc<TrackRemote>> = tracks.into_iter().map(|t| t.0).collect();
+            let mut tracks = track_match_codec(&[original_track.0.codec().capability], &tracks);
             track_sort(&mut tracks);
             let tracks: Vec<TrackRemoteWrap> = tracks.into_iter().map(TrackRemoteWrap).collect();
             let mut original_index = None;
             for (index, item) in tracks.iter().enumerate() {
-                if item == &original_track_remote_wrap {
+                if item == &original_track {
                     original_index = Some(index);
                     break;
                 }
             }
             if original_index.is_none() {
-                return false;
+                return;
             }
             let original_index = original_index.unwrap();
             let target_index = if upgrade {
@@ -282,21 +280,17 @@ impl PeerForwardInternal {
                 original_index - 1
             };
             if !(0..tracks.len()).contains(&target_index) {
-                return false;
+                return;
             }
             let target_track = tracks.get(target_index).unwrap();
-            let original_subscribes = anchor_track_forward_map
-                .get(&original_track_remote_wrap)
-                .unwrap();
+            let original_subscribes = anchor_track_forward_map.get(&original_track).unwrap();
             let mut subscribes = original_subscribes.write().await;
             if let Some(sender) = subscribes.remove(&peer_wrap) {
                 let target_subscribes = anchor_track_forward_map.get(target_track).unwrap();
                 let mut target_subscribes = target_subscribes.write().await;
                 target_subscribes.insert(peer_wrap, sender);
-                return true;
             }
         }
-        false
     }
 
     pub async fn remove_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
