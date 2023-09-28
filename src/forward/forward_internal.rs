@@ -199,7 +199,7 @@ impl PeerForwardInternal {
     ) {
         let mut pre_report: Option<RemoteInboundRTPStats> = None;
         loop {
-            let timeout = tokio::time::sleep(Duration::from_secs(1));
+            let timeout = tokio::time::sleep(Duration::from_secs(10));
             tokio::pin!(timeout);
             let _ = timeout.as_mut().await;
             if let Some(pc) = peer.upgrade() {
@@ -214,7 +214,7 @@ impl PeerForwardInternal {
                             packets_received -= pre_report.packets_received;
                             packets_lost -= pre_report.packets_lost;
                         }
-                        if packets_received < 1000 {
+                        if packets_received == 0 {
                             continue;
                         }
                         let packet_loss_rate = packets_lost as f64 / packets_received as f64;
