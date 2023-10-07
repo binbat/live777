@@ -1,63 +1,73 @@
-# Live777
+<h1 align="center">
+  <img src="./docs/logo.svg" alt="Live777" width="200">
+  <br>Live777<br>
+</h1>
 
 [![Rust](https://github.com/binbat/live777/actions/workflows/rust.yml/badge.svg)](https://github.com/binbat/live777/actions/workflows/rust.yml)
 [![GitHub release](https://img.shields.io/github/tag/binbat/live777.svg?label=release)](https://github.com/binbat/live777/releases)
 
-A very simple, high performance, support WHIP/WHEP edge WebRTC SFU (Selective Forwarding Unit)
+Live777 is an SFU server for real-time video streaming for the `WHIP`/`WHEP` as first protocol.
+
+Live777 media server is used with [Gstreamer](https://gstreamer.freedesktop.org/), [FFmpeg](https://ffmpeg.org/), [OBS Studio](https://obsproject.com/), [VLC](https://www.videolan.org/), [WebRTC](https://webrtc.org/) and other clients to provide the ability to receive and distribute streams, and is a typical publishing (pushing) and subscription (playing) server model.
+
+Live777 supports the conversion of audio and video protocols widely used in the Internet, such as RTP to WHIP or WHEP and other protocols. 
 
 ![live777-arch](./docs/live777-arch.excalidraw.svg#gh-light-mode-only)
 ![live777-arch](./docs/live777-arch.dark.svg#gh-dark-mode-only)
 
-## Current
+## Features
 
-| protocol | video codecs | audio codecs |
-| -------- | ------------ | ------------ |
-| `WHIP` | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
-| `WHEP` | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
+Live777 has the following characteristics:
 
-## Supports `WHIP`/`WHEP` applications
+- 📚 **Support `WHIP`/`WHEP`**
 
-![live777-apps](./docs/live777-apps.excalidraw.svg#gh-light-mode-only)
-![live777-apps](./docs/live777-apps.dark.svg#gh-dark-mode-only)
+  The WHIP/WHEP protocol is implemented to improve interoperability with other WebRTC application modules without the need for custom adaptations.
 
-### Live777 Server
+- 🗃️ **SFU architecture**
 
-```bash
-docker run --name live777-server --rm --network host \
-ghcr.io/binbat/live777-server:latest live777
+  Only responsible for forwarding, do not do confluence, transcoding and other resource overhead of the media processing work, the encoding and decoding work are respectively placed on the sender and the receiver.
+
+- 🌐 **Multiple platform support**
+
+  With rich multi-platform native support.
+
+- 🔍 **Multiple audio and video encoding formats support**
+
+  Support a variety of video encoding and audio encoding formats, providing a wider range of compatibility to help enable adaptive streaming.
+
+## Current support encode
+| protocol | video codecs                | audio codecs   |
+| -------- | --------------------------- | -------------- |
+| `WHIP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
+| `WHEP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
+
+## Quickstart
+
+### Run Live777 using docker:
+
+```sh
+docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
-### Browser Demo Page
+### Gstreamer WHIP/WHEP client
 
-```bash
-# open your browser
-open http://localhost:3000/
-```
+- Use docker of [Gstreamer](https://gstreamer.freedesktop.org/download/) to publish:
 
-## Use OBS Studio WHIP
+This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
 
-- OBS Studio >= 30
+> *Note: supports multiple encoding formats* 
 
-**OBS WHIP Current only support `H264` video codecs and `Opus` audio codecs**
+#### Video: AV1
 
-![obs whip](./obs-whip.avif)
-
-## Use GStreamer `WHIP`/`WHEP`
-
-This plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
-
-### Video: AV1
-
-**NOTE: AV1 has a lot of problem**
-
-- [ ] browser whip av1
-- [ ] browser whep av1
-- [x] gstreamer whip av1
-- [ ] gstreamer whep av1
-- [ ] gstreamer rtp av1 src
-- [x] gstreamer rtp av1 sink
-- [ ] ffmpeg rtp av1 src
-- [ ] ffmpeg rtp av1 sink
+**Note: AV1 has a lot of problem** 
+- 🚧 browser whip av1
+- 🚧 browser whep av1
+- ✅ gstreamer whip av1
+- 🚧 gstreamer whep av1
+- ✅ gstreamer rtp av1 src
+- ✅ gstreamer rtp av1 sink
+- 🚧 ffmpeg rtp av1 src
+- 🚧 ffmpeg rtp av1 sink
 
 `WHIP`:
 
@@ -83,46 +93,46 @@ ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 udpsrc port=5004 caps="application/x-rtp, media=(string)video, encoding-name=(string)AV1" ! rtpjitterbuffer ! rtpav1depay ! av1parse ! av1dec ! videoconvert ! aasink
 ```
 
-### Video: VP8
+#### Video: VP8
 
 `WHIP`:
-
+ 
 ```bash
 docker run --name live777-client-whip --rm --network host \
 ghcr.io/binbat/live777-client:latest \
-gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
+gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"  
 ```
-
+ 
 `WHEP`:
-
+ 
 ```bash
 docker run --name live777-client-whep --rm --network host \
 ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=96,encoding-name=VP8,media=video,clock-rate=90000" ! rtpvp8depay ! vp8dec ! videoconvert ! aasink
 ```
 
-### Video: VP9
+#### Video: VP9
 
 `WHIP`:
-
+ 
 ``` bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 videotestsrc ! videoconvert ! vp9enc ! rtpvp9pay ! whipsink whip-endpoint="http://localhost:3000/whip/777"
 ```
 
-`WHEP`:
-
+ `WHEP`:
+ 
 ```bash
 docker run --name live777-client-whep --rm --network host \
 ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=98,encoding-name=VP9,media=video,clock-rate=90000" ! rtpvp9depay ! vp9dec ! videoconvert ! aasink
 ```
 
-### Video: H264
+#### Video: H264
 
 `WHIP`:
-
+ 
 ```bash
 docker run --name live777-client --rm --network host \
 ghcr.io/binbat/live777-client:latest \
@@ -142,10 +152,10 @@ Use `libav`
 ```bash
 docker run --name live777-client-whep --rm --network host \
 ghcr.io/binbat/live777-client:latest \
-gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtph264depay ! avdec_h264 ! videoconvert ! aasink
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264 media=video,clock-rate=90000" ! rtph264depay ! avdec_h264 ! videoconvert ! aasink
 ```
 
-### Audio: Opus
+#### Audio: Opus
 
 `WHIP`:
 
@@ -167,7 +177,7 @@ Maybe you can't play audio, we can audio to video display for ascii
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtpopusdepay ! opusdec ! audioconvert ! wavescope ! videoconvert ! aasink
 ```
 
-### Audio: G722
+#### Audio: G722
 
 **GStreamer G722 need `avenc_g722` in `gstreamer-libav`**
 
@@ -177,9 +187,25 @@ ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink whip-endpoint="http://localhost:3000/whip/777
 ```
 
+### OBS Studio WHIP client
+
+> Note:  
+> 1. OBS Studio version [**30 or higher**](https://obsproject.com/forum/threads/obs-studio-30-beta.168984/)
+> 2. OBS WHIP Current only support **H264** video codecs and **Opus** audio codecs
+
+![obs whip](./obs-whip.avif)
+
+#### Play stream
+
+- open your browser, enter the URL: [`http://localhost:3000/`](http://localhost:3000/)
+
 ## Tools
 
 We have tools for support rtp -> whip/whep convert
+
+![live777-apps](./docs/live777-apps.excalidraw.svg#gh-light-mode-only)
+![live777-apps](./docs/live777-apps.dark.svg#gh-dark-mode-only)
+
 
 For Example:
 
@@ -191,7 +217,7 @@ ffmpeg -> whipinto -> live777 -> whepfrom -> ffplay
 
 This tool is `rtp2whip`
 
-Build:
+Build
 
 ```bash
 cargo build --package=whipinto --release
@@ -214,7 +240,9 @@ cargo run --package=whipinto -- -c vp8 -u http://localhost:3000/whip/777 --comma
 "ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -cpu-used 5 -deadline 1 -g 10 -error-resilient 1 -auto-alt-ref 1 -f rtp 'rtp://127.0.0.1:{port}?pkt_size=1200'"
 ```
 
-VLC RTP stream, **NOTE: VLC can't support all video codec**
+VLC RTP stream
+
+**Note: VLC can't support all video codec**
 
 ```bash
 vlc -vvv <INPUT_FILE> --sout '#transcode{vcodec=h264}:rtp{dst=127.0.0.1,port=5003}'
@@ -224,7 +252,7 @@ vlc -vvv <INPUT_FILE> --sout '#transcode{vcodec=h264}:rtp{dst=127.0.0.1,port=500
 
 This tool is `whep2rtp`
 
-Build:
+Build
 
 ```bash
 cargo build --package=whepfrom --release
@@ -253,7 +281,7 @@ Use ffplay
 ffplay -protocol_whitelist rtp,file,udp -i stream.sdp
 ```
 
-So. You can use this:
+So. You can use this
 
 ```bash
 cargo run --package=whepfrom -- -c vp8 -u http://localhost:3000/whep/777 -t 127.0.0.1:5004 --command 'ffplay -protocol_whitelist rtp,file,udp -i stream.sdp'
@@ -264,7 +292,6 @@ Use VLC player
 ```bash
 vlc stream.sdp
 ```
-
 ## Sponsors
 
 <p align="center">
