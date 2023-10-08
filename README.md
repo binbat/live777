@@ -1,6 +1,7 @@
-# Live777
-
-![Live777-logo](./docs/logo.png)
+<h1 align="center">
+  <img src="./docs/logo.svg" alt="Live777" width="200">
+  <br>Live777<br>
+</h1>
 
 [![Rust](https://github.com/binbat/live777/actions/workflows/rust.yml/badge.svg)](https://github.com/binbat/live777/actions/workflows/rust.yml)
 
