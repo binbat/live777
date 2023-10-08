@@ -268,6 +268,12 @@ vlc stream.sdp
 ## Sponsors
 
 <p align="center">
-  <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg" alt="JetBrains Logo (Main) logo.">
+  <a href="https://www.jetbrains.com/">
+    <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg" height="200" alt="JetBrains Logo (Main) logo.">
+  </a>
+  <br/>
+  <a href="https://www.hostker.net/">
+    <img src="https://kerstatic.cloud-open-api.com/email-img/hostker-logo.png" height="80" alt="Hostker logo.">
+  </a>
 </p>
 
