@@ -28,8 +28,8 @@ mod path;
 #[tokio::main]
 async fn main() {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .filter_module("webrtc", log::LevelFilter::Error)
+        .filter_level(log::LevelFilter::Debug)
+        .filter_module("webrtc", log::LevelFilter::Trace)
         .write_style(env_logger::WriteStyle::Auto)
         .target(env_logger::Target::Stdout)
         .init();
