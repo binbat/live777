@@ -6,7 +6,7 @@
 [![Rust](https://github.com/binbat/live777/actions/workflows/rust.yml/badge.svg)](https://github.com/binbat/live777/actions/workflows/rust.yml)
 [![GitHub release](https://img.shields.io/github/tag/binbat/live777.svg?label=release)](https://github.com/binbat/live777/releases)
 
-Live777 is an SFU server for real-time video streaming based on the WHIP/WHEP protocol.
+Live777 is an SFU server for real-time video streaming based on the `WHIP`/`WHEP` protocol.
 
 Live777 media server is used with [Gstreamer](https://gstreamer.freedesktop.org/), [FFmpeg](https://ffmpeg.org/), [OBS Studio](https://obsproject.com/), [VLC](https://www.videolan.org/), [WebRTC](https://webrtc.org/) and other clients to provide the ability to receive and distribute streams, and is a typical publishing (pushing) and subscription (playing) server model.
 
@@ -19,7 +19,7 @@ Live777 supports the conversion of audio and video protocols widely used in the 
 
 Live777 has the following characteristics:
 
-- 📚 **Support WHIP/WHEP**
+- 📚 **Support `WHIP`/`WHEP`**
 
   The WHIP/WHEP protocol is implemented to improve interoperability with other WebRTC application modules without the need for custom adaptations.
 
@@ -60,7 +60,7 @@ This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org
 
 #### Video: AV1
 
-**Note:AV1 has a lot of problem** 
+**Note: AV1 has a lot of problem** 
 - 🚧 browser whip av1
 - 🚧 browser whep av1
 - ✅ gstreamer whip av1
@@ -169,7 +169,7 @@ gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whi
 `WHEP`:
 
 ```bash
-gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777"   audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtpopusdepay ! opusdec ! audioconvert ! autoaudiosink
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:3000/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtpopusdepay ! opusdec ! audioconvert ! autoaudiosink
 ```
 
 Maybe you can't play audio, we can audio to video display for ascii
@@ -198,14 +198,13 @@ gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink 
 
 #### Play stream
 
-- open your browser,enter the URL: [`http://localhost:3000/`](http://localhost:3000/)
+- open your browser, enter the URL: [`http://localhost:3000/`](http://localhost:3000/)
 
 ## Tools
 
 We have tools for support rtp -> whip/whep convert
 
 ![live777-apps](./docs/live777-apps.excalidraw.svg#gh-light-mode-only)
-
 ![live777-apps](./docs/live777-apps.dark.svg#gh-dark-mode-only)
 
 
@@ -243,6 +242,7 @@ cargo run --package=whipinto -- -c vp8 -u http://localhost:3000/whip/777 --comma
 ```
 
 VLC RTP stream
+
 **Note: VLC can't support all video codec**
 
 ```bash
