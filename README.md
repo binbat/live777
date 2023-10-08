@@ -13,7 +13,6 @@ Live777 media server is used with [Gstreamer](https://gstreamer.freedesktop.org/
 Live777 supports the conversion of audio and video protocols widely used in the Internet, such as RTP to WHIP or WHEP and other protocols. 
 
 ![live777-arch](./docs/live777-arch.excalidraw.svg#gh-light-mode-only)
-
 ![live777-arch](./docs/live777-arch.dark.svg#gh-dark-mode-only)
 
 ## Features
@@ -51,10 +50,12 @@ Live777 has the following characteristics:
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
-### Publish stream
+### Gstreamer WHIP/WHEP client
 
 - Use docker of [Gstreamer](https://gstreamer.freedesktop.org/download/) to publish:
-  
+
+This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
+
 > *Note: supports multiple encoding formats* 
 
 #### Video: AV1
@@ -187,15 +188,15 @@ ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink whip-endpoint="http://localhost:3000/whip/777
 ```
 
-- Or publish stream by [Gstreamer](https://gstreamer.freedesktop.org/download/) or [OBS]((https://obsproject.com/forum/threads/obs-studio-30-beta.168984/)) :
+### OBS Studio WHIP client
 
 > Note:  
-> 1. OBS Studio version **30 or higher**        
+> 1. OBS Studio version [**30 or higher**](https://obsproject.com/forum/threads/obs-studio-30-beta.168984/)
 > 2. OBS WHIP Current only support **H264** video codecs and **Opus** audio codecs
 
 ![obs whip](./obs-whip.avif)
 
-### Play stream
+#### Play stream
 
 - open your browser,enter the URL: [`http://localhost:3000/`](http://localhost:3000/)
 
