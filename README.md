@@ -31,16 +31,15 @@ Live777 has the following characteristics:
 
   With rich multi-platform native support.
 
-- 🔍 **Multiple audio and video encoding formats support** 
+- 🔍 **Multiple audio and video encoding formats support**
 
-  Support a variety of video encoding and audio encoding formats,providing a wider range of compatibility to help enable adaptive streaming.
+  Support a variety of video encoding and audio encoding formats, providing a wider range of compatibility to help enable adaptive streaming.
 
 ## Current support encode
 | protocol | video codecs                | audio codecs   |
 | -------- | --------------------------- | -------------- |
 | `WHIP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
 | `WHEP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
-
 
 ## Quickstart
 
