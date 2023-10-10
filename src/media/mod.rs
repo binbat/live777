@@ -74,3 +74,26 @@ pub fn codecs_from_media_description(
 
     Ok(out)
 }
+
+pub fn count_send(md: &MediaDescription) -> usize {
+    let mut count = 0;
+    let mut minus = 0;
+    for attribute in &md.attributes {
+        match attribute.key.as_str() {
+            "sendonly" => {
+                count += 1;
+                minus += 1;
+            }
+            "simulcast" => {
+                let val = attribute.value.clone().unwrap_or("".to_string());
+                if !val.starts_with("send ") {
+                    break;
+                }
+                count += val.replace("send ", "").split(";").count() - minus;
+                break;
+            }
+            _ => {}
+        }
+    }
+    count
+}
