@@ -97,7 +97,7 @@ pub fn count_send(md: &MediaDescription) -> usize {
                 if !val.starts_with("send ") {
                     break;
                 }
-                count += val.replace("send ", "").split(";").count() - minus;
+                count += val.replace("send ", "").split(';').count() - minus;
                 break;
             }
             _ => {}
