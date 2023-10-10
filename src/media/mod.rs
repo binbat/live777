@@ -75,6 +75,14 @@ pub fn codecs_from_media_description(
     Ok(out)
 }
 
+pub fn count_sends(mds: &Vec<MediaDescription>) -> usize {
+    let mut count = 0;
+    for md in mds {
+        count += count_send(md);
+    }
+    count
+}
+
 pub fn count_send(md: &MediaDescription) -> usize {
     let mut count = 0;
     let mut minus = 0;

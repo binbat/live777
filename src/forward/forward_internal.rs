@@ -33,6 +33,7 @@ use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::forward::track_match::{track_match_codec, track_sort};
+use crate::media;
 
 use super::track_match;
 
@@ -130,7 +131,18 @@ impl PeerForwardInternal {
         let anchor = self.anchor.read().await;
         let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
         anchor.is_some()
-            && !anchor_track_forward_map.is_empty()
+            && anchor_track_forward_map.len()
+                == media::count_sends(
+                    &anchor
+                        .as_ref()
+                        .unwrap()
+                        .remote_description()
+                        .await
+                        .unwrap()
+                        .unmarshal()
+                        .unwrap()
+                        .media_descriptions,
+                )
             && anchor.as_ref().unwrap().connection_state() == RTCPeerConnectionState::Connected
     }
 
