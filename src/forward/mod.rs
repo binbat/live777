@@ -112,6 +112,9 @@ impl PeerForward {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
+                        RTCPeerConnectionState::Connected => {
+                            let _ = internal.add_subscribe(pc).await;
+                        }
                         RTCPeerConnectionState::Closed => {
                             let _ = internal.remove_subscribe(pc).await;
                         }
@@ -121,7 +124,6 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
-        let _ = self.internal.add_subscribe(peer.clone()).await;
         Ok((
             peer_complete(offer, peer.clone()).await?,
             get_peer_key(peer),
