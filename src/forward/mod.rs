@@ -1,7 +1,6 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
 use anyhow::Result;
 use log::info;
 use tokio::sync::Mutex;
@@ -12,6 +11,10 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::{MediaDescription, SessionDescription};
+
+use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
+use crate::media;
+
 mod forward_internal;
 mod track_match;
 
@@ -109,6 +112,9 @@ impl PeerForward {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
+                        RTCPeerConnectionState::Connected => {
+                            let _ = internal.add_subscribe(pc).await;
+                        }
                         RTCPeerConnectionState::Closed => {
                             let _ = internal.remove_subscribe(pc).await;
                         }
@@ -118,7 +124,6 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
-        let _ = self.internal.add_subscribe(peer.clone()).await;
         Ok((
             peer_complete(offer, peer.clone()).await?,
             get_peer_key(peer),
@@ -191,19 +196,7 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
 
 fn get_media_descriptions(sd: SessionDescription, publish: bool) -> Result<Vec<MediaDescription>> {
     let mut media_descriptions = sd.media_descriptions;
-    media_descriptions.retain(|media_description| {
-        let mut is_publish = false;
-        for attribute in &media_description.attributes {
-            match attribute.key.as_str() {
-                "sendonly" | "simulcast:send" => {
-                    is_publish = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        publish == is_publish
-    });
+    media_descriptions.retain(|md| publish == (media::count_send(md) > 0));
     let mut video = false;
     let mut audio = false;
     for md in &media_descriptions {

@@ -1,19 +1,25 @@
-FROM rust:1.71.1-slim-bookworm
+FROM debian:sid-20230919-slim AS common
 
-RUN apt update -y && apt install -y --no-install-recommends libglib2.0-dev libssl-dev \
+RUN apt update -y && apt install -y --no-install-recommends ca-certificates
+
+RUN apt install -y --no-install-recommends libglib2.0-dev libssl-dev \
     libgstreamer1.0-dev gstreamer1.0-tools gstreamer1.0-libav \
     libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
     libpango1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-nice
 
-RUN cargo install cargo-c
+FROM common AS builder
+
+# Now, rust version: 1.70
+RUN apt install -y --no-install-recommends cargo cargo-c
 
 WORKDIR /app
 
-ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.5/gst-plugins-rs-gstreamer-1.22.5.tar.gz gst-plugins-rs-gstreamer.tar.gz
+ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.6/gst-plugins-rs-gstreamer-1.22.6.tar.gz gst-plugins-rs-gstreamer.tar.gz
 
 RUN tar -xf gst-plugins-rs-gstreamer.tar.gz --strip-components 1
 
+# whip / whep: protocol support
 RUN cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
 
 # rtpav1pay / rtpav1depay: RTP (de)payloader for the AV1 video codec.
