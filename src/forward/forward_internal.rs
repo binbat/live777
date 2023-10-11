@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use log::info;
-use tokio::select;
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
 use tokio::sync::RwLock;
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -24,6 +23,7 @@ use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
 };
+use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
@@ -187,10 +187,6 @@ impl PeerForwardInternal {
         let mut subscribe_peers = self.subscribe_group.write().await;
         subscribe_peers.push(PeerWrap(peer.clone()));
         drop(subscribe_peers);
-        let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
-        for (_, track_forward) in anchor_track_forward_map.iter() {
-            let _ = track_forward.pli_send.try_send(());
-        }
         if self.publish_is_svc().await {
             tokio::spawn(Self::subscribe_track_flush(
                 Arc::downgrade(&peer),
@@ -446,7 +442,11 @@ impl PeerForwardInternal {
                 ..Default::default()
             })])
             .await;
-        tokio::spawn(async move { while (sender.read_rtcp().await).is_ok() {} });
+        tokio::spawn(Self::subscribe_read_rtcp(
+            Arc::downgrade(&peer),
+            sender,
+            self.anchor_track_forward_map.clone(),
+        ));
         let (send, mut recv) = unbounded_channel::<ForwardData>();
         let self_id = self.id.clone();
         let peer_stats_id = peer.get_stats_id().to_string();
@@ -474,6 +474,34 @@ impl PeerForwardInternal {
             );
         });
         Ok(send)
+    }
+
+    async fn subscribe_read_rtcp(
+        pc: Weak<RTCPeerConnection>,
+        sender: Arc<RTCRtpSender>,
+        track_forward_map: Arc<RwLock<HashMap<TrackRemoteWrap, TrackForward>>>,
+    ) {
+        while let Ok((packets, _)) = sender.read_rtcp().await {
+            if let Some(pc) = pc.upgrade() {
+                for packet in packets {
+                    if let Some(_pli) = packet.as_any().downcast_ref::<PictureLossIndication>() {
+                        if let Some(track) = sender.track().await {
+                            let kind = track.kind();
+                            let track_forward_map = track_forward_map.read().await;
+                            for (track_remote, track_forward) in track_forward_map.iter() {
+                                if track_remote.0.kind() == kind {
+                                    let subscription_group =
+                                        track_forward.subscription_group.read().await;
+                                    if subscription_group.contains_key(&PeerWrap(pc.clone())) {
+                                        let _ = track_forward.pli_send.try_send(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) async fn add_ice_candidate(
@@ -584,12 +612,7 @@ impl PeerForwardInternal {
         mut recv: Receiver<()>,
     ) {
         loop {
-            let timeout = tokio::time::sleep(Duration::from_secs(10));
-            tokio::pin!(timeout);
-            select! {
-                _= recv.recv() => {},
-                _ = timeout.as_mut() => {},
-            }
+            let _ = recv.recv().await;
             if let Some(pc) = peer.upgrade() {
                 if pc
                     .write_rtcp(&[Box::new(PictureLossIndication {
