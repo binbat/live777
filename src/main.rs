@@ -12,6 +12,7 @@ use path::manager::Manager;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::env;
 
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -27,8 +28,18 @@ mod path;
 
 #[tokio::main]
 async fn main() {
+    let log_level = env::var("LOG_LEVEL").unwrap_or("info".to_string());
+    let level_filter = match log_level.as_str() {
+        "off" => log::LevelFilter::Off,
+        "error" => log::LevelFilter::Error,
+        "warn" => log::LevelFilter::Warn,
+        "info" => log::LevelFilter::Info,
+        "debug" => log::LevelFilter::Debug,
+        "trace" => log::LevelFilter::Trace,
+        _ => log::LevelFilter::Info,
+    };
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(level_filter)
         .filter_module("webrtc", log::LevelFilter::Error)
         .write_style(env_logger::WriteStyle::Auto)
         .target(env_logger::Target::Stdout)
