@@ -28,7 +28,11 @@ mod path;
 
 #[tokio::main]
 async fn main() {
-    let log_level = env::var("LOG_LEVEL").unwrap_or("info".to_string());
+    let log_level = if cfg!(debug_assertions) {
+        env::var("LOG_LEVEL").unwrap_or_else(|_| "debug".to_string())
+    } else {
+        env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string())
+    };
     let level_filter = match log_level.as_str() {
         "off" => log::LevelFilter::Off,
         "error" => log::LevelFilter::Error,
