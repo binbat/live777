@@ -166,7 +166,78 @@ class WHIPClient {
         }
 
         //Get the SDP answer
+
+        const setVideoBitrate = (section, bitrate) => {
+            let lines = section.split('\r\n');
+        
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].startsWith('c=')) {
+                    lines = [...lines.slice(0, i+1), 'b=TIAS:' + (parseInt(bitrate) * 1024).toString(), ...lines.slice(i+1)];
+                    break
+                }
+            }
+        
+            return lines.join('\r\n');
+        };
+
+        const setAudioBitrate = (section, bitrate, voice) => {
+            let opusPayloadFormat = '';
+            let lines = section.split('\r\n');
+        
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].startsWith('a=rtpmap:') && lines[i].toLowerCase().includes('opus/')) {
+                    opusPayloadFormat = lines[i].slice('a=rtpmap:'.length).split(' ')[0];
+                    break;
+                }
+            }
+        
+            if (opusPayloadFormat === '') {
+                return section;
+            }
+        
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].startsWith('a=fmtp:' + opusPayloadFormat + ' ')) {
+                    if (voice) {
+                        lines[i] = 'a=fmtp:' + opusPayloadFormat + ' minptime=10;useinbandfec=1;maxaveragebitrate='
+                            + (parseInt(bitrate) * 1024).toString();
+                    } else {
+                        lines[i] = 'a=fmtp:' + opusPayloadFormat + ' maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate'
+                            + (parseInt(bitrate) * 1024).toString();
+                    }
+                }
+            }
+        
+            return lines.join('\r\n');
+        };
+        
+
+        const editAnswer = (answer, videoCodec, audioCodec, videoBitrate, audioBitrate, audioVoice) => {
+            const sections = answer.sdp.split('m=');
+        
+            for (let i = 0; i < sections.length; i++) {
+                const section = sections[i];
+                if (section.startsWith('video')) {
+                    sections[i] = setVideoBitrate(setCodec(section, videoCodec), videoBitrate);
+                } else if (section.startsWith('audio')) {
+                    sections[i] = setAudioBitrate(setCodec(section, audioCodec), audioBitrate, audioVoice);
+                }
+            }
+        
+            answer.sdp = sections.join('m=');
+        };
+
         const answer = await fetched.text();
+        
+        editAnswer(
+            answer,
+            document.getElementById('video_codec').value,
+            document.getElementById('audio_codec').value,
+            document.getElementById('video_bitrate').value,
+            document.getElementById('audio_bitrate').value,
+            document.getElementById('audio_voice').value,
+        );
+
+
         this.id = fetched.headers.get("E-tag")
         //Schedule trickle on next tick
         if (!this.iceTrickeTimeout)
