@@ -167,6 +167,41 @@ class WHIPClient {
 
         //Get the SDP answer
 
+        const setCodec = (section, codec) => {
+            const lines = section.split('\r\n');
+            const lines2 = [];
+            const payloadFormats = [];
+        
+            for (const line of lines) {
+                if (!line.startsWith('a=rtpmap:')) {
+                    lines2.push(line);
+                } else {
+                    if (line.toLowerCase().includes(codec)) {
+                        payloadFormats.push(line.slice('a=rtpmap:'.length).split(' ')[0]);
+                        lines2.push(line);
+                    }
+                }
+            }
+        
+            const lines3 = [];
+        
+            for (const line of lines2) {
+                if (line.startsWith('a=fmtp:')) {
+                    if (payloadFormats.includes(line.slice('a=fmtp:'.length).split(' ')[0])) {
+                        lines3.push(line);
+                    }
+                } else if (line.startsWith('a=rtcp-fb:')) {
+                    if (payloadFormats.includes(line.slice('a=rtcp-fb:'.length).split(' ')[0])) {
+                        lines3.push(line);
+                    }
+                } else {
+                    lines3.push(line);
+                }
+            }
+        
+            return lines3.join('\r\n');
+        };
+
         const setVideoBitrate = (section, bitrate) => {
             let lines = section.split('\r\n');
         
@@ -210,7 +245,6 @@ class WHIPClient {
             return lines.join('\r\n');
         };
         
-
         const editAnswer = (answer, videoCodec, audioCodec, videoBitrate, audioBitrate, audioVoice) => {
             const sections = answer.sdp.split('m=');
         

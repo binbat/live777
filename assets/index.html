@@ -167,7 +167,42 @@ select {
         const onTransmit = (stream) => {
             document.getElementById('video').srcObject = stream;
             // new Transmitter(stream);
-            return stream;
+            //get svc_level
+            const rid_value = document.getElementById("svc_level").value;
+            if (rid_value == 'a') {
+                const sendEncodings = [
+                    { enhanced_level:'2'},
+                    { rid: 'a', scaleResolutionDownBy: 2.0 },
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }   
+                ]
+            }else if (rid_value == 'b') {
+                const sendEncodings = [
+                    { enhanced_level:'1'},
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }     
+                ]
+            }else{
+                const sendEncodings = [
+                    { enhanced_level:'0'},
+                    { rid: 'c' }    
+                ]
+            }
+            const pc = new RTCPeerConnection();
+            pc.addTransceiver(stream.getVideoTracks()[0], {
+                direction: 'sendonly',
+                // sendEncodings: [
+                //     { rid: 'a', scaleResolutionDownBy: 2.0 },
+                //     { rid: 'b', scaleResolutionDownBy: 1.0 },
+                //     { rid: 'c' }
+                // ]
+                sendEncodings: sendEncodings
+            });
+            
+            const whip = new WHIPClient();
+            const url = location.origin + "/whip/" + resource;
+            const token = document.getElementById("token").value;
+            whip.publish(pc, url, token);
         };
     
         // onPublish
@@ -330,39 +365,23 @@ select {
                 alert("input resource")
                 return
             }
-            
-            //get svc_level
-            const rid_value = document.getElementById("svc_level").value;
-            if (rid_value == 'a') {
-                const sendEncodings = [
-                    { rid: 'a', scaleResolutionDownBy: 2.0 }    
-                ]
-            }else if (rid_value == 'b') {
-                const sendEncodings = [
-                    { rid: 'a', scaleResolutionDownBy: 2.0 }    
-                ]
-            }else{
-                const sendEncodings = [
-                    { rid: 'c' }    
-                ]
-            }
-            const stream = onPublish();
+            onPublish();
             //const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
-            const pc = new RTCPeerConnection();
-            pc.addTransceiver(stream.getVideoTracks()[0], {
-                direction: 'sendonly',
-                // sendEncodings: [
-                //     { rid: 'a', scaleResolutionDownBy: 2.0 },
-                //     { rid: 'b', scaleResolutionDownBy: 1.0 },
-                //     { rid: 'c' }
-                // ]
-                sendEncodings: sendEncodings
-            });
+            // const pc = new RTCPeerConnection();
+            // pc.addTransceiver(stream.getVideoTracks()[0], {
+            //     direction: 'sendonly',
+            //     // sendEncodings: [
+            //     //     { rid: 'a', scaleResolutionDownBy: 2.0 },
+            //     //     { rid: 'b', scaleResolutionDownBy: 1.0 },
+            //     //     { rid: 'c' }
+            //     // ]
+            //     sendEncodings: sendEncodings
+            // });
             
-            const whip = new WHIPClient();
-            const url = location.origin + "/whip/" + resource;
-            const token = document.getElementById("token").value;
-            whip.publish(pc, url, token);
+            // const whip = new WHIPClient();
+            // const url = location.origin + "/whip/" + resource;
+            // const token = document.getElementById("token").value;
+            // whip.publish(pc, url, token);
         }
         
         async function startWhep() {
