@@ -39,7 +39,7 @@ impl Client {
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
         Client {
             url,
-            defulat_headers: defulat_headers.unwrap_or(Default::default()),
+            defulat_headers: defulat_headers.unwrap_or_default(),
         }
     }
 
