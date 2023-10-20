@@ -3,3 +3,5 @@ stream.sdp
 /target
 /.idea
 /.vscode
+*.json
+/node_modules
