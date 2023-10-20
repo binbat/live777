@@ -78,6 +78,13 @@
                 Bearer token
                 <input id="token" type="text">
             </div>
+            <div> SVC Level
+                <select id="svc_level">
+                    <option value="c">Basic</option>
+                    <option value="b">Enhanced 1</option>
+                    <option value="a">Enhanced 2</option>
+                </select>
+            </div>
             <div id="submit_line">
                 <button onclick="startWhip()"> WebRTC Start Whip</button>
                 <button onclick="startWhep()"> WebRTC Start Whep</button>
@@ -201,15 +208,38 @@
                 alert("input resource")
                 return
             }
+            //get svc_level
+            const rid_value = document.getElementById("svc_level").value;
+            var sendEncodings = [];
+            if (rid_value == 'a') {
+                sendEncodings = [
+                    // { enhanced_level:'2'},
+                    { rid: 'a', scaleResolutionDownBy: 2.0 },
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }   
+                ]
+            }else if (rid_value == 'b') {
+                sendEncodings = [
+                    // { enhanced_level:'1'},
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }     
+                ]
+            }else{
+                sendEncodings = [
+                    // { enhanced_level:'0'},
+                    { rid: 'c' }    
+                ]
+            }
             const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
             const pc = new RTCPeerConnection();
             pc.addTransceiver(stream.getVideoTracks()[0], {
                 direction: 'sendonly',
-                sendEncodings: [
-                    { rid: 'a', scaleResolutionDownBy: 2.0 },
-                    { rid: 'b', scaleResolutionDownBy: 1.0, },
-                    { rid: 'c' }
-                ]
+                sendEncodings: sendEncodings
+                // sendEncodings: [
+                //     { rid: 'a', scaleResolutionDownBy: 2.0 },
+                //     { rid: 'b', scaleResolutionDownBy: 1.0, },
+                //     { rid: 'c' }
+                // ]
             });
             const whip = new WHIPClient();
             const url = location.origin + "/whip/" + resource;
