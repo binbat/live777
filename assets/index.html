@@ -20,6 +20,12 @@
             flex-grow: 1;
             min-height: 0;
         }
+        #remoteVideos {
+            height: 100%;
+            flex-grow: 1;
+            min-height: 0;
+            margin: 0 auto;
+        }
         #controls {
             flex-shrink: 0;
             display: flex;
@@ -52,6 +58,7 @@
 </head>
 <body>
     <video id="video" muted controls autoplay playsinline></video>
+    <div id="remoteVideos" style="display: none;"></div>
     <div id="controls">
         <div id="initializing" style="display: block;">
             initializing
@@ -91,10 +98,6 @@
         </div>
     
     </div>
-    
-    <br />
-    Video<br />
-    <div id="remoteVideos"></div> <br />
     <script src="whip.js"></script>
     <script src="whep.js"></script>
     <script>
@@ -170,6 +173,80 @@
                 }
             });
     };
+        // onPublish
+        const onPublish = () => {
+            state = TRANSMITTING;
+            render();
+        
+            const videoId = document.getElementById('video_device').value;
+            const audioId = document.getElementById('audio_device').value;
+        
+            if (videoId !== 'screen') {
+                let video = false;
+                if (videoId !== 'none') {
+                    video = {
+                        deviceId: videoId,
+                    };
+                }
+        
+                let audio = false;
+        
+                if (audioId !== 'none') {
+                    audio = {
+                        deviceId: audioId,
+                    };
+        
+                    // const voice = document.getElementById('audio_voice').checked;
+                    // if (!voice) {
+                    //     audio.autoGainControl = false;
+                    //     audio.echoCancellation = false;
+                    //     audio.noiseSuppression = false;
+                    // }
+                }
+        
+                navigator.mediaDevices.getUserMedia({ video, audio })
+                    .then(onTransmit)
+                    .catch((err) => {
+                        state = ERROR;
+                        errorMessage = err.toString();
+                        render();
+                    });
+            } else {
+                navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                        frameRate: { ideal: 30 },
+                        cursor: "always",
+                    },
+                    audio: false,
+                })
+                    .then(onTransmit)
+                    .catch((err) => {
+                        state = ERROR;
+                        errorMessage = err.toString();
+                        render();
+                    });
+            }
+        };
+        // onTransmit
+        const onTransmit = (stream) => {
+            document.getElementById('video').srcObject = stream;
+            const resource = document.getElementById("resource").value;         
+            const pc = new RTCPeerConnection();
+            pc.addTransceiver(stream.getVideoTracks()[0], {
+                direction: 'sendonly',
+                // sendEncodings: [
+                //     { rid: 'a', scaleResolutionDownBy: 2.0 },
+                //     { rid: 'b', scaleResolutionDownBy: 1.0, },
+                //     { rid: 'c' }
+                // ]
+            });
+            const whip = new WHIPClient();
+            const url = location.origin + "/whip/" + resource;
+            const token = document.getElementById("token").value;
+            whip.publish(pc, url, token);       
+        };
         // initialize
         const initialize = () => {
             if (navigator.mediaDevices === undefined) {
@@ -201,23 +278,13 @@
                 alert("input resource")
                 return
             }
-            const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
-            const pc = new RTCPeerConnection();
-            pc.addTransceiver(stream.getVideoTracks()[0], {
-                direction: 'sendonly',
-                sendEncodings: [
-                    { rid: 'a', scaleResolutionDownBy: 2.0 },
-                    { rid: 'b', scaleResolutionDownBy: 1.0, },
-                    { rid: 'c' }
-                ]
-            });
-            const whip = new WHIPClient();
-            const url = location.origin + "/whip/" + resource;
-            const token = document.getElementById("token").value;
-            whip.publish(pc, url, token);
+
+            onPublish();
         }
     
         async function startWhep() {
+            document.getElementById('video').style.display = 'none';
+            document.getElementById('remoteVideos').style.display = 'block';
             const resource = document.getElementById("resource").value;
             if (!resource) {
                 alert("input resource")
@@ -233,15 +300,16 @@
                     el.srcObject = event.streams[0]
                     el.autoplay = true
                     el.controls = true
+                    el.style.height = "100%"
                     document.getElementById('remoteVideos').appendChild(el)
                 }
-                if (event.track.kind == "audio") {
-                    var el = document.createElement(event.track.kind)
-                    el.srcObject = event.streams[0]
-                    el.autoplay = true
-                    el.controls = true
-                    document.getElementById('remoteVideos').appendChild(el)
-                }
+                // if (event.track.kind == "audio") {
+                //     var el = document.createElement(event.track.kind)
+                //     el.srcObject = event.streams[0]
+                //     el.autoplay = true
+                //     el.controls = true
+                //     document.getElementById('remoteVideos').appendChild(el)
+                // }
             }
             const whep = new WHEPClient();
             const url = location.origin + "/whep/" + resource;
