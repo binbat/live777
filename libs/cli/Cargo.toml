@@ -9,6 +9,6 @@ crate-type = ["lib"]
 
 [dependencies]
 clap = { version = "4.4.1", features = ["derive"] }
-webrtc = "0.9.0"
+webrtc = { git = "https://github.com/webrtc-rs/webrtc" }
 shellwords = "1.1.0"
 anyhow = "1.0"
