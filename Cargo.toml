@@ -4,18 +4,17 @@ version = "0.2.0"
 edition = "2021"
 
 [workspace]
-members = [
-    ".",
-    "libs/cli",
-    "libs/libwish",
-    "tools/whepfrom",
-    "tools/whipinto",
-]
+members = [".", "libs/cli", "libs/libwish", "tools/whepfrom", "tools/whipinto"]
 
 [dependencies]
 axum = { version = "0.6.20", features = ["multipart"] }
 tower-http = { version = "0.4.3", features = ["fs", "auth"] }
-webrtc = "0.9.0"
+
+# TODO
+# There have error, Next commit can't work with obs studio
+# webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "9c0570ad562b226cc9c6c0a3c7a9a28e1d43e08f" }
+# Reference: https://github.com/binbat/live777/issues/39
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
 anyhow = "1.0"
 tokio = { version = "1.30", features = ["full"] }
 hyper = "0.14"
