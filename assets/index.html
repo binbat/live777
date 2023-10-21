@@ -1,71 +1,381 @@
-ID: <input id="resource" type="text">
-<button onclick="startWhip()"> WebRTC Start Whip</button>
-<button onclick="startWhep()"> WebRTC Start Whep</button>
-<br />
-Bearer token: <input id="token" type="text">
-
-<br />
-Video<br />
-<div id="remoteVideos"></div> <br />
-
-Logs<br />
-<div id="div"></div>
-<script src="whip.js"></script>
-<script src="whep.js"></script>
-
-<script>
-    async function startWhip() {
-        const resource = document.getElementById("resource").value;
-        if (!resource) {
-            alert("input resource")
-            return
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live777</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
         }
-        const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
-        const pc = new RTCPeerConnection();
-        pc.addTransceiver(stream.getVideoTracks()[0], {
-            direction: 'sendonly',
-            sendEncodings: [
-                { rid: 'a', scaleResolutionDownBy: 2.0 },
-                { rid: 'b', scaleResolutionDownBy: 1.0, },
-                { rid: 'c' }
-            ]
-        });
-        const whip = new WHIPClient();
-        const url = location.origin + "/whip/" + resource;
-        const token = document.getElementById("token").value;
-        whip.publish(pc, url, token);
-    }
-
-    async function startWhep() {
-        const resource = document.getElementById("resource").value;
-        if (!resource) {
-            alert("input resource")
-            return
+        body {
+            display: flex;
+            flex-direction: column;
         }
-        const pc = window.pc = new RTCPeerConnection();
-        pc.addTransceiver('video', { 'direction': 'recvonly' })
-        pc.addTransceiver('audio', { 'direction': 'recvonly' })
-        pc.ontrack = (event) => {
-            console.log(event)
-            if (event.track.kind == "video") {
-                var el = document.createElement(event.track.kind)
-                el.srcObject = event.streams[0]
-                el.autoplay = true
-                el.controls = true
-                document.getElementById('remoteVideos').appendChild(el)
+        #video {
+            height: 100%;
+            background: black;
+            flex-grow: 1;
+            min-height: 0;
+        }
+        #remoteVideos {
+            height: 100%;
+            flex-grow: 1;
+            min-height: 0;
+            margin: 0 auto;
+        }
+        #controls {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 200px;
+            padding: 10px;
+        }
+        #device {
+            flex-direction: column;
+        }
+        #device > div {
+            margin: 10px 0;
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        #device > div > div {
+            display: flex;
+            gap: 20px;
+        }
+        #error-message {
+            text-align: center;
+        }
+        select {
+            width: 200px;
+        }
+        </style>
+</head>
+<body>
+    <video id="video" muted controls autoplay playsinline></video>
+    <div id="remoteVideos" style="display: none;"></div>
+    <div id="controls">
+        <div id="initializing" style="display: block;">
+            initializing
+        </div>
+        <div id="device" style="display: none;">
+            <div id="device_line">
+                <div>
+                    video device
+                    <select id="video_device" onchange="showDiv()">
+                        <option value="none">none</option>
+                    </select>
+                </div>
+                <div>
+                    audio device
+                    <select id="audio_device">
+                        <option value="none">none</option>
+                    </select>
+                </div>
+            </div>
+            <div id="SVC" style="display: none;"> 
+                SVC Level
+                <select id="svc_level">
+                    <option value="c">Basic</option>
+                    <option value="b">Enhanced 1</option>
+                    <option value="a">Enhanced 2</option>
+                </select>
+            </div>
+            <div>
+                ID
+                <input id="resource" type="text">
+                Bearer token
+                <input id="token" type="text">
+            </div>
+            <div id="submit_line">
+                <button onclick="startWhip()"> WebRTC Start Whip</button>
+                <button onclick="startWhep()"> WebRTC Start Whep</button>
+            </div>
+        </div>
+        <div id="transmitting" style="display: none;">
+            publishing
+        </div>
+        <div id="error" style="display: none;">
+            <span id="error-message"></span>
+        </div>
+    
+    </div>
+    <script src="whip.js"></script>
+    <script src="whep.js"></script>
+    <script>
+        //show screen-svc
+        function showDiv() {
+            var selectBox = document.getElementById("video_device");
+            var selectedOption = selectBox.options[selectBox.selectedIndex].value;
+            var divToDisplay = document.getElementById("SVC");
+
+            if (selectedOption === "screen") {
+                divToDisplay.style.display = "flex";
+            } else {
+                divToDisplay.style.display = "none";
             }
-            if (event.track.kind == "audio") {
-                var el = document.createElement(event.track.kind)
-                el.srcObject = event.streams[0]
-                el.autoplay = true
-                el.controls = true
-                document.getElementById('remoteVideos').appendChild(el)
-            }
         }
-        const whep = new WHEPClient();
-        const url = location.origin + "/whep/" + resource;
-        const token = document.getElementById("token").value;
-        whep.view(pc, url, token);
-    }
+        // define four states
+        const INITIALIZING = 0;
+        const DEVICE = 1;
+        const TRANSMITTING = 2;
+        const ERROR = 3;
+    
+        let state = INITIALIZING;
+        let errorMessage = '';
 
-</script>
+        // display state 
+        const render = () => {
+            for (const el of ['initializing', 'device', 'transmitting', 'error']) {
+                document.getElementById(el).style.display = 'none';
+            }
+    
+            switch (state) {
+                case DEVICE:
+                    document.getElementById('device').style.display = 'flex';
+                    break;
+    
+                case TRANSMITTING:
+                    document.getElementById('transmitting').style.display = 'flex';
+                    break;
+    
+                case ERROR:
+                    document.getElementById('error').style.display = 'flex';
+                    document.getElementById('error-message').innerHTML = 'error: ' + errorMessage;
+                    break;
+            }
+        };
+        // populateDevices
+        const populateDevices = () => {
+        return navigator.mediaDevices.enumerateDevices()
+            .then((devices) => {
+                for (const device of devices) {
+                    switch (device.kind) {
+                    case 'videoinput':
+                        {
+                            const opt = document.createElement('option');
+                            opt.value = device.deviceId;
+                            opt.text = device.label;
+                            document.getElementById('video_device').appendChild(opt);
+                        }
+                        break;
+    
+                    case 'audioinput':
+                        {
+                            const opt = document.createElement('option');
+                            opt.value = device.deviceId;
+                            opt.text = device.label;
+                            document.getElementById('audio_device').appendChild(opt);
+                        }
+                        break;
+                    }
+                }
+    
+                if (navigator.mediaDevices.getDisplayMedia !== undefined) {
+                    const opt = document.createElement('option');
+                    opt.value = "screen";
+                    opt.text = "screen";
+                    document.getElementById('video_device').appendChild(opt);
+                }
+    
+                if (document.getElementById('video_device').children.length !== 0) {
+                    document.getElementById('video_device').value = document.getElementById('video_device').children[1].value;
+                }
+    
+                if (document.getElementById('audio_device').children.length !== 0) {
+                    document.getElementById('audio_device').value = document.getElementById('audio_device').children[1].value;
+                }
+            });
+    };
+        // onPublish
+        const onPublish = () => {
+            state = TRANSMITTING;
+            render();
+        
+            const videoId = document.getElementById('video_device').value;
+            const audioId = document.getElementById('audio_device').value;
+        
+            if (videoId !== 'screen') {
+                let video = false;
+                if (videoId !== 'none') {
+                    video = {
+                        deviceId: videoId,
+                    };
+                }
+                
+                let audio = false;
+        
+                if (audioId !== 'none') {
+                    audio = {
+                        deviceId: audioId,
+                    };
+        
+                    // const voice = document.getElementById('audio_voice').checked;
+                    // if (!voice) {
+                    //     audio.autoGainControl = false;
+                    //     audio.echoCancellation = false;
+                    //     audio.noiseSuppression = false;
+                    // }
+                }
+        
+                navigator.mediaDevices.getUserMedia({ video, audio })
+                    .then(onTransmit)
+                    .catch((err) => {
+                        state = ERROR;
+                        errorMessage = err.toString();
+                        render();
+                    });
+            } else {
+                navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                        frameRate: { ideal: 30 },
+                        cursor: "always",
+                    },
+                    audio: false,
+                })
+                    .then(onTransmitSVC)
+                    .catch((err) => {
+                        state = ERROR;
+                        errorMessage = err.toString();
+                        render();
+                    });
+            }
+        };
+        // onTransmit
+        const onTransmit = (stream) => {
+            document.getElementById('video').srcObject = stream;
+            const resource = document.getElementById("resource").value;
+            //get svc_level
+            const rid_value = document.getElementById("svc_level").value;
+            var sendEncodings = [];
+            if (rid_value == 'a') {
+                sendEncodings = [
+                    { rid: 'a', scaleResolutionDownBy: 2.0 },
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }   
+                ]
+            }else if (rid_value == 'b') {
+                sendEncodings = [
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }     
+                ]
+            }else{
+                sendEncodings = [
+                    { rid: 'c' }    
+                ]
+            }         
+            const pc = new RTCPeerConnection();
+            pc.addTransceiver(stream.getVideoTracks()[0], {
+                direction: 'sendonly',
+                sendEncodings: sendEncodings
+                // sendEncodings: [
+                //     { rid: 'a', scaleResolutionDownBy: 2.0 },
+                //     { rid: 'b', scaleResolutionDownBy: 1.0, },
+                //     { rid: 'c' }
+                // ]
+            });
+            const whip = new WHIPClient();
+            const url = location.origin + "/whip/" + resource;
+            const token = document.getElementById("token").value;
+            whip.publish(pc, url, token);       
+        };
+        // onTransmitSVC
+        const onTransmitSVC = (stream) => {
+            document.getElementById('video').srcObject = stream;
+            const resource = document.getElementById("resource").value;         
+            const pc = new RTCPeerConnection();
+            pc.addTransceiver(stream.getVideoTracks()[0], {
+                direction: 'sendonly',
+                sendEncodings: [
+                    { rid: 'a', scaleResolutionDownBy: 2.0 },
+                    { rid: 'b', scaleResolutionDownBy: 1.0, },
+                    { rid: 'c' }
+                ]
+            });
+            const whip = new WHIPClient();
+            const url = location.origin + "/whip/" + resource;
+            const token = document.getElementById("token").value;
+            whip.publish(pc, url, token);       
+        };
+        // initialize
+        const initialize = () => {
+            if (navigator.mediaDevices === undefined) {
+                state = ERROR;
+                errorMessage = 'can\'t access webcams or microphones. Make sure that WebRTC encryption is enabled.';
+                render();
+                return;
+            }
+    
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                .then(() => Promise.all([
+                    populateDevices(),
+                ]))
+                .then(() => {
+                    state = DEVICE;
+                    render();
+                })
+                .catch((err) => {
+                    state = ERROR;
+                    errorMessage = err.toString();
+                    render();
+                });
+        };
+
+
+        async function startWhip() {
+            const resource = document.getElementById("resource").value;
+            if (!resource) {
+                alert("input resource")
+                return
+            }
+
+            onPublish();
+        }
+    
+        async function startWhep() {
+            document.getElementById('video').style.display = 'none';
+            document.getElementById('remoteVideos').style.display = 'block';
+            const resource = document.getElementById("resource").value;
+            if (!resource) {
+                alert("input resource")
+                return
+            }
+            const pc = window.pc = new RTCPeerConnection();
+            pc.addTransceiver('video', { 'direction': 'recvonly' })
+            pc.addTransceiver('audio', { 'direction': 'recvonly' })
+            pc.ontrack = (event) => {
+                console.log(event)
+                if (event.track.kind == "video") {
+                    var el = document.createElement(event.track.kind)
+                    el.srcObject = event.streams[0]
+                    el.autoplay = true
+                    el.controls = true
+                    el.style.height = "100%"
+                    document.getElementById('remoteVideos').appendChild(el)
+                }
+                // if (event.track.kind == "audio") {
+                //     var el = document.createElement(event.track.kind)
+                //     el.srcObject = event.streams[0]
+                //     el.autoplay = true
+                //     el.controls = true
+                //     document.getElementById('remoteVideos').appendChild(el)
+                // }
+            }
+            const whep = new WHEPClient();
+            const url = location.origin + "/whep/" + resource;
+            const token = document.getElementById("token").value;
+            whep.view(pc, url, token);
+        }
+
+        initialize();
+    
+    </script>
+</body>
+</html>
