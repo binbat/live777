@@ -67,7 +67,7 @@
             <div id="device_line">
                 <div>
                     video device
-                    <select id="video_device">
+                    <select id="video_device" onchange="showDiv()">
                         <option value="none">none</option>
                     </select>
                 </div>
@@ -78,7 +78,14 @@
                     </select>
                 </div>
             </div>
-        
+            <div id="SVC" style="display: none;"> 
+                SVC Level
+                <select id="svc_level">
+                    <option value="c">Basic</option>
+                    <option value="b">Enhanced 1</option>
+                    <option value="a">Enhanced 2</option>
+                </select>
+            </div>
             <div>
                 ID
                 <input id="resource" type="text">
@@ -101,6 +108,18 @@
     <script src="whip.js"></script>
     <script src="whep.js"></script>
     <script>
+        //show screen-svc
+        function showDiv() {
+            var selectBox = document.getElementById("video_device");
+            var selectedOption = selectBox.options[selectBox.selectedIndex].value;
+            var divToDisplay = document.getElementById("SVC");
+
+            if (selectedOption === "screen") {
+                divToDisplay.style.display = "flex";
+            } else {
+                divToDisplay.style.display = "none";
+            }
+        }
         // define four states
         const INITIALIZING = 0;
         const DEVICE = 1;
@@ -188,7 +207,7 @@
                         deviceId: videoId,
                     };
                 }
-        
+                
                 let audio = false;
         
                 if (audioId !== 'none') {
@@ -221,7 +240,7 @@
                     },
                     audio: false,
                 })
-                    .then(onTransmit)
+                    .then(onTransmitSVC)
                     .catch((err) => {
                         state = ERROR;
                         errorMessage = err.toString();
@@ -232,15 +251,53 @@
         // onTransmit
         const onTransmit = (stream) => {
             document.getElementById('video').srcObject = stream;
-            const resource = document.getElementById("resource").value;         
+            const resource = document.getElementById("resource").value;
+            //get svc_level
+            const rid_value = document.getElementById("svc_level").value;
+            var sendEncodings = [];
+            if (rid_value == 'a') {
+                sendEncodings = [
+                    { rid: 'a', scaleResolutionDownBy: 2.0 },
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }   
+                ]
+            }else if (rid_value == 'b') {
+                sendEncodings = [
+                    { rid: 'b', scaleResolutionDownBy: 1.0 },
+                    { rid: 'c' }     
+                ]
+            }else{
+                sendEncodings = [
+                    { rid: 'c' }    
+                ]
+            }         
             const pc = new RTCPeerConnection();
             pc.addTransceiver(stream.getVideoTracks()[0], {
                 direction: 'sendonly',
+                sendEncodings: sendEncodings
                 // sendEncodings: [
                 //     { rid: 'a', scaleResolutionDownBy: 2.0 },
                 //     { rid: 'b', scaleResolutionDownBy: 1.0, },
                 //     { rid: 'c' }
                 // ]
+            });
+            const whip = new WHIPClient();
+            const url = location.origin + "/whip/" + resource;
+            const token = document.getElementById("token").value;
+            whip.publish(pc, url, token);       
+        };
+        // onTransmitSVC
+        const onTransmitSVC = (stream) => {
+            document.getElementById('video').srcObject = stream;
+            const resource = document.getElementById("resource").value;         
+            const pc = new RTCPeerConnection();
+            pc.addTransceiver(stream.getVideoTracks()[0], {
+                direction: 'sendonly',
+                sendEncodings: [
+                    { rid: 'a', scaleResolutionDownBy: 2.0 },
+                    { rid: 'b', scaleResolutionDownBy: 1.0, },
+                    { rid: 'c' }
+                ]
             });
             const whip = new WHIPClient();
             const url = location.origin + "/whip/" + resource;
