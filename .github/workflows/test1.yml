@@ -43,7 +43,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Start Live777 Server
-      run: live777
+      run: live777 &
 
     - name: Wait for Live777 Server to Start
       run: sleep 10
