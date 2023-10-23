@@ -43,7 +43,11 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Install GStreamer
-      run: sudo apt-get install -y gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+        # Add any additional GStreamer plugins installation here
+      shell: bash
 
     - name: Start Live777 Server
       run: live777 &
