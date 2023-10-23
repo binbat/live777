@@ -44,7 +44,6 @@ jobs:
 
     - name: Start Live777 Server
       run: live777
-      background: true
 
     - name: Wait for Live777 Server to Start
       run: sleep 10
