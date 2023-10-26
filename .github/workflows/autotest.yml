@@ -36,24 +36,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Build and push docker-server
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          push: true
-          file: ./Dockerfile.server
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Build and push docker-client
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          push: true
-          file: ./Dockerfile.client
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
       - name: Run Multirun Script
         run: |
           chmod +x multirun.sh
