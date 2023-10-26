@@ -32,9 +32,6 @@ jobs:
 
   multirun:
     runs-on: ubuntu-latest
-    defaults:
-        run:
-            working-directory: ./scripts
 
     steps:
       - uses: actions/checkout@v3
