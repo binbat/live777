@@ -157,36 +157,41 @@
         const DEVICE = 1;
         const TRANSMITTING = 2;
         const ERROR = 3;
-        const SCREEN = 4;
 
         let state = INITIALIZING;
         let errorMessage = '';
         // initialize
         const initialize = () => {
-            if (navigator.mediaDevices === undefined) {
-                state = ERROR;
-                errorMessage = 'can\'t access webcams or microphones. Make sure that WebRTC encryption is enabled.';
-                render();
-                return;
-            }
+            navigator.mediaDevices.enumerateDevices()
+            .then(devices => {
+             const videoDevices = devices.filter(device => device.kind === 'videoinput' && device.label !== 'OBS Virtual Camera');
 
-            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-                .then(() => Promise.all([
-                    populateDevices(),
-                    populateCodecs(),
-                ]))
-                .then(() => {
-                    state = DEVICE;
-                    render();
+            // Decide whether to request video based on the presence of the camera device
+            const mediaConstraints = {
+            video: videoDevices.length > 0,
+            audio: true,};
+
+            navigator.mediaDevices.getUserMedia(mediaConstraints)
+            .then(() => Promise.all([
+                populateDevices(),
+                populateCodecs(),
+                    ]))
+                    .then(() => {
+                state = DEVICE;
+                render();
                 })
                 .catch((err) => {
-                    state = ERROR;
-                    errorMessage = err.toString();
-                    render();
+                state = ERROR;
+                errorMessage = err.toString();
+                render();
                 });
+            })
+            .catch(error => {
+            console.error("Error while enumerating devices: ", error);
+            });
         };
-            
-        // display state 
+
+        //render
         const render = () => {
             for (const el of ['initializing', 'device', 'transmitting', 'error']) {
                 document.getElementById(el).style.display = 'none';
@@ -195,11 +200,6 @@
             switch (state) {
                 case DEVICE:
                     document.getElementById('device').style.display = 'flex';
-                    break;
-
-                case SCREEN:
-                    document.getElementById('device_screen').style.display = 'flex';
-
                     break;
 
                 case TRANSMITTING:
@@ -344,7 +344,7 @@
                         frameRate: { ideal: 30 },
                         cursor: "always",
                     },
-                    audio: false,
+                    audio: true,
                 })
                     .then(onTransmitSVC)
                     .catch((err) => {
@@ -378,9 +378,11 @@
                 direction: 'sendonly',
                 sendEncodings: sendEncodings
             });
-            pc.addTransceiver(stream.getAudioTracks()[0], {
-                direction: 'sendonly',
-            });
+            // if audioTracks exit
+            const audioTracks = stream.getAudioTracks();
+            if (audioTracks.length > 0) {
+            pc.addTransceiver(audioTracks[0], { direction: 'sendonly' }); }
+            
             const whip = new WHIPClient();
             const url = location.origin + "/whip/" + resource;
             const token = document.getElementById("token").value;
