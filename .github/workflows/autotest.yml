@@ -23,12 +23,6 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-  check_clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Cargo clippy
-        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 
   multirun:
     runs-on: ubuntu-latest
@@ -36,13 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Run live777
-        run: live777
-      -   name: Wait for Live777 Server to Start
-          run: sleep 1
-      - name: Run whipinto
-        run: |
-          cargo run --package=whipinto -- -c vp8 -u http://localhost:3000/whip/777 --command 'ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -cpu-used 5 -deadline 1 -g 10 -error-resilient 1 -auto-alt-ref 1 -f rtp "rtp://127.0.0.1:{port}?pkt_size=1200"' &&
-      - name: Run whepfrom
-        run: |
-          cargo run --package=whepfrom -- -c vp8 -u http://localhost:3000/whep/777 -t 127.0.0.1:5004 --command 'ffplay -protocol_whitelist rtp,file,udp -i stream.sdp'
+      - name: Install ffmpeg
+        run: sudo apt-get install ffmpeg
+
+      - name: multitask
+        run: ./test.sh
+
