@@ -33,9 +33,6 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get install ffmpeg
 
-      - name: Make test executable
-        run: git update-index --chmod=+x test.sh
-
       - name: multitask
         run: ./test.sh
 
