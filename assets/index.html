@@ -141,13 +141,6 @@
                 <button onclick="startWhep()"> WebRTC Start Whep</button>
             </div>
         </div>
-        <div id="screening" style="display: none;">
-            video device
-            <select id="video_device">
-                <option value="none">none</option>
-                <option value="screen">screen</option>
-            </select>
-        </div>
         <div id="transmitting" style="display: none;">
             publishing
         </div>
@@ -336,7 +329,7 @@
                     }
                 }
 
-                navigator.mediaDevices.getUserMedia({ video, audio })
+                navigator.mediaDevices.getUserMedia({ video:true, audio:true })
                     .then(onTransmitSVC)
                     .catch((err) => {
                         state = ERROR;
@@ -364,6 +357,7 @@
         // onTransmitSVC
         const onTransmitSVC = (stream) => {
             document.getElementById('video').srcObject = stream;
+            console.log(stream);
             const resource = document.getElementById("resource").value;
             //get svc_level
             const rid_value = document.getElementById("svc_level").value;
@@ -383,6 +377,9 @@
             pc.addTransceiver(stream.getVideoTracks()[0], {
                 direction: 'sendonly',
                 sendEncodings: sendEncodings
+            });
+            pc.addTransceiver(stream.getAudioTracks()[0], {
+                direction: 'sendonly',
             });
             const whip = new WHIPClient();
             const url = location.origin + "/whip/" + resource;
