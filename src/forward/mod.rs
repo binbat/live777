@@ -13,7 +13,7 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
-use crate::media;
+use crate::{media, metrics};
 
 mod forward_internal;
 mod track_match;
@@ -62,7 +62,11 @@ impl PeerForward {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
+                        RTCPeerConnectionState::Connected => {
+                            metrics::PUBLISH.inc();
+                        }
                         RTCPeerConnectionState::Closed => {
+                            metrics::PUBLISH.dec();
                             let _ = internal.remove_anchor(pc).await;
                         }
                         _ => {}
@@ -113,9 +117,11 @@ impl PeerForward {
                             let _ = pc.close().await;
                         }
                         RTCPeerConnectionState::Connected => {
+                            metrics::SUBSCRIBE.inc();
                             let _ = internal.add_subscribe(pc).await;
                         }
                         RTCPeerConnectionState::Closed => {
+                            metrics::SUBSCRIBE.dec();
                             let _ = internal.remove_subscribe(pc).await;
                         }
                         _ => {}
