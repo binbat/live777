@@ -77,15 +77,19 @@
         </div>
         <div id="device" style="display: none;">
             <div id="device_line">
-                <div>
+                <div id="device_media">
                     video device
                     <select id="video_device">
                         <option value="none">none</option>
                     </select>
                 </div>
-                <div>
-                    audio device
-                    <select id="audio_device">
+                <div id="audio_device">
+                    audio input
+                    <select id="audio_input">
+                        <option value="none">none</option>
+                    </select>
+                    audio output
+                    <select id="audio_output">
                         <option value="none">none</option>
                     </select>
                 </div>
@@ -113,12 +117,12 @@
                     audio bitrate (kbps)
                     <input id="audio_bitrate" type="text" value="32" />
                 </div>
-
                 <div>
                     <input id="audio_voice" type="checkbox" checked>
                     <label for="audio_voice">optimize for voice</label>
                 </div>
             </div>
+            
             <div id="SVC">
                 SVC Level
                 <select id="svc_level">
@@ -137,6 +141,13 @@
                 <button onclick="startWhep()"> WebRTC Start Whep</button>
             </div>
         </div>
+        <div id="screening" style="display: none;">
+            video device
+            <select id="video_device">
+                <option value="none">none</option>
+                <option value="screen">screen</option>
+            </select>
+        </div>
         <div id="transmitting" style="display: none;">
             publishing
         </div>
@@ -148,27 +159,40 @@
     <script src="whip.js"></script>
     <script src="whep.js"></script>
     <script>
-        //show screen-svc
-        function showDiv() {
-            var selectBox = document.getElementById("video_device");
-            var selectedOption = selectBox.options[selectBox.selectedIndex].value;
-            var divToDisplay = document.getElementById("SVC");
-
-            if (selectedOption === "screen") {
-                divToDisplay.style.display = "flex";
-            } else {
-                divToDisplay.style.display = "none";
-            }
-        }
         // define four states
         const INITIALIZING = 0;
         const DEVICE = 1;
         const TRANSMITTING = 2;
         const ERROR = 3;
+        const SCREEN = 4;
 
         let state = INITIALIZING;
         let errorMessage = '';
+        // initialize
+        const initialize = () => {
+            if (navigator.mediaDevices === undefined) {
+                state = ERROR;
+                errorMessage = 'can\'t access webcams or microphones. Make sure that WebRTC encryption is enabled.';
+                render();
+                return;
+            }
 
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                .then(() => Promise.all([
+                    populateDevices(),
+                    populateCodecs(),
+                ]))
+                .then(() => {
+                    state = DEVICE;
+                    render();
+                })
+                .catch((err) => {
+                    state = ERROR;
+                    errorMessage = err.toString();
+                    render();
+                });
+        };
+            
         // display state 
         const render = () => {
             for (const el of ['initializing', 'device', 'transmitting', 'error']) {
@@ -180,6 +204,11 @@
                     document.getElementById('device').style.display = 'flex';
                     break;
 
+                case SCREEN:
+                    document.getElementById('device_screen').style.display = 'flex';
+
+                    break;
+
                 case TRANSMITTING:
                     document.getElementById('transmitting').style.display = 'flex';
                     break;
@@ -189,7 +218,7 @@
                     document.getElementById('error-message').innerHTML = 'error: ' + errorMessage;
                     break;
             }
-        };
+        };  
         // populateDevices
         const populateDevices = () => {
             return navigator.mediaDevices.enumerateDevices()
@@ -210,9 +239,18 @@
                                     const opt = document.createElement('option');
                                     opt.value = device.deviceId;
                                     opt.text = device.label;
-                                    document.getElementById('audio_device').appendChild(opt);
+                                    document.getElementById('audio_input').appendChild(opt);
                                 }
                                 break;
+
+                            case 'audiooutput':
+                            {
+                                const opt = document.createElement('option');
+                                opt.value = device.deviceId;
+                                opt.text = device.label;
+                                document.getElementById('audio_output').appendChild(opt);
+                            }
+                            break;
                         }
                     }
 
@@ -227,9 +265,44 @@
                         document.getElementById('video_device').value = document.getElementById('video_device').children[1].value;
                     }
 
-                    if (document.getElementById('audio_device').children.length !== 0) {
-                        document.getElementById('audio_device').value = document.getElementById('audio_device').children[1].value;
+                    if (document.getElementById('audio_input').children.length !== 0) {
+                        document.getElementById('audio_input').value = document.getElementById('audio_input').children[1].value;
                     }
+
+                    if (document.getElementById('audio_output').children.length !== 0) {
+                        document.getElementById('audio_output').value = document.getElementById('audio_input').children[1].value;
+                    }
+                });
+        };
+        // populateCodecs
+        const populateCodecs = () => {
+            const pc = new RTCPeerConnection({});
+            pc.addTransceiver("video", { direction: 'sendonly' });
+            pc.addTransceiver("audio", { direction: 'sendonly' });
+
+            return pc.createOffer()
+                .then((desc) => {
+                    const sdp = desc.sdp.toLowerCase();
+
+                    for (const codec of ['av1/90000', 'vp9/90000', 'vp8/90000', 'h264/90000']) {
+                        if (sdp.includes(codec)) {
+                            const opt = document.createElement('option');
+                            opt.value = codec;
+                            opt.text = codec.split('/')[0].toUpperCase();
+                            document.getElementById('video_codec').appendChild(opt);
+                        }
+                    }
+
+                    for (const codec of ['opus/48000', 'g722/8000', 'pcmu/8000', 'pcma/8000']) {
+                        if (sdp.includes(codec)) {
+                            const opt = document.createElement('option');
+                            opt.value = codec;
+                            opt.text = codec.split('/')[0].toUpperCase();
+                            document.getElementById('audio_codec').appendChild(opt);
+                        }
+                    }
+
+                    pc.close();
                 });
         };
         // onPublish
@@ -238,7 +311,7 @@
             render();
 
             const videoId = document.getElementById('video_device').value;
-            const audioId = document.getElementById('audio_device').value;
+            const audioId = document.getElementById('audio_input').value;
 
             if (videoId !== 'screen') {
                 let video = false;
@@ -316,63 +389,7 @@
             const token = document.getElementById("token").value;
             whip.publish(pc, url, token);
         };
-        // populateCodecs
-        const populateCodecs = () => {
-            const pc = new RTCPeerConnection({});
-            pc.addTransceiver("video", { direction: 'sendonly' });
-            pc.addTransceiver("audio", { direction: 'sendonly' });
-
-            return pc.createOffer()
-                .then((desc) => {
-                    const sdp = desc.sdp.toLowerCase();
-
-                    for (const codec of ['av1/90000', 'vp9/90000', 'vp8/90000', 'h264/90000']) {
-                        if (sdp.includes(codec)) {
-                            const opt = document.createElement('option');
-                            opt.value = codec;
-                            opt.text = codec.split('/')[0].toUpperCase();
-                            document.getElementById('video_codec').appendChild(opt);
-                        }
-                    }
-
-                    for (const codec of ['opus/48000', 'g722/8000', 'pcmu/8000', 'pcma/8000']) {
-                        if (sdp.includes(codec)) {
-                            const opt = document.createElement('option');
-                            opt.value = codec;
-                            opt.text = codec.split('/')[0].toUpperCase();
-                            document.getElementById('audio_codec').appendChild(opt);
-                        }
-                    }
-
-                    pc.close();
-                });
-        };
-        // initialize
-        const initialize = () => {
-            if (navigator.mediaDevices === undefined) {
-                state = ERROR;
-                errorMessage = 'can\'t access webcams or microphones. Make sure that WebRTC encryption is enabled.';
-                render();
-                return;
-            }
-
-            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-                .then(() => Promise.all([
-                    populateDevices(),
-                    populateCodecs(),
-                ]))
-                .then(() => {
-                    state = DEVICE;
-                    render();
-                })
-                .catch((err) => {
-                    state = ERROR;
-                    errorMessage = err.toString();
-                    render();
-                });
-        };
-
-
+        // startWhip
         async function startWhip() {
             const resource = document.getElementById("resource").value;
             if (!resource) {
