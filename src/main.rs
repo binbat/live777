@@ -1,4 +1,10 @@
+use std::env;
+use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::Arc;
+
 use axum::http::{HeaderMap, Uri};
+use axum::routing::get;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -6,16 +12,16 @@ use axum::{
     routing::post,
     Router,
 };
-use config::IceServer;
 use log::info;
-use path::manager::Manager;
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::env;
-
+#[cfg(debug_assertions)]
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+
+use config::IceServer;
+use path::manager::Manager;
+#[cfg(not(debug_assertions))]
+use {http::header, rust_embed::RustEmbed};
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
@@ -24,10 +30,17 @@ mod auth;
 mod config;
 mod forward;
 mod media;
+mod metrics;
 mod path;
 
 #[tokio::main]
 async fn main() {
+    metrics::REGISTRY
+        .register(Box::new(metrics::PUBLISH.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::SUBSCRIBE.clone()))
+        .unwrap();
     let log_level = if cfg!(debug_assertions) {
         env::var("LOG_LEVEL").unwrap_or_else(|_| "debug".to_string())
     } else {
@@ -79,6 +92,7 @@ async fn main() {
                 .layer(auth_layer)
                 .options(ice_server_config),
         )
+        .route("/metrics", get(metrics))
         .with_state(app_state);
     app = static_server(app);
     axum::Server::bind(&addr)
@@ -87,10 +101,12 @@ async fn main() {
         .unwrap();
 }
 
-#[cfg(debug_assertions)]
-use tower_http::services::{ServeDir, ServeFile};
-#[cfg(not(debug_assertions))]
-use {http::header, rust_embed::RustEmbed};
+async fn metrics() -> String {
+    metrics::ENCODER
+        .encode_to_string(&metrics::REGISTRY.gather())
+        .unwrap()
+}
+
 #[cfg(not(debug_assertions))]
 #[derive(RustEmbed)]
 #[folder = "assets/"]
