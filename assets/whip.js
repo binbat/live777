@@ -8,119 +8,128 @@ class WHIPClient {
         //Pending candidadtes
         this.candidates = [];
         this.endOfcandidates = false;
-        this.id = ""
+        this.id = "";
     }
 
     async publish(pc, url, token) {
         // edit answer_sdp
-        const onRemoteAnswer=(answer_sdp) =>{
-
+        const onRemoteAnswer = (answer_sdp) => {
             const answer_modified = editAnswer(
                 answer_sdp,
-                document.getElementById('video_codec').value,
-                document.getElementById('audio_codec').value,
-                document.getElementById('video_bitrate').value,
-                document.getElementById('audio_bitrate').value,
-                document.getElementById('audio_voice').value,
+                document.getElementById("video_codec").value,
+                document.getElementById("audio_codec").value,
+                document.getElementById("video_bitrate").value,
+                document.getElementById("audio_bitrate").value,
+                document.getElementById("audio_voice").value,
             );
             return answer_modified;
-        }
+        };
+
         const editAnswer = (answer_sdp, videoCodec, audioCodec, videoBitrate, audioBitrate, audioVoice) => {
-            const sections = answer_sdp.split('m=');
+            const sections = answer_sdp.split("m=");
             for (let i = 0; i < sections.length; i++) {
                 const section = sections[i];
-                if (section.startsWith('video')) {
+                if (section.startsWith("video")) {
                     sections[i] = setVideoBitrate(setCodec(section, videoCodec), videoBitrate);
-                } else if (section.startsWith('audio')) {
+                } else if (section.startsWith("audio")) {
                     sections[i] = setAudioBitrate(setCodec(section, audioCodec), audioBitrate, audioVoice);
                 }
             }
-            
-            const answer_modified = sections.join('m=');
+
+            const answer_modified = sections.join("m=");
             console.log(answer_modified);
             return answer_modified;
         };
 
         const setVideoBitrate = (section, bitrate) => {
-            let lines = section.split('\r\n');
-        
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith('c=')) {
-                    lines = [...lines.slice(0, i+1), 'b=TIAS:' + (parseInt(bitrate) * 1024).toString(), ...lines.slice(i+1)];
-                    break
-                }
-            }
-        
-            return lines.join('\r\n');
-        };
+            let lines = section.split("\r\n");
 
-        const setAudioBitrate = (section, bitrate, voice) => {
-            let opusPayloadFormat = '';
-            let lines = section.split('\r\n');
-        
             for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith('a=rtpmap:') && lines[i].toLowerCase().includes('opus/')) {
-                    opusPayloadFormat = lines[i].slice('a=rtpmap:'.length).split(' ')[0];
+                if (lines[i].startsWith("c=")) {
+                    lines = [
+                        ...lines.slice(0, i + 1),
+                        "b=TIAS:" + (parseInt(bitrate) * 1024).toString(),
+                        ...lines.slice(i + 1),
+                    ];
                     break;
                 }
             }
-        
-            if (opusPayloadFormat === '') {
+
+            return lines.join("\r\n");
+        };
+
+        const setAudioBitrate = (section, bitrate, voice) => {
+            let opusPayloadFormat = "";
+            let lines = section.split("\r\n");
+
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].startsWith("a=rtpmap:") && lines[i].toLowerCase().includes("opus/")) {
+                    opusPayloadFormat = lines[i].slice("a=rtpmap:".length).split(" ")[0];
+                    break;
+                }
+            }
+
+            if (opusPayloadFormat === "") {
                 return section;
             }
-        
+
             for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith('a=fmtp:' + opusPayloadFormat + ' ')) {
+                if (lines[i].startsWith("a=fmtp:" + opusPayloadFormat + " ")) {
                     if (voice) {
-                        lines[i] = 'a=fmtp:' + opusPayloadFormat + ' minptime=10;useinbandfec=1;maxaveragebitrate='
-                            + (parseInt(bitrate) * 1024).toString();
+                        lines[i] =
+                            "a=fmtp:" +
+                            opusPayloadFormat +
+                            " minptime=10;useinbandfec=1;maxaveragebitrate=" +
+                            (parseInt(bitrate) * 1024).toString();
                     } else {
-                        lines[i] = 'a=fmtp:' + opusPayloadFormat + ' maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate'
-                            + (parseInt(bitrate) * 1024).toString();
+                        lines[i] =
+                            "a=fmtp:" +
+                            opusPayloadFormat +
+                            " maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate" +
+                            (parseInt(bitrate) * 1024).toString();
                     }
                 }
             }
-        
-            return lines.join('\r\n');
+
+            return lines.join("\r\n");
         };
 
         const setCodec = (section, codec) => {
-            const lines = section.split('\r\n');
+            const lines = section.split("\r\n");
             const lines2 = [];
             const payloadFormats = [];
-        
+
             for (const line of lines) {
-                if (!line.startsWith('a=rtpmap:')) {
+                if (!line.startsWith("a=rtpmap:")) {
                     lines2.push(line);
                 } else {
                     if (line.toLowerCase().includes(codec)) {
-                        payloadFormats.push(line.slice('a=rtpmap:'.length).split(' ')[0]);
+                        payloadFormats.push(line.slice("a=rtpmap:".length).split(" ")[0]);
                         lines2.push(line);
                     }
                 }
             }
-        
+
             const lines3 = [];
-        
+
             for (const line of lines2) {
-                if (line.startsWith('a=fmtp:')) {
-                    if (payloadFormats.includes(line.slice('a=fmtp:'.length).split(' ')[0])) {
+                if (line.startsWith("a=fmtp:")) {
+                    if (payloadFormats.includes(line.slice("a=fmtp:".length).split(" ")[0])) {
                         lines3.push(line);
                     }
-                } else if (line.startsWith('a=rtcp-fb:')) {
-                    if (payloadFormats.includes(line.slice('a=rtcp-fb:'.length).split(' ')[0])) {
+                } else if (line.startsWith("a=rtcp-fb:")) {
+                    if (payloadFormats.includes(line.slice("a=rtcp-fb:".length).split(" ")[0])) {
                         lines3.push(line);
                     }
                 } else {
                     lines3.push(line);
                 }
             }
-        
-            return lines3.join('\r\n');
+
+            return lines3.join("\r\n");
         };
         //If already publishing
-        if (this.pc)
-            throw new Error("Already publishing")
+        if (this.pc) throw new Error("Already publishing");
 
         //Store pc object and token
         this.token = token;
@@ -140,11 +149,10 @@ class WHIPClient {
                     // The connection has been closed
                     break;
             }
-        }
+        };
 
         //Listen for candidates
         pc.onicecandidate = (event) => {
-
             if (event.candidate) {
                 //Ignore candidates not from the first m line
                 if (event.candidate.sdpMLineIndex > 0)
@@ -157,32 +165,28 @@ class WHIPClient {
                 this.endOfcandidates = true;
             }
             //Schedule trickle on next tick
-            if (!this.iceTrickeTimeout)
-                this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
-        }
+            if (!this.iceTrickeTimeout) this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
+        };
         //Create SDP offer
         const offer = await pc.createOffer();
 
         //Request headers
         const headers = {
-            "Content-Type": "application/sdp"
+            "Content-Type": "application/sdp",
         };
 
         //If token is set
-        if (token)
-            headers["Authorization"] = "Bearer " + token;
+        if (token) headers["Authorization"] = "Bearer " + token;
 
         //Do the post request to the WHIP endpoint with the SDP offer
         const fetched = await fetch(url, {
             method: "POST",
             body: offer.sdp,
-            headers
+            headers,
         });
 
-        if (!fetched.ok)
-            throw new Error("Request rejected with status " + fetched.status)
-        if (!fetched.headers.get("location"))
-            throw new Error("Response missing location header")
+        if (!fetched.ok) throw new Error("Request rejected with status " + fetched.status);
+        if (!fetched.headers.get("location")) throw new Error("Response missing location header");
 
         //Get the resource url
         this.resourceURL = new URL(fetched.headers.get("location"), url);
@@ -193,16 +197,20 @@ class WHIPClient {
         //If the response contained any
         if (fetched.headers.has("link")) {
             //Get all links headers
-            const linkHeaders = fetched.headers.get("link").split(/,\s+(?=<)/)
+            const linkHeaders = fetched.headers.get("link").split(/,\s+(?=<)/);
 
             //For each one
             for (const header of linkHeaders) {
                 try {
-                    let rel, params = {};
+                    let rel,
+                        params = {};
                     //Split in parts
                     const items = header.split(";");
                     //Create url server
-                    const url = items[0].trim().replace(/<(.*)>/, "$1").trim();
+                    const url = items[0]
+                        .trim()
+                        .replace(/<(.*)>/, "$1")
+                        .trim();
                     //For each other item
                     for (let i = 1; i < items.length; ++i) {
                         //Split into key/val
@@ -211,28 +219,22 @@ class WHIPClient {
                         const key = subitems[0].trim();
                         //Unquote value
                         const value = subitems[1]
-                            ? subitems[1]
-                                .trim()
-                                .replaceAll('"', '')
-                                .replaceAll("'", "")
+                            ? subitems[1].trim().replaceAll('"', "").replaceAll("'", "")
                             : subitems[1];
                         //Check if it is the rel attribute
                         if (key == "rel")
                             //Get rel value
                             rel = value;
-                        else
-                            //Unquote value and set them
-                            params[key] = value
+                        //Unquote value and set them
+                        else params[key] = value;
                     }
                     //Ensure it is an ice server
-                    if (!rel)
-                        continue;
-                    if (!links[rel])
-                        links[rel] = [];
+                    if (!rel) continue;
+                    if (!links[rel]) links[rel] = [];
                     //Add to config
-                    links[rel].push({url, params});
+                    links[rel].push({ url, params });
                 } catch (e) {
-                    console.error(e)
+                    console.error(e);
                 }
             }
         }
@@ -250,19 +252,20 @@ class WHIPClient {
                 try {
                     //Create ice server
                     const iceServer = {
-                        urls: server.url
-                    }
+                        urls: server.url,
+                    };
                     //For each other param
                     for (const [key, value] of Object.entries(server.params)) {
                         //Get key in cammel case
-                        const cammelCase = key.replace(/([-_][a-z])/ig, $1 => $1.toUpperCase().replace('-', '').replace('_', ''))
+                        const cammelCase = key.replace(/([-_][a-z])/gi, ($1) =>
+                            $1.toUpperCase().replace("-", "").replace("_", ""),
+                        );
                         //Unquote value and set them
                         iceServer[cammelCase] = value;
                     }
                     //Add to config
                     config.iceServers.push(iceServer);
-                } catch (e) {
-                }
+                } catch (e) {}
             }
 
             //If any configured
@@ -273,10 +276,9 @@ class WHIPClient {
 
         //Get the SDP answer
         const answer = await fetched.text();
-        this.id = fetched.headers.get("E-tag")
+        this.id = fetched.headers.get("E-tag");
         //Schedule trickle on next tick
-        if (!this.iceTrickeTimeout)
-            this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
+        if (!this.iceTrickeTimeout) this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
 
         //Set local description
         await pc.setLocalDescription(offer);
@@ -293,16 +295,11 @@ class WHIPClient {
         this.iceUsername = offer.sdp.match(/a=ice-ufrag:(.*)\r\n/)[1];
         this.icePassword = offer.sdp.match(/a=ice-pwd:(.*)\r\n/)[1];
         //}
-        
+
         //And set remote description
         const answer_sdp = onRemoteAnswer(answer);
         console.log(answer_sdp);
-        await pc.setRemoteDescription({type: "answer", sdp: answer_sdp});
-    
-        
-        
-
-        
+        await pc.setRemoteDescription({ type: "answer", sdp: answer_sdp });
     }
 
     restart() {
@@ -310,8 +307,7 @@ class WHIPClient {
         this.restartIce = true;
 
         //Schedule trickle on next tick
-        if (!this.iceTrickeTimeout)
-            this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
+        if (!this.iceTrickeTimeout) this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
     }
 
     async trickle() {
@@ -341,7 +337,7 @@ class WHIPClient {
             //Restart ice
             this.pc.restartIce();
             //Create a new offer
-            const offer = await this.pc.createOffer({iceRestart: true});
+            const offer = await this.pc.createOffer({ iceRestart: true });
             //Update ice
             this.iceUsername = offer.sdp.match(/a=ice-ufrag:(.*)\r\n/)[1];
             this.icePassword = offer.sdp.match(/a=ice-pwd:(.*)\r\n/)[1];
@@ -351,9 +347,7 @@ class WHIPClient {
             endOfcandidates = false;
         }
         //Prepare fragment
-        let fragment =
-            "a=ice-ufrag:" + this.iceUsername + "\r\n" +
-            "a=ice-pwd:" + this.icePassword + "\r\n";
+        let fragment = "a=ice-ufrag:" + this.iceUsername + "\r\n" + "a=ice-pwd:" + this.icePassword + "\r\n";
         //Get peerconnection transceivers
         const transceivers = this.pc.getTransceivers();
         //Get medias
@@ -369,9 +363,9 @@ class WHIPClient {
         //For each candidate
         for (const candidate of candidates) {
             //Get mid for candidate
-            const mid = candidate.sdpMid
+            const mid = candidate.sdpMid;
             //Get associated transceiver
-            const transceiver = transceivers.find(t => t.mid == mid);
+            const transceiver = transceivers.find((t) => t.mid == mid);
             //Get media
             let media = medias[mid];
             //If not found yet
@@ -388,32 +382,26 @@ class WHIPClient {
         //For each media
         for (const media of Object.values(medias)) {
             //Add media to fragment
-            fragment +=
-                "m=" + media.kind + " 9 RTP/AVP 0\r\n" +
-                "a=mid:" + media.mid + "\r\n";
+            fragment += "m=" + media.kind + " 9 RTP/AVP 0\r\n" + "a=mid:" + media.mid + "\r\n";
             //Add candidate
-            for (const candidate of media.candidates)
-                fragment += "a=" + candidate.candidate + "\r\n";
-            if (endOfcandidates)
-                fragment += "a=end-of-candidates\r\n";
+            for (const candidate of media.candidates) fragment += "a=" + candidate.candidate + "\r\n";
+            if (endOfcandidates) fragment += "a=end-of-candidates\r\n";
         }
 
         //Request headers
         const headers = {
-            "Content-Type": "application/trickle-ice-sdpfrag"
+            "Content-Type": "application/trickle-ice-sdpfrag",
         };
         //If token is set
-        if (this.token)
-            headers["Authorization"] = "Bearer " + this.token;
+        if (this.token) headers["Authorization"] = "Bearer " + this.token;
         //Do the post request to the WHIP resource
-        headers["If-Match"] = this.id
+        headers["If-Match"] = this.id;
         const fetched = await fetch(this.resourceURL, {
             method: "PATCH",
             body: fragment,
-            headers
+            headers,
         });
-        if (!fetched.ok)
-            throw new Error("Request rejected with status " + fetched.status)
+        if (!fetched.ok) throw new Error("Request rejected with status " + fetched.status);
 
         //If we have got an answer
         if (fetched.status == 200) {
@@ -427,8 +415,14 @@ class WHIPClient {
             const remoteDescription = this.pc.remoteDescription;
 
             //Patch
-            remoteDescription.sdp = remoteDescription.sdp.replaceAll(/(a=ice-ufrag:)(.*)\r\n/gm, "$1" + iceUsername + "\r\n");
-            remoteDescription.sdp = remoteDescription.sdp.replaceAll(/(a=ice-pwd:)(.*)\r\n/gm, "$1" + icePassword + "\r\n");
+            remoteDescription.sdp = remoteDescription.sdp.replaceAll(
+                /(a=ice-ufrag:)(.*)\r\n/gm,
+                "$1" + iceUsername + "\r\n",
+            );
+            remoteDescription.sdp = remoteDescription.sdp.replaceAll(
+                /(a=ice-pwd:)(.*)\r\n/gm,
+                "$1" + icePassword + "\r\n",
+            );
 
             //Set it
             await this.pc.setRemoteDescription(remoteDescription);
@@ -438,25 +432,24 @@ class WHIPClient {
     async mute(muted) {
         //Request headers
         const headers = {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         };
 
         //If token is set
-        if (this.token)
-            headers["Authorization"] = "Bearer " + this.token;
+        if (this.token) headers["Authorization"] = "Bearer " + this.token;
 
         //Do the post request to the WHIP resource
         const fetched = await fetch(this.resourceURL, {
             method: "POST",
             body: JSON.stringify(muted),
-            headers
+            headers,
         });
     }
 
     async stop() {
         if (!this.pc) {
             // Already stopped
-            return
+            return;
         }
 
         //Cancel any pending timeout
@@ -469,22 +462,18 @@ class WHIPClient {
         this.pc = null;
 
         //If we don't have the resource url
-        if (!this.resourceURL)
-            throw new Error("WHIP resource url not available yet");
+        if (!this.resourceURL) throw new Error("WHIP resource url not available yet");
 
         //Request headers
         const headers = {};
 
         //If token is set
-        if (this.token)
-            headers["Authorization"] = "Bearer " + this.token;
+        if (this.token) headers["Authorization"] = "Bearer " + this.token;
 
         //Send a delete
         await fetch(this.resourceURL, {
             method: "DELETE",
-            headers
+            headers,
         });
     }
-
-    
-};
+}
