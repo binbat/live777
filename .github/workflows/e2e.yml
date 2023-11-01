@@ -1,0 +1,35 @@
+name: E2E
+
+on:
+  push:
+    branches:
+    - "main"
+    - "ci-*"
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v3
+    - name: Build
+      run: |
+        cargo build --release
+        cargo build --package=whipinto --release
+        cargo build --package=whepfrom --release
+
+    - name: Install Tools
+      run: |
+        apt update -y && apt install ffmpeg
+        wget https://gist.github.com/a-wing/f7b074770b558e114911e339bb6a3e84/raw/9529d71fb8abe16fe4900a0232c77b2621c8d318/multirun.sh
+        chmod +x multirun.sh
+
+    - name: Run E2E Test
+      run: ./e2e.sh
+
