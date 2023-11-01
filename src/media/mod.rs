@@ -88,7 +88,7 @@ pub fn count_send(md: &MediaDescription) -> usize {
     let mut minus = 0;
     for attribute in &md.attributes {
         match attribute.key.as_str() {
-            "sendonly" => {
+            "sendonly" | "sendrecv" => {
                 count += 1;
                 minus += 1;
             }
