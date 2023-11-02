@@ -144,22 +144,131 @@
         <script src="whip.js"></script>
         <script src="whep.js"></script>
         <script>
-            // define four states
-            const INITIALIZING = 0;
-            const DEVICE = 1;
-            const TRANSMITTING = 2;
-            const ERROR = 3;
+            // onRemoteAnswer
+            /**
+             * Processes a media streaming answer, modifying it with specified parameters.
+             *
+             * @param {string} answer - The media streaming answer to be modified.
+             * @returns {string} - The modified media streaming answer.
+             */
+            function onRemoteAnswer(answer) {
+                return editAnswer(
+                    answer,
+                    document.getElementById("video_codec").value,
+                    document.getElementById("audio_codec").value,
+                    document.getElementById("video_bitrate").value,
+                    document.getElementById("audio_bitrate").value,
+                    document.getElementById("audio_voice").value,
+                );
+            }
+            // editAnswer
+            function editAnswer(answer, videoCodec, audioCodec, videoBitrate, audioBitrate, audioVoice) {
+                const sections = answer.split("m=");
+                for (let i = 0; i < sections.length; i++) {
+                    const section = sections[i];
+                    if (section.startsWith("video")) {
+                        sections[i] = setVideoBitrate(setCodec(section, videoCodec), videoBitrate);
+                    } else if (section.startsWith("audio")) {
+                        sections[i] = setAudioBitrate(setCodec(section, audioCodec), audioBitrate, audioVoice);
+                    }
+                }
 
-            let state = INITIALIZING;
-            let errorMessage = "";
-            // initialize
-            const initialize = () => {
+                return sections.join("m=");
+            }
+            // setVideoBitrate
+            function setVideoBitrate(section, bitrate) {
+                let lines = section.split("\r\n");
+
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].startsWith("c=")) {
+                        lines = [
+                            ...lines.slice(0, i + 1),
+                            "b=TIAS:" + (parseInt(bitrate) * 1024).toString(),
+                            ...lines.slice(i + 1),
+                        ];
+                        break;
+                    }
+                }
+
+                return lines.join("\r\n");
+            }
+            // setAudioBitrate
+            function setAudioBitrate(section, bitrate, voice) {
+                let opusPayloadFormat = "";
+                let lines = section.split("\r\n");
+
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].startsWith("a=rtpmap:") && lines[i].toLowerCase().includes("opus/")) {
+                        opusPayloadFormat = lines[i].slice("a=rtpmap:".length).split(" ")[0];
+                        break;
+                    }
+                }
+
+                if (opusPayloadFormat === "") {
+                    return section;
+                }
+
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].startsWith("a=fmtp:" + opusPayloadFormat + " ")) {
+                        if (voice) {
+                            lines[i] =
+                                "a=fmtp:" +
+                                opusPayloadFormat +
+                                " minptime=10;useinbandfec=1;maxaveragebitrate=" +
+                                (parseInt(bitrate) * 1024).toString();
+                        } else {
+                            lines[i] =
+                                "a=fmtp:" +
+                                opusPayloadFormat +
+                                " maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate" +
+                                (parseInt(bitrate) * 1024).toString();
+                        }
+                    }
+                }
+
+                return lines.join("\r\n");
+            }
+            // setCodec
+            function setCodec(section, codec) {
+                const lines = section.split("\r\n");
+                const lines2 = [];
+                const payloadFormats = [];
+
+                for (const line of lines) {
+                    if (!line.startsWith("a=rtpmap:")) {
+                        lines2.push(line);
+                    } else {
+                        if (line.toLowerCase().includes(codec)) {
+                            payloadFormats.push(line.slice("a=rtpmap:".length).split(" ")[0]);
+                            lines2.push(line);
+                        }
+                    }
+                }
+
+                const lines3 = [];
+
+                for (const line of lines2) {
+                    if (line.startsWith("a=fmtp:")) {
+                        if (payloadFormats.includes(line.slice("a=fmtp:".length).split(" ")[0])) {
+                            lines3.push(line);
+                        }
+                    } else if (line.startsWith("a=rtcp-fb:")) {
+                        if (payloadFormats.includes(line.slice("a=rtcp-fb:".length).split(" ")[0])) {
+                            lines3.push(line);
+                        }
+                    } else {
+                        lines3.push(line);
+                    }
+                }
+
+                return lines3.join("\r\n");
+            }
+            // Initializes the application.
+            function initialize() {
                 navigator.mediaDevices
                     .enumerateDevices()
                     .then((devices) => {
-                        const videoDevices = devices.filter(
-                            (device) => device.kind === "videoinput" && device.label !== "OBS Virtual Camera",
-                        );
+                        const videoDevices = devices.filter((device) => device.kind === "videoinput");
 
                         // Decide whether to request video based on the presence of the camera device
                         const mediaConstraints = {
@@ -183,10 +292,9 @@
                     .catch((error) => {
                         console.error("Error while enumerating devices: ", error);
                     });
-            };
-
-            //render
-            const render = () => {
+            }
+            // Renders the UI based on the current state.
+            function render() {
                 for (const el of ["initializing", "device", "transmitting", "error"]) {
                     document.getElementById(el).style.display = "none";
                 }
@@ -205,9 +313,9 @@
                         document.getElementById("error-message").innerHTML = "error: " + errorMessage;
                         break;
                 }
-            };
-            // populateDevices
-            const populateDevices = () => {
+            }
+            // Populates video and audio devices in the UI.
+            function populateDevices() {
                 return navigator.mediaDevices.enumerateDevices().then((devices) => {
                     for (const device of devices) {
                         switch (device.kind) {
@@ -239,32 +347,31 @@
                                 break;
                         }
                     }
-
+                    const elVideoDevice = document.getElementById("video_device");
+                    const elAudioInput = document.getElementById("audio_input");
+                    const elAudioOutput = document.getElementById("audio_output");
                     if (navigator.mediaDevices.getDisplayMedia !== undefined) {
                         const opt = document.createElement("option");
                         opt.value = "screen";
                         opt.text = "screen";
-                        document.getElementById("video_device").appendChild(opt);
+                        elVideoDevice.appendChild(opt);
                     }
 
-                    if (document.getElementById("video_device").children.length !== 0) {
-                        document.getElementById("video_device").value =
-                            document.getElementById("video_device").children[1].value;
+                    if (elVideoDevice.children.length !== 0) {
+                        elVideoDevice.value = elVideoDevice.children[1].value;
                     }
 
-                    if (document.getElementById("audio_input").children.length !== 0) {
-                        document.getElementById("audio_input").value =
-                            document.getElementById("audio_input").children[1].value;
+                    if (elAudioInput.children.length !== 0) {
+                        elAudioInput.value = elAudioInput.children[1].value;
                     }
 
-                    if (document.getElementById("audio_output").children.length !== 0) {
-                        document.getElementById("audio_output").value =
-                            document.getElementById("audio_input").children[1].value;
+                    if (elAudioOutput.children.length !== 0) {
+                        elAudioOutput.value = elAudioOutput.children[1].value;
                     }
                 });
-            };
-            // populateCodecs
-            const populateCodecs = () => {
+            }
+            // Populates video and audio codecs in the UI.
+            function populateCodecs() {
                 const pc = new RTCPeerConnection({});
                 pc.addTransceiver("video", { direction: "sendonly" });
                 pc.addTransceiver("audio", { direction: "sendonly" });
@@ -292,9 +399,9 @@
 
                     pc.close();
                 });
-            };
-            // onPublish
-            const onPublish = () => {
+            }
+            // Initiates the publishing process
+            function onPublish() {
                 state = TRANSMITTING;
                 render();
 
@@ -350,13 +457,12 @@
                             render();
                         });
                 }
-            };
-            // onTransmitSVC
-            const onTransmitSVC = (stream) => {
+            }
+            // Initiates media streaming with SVC .
+            function onTransmitSVC(stream) {
                 document.getElementById("video").srcObject = stream;
-                console.log(stream);
                 const resource = document.getElementById("resource").value;
-                //get svc_level
+                // Get svc_level
                 const rid_value = document.getElementById("svc_level").value;
                 var sendEncodings = [];
                 if (rid_value == "a") {
@@ -373,25 +479,23 @@
                     direction: "sendonly",
                     sendEncodings: sendEncodings,
                 });
-                // if audioTracks exit
+                // If audioTracks exit
                 const audioTracks = stream.getAudioTracks();
                 if (audioTracks.length > 0) {
                     pc.addTransceiver(audioTracks[0], { direction: "sendonly" });
                 }
-
                 const whip = new WHIPClient();
                 const url = location.origin + "/whip/" + resource;
                 const token = document.getElementById("token").value;
                 whip.publish(pc, url, token);
-            };
-            // startWhip
+            }
+
             async function startWhip() {
                 const resource = document.getElementById("resource").value;
                 if (!resource) {
                     alert("input resource");
                     return;
                 }
-
                 onPublish();
             }
 
@@ -429,6 +533,15 @@
                 const token = document.getElementById("token").value;
                 whep.view(pc, url, token);
             }
+
+            // Define four states
+            const INITIALIZING = 0;
+            const DEVICE = 1;
+            const TRANSMITTING = 2;
+            const ERROR = 3;
+
+            let state = INITIALIZING;
+            let errorMessage = "";
 
             initialize();
         </script>

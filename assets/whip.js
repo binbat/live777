@@ -1,5 +1,3 @@
-//import { EventEmitter } from "events";
-
 class WHIPClient {
     constructor() {
         //Ice properties
@@ -12,122 +10,6 @@ class WHIPClient {
     }
 
     async publish(pc, url, token) {
-        // edit answer_sdp
-        const onRemoteAnswer = (answer_sdp) => {
-            const answer_modified = editAnswer(
-                answer_sdp,
-                document.getElementById("video_codec").value,
-                document.getElementById("audio_codec").value,
-                document.getElementById("video_bitrate").value,
-                document.getElementById("audio_bitrate").value,
-                document.getElementById("audio_voice").value,
-            );
-            return answer_modified;
-        };
-
-        const editAnswer = (answer_sdp, videoCodec, audioCodec, videoBitrate, audioBitrate, audioVoice) => {
-            const sections = answer_sdp.split("m=");
-            for (let i = 0; i < sections.length; i++) {
-                const section = sections[i];
-                if (section.startsWith("video")) {
-                    sections[i] = setVideoBitrate(setCodec(section, videoCodec), videoBitrate);
-                } else if (section.startsWith("audio")) {
-                    sections[i] = setAudioBitrate(setCodec(section, audioCodec), audioBitrate, audioVoice);
-                }
-            }
-
-            const answer_modified = sections.join("m=");
-            console.log(answer_modified);
-            return answer_modified;
-        };
-
-        const setVideoBitrate = (section, bitrate) => {
-            let lines = section.split("\r\n");
-
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith("c=")) {
-                    lines = [
-                        ...lines.slice(0, i + 1),
-                        "b=TIAS:" + (parseInt(bitrate) * 1024).toString(),
-                        ...lines.slice(i + 1),
-                    ];
-                    break;
-                }
-            }
-
-            return lines.join("\r\n");
-        };
-
-        const setAudioBitrate = (section, bitrate, voice) => {
-            let opusPayloadFormat = "";
-            let lines = section.split("\r\n");
-
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith("a=rtpmap:") && lines[i].toLowerCase().includes("opus/")) {
-                    opusPayloadFormat = lines[i].slice("a=rtpmap:".length).split(" ")[0];
-                    break;
-                }
-            }
-
-            if (opusPayloadFormat === "") {
-                return section;
-            }
-
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith("a=fmtp:" + opusPayloadFormat + " ")) {
-                    if (voice) {
-                        lines[i] =
-                            "a=fmtp:" +
-                            opusPayloadFormat +
-                            " minptime=10;useinbandfec=1;maxaveragebitrate=" +
-                            (parseInt(bitrate) * 1024).toString();
-                    } else {
-                        lines[i] =
-                            "a=fmtp:" +
-                            opusPayloadFormat +
-                            " maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate" +
-                            (parseInt(bitrate) * 1024).toString();
-                    }
-                }
-            }
-
-            return lines.join("\r\n");
-        };
-
-        const setCodec = (section, codec) => {
-            const lines = section.split("\r\n");
-            const lines2 = [];
-            const payloadFormats = [];
-
-            for (const line of lines) {
-                if (!line.startsWith("a=rtpmap:")) {
-                    lines2.push(line);
-                } else {
-                    if (line.toLowerCase().includes(codec)) {
-                        payloadFormats.push(line.slice("a=rtpmap:".length).split(" ")[0]);
-                        lines2.push(line);
-                    }
-                }
-            }
-
-            const lines3 = [];
-
-            for (const line of lines2) {
-                if (line.startsWith("a=fmtp:")) {
-                    if (payloadFormats.includes(line.slice("a=fmtp:".length).split(" ")[0])) {
-                        lines3.push(line);
-                    }
-                } else if (line.startsWith("a=rtcp-fb:")) {
-                    if (payloadFormats.includes(line.slice("a=rtcp-fb:".length).split(" ")[0])) {
-                        lines3.push(line);
-                    }
-                } else {
-                    lines3.push(line);
-                }
-            }
-
-            return lines3.join("\r\n");
-        };
         //If already publishing
         if (this.pc) throw new Error("Already publishing");
 
@@ -169,7 +51,6 @@ class WHIPClient {
         };
         //Create SDP offer
         const offer = await pc.createOffer();
-
         //Request headers
         const headers = {
             "Content-Type": "application/sdp",
@@ -238,7 +119,6 @@ class WHIPClient {
                 }
             }
         }
-
         //Get current config
         const config = pc.getConfiguration();
 
@@ -276,6 +156,7 @@ class WHIPClient {
 
         //Get the SDP answer
         const answer = await fetched.text();
+        const process_answer = onRemoteAnswer(answer);
         this.id = fetched.headers.get("E-tag");
         //Schedule trickle on next tick
         if (!this.iceTrickeTimeout) this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
@@ -295,11 +176,8 @@ class WHIPClient {
         this.iceUsername = offer.sdp.match(/a=ice-ufrag:(.*)\r\n/)[1];
         this.icePassword = offer.sdp.match(/a=ice-pwd:(.*)\r\n/)[1];
         //}
-
         //And set remote description
-        const answer_sdp = onRemoteAnswer(answer);
-        console.log(answer_sdp);
-        await pc.setRemoteDescription({ type: "answer", sdp: answer_sdp });
+        await pc.setRemoteDescription({ type: "answer", sdp: process_answer });
     }
 
     restart() {
