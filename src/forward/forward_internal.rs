@@ -596,11 +596,12 @@ impl PeerForwardInternal {
             track.ssrc()
         );
         while let Ok((rtp_packet, _)) = track.read(&mut b).await {
-            let anchor_track_forward = subscription.read().await;
-            let packet = Arc::new(rtp_packet);
-            for (peer_wrap, sender) in anchor_track_forward.iter() {
-                if peer_wrap.0.connection_state() == RTCPeerConnectionState::Connected {
-                    let _ = sender.send(packet.clone());
+            if let Ok(anchor_track_forward) = subscription.try_read() {
+                let packet = Arc::new(rtp_packet);
+                for (peer_wrap, sender) in anchor_track_forward.iter() {
+                    if peer_wrap.0.connection_state() == RTCPeerConnectionState::Connected {
+                        let _ = sender.send(packet.clone());
+                    }
                 }
             }
         }
