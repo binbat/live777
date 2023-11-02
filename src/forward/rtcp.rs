@@ -12,18 +12,18 @@ pub(crate) enum RtcpMessage {
 
 impl RtcpMessage {
     pub(crate) fn from_rtcp_packet(packet: Box<dyn Packet + Send + Sync>) -> Option<Self> {
-        let x = packet.as_any();
-        if let Some(_) = x.downcast_ref::<FullIntraRequest>() {
+        let any = packet.as_any();
+        if any.downcast_ref::<FullIntraRequest>().is_some() {
             return Some(RtcpMessage::FullIntraRequest);
-        } else if let Some(_) = x.downcast_ref::<PictureLossIndication>() {
+        } else if any.downcast_ref::<PictureLossIndication>().is_some() {
             return Some(RtcpMessage::PictureLossIndication);
-        } else if let Some(_) = x.downcast_ref::<SliceLossIndication>() {
+        } else if any.downcast_ref::<SliceLossIndication>().is_some() {
             return Some(RtcpMessage::SliceLossIndication);
         }
         None
     }
 
-    pub(crate) fn to_rtcp_packet(&self, ssrc: u32) -> Box<dyn Packet + Send + Sync> {
+    pub(crate) fn to_rtcp_packet(self, ssrc: u32) -> Box<dyn Packet + Send + Sync> {
         match self {
             RtcpMessage::FullIntraRequest => Box::new(FullIntraRequest {
                 sender_ssrc: 0,
