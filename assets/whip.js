@@ -1,5 +1,3 @@
-//import { EventEmitter } from "events";
-
 class WHIPClient {
     constructor() {
         //Ice properties
@@ -8,13 +6,12 @@ class WHIPClient {
         //Pending candidadtes
         this.candidates = [];
         this.endOfcandidates = false;
-        this.id = ""
+        this.id = "";
     }
 
     async publish(pc, url, token) {
         //If already publishing
-        if (this.pc)
-            throw new Error("Already publishing")
+        if (this.pc) throw new Error("Already publishing");
 
         //Store pc object and token
         this.token = token;
@@ -34,11 +31,10 @@ class WHIPClient {
                     // The connection has been closed
                     break;
             }
-        }
+        };
 
         //Listen for candidates
         pc.onicecandidate = (event) => {
-
             if (event.candidate) {
                 //Ignore candidates not from the first m line
                 if (event.candidate.sdpMLineIndex > 0)
@@ -51,32 +47,27 @@ class WHIPClient {
                 this.endOfcandidates = true;
             }
             //Schedule trickle on next tick
-            if (!this.iceTrickeTimeout)
-                this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
-        }
+            if (!this.iceTrickeTimeout) this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
+        };
         //Create SDP offer
         const offer = await pc.createOffer();
-
         //Request headers
         const headers = {
-            "Content-Type": "application/sdp"
+            "Content-Type": "application/sdp",
         };
 
         //If token is set
-        if (token)
-            headers["Authorization"] = "Bearer " + token;
+        if (token) headers["Authorization"] = "Bearer " + token;
 
         //Do the post request to the WHIP endpoint with the SDP offer
         const fetched = await fetch(url, {
             method: "POST",
             body: offer.sdp,
-            headers
+            headers,
         });
 
-        if (!fetched.ok)
-            throw new Error("Request rejected with status " + fetched.status)
-        if (!fetched.headers.get("location"))
-            throw new Error("Response missing location header")
+        if (!fetched.ok) throw new Error("Request rejected with status " + fetched.status);
+        if (!fetched.headers.get("location")) throw new Error("Response missing location header");
 
         //Get the resource url
         this.resourceURL = new URL(fetched.headers.get("location"), url);
@@ -87,16 +78,20 @@ class WHIPClient {
         //If the response contained any
         if (fetched.headers.has("link")) {
             //Get all links headers
-            const linkHeaders = fetched.headers.get("link").split(/,\s+(?=<)/)
+            const linkHeaders = fetched.headers.get("link").split(/,\s+(?=<)/);
 
             //For each one
             for (const header of linkHeaders) {
                 try {
-                    let rel, params = {};
+                    let rel,
+                        params = {};
                     //Split in parts
                     const items = header.split(";");
                     //Create url server
-                    const url = items[0].trim().replace(/<(.*)>/, "$1").trim();
+                    const url = items[0]
+                        .trim()
+                        .replace(/<(.*)>/, "$1")
+                        .trim();
                     //For each other item
                     for (let i = 1; i < items.length; ++i) {
                         //Split into key/val
@@ -105,32 +100,25 @@ class WHIPClient {
                         const key = subitems[0].trim();
                         //Unquote value
                         const value = subitems[1]
-                            ? subitems[1]
-                                .trim()
-                                .replaceAll('"', '')
-                                .replaceAll("'", "")
+                            ? subitems[1].trim().replaceAll('"', "").replaceAll("'", "")
                             : subitems[1];
                         //Check if it is the rel attribute
                         if (key == "rel")
                             //Get rel value
                             rel = value;
-                        else
-                            //Unquote value and set them
-                            params[key] = value
+                        //Unquote value and set them
+                        else params[key] = value;
                     }
                     //Ensure it is an ice server
-                    if (!rel)
-                        continue;
-                    if (!links[rel])
-                        links[rel] = [];
+                    if (!rel) continue;
+                    if (!links[rel]) links[rel] = [];
                     //Add to config
-                    links[rel].push({url, params});
+                    links[rel].push({ url, params });
                 } catch (e) {
-                    console.error(e)
+                    console.error(e);
                 }
             }
         }
-
         //Get current config
         const config = pc.getConfiguration();
 
@@ -144,19 +132,20 @@ class WHIPClient {
                 try {
                     //Create ice server
                     const iceServer = {
-                        urls: server.url
-                    }
+                        urls: server.url,
+                    };
                     //For each other param
                     for (const [key, value] of Object.entries(server.params)) {
                         //Get key in cammel case
-                        const cammelCase = key.replace(/([-_][a-z])/ig, $1 => $1.toUpperCase().replace('-', '').replace('_', ''))
+                        const cammelCase = key.replace(/([-_][a-z])/gi, ($1) =>
+                            $1.toUpperCase().replace("-", "").replace("_", ""),
+                        );
                         //Unquote value and set them
                         iceServer[cammelCase] = value;
                     }
                     //Add to config
                     config.iceServers.push(iceServer);
-                } catch (e) {
-                }
+                } catch (e) {}
             }
 
             //If any configured
@@ -167,10 +156,10 @@ class WHIPClient {
 
         //Get the SDP answer
         const answer = await fetched.text();
-        this.id = fetched.headers.get("E-tag")
+        const process_answer = onRemoteAnswer(answer);
+        this.id = fetched.headers.get("E-tag");
         //Schedule trickle on next tick
-        if (!this.iceTrickeTimeout)
-            this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
+        if (!this.iceTrickeTimeout) this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
 
         //Set local description
         await pc.setLocalDescription(offer);
@@ -187,9 +176,8 @@ class WHIPClient {
         this.iceUsername = offer.sdp.match(/a=ice-ufrag:(.*)\r\n/)[1];
         this.icePassword = offer.sdp.match(/a=ice-pwd:(.*)\r\n/)[1];
         //}
-
         //And set remote description
-        await pc.setRemoteDescription({type: "answer", sdp: answer});
+        await pc.setRemoteDescription({ type: "answer", sdp: process_answer });
     }
 
     restart() {
@@ -197,8 +185,7 @@ class WHIPClient {
         this.restartIce = true;
 
         //Schedule trickle on next tick
-        if (!this.iceTrickeTimeout)
-            this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
+        if (!this.iceTrickeTimeout) this.iceTrickeTimeout = setTimeout(() => this.trickle(), 0);
     }
 
     async trickle() {
@@ -228,7 +215,7 @@ class WHIPClient {
             //Restart ice
             this.pc.restartIce();
             //Create a new offer
-            const offer = await this.pc.createOffer({iceRestart: true});
+            const offer = await this.pc.createOffer({ iceRestart: true });
             //Update ice
             this.iceUsername = offer.sdp.match(/a=ice-ufrag:(.*)\r\n/)[1];
             this.icePassword = offer.sdp.match(/a=ice-pwd:(.*)\r\n/)[1];
@@ -238,9 +225,7 @@ class WHIPClient {
             endOfcandidates = false;
         }
         //Prepare fragment
-        let fragment =
-            "a=ice-ufrag:" + this.iceUsername + "\r\n" +
-            "a=ice-pwd:" + this.icePassword + "\r\n";
+        let fragment = "a=ice-ufrag:" + this.iceUsername + "\r\n" + "a=ice-pwd:" + this.icePassword + "\r\n";
         //Get peerconnection transceivers
         const transceivers = this.pc.getTransceivers();
         //Get medias
@@ -256,9 +241,9 @@ class WHIPClient {
         //For each candidate
         for (const candidate of candidates) {
             //Get mid for candidate
-            const mid = candidate.sdpMid
+            const mid = candidate.sdpMid;
             //Get associated transceiver
-            const transceiver = transceivers.find(t => t.mid == mid);
+            const transceiver = transceivers.find((t) => t.mid == mid);
             //Get media
             let media = medias[mid];
             //If not found yet
@@ -275,32 +260,26 @@ class WHIPClient {
         //For each media
         for (const media of Object.values(medias)) {
             //Add media to fragment
-            fragment +=
-                "m=" + media.kind + " 9 RTP/AVP 0\r\n" +
-                "a=mid:" + media.mid + "\r\n";
+            fragment += "m=" + media.kind + " 9 RTP/AVP 0\r\n" + "a=mid:" + media.mid + "\r\n";
             //Add candidate
-            for (const candidate of media.candidates)
-                fragment += "a=" + candidate.candidate + "\r\n";
-            if (endOfcandidates)
-                fragment += "a=end-of-candidates\r\n";
+            for (const candidate of media.candidates) fragment += "a=" + candidate.candidate + "\r\n";
+            if (endOfcandidates) fragment += "a=end-of-candidates\r\n";
         }
 
         //Request headers
         const headers = {
-            "Content-Type": "application/trickle-ice-sdpfrag"
+            "Content-Type": "application/trickle-ice-sdpfrag",
         };
         //If token is set
-        if (this.token)
-            headers["Authorization"] = "Bearer " + this.token;
+        if (this.token) headers["Authorization"] = "Bearer " + this.token;
         //Do the post request to the WHIP resource
-        headers["If-Match"] = this.id
+        headers["If-Match"] = this.id;
         const fetched = await fetch(this.resourceURL, {
             method: "PATCH",
             body: fragment,
-            headers
+            headers,
         });
-        if (!fetched.ok)
-            throw new Error("Request rejected with status " + fetched.status)
+        if (!fetched.ok) throw new Error("Request rejected with status " + fetched.status);
 
         //If we have got an answer
         if (fetched.status == 200) {
@@ -314,8 +293,14 @@ class WHIPClient {
             const remoteDescription = this.pc.remoteDescription;
 
             //Patch
-            remoteDescription.sdp = remoteDescription.sdp.replaceAll(/(a=ice-ufrag:)(.*)\r\n/gm, "$1" + iceUsername + "\r\n");
-            remoteDescription.sdp = remoteDescription.sdp.replaceAll(/(a=ice-pwd:)(.*)\r\n/gm, "$1" + icePassword + "\r\n");
+            remoteDescription.sdp = remoteDescription.sdp.replaceAll(
+                /(a=ice-ufrag:)(.*)\r\n/gm,
+                "$1" + iceUsername + "\r\n",
+            );
+            remoteDescription.sdp = remoteDescription.sdp.replaceAll(
+                /(a=ice-pwd:)(.*)\r\n/gm,
+                "$1" + icePassword + "\r\n",
+            );
 
             //Set it
             await this.pc.setRemoteDescription(remoteDescription);
@@ -325,25 +310,24 @@ class WHIPClient {
     async mute(muted) {
         //Request headers
         const headers = {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         };
 
         //If token is set
-        if (this.token)
-            headers["Authorization"] = "Bearer " + this.token;
+        if (this.token) headers["Authorization"] = "Bearer " + this.token;
 
         //Do the post request to the WHIP resource
         const fetched = await fetch(this.resourceURL, {
             method: "POST",
             body: JSON.stringify(muted),
-            headers
+            headers,
         });
     }
 
     async stop() {
         if (!this.pc) {
             // Already stopped
-            return
+            return;
         }
 
         //Cancel any pending timeout
@@ -356,20 +340,18 @@ class WHIPClient {
         this.pc = null;
 
         //If we don't have the resource url
-        if (!this.resourceURL)
-            throw new Error("WHIP resource url not available yet");
+        if (!this.resourceURL) throw new Error("WHIP resource url not available yet");
 
         //Request headers
         const headers = {};
 
         //If token is set
-        if (this.token)
-            headers["Authorization"] = "Bearer " + this.token;
+        if (this.token) headers["Authorization"] = "Bearer " + this.token;
 
         //Send a delete
         await fetch(this.resourceURL, {
             method: "DELETE",
-            headers
+            headers,
         });
     }
-};
+}
