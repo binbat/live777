@@ -160,7 +160,8 @@ async fn whip(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.publish(id, offer).await?;
+    let (answer, key) = state.paths.publish(id, offer).await.map_err(|err|{
+        AppError::not_found(anyhow::anyhow!(err))})?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
@@ -184,7 +185,8 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.subscribe(id, offer).await?;
+    let (answer, key) = state.paths.subscribe(id, offer).await.map_err(|err|{
+        AppError::not_found(anyhow::anyhow!(err))})?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
@@ -276,19 +278,27 @@ fn string_encoder(s: &impl ToString) -> String {
     s[1..s.len() - 1].to_string()
 }
 
-struct AppError(anyhow::Error);
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        (StatusCode::INTERNAL_SERVER_ERROR, self.0.to_string()).into_response()
-    }
-}
-
 impl<E> From<E> for AppError
 where
     E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
-        Self(err.into())
+        Self {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            error: err.into(),
+        }
     }
+}
+
+impl AppError {
+   pub fn not_found<E>(err: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self {
+            status_code: StatusCode::NOT_FOUND,
+            error: err.into(),
+        }
+    }
+  
 }
