@@ -278,6 +278,17 @@ fn string_encoder(s: &impl ToString) -> String {
     s[1..s.len() - 1].to_string()
 }
 
+pub struct AppError {
+    status_code: StatusCode,
+    error: anyhow::Error,
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (self.status_code, self.error.to_string()).into_response()
+    }
+}
+
 impl<E> From<E> for AppError
 where
     E: Into<anyhow::Error>,
@@ -300,5 +311,4 @@ impl AppError {
             error: err.into(),
         }
     }
-  
 }
