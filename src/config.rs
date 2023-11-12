@@ -29,8 +29,8 @@ pub struct Account {
 
 fn default_listen() -> String {
     format!(
-        "0.0.0.0:{}",
-        env::var("PORT").unwrap_or(String::from("3000"))
+        "[::]:{}",
+        env::var("PORT").unwrap_or(String::from("7777"))
     )
 }
 
