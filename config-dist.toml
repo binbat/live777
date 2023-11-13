@@ -1,5 +1,5 @@
 # Http Server Listen Address
-# listen = "0.0.0.0:3000"
+# listen = "[::]:7777"
 
 [[ice_servers]]
 urls = [
@@ -13,8 +13,11 @@ urls = [
 # username = "live777"
 # credential = "live777"
 
+# WHIP/WHEP auth token
+# Headers["Authorization"] = "Bearer {token}"
 [auth]
 tokens = ["live777"]
-[[auth.accounts]]
-username = "live777"
-password = "live777"
+
+# [[auth.accounts]]
+# username = "live777"
+# password = "live777"
