@@ -9,7 +9,7 @@ use webrtc::{
 };
 
 use crate::forward::PeerForward;
-
+use crate::HttpError;
 #[derive(Clone)]
 pub struct Manager {
     ice_servers: Vec<RTCIceServer>,
@@ -52,7 +52,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_subscribe(offer).await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(HttpError::NotFound(anyhow::anyhow!("resource not exists")).into())
         }
     }
 

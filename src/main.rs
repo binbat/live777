@@ -17,7 +17,7 @@ use log::info;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-
+use thiserror::Error;
 use config::IceServer;
 use path::manager::Manager;
 #[cfg(not(debug_assertions))]
@@ -310,5 +310,16 @@ impl AppError {
             status_code: StatusCode::NOT_FOUND,
             error: err.into(),
         }
+    }
+}
+#[derive(Debug, Error)]
+enum HttpError {
+    #[error("404 not found")]
+    NotFound(anyhow::Error),
+}
+
+impl IntoResponse for HttpError {
+    fn into_response(self) -> Response {
+        (StatusCode::NOT_FOUND, self.to_string()).into_response()
     }
 }
