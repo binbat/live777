@@ -316,6 +316,6 @@ impl From<webrtc::Error> for AppError {
 
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
-        AppError::InternalServerError(err.into())
+        AppError::InternalServerError(err)
     }
 }
