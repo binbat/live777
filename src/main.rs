@@ -17,7 +17,7 @@ use log::info;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-
+use thiserror::Error;
 use config::IceServer;
 use path::manager::Manager;
 #[cfg(not(debug_assertions))]
@@ -26,6 +26,7 @@ use {http::header, rust_embed::RustEmbed};
 use crate::auth::ManyValidate;
 use crate::config::Config;
 
+use http::header::ToStrError;
 mod auth;
 mod config;
 mod forward;
@@ -160,8 +161,7 @@ async fn whip(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.publish(id, offer).await.map_err(|err|{
-        AppError::not_found(anyhow::anyhow!(err))})?;
+    let (answer, key) = state.paths.publish(id, offer).await?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
@@ -185,8 +185,7 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.subscribe(id, offer).await.map_err(|err|{
-        AppError::not_found(anyhow::anyhow!(err))})?;
+    let (answer, key) = state.paths.subscribe(id, offer).await?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
@@ -278,37 +277,45 @@ fn string_encoder(s: &impl ToString) -> String {
     s[1..s.len() - 1].to_string()
 }
 
-pub struct AppError {
-    status_code: StatusCode,
-    error: anyhow::Error,
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error("404 not found")]
+    NotFound(anyhow::Error),
+    #[error("500 internal server error")]
+    InternalServerError(anyhow::Error),
+    #[error("409 conflict")]
+    Conflict(anyhow::Error),
 }
+
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (self.status_code, self.error.to_string()).into_response()
-    }
-}
-
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            error: err.into(),
+        match self {
+            AppError::NotFound(err) => (StatusCode::NOT_FOUND, err.to_string()).into_response(),
+            AppError::InternalServerError(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+            AppError::Conflict(err) => (StatusCode::CONFLICT, err.to_string()).into_response(),
         }
     }
 }
+impl From<http::Error> for AppError {
+    fn from(err: http::Error) -> Self {
+        AppError::InternalServerError(err.into())
+    }
+}
+impl From<ToStrError> for AppError {
+    fn from(err: ToStrError) -> Self {
+        AppError::InternalServerError(err.into())
+    }
+}
 
-impl AppError {
-   pub fn not_found<E>(err: E) -> Self
-    where
-        E: Into<anyhow::Error>,
-    {
-        Self {
-            status_code: StatusCode::NOT_FOUND,
-            error: err.into(),
-        }
+impl From<webrtc::Error> for AppError {
+    fn from(err: webrtc::Error) -> Self {
+        AppError::InternalServerError(err.into())
+    }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(err: anyhow::Error) -> Self {
+        AppError::InternalServerError(err.into())
     }
 }
