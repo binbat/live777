@@ -9,6 +9,7 @@ use webrtc::{
 };
 
 use crate::forward::PeerForward;
+use crate::AppError;
 
 #[derive(Clone)]
 pub struct Manager {
@@ -52,7 +53,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_subscribe(offer).await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(AppError::ResourceNotFound(("The requested resource not exist,please check the path and try again.").to_string()).into())
         }
     }
 
