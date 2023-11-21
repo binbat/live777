@@ -34,6 +34,7 @@ use webrtc::track::track_remote::TrackRemote;
 
 use crate::forward::track_match::{track_match_codec, track_sort};
 use crate::media;
+use crate::AppError;
 
 use super::rtcp::RtcpMessage;
 use super::track_match;
@@ -156,7 +157,7 @@ impl PeerForwardInternal {
     pub(crate) async fn set_anchor(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
         let mut anchor = self.anchor.write().await;
         if anchor.is_some() {
-            return Err(anyhow::anyhow!("anchor is set"));
+            return Err(AppError::ResourceAlreadyExists("A connection has already been established".to_string()).into());
         }
         info!("[{}] [anchor] set {}", self.id, peer.get_stats_id());
         *anchor = Some(peer);

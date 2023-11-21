@@ -17,6 +17,8 @@ use log::info;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use thiserror::Error;
+use http::header::ToStrError;
 
 use config::IceServer;
 use path::manager::Manager;
@@ -152,7 +154,7 @@ async fn whip(
     header: HeaderMap,
     uri: Uri,
     body: String,
-) -> Result<Response<String>, AppError> {
+) -> AppResult<Response<String>> {
     let content_type = header
         .get("Content-Type")
         .ok_or(anyhow::anyhow!("Content-Type is required"))?;
@@ -176,7 +178,7 @@ async fn whep(
     header: HeaderMap,
     uri: Uri,
     body: String,
-) -> Result<Response<String>, AppError> {
+) -> AppResult<Response<String>> {
     let content_type = header
         .get("Content-Type")
         .ok_or(anyhow::anyhow!("Content-Type is required"))?;
@@ -199,7 +201,7 @@ async fn add_ice_candidate(
     Path(id): Path<String>,
     header: HeaderMap,
     body: String,
-) -> Result<Response<String>, AppError> {
+) -> AppResult<Response<String>> {
     let content_type = header
         .get("Content-Type")
         .ok_or(AppError::from(anyhow::anyhow!("Content-Type is required")))?;
@@ -221,7 +223,7 @@ async fn remove_path_key(
     State(state): State<AppState>,
     Path(id): Path<String>,
     header: HeaderMap,
-) -> Result<Response<String>, AppError> {
+) -> AppResult<Response<String>> {
     let key = header
         .get("If-Match")
         .ok_or(AppError::from(anyhow::anyhow!("If-Match is required")))?
@@ -233,7 +235,7 @@ async fn remove_path_key(
         .body("".to_string())?)
 }
 
-async fn ice_server_config(State(state): State<AppState>) -> Result<Response<String>, AppError> {
+async fn ice_server_config(State(state): State<AppState>) -> AppResult<Response<String>> {
     let mut builder = Response::builder()
         .status(StatusCode::NO_CONTENT)
         .header("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH")
@@ -276,19 +278,45 @@ fn string_encoder(s: &impl ToString) -> String {
     s[1..s.len() - 1].to_string()
 }
 
-struct AppError(anyhow::Error);
+pub type AppResult<T> = Result<T, AppError>;
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error("resource not found:{0}")]
+    ResourceNotFound(String),
+    #[error("resource already exists:{0}")]
+    ResourceAlreadyExists(String),
+    #[error("internal server error")]
+    InternalServerError(anyhow::Error),
+}
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (StatusCode::INTERNAL_SERVER_ERROR, self.0.to_string()).into_response()
+        match self {
+            AppError::ResourceNotFound(err) => (StatusCode::NOT_FOUND, err.to_string()).into_response(),
+            AppError::InternalServerError(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+            AppError::ResourceAlreadyExists(err) => (StatusCode::CONFLICT, err.to_string()).into_response(),
+        }
+    }
+}
+impl From<http::Error> for AppError {
+    fn from(err: http::Error) -> Self {
+        AppError::InternalServerError(err.into())
+    }
+}
+impl From<ToStrError> for AppError {
+    fn from(err: ToStrError) -> Self {
+        AppError::InternalServerError(err.into())
     }
 }
 
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self(err.into())
+impl From<webrtc::Error> for AppError {
+    fn from(err: webrtc::Error) -> Self {
+        AppError::InternalServerError(err.into())
+    }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(err: anyhow::Error) -> Self {
+        AppError::InternalServerError(err)
     }
 }
