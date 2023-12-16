@@ -13,8 +13,8 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
-use crate::{media, metrics};
 use crate::AppError;
+use crate::{media, metrics};
 
 mod forward_internal;
 mod rtcp;
@@ -39,11 +39,17 @@ impl PeerForward {
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if self.internal.anchor_is_some().await {
-            return Err(AppError::ResourceAlreadyExists("A connection has already been established".to_string()).into());
+            return Err(AppError::ResourceAlreadyExists(
+                "A connection has already been established".to_string(),
+            )
+            .into());
         }
         let _ = self.anchor_lock.lock().await;
         if self.internal.anchor_is_some().await {
-            return Err(AppError::ResourceAlreadyExists("A connection has already been established".to_string()).into());
+            return Err(AppError::ResourceAlreadyExists(
+                "A connection has already been established".to_string(),
+            )
+            .into());
         }
         let peer = self
             .internal

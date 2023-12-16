@@ -28,10 +28,7 @@ pub struct Account {
 }
 
 fn default_listen() -> String {
-    format!(
-        "[::]:{}",
-        env::var("PORT").unwrap_or(String::from("7777"))
-    )
+    format!("[::]:{}", env::var("PORT").unwrap_or(String::from("7777")))
 }
 
 fn default_ice_servers() -> Vec<IceServer> {

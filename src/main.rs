@@ -12,13 +12,13 @@ use axum::{
     routing::post,
     Router,
 };
+use http::header::ToStrError;
 use log::info;
+use thiserror::Error;
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use thiserror::Error;
-use http::header::ToStrError;
 
 use config::IceServer;
 use path::manager::Manager;
@@ -292,9 +292,15 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         match self {
-            AppError::ResourceNotFound(err) => (StatusCode::NOT_FOUND, err.to_string()).into_response(),
-            AppError::InternalServerError(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-            AppError::ResourceAlreadyExists(err) => (StatusCode::CONFLICT, err.to_string()).into_response(),
+            AppError::ResourceNotFound(err) => {
+                (StatusCode::NOT_FOUND, err.to_string()).into_response()
+            }
+            AppError::InternalServerError(err) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            }
+            AppError::ResourceAlreadyExists(err) => {
+                (StatusCode::CONFLICT, err.to_string()).into_response()
+            }
         }
     }
 }

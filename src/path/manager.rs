@@ -53,7 +53,11 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_subscribe(offer).await
         } else {
-            Err(AppError::ResourceNotFound(("The requested resource not exist,please check the path and try again.").to_string()).into())
+            Err(AppError::ResourceNotFound(
+                ("The requested resource not exist,please check the path and try again.")
+                    .to_string(),
+            )
+            .into())
         }
     }
 
