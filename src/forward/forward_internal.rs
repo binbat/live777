@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
 
-use crate::media;
-use crate::AppError;
 use anyhow::Result;
 use log::{debug, info};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
@@ -31,6 +29,9 @@ use webrtc::sdp::MediaDescription;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_remote::TrackRemote;
+
+use crate::media;
+use crate::AppError;
 
 use super::rtcp::RtcpMessage;
 use super::track_match;
@@ -191,6 +192,10 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    pub async fn publish_is_svc(&self) -> bool {
+        self.publish_track_remotes(RTPCodecType::Video).await.len() > 1
+    }
+
     async fn publish_track_remotes(&self, code_type: RTPCodecType) -> Vec<Arc<TrackRemote>> {
         let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
         let mut video_track_remotes = vec![];
@@ -200,6 +205,21 @@ impl PeerForwardInternal {
             }
         }
         video_track_remotes
+    }
+
+    async fn publish_svc_rids(&self) -> Result<Vec<String>> {
+        let anchor = self.anchor.read().await.as_ref().cloned();
+        if let Some(pc) = anchor {
+            if let Some(rd) = pc.remote_description().await {
+                let mds = rd.unmarshal()?.media_descriptions;
+                for md in mds {
+                    if RTPCodecType::from(md.media_name.media.as_str()) == RTPCodecType::Video {
+                        return Ok(media::rids(&md));
+                    }
+                }
+            }
+        }
+        return Err(anyhow::anyhow!("anchor is none"));
     }
 
     pub async fn remove_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
@@ -283,7 +303,15 @@ impl PeerForwardInternal {
             .map(|(t, _)| t.0.clone())
             .collect();
         for media_description in media_descriptions {
-            if let Some(track) = track_match::track_match(&media_description, &tracks) {
+            let rids = if RTPCodecType::from(media_description.media_name.media.as_str())
+                == RTPCodecType::Video
+                && self.publish_is_svc().await
+            {
+                Some(self.publish_svc_rids().await?)
+            } else {
+                None
+            };
+            if let Some(track) = track_match::track_match(&media_description, &tracks, rids) {
                 if let Ok(sender) = self
                     .new_subscription_peer_track(
                         peer.clone(),
@@ -469,10 +497,11 @@ impl PeerForwardInternal {
     ) {
         let mut b = vec![0u8; 1500];
         info!(
-            "[{}] [anchor] [track-{}-{}] forward up",
+            "[{}] [anchor] [track-{}-{}-{}] forward up",
             id,
             track.kind(),
-            track.ssrc()
+            track.ssrc(),
+            track.rid()
         );
         while let Ok((rtp_packet, _)) = track.read(&mut b).await {
             if let Ok(anchor_track_forward) = subscription.try_read() {
@@ -485,10 +514,11 @@ impl PeerForwardInternal {
             }
         }
         info!(
-            "[{}] [anchor] [track-{}-{}] forward down",
+            "[{}] [anchor] [track-{}-{}-{}] forward down",
             id,
             track.kind(),
-            track.ssrc()
+            track.ssrc(),
+            track.rid()
         );
     }
 

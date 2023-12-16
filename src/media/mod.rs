@@ -105,3 +105,17 @@ pub fn count_send(md: &MediaDescription) -> usize {
     }
     count
 }
+
+pub fn rids(md: &MediaDescription) -> Vec<String> {
+    let mut rids = vec![];
+    for attribute in &md.attributes {
+        match attribute.key.as_str() {
+            "rid" => {
+                let val = attribute.value.clone().unwrap();
+                rids.push(val.split(" ").next().unwrap().to_string())
+            }
+            _ => {}
+        }
+    }
+    rids
+}
