@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use log::info;
 use tokio::sync::Mutex;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -13,6 +13,7 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
+use crate::layer::Layer;
 use crate::AppError;
 use crate::{media, metrics};
 
@@ -155,8 +156,21 @@ impl PeerForward {
     pub async fn remove_peer(&self, key: String) -> Result<bool> {
         self.internal.remove_peer(key).await
     }
-}
 
+    pub async fn layers(&self) -> Result<Vec<Layer>> {
+        if self.internal.publish_is_svc().await {
+            let mut layers = vec![];
+            for rid in self.internal.publish_svc_rids().await? {
+                layers.push(Layer {
+                    encoding_id: rid.to_owned(),
+                });
+            }
+            Ok(layers)
+        } else {
+            Err(anyhow::anyhow!("not layers"))
+        }
+    }
+}
 async fn peer_complete(
     offer: RTCSessionDescription,
     peer: Arc<RTCPeerConnection>,

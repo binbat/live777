@@ -9,6 +9,7 @@ use webrtc::{
 };
 
 use crate::forward::PeerForward;
+use crate::layer::Layer;
 use crate::AppError;
 
 #[derive(Clone)]
@@ -90,5 +91,16 @@ impl Manager {
             }
         }
         Ok(())
+    }
+
+    pub async fn layers(&self, path: String) -> Result<Vec<Layer>> {
+        let paths = self.paths.read().await;
+        let forward = paths.get(&path).cloned();
+        drop(paths);
+        if let Some(forward) = forward {
+            forward.layers().await
+        } else {
+            Err(anyhow::anyhow!("resource not exists"))
+        }
     }
 }

@@ -31,6 +31,7 @@ use crate::config::Config;
 mod auth;
 mod config;
 mod forward;
+mod layer;
 mod media;
 mod metrics;
 mod path;
@@ -186,14 +187,18 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.subscribe(id, offer).await?;
-    Ok(Response::builder()
+    let (answer, key) = state.paths.subscribe(id.clone(), offer).await?;
+    let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
         .header("E-Tag", key)
-        .header("Location", uri.to_string())
-        .body(answer.sdp)?)
+        .header("Location", uri.to_string());
+    if state.paths.layers(id).await.is_ok() {
+        builder = builder.header("Link", format!("<{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"", uri.to_string()))
+                        .header("Link", format!("<{}/sse_info>; rel=\"urn:ietf:params:whep:ext:core:server-sent-events\"; events=\"layers\"", uri.to_string()))
+    }
+    Ok(builder.body(answer.sdp)?)
 }
 
 async fn add_ice_candidate(
@@ -279,6 +284,7 @@ fn string_encoder(s: &impl ToString) -> String {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("resource not found:{0}")]
@@ -304,11 +310,13 @@ impl IntoResponse for AppError {
         }
     }
 }
+
 impl From<http::Error> for AppError {
     fn from(err: http::Error) -> Self {
         AppError::InternalServerError(err.into())
     }
 }
+
 impl From<ToStrError> for AppError {
     fn from(err: ToStrError) -> Self {
         AppError::InternalServerError(err.into())

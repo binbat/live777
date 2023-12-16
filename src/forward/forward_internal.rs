@@ -207,7 +207,7 @@ impl PeerForwardInternal {
         video_track_remotes
     }
 
-    async fn publish_svc_rids(&self) -> Result<Vec<String>> {
+    pub async fn publish_svc_rids(&self) -> Result<Vec<String>> {
         let anchor = self.anchor.read().await.as_ref().cloned();
         if let Some(pc) = anchor {
             if let Some(rd) = pc.remote_description().await {
