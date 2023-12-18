@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use axum::http::{HeaderMap, Uri};
 use axum::routing::get;
+use axum::Json;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -12,6 +13,7 @@ use axum::{
     routing::post,
     Router,
 };
+use forward::info::Layer;
 use http::header::ToStrError;
 use log::info;
 use thiserror::Error;
@@ -27,11 +29,12 @@ use {http::header, rust_embed::RustEmbed};
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
+use crate::dto::req::SelectLayer;
 
 mod auth;
 mod config;
+mod dto;
 mod forward;
-mod layer;
 mod media;
 mod metrics;
 mod path;
@@ -92,8 +95,12 @@ async fn main() {
             post(whep)
                 .patch(add_ice_candidate)
                 .delete(remove_path_key)
-                .layer(auth_layer)
+                .layer(auth_layer.clone())
                 .options(ice_server_config),
+        )
+        .route(
+            "/whep/:id/layer",
+            get(get_layer).post(select_layer).layer(auth_layer),
         )
         .route("/metrics", get(metrics))
         .with_state(app_state);
@@ -195,8 +202,13 @@ async fn whep(
         .header("E-Tag", key)
         .header("Location", uri.to_string());
     if state.paths.layers(id).await.is_ok() {
-        builder = builder.header("Link", format!("<{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"", uri.to_string()))
-                        .header("Link", format!("<{}/sse_info>; rel=\"urn:ietf:params:whep:ext:core:server-sent-events\"; events=\"layers\"", uri.to_string()))
+        builder = builder.header(
+            "Link",
+            format!(
+                "<{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
+                uri.to_string()
+            ),
+        )
     }
     Ok(builder.body(answer.sdp)?)
 }
@@ -252,6 +264,40 @@ async fn ice_server_config(State(state): State<AppState>) -> AppResult<Response<
         builder = builder.header("Link", link);
     }
     Ok(builder.body("".to_owned())?)
+}
+
+async fn get_layer(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<Json<Vec<Layer>>> {
+    let layers = state.paths.layers(id).await?;
+    Ok(Json(layers))
+}
+
+async fn select_layer(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    header: HeaderMap,
+    Json(layer): Json<SelectLayer>,
+) -> AppResult<String> {
+    let key = header
+        .get("If-Match")
+        .ok_or(AppError::from(anyhow::anyhow!("If-Match is required")))?
+        .to_str()?
+        .to_string();
+    state
+        .paths
+        .select_layer(
+            id,
+            key,
+            if let Some(encoding_id) = layer.encoding_id {
+                Some(Layer { encoding_id })
+            } else {
+                None
+            },
+        )
+        .await?;
+    Ok("".to_string())
 }
 
 fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {

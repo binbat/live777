@@ -13,11 +13,12 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
-use crate::layer::Layer;
+use crate::forward::info::Layer;
 use crate::AppError;
 use crate::{media, metrics};
 
 mod forward_internal;
+pub mod info;
 mod rtcp;
 mod track_match;
 
@@ -170,7 +171,15 @@ impl PeerForward {
             Err(anyhow::anyhow!("not layers"))
         }
     }
+
+    pub async fn select_layer(&self, key: String, layer: Option<Layer>) -> Result<()> {
+        if !self.internal.publish_is_svc().await {
+            return Err(anyhow::anyhow!("anchor svc is not enabled"));
+        }
+        self.internal.select_layer(key, layer).await
+    }
 }
+
 async fn peer_complete(
     offer: RTCSessionDescription,
     peer: Arc<RTCPeerConnection>,

@@ -8,8 +8,8 @@ use webrtc::{
     peer_connection::sdp::session_description::RTCSessionDescription,
 };
 
+use crate::forward::info::Layer;
 use crate::forward::PeerForward;
-use crate::layer::Layer;
 use crate::AppError;
 
 #[derive(Clone)]
@@ -99,6 +99,22 @@ impl Manager {
         drop(paths);
         if let Some(forward) = forward {
             forward.layers().await
+        } else {
+            Err(anyhow::anyhow!("resource not exists"))
+        }
+    }
+
+    pub async fn select_layer(
+        &self,
+        path: String,
+        key: String,
+        layer: Option<Layer>,
+    ) -> Result<()> {
+        let paths = self.paths.read().await;
+        let forward = paths.get(&path).cloned();
+        drop(paths);
+        if let Some(forward) = forward {
+            forward.select_layer(key, layer).await
         } else {
             Err(anyhow::anyhow!("resource not exists"))
         }

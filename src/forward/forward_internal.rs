@@ -30,6 +30,7 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_remote::TrackRemote;
 
+use crate::forward::info::Layer;
 use crate::media;
 use crate::AppError;
 
@@ -219,7 +220,65 @@ impl PeerForwardInternal {
                 }
             }
         }
-        return Err(anyhow::anyhow!("anchor is none"));
+        Err(anyhow::anyhow!("anchor svc rids error"))
+    }
+
+    pub async fn select_layer(&self, key: String, layer: Option<Layer>) -> Result<()> {
+        let rid = if let Some(layer) = layer {
+            layer.encoding_id
+        } else {
+            self.publish_svc_rids().await?[0].clone()
+        };
+        let peer: Option<PeerWrap> = self
+            .subscribe_group
+            .read()
+            .await
+            .iter()
+            .filter(|p| p.get_key() == key)
+            .map(|p| p.clone())
+            .next();
+        if let Some(peer) = peer {
+            let anchor_track_forward_map = self.anchor_track_forward_map.write().await;
+            for (track_remote, track_forward) in anchor_track_forward_map.iter() {
+                if track_remote.0.rid() == rid && track_remote.0.kind() == RTPCodecType::Video {
+                    for (track_remote_original, track_forward_original) in
+                        anchor_track_forward_map.iter()
+                    {
+                        if track_remote_original.0.kind() != RTPCodecType::Video {
+                            continue;
+                        }
+                        let mut subscription_group =
+                            track_forward_original.subscription_group.write().await;
+                        if subscription_group.contains_key(&peer) {
+                            if track_remote_original.0.rid() == rid {
+                                return Ok(());
+                            }
+                            let sender = subscription_group.remove(&peer).unwrap();
+                            drop(subscription_group);
+                            track_forward
+                                .subscription_group
+                                .write()
+                                .await
+                                .insert(peer.clone(), sender);
+                            let _ = track_forward
+                                .rtcp_send
+                                .try_send(RtcpMessage::PictureLossIndication);
+                            info!(
+                                "[{}] [subscribe] [{}] select layer {} to {} ",
+                                self.id,
+                                peer.get_key(),
+                                track_remote_original.0.rid(),
+                                rid
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Err(anyhow::anyhow!("not found layer"))
+        } else {
+            Err(anyhow::anyhow!("not found key"))
+        }
     }
 
     pub async fn remove_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
