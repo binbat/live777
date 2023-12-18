@@ -229,14 +229,13 @@ impl PeerForwardInternal {
         } else {
             self.publish_svc_rids().await?[0].clone()
         };
-        let peer: Option<PeerWrap> = self
+        let peer = self
             .subscribe_group
             .read()
             .await
             .iter()
-            .filter(|p| p.get_key() == key)
-            .map(|p| p.clone())
-            .next();
+            .find(|p| p.get_key() == key)
+            .cloned();
         if let Some(peer) = peer {
             let anchor_track_forward_map = self.anchor_track_forward_map.write().await;
             for (track_remote, track_forward) in anchor_track_forward_map.iter() {

@@ -206,7 +206,7 @@ async fn whep(
             "Link",
             format!(
                 "<{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                uri.to_string()
+                uri
             ),
         )
     }
@@ -290,11 +290,7 @@ async fn select_layer(
         .select_layer(
             id,
             key,
-            if let Some(encoding_id) = layer.encoding_id {
-                Some(Layer { encoding_id })
-            } else {
-                None
-            },
+            layer.encoding_id.map(|encoding_id| Layer { encoding_id }),
         )
         .await?;
     Ok("".to_string())
