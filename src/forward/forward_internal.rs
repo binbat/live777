@@ -237,7 +237,7 @@ impl PeerForwardInternal {
             .find(|p| p.get_key() == key)
             .cloned();
         if let Some(peer) = peer {
-            let anchor_track_forward_map = self.anchor_track_forward_map.write().await;
+            let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
             for (track_remote, track_forward) in anchor_track_forward_map.iter() {
                 if track_remote.0.rid() == rid && track_remote.0.kind() == RTPCodecType::Video {
                     for (track_remote_original, track_forward_original) in
