@@ -15,8 +15,6 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtcp::reception_report::ReceptionReport;
-use webrtc::rtcp::sender_report::SenderReport;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
@@ -418,17 +416,6 @@ impl PeerForwardInternal {
         let sender = peer
             .add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
-        let ssrc = sender.get_parameters().await.encodings.pop().unwrap().ssrc;
-        let _ = peer
-            .write_rtcp(&[Box::new(SenderReport {
-                ssrc,
-                reports: vec![ReceptionReport {
-                    ssrc,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            })])
-            .await;
         tokio::spawn(Self::subscribe_read_rtcp(
             Arc::downgrade(&peer),
             sender,
