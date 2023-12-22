@@ -389,6 +389,7 @@ class WHEPClient extends EventTarget {
 
         //If token is set
         if (this.token) headers["Authorization"] = "Bearer " + this.token;
+        if (this.id) headers["If-Match"] = this.id;
 
         //Do the post request to the whep resource
         const fetched = await fetch(this.layerUrl, {

@@ -122,8 +122,9 @@
             <div id="SVC">
                 SVC Level
                 <select id="svc_level">
-                    <option value="b">Basic</option>
-                    <option value="a">Enhanced 1</option>
+                    <option value="q">LOW</option>
+                    <!--<option value="h">MEDIUM</option>-->
+                    <option value="f">HIGH</option>
                 </select>
             </div>
             <div>
@@ -264,7 +265,7 @@
 
             return lines3.join("\r\n");
         }
-        // Initializes the application.
+       // Initializes the application.
         function initialize() {
             navigator.mediaDevices
                 .enumerateDevices()
@@ -463,16 +464,28 @@
         function onTransmitSVC(stream) {
             document.getElementById("video").srcObject = stream;
             const resource = document.getElementById("resource").value;
+
             // Get svc_level
+            // NOTE:
+            // https://github.com/livekit/client-sdk-js/blob/761711adb4195dc49a0b32e1e4f88726659dac94/src/room/track/LocalVideoTrack.ts#L492
+            // - f: HIGH
+            // - h: MEDIUM
+            // - q: LOW
             const rid_value = document.getElementById("svc_level").value;
             var sendEncodings = [];
-            if (rid_value == "a") {
+            if (rid_value == "q") {
                 sendEncodings = [
                     { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
-                    { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
+                    // { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T2' },
+                    { rid: 'f', scaleResolutionDownBy: 1.0 },
                 ];
+            //} else if (rid_value == "h") {
+            //    sendEncodings = [
+            //        { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
+            //        { rid: 'f', scaleResolutionDownBy: 1.0 },
+            //    ];
             } else {
-                sendEncodings = [{ rid: "b", scaleResolutionDownBy: 2.0 }];
+                sendEncodings = [{ rid: "f", scaleResolutionDownBy: 1.0 }];
             }
 
             const pc = new RTCPeerConnection();
@@ -533,6 +546,17 @@
             const url = location.origin + "/whep/" + resource;
             const token = document.getElementById("token").value;
             whep.view(pc, url, token);
+
+            const initEvevt = () => {
+                const el = document.getElementById("SVC")
+                if (el) {
+                    el.onchange = (ev) => {
+                        whep.layerUrl = '/whep/777/layer'
+                        whep.selectLayer({"encodingId": ev.target.value})
+                    }
+                }
+            }
+            initEvevt()
         }
 
         // Define four states
