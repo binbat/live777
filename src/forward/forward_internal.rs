@@ -246,12 +246,15 @@ impl PeerForwardInternal {
                         if track_remote_original.0.kind() != RTPCodecType::Video {
                             continue;
                         }
-                        let mut subscription_group =
-                            track_forward_original.subscription_group.write().await;
+                        let subscription_group =
+                            track_forward_original.subscription_group.read().await;
                         if subscription_group.contains_key(&peer) {
                             if track_remote_original.0.rid() == rid {
                                 return Ok(());
                             }
+                            drop(subscription_group);
+                            let mut subscription_group =
+                                track_forward_original.subscription_group.write().await;
                             let sender = subscription_group.remove(&peer).unwrap();
                             drop(subscription_group);
                             track_forward
