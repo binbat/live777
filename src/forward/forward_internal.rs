@@ -29,8 +29,8 @@ use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::forward::info::Layer;
-use crate::media;
 use crate::AppError;
+use crate::{media, metrics};
 
 use super::rtcp::RtcpMessage;
 use super::track_match;
@@ -160,6 +160,7 @@ impl PeerForwardInternal {
         }
         info!("[{}] [anchor] set {}", self.id, peer.get_stats_id());
         *anchor = Some(peer);
+        metrics::PUBLISH.inc();
         Ok(())
     }
 
@@ -180,14 +181,15 @@ impl PeerForwardInternal {
         subscribe_group.clear();
         *anchor = None;
         info!("[{}] [anchor] set none", self.id);
+        metrics::PUBLISH.dec();
         Ok(())
     }
 
     pub async fn add_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
         let mut subscribe_peers = self.subscribe_group.write().await;
         subscribe_peers.push(PeerWrap(peer.clone()));
-        drop(subscribe_peers);
         info!("[{}] [subscribe] [{}] up", self.id, peer.get_stats_id());
+        metrics::SUBSCRIBE.inc();
         Ok(())
     }
 
@@ -298,9 +300,12 @@ impl PeerForwardInternal {
             subscription_group.remove(&peer_wrap);
         }
         let mut subscribe_peers = self.subscribe_group.write().await;
+        let size = subscribe_peers.len();
         subscribe_peers.retain(|x| x != &peer_wrap);
-        drop(subscribe_peers);
-        info!("[{}] [subscribe] [{}] down", self.id, peer.get_stats_id());
+        if size != subscribe_peers.len() {
+            info!("[{}] [subscribe] [{}] down", self.id, peer.get_stats_id());
+            metrics::SUBSCRIBE.dec();
+        }
         Ok(())
     }
 

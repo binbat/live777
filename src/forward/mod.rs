@@ -14,8 +14,8 @@ use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
 use crate::forward::info::Layer;
+use crate::media;
 use crate::AppError;
-use crate::{media, metrics};
 
 mod forward_internal;
 pub mod info;
@@ -72,11 +72,7 @@ impl PeerForward {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
-                        RTCPeerConnectionState::Connected => {
-                            metrics::PUBLISH.inc();
-                        }
                         RTCPeerConnectionState::Closed => {
-                            metrics::PUBLISH.dec();
                             let _ = internal.remove_anchor(pc).await;
                         }
                         _ => {}
@@ -127,7 +123,6 @@ impl PeerForward {
                             let _ = pc.close().await;
                         }
                         RTCPeerConnectionState::Closed => {
-                            metrics::SUBSCRIBE.dec();
                             let _ = internal.remove_subscribe(pc).await;
                         }
                         _ => {}
@@ -140,8 +135,7 @@ impl PeerForward {
             peer_complete(offer, peer.clone()).await?,
             get_peer_key(peer.clone()),
         );
-        metrics::SUBSCRIBE.inc();
-        let _ = self.internal.add_subscribe(peer).await?;
+        self.internal.add_subscribe(peer).await?;
         Ok((sdp, key))
     }
 
