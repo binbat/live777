@@ -8,7 +8,10 @@ Bearer token: <input id="token" type="text">
 Video<br />
 <div id="remoteVideos"></div> <br />
 
-Layer: <select id="layer"></select><br />
+<section>
+    <input type="checkbox" id="layer-check" />
+    Layer: <select disabled id="layer-select"></select><br />
+</section>
 
 Logs<br />
 <div id="div"></div>
@@ -22,24 +25,54 @@ Logs<br />
         { rid: 'f', scalabilityMode: 'L1T3' }
     ]
 
-    function initSelectLayer() {
-        const el = document.getElementById("layer")
-        if (el) {
-            const mapShow = {
-                q: "LOW",
-                h: "MEDIUM",
-                f: "HIGH",
+    const idLayerCheck = "layer-check"
+    const idLayerSelect = "layer-select"
+
+    function initLayerCheck() {
+        const checkLayer = document.getElementById(idLayerCheck)
+        if (checkLayer) {
+            const selectLayer = document.getElementById(idLayerSelect)
+            if (selectLayer) {
+                initLayerSelect(selectLayer)
+                checkLayer.onchange = ev => {
+                    if (ev.target.checked) {
+                        selectLayer.disabled = false
+                    } else {
+                        selectLayer.disabled = true
+                    }
+                }
             }
-            const opts = layers.map(i => {
-                const opt = document.createElement("option")
-                opt.value = i.rid
-                opt.text = mapShow[i.rid]
-                el.appendChild(opt)
-            })
         }
     }
 
-    initSelectLayer()
+    // @return Bool
+    function getLayerCheck() {
+        const checkLayer = document.getElementById(idLayerCheck)
+        return checkLayer ? checkLayer.checked : false
+    }
+
+    // @params HTMLElementSelect
+    function initLayerSelect(selectLayer) {
+        const mapShow = {
+            q: "LOW",
+            h: "MEDIUM",
+            f: "HIGH",
+        }
+        const opts = layers.map(i => {
+            const opt = document.createElement("option")
+            opt.value = i.rid
+            opt.text = mapShow[i.rid]
+            selectLayer.appendChild(opt)
+        })
+    }
+
+    // @return String
+    function getLayerSelect() {
+        const selectLayer = document.getElementById(idLayerSelect)
+        return selectLayer ? selectLayer.value : ""
+    }
+
+    initLayerCheck()
 
     async function startWhip() {
         const resource = document.getElementById("resource").value;
@@ -49,14 +82,25 @@ Logs<br />
         }
         const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
         const pc = new RTCPeerConnection();
+
+        let sendEncodings
+        if (getLayerCheck()) {
+            const layer = getLayerSelect()
+            const index = layers.findIndex(i => i.rid === layer)
+            sendEncodings = layers.slice(0 - (layers.length - index))
+        } else {
+            sendEncodings = []
+        }
         pc.addTransceiver(stream.getVideoTracks()[0], {
             direction: 'sendonly',
-            sendEncodings: layers,
+            sendEncodings: sendEncodings,
         });
         const whip = new WHIPClient();
         const url = location.origin + "/whip/" + resource;
         const token = document.getElementById("token").value;
-        whip.publish(pc, url, token);
+        await whip.publish(pc, url, token);
+
+        document.getElementById(idLayerCheck).disabled = true
     }
 
     async function startWhep() {
@@ -88,15 +132,24 @@ Logs<br />
         const whep = new WHEPClient();
         const url = location.origin + "/whep/" + resource;
         const token = document.getElementById("token").value;
-        whep.view(pc, url, token);
+        await whep.view(pc, url, token);
 
         const initEvevt = () => {
-            const el = document.getElementById("layer")
-            if (el) {
-                el.onchange = ev => whep.selectLayer({"encodingId": ev.target.value})
-            }
+            const el = document.getElementById(idLayerSelect)
+            if (el) el.onchange = ev => whep.selectLayer({"encodingId": ev.target.value})
         }
-        initEvevt()
+
+        if (whep.layerUrl) {
+            const checkLayer = document.getElementById(idLayerCheck)
+            const selectLayer = document.getElementById(idLayerSelect)
+            if (checkLayer && selectLayer) {
+                checkLayer.checked = true
+                checkLayer.disabled = true
+                selectLayer.disabled = false
+            }
+            initEvevt()
+        }
+        document.getElementById(idLayerCheck).disabled = true
 
     }
 
