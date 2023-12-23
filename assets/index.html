@@ -8,12 +8,39 @@ Bearer token: <input id="token" type="text">
 Video<br />
 <div id="remoteVideos"></div> <br />
 
+Layer: <select id="layer"></select><br />
+
 Logs<br />
 <div id="div"></div>
 <script src="./whip.js"></script>
 <script src="./whep.js"></script>
 
 <script>
+    const layers = [
+        { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
+        { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
+        { rid: 'f', scalabilityMode: 'L1T3' }
+    ]
+
+    function initSelectLayer() {
+        const el = document.getElementById("layer")
+        if (el) {
+            const mapShow = {
+                q: "LOW",
+                h: "MEDIUM",
+                f: "HIGH",
+            }
+            const opts = layers.map(i => {
+                const opt = document.createElement("option")
+                opt.value = i.rid
+                opt.text = mapShow[i.rid]
+                el.appendChild(opt)
+            })
+        }
+    }
+
+    initSelectLayer()
+
     async function startWhip() {
         const resource = document.getElementById("resource").value;
         if (!resource) {
@@ -24,11 +51,7 @@ Logs<br />
         const pc = new RTCPeerConnection();
         pc.addTransceiver(stream.getVideoTracks()[0], {
             direction: 'sendonly',
-            sendEncodings: [
-                { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
-                { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
-                { rid: 'f', scalabilityMode: 'L1T3' }
-            ]
+            sendEncodings: layers,
         });
         const whip = new WHIPClient();
         const url = location.origin + "/whip/" + resource;
@@ -66,6 +89,15 @@ Logs<br />
         const url = location.origin + "/whep/" + resource;
         const token = document.getElementById("token").value;
         whep.view(pc, url, token);
+
+        const initEvevt = () => {
+            const el = document.getElementById("layer")
+            if (el) {
+                el.onchange = ev => whep.selectLayer({"encodingId": ev.target.value})
+            }
+        }
+        initEvevt()
+
     }
 
 </script>
