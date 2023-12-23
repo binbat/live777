@@ -126,10 +126,6 @@ impl PeerForward {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
-                        RTCPeerConnectionState::Connected => {
-                            metrics::SUBSCRIBE.inc();
-                            let _ = internal.add_subscribe(pc).await;
-                        }
                         RTCPeerConnectionState::Closed => {
                             metrics::SUBSCRIBE.dec();
                             let _ = internal.remove_subscribe(pc).await;
@@ -140,10 +136,13 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
-        Ok((
+        let (sdp, key) = (
             peer_complete(offer, peer.clone()).await?,
-            get_peer_key(peer),
-        ))
+            get_peer_key(peer.clone()),
+        );
+        metrics::SUBSCRIBE.inc();
+        let _ = self.internal.add_subscribe(peer).await?;
+        Ok((sdp, key))
     }
 
     pub async fn add_ice_candidate(&self, key: String, ice_candidates: String) -> Result<()> {
