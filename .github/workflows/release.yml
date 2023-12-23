@@ -132,6 +132,7 @@ jobs:
         mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
 
     - name: Upload release archive
+      shell: bash
       if: github.ref_type == 'tag'
       run: gh release upload ${{ env.VERSION }} ${{ env.PKG_LIVE777_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
       env:
