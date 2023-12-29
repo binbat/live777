@@ -1,0 +1,12 @@
+[Unit]
+Description=A very simple, high performance, edge WebRTC SFU
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/live777
+Restart=always
+
+[Install]
+WantedBy=default.target
