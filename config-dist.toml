@@ -21,3 +21,9 @@ tokens = ["live777"]
 # [[auth.accounts]]
 # username = "live777"
 # password = "live777"
+
+[log]
+# Env: `LOG_LEVEL`
+# Default: info
+# Values: off, error, warn, info, debug, trace
+# level = "warn"

@@ -1,4 +1,3 @@
-use std::env;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -47,27 +46,14 @@ async fn main() {
     metrics::REGISTRY
         .register(Box::new(metrics::SUBSCRIBE.clone()))
         .unwrap();
-    let log_level = if cfg!(debug_assertions) {
-        env::var("LOG_LEVEL").unwrap_or_else(|_| "debug".to_string())
-    } else {
-        env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string())
-    };
-    let level_filter = match log_level.as_str() {
-        "off" => log::LevelFilter::Off,
-        "error" => log::LevelFilter::Error,
-        "warn" => log::LevelFilter::Warn,
-        "info" => log::LevelFilter::Info,
-        "debug" => log::LevelFilter::Debug,
-        "trace" => log::LevelFilter::Trace,
-        _ => log::LevelFilter::Info,
-    };
+
+    let cfg = Config::parse();
     env_logger::builder()
-        .filter_level(level_filter)
+        .parse_filters(cfg.log.level.as_str())
         .filter_module("webrtc", log::LevelFilter::Error)
         .write_style(env_logger::WriteStyle::Auto)
         .target(env_logger::Target::Stdout)
         .init();
-    let cfg = Config::parse();
     let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
     let ice_servers = cfg

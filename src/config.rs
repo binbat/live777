@@ -14,6 +14,8 @@ pub struct Config {
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
+    #[serde(default)]
+    pub log: Log,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
@@ -27,6 +29,12 @@ pub struct Account {
     pub password: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Log {
+    #[serde(default = "default_log_level")]
+    pub level: String,
+}
+
 fn default_listen() -> String {
     format!("[::]:{}", env::var("PORT").unwrap_or(String::from("7777")))
 }
@@ -38,6 +46,16 @@ fn default_ice_servers() -> Vec<IceServer> {
         credential: "".to_string(),
         credential_type: "".to_string(),
     }]
+}
+
+fn default_log_level() -> String {
+    env::var("LOG_LEVEL").unwrap_or_else(|_|
+        if cfg!(debug_assertions) {
+            "debug".to_string()
+        } else {
+            "info".to_string()
+        }
+    )
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -128,6 +146,7 @@ impl Config {
                 ice_servers: default_ice_servers(),
                 listen: default_listen(),
                 auth: Default::default(),
+                log: Default::default(),
             }
         }
     }
