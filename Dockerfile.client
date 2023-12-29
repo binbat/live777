@@ -1,4 +1,4 @@
-FROM debian:sid-20230919-slim AS common
+FROM debian:sid-slim AS common
 
 RUN apt update -y && apt install -y --no-install-recommends ca-certificates
 
@@ -15,7 +15,16 @@ RUN apt install -y --no-install-recommends cargo cargo-c
 
 WORKDIR /app
 
-ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.6/gst-plugins-rs-gstreamer-1.22.6.tar.gz gst-plugins-rs-gstreamer.tar.gz
+FROM builder AS builder-client
+
+COPY . .
+
+RUN cargo build --package=whipinto --release
+RUN cargo build --package=whepfrom --release
+
+FROM builder AS builder-gstreamer
+
+ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.8/gst-plugins-rs-gstreamer-1.22.8.tar.gz gst-plugins-rs-gstreamer.tar.gz
 
 RUN tar -xf gst-plugins-rs-gstreamer.tar.gz --strip-components 1
 
@@ -24,5 +33,8 @@ RUN cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr --libdir=/usr/lib/$(gc
 
 # rtpav1pay / rtpav1depay: RTP (de)payloader for the AV1 video codec.
 RUN cargo cinstall -p gst-plugin-rtp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
+
+COPY --from=builder-client /app/target/release/whipinto /usr/local/bin/whipinto
+COPY --from=builder-client /app/target/release/whepfrom /usr/local/bin/whepfrom
 
 CMD ["sh", "-c", "gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint=http://localhost:3000/whip/777"]
