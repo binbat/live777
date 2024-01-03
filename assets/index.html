@@ -28,11 +28,13 @@
             <fieldset>
                 <legend>WHIP</legend>
                 <button onclick="startWhip()"> WebRTC Start Whip</button>
+                <br />Logs: <br /><div id="whip-logs"></div>
             </fieldset>
 
             <fieldset>
                 <legend>WHEP</legend>
                 <button onclick="startWhep()"> WebRTC Start Whep</button>
+                <br />Logs: <br /><div id="whep-logs"></div>
             </fieldset>
         </div>
 <br />
@@ -44,8 +46,6 @@ Video<br />
     Layer: <select disabled id="layer-select"></select><br />
 </section>
 
-Logs<br />
-<div id="div"></div>
 <script src="./whip.js"></script>
 <script src="./whep.js"></script>
 
@@ -73,6 +73,10 @@ Logs<br />
         }
         initCommonInput(idResourceId, idResourceId)
         initCommonInput(idBearerToken, idBearerToken)
+
+        function log(el, msg) { el.innerHTML += msg + '<br>' }
+        function logWhip(msg) { log(document.getElementById('whip-logs'), msg) }
+        function logWhep(msg) { log(document.getElementById('whep-logs'), msg) }
 
     const layers = [
         { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
@@ -135,8 +139,10 @@ Logs<br />
             alert("input resource")
             return
         }
+        logWhip("start")
         const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
         const pc = new RTCPeerConnection();
+        pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
 
         let sendEncodings
         if (getLayerCheck()) {
@@ -153,7 +159,11 @@ Logs<br />
         const whip = new WHIPClient();
         const url = location.origin + "/whip/" + resource;
         const token = document.getElementById("token").value;
-        await whip.publish(pc, url, token);
+        try {
+            await whip.publish(pc, url, token);
+        } catch (e) {
+            logWhip(e)
+        }
 
         document.getElementById(idLayerCheck).disabled = true
     }
@@ -164,11 +174,13 @@ Logs<br />
             alert("input resource")
             return
         }
+        logWhep("start")
         const pc = window.pc = new RTCPeerConnection();
+        pc.oniceconnectionstatechange = e => logWhep(pc.iceConnectionState)
         pc.addTransceiver('video', { 'direction': 'recvonly' })
         pc.addTransceiver('audio', { 'direction': 'recvonly' })
         pc.ontrack = (event) => {
-            console.log(event)
+            logWhep(`track: ${event.track.kind}`)
             if (event.track.kind == "video") {
                 var el = document.createElement(event.track.kind)
                 el.srcObject = event.streams[0]
@@ -187,7 +199,12 @@ Logs<br />
         const whep = new WHEPClient();
         const url = location.origin + "/whep/" + resource;
         const token = document.getElementById("token").value;
-        await whep.view(pc, url, token);
+
+        try {
+            await whep.view(pc, url, token);
+        } catch (e) {
+            logWhep(e)
+        }
 
         const initEvevt = () => {
             const el = document.getElementById(idLayerSelect)
