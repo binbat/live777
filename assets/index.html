@@ -1,18 +1,40 @@
 <!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="./logo.svg" />
-    <title>Live777</title>
-</head>
-<body>
-ID: <input id="resource" type="text">
-<button onclick="startWhip()"> WebRTC Start Whip</button>
-<button onclick="startWhep()"> WebRTC Start Whep</button>
-<br />
-Bearer token: <input id="token" type="text">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="icon" href="./logo.svg" />
+        <title>Live777</title>
+        <style>
+            fieldset {
+                border-style: dotted;
+                border-width: 0.25rem;
+                border-radius: 0.5rem;
+                padding: 0.5rem;
+                margin: 0.5rem;
+            }
+        </style>
+    </head>
+    <body>
+        <fieldset>
+            <legend>Common</legend>
+            <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
+                <div>Resource ID: <input id="resource" type="text" /></div>
+                <div>Bearer Token: <input id="token" type="text" /></div>
+            </section>
+        </fieldset>
 
+        <div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
+            <fieldset>
+                <legend>WHIP</legend>
+                <button onclick="startWhip()"> WebRTC Start Whip</button>
+            </fieldset>
+
+            <fieldset>
+                <legend>WHEP</legend>
+                <button onclick="startWhep()"> WebRTC Start Whep</button>
+            </fieldset>
+        </div>
 <br />
 Video<br />
 <div id="remoteVideos"></div> <br />
@@ -28,6 +50,30 @@ Logs<br />
 <script src="./whep.js"></script>
 
 <script>
+
+        // Common
+        const idResourceId = "resource"
+        const idBearerToken = "token"
+
+        function setURLSearchParams(k, v) {
+            const params = new URLSearchParams((new URL(location.href)).search)
+            !!v ? params.set(k, v) : params.delete(k)
+            history.replaceState({}, "", "?" + params.toString())
+        }
+        function getURLSearchParams(k) {
+            const params = new URLSearchParams((new URL(location.href)).search)
+            return params.get(k)
+        }
+        function initCommonInput(elementId, paramId) {
+            const element = document.getElementById(elementId)
+            if (element) {
+                element.addEventListener('input', ev => setURLSearchParams(paramId, ev.target.value))
+                element.value = getURLSearchParams(paramId)
+            }
+        }
+        initCommonInput(idResourceId, idResourceId)
+        initCommonInput(idBearerToken, idBearerToken)
+
     const layers = [
         { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
         { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
