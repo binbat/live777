@@ -8,6 +8,7 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 
+COPY --from=builder /app/config-dist.toml /etc/live777/config.toml
 COPY --from=builder /app/target/release/live777 /usr/local/bin/live777
 
 CMD ["live777"]

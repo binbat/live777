@@ -15,14 +15,17 @@ urls = [
 
 # WHIP/WHEP auth token
 # Headers["Authorization"] = "Bearer {token}"
-[auth]
-tokens = ["live777"]
+# [auth]
+# tokens = ["live777"]
 
+# Not WHIP/WHEP standard
+# https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication#basic
+# Headers["Authorization"] = "Basic {Base64.encode({username}:{password})}"
 # [[auth.accounts]]
 # username = "live777"
 # password = "live777"
 
-[log]
+# [log]
 # Env: `LOG_LEVEL`
 # Default: info
 # Values: off, error, warn, info, debug, trace
