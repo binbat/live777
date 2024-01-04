@@ -19,13 +19,17 @@ pub struct Config {
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
+    #[serde(default)]
     pub accounts: Vec<Account>,
+    #[serde(default)]
     pub tokens: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub password: String,
 }
 
