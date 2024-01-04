@@ -156,7 +156,7 @@ impl Config {
                 ice_servers: default_ice_servers(),
                 listen: default_listen(),
                 auth: Default::default(),
-                log: Default::default(),
+                log: default_log(),
             }
         }
     }
