@@ -14,7 +14,7 @@ pub struct Config {
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
-    #[serde(default)]
+    #[serde(default = "default_log")]
     pub log: Log,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -46,6 +46,12 @@ fn default_ice_servers() -> Vec<IceServer> {
         credential: "".to_string(),
         credential_type: "".to_string(),
     }]
+}
+
+fn default_log() -> Log {
+    Log {
+        level: default_log_level(),
+    }
 }
 
 fn default_log_level() -> String {
