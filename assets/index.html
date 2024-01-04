@@ -27,29 +27,26 @@
         <div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
             <fieldset>
                 <legend>WHIP</legend>
+                <section>Layer: <select id="whip-layer-select"></select></section>
                 <button onclick="startWhip()"> WebRTC Start Whip</button>
                 <br />Logs: <br /><div id="whip-logs"></div>
             </fieldset>
 
             <fieldset>
                 <legend>WHEP</legend>
+                <section>Layer: <select disabled id="whep-layer-select"></select></section>
                 <button onclick="startWhep()"> WebRTC Start Whep</button>
                 <br />Logs: <br /><div id="whep-logs"></div>
             </fieldset>
         </div>
-<br />
-Video<br />
-<div id="remoteVideos"></div> <br />
+        <br />
+        Video<br />
+        <div id="remoteVideos"></div> <br />
 
-<section>
-    <input type="checkbox" id="layer-check" />
-    Layer: <select disabled id="layer-select"></select><br />
-</section>
+        <script src="./whip.js"></script>
+        <script src="./whep.js"></script>
 
-<script src="./whip.js"></script>
-<script src="./whep.js"></script>
-
-<script>
+        <script>
 
         // Common
         const idResourceId = "resource"
@@ -78,153 +75,125 @@ Video<br />
         function logWhip(msg) { log(document.getElementById('whip-logs'), msg) }
         function logWhep(msg) { log(document.getElementById('whep-logs'), msg) }
 
-    const layers = [
-        { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
-        { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
-        { rid: 'f', scalabilityMode: 'L1T3' }
-    ]
+        function getElementValue(elementId) {
+            const el = document.getElementById(elementId)
+            return el ? el.value : ""
+        }
 
-    const idLayerCheck = "layer-check"
-    const idLayerSelect = "layer-select"
+        const layers = [
+            { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
+            { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
+            { rid: 'f', scalabilityMode: 'L1T3' }
+        ]
 
-    function initLayerCheck() {
-        const checkLayer = document.getElementById(idLayerCheck)
-        if (checkLayer) {
-            const selectLayer = document.getElementById(idLayerSelect)
-            if (selectLayer) {
-                initLayerSelect(selectLayer)
-                checkLayer.onchange = ev => {
-                    if (ev.target.checked) {
-                        selectLayer.disabled = false
-                    } else {
-                        selectLayer.disabled = true
-                    }
-                }
+        function initLayerSelect(elementId, opts) {
+            const selectLayer = document.getElementById(elementId)
+            if (selectLayer) opts.map(i => {
+                const opt = document.createElement("option")
+                opt.value = i.rid
+                opt.text = i.text
+                selectLayer.appendChild(opt)
+            })
+        }
+
+        // WHIP
+        const idWhipLayerSelect = "whip-layer-select"
+
+        initLayerSelect(idWhipLayerSelect, [
+            { rid: "f", text: "Base" },
+            { rid: "h", text: "Base + 1/2" },
+            { rid: "q", text: "Base + 1/2 + 1/4" },
+        ])
+
+        async function startWhip() {
+            const resource = getElementValue(idResourceId)
+            if (!resource) {
+                alert("input resource")
+                return
             }
-        }
-    }
+            logWhip("start")
+            const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
+            const pc = new RTCPeerConnection()
+            pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
 
-    // @return Bool
-    function getLayerCheck() {
-        const checkLayer = document.getElementById(idLayerCheck)
-        return checkLayer ? checkLayer.checked : false
-    }
-
-    // @params HTMLElementSelect
-    function initLayerSelect(selectLayer) {
-        const mapShow = {
-            q: "LOW",
-            h: "MEDIUM",
-            f: "HIGH",
-        }
-        const opts = layers.map(i => {
-            const opt = document.createElement("option")
-            opt.value = i.rid
-            opt.text = mapShow[i.rid]
-            selectLayer.appendChild(opt)
-        })
-    }
-
-    // @return String
-    function getLayerSelect() {
-        const selectLayer = document.getElementById(idLayerSelect)
-        return selectLayer ? selectLayer.value : ""
-    }
-
-    initLayerCheck()
-
-    async function startWhip() {
-        const resource = document.getElementById("resource").value;
-        if (!resource) {
-            alert("input resource")
-            return
-        }
-        logWhip("start")
-        const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
-        const pc = new RTCPeerConnection();
-        pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
-
-        let sendEncodings
-        if (getLayerCheck()) {
-            const layer = getLayerSelect()
+            const layer = getElementValue(idWhipLayerSelect)
             const index = layers.findIndex(i => i.rid === layer)
             sendEncodings = layers.slice(0 - (layers.length - index))
-        } else {
-            sendEncodings = []
-        }
-        pc.addTransceiver(stream.getVideoTracks()[0], {
-            direction: 'sendonly',
-            sendEncodings: sendEncodings,
-        });
-        const whip = new WHIPClient();
-        const url = location.origin + "/whip/" + resource;
-        const token = document.getElementById("token").value;
-        try {
-            await whip.publish(pc, url, token);
-        } catch (e) {
-            logWhip(e)
-        }
 
-        document.getElementById(idLayerCheck).disabled = true
-    }
-
-    async function startWhep() {
-        const resource = document.getElementById("resource").value;
-        if (!resource) {
-            alert("input resource")
-            return
-        }
-        logWhep("start")
-        const pc = window.pc = new RTCPeerConnection();
-        pc.oniceconnectionstatechange = e => logWhep(pc.iceConnectionState)
-        pc.addTransceiver('video', { 'direction': 'recvonly' })
-        pc.addTransceiver('audio', { 'direction': 'recvonly' })
-        pc.ontrack = (event) => {
-            logWhep(`track: ${event.track.kind}`)
-            if (event.track.kind == "video") {
-                var el = document.createElement(event.track.kind)
-                el.srcObject = event.streams[0]
-                el.autoplay = true
-                el.controls = true
-                document.getElementById('remoteVideos').appendChild(el)
+            pc.addTransceiver(stream.getVideoTracks()[0], {
+                direction: 'sendonly',
+                sendEncodings: sendEncodings,
+            })
+            const whip = new WHIPClient()
+            const url = location.origin + "/whip/" + resource
+            const token = getElementValue(idBearerToken)
+            try {
+                await whip.publish(pc, url, token)
+            } catch (e) {
+                logWhip(e)
             }
-            if (event.track.kind == "audio") {
-                var el = document.createElement(event.track.kind)
-                el.srcObject = event.streams[0]
-                el.autoplay = true
-                el.controls = true
-                document.getElementById('remoteVideos').appendChild(el)
+
+            document.getElementById(idWhipLayerSelect).disabled = true
+        }
+
+        // WHEP
+        const idWhepLayerSelect = "whep-layer-select"
+        initLayerSelect(idWhepLayerSelect, [
+            { rid: "", text: "AUTO" },
+            { rid: "q", text: "LOW" },
+            { rid: "h", text: "MEDIUM" },
+            { rid: "f", text: "HIGH" },
+        ])
+
+        async function startWhep() {
+            const resource = getElementValue(idResourceId)
+            if (!resource) {
+                alert("input resource")
+                return
+            }
+            logWhep("start")
+            const pc = window.pc = new RTCPeerConnection()
+            pc.oniceconnectionstatechange = e => logWhep(pc.iceConnectionState)
+            pc.addTransceiver('video', { 'direction': 'recvonly' })
+            pc.addTransceiver('audio', { 'direction': 'recvonly' })
+            pc.ontrack = (event) => {
+                logWhep(`track: ${event.track.kind}`)
+                if (event.track.kind == "video") {
+                    var el = document.createElement(event.track.kind)
+                    el.srcObject = event.streams[0]
+                    el.autoplay = true
+                    el.controls = true
+                    document.getElementById('remoteVideos').appendChild(el)
+                }
+                if (event.track.kind == "audio") {
+                    var el = document.createElement(event.track.kind)
+                    el.srcObject = event.streams[0]
+                    el.autoplay = true
+                    el.controls = true
+                    document.getElementById('remoteVideos').appendChild(el)
+                }
+            }
+            const whep = new WHEPClient()
+            const url = location.origin + "/whep/" + resource
+            const token = getElementValue(idBearerToken)
+
+            try {
+                await whep.view(pc, url, token)
+            } catch (e) {
+                logWhep(e)
+            }
+
+            const initEvevt = () => {
+                const el = document.getElementById(idWhepLayerSelect)
+                if (el) el.onchange = ev => !ev.target.value ? whep.unselectLayer() : whep.selectLayer({"encodingId": ev.target.value}).catch(e => logWhep(e))
+            }
+
+            if (whep.layerUrl) {
+                const selectLayer = document.getElementById(idWhepLayerSelect)
+                if (selectLayer) selectLayer.disabled = false
+                initEvevt()
             }
         }
-        const whep = new WHEPClient();
-        const url = location.origin + "/whep/" + resource;
-        const token = document.getElementById("token").value;
-
-        try {
-            await whep.view(pc, url, token);
-        } catch (e) {
-            logWhep(e)
-        }
-
-        const initEvevt = () => {
-            const el = document.getElementById(idLayerSelect)
-            if (el) el.onchange = ev => whep.selectLayer({"encodingId": ev.target.value})
-        }
-
-        if (whep.layerUrl) {
-            const checkLayer = document.getElementById(idLayerCheck)
-            const selectLayer = document.getElementById(idLayerSelect)
-            if (checkLayer && selectLayer) {
-                checkLayer.checked = true
-                checkLayer.disabled = true
-                selectLayer.disabled = false
-            }
-            initEvevt()
-        }
-        document.getElementById(idLayerCheck).disabled = true
-
-    }
-
-</script>
-</body>
+        </script>
+    </body>
 </html>
