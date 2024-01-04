@@ -14,7 +14,7 @@ use axum::{
 };
 use forward::info::Layer;
 use http::header::ToStrError;
-use log::info;
+use log::{info, debug, error};
 use thiserror::Error;
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
@@ -37,6 +37,7 @@ mod forward;
 mod media;
 mod metrics;
 mod path;
+mod signal;
 
 #[tokio::main]
 async fn main() {
@@ -91,10 +92,11 @@ async fn main() {
         .route("/metrics", get(metrics))
         .with_state(app_state);
     app = static_server(app);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    tokio::select!{
+        Err(e) = axum::Server::bind(&addr).serve(app.into_make_service()) => error!("Application error: {e}"),
+        msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
+    }
+    info!("Server shutdown");
 }
 
 async fn metrics() -> String {
