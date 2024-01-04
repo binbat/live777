@@ -1243,7 +1243,7 @@ checksum = "da2479e8c062e40bf0066ffa0bc823de0a9368974af99c9f6df941d2c231e03f"
 
 [[package]]
 name = "live777"
-version = "0.2.0"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
