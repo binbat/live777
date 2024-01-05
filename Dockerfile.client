@@ -15,26 +15,28 @@ RUN apt install -y --no-install-recommends cargo cargo-c
 
 WORKDIR /app
 
-FROM builder AS builder-client
-
-COPY . .
-
-RUN cargo build --package=whipinto --release
-RUN cargo build --package=whepfrom --release
-
-FROM builder AS builder-gstreamer
-
 ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.8/gst-plugins-rs-gstreamer-1.22.8.tar.gz gst-plugins-rs-gstreamer.tar.gz
 
 RUN tar -xf gst-plugins-rs-gstreamer.tar.gz --strip-components 1
 
 # whip / whep: protocol support
-RUN cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
+RUN cargo cinstall -p gst-plugin-webrtchttp --libdir=pkg/usr/lib/$(gcc -dumpmachine)
+# gst-plugin-webrtchttp
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.a
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.so
+# - usr/lib/$(gcc -dumpmachine)/pkgconfig/gstwebrtchttp.pc
+RUN rm pkg/usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.a
 
 # rtpav1pay / rtpav1depay: RTP (de)payloader for the AV1 video codec.
-RUN cargo cinstall -p gst-plugin-rtp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
+RUN cargo cinstall -p gst-plugin-rtp --libdir=pkg/usr/lib/$(gcc -dumpmachine)
+# gst-plugin-rtp
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.a
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.so
+# - usr/lib/$(gcc -dumpmachine)/pkgconfig/gstrsrtp.pc
+RUN rm pkg/usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.a
 
-COPY --from=builder-client /app/target/release/whipinto /usr/local/bin/whipinto
-COPY --from=builder-client /app/target/release/whepfrom /usr/local/bin/whepfrom
+FROM common
 
-CMD ["sh", "-c", "gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint=http://localhost:3000/whip/777"]
+COPY --from=builder /app/pkg/ /
+
+CMD ["sh", "-c", "gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint=http://localhost:7777/whip/777"]
