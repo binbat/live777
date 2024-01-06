@@ -27,14 +27,22 @@
         <div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
             <fieldset>
                 <legend>WHIP</legend>
-                <section>Layer: <select id="whip-layer-select"></select></section>
+                <section>Max Width: <select id="whip-video-width-max">
+                    <option value="" selected>Max</option>
+                    <option value="3840">3840px</option>
+                    <option value="1080">1080px</option>
+                    <option value="720">720px</option>
+                    <option value="480">480px</option>
+                    <option value="240">240px</option>
+                </select></section>
+                <section>SVC Layer: <select id="whip-layer-select"></select></section>
                 <button onclick="startWhip()"> WebRTC Start Whip</button>
                 <br />Logs: <br /><div id="whip-logs"></div>
             </fieldset>
 
             <fieldset>
                 <legend>WHEP</legend>
-                <section>Layer: <select disabled id="whep-layer-select"></select></section>
+                <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
                 <button onclick="startWhep()"> WebRTC Start Whep</button>
                 <br />Logs: <br /><div id="whep-logs"></div>
             </fieldset>
@@ -80,6 +88,11 @@
             return el ? el.value : ""
         }
 
+        // NOTE:
+        // https://github.com/livekit/client-sdk-js/blob/761711adb4195dc49a0b32e1e4f88726659dac94/src/room/track/LocalVideoTrack.ts#L492
+        // - f: HIGH
+        // - h: MEDIUM
+        // - q: LOW
         const layers = [
             { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
             { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
@@ -98,6 +111,7 @@
 
         // WHIP
         const idWhipLayerSelect = "whip-layer-select"
+        const idWhipVideoWidthMax = "whip-video-width-max"
 
         initLayerSelect(idWhipLayerSelect, [
             { rid: "f", text: "Base" },
@@ -111,8 +125,16 @@
                 alert("input resource")
                 return
             }
-            logWhip("start")
-            const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true })
+            logWhip("started")
+            const videoMaxWidth = getElementValue(idWhipVideoWidthMax)
+            document.getElementById(idWhipVideoWidthMax).disabled = true
+            logWhip(`video width max: ${!videoMaxWidth ? "default" : videoMaxWidth}`)
+
+            // Reference: https://developer.mozilla.org/en-US/docs/Web/API/Media_Capture_and_Streams_API/Constraints
+            const videoConstraints = !videoMaxWidth ? true : {
+                width: { max: videoMaxWidth },
+            }
+            const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: videoConstraints })
             const pc = new RTCPeerConnection()
             pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
 
@@ -128,6 +150,7 @@
             const url = location.origin + "/whip/" + resource
             const token = getElementValue(idBearerToken)
             try {
+                logWhip("http begined")
                 await whip.publish(pc, url, token)
             } catch (e) {
                 logWhip(e)
@@ -151,7 +174,7 @@
                 alert("input resource")
                 return
             }
-            logWhep("start")
+            logWhep("started")
             const pc = window.pc = new RTCPeerConnection()
             pc.oniceconnectionstatechange = e => logWhep(pc.iceConnectionState)
             pc.addTransceiver('video', { 'direction': 'recvonly' })
@@ -178,6 +201,7 @@
             const token = getElementValue(idBearerToken)
 
             try {
+                logWhep("http begined")
                 await whep.view(pc, url, token)
             } catch (e) {
                 logWhep(e)
