@@ -27,6 +27,23 @@
         <div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
             <fieldset>
                 <legend>WHIP</legend>
+                <section>
+                    Audio Codec: <select id="whip-audio-codec">
+                        <option value="" selected>default</option>
+                        <option value="opus/48000">OPUS</option>
+                        <option value="g722/8000">G722</option>
+                        <option value="pcmu/8000">PCMU</option>
+                        <option value="pcma/8000">PCMA</option>
+                    </select>
+                    Video Codec: <select id="whip-video-codec">
+                        <option value="" selected>default</option>
+                        <option value="av1/90000">AV1</option>
+                        <option value="vp9/90000">VP9</option>
+                        <option value="vp8/90000">VP8</option>
+                        <option value="h264/90000">H264</option>
+                    </select>
+                </section>
+
                 <section>Max Width: <select id="whip-video-width-max">
                     <option value="" selected>Max</option>
                     <option value="3840">3840px</option>
@@ -51,10 +68,10 @@
         Video<br />
         <div id="remoteVideos"></div> <br />
 
-        <script src="./whip.js"></script>
-        <script src="./whep.js"></script>
-
-        <script>
+        <script type="module">
+        import convertSessionDescription from "./sdp.js"
+        import { WHIPClient } from "./whip.js"
+        import { WHEPClient } from "./whep.js"
 
         // Common
         const idResourceId = "resource"
@@ -111,6 +128,8 @@
 
         // WHIP
         const idWhipLayerSelect = "whip-layer-select"
+        const idWhipAudioCodec = "whip-audio-codec"
+        const idWhipVideoCodec = "whip-video-codec"
         const idWhipVideoWidthMax = "whip-video-width-max"
 
         initLayerSelect(idWhipLayerSelect, [
@@ -140,13 +159,23 @@
 
             const layer = getElementValue(idWhipLayerSelect)
             const index = layers.findIndex(i => i.rid === layer)
-            sendEncodings = layers.slice(0 - (layers.length - index))
 
             pc.addTransceiver(stream.getVideoTracks()[0], {
                 direction: 'sendonly',
-                sendEncodings: sendEncodings,
+                sendEncodings: layers.slice(0 - (layers.length - index)),
             })
+
+            const audioCodec = getElementValue(idWhipAudioCodec)
+            document.getElementById(idWhipAudioCodec).disabled = true
+            logWhip(`audio codec: ${!audioCodec ? "default" : audioCodec}`)
+
+            const videoCodec = getElementValue(idWhipVideoCodec)
+            document.getElementById(idWhipVideoCodec).disabled = true
+            logWhip(`video codec: ${!videoCodec ? "default" : videoCodec}`)
+
             const whip = new WHIPClient()
+            whip.onAnswer = answer => convertSessionDescription(answer, audioCodec, videoCodec)
+
             const url = location.origin + "/whip/" + resource
             const token = getElementValue(idBearerToken)
             try {
@@ -158,6 +187,7 @@
 
             document.getElementById(idWhipLayerSelect).disabled = true
         }
+        window.startWhip = startWhip
 
         // WHEP
         const idWhepLayerSelect = "whep-layer-select"
@@ -218,6 +248,7 @@
                 initEvevt()
             }
         }
+        window.startWhep = startWhep
         </script>
     </body>
 </html>

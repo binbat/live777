@@ -6,7 +6,7 @@ const Extensions = {
 }
 
 
-class WHEPClient extends EventTarget {
+export class WHEPClient extends EventTarget {
     constructor() {
         super();
         //Ice properties

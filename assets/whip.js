@@ -1,4 +1,4 @@
-class WHIPClient {
+export class WHIPClient {
     constructor() {
         //Ice properties
         this.iceUsername = null;
@@ -7,6 +7,9 @@ class WHIPClient {
         this.candidates = [];
         this.endOfcandidates = false;
         this.etag = "";
+
+        this.onOffer = offer => offer;
+        this.onAnswer = answer => answer;
     }
 
     async publish(pc, url, token) {
@@ -38,6 +41,7 @@ class WHIPClient {
         }
         //Create SDP offer
         const offer = await pc.createOffer();
+        offer.sdp = this.onOffer(offer.sdp)
 
         //Request headers
         const headers = {
@@ -172,7 +176,7 @@ class WHIPClient {
         //}
 
         //And set remote description
-        await pc.setRemoteDescription({ type: "answer", sdp: answer });
+        await pc.setRemoteDescription({ type: "answer", sdp: this.onAnswer(answer) });
     }
 
     restart() {
