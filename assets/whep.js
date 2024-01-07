@@ -445,6 +445,8 @@ export class WHEPClient extends EventTarget {
         if (this.token)
         headers["Authorization"] = "Bearer " + this.token;
 
+        if (this.etag) headers["If-Match"] = this.etag;
+
         //Send a delete
         await fetch(this.resourceURL, {
             method: "DELETE",

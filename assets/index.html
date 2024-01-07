@@ -57,14 +57,20 @@
                     <option value="240">240px</option>
                 </select></section>
                 <section>SVC Layer: <select id="whip-layer-select"></select></section>
-                <button onclick="startWhip()"> WebRTC Start Whip</button>
+                <section>
+                    <button onclick="startWhip()">Start</button>
+                    <button id="whip-button-stop">Stop</button>
+                </section>
                 <br />Logs: <br /><div id="whip-logs"></div>
             </fieldset>
 
             <fieldset>
                 <legend>WHEP</legend>
                 <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
-                <button onclick="startWhep()"> WebRTC Start Whep</button>
+                <section>
+                    <button onclick="startWhep()">Start</button>
+                    <button id="whep-button-stop">Stop</button>
+                </section>
                 <br />Logs: <br /><div id="whep-logs"></div>
             </fieldset>
         </div>
@@ -137,6 +143,7 @@
         const idWhipAudioDevice = "whip-audio-device"
         const idWhipVideoDevice = "whip-video-device"
         const idWhipVideoWidthMax = "whip-video-width-max"
+        const idWhipButtonStop = "whip-button-stop"
 
         initLayerSelect(idWhipLayerSelect, [
             { value: "f", text: "Base" },
@@ -217,12 +224,24 @@
                 logWhip(e)
             }
 
+            const stop = async () => {
+                await whip.stop()
+                logWhip("stopped")
+            }
+
+            // leave page
+            addEventListener("beforeunload", stop)
+
+            const element = document.getElementById(idWhipButtonStop)
+            if (element) element.addEventListener('click', stop)
+
             document.getElementById(idWhipLayerSelect).disabled = true
         }
         window.startWhip = startWhip
 
         // WHEP
         const idWhepLayerSelect = "whep-layer-select"
+        const idWhepButtonStop = "whep-button-stop"
         initLayerSelect(idWhepLayerSelect, [
             { value: "", text: "AUTO" },
             { value: "q", text: "LOW" },
@@ -268,6 +287,12 @@
             } catch (e) {
                 logWhep(e)
             }
+
+            const element = document.getElementById(idWhepButtonStop)
+            if (element) element.addEventListener('click', async () => {
+                await whep.stop()
+                logWhep("stopped")
+            })
 
             const initEvevt = () => {
                 const el = document.getElementById(idWhepLayerSelect)
