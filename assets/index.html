@@ -28,12 +28,16 @@
             <fieldset>
                 <legend>WHIP</legend>
                 <section>
+                    <button id="whip-device-button" onclick="refreshDevice()">Use Device</button>
+                    Audio Device: <select id="whip-audio-device"><option value="">none</option></select>
+                    Video Device: <select id="whip-video-device"><option value="">none</option></select>
+                </section>
+
+                <section>
                     Audio Codec: <select id="whip-audio-codec">
                         <option value="" selected>default</option>
                         <option value="opus/48000">OPUS</option>
                         <option value="g722/8000">G722</option>
-                        <option value="pcmu/8000">PCMU</option>
-                        <option value="pcma/8000">PCMA</option>
                     </select>
                     Video Codec: <select id="whip-video-codec">
                         <option value="" selected>default</option>
@@ -120,7 +124,7 @@
             const selectLayer = document.getElementById(elementId)
             if (selectLayer) opts.map(i => {
                 const opt = document.createElement("option")
-                opt.value = i.rid
+                opt.value = i.value
                 opt.text = i.text
                 selectLayer.appendChild(opt)
             })
@@ -130,13 +134,29 @@
         const idWhipLayerSelect = "whip-layer-select"
         const idWhipAudioCodec = "whip-audio-codec"
         const idWhipVideoCodec = "whip-video-codec"
+        const idWhipAudioDevice = "whip-audio-device"
+        const idWhipVideoDevice = "whip-video-device"
         const idWhipVideoWidthMax = "whip-video-width-max"
 
         initLayerSelect(idWhipLayerSelect, [
-            { rid: "f", text: "Base" },
-            { rid: "h", text: "Base + 1/2" },
-            { rid: "q", text: "Base + 1/2 + 1/4" },
+            { value: "f", text: "Base" },
+            { value: "h", text: "Base + 1/2" },
+            { value: "q", text: "Base + 1/2 + 1/4" },
         ])
+
+        async function refreshDevice() {
+            const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+            mediaStream.getTracks().map(track => track.stop())
+
+            const devices = (await navigator.mediaDevices.enumerateDevices()).filter(i => !!i.deviceId)
+            initLayerSelect(idWhipAudioDevice, devices.filter(i => i.kind === 'audioinput').map(i => { return { value: i.deviceId, text: i.label }}))
+            initLayerSelect(idWhipVideoDevice, devices.filter(i => i.kind === 'videoinput').map(i => { return { value: i.deviceId, text: i.label }}))
+        }
+
+        window.refreshDevice = () => {
+            refreshDevice()
+            document.getElementById("whip-device-button").disabled = true
+        }
 
         async function startWhip() {
             const resource = getElementValue(idResourceId)
@@ -153,7 +173,17 @@
             const videoConstraints = !videoMaxWidth ? true : {
                 width: { max: videoMaxWidth },
             }
-            const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: videoConstraints })
+            const audioDevice = getElementValue(idWhipAudioDevice)
+            const videoDevice = getElementValue(idWhipVideoDevice)
+            logWhip(`audio device: ${!audioDevice ? "none" : audioDevice}`)
+            logWhip(`video device: ${!videoDevice ? "none" : videoDevice}`)
+
+            let stream
+            if (!audioDevice && !videoDevice) {
+                stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: videoConstraints })
+            } else {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: audioDevice }, video: { deviceId: videoDevice } })
+            }
             const pc = new RTCPeerConnection()
             pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
 
@@ -164,6 +194,8 @@
                 direction: 'sendonly',
                 sendEncodings: layers.slice(0 - (layers.length - index)),
             })
+
+            stream.getAudioTracks().map(track => pc.addTrack(track))
 
             const audioCodec = getElementValue(idWhipAudioCodec)
             document.getElementById(idWhipAudioCodec).disabled = true
@@ -192,10 +224,10 @@
         // WHEP
         const idWhepLayerSelect = "whep-layer-select"
         initLayerSelect(idWhepLayerSelect, [
-            { rid: "", text: "AUTO" },
-            { rid: "q", text: "LOW" },
-            { rid: "h", text: "MEDIUM" },
-            { rid: "f", text: "HIGH" },
+            { value: "", text: "AUTO" },
+            { value: "q", text: "LOW" },
+            { value: "h", text: "MEDIUM" },
+            { value: "f", text: "HIGH" },
         ])
 
         async function startWhep() {
