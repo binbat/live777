@@ -74,10 +74,10 @@
                 <br />Logs: <br /><div id="whep-logs"></div>
             </fieldset>
         </div>
-        <br />
-        Video<br />
-        <div id="remoteVideos"></div> <br />
-
+        <br />WHIP Video:<br />
+        <video controls autoplay id="whip-video-player"></video>
+        <br />WHEP Video:<br />
+        <div id="whep-video-player"></div> <br />
         <script type="module">
         import convertSessionDescription from "./sdp.js"
         import { WHIPClient } from "./whip.js"
@@ -191,6 +191,10 @@
             } else {
                 stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: audioDevice }, video: { deviceId: videoDevice } })
             }
+
+            const el = document.getElementById("whip-video-player")
+            if (el) el.srcObject = stream
+
             const pc = new RTCPeerConnection()
             pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
 
@@ -227,6 +231,9 @@
             const stop = async () => {
                 await whip.stop()
                 logWhip("stopped")
+                stream.getTracks().map(track => track.stop())
+
+                if (el) el.srcObject = null
             }
 
             // leave page
@@ -262,19 +269,12 @@
             pc.addTransceiver('audio', { 'direction': 'recvonly' })
             pc.ontrack = (event) => {
                 logWhep(`track: ${event.track.kind}`)
-                if (event.track.kind == "video") {
+                if (event.track.kind === "video" || event.track.kind === "audio") {
                     var el = document.createElement(event.track.kind)
                     el.srcObject = event.streams[0]
                     el.autoplay = true
                     el.controls = true
-                    document.getElementById('remoteVideos').appendChild(el)
-                }
-                if (event.track.kind == "audio") {
-                    var el = document.createElement(event.track.kind)
-                    el.srcObject = event.streams[0]
-                    el.autoplay = true
-                    el.controls = true
-                    document.getElementById('remoteVideos').appendChild(el)
+                    document.getElementById("whep-video-player").appendChild(el)
                 }
             }
             const whep = new WHEPClient()
