@@ -52,8 +52,8 @@ Live777 has the following characteristics:
 ## Current support encode
 | protocol | video codecs                | audio codecs   |
 | -------- | --------------------------- | -------------- |
-| `WHIP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
-| `WHEP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
+| `WHIP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
+| `WHEP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
 
 ## Quickstart
 
@@ -63,25 +63,15 @@ Live777 has the following characteristics:
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
-### Gstreamer WHIP/WHEP client
+**Open your browser, enter the URL: http://localhost:7777/**
 
-- Use docker of [Gstreamer](https://gstreamer.freedesktop.org/download/) to publish:
+### Gstreamer `WHIP`/`WHEP` client
 
 This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
 
-> *Note: supports multiple encoding formats*
+You can use this docker [images](https://github.com/binbat/live777/pkgs/container/live777-client) of Gstreamer
 
 #### Video: AV1
-
-**Note: AV1 has a lot of problem**
-- 🚧 browser whip av1
-- 🚧 browser whep av1
-- ✅ gstreamer whip av1
-- 🚧 gstreamer whep av1
-- ✅ gstreamer rtp av1 src
-- ✅ gstreamer rtp av1 sink
-- 🚧 ffmpeg rtp av1 src
-- 🚧 ffmpeg rtp av1 sink
 
 `WHIP`:
 
@@ -226,6 +216,27 @@ For Example:
 ```bash
 ffmpeg -> whipinto -> live777 -> whepfrom -> ffplay
 ```
+
+Application        | `AV1`  | `VP9`  | `VP8`  | `H264` | `OPUS` | `G722` |
+------------------ | ------ | ------ | ------ | ------ | ------ | ------ |
+Browser whip       | :star: | :star: | :star: | :star: | :star: | :star: |
+Browser whep       | :star: | :star: | :star: | :star: | :star: | :star: |
+Gstreamer whip     | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
+Gstreamer whep     | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
+Gstreamer rtp-into | :bulb: | :star: | :star: | :star: | :star: | :bulb: |
+Gstreamer rtp-from | :bulb: | :star: | :star: | :star: | :star: | :bulb: |
+Ffmpeg rtp-into    | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
+Ffmpeg rtp-from    | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
+VLC rtp-into       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
+VLC rtp-from       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
+OBS Studio whip    | :shit: | :shit: | :shit: | :star: | :star: | :shit: |
+
+- :star: It's working
+- :shit: Don't support
+- :bulb: I don't know, No testing
+- :tv: Note have some problem
+  1. Working, But Browser can't player this video
+  2. I don't know why av1 and whep error
 
 ### whipinto
 
