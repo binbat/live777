@@ -47,15 +47,7 @@
                         <option value="h264/90000">H264</option>
                     </select>
                 </section>
-
-                <section>Max Width: <select id="whip-video-width-max">
-                    <option value="" selected>Max</option>
-                    <option value="3840">3840px</option>
-                    <option value="1080">1080px</option>
-                    <option value="720">720px</option>
-                    <option value="480">480px</option>
-                    <option value="240">240px</option>
-                </select></section>
+                <section><video-size-select id="whip-video-size" ></video-size-select></section>
                 <section>SVC Layer: <select id="whip-layer-select"></select></section>
                 <section>
                     <button onclick="startWhip()">Start</button>
@@ -82,6 +74,9 @@
         import convertSessionDescription from "./sdp.js"
         import { WHIPClient } from "./whip.js"
         import { WHEPClient } from "./whep.js"
+
+        import VideoSizeSelectElement from "./components.js"
+        customElements.define("video-size-select", VideoSizeSelectElement)
 
         // Common
         const idResourceId = "resource"
@@ -142,7 +137,7 @@
         const idWhipVideoCodec = "whip-video-codec"
         const idWhipAudioDevice = "whip-audio-device"
         const idWhipVideoDevice = "whip-video-device"
-        const idWhipVideoWidthMax = "whip-video-width-max"
+        const idWhipVideoSize = "whip-video-size"
         const idWhipButtonStop = "whip-button-stop"
 
         initLayerSelect(idWhipLayerSelect, [
@@ -172,14 +167,9 @@
                 return
             }
             logWhip("started")
-            const videoMaxWidth = getElementValue(idWhipVideoWidthMax)
-            document.getElementById(idWhipVideoWidthMax).disabled = true
-            logWhip(`video width max: ${!videoMaxWidth ? "default" : videoMaxWidth}`)
+            const videoSize = document.getElementById(idWhipVideoSize).params
+            logWhip(`video width: ${!videoSize.width ? "default" : videoSize.width}, height: ${!videoSize.height ? "default" : videoSize.height}`)
 
-            // Reference: https://developer.mozilla.org/en-US/docs/Web/API/Media_Capture_and_Streams_API/Constraints
-            const videoConstraints = !videoMaxWidth ? true : {
-                width: { max: videoMaxWidth },
-            }
             const audioDevice = getElementValue(idWhipAudioDevice)
             const videoDevice = getElementValue(idWhipVideoDevice)
             logWhip(`audio device: ${!audioDevice ? "none" : audioDevice}`)
@@ -187,9 +177,9 @@
 
             let stream
             if (!audioDevice && !videoDevice) {
-                stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: videoConstraints })
+                stream = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: videoSize })
             } else {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: audioDevice }, video: { deviceId: videoDevice } })
+                stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: audioDevice }, video: { deviceId: videoDevice, ...videoSize } })
             }
 
             const el = document.getElementById("whip-video-player")
