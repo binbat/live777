@@ -5,10 +5,13 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use log::{debug, info, warn};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
+use webrtc::data::data_channel::DataChannel;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -34,6 +37,8 @@ use crate::{media, metrics};
 
 use super::rtcp::RtcpMessage;
 use super::track_match;
+
+const MESSAGE_SIZE: usize = 1024 * 16;
 
 type ForwardData = Arc<Packet>;
 
@@ -107,11 +112,24 @@ struct TrackForward {
     subscription_group: SubscriptionGroup,
 }
 
+#[derive(Clone)]
+struct DataChannelForward {
+    anchor: (
+        broadcast::Sender<Vec<u8>>,
+        Arc<broadcast::Receiver<Vec<u8>>>,
+    ),
+    subscribe: (
+        broadcast::Sender<Vec<u8>>,
+        Arc<broadcast::Receiver<Vec<u8>>>,
+    ),
+}
+
 pub(crate) struct PeerForwardInternal {
     pub(crate) id: String,
     anchor: RwLock<Option<Arc<RTCPeerConnection>>>,
     subscribe_group: RwLock<Vec<PeerWrap>>,
     anchor_track_forward_map: Arc<RwLock<HashMap<TrackRemoteWrap, TrackForward>>>,
+    data_channel_forward: RwLock<Option<DataChannelForward>>,
     ice_server: Vec<RTCIceServer>,
 }
 
@@ -122,6 +140,7 @@ impl PeerForwardInternal {
             anchor: Default::default(),
             subscribe_group: Default::default(),
             anchor_track_forward_map: Default::default(),
+            data_channel_forward: Default::default(),
             ice_server,
         }
     }
@@ -182,6 +201,61 @@ impl PeerForwardInternal {
             }
         }
     }
+    async fn data_channel_forward(
+        dc: Arc<RTCDataChannel>,
+        sender: broadcast::Sender<Vec<u8>>,
+        receiver: broadcast::Receiver<Vec<u8>>,
+    ) {
+        let dc2 = dc.clone();
+        dc.on_open(Box::new(move || {
+            tokio::spawn(async move {
+                let raw = match dc2.detach().await {
+                    Ok(raw) => raw,
+                    Err(err) => {
+                        warn!("detach err: {}", err);
+                        return;
+                    }
+                };
+                let r = Arc::clone(&raw);
+                tokio::spawn(async move {
+                    let _ = Self::data_channel_read_loop(r, sender).await;
+                });
+                tokio::spawn(async move {
+                    let _ = Self::data_channel_write_loop(raw, receiver).await;
+                });
+            });
+
+            Box::pin(async {})
+        }));
+    }
+
+    async fn data_channel_read_loop(d: Arc<DataChannel>, sender: broadcast::Sender<Vec<u8>>) {
+        let mut buffer = vec![0u8; MESSAGE_SIZE];
+        loop {
+            let n = match d.read(&mut buffer).await {
+                Ok(n) => n,
+                Err(err) => {
+                    info!("Datachannel closed; Exit the read_loop: {err}");
+                    return;
+                }
+            };
+            if let Err(err) = sender.send(buffer[..n].to_vec()) {
+                info!("send data channel err: {}", err);
+                return;
+            };
+        }
+    }
+
+    async fn data_channel_write_loop(
+        d: Arc<DataChannel>,
+        mut receiver: broadcast::Receiver<Vec<u8>>,
+    ) {
+        while let Ok(msg) = receiver.recv().await {
+            if let Err(err) = d.write(&msg.into()).await {
+                info!("write data channel err: {}", err);
+            };
+        }
+    }
 }
 
 // anchor
@@ -196,17 +270,17 @@ impl PeerForwardInternal {
         let anchor_track_forward_map = self.anchor_track_forward_map.read().await;
         anchor.is_some()
             && anchor_track_forward_map.len()
-            == media::count_sends(
-            &anchor
-                .as_ref()
-                .unwrap()
-                .remote_description()
-                .await
-                .unwrap()
-                .unmarshal()
-                .unwrap()
-                .media_descriptions,
-        )
+                == media::count_sends(
+                    &anchor
+                        .as_ref()
+                        .unwrap()
+                        .remote_description()
+                        .await
+                        .unwrap()
+                        .unmarshal()
+                        .unwrap()
+                        .media_descriptions,
+                )
             && anchor.as_ref().unwrap().connection_state() == RTCPeerConnectionState::Connected
     }
 
@@ -216,9 +290,22 @@ impl PeerForwardInternal {
             return Err(AppError::ResourceAlreadyExists(
                 "A connection has already been established".to_string(),
             )
-                .into());
+            .into());
         }
         info!("[{}] [anchor] set {}", self.id, peer.get_stats_id());
+        let mut data_channel_forward = self.data_channel_forward.write().await;
+        let data_channel_forward_anchor = broadcast::channel(1024);
+        let data_channel_forward_subscribe = broadcast::channel(1024);
+        *data_channel_forward = Some(DataChannelForward {
+            anchor: (
+                data_channel_forward_anchor.0,
+                Arc::new(data_channel_forward_anchor.1),
+            ),
+            subscribe: (
+                data_channel_forward_subscribe.0,
+                Arc::new(data_channel_forward_subscribe.1),
+            ),
+        });
         *anchor = Some(peer);
         metrics::PUBLISH.inc();
         Ok(())
@@ -239,6 +326,8 @@ impl PeerForwardInternal {
             let _ = peer_wrap.0.close().await;
         }
         subscribe_group.clear();
+        let mut data_channel_forward = self.data_channel_forward.write().await;
+        *data_channel_forward = None;
         *anchor = None;
         info!("[{}] [anchor] set none", self.id);
         metrics::PUBLISH.dec();
@@ -275,7 +364,6 @@ impl PeerForwardInternal {
         Err(anyhow::anyhow!("anchor svc rids error"))
     }
 
-
     pub(crate) async fn new_publish_peer(
         &self,
         media_descriptions: Vec<MediaDescription>,
@@ -298,9 +386,12 @@ impl PeerForwardInternal {
         )?;
         let mut registry = Registry::new();
         registry = register_default_interceptors(registry, &mut m)?;
+        let mut s = SettingEngine::default();
+        s.detach_data_channels();
         let api = APIBuilder::new()
             .with_media_engine(m)
             .with_interceptor_registry(registry)
+            .with_setting_engine(s)
             .build();
         let config = RTCConfiguration {
             ice_servers: self.ice_server.clone(),
@@ -384,6 +475,30 @@ impl PeerForwardInternal {
             track.rid()
         );
     }
+
+    pub(crate) async fn anchor_data_channel(
+        &self,
+        peer: Arc<RTCPeerConnection>,
+        dc: Arc<RTCDataChannel>,
+    ) -> Result<()> {
+        let anchor = self.anchor.read().await;
+        if anchor.is_none() {
+            return Err(anyhow::anyhow!("anchor is none"));
+        }
+        if anchor.as_ref().unwrap().get_stats_id() != peer.get_stats_id() {
+            return Err(anyhow::anyhow!("anchor is not self"));
+        }
+        let data_channel_forward = self.data_channel_forward.read().await;
+        if data_channel_forward.is_none() {
+            warn!("data channel forward is none");
+            return Err(anyhow::anyhow!("data channel forward is none"));
+        }
+        let data_channel_forward = data_channel_forward.as_ref().unwrap();
+        let sender = data_channel_forward.subscribe.0.clone();
+        let receiver = data_channel_forward.anchor.0.subscribe();
+        Self::data_channel_forward(dc, sender, receiver).await;
+        Ok(())
+    }
 }
 
 // subscribe
@@ -396,9 +511,12 @@ impl PeerForwardInternal {
         m.register_default_codecs()?;
         let mut registry = Registry::new();
         registry = register_default_interceptors(registry, &mut m)?;
+        let mut s = SettingEngine::default();
+        s.detach_data_channels();
         let api = APIBuilder::new()
             .with_media_engine(m)
             .with_interceptor_registry(registry)
+            .with_setting_engine(s)
             .build();
         let config = RTCConfiguration {
             ice_servers: self.ice_server.clone(),
@@ -531,7 +649,7 @@ impl PeerForwardInternal {
             for (track_remote, track_forward) in anchor_track_forward_map.iter() {
                 if track_remote.0.rid() == rid && track_remote.0.kind() == RTPCodecType::Video {
                     for (track_remote_original, track_forward_original) in
-                    anchor_track_forward_map.iter()
+                        anchor_track_forward_map.iter()
                     {
                         if track_remote_original.0.kind() != RTPCodecType::Video {
                             continue;
@@ -607,5 +725,22 @@ impl PeerForwardInternal {
                 }
             }
         }
+    }
+
+    pub(crate) async fn subscribe_data_channel(
+        &self,
+        _peer: Arc<RTCPeerConnection>,
+        dc: Arc<RTCDataChannel>,
+    ) -> Result<()> {
+        let data_channel_forward = self.data_channel_forward.read().await;
+        if data_channel_forward.is_none() {
+            warn!("data channel forward is none");
+            return Err(anyhow::anyhow!("data channel forward is none"));
+        }
+        let data_channel_forward = data_channel_forward.as_ref().unwrap();
+        let sender = data_channel_forward.anchor.0.clone();
+        let receiver = data_channel_forward.subscribe.0.subscribe();
+        Self::data_channel_forward(dc, sender, receiver).await;
+        Ok(())
     }
 }

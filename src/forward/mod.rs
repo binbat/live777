@@ -91,6 +91,16 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
+        let internal = Arc::downgrade(&self.internal);
+        let pc = Arc::downgrade(&peer);
+        peer.on_data_channel(Box::new(move |dc| {
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
+                tokio::spawn(async move {
+                    let _ = internal.anchor_data_channel(pc, dc).await;
+                });
+            }
+            Box::pin(async {})
+        }));
         let description = peer_complete(offer, peer.clone()).await?;
         self.internal.set_anchor(peer.clone()).await?;
         Ok((description, get_peer_key(peer)))
@@ -127,6 +137,16 @@ impl PeerForward {
                         }
                         _ => {}
                     }
+                });
+            }
+            Box::pin(async {})
+        }));
+        let internal = Arc::downgrade(&self.internal);
+        let pc = Arc::downgrade(&peer);
+        peer.on_data_channel(Box::new(move |dc| {
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
+                tokio::spawn(async move {
+                    let _ = internal.subscribe_data_channel(pc, dc).await;
                 });
             }
             Box::pin(async {})
@@ -244,9 +264,7 @@ fn get_media_descriptions(sd: SessionDescription, publish: bool) -> Result<Vec<M
                 }
                 audio = true;
             }
-            RTPCodecType::Unspecified => {
-                return Err(anyhow::anyhow!("unknown media kind: {}", media));
-            }
+            _ => {}
         }
     }
     Ok(media_descriptions)
