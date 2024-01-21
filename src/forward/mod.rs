@@ -12,42 +12,50 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::{MediaDescription, SessionDescription};
 
-use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
+use crate::forward::forward_internal::PeerForwardInternal;
 use crate::forward::info::Layer;
 use crate::media;
 use crate::AppError;
 
 mod forward_internal;
 pub mod info;
+mod publish;
 mod rtcp;
+mod subscribe;
+mod track;
 mod track_match;
+
+pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
+    let digest = md5::compute(peer.get_stats_id());
+    format!("{:x}", digest)
+}
 
 #[derive(Clone)]
 pub struct PeerForward {
-    anchor_lock: Arc<Mutex<()>>,
+    publish_lock: Arc<Mutex<()>>,
     internal: Arc<PeerForwardInternal>,
 }
 
 impl PeerForward {
     pub fn new(id: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         PeerForward {
-            anchor_lock: Arc::new(Mutex::new(())),
+            publish_lock: Arc::new(Mutex::new(())),
             internal: Arc::new(PeerForwardInternal::new(id, ice_server)),
         }
     }
 
-    pub async fn set_anchor(
+    pub async fn set_publish(
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        if self.internal.anchor_is_some().await {
+        if self.internal.publish_is_some().await {
             return Err(AppError::ResourceAlreadyExists(
                 "A connection has already been established".to_string(),
             )
             .into());
         }
-        let _ = self.anchor_lock.lock().await;
-        if self.internal.anchor_is_some().await {
+        let _ = self.publish_lock.lock().await;
+        if self.internal.publish_is_some().await {
             return Err(AppError::ResourceAlreadyExists(
                 "A connection has already been established".to_string(),
             )
@@ -63,9 +71,9 @@ impl PeerForward {
             if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
                     info!(
-                        "[{}] [anchor] [{}] connection state changed: {}",
+                        "[{}] [publish] [{}] connection state changed: {}",
                         internal.id,
-                        pc.get_stats_id(),
+                        get_peer_id(&pc),
                         s
                     );
                     match s {
@@ -73,7 +81,7 @@ impl PeerForward {
                             let _ = pc.close().await;
                         }
                         RTCPeerConnectionState::Closed => {
-                            let _ = internal.remove_anchor(pc).await;
+                            let _ = internal.remove_publish(pc).await;
                         }
                         _ => {}
                     };
@@ -86,7 +94,7 @@ impl PeerForward {
         peer.on_track(Box::new(move |track, _, _| {
             if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
-                    let _ = internal.anchor_track_up(pc, track).await;
+                    let _ = internal.publish_track_up(pc, track).await;
                 });
             }
             Box::pin(async {})
@@ -96,22 +104,22 @@ impl PeerForward {
         peer.on_data_channel(Box::new(move |dc| {
             if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
-                    let _ = internal.anchor_data_channel(pc, dc).await;
+                    let _ = internal.publish_data_channel(pc, dc).await;
                 });
             }
             Box::pin(async {})
         }));
         let description = peer_complete(offer, peer.clone()).await?;
-        self.internal.set_anchor(peer.clone()).await?;
-        Ok((description, get_peer_key(peer)))
+        self.internal.set_publish(peer.clone()).await?;
+        Ok((description, get_peer_id(&peer)))
     }
 
     pub async fn add_subscribe(
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        if !self.internal.anchor_is_ok().await {
-            return Err(anyhow::anyhow!("anchor is not ok"));
+        if !self.internal.publish_is_ok().await {
+            return Err(anyhow::anyhow!("publish is not ok"));
         }
         let peer = self
             .internal
@@ -125,7 +133,7 @@ impl PeerForward {
                     info!(
                         "[{}] [subscribe] [{}] connection state changed: {}",
                         internal.id,
-                        pc.get_stats_id(),
+                        get_peer_id(&pc),
                         s
                     );
                     match s {
@@ -153,9 +161,8 @@ impl PeerForward {
         }));
         let (sdp, key) = (
             peer_complete(offer, peer.clone()).await?,
-            get_peer_key(peer.clone()),
+            get_peer_id(&peer),
         );
-        self.internal.add_subscribe(peer).await?;
         Ok((sdp, key))
     }
 
@@ -187,7 +194,7 @@ impl PeerForward {
 
     pub async fn select_layer(&self, key: String, layer: Option<Layer>) -> Result<()> {
         if !self.internal.publish_is_svc().await {
-            return Err(anyhow::anyhow!("anchor svc is not enabled"));
+            return Err(anyhow::anyhow!("publish svc is not enabled"));
         }
         self.internal.select_layer(key, layer).await
     }

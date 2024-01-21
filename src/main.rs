@@ -14,7 +14,7 @@ use axum::{
 };
 use forward::info::Layer;
 use http::header::ToStrError;
-use log::{info, debug, error};
+use log::{debug, error, info};
 use thiserror::Error;
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
@@ -50,7 +50,10 @@ async fn main() {
 
     let cfg = Config::parse();
     env_logger::builder()
-        .parse_filters(cfg.log.level.as_str())
+        .filter_module(
+            "live777",
+            log::LevelFilter::from_str(cfg.log.level.as_str()).unwrap(),
+        )
         .filter_module("webrtc", log::LevelFilter::Error)
         .write_style(env_logger::WriteStyle::Auto)
         .target(env_logger::Target::Stdout)
@@ -92,7 +95,7 @@ async fn main() {
         .route("/metrics", get(metrics))
         .with_state(app_state);
     app = static_server(app);
-    tokio::select!{
+    tokio::select! {
         Err(e) = axum::Server::bind(&addr).serve(app.into_make_service()) => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
     }

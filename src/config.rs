@@ -59,13 +59,13 @@ fn default_log() -> Log {
 }
 
 fn default_log_level() -> String {
-    env::var("LOG_LEVEL").unwrap_or_else(|_|
+    env::var("LOG_LEVEL").unwrap_or_else(|_| {
         if cfg!(debug_assertions) {
             "debug".to_string()
         } else {
             "info".to_string()
         }
-    )
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -33,10 +33,10 @@ impl Manager {
         let forward = paths.get(&path).cloned();
         drop(paths);
         if let Some(forward) = forward {
-            forward.set_anchor(offer).await
+            forward.set_publish(offer).await
         } else {
             let forward = PeerForward::new(path.clone(), self.ice_servers.clone());
-            let (sdp, key) = forward.set_anchor(offer).await?;
+            let (sdp, key) = forward.set_publish(offer).await?;
             let mut paths = self.paths.write().await;
             if paths.contains_key(&path) {
                 return Err(anyhow::anyhow!("resource already exists"));
