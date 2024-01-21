@@ -27,53 +27,6 @@
 </fieldset>
 
 <div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
-    <div>
-        <div class="messagebox">
-            <label for="anchor_message"
-            >Anchor Enter a message:
-                <input
-                    type="text"
-                    name="message"
-                    id="anchor_message"
-                    placeholder="Message text"
-                    inputmode="latin"
-                    size="60"
-                    maxlength="120"
-                    disabled/>
-            </label>
-            <button id="anchor_sendButton" name="sendButton" class="buttonright" disabled>
-                Send
-            </button>
-
-            <div class="messagebox" id="anchor_receivebox">
-                <p>Anchor Messages received:</p>
-            </div>
-        </div>
-
-        <div class="messagebox">
-            <label for="subscribe_message"
-            >Subscribe Enter a message:
-                <input
-                    type="text"
-                    name="message"
-                    id="subscribe_message"
-                    placeholder="Message text"
-                    inputmode="latin"
-                    size="60"
-                    maxlength="120"
-                    disabled/>
-            </label>
-            <button id="subscribe_sendButton" name="sendButton" class="buttonright" disabled>
-                Send
-            </button>
-
-            <div class="messagebox" id="subscribe_receivebox">
-                <p>Subscribe Messages received:</p>
-            </div>
-        </div>
-    </div>
-
-
     <fieldset>
         <legend>WHIP</legend>
         <section>
@@ -108,6 +61,13 @@
             <button onclick="startWhip()">Start</button>
             <button id="whip-button-stop">Stop</button>
         </section>
+
+        <section>
+            <label for="whip-datachannel-send">Publisher Enter a message: </label>
+            <input type="text" id="whip-datachannel-send" placeholder="Message text" disabled/>
+            <button id="whip-datachannel-button" disabled>Send</button>
+            <div id="whip-datachannel-recv"><p>Publisher Messages received:</p></div>
+        </section>
         <br/>Logs: <br/>
         <div id="whip-logs"></div>
     </fieldset>
@@ -118,6 +78,13 @@
         <section>
             <button onclick="startWhep()">Start</button>
             <button id="whep-button-stop">Stop</button>
+        </section>
+
+        <section>
+            <label for="whep-datachannel-send">Subscriber Enter a message: </label>
+            <input type="text" id="whep-datachannel-send" placeholder="Message text" disabled/>
+            <button id="whep-datachannel-button" disabled>Send</button>
+            <div id="whep-datachannel-recv"><p>Subscribe Messages received:</p></div>
         </section>
         <br/>Logs: <br/>
         <div id="whep-logs"></div>
@@ -210,6 +177,10 @@
     const idWhipVideoSize = "whip-video-size"
     const idWhipButtonStop = "whip-button-stop"
 
+    const idWhipDataChannelSend = "whip-datachannel-send"
+    const idWhipDataChannelRecv = "whip-datachannel-recv"
+    const idWhipDataChannelButton = "whip-datachannel-button"
+
     initLayerSelect(idWhipLayerSelect, [
         {value: "f", text: "Base"},
         {value: "h", text: "Base + 1/2"},
@@ -263,26 +234,22 @@
         if (el) el.srcObject = stream
 
         const pc = new RTCPeerConnection()
-        const dataChannel = pc.createDataChannel("dataChannel");
-        dataChannel.onopen = function (event) {
-            document.getElementById("anchor_message").disabled = false;
-            document.getElementById("anchor_sendButton").disabled = false;
-            document.getElementById("anchor_sendButton").onclick = function () {
-                dataChannel.send(document.getElementById("anchor_message").value);
-            };
-        };
-        dataChannel.onclose = function () {
-            document.getElementById("anchor_message").disabled = true;
-            document.getElementById("anchor_sendButton").disabled = true
-            document.getElementById("anchor_sendButton").onclick = undefined
-
-        };
+        const dataChannel = pc.createDataChannel("dataChannel")
+        dataChannel.onopen = () => {
+            document.getElementById(idWhipDataChannelSend).disabled = false
+            document.getElementById(idWhipDataChannelButton).disabled = false
+            document.getElementById(idWhipDataChannelButton).onclick = () => dataChannel.send(document.getElementById(idWhipDataChannelSend).value)
+        }
+        dataChannel.onclose = () => {
+            document.getElementById(idWhipDataChannelSend).disabled = true
+            document.getElementById(idWhipDataChannelButton).disabled = true
+            document.getElementById(idWhipDataChannelButton).onclick = undefined
+        }
         const decoder = new TextDecoder('utf-8');
-        dataChannel.onmessage = function (event) {
-            const el = document.getElementById("anchor_receivebox");
-            el.innerHTML += decoder.decode(new Uint8Array(event.data)) + '<br>';
-        };
-
+        dataChannel.onmessage = ev => {
+            const el = document.getElementById(idWhipDataChannelRecv)
+            el.innerHTML += decoder.decode(new Uint8Array(ev.data)) + '<br>'
+        }
 
         pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
 
@@ -338,6 +305,11 @@
     // WHEP
     const idWhepLayerSelect = "whep-layer-select"
     const idWhepButtonStop = "whep-button-stop"
+
+    const idWhepDataChannelSend = "whep-datachannel-send"
+    const idWhepDataChannelRecv = "whep-datachannel-recv"
+    const idWhepDataChannelButton = "whep-datachannel-button"
+
     initLayerSelect(idWhepLayerSelect, [
         {value: "", text: "AUTO"},
         {value: "q", text: "LOW"},
@@ -353,25 +325,22 @@
         }
         logWhep("started")
         const pc = window.pc = new RTCPeerConnection()
-        const dataChannel = pc.createDataChannel("dataChannel");
-        dataChannel.onopen = function (event) {
-            document.getElementById("subscribe_message").disabled = false;
-            document.getElementById("subscribe_sendButton").disabled = false;
-            document.getElementById("subscribe_sendButton").onclick = function () {
-                dataChannel.send(document.getElementById("subscribe_message").value);
-            };
-        };
-        dataChannel.onclose = function () {
-            document.getElementById("subscribe_message").disabled = true;
-            document.getElementById("subscribe_sendButton").disabled = true
-            document.getElementById("subscribe_sendButton").onclick = undefined
-
-        };
+        const dataChannel = pc.createDataChannel("dataChannel")
+        dataChannel.onopen = () => {
+            document.getElementById(idWhepDataChannelSend).disabled = false
+            document.getElementById(idWhepDataChannelButton).disabled = false
+            document.getElementById(idWhepDataChannelButton).onclick = () => dataChannel.send(document.getElementById(idWhepDataChannelSend).value)
+        }
+        dataChannel.onclose = () => {
+            document.getElementById(idWhepDataChannelSend).disabled = true
+            document.getElementById(idWhepDataChannelButton).disabled = true
+            document.getElementById(idWhepDataChannelButton).onclick = undefined
+        }
         const decoder = new TextDecoder('utf-8');
-        dataChannel.onmessage = function (event) {
-            const el = document.getElementById("subscribe_receivebox");
-            el.innerHTML += decoder.decode(new Uint8Array(event.data)) + '<br>';
-        };
+        dataChannel.onmessage = (ev) => {
+            const el = document.getElementById(idWhepDataChannelRecv)
+            el.innerHTML += decoder.decode(new Uint8Array(ev.data)) + '<br>'
+        }
 
         pc.oniceconnectionstatechange = e => logWhep(pc.iceConnectionState)
         pc.addTransceiver('video', {'direction': 'recvonly'})
