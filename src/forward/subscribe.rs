@@ -123,7 +123,7 @@ impl SubscribeRTCPeerConnection {
             error!("[{}] [{}] subscribe video tracks is empty", path, id);
             return;
         }
-        let subscribe_video_track = subscribe_video_tracks.get(0).unwrap();
+        let subscribe_video_track = subscribe_video_tracks.first().unwrap();
         let mut recv = match (subscribe_video_track.rtp_recv)() {
             Ok(recv) => recv,
             Err(_err) => {
