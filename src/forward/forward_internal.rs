@@ -126,12 +126,8 @@ impl PeerForwardInternal {
                     }
                 };
                 let r = Arc::clone(&raw);
-                tokio::spawn(async move {
-                    let _ = Self::data_channel_read_loop(r, sender).await;
-                });
-                tokio::spawn(async move {
-                    let _ = Self::data_channel_write_loop(raw, receiver).await;
-                });
+                tokio::spawn(Self::data_channel_read_loop(r, sender));
+                tokio::spawn(Self::data_channel_write_loop(raw, receiver));
             });
 
             Box::pin(async {})
@@ -148,6 +144,9 @@ impl PeerForwardInternal {
                     return;
                 }
             };
+            if n == 0 {
+                break;
+            }
             if let Err(err) = sender.send(buffer[..n].to_vec()) {
                 info!("send data channel err: {}", err);
                 return;
@@ -162,6 +161,7 @@ impl PeerForwardInternal {
         while let Ok(msg) = receiver.recv().await {
             if let Err(err) = d.write(&msg.into()).await {
                 info!("write data channel err: {}", err);
+                return;
             };
         }
     }

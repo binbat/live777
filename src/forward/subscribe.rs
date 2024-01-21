@@ -123,7 +123,6 @@ impl SubscribeRTCPeerConnection {
             error!("[{}] [{}] subscribe video tracks is empty", path, id);
             return;
         }
-        info!("[{}] [{}] video up", path, id);
         let subscribe_video_track = subscribe_video_tracks.get(0).unwrap();
         let mut recv = match (subscribe_video_track.rtp_recv)() {
             Ok(recv) => recv,
@@ -131,7 +130,7 @@ impl SubscribeRTCPeerConnection {
                 return;
             }
         };
-
+        info!("[{}] [{}] video up", path, id);
         let mut track_binding_publish_rid_one = track_binding_publish_rid.write().await;
         track_binding_publish_rid_one.insert(
             track.stream_id().to_owned(),
@@ -175,7 +174,7 @@ impl SubscribeRTCPeerConnection {
                                     recv= match (subscribe_track.rtp_recv)() {
                                         Ok(recv) => recv,
                                         Err(_err) => {
-                                           return ;
+                                            return ;
                                         }
                                     };
                                     publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, subscribe_track.track.ssrc())).await.unwrap();
