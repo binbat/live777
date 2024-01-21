@@ -130,16 +130,16 @@
     initCommonInput(idResourceId, idResourceId)
     initCommonInput(idBearerToken, idBearerToken)
 
-    function log(el, msg) {
-        el.innerHTML += msg + '<br>'
+    function log(el, num, msg) {
+        el.innerHTML += `[${num}]: ` + msg + '<br>'
     }
 
-    function logWhip(msg) {
-        log(document.getElementById('whip-logs'), msg)
+    function logWhip(num, msg) {
+        log(document.getElementById('whip-logs'), num, msg)
     }
 
-    function logWhep(msg) {
-        log(document.getElementById('whep-logs'), msg)
+    function logWhep(num, msg) {
+        log(document.getElementById('whep-logs'), num, msg)
     }
 
     function getElementValue(elementId) {
@@ -169,6 +169,8 @@
     }
 
     // WHIP
+    let whipNum = 0
+
     const idWhipLayerSelect = "whip-layer-select"
     const idWhipAudioCodec = "whip-audio-codec"
     const idWhipVideoCodec = "whip-video-codec"
@@ -211,14 +213,15 @@
             alert("input resource")
             return
         }
-        logWhip("started")
+        const num = whipNum++
+        logWhip(num, "started")
         const videoSize = document.getElementById(idWhipVideoSize).params
-        logWhip(`video width: ${!videoSize.width ? "default" : videoSize.width}, height: ${!videoSize.height ? "default" : videoSize.height}`)
+        logWhip(num, `video width: ${!videoSize.width ? "default" : videoSize.width}, height: ${!videoSize.height ? "default" : videoSize.height}`)
 
         const audioDevice = getElementValue(idWhipAudioDevice)
         const videoDevice = getElementValue(idWhipVideoDevice)
-        logWhip(`audio device: ${!audioDevice ? "none" : audioDevice}`)
-        logWhip(`video device: ${!videoDevice ? "none" : videoDevice}`)
+        logWhip(num, `audio device: ${!audioDevice ? "none" : audioDevice}`)
+        logWhip(num, `video device: ${!videoDevice ? "none" : videoDevice}`)
 
         let stream
         if (!audioDevice && !videoDevice) {
@@ -248,10 +251,10 @@
         const decoder = new TextDecoder('utf-8');
         dataChannel.onmessage = ev => {
             const el = document.getElementById(idWhipDataChannelRecv)
-            el.innerHTML += decoder.decode(new Uint8Array(ev.data)) + '<br>'
+            el.innerHTML += `[${num}]: ` + decoder.decode(new Uint8Array(ev.data)) + '<br>'
         }
 
-        pc.oniceconnectionstatechange = e => logWhip(pc.iceConnectionState)
+        pc.oniceconnectionstatechange = e => logWhip(num, pc.iceConnectionState)
 
         const layer = getElementValue(idWhipLayerSelect)
         const index = layers.findIndex(i => i.rid === layer)
@@ -265,11 +268,11 @@
 
         const audioCodec = getElementValue(idWhipAudioCodec)
         document.getElementById(idWhipAudioCodec).disabled = true
-        logWhip(`audio codec: ${!audioCodec ? "default" : audioCodec}`)
+        logWhip(num, `audio codec: ${!audioCodec ? "default" : audioCodec}`)
 
         const videoCodec = getElementValue(idWhipVideoCodec)
         document.getElementById(idWhipVideoCodec).disabled = true
-        logWhip(`video codec: ${!videoCodec ? "default" : videoCodec}`)
+        logWhip(num, `video codec: ${!videoCodec ? "default" : videoCodec}`)
 
         const whip = new WHIPClient()
         whip.onAnswer = answer => convertSessionDescription(answer, audioCodec, videoCodec)
@@ -277,15 +280,15 @@
         const url = location.origin + "/whip/" + resource
         const token = getElementValue(idBearerToken)
         try {
-            logWhip("http begined")
+            logWhip(num, "http begined")
             await whip.publish(pc, url, token)
         } catch (e) {
-            logWhip(e)
+            logWhip(num, e)
         }
 
         const stop = async () => {
             await whip.stop()
-            logWhip("stopped")
+            logWhip(num, "stopped")
             stream.getTracks().map(track => track.stop())
 
             if (el) el.srcObject = null
@@ -303,6 +306,8 @@
     window.startWhip = startWhip
 
     // WHEP
+    let whepNum = 0
+
     const idWhepLayerSelect = "whep-layer-select"
     const idWhepButtonStop = "whep-button-stop"
 
@@ -323,7 +328,8 @@
             alert("input resource")
             return
         }
-        logWhep("started")
+        const num = whepNum++
+        logWhep(num, "started")
         const pc = window.pc = new RTCPeerConnection()
         const dataChannel = pc.createDataChannel("dataChannel")
         dataChannel.onopen = () => {
@@ -339,14 +345,14 @@
         const decoder = new TextDecoder('utf-8');
         dataChannel.onmessage = (ev) => {
             const el = document.getElementById(idWhepDataChannelRecv)
-            el.innerHTML += decoder.decode(new Uint8Array(ev.data)) + '<br>'
+            el.innerHTML += `[${num}]: ` + decoder.decode(new Uint8Array(ev.data)) + '<br>'
         }
 
-        pc.oniceconnectionstatechange = e => logWhep(pc.iceConnectionState)
+        pc.oniceconnectionstatechange = e => logWhep(num, pc.iceConnectionState)
         pc.addTransceiver('video', {'direction': 'recvonly'})
         pc.addTransceiver('audio', {'direction': 'recvonly'})
         pc.ontrack = (event) => {
-            logWhep(`track: ${event.track.kind}`)
+            logWhep(num, `track: ${event.track.kind}`)
             if (event.track.kind === "video" || event.track.kind === "audio") {
                 var el = document.createElement(event.track.kind)
                 el.srcObject = event.streams[0]
@@ -360,16 +366,16 @@
         const token = getElementValue(idBearerToken)
 
         try {
-            logWhep("http begined")
+            logWhep(num, "http begined")
             await whep.view(pc, url, token)
         } catch (e) {
-            logWhep(e)
+            logWhep(num, e)
         }
 
         const element = document.getElementById(idWhepButtonStop)
         if (element) element.addEventListener('click', async () => {
             await whep.stop()
-            logWhep("stopped")
+            logWhep(num, "stopped")
         })
 
         const initEvevt = () => {
