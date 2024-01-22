@@ -49,6 +49,10 @@ Live777 has the following characteristics:
 
   Support a variety of video encoding and audio encoding formats, providing a wider range of compatibility to help enable adaptive streaming.
 
+### DataChannel Forward
+
+![live777-datachannel](./docs/live777-datachannel.excalidraw.svg)
+
 ## Current support encode
 | protocol | video codecs                | audio codecs   |
 | -------- | --------------------------- | -------------- |
