@@ -104,7 +104,7 @@ impl PeerForwardInternal {
         for subscribe in subscribe_group.iter() {
             if subscribe.id == id {
                 subscribe.peer.close().await?;
-                return Ok(true);
+                break;
             }
         }
         Ok(false)
