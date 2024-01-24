@@ -29,6 +29,7 @@
 <div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
     <fieldset>
         <legend>WHIP</legend>
+        <center>
         <section>
             <button id="whip-device-button" onclick="refreshDevice()">Use Device</button>
             Audio Device: <select id="whip-audio-device">
@@ -63,6 +64,10 @@
         </section>
 
         <section>
+            <h3>WHIP Video:</h3>
+            <debug-player controls autoplay id="whip-video-player"></debug-player>
+        </section>
+        <section>
             <label for="whip-datachannel-send">Publisher Enter a message: </label>
             <input type="text" id="whip-datachannel-send" placeholder="Message text" disabled/>
             <button id="whip-datachannel-button" disabled>Send</button>
@@ -70,16 +75,22 @@
         </section>
         <br/>Logs: <br/>
         <div id="whip-logs"></div>
+        <center>
     </fieldset>
 
     <fieldset>
         <legend>WHEP</legend>
+        <center>
         <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
         <section>
             <button onclick="startWhep()">Start</button>
             <button id="whep-button-stop">Stop</button>
         </section>
 
+        <section>
+            <h3>WHEP Video:</h3>
+            <debug-player controls autoplay id="whep-video-player"></debug-player>
+        </section>
         <section>
             <label for="whep-datachannel-send">Subscriber Enter a message: </label>
             <input type="text" id="whep-datachannel-send" placeholder="Message text" disabled/>
@@ -88,21 +99,19 @@
         </section>
         <br/>Logs: <br/>
         <div id="whep-logs"></div>
+        </center>
     </fieldset>
 </div>
-<br/>WHIP Video:<br/>
-<video controls autoplay id="whip-video-player"></video>
-<br/>WHEP Video:<br/>
-<div id="whep-video-player"></div>
-<br/>
 <script type="module">
     import convertSessionDescription from "./sdp.js"
     import {WHIPClient} from "./whip.js"
     import {WHEPClient} from "./whep.js"
 
-    import VideoSizeSelectElement from "./components.js"
+    import VideoSizeSelectElement from "./components/video-size-select.js"
+    import DebugPlayer from "./components/debug-player.js"
 
     customElements.define("video-size-select", VideoSizeSelectElement)
+    customElements.define("debug-player", DebugPlayer)
 
     // Common
     const idResourceId = "resource"
@@ -351,14 +360,10 @@
         pc.oniceconnectionstatechange = e => logWhep(num, pc.iceConnectionState)
         pc.addTransceiver('video', {'direction': 'recvonly'})
         pc.addTransceiver('audio', {'direction': 'recvonly'})
-        pc.ontrack = (event) => {
-            logWhep(num, `track: ${event.track.kind}`)
-            if (event.track.kind === "video" || event.track.kind === "audio") {
-                var el = document.createElement(event.track.kind)
-                el.srcObject = event.streams[0]
-                el.autoplay = true
-                el.controls = true
-                document.getElementById("whep-video-player").appendChild(el)
+        pc.ontrack = ev => {
+            logWhep(num, `track: ${ev.track.kind}`)
+            if (ev.track.kind === "video" || ev.track.kind === "audio") {
+                document.getElementById("whep-video-player").srcObject = ev.streams[0]
             }
         }
         const whep = new WHEPClient()
