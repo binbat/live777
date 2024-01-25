@@ -68,10 +68,13 @@
             <debug-player controls autoplay id="whip-video-player"></debug-player>
         </section>
         <section>
-            <label for="whip-datachannel-send">Publisher Enter a message: </label>
-            <input type="text" id="whip-datachannel-send" placeholder="Message text" disabled/>
-            <button id="whip-datachannel-button" disabled>Send</button>
-            <div id="whip-datachannel-recv"><p>Publisher Messages received:</p></div>
+            <input type="checkbox" id="whip-datachannel-negotiated"/>
+            <label for="whip-datachannel-negotiated">Negotiated</label>
+            &nbsp&nbsp
+            <label for="whip-datachannel-label">Label:</label>
+            <input type="text" id="whip-datachannel-label" placeholder="Empty will not created"/>
+            <br/>
+            <data-channel id="whip-datachannel"></data-channel>
         </section>
         <br/>Logs: <br/>
         <div id="whip-logs"></div>
@@ -92,10 +95,13 @@
             <debug-player controls autoplay id="whep-video-player"></debug-player>
         </section>
         <section>
-            <label for="whep-datachannel-send">Subscriber Enter a message: </label>
-            <input type="text" id="whep-datachannel-send" placeholder="Message text" disabled/>
-            <button id="whep-datachannel-button" disabled>Send</button>
-            <div id="whep-datachannel-recv"><p>Subscribe Messages received:</p></div>
+            <input type="checkbox" id="whep-datachannel-negotiated"/>
+            <label for="whep-datachannel-negotiated">Negotiated</label>
+            &nbsp&nbsp
+            <label for="whep-datachannel-label">Label:</label>
+            <input type="text" id="whep-datachannel-label" placeholder="Empty will not created"/>
+            <br/>
+            <data-channel id="whep-datachannel"></data-channel>
         </section>
         <br/>Logs: <br/>
         <div id="whep-logs"></div>
@@ -109,9 +115,11 @@
 
     import VideoSizeSelectElement from "./components/video-size-select.js"
     import DebugPlayer from "./components/debug-player.js"
+    import DataChannel from "./components/data-channel.js"
 
     customElements.define("video-size-select", VideoSizeSelectElement)
     customElements.define("debug-player", DebugPlayer)
+    customElements.define("data-channel", DataChannel)
 
     // Common
     const idResourceId = "resource"
@@ -188,9 +196,9 @@
     const idWhipVideoSize = "whip-video-size"
     const idWhipButtonStop = "whip-button-stop"
 
-    const idWhipDataChannelSend = "whip-datachannel-send"
-    const idWhipDataChannelRecv = "whip-datachannel-recv"
-    const idWhipDataChannelButton = "whip-datachannel-button"
+    const idWhipDataChannel = "whip-datachannel"
+    const idWhipDataChannelLabel = "whip-datachannel-label"
+    const idWhipDataChannelNegotiated = "whip-datachannel-negotiated"
 
     initLayerSelect(idWhipLayerSelect, [
         {value: "f", text: "Base"},
@@ -247,22 +255,12 @@
         if (el) el.srcObject = stream
 
         const pc = new RTCPeerConnection()
-        const dataChannel = pc.createDataChannel("dataChannel")
-        dataChannel.onopen = () => {
-            document.getElementById(idWhipDataChannelSend).disabled = false
-            document.getElementById(idWhipDataChannelButton).disabled = false
-            document.getElementById(idWhipDataChannelButton).onclick = () => dataChannel.send(document.getElementById(idWhipDataChannelSend).value)
-        }
-        dataChannel.onclose = () => {
-            document.getElementById(idWhipDataChannelSend).disabled = true
-            document.getElementById(idWhipDataChannelButton).disabled = true
-            document.getElementById(idWhipDataChannelButton).onclick = undefined
-        }
-        const decoder = new TextDecoder('utf-8');
-        dataChannel.onmessage = ev => {
-            const el = document.getElementById(idWhipDataChannelRecv)
-            el.innerHTML += `[${num}]: ` + decoder.decode(new Uint8Array(ev.data)) + '<br>'
-        }
+
+        const elDataChannel = document.getElementById(idWhipDataChannel)
+        const negotiated = document.getElementById(idWhipDataChannelNegotiated).checked
+        if (negotiated) pc.ondatachannel = ev => elDataChannel.onDataChannel = ev.channel
+        const dcLabel = document.getElementById(idWhipDataChannelLabel).value
+        if (dcLabel !== "") elDataChannel.dataChannel = pc.createDataChannel(dcLabel, { negotiated: negotiated })
 
         pc.oniceconnectionstatechange = e => logWhip(num, pc.iceConnectionState)
 
@@ -321,9 +319,9 @@
     const idWhepLayerSelect = "whep-layer-select"
     const idWhepButtonStop = "whep-button-stop"
 
-    const idWhepDataChannelSend = "whep-datachannel-send"
-    const idWhepDataChannelRecv = "whep-datachannel-recv"
-    const idWhepDataChannelButton = "whep-datachannel-button"
+    const idWhepDataChannel = "whep-datachannel"
+    const idWhepDataChannelLabel = "whep-datachannel-label"
+    const idWhepDataChannelNegotiated = "whep-datachannel-negotiated"
 
     initLayerSelect(idWhepLayerSelect, [
         {value: "", text: "AUTO"},
@@ -340,23 +338,13 @@
         }
         const num = whepNum++
         logWhep(num, "started")
-        const pc = window.pc = new RTCPeerConnection()
-        const dataChannel = pc.createDataChannel("dataChannel")
-        dataChannel.onopen = () => {
-            document.getElementById(idWhepDataChannelSend).disabled = false
-            document.getElementById(idWhepDataChannelButton).disabled = false
-            document.getElementById(idWhepDataChannelButton).onclick = () => dataChannel.send(document.getElementById(idWhepDataChannelSend).value)
-        }
-        dataChannel.onclose = () => {
-            document.getElementById(idWhepDataChannelSend).disabled = true
-            document.getElementById(idWhepDataChannelButton).disabled = true
-            document.getElementById(idWhepDataChannelButton).onclick = undefined
-        }
-        const decoder = new TextDecoder('utf-8');
-        dataChannel.onmessage = (ev) => {
-            const el = document.getElementById(idWhepDataChannelRecv)
-            el.innerHTML += `[${num}]: ` + decoder.decode(new Uint8Array(ev.data)) + '<br>'
-        }
+        const pc = new RTCPeerConnection()
+
+        const elDataChannel = document.getElementById(idWhepDataChannel)
+        const negotiated = document.getElementById(idWhepDataChannelNegotiated).checked
+        if (negotiated) pc.ondatachannel = ev => elDataChannel.onDataChannel = ev.channel
+        const dcLabel = document.getElementById(idWhipDataChannelLabel).value
+        if (dcLabel !== "") elDataChannel.dataChannel = pc.createDataChannel(dcLabel, { negotiated: negotiated })
 
         pc.oniceconnectionstatechange = e => logWhep(num, pc.iceConnectionState)
         pc.addTransceiver('video', {'direction': 'recvonly'})
@@ -364,7 +352,7 @@
         pc.ontrack = ev => {
             logWhep(num, `track: ${ev.track.kind}`)
             if (ev.track.kind === "video" || ev.track.kind === "audio") {
-                document.getElementById("whep-video-player").srcObject = ev.streams[0]
+                if (ev.streams.length !== 0) document.getElementById("whep-video-player").srcObject = ev.streams[0]
             }
         }
         const whep = new WHEPClient()
