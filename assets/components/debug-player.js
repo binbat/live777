@@ -6,7 +6,11 @@ export default class VideoSizeSelectElement extends HTMLElement {
         this.video = document.createElement("video")
         this.video.autoplay = true
         this.video.controls = true
-        this.video.addEventListener("loadedmetadata", this.setShowSize)
+
+        // https://github.com/Orphis/webrtc-sandbox/blob/811a6cc548c3e82838dc7a66533460b205716c54/simulcast-playground.html#L1107
+        this.video.style.width = "320px"
+        this.video.onloadedmetadata = this.setShowSize
+        this.video.onresize = this.setShowSize
     }
 
     connectedCallback() {
@@ -21,7 +25,7 @@ export default class VideoSizeSelectElement extends HTMLElement {
             option.innerText = i
             root.append(option)
         })
-        addSelectOptions(["auto", "320px", "480px", "600px", "1280px", "1920px"], selectWidthValue)
+        addSelectOptions(["320px", "480px", "600px", "1280px", "1920px", "auto"], selectWidthValue)
 
         const labelWidthHeight = document.createElement("label")
 
@@ -48,9 +52,5 @@ export default class VideoSizeSelectElement extends HTMLElement {
     }
 
     setShowSize = () => this.labelSize.innerText = `Raw Resolution: ${this.video.videoWidth}x${this.video.videoHeight}`
-    setShowTrackCount = (ev) => {
-        //const stream = ev.target
-        const stream = this.stream
-        this.labelCount.innerText = `Audio Track Count: ${stream.getAudioTracks().length}, Video Track Count: ${stream.getVideoTracks().length}`
-    }
+    setShowTrackCount = () => this.labelCount.innerText = `Audio Track Count: ${this.stream.getAudioTracks().length}, Video Track Count: ${this.stream.getVideoTracks().length}`
 }
