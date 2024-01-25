@@ -68,12 +68,6 @@
             <debug-player controls autoplay id="whip-video-player"></debug-player>
         </section>
         <section>
-            <input type="checkbox" id="whip-datachannel-negotiated"/>
-            <label for="whip-datachannel-negotiated">Negotiated</label>
-            &nbsp&nbsp
-            <label for="whip-datachannel-label">Label:</label>
-            <input type="text" id="whip-datachannel-label" placeholder="Empty will not created"/>
-            <br/>
             <data-channel id="whip-datachannel"></data-channel>
         </section>
         <br/>Logs: <br/>
@@ -95,12 +89,6 @@
             <debug-player controls autoplay id="whep-video-player"></debug-player>
         </section>
         <section>
-            <input type="checkbox" id="whep-datachannel-negotiated"/>
-            <label for="whep-datachannel-negotiated">Negotiated</label>
-            &nbsp&nbsp
-            <label for="whep-datachannel-label">Label:</label>
-            <input type="text" id="whep-datachannel-label" placeholder="Empty will not created"/>
-            <br/>
             <data-channel id="whep-datachannel"></data-channel>
         </section>
         <br/>Logs: <br/>
@@ -195,10 +183,7 @@
     const idWhipVideoDevice = "whip-video-device"
     const idWhipVideoSize = "whip-video-size"
     const idWhipButtonStop = "whip-button-stop"
-
     const idWhipDataChannel = "whip-datachannel"
-    const idWhipDataChannelLabel = "whip-datachannel-label"
-    const idWhipDataChannelNegotiated = "whip-datachannel-negotiated"
 
     initLayerSelect(idWhipLayerSelect, [
         {value: "f", text: "Base"},
@@ -256,11 +241,10 @@
 
         const pc = new RTCPeerConnection()
 
-        const elDataChannel = document.getElementById(idWhipDataChannel)
-        const negotiated = document.getElementById(idWhipDataChannelNegotiated).checked
-        if (negotiated) pc.ondatachannel = ev => elDataChannel.onDataChannel = ev.channel
-        const dcLabel = document.getElementById(idWhipDataChannelLabel).value
-        if (dcLabel !== "") elDataChannel.dataChannel = pc.createDataChannel(dcLabel, { negotiated: negotiated })
+        // NOTE:
+        // 1. Live777 Don't support label
+        // 2. Live777 Don't support negotiated
+        document.getElementById(idWhipDataChannel).dataChannel = pc.createDataChannel("")
 
         pc.oniceconnectionstatechange = e => logWhip(num, pc.iceConnectionState)
 
@@ -318,10 +302,7 @@
 
     const idWhepLayerSelect = "whep-layer-select"
     const idWhepButtonStop = "whep-button-stop"
-
     const idWhepDataChannel = "whep-datachannel"
-    const idWhepDataChannelLabel = "whep-datachannel-label"
-    const idWhepDataChannelNegotiated = "whep-datachannel-negotiated"
 
     initLayerSelect(idWhepLayerSelect, [
         {value: "", text: "AUTO"},
@@ -340,11 +321,10 @@
         logWhep(num, "started")
         const pc = new RTCPeerConnection()
 
-        const elDataChannel = document.getElementById(idWhepDataChannel)
-        const negotiated = document.getElementById(idWhepDataChannelNegotiated).checked
-        if (negotiated) pc.ondatachannel = ev => elDataChannel.onDataChannel = ev.channel
-        const dcLabel = document.getElementById(idWhipDataChannelLabel).value
-        if (dcLabel !== "") elDataChannel.dataChannel = pc.createDataChannel(dcLabel, { negotiated: negotiated })
+        // NOTE:
+        // 1. Live777 Don't support label
+        // 2. Live777 Don't support negotiated
+        document.getElementById(idWhepDataChannel).dataChannel = pc.createDataChannel("")
 
         pc.oniceconnectionstatechange = e => logWhep(num, pc.iceConnectionState)
         pc.addTransceiver('video', {'direction': 'recvonly'})

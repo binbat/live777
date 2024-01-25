@@ -51,6 +51,10 @@ Live777 has the following characteristics:
 
 ### DataChannel Forward
 
+> NOTE: About `createDataChannel()`
+> 1. Live777 Don't support `label`, `createDataChannel(label)` this `label` is not used
+> 2. Live777 Don't support `negotiated`, `{ id: 42, negotiated: true }` this don't support
+
 ![live777-datachannel](./docs/live777-datachannel.excalidraw.svg)
 
 ## Current support encode

@@ -34,12 +34,6 @@ export default class DataChannelElement extends HTMLElement {
         this.dc.addEventListener("open", this.onopen)
     }
 
-    // @params DataChannel
-    set onDataChannel(dc) {
-        this.dataChannel = dc
-        this.open()
-    }
-
     onopen = () => {
         this.input.disabled = false
         this.button.disabled = false
