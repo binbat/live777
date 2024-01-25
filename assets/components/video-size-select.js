@@ -6,25 +6,29 @@ export default class VideoSizeSelectElement extends HTMLElement {
 
         // Reference: https://developer.mozilla.org/en-US/docs/Web/API/Media_Capture_and_Streams_API/Constraints
         this.params = {}
+
+        this.enabledWidth = document.createElement("input")
+        this.enabledWidth.type = "checkbox"
+        this.enabledHeight = document.createElement("input")
+        this.enabledHeight.type = "checkbox"
     }
 
     connectedCallback() {
         const shadow = this.attachShadow({ mode: "closed" })
 
-        const sectionWidth = document.createElement("section")
+        const fieldset = document.createElement("fieldset")
+        fieldset.style.borderStyle = "unset"
+        fieldset.style.padding = "unset"
+
         const labelWidth = document.createElement("label")
-        const enabledWidth = document.createElement("input")
         const selectWidthValue = document.createElement("select")
 
-        const sectionHeight = document.createElement("section")
         const labelHeight = document.createElement("label")
-        const enabledHeight = document.createElement("input")
         const selectHeightValue = document.createElement("select")
 
         labelWidth.innerText = "Width: "
         selectWidthValue.disabled = true
-        enabledWidth.type = "checkbox"
-        enabledWidth.onclick = (ev) => {
+        this.enabledWidth.onclick = ev => {
             if (ev.target.checked) {
                 selectWidthValue.disabled = false
                 this.params.width = this.width
@@ -37,8 +41,7 @@ export default class VideoSizeSelectElement extends HTMLElement {
 
         labelHeight.innerText = "Height: "
         selectHeightValue.disabled = true
-        enabledHeight.type = "checkbox"
-        enabledHeight.onclick = (ev) => {
+        this.enabledHeight.onclick = ev => {
             if (ev.target.checked) {
                 selectHeightValue.disabled = false
                 this.params.height = this.height
@@ -62,14 +65,21 @@ export default class VideoSizeSelectElement extends HTMLElement {
         addSelectOptions(["320", "480", "600", "1280", "1920", "3480"], selectWidthValue)
         addSelectOptions(["240", "320", "480", "720", "1080", "2160"], selectHeightValue)
 
-        shadow.append(sectionWidth)
-        sectionWidth.append(enabledWidth)
-        sectionWidth.append(labelWidth)
-        sectionWidth.append(selectWidthValue)
+        shadow.append(fieldset)
 
-        shadow.append(sectionHeight)
-        sectionHeight.append(enabledHeight)
-        sectionHeight.append(labelHeight)
-        sectionHeight.append(selectHeightValue)
+        fieldset.append(this.enabledWidth)
+        fieldset.append(labelWidth)
+        fieldset.append(selectWidthValue)
+
+        fieldset.append(this.enabledHeight)
+        fieldset.append(labelHeight)
+        fieldset.append(selectHeightValue)
+    }
+
+    // @params boolean
+    // @return void
+    set disabled(value) {
+        this.enabledWidth.disabled = value
+        this.enabledHeight.disabled = value
     }
 }

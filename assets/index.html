@@ -225,6 +225,7 @@
         const num = whipNum++
         logWhip(num, "started")
         const videoSize = document.getElementById(idWhipVideoSize).params
+        document.getElementById(idWhipVideoSize).disabled = true
         logWhip(num, `video width: ${!videoSize.width ? "default" : videoSize.width}, height: ${!videoSize.height ? "default" : videoSize.height}`)
 
         const audioDevice = getElementValue(idWhipAudioDevice)
