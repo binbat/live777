@@ -32,12 +32,8 @@
         <center>
         <section>
             <button id="whip-device-button" onclick="refreshDevice()">Use Device</button>
-            Audio Device: <select id="whip-audio-device">
-            <option value="">none</option>
-        </select>
-            Video Device: <select id="whip-video-device">
-            <option value="">none</option>
-        </select>
+            <br/>Audio Device: <select id="whip-audio-device"><option value="">none</option></select>
+            <br/>Video Device: <select id="whip-video-device"><option value="">none</option></select>
         </section>
 
         <section>
@@ -136,7 +132,7 @@
     initCommonInput(idBearerToken, idBearerToken)
 
     function log(el, num, msg) {
-        el.innerHTML += `[${num}]: ` + msg + '<br>'
+        el.innerHTML += (!!num ? `[${num}]: ` : '') + msg + '<br>'
     }
 
     function logWhip(num, msg) {
