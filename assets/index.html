@@ -55,6 +55,9 @@
         </section>
         <section>SVC Layer: <select id="whip-layer-select"></select></section>
         <section>
+            <input type="checkbox" id="whip-pseudo-audio"/>Pseudo Audio Track
+        </section>
+        <section>
             <button onclick="startWhip()">Start</button>
             <button id="whip-button-stop">Stop</button>
         </section>
@@ -179,6 +182,7 @@
     const idWhipVideoDevice = "whip-video-device"
     const idWhipVideoSize = "whip-video-size"
     const idWhipButtonStop = "whip-button-stop"
+    const idWhipPseudoAudio = "whip-pseudo-audio"
     const idWhipDataChannel = "whip-datachannel"
 
     initLayerSelect(idWhipLayerSelect, [
@@ -252,7 +256,11 @@
             sendEncodings: layers.slice(0 - (layers.length - index)),
         })
 
-        stream.getAudioTracks().map(track => pc.addTrack(track))
+        if (document.getElementById(idWhipPseudoAudio).checked) {
+            pc.addTransceiver('audio', { 'direction': 'sendonly' })
+        } else {
+            stream.getAudioTracks().map(track => pc.addTrack(track))
+        }
 
         const audioCodec = getElementValue(idWhipAudioCodec)
         document.getElementById(idWhipAudioCodec).disabled = true
