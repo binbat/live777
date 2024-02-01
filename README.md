@@ -233,8 +233,8 @@ Gstreamer whip     | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
 Gstreamer whep     | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
 Gstreamer rtp-into | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
 Gstreamer rtp-from | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
-Ffmpeg rtp-into    | :shit: | :star: | :star: | :star: | :star: | :star: |
-Ffmpeg rtp-from    | :shit: | :star: | :star: | :star: | :star: | :star: |
+FFmpeg rtp-into    | :shit: | :star: | :star: | :star: | :star: | :star: |
+FFmpeg rtp-from    | :shit: | :star: | :star: | :star: | :star: | :star: |
 VLC rtp-into       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
 VLC rtp-from       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
 OBS Studio whip    | :shit: | :shit: | :shit: | :star: | :star: | :shit: |
