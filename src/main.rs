@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, Uri};
+use axum::http::HeaderMap;
 
-use axum::routing::get;
+use axum::routing::{get, patch};
 use axum::Json;
 use axum::{
     extract::{Path, State},
@@ -76,21 +76,23 @@ async fn main() {
         .route(
             "/whip/:id",
             post(whip)
-                .patch(add_ice_candidate)
-                .delete(remove_path_key)
                 .layer(auth_layer.clone())
                 .options(ice_server_config),
         )
         .route(
             "/whep/:id",
             post(whep)
-                .patch(add_ice_candidate)
-                .delete(remove_path_key)
                 .layer(auth_layer.clone())
                 .options(ice_server_config),
         )
         .route(
-            "/whep/:id/layer",
+            "/resource/:id/:key",
+            patch(add_ice_candidate)
+                .delete(remove_path_key)
+                .layer(auth_layer.clone()),
+        )
+        .route(
+            "/resource/:id/:key/layer",
             get(get_layer).post(select_layer).layer(auth_layer),
         )
         .route("/metrics", get(metrics))
@@ -152,7 +154,6 @@ async fn whip(
     State(state): State<AppState>,
     Path(id): Path<String>,
     header: HeaderMap,
-    uri: Uri,
     body: String,
 ) -> AppResult<Response<String>> {
     let content_type = header
@@ -162,13 +163,12 @@ async fn whip(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.publish(id, offer).await?;
+    let (answer, key) = state.paths.publish(id.clone(), offer).await?;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("E-Tag", key)
-        .header("Location", uri.to_string())
+        .header("Location", format!("/resource/{}/{}", id, key))
         .body(answer.sdp)?)
 }
 
@@ -176,7 +176,6 @@ async fn whep(
     State(state): State<AppState>,
     Path(id): Path<String>,
     header: HeaderMap,
-    uri: Uri,
     body: String,
 ) -> AppResult<Response<String>> {
     let content_type = header
@@ -191,14 +190,13 @@ async fn whep(
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("E-Tag", key)
-        .header("Location", uri.to_string());
-    if state.paths.layers(id).await.is_ok() {
+        .header("Location", format!("/resource/{}/{}", id, key));
+    if state.paths.layers(id.clone()).await.is_ok() {
         builder = builder.header(
             "Link",
             format!(
-                "<{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                uri
+                "</resource/{}/{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
+                id, key
             ),
         )
     }
@@ -207,7 +205,7 @@ async fn whep(
 
 async fn add_ice_candidate(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path((id, key)): Path<(String, String)>,
     header: HeaderMap,
     body: String,
 ) -> AppResult<Response<String>> {
@@ -217,11 +215,6 @@ async fn add_ice_candidate(
     if content_type.to_str()? != "application/trickle-ice-sdpfrag" {
         return Err(anyhow::anyhow!("Content-Type must be application/trickle-ice-sdpfrag").into());
     }
-    let key = header
-        .get("If-Match")
-        .ok_or(AppError::from(anyhow::anyhow!("If-Match is required")))?
-        .to_str()?
-        .to_string();
     state.paths.add_ice_candidate(id, key, body).await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -230,14 +223,8 @@ async fn add_ice_candidate(
 
 async fn remove_path_key(
     State(state): State<AppState>,
-    Path(id): Path<String>,
-    header: HeaderMap,
+    Path((id, key)): Path<(String, String)>,
 ) -> AppResult<Response<String>> {
-    let key = header
-        .get("If-Match")
-        .ok_or(AppError::from(anyhow::anyhow!("If-Match is required")))?
-        .to_str()?
-        .to_string();
     state.paths.remove_path_key(id, key).await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -250,7 +237,7 @@ async fn ice_server_config(State(state): State<AppState>) -> AppResult<Response<
         .header("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH")
         .header(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, If-Match",
+            "Authorization, Content-Type",
         );
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
@@ -260,7 +247,7 @@ async fn ice_server_config(State(state): State<AppState>) -> AppResult<Response<
 
 async fn get_layer(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path((id, _key)): Path<(String, String)>,
 ) -> AppResult<Json<Vec<Layer>>> {
     let layers = state.paths.layers(id).await?;
     Ok(Json(layers))
@@ -268,15 +255,9 @@ async fn get_layer(
 
 async fn select_layer(
     State(state): State<AppState>,
-    Path(id): Path<String>,
-    header: HeaderMap,
+    Path((id, key)): Path<(String, String)>,
     Json(layer): Json<SelectLayer>,
 ) -> AppResult<String> {
-    let key = header
-        .get("If-Match")
-        .ok_or(AppError::from(anyhow::anyhow!("If-Match is required")))?
-        .to_str()?
-        .to_string();
     state
         .paths
         .select_layer(
