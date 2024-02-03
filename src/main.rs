@@ -16,6 +16,7 @@ use axum::{
 
 use forward::info::Layer;
 use http::header::ToStrError;
+use http::Uri;
 
 use log::{debug, error, info};
 use thiserror::Error;
@@ -73,28 +74,17 @@ async fn main() {
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
     let mut app = Router::new()
-        .route(
-            "/whip/:id",
-            post(whip)
-                .layer(auth_layer.clone())
-                .options(ice_server_config),
-        )
-        .route(
-            "/whep/:id",
-            post(whep)
-                .layer(auth_layer.clone())
-                .options(ice_server_config),
-        )
+        .route("/whip/:id", post(whip))
+        .route("/whep/:id", post(whep))
         .route(
             "/resource/:id/:key",
-            patch(add_ice_candidate)
-                .delete(remove_path_key)
-                .layer(auth_layer.clone()),
+            patch(add_ice_candidate).delete(remove_path_key),
         )
         .route(
             "/resource/:id/:key/layer",
-            get(get_layer).post(select_layer).layer(auth_layer),
+            get(get_layer).post(select_layer),
         )
+        .layer(auth_layer)
         .route("/metrics", get(metrics))
         .with_state(app_state);
     app = static_server(app);
@@ -164,12 +154,15 @@ async fn whip(
     }
     let offer = RTCSessionDescription::offer(body)?;
     let (answer, key) = state.paths.publish(id.clone(), offer).await?;
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", id, key))
-        .body(answer.sdp)?)
+        .header("Location", format!("/resource/{}/{}", id, key));
+    for link in link_header(state.config.ice_servers.clone()) {
+        builder = builder.header("Link", link);
+    }
+    Ok(builder.body(answer.sdp)?)
 }
 
 async fn whep(
@@ -191,6 +184,9 @@ async fn whep(
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
         .header("Location", format!("/resource/{}/{}", id, key));
+    for link in link_header(state.config.ice_servers.clone()) {
+        builder = builder.header("Link", link);
+    }
     if state.paths.layers(id.clone()).await.is_ok() {
         builder = builder.header(
             "Link",
@@ -224,25 +220,12 @@ async fn add_ice_candidate(
 async fn remove_path_key(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
+    _uri: Uri,
 ) -> AppResult<Response<String>> {
     state.paths.remove_path_key(id, key).await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)
-}
-
-async fn ice_server_config(State(state): State<AppState>) -> AppResult<Response<String>> {
-    let mut builder = Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH")
-        .header(
-            "Access-Control-Allow-Headers",
-            "Authorization, Content-Type",
-        );
-    for link in link_header(state.config.ice_servers.clone()) {
-        builder = builder.header("Link", link);
-    }
-    Ok(builder.body("".to_owned())?)
 }
 
 async fn get_layer(
@@ -280,7 +263,7 @@ fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
                 credential = string_encoder(&credential);
             }
             server.urls.into_iter().map(move |url| {
-                let mut link = format!("<{}>; rel=\"ice-server\"", url.replacen(':', "://", 1));
+                let mut link = format!("<{}>; rel=\"ice-server\"", url);
                 if !username.is_empty() {
                     link = format!(
                         "{}; username=\"{}\"; credential=\"{}\"; credential-type=\"{}\"",
