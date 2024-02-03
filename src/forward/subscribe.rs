@@ -30,7 +30,7 @@ impl SubscribeRTCPeerConnection {
         peer: Arc<RTCPeerConnection>,
         publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
         publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
-        publish_track_change: broadcast::Sender<()>, // 使用 sub
+        publish_track_change: broadcast::Sender<()>, // use subscribe
         video_sender: Option<Arc<RTCRtpSender>>,
         audio_sender: Option<Arc<RTCRtpSender>>,
     ) -> Self {
