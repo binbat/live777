@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
 
-use axum::routing::{get, patch};
+use axum::routing::get;
 use axum::Json;
 use axum::{
     extract::{Path, State},
@@ -17,7 +18,6 @@ use axum::{
 use forward::info::Layer;
 use http::header::ToStrError;
 use http::Uri;
-
 use log::{debug, error, info};
 use thiserror::Error;
 #[cfg(debug_assertions)]
@@ -27,7 +27,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::dto::req::SelectLayer;
+use crate::dto::req::{ChangeResource, SelectLayer};
 use config::IceServer;
 use path::manager::Manager;
 #[cfg(not(debug_assertions))]
@@ -35,6 +35,7 @@ use {http::header, rust_embed::RustEmbed};
 
 mod auth;
 mod config;
+mod constant;
 mod dto;
 mod forward;
 mod metrics;
@@ -78,11 +79,13 @@ async fn main() {
         .route("/whep/:id", post(whep))
         .route(
             "/resource/:id/:key",
-            patch(add_ice_candidate).delete(remove_path_key),
+            post(change_resource)
+                .patch(add_ice_candidate)
+                .delete(remove_path_key),
         )
         .route(
             "/resource/:id/:key/layer",
-            get(get_layer).post(select_layer),
+            get(get_layer).post(select_layer).delete(un_select_layer),
         )
         .layer(auth_layer)
         .route("/metrics", get(metrics))
@@ -228,6 +231,15 @@ async fn remove_path_key(
         .body("".to_string())?)
 }
 
+async fn change_resource(
+    State(state): State<AppState>,
+    Path((id, key)): Path<(String, String)>,
+    Json(dto): Json<ChangeResource>,
+) -> AppResult<Json<HashMap<String, String>>> {
+    state.paths.change_resource(id, key, dto).await?;
+    Ok(Json(HashMap::new()))
+}
+
 async fn get_layer(
     State(state): State<AppState>,
     Path((id, _key)): Path<(String, String)>,
@@ -247,6 +259,23 @@ async fn select_layer(
             id,
             key,
             layer.encoding_id.map(|encoding_id| Layer { encoding_id }),
+        )
+        .await?;
+    Ok("".to_string())
+}
+
+async fn un_select_layer(
+    State(state): State<AppState>,
+    Path((id, key)): Path<(String, String)>,
+) -> AppResult<String> {
+    state
+        .paths
+        .select_layer(
+            id,
+            key,
+            Some(Layer {
+                encoding_id: constant::RID_DISABLE.to_string(),
+            }),
         )
         .await?;
     Ok("".to_string())

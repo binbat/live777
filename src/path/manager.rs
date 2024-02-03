@@ -8,6 +8,7 @@ use webrtc::{
     peer_connection::sdp::session_description::RTCSessionDescription,
 };
 
+use crate::dto::req::ChangeResource;
 use crate::forward::info::Layer;
 use crate::forward::PeerForward;
 use crate::AppError;
@@ -115,6 +116,22 @@ impl Manager {
         drop(paths);
         if let Some(forward) = forward {
             forward.select_layer(key, layer).await
+        } else {
+            Err(anyhow::anyhow!("resource not exists"))
+        }
+    }
+
+    pub async fn change_resource(
+        &self,
+        path: String,
+        key: String,
+        change_resource: ChangeResource,
+    ) -> Result<()> {
+        let paths = self.paths.read().await;
+        let forward = paths.get(&path).cloned();
+        drop(paths);
+        if let Some(forward) = forward {
+            forward.change_resource(key, change_resource).await
         } else {
             Err(anyhow::anyhow!("resource not exists"))
         }

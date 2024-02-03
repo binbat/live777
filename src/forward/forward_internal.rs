@@ -1,3 +1,4 @@
+use std::borrow::ToOwned;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -23,7 +24,6 @@ use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::forward::get_peer_id;
-use crate::forward::info::Layer;
 use crate::forward::rtcp::RtcpMessage;
 use crate::metrics;
 use crate::AppError;
@@ -421,16 +421,11 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    pub async fn select_layer(&self, id: String, layer: Option<Layer>) -> Result<()> {
-        let rid = if let Some(layer) = layer {
-            layer.encoding_id
-        } else {
-            self.publish_svc_rids().await?[0].clone()
-        };
+    pub async fn select_kind_rid(&self, id: String, kind: RTPCodecType, rid: String) -> Result<()> {
         let subscribe_group = self.subscribe_group.read().await;
         for subscribe in subscribe_group.iter() {
             if subscribe.id == id {
-                subscribe.select_layer(rid)?;
+                subscribe.select_kind_rid(kind, rid)?;
                 break;
             }
         }

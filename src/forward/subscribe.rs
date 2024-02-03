@@ -11,15 +11,17 @@ use webrtc::track::track_local::TrackLocalWriter;
 
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
-use crate::AppResult;
+use crate::{constant, AppResult};
 
 use super::track::PublishTrackRemote;
 use super::{get_peer_id, info};
 
+type SelectLayerBody = (RTPCodecType, String);
+
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) peer: Arc<RTCPeerConnection>,
-    select_layer_sender: broadcast::Sender<String>,
+    select_layer_sender: broadcast::Sender<SelectLayerBody>,
 }
 
 impl SubscribeRTCPeerConnection {
@@ -76,12 +78,13 @@ impl SubscribeRTCPeerConnection {
         sender: Arc<RTCRtpSender>,
         kind: RTPCodecType,
         publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
-        mut select_layer_recv: broadcast::Receiver<String>,
+        mut select_layer_recv: broadcast::Receiver<SelectLayerBody>,
         track_binding_publish_rid: Arc<RwLock<HashMap<String, String>>>,
         publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
         mut publish_track_change: broadcast::Receiver<()>,
     ) {
         info!("[{}] [{}] {} up", path, id, kind);
+        let mut pre_rid: Option<String> = None;
         // empty broadcast channel
         let (s, _) = broadcast::channel::<ForwardData>(1);
         let mut recv = s.subscribe();
@@ -94,20 +97,27 @@ impl SubscribeRTCPeerConnection {
                     if publish_change.is_err() {
                         continue;
                     }
+                      let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
                         let publish_tracks = publish_tracks.read().await;
+                        let current_rid = track_binding_publish_rid.get(&kind.clone().to_string());
                         if publish_tracks.len() == 0 {
                             debug!("{} {} publish track len 0 , probably offline",path,id);
                             recv = s.subscribe();
                             let _ = sender.replace_track(None).await;
                             track = None;
-                            let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
-                            track_binding_publish_rid.remove(&kind.clone().to_string());
+                            pre_rid = None;
+                            if current_rid.is_some() && current_rid.cloned().unwrap() != constant::RID_DISABLE {
+                                track_binding_publish_rid.remove(&kind.clone().to_string());
+                            };
                             continue;
                         }
                         if track.is_some(){
                             continue;
                         }
-                       for publish_track in publish_tracks.iter() {
+                        if current_rid.is_some() && current_rid.cloned().unwrap() == constant::RID_DISABLE {
+                           continue;
+                        }
+                        for publish_track in publish_tracks.iter() {
                               if publish_track.kind != kind {
                                 continue;
                             }
@@ -120,7 +130,6 @@ impl SubscribeRTCPeerConnection {
                                         recv = publish_track.subscribe();
                                         track = Some(new_track);
                                         let _ = publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc()));
-                                        let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
                                         track_binding_publish_rid.insert(kind.clone().to_string(), publish_track.rid.clone());
                                     }
                                      Err(e) => {
@@ -154,13 +163,53 @@ impl SubscribeRTCPeerConnection {
                 }
                 select_layer_result = select_layer_recv.recv() => {
                     match select_layer_result {
-                        Ok(rid) => {
-                            if kind != RTPCodecType::Video{
+                        Ok(select_layer_body) => {
+                            if select_layer_body.0 != kind {
                                 continue;
-                            }
-                            let publish_tracks =  publish_tracks.read().await;
+                            };
+                             let select_rid = select_layer_body.1;
+                             let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
+                             let publish_tracks =  publish_tracks.read().await;
+                             let current_rid = track_binding_publish_rid.get(&kind.to_string()).cloned();
+                             if current_rid == Some(select_rid.clone()){
+                                continue;
+                             }
+                            let new_rid = match &current_rid{
+                                None => {
+                                    select_rid.clone()
+                                }
+                                Some(current_rid) => {
+                                    if current_rid == constant::RID_DISABLE && select_rid == constant::RID_ENABLE{
+                                        track_binding_publish_rid.remove(&kind.clone().to_string());
+                                        match &pre_rid{
+                                            None => {
+                                                let next_rid = publish_tracks.iter().filter(|t|t.kind==kind).map(|t|t.rid.clone()).next();
+                                                if next_rid.is_none(){
+                                                    continue;
+                                                }
+                                                next_rid.unwrap()
+                                            }
+                                            Some(pre_rid) => {
+                                                pre_rid.clone()
+                                            }
+                                        }
+                                    }else{
+                                        select_rid.clone()
+                                    }
+                                }
+                            };
+                            if new_rid == constant::RID_DISABLE {
+                                if current_rid.is_some(){
+                                    recv = s.subscribe();
+                                    let _ = sender.replace_track(None).await;
+                                    track = None;
+                                    pre_rid = Some(current_rid.unwrap());
+                                }
+                                track_binding_publish_rid.insert(kind.clone().to_string(), new_rid);
+                                continue;
+                            };
                             for  publish_track in publish_tracks.iter() {
-                                if publish_track.kind == RTPCodecType::Video && publish_track.rid == rid {
+                                if publish_track.kind == RTPCodecType::Video && (publish_track.rid == new_rid || new_rid == constant::RID_ENABLE) {
                                       let new_track= Arc::new(
                                         TrackLocalStaticRTP::new(publish_track.track.clone().codec().capability,"webrtc".to_string(),format!("{}-{}","webrtc",kind))
                                     );
@@ -170,9 +219,8 @@ impl SubscribeRTCPeerConnection {
                                         recv = publish_track.subscribe();
                                         track = Some(new_track);
                                         let _ = publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc())).unwrap();
-                                        let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
-                                        track_binding_publish_rid.insert(kind.clone().to_string(), rid.clone());
-                                        info!("[{}] [{}] {} select layer to {}", path, id, kind,rid);
+                                        track_binding_publish_rid.insert(kind.clone().to_string(), new_rid.clone());
+                                        info!("[{}] [{}] {} select layer to {}", path, id, kind,new_rid);
                                     }
                                      Err(e) => {
                                         debug!("[{}] [{}] {} track replace err: {}", path, id,kind, e);
@@ -192,8 +240,8 @@ impl SubscribeRTCPeerConnection {
         info!("[{}] [{}] {} down", path, id, kind);
     }
 
-    pub(crate) fn select_layer(&self, rid: String) -> AppResult<()> {
-        if let Err(err) = self.select_layer_sender.send(rid) {
+    pub(crate) fn select_kind_rid(&self, kind: RTPCodecType, rid: String) -> AppResult<()> {
+        if let Err(err) = self.select_layer_sender.send((kind, rid)) {
             Err(anyhow::anyhow!("select layer send err: {}", err).into())
         } else {
             Ok(())

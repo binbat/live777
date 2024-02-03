@@ -80,6 +80,7 @@
         <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
         <section>
             <button onclick="startWhep()">Start</button>
+            <button id="whep-button-disable-video">Disable Video</button>
             <button id="whep-button-stop">Stop</button>
         </section>
 
@@ -355,7 +356,14 @@
             await whep.stop()
             logWhep(num, "stopped")
         })
-
+        var flag = false
+        document.getElementById("whep-button-disable-video").onclick = async () => {
+            await whep.mute({
+                "kind":"video",
+                "audioEnabled": flag
+            })
+            flag = !flag
+        }
         const initEvevt = () => {
             const el = document.getElementById(idWhepLayerSelect)
             if (el) el.onchange = ev => !ev.target.value ? whep.unselectLayer() : whep.selectLayer({"encodingId": ev.target.value}).catch(e => logWhep(e))

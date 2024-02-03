@@ -9,12 +9,14 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 
 use webrtc::sdp::SessionDescription;
 
+use crate::dto::req::ChangeResource;
 use crate::forward::forward_internal::PeerForwardInternal;
 use crate::forward::info::Layer;
-use crate::AppError;
+use crate::{constant, AppError};
 
 use self::media::MediaInfo;
 
@@ -194,10 +196,32 @@ impl PeerForward {
     }
 
     pub async fn select_layer(&self, key: String, layer: Option<Layer>) -> Result<()> {
-        if !self.internal.publish_is_svc().await {
-            return Err(anyhow::anyhow!("publish svc is not enabled"));
+        let rid = if let Some(layer) = layer {
+            layer.encoding_id
+        } else {
+            self.internal.publish_svc_rids().await?[0].clone()
+        };
+        self.internal
+            .select_kind_rid(key, RTPCodecType::Video, rid)
+            .await
+    }
+
+    pub async fn change_resource(
+        &self,
+        key: String,
+        change_resource: ChangeResource,
+    ) -> Result<()> {
+        let codec_type = RTPCodecType::from(change_resource.kind.as_str());
+        if codec_type == RTPCodecType::Unspecified {
+            return Err(anyhow::anyhow!("kind unspecified"));
         }
-        self.internal.select_layer(key, layer).await
+
+        let rid = if change_resource.audio_enabled {
+            constant::RID_ENABLE.to_string()
+        } else {
+            constant::RID_DISABLE.to_string()
+        };
+        self.internal.select_kind_rid(key, codec_type, rid).await
     }
 }
 
