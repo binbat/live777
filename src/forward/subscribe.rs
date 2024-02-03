@@ -1,249 +1,218 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use log::{debug, error};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use log::debug;
+use tokio::sync::{broadcast, RwLock};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
+use webrtc::track::track_local::TrackLocalWriter;
 
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
 use crate::AppResult;
 
-use super::track::SubscribeTrackRemote;
+use super::track::PublishTrackRemote;
 use super::{get_peer_id, info};
 
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) peer: Arc<RTCPeerConnection>,
-    select_layer_sender: mpsc::Sender<String>,
-}
-
-#[derive(Clone)]
-struct SubscribeTrackRemoteInfo {
-    pub(crate) rid: String,
-    pub(crate) kind: RTPCodecType,
-    pub(crate) ssrc: u32,
-}
-
-impl SubscribeTrackRemoteInfo {
-    pub(crate) fn new(subscribe_track: &SubscribeTrackRemote) -> Self {
-        Self {
-            rid: subscribe_track.rid.to_owned(),
-            kind: subscribe_track.kind,
-            ssrc: subscribe_track.track.ssrc(),
-        }
-    }
+    select_layer_sender: broadcast::Sender<String>,
 }
 
 impl SubscribeRTCPeerConnection {
     pub(crate) async fn new(
         path: String,
         peer: Arc<RTCPeerConnection>,
-        publish_rtcp_sender: mpsc::Sender<(RtcpMessage, u32)>,
-        mut subscribe_tracks: Vec<SubscribeTrackRemote>,
-        video_track: Option<Arc<TrackLocalStaticRTP>>,
-        audio_track: Option<Arc<TrackLocalStaticRTP>>,
-    ) -> AppResult<Self> {
-        let (select_layer_sender, select_layer_recv) = mpsc::channel(1);
+        publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
+        publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
+        publish_track_change: broadcast::Sender<()>, // 使用 sub
+        video_sender: Option<Arc<RTCRtpSender>>,
+        audio_sender: Option<Arc<RTCRtpSender>>,
+    ) -> Self {
+        let (select_layer_sender, _) = broadcast::channel(1);
         let id = get_peer_id(&peer);
         let track_binding_publish_rid = Arc::new(RwLock::new(HashMap::new()));
-        let subscribe_track_infos: Vec<SubscribeTrackRemoteInfo> = subscribe_tracks
-            .iter()
-            .map(SubscribeTrackRemoteInfo::new)
-            .collect();
-        let mut subscribe_track_audio = None;
-        for (index, subscribe_track) in subscribe_tracks.iter().enumerate() {
-            if subscribe_track.kind == RTPCodecType::Audio {
-                subscribe_track_audio = Some(subscribe_tracks.remove(index));
-                break;
+        for (sender, kind) in [
+            (video_sender, RTPCodecType::Video),
+            (audio_sender, RTPCodecType::Audio),
+        ] {
+            if sender.is_none() {
+                continue;
             }
-        }
-        if let Some(track) = video_track {
-            let sender = peer.add_track(track.clone()).await?;
-            tokio::spawn(Self::track_read_rtcp(
-                track.stream_id().to_owned(),
-                RTPCodecType::Video,
-                sender,
-                subscribe_track_infos.clone(),
+            let sender = sender.unwrap();
+            tokio::spawn(Self::sender_forward_rtcp(
+                kind,
+                sender.clone(),
+                publish_tracks.clone(),
                 track_binding_publish_rid.clone(),
                 publish_rtcp_sender.clone(),
             ));
-            tokio::spawn(Self::track_write_rtp_video(
+            tokio::spawn(Self::sender_forward_rtp(
                 path.clone(),
                 id.clone(),
-                track,
-                publish_rtcp_sender.clone(),
-                select_layer_recv,
-                track_binding_publish_rid.clone(),
-                subscribe_tracks,
-            ));
-        }
-        if let Some(track) = audio_track {
-            if subscribe_track_audio.is_none() {
-                return Err(anyhow::anyhow!("publish audio track is none").into());
-            }
-            let sender = peer.add_track(track.clone()).await?;
-            tokio::spawn(Self::track_read_rtcp(
-                track.stream_id().to_owned(),
-                RTPCodecType::Video,
                 sender,
-                subscribe_track_infos.clone(),
-                track_binding_publish_rid.clone(),
+                kind,
                 publish_rtcp_sender.clone(),
-            ));
-            tokio::spawn(Self::track_write_rtp_audio(
-                path.clone(),
-                id.clone(),
-                track,
-                (subscribe_track_audio.unwrap().rtp_recv)()?,
+                select_layer_sender.subscribe(),
+                track_binding_publish_rid.clone(),
+                publish_tracks.clone(),
+                publish_track_change.subscribe(),
             ));
         }
-
-        Ok(Self {
+        let _ = publish_track_change.send(());
+        Self {
             id,
             peer,
             select_layer_sender,
-        })
+        }
     }
 
-    async fn track_write_rtp_video(
+    async fn sender_forward_rtp(
         path: String,
         id: String,
-        track: Arc<TrackLocalStaticRTP>,
-        publish_rtcp_sender: mpsc::Sender<(RtcpMessage, u32)>,
-        mut select_layer_recv: mpsc::Receiver<String>,
+        sender: Arc<RTCRtpSender>,
+        kind: RTPCodecType,
+        publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
+        mut select_layer_recv: broadcast::Receiver<String>,
         track_binding_publish_rid: Arc<RwLock<HashMap<String, String>>>,
-        mut subscribe_video_tracks: Vec<SubscribeTrackRemote>,
+        publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
+        mut publish_track_change: broadcast::Receiver<()>,
     ) {
-        if subscribe_video_tracks.is_empty() {
-            error!("[{}] [{}] subscribe video tracks is empty", path, id);
-            return;
-        }
-        let subscribe_video_track = subscribe_video_tracks.first().unwrap();
-        let mut recv = match (subscribe_video_track.rtp_recv)() {
-            Ok(recv) => recv,
-            Err(_err) => {
-                return;
-            }
-        };
-        info!("[{}] [{}] video up", path, id);
-        let mut track_binding_publish_rid_one = track_binding_publish_rid.write().await;
-        track_binding_publish_rid_one.insert(
-            track.stream_id().to_owned(),
-            subscribe_video_track.rid.clone(),
-        );
-        info!(
-            "[{}] [{}] select layer to {}",
-            path,
-            track.stream_id(),
-            subscribe_video_track.rid.clone()
-        );
-        drop(track_binding_publish_rid_one);
+        info!("[{}] [{}] {} up", path, id, kind);
+        // empty broadcast channel
+        let (s, _) = broadcast::channel::<ForwardData>(1);
+        let mut recv = s.subscribe();
+        let mut track = None;
         let mut sequence_number: u16 = 0;
         loop {
             tokio::select! {
+                publish_change = publish_track_change.recv() =>{
+                    debug!("{} {} recv publish track_change",path,id);
+                    if publish_change.is_err() {
+                        continue;
+                    }
+                        let publish_tracks = publish_tracks.read().await;
+                        if publish_tracks.len() == 0 {
+                            debug!("{} {} publish track len 0 , probably offline",path,id);
+                            recv = s.subscribe();
+                            let _ = sender.replace_track(None).await;
+                            track = None;
+                            let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
+                            track_binding_publish_rid.remove(&kind.clone().to_string());
+                            continue;
+                        }
+                        if track.is_some(){
+                            continue;
+                        }
+                       for publish_track in publish_tracks.iter() {
+                              if publish_track.kind != kind {
+                                continue;
+                            }
+                                    let new_track= Arc::new(
+                                        TrackLocalStaticRTP::new(publish_track.track.clone().codec().capability,"webrtc".to_string(),format!("{}-{}","webrtc",kind))
+                                    );
+                                    match sender.replace_track(Some(new_track.clone())).await {
+                                     Ok(_) => {
+                                        debug!("[{}] [{}] {} track replace ok", path, id,kind);
+                                        recv = publish_track.subscribe();
+                                        track = Some(new_track);
+                                        let _ = publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc()));
+                                        let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
+                                        track_binding_publish_rid.insert(kind.clone().to_string(), publish_track.rid.clone());
+                                    }
+                                     Err(e) => {
+                                        debug!("[{}] [{}] {} track replace err: {}", path, id,kind, e);
+                                    }};
+                                     break;
+                       }
+                }
                 rtp_result = recv.recv() => {
                     match rtp_result {
                         Ok(packet) => {
-                            let mut packet = packet.as_ref().clone();
-                            packet.header.sequence_number = sequence_number;
-                            if let Err(err) = track.write_rtp(&packet).await {
-                                debug!("[{}] [{}] video track write err: {}", path, id, err);
-                                break;
+                            match track {
+                                None => {
+                                    continue;
+                                }
+                                Some(ref track) => {
+                                    let mut packet = packet.as_ref().clone();
+                                    packet.header.sequence_number = sequence_number;
+                                    if let Err(err) = track.write_rtp(&packet).await {
+                                        debug!("[{}] [{}] {} track write err: {}", path, id,kind, err);
+                                        break;
+                                    }
+                                    sequence_number = sequence_number.wrapping_add(1);
+                                }
                             }
-                            sequence_number = sequence_number.wrapping_add(1);
                         }
                         Err(err) => {
-                            debug!("[{}] [{}] video rtp receiver err: {}", path, id, err);
-                            if err == broadcast::error::RecvError::Closed {
-                              break;
-                            }
-
+                            debug!("[{}] [{}] {} rtp receiver err: {}", path, id, kind,err);
                         }
                     }
                 }
                 select_layer_result = select_layer_recv.recv() => {
                     match select_layer_result {
-                        Some(rid) => {
-                            for  subscribe_track in subscribe_video_tracks.iter_mut() {
-                                if subscribe_track.kind == RTPCodecType::Video && subscribe_track.rid == rid {
-                                    recv= match (subscribe_track.rtp_recv)() {
-                                        Ok(recv) => recv,
-                                        Err(_err) => {
-                                            return ;
-                                        }
-                                    };
-                                    publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, subscribe_track.track.ssrc())).await.unwrap();
-                                    let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
-                                    track_binding_publish_rid.insert(track.stream_id().to_owned(), rid.clone());
-                                    info!("[{}] [{}] select layer to {}", path, id, rid);
+                        Ok(rid) => {
+                            if kind != RTPCodecType::Video{
+                                continue;
+                            }
+                            let publish_tracks =  publish_tracks.read().await;
+                            for  publish_track in publish_tracks.iter() {
+                                if publish_track.kind == RTPCodecType::Video && publish_track.rid == rid {
+                                      let new_track= Arc::new(
+                                        TrackLocalStaticRTP::new(publish_track.track.clone().codec().capability,"webrtc".to_string(),format!("{}-{}","webrtc",kind))
+                                    );
+                                    match sender.replace_track(Some(new_track.clone())).await {
+                                     Ok(_) => {
+                                        debug!("[{}] [{}] {} track replace ok", path, id,kind);
+                                        recv = publish_track.subscribe();
+                                        track = Some(new_track);
+                                        let _ = publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc())).unwrap();
+                                        let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
+                                        track_binding_publish_rid.insert(kind.clone().to_string(), rid.clone());
+                                        info!("[{}] [{}] {} select layer to {}", path, id, kind,rid);
+                                    }
+                                     Err(e) => {
+                                        debug!("[{}] [{}] {} track replace err: {}", path, id,kind, e);
+                                    }};
                                     break;
                                 }
                             }
                         }
-                        None => {
+                        Err(e) => {
+                            debug!("select_layer_recv err : {:?}",e);
                             break ;
                         }
                     }
                 }
             }
         }
-        info!("[{}] [{}] video down", path, id);
-    }
-
-    async fn track_write_rtp_audio(
-        path: String,
-        id: String,
-        track: Arc<TrackLocalStaticRTP>,
-        mut rtp_receiver: broadcast::Receiver<ForwardData>,
-    ) {
-        info!("[{}] [{}] audio up", path, id);
-        let mut sequence_number: u16 = 0;
-        loop {
-            match rtp_receiver.recv().await {
-                Ok(packet) => {
-                    let mut packet = packet.as_ref().clone();
-                    packet.header.sequence_number = sequence_number;
-                    if let Err(err) = track.write_rtp(&packet).await {
-                        debug!("[{}] [{}] audio track write err: {}", path, id, err);
-                        break;
-                    }
-                    sequence_number = sequence_number.wrapping_add(1);
-                }
-                Err(err) => {
-                    debug!("[{}] [{}] audio rtp receiver err: {}", path, id, err);
-                    break;
-                }
-            }
-        }
-        debug!("[{}] [{}] audio down", path, id);
+        info!("[{}] [{}] {} down", path, id, kind);
     }
 
     pub(crate) fn select_layer(&self, rid: String) -> AppResult<()> {
-        if let Err(err) = self.select_layer_sender.try_send(rid) {
+        if let Err(err) = self.select_layer_sender.send(rid) {
             Err(anyhow::anyhow!("select layer send err: {}", err).into())
         } else {
             Ok(())
         }
     }
 
-    async fn track_read_rtcp(
-        stream_id: String,
+    async fn sender_forward_rtcp(
         kind: RTPCodecType,
         sender: Arc<RTCRtpSender>,
-        tracks: Vec<SubscribeTrackRemoteInfo>,
+        publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
         track_binding_publish_rid: Arc<RwLock<HashMap<String, String>>>,
-        publish_rtcp_sender: mpsc::Sender<(RtcpMessage, u32)>,
+        publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
     ) {
         loop {
             match sender.read_rtcp().await {
                 Ok((packets, _)) => {
                     let track_binding_publish_rid = track_binding_publish_rid.read().await;
-                    let publish_rid = match track_binding_publish_rid.get(&stream_id) {
+                    let publish_rid = match track_binding_publish_rid.get(&kind.clone().to_string())
+                    {
                         None => {
                             continue;
                         }
@@ -251,10 +220,11 @@ impl SubscribeRTCPeerConnection {
                     };
                     for packet in packets {
                         if let Some(msg) = RtcpMessage::from_rtcp_packet(packet) {
-                            for track in tracks.iter() {
-                                if track.kind == kind && &track.rid == publish_rid {
+                            let publish_tracks = publish_tracks.read().await;
+                            for publish_track in publish_tracks.iter() {
+                                if publish_track.kind == kind && &publish_track.rid == publish_rid {
                                     if let Err(_err) =
-                                        publish_rtcp_sender.send((msg, track.ssrc)).await
+                                        publish_rtcp_sender.send((msg, publish_track.track.ssrc()))
                                     {
                                         return;
                                     }

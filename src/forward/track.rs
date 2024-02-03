@@ -1,6 +1,5 @@
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
-use anyhow::Result;
 use log::{debug, info};
 use tokio::sync::broadcast;
 use webrtc::rtp::packet::Packet;
@@ -15,14 +14,6 @@ pub(crate) struct PublishTrackRemote {
     pub(crate) kind: RTPCodecType,
     pub(crate) track: Arc<TrackRemote>,
     rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
-}
-
-pub(crate) struct SubscribeTrackRemote {
-    pub(crate) rid: String,
-    pub(crate) kind: RTPCodecType,
-    pub(crate) track: Arc<TrackRemote>,
-    pub(crate) rtp_recv:
-        Box<dyn Fn() -> Result<broadcast::Receiver<ForwardData>> + 'static + Send + Sync>,
 }
 
 impl PublishTrackRemote {
@@ -98,22 +89,7 @@ impl PublishTrackRemote {
         );
     }
 
-    pub(crate) fn subscribe(&self) -> SubscribeTrackRemote {
-        let weak = Arc::downgrade(&self.rtp_broadcast);
-        SubscribeTrackRemote {
-            rid: self.rid.clone(),
-            kind: self.kind,
-            track: self.track.clone(),
-            rtp_recv: Box::new(move || Self::new_subscribe(weak.clone())),
-        }
-    }
-
-    fn new_subscribe(
-        broadcast: Weak<broadcast::Sender<ForwardData>>,
-    ) -> Result<broadcast::Receiver<ForwardData>> {
-        match broadcast.upgrade() {
-            Some(broadcast) => Ok(broadcast.subscribe()),
-            None => Err(anyhow::anyhow!("broadcast upgrade error")),
-        }
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<ForwardData> {
+        self.rtp_broadcast.subscribe()
     }
 }

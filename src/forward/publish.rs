@@ -1,41 +1,50 @@
 use std::sync::{Arc, Weak};
 
+use anyhow::{anyhow, Result};
 use log::debug;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::broadcast;
 use webrtc::peer_connection::RTCPeerConnection;
 
 use crate::forward::rtcp::RtcpMessage;
 
 use super::get_peer_id;
+use super::media::MediaInfo;
 
 pub(crate) struct PublishRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) peer: Arc<RTCPeerConnection>,
-    pub(crate) rtcp_sender: mpsc::Sender<(RtcpMessage, u32)>,
+    pub(crate) media_info: MediaInfo,
 }
 
 impl PublishRTCPeerConnection {
-    pub(crate) async fn new(path: String, peer: Arc<RTCPeerConnection>) -> Self {
-        let (rtcp_sender, rtcp_recv) = mpsc::channel(100);
+    pub(crate) async fn new(
+        path: String,
+        peer: Arc<RTCPeerConnection>,
+        rtcp_recv: broadcast::Receiver<(RtcpMessage, u32)>,
+    ) -> Result<Self> {
         let id = get_peer_id(&peer);
         let peer_weak = Arc::downgrade(&peer);
+        let media_info = MediaInfo::try_from(
+            peer.remote_description()
+                .await
+                .ok_or(anyhow!("not set remote_description"))?
+                .unmarshal()?,
+        )?;
         tokio::spawn(Self::peer_send_rtcp(path, id.clone(), peer_weak, rtcp_recv));
-        Self {
+        Ok(Self {
             id,
             peer,
-            rtcp_sender,
-        }
+            media_info,
+        })
     }
 
     async fn peer_send_rtcp(
         path: String,
         id: String,
         peer: Weak<RTCPeerConnection>,
-        mut recv: Receiver<(RtcpMessage, u32)>,
+        mut recv: broadcast::Receiver<(RtcpMessage, u32)>,
     ) {
-        while let (Some((rtcp_message, media_ssrc)), Some(pc)) = (recv.recv().await, peer.upgrade())
-        {
+        while let (Ok((rtcp_message, media_ssrc)), Some(pc)) = (recv.recv().await, peer.upgrade()) {
             debug!(
                 "[{}] [{}] ssrc : {} ,send rtcp : {:?}",
                 path, id, media_ssrc, rtcp_message

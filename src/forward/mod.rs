@@ -9,21 +9,22 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::sdp::{MediaDescription, SessionDescription};
+
+use webrtc::sdp::SessionDescription;
 
 use crate::forward::forward_internal::PeerForwardInternal;
 use crate::forward::info::Layer;
-use crate::media;
 use crate::AppError;
+
+use self::media::MediaInfo;
 
 mod forward_internal;
 pub mod info;
+mod media;
 mod publish;
 mod rtcp;
 mod subscribe;
 mod track;
-mod track_match;
 
 pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
     let digest = md5::compute(peer.get_stats_id());
@@ -63,7 +64,7 @@ impl PeerForward {
         }
         let peer = self
             .internal
-            .new_publish_peer(get_media_descriptions(offer.unmarshal()?, true)?)
+            .new_publish_peer(MediaInfo::try_from(offer.unmarshal()?)?)
             .await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
@@ -123,7 +124,7 @@ impl PeerForward {
         }
         let peer = self
             .internal
-            .new_subscription_peer(get_media_descriptions(offer.unmarshal()?, false)?)
+            .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?)
             .await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
@@ -249,32 +250,6 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
         }
     }
     Ok(ice_candidates)
-}
-
-fn get_media_descriptions(sd: SessionDescription, publish: bool) -> Result<Vec<MediaDescription>> {
-    let mut media_descriptions = sd.media_descriptions;
-    media_descriptions.retain(|md| publish == (media::count_send(md) > 0));
-    let mut video = false;
-    let mut audio = false;
-    for md in &media_descriptions {
-        let media = md.media_name.media.clone();
-        match RTPCodecType::from(media.as_str()) {
-            RTPCodecType::Video => {
-                if video {
-                    return Err(anyhow::anyhow!("only one video media is supported"));
-                }
-                video = true;
-            }
-            RTPCodecType::Audio => {
-                if audio {
-                    return Err(anyhow::anyhow!("only one audio media is supported"));
-                }
-                audio = true;
-            }
-            _ => {}
-        }
-    }
-    Ok(media_descriptions)
 }
 
 #[cfg(test)]

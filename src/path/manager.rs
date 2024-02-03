@@ -83,12 +83,12 @@ impl Manager {
         let forward = paths.get(&path).cloned();
         drop(paths);
         if let Some(forward) = forward {
-            let is_publish = forward.remove_peer(key.clone()).await?;
-            if is_publish {
-                let mut paths = self.paths.write().await;
-                info!("remove path : {}", path);
-                paths.remove(&path);
-            }
+            let _ = forward.remove_peer(key.clone()).await?;
+            // if is_publish {
+            //     let mut paths = self.paths.write().await;
+            //     info!("remove path : {}", path);
+            //     paths.remove(&path);
+            // }
         }
         Ok(())
     }

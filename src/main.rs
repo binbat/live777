@@ -3,6 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, Uri};
+
 use axum::routing::get;
 use axum::Json;
 use axum::{
@@ -12,8 +13,10 @@ use axum::{
     routing::post,
     Router,
 };
+
 use forward::info::Layer;
 use http::header::ToStrError;
+
 use log::{debug, error, info};
 use thiserror::Error;
 #[cfg(debug_assertions)]
@@ -21,20 +24,18 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use config::IceServer;
-use path::manager::Manager;
+use crate::auth::ManyValidate;
 #[cfg(not(debug_assertions))]
-use {http::header, rust_embed::RustEmbed};
-
 use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::dto::req::SelectLayer;
+use config::IceServer;
+use path::manager::Manager;
 
 mod auth;
 mod config;
 mod dto;
 mod forward;
-mod media;
 mod metrics;
 mod path;
 mod signal;
@@ -335,6 +336,7 @@ impl IntoResponse for AppError {
                 (StatusCode::NOT_FOUND, err.to_string()).into_response()
             }
             AppError::InternalServerError(err) => {
+                debug!("{:?}", err);
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
             }
             AppError::ResourceAlreadyExists(err) => {

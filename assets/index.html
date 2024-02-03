@@ -335,7 +335,7 @@
         pc.addTransceiver('audio', {'direction': 'recvonly'})
         pc.ontrack = ev => {
             logWhep(num, `track: ${ev.track.kind}`)
-            if (ev.track.kind === "video" || ev.track.kind === "audio") {
+            if (ev.track.kind === "video") {
                 if (ev.streams.length !== 0) document.getElementById("whep-video-player").srcObject = ev.streams[0]
             }
         }
