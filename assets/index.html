@@ -79,8 +79,11 @@
         <center>
         <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
         <section>
-            <button onclick="startWhep()">Start</button>
+            <button id="whep-button-disable-audio">Disable Audio</button>
             <button id="whep-button-disable-video">Disable Video</button>
+        </section>
+        <section>
+            <button onclick="startWhep()">Start</button>
             <button id="whep-button-stop">Stop</button>
         </section>
 
@@ -291,9 +294,6 @@
             if (el) el.srcObject = null
         }
 
-        // leave page
-        // addEventListener("beforeunload", stop)
-
         const element = document.getElementById(idWhipButtonStop)
         if (element) element.addEventListener('click', stop)
 
@@ -307,6 +307,8 @@
 
     const idWhepLayerSelect = "whep-layer-select"
     const idWhepButtonStop = "whep-button-stop"
+    const idWhepButtonDisableAudio = "whep-button-disable-audio"
+    const idWhepButtonDisableVideo = "whep-button-disable-video"
     const idWhepDataChannel = "whep-datachannel"
 
     initLayerSelect(idWhepLayerSelect, [
@@ -356,14 +358,23 @@
             await whep.stop()
             logWhep(num, "stopped")
         })
-        var flag = false
-        document.getElementById("whep-button-disable-video").onclick = async () => {
-            await whep.mute({
-                "kind":"video",
-                "audioEnabled": flag
-            })
-            flag = !flag
+
+        const buttonDisableAudio = document.getElementById(idWhepButtonDisableAudio)
+        let flagButtonDisableAudio = false
+        buttonDisableAudio.onclick = async () => {
+            await whep.mute({ kind: "audio", enabled: flagButtonDisableAudio })
+            buttonDisableAudio.innerText = flagButtonDisableAudio ? "Disable Audio" : "Enable Audio"
+            flagButtonDisableAudio = !flagButtonDisableAudio
         }
+
+        const buttonDisableVideo = document.getElementById(idWhepButtonDisableVideo)
+        let flagButtonDisableVideo = false
+        buttonDisableVideo.onclick = async () => {
+            await whep.mute({ kind: "video", enabled: flagButtonDisableVideo })
+            buttonDisableVideo.innerText = flagButtonDisableVideo ? "Disable Video" : "Enable Video"
+            flagButtonDisableVideo = !flagButtonDisableVideo
+        }
+
         const initEvevt = () => {
             const el = document.getElementById(idWhepLayerSelect)
             if (el) el.onchange = ev => !ev.target.value ? whep.unselectLayer() : whep.selectLayer({"encodingId": ev.target.value}).catch(e => logWhep(e))
