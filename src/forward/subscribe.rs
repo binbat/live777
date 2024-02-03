@@ -18,6 +18,12 @@ use super::{get_peer_id, info};
 
 type SelectLayerBody = (RTPCodecType, String);
 
+struct SubscribeForwardChannel {
+    publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
+    select_layer_recv: broadcast::Receiver<SelectLayerBody>,
+    publish_track_change: broadcast::Receiver<()>,
+}
+
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) peer: Arc<RTCPeerConnection>,
@@ -57,11 +63,13 @@ impl SubscribeRTCPeerConnection {
                 id.clone(),
                 sender,
                 kind,
-                publish_rtcp_sender.clone(),
-                select_layer_sender.subscribe(),
                 track_binding_publish_rid.clone(),
                 publish_tracks.clone(),
-                publish_track_change.subscribe(),
+                SubscribeForwardChannel {
+                    publish_rtcp_sender: publish_rtcp_sender.clone(),
+                    select_layer_recv: select_layer_sender.subscribe(),
+                    publish_track_change: publish_track_change.subscribe(),
+                },
             ));
         }
         let _ = publish_track_change.send(());
@@ -77,11 +85,9 @@ impl SubscribeRTCPeerConnection {
         id: String,
         sender: Arc<RTCRtpSender>,
         kind: RTPCodecType,
-        publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
-        mut select_layer_recv: broadcast::Receiver<SelectLayerBody>,
         track_binding_publish_rid: Arc<RwLock<HashMap<String, String>>>,
         publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
-        mut publish_track_change: broadcast::Receiver<()>,
+        mut forward_channel: SubscribeForwardChannel,
     ) {
         info!("[{}] [{}] {} up", path, id, kind);
         let mut pre_rid: Option<String> = None;
@@ -92,7 +98,7 @@ impl SubscribeRTCPeerConnection {
         let mut sequence_number: u16 = 0;
         loop {
             tokio::select! {
-                publish_change = publish_track_change.recv() =>{
+                publish_change = forward_channel.publish_track_change.recv() =>{
                     debug!("{} {} recv publish track_change",path,id);
                     if publish_change.is_err() {
                         continue;
@@ -129,7 +135,7 @@ impl SubscribeRTCPeerConnection {
                                         debug!("[{}] [{}] {} track replace ok", path, id,kind);
                                         recv = publish_track.subscribe();
                                         track = Some(new_track);
-                                        let _ = publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc()));
+                                        let _ = forward_channel.publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc()));
                                         track_binding_publish_rid.insert(kind.clone().to_string(), publish_track.rid.clone());
                                     }
                                      Err(e) => {
@@ -161,7 +167,7 @@ impl SubscribeRTCPeerConnection {
                         }
                     }
                 }
-                select_layer_result = select_layer_recv.recv() => {
+                select_layer_result = forward_channel.select_layer_recv.recv() => {
                     match select_layer_result {
                         Ok(select_layer_body) => {
                             if select_layer_body.0 != kind {
@@ -218,7 +224,7 @@ impl SubscribeRTCPeerConnection {
                                         debug!("[{}] [{}] {} track replace ok", path, id,kind);
                                         recv = publish_track.subscribe();
                                         track = Some(new_track);
-                                        let _ = publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc())).unwrap();
+                                        let _ = forward_channel.publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc())).unwrap();
                                         track_binding_publish_rid.insert(kind.clone().to_string(), new_rid.clone());
                                         info!("[{}] [{}] {} select layer to {}", path, id, kind,new_rid);
                                     }
