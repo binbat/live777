@@ -25,12 +25,12 @@ use tower_http::validate_request::ValidateRequestHeaderLayer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
-#[cfg(not(debug_assertions))]
-use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::dto::req::SelectLayer;
 use config::IceServer;
 use path::manager::Manager;
+#[cfg(not(debug_assertions))]
+use {http::header, rust_embed::RustEmbed};
 
 mod auth;
 mod config;
