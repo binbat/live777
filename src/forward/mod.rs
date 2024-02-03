@@ -216,7 +216,7 @@ impl PeerForward {
             return Err(anyhow::anyhow!("kind unspecified"));
         }
 
-        let rid = if change_resource.audio_enabled {
+        let rid = if change_resource.enabled {
             constant::RID_ENABLE.to_string()
         } else {
             constant::RID_DISABLE.to_string()

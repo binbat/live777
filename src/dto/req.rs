@@ -9,6 +9,6 @@ pub struct SelectLayer {
 #[derive(Deserialize)]
 pub struct ChangeResource {
     pub kind: String,
-    #[serde(rename = "audioEnabled")]
-    pub audio_enabled: bool,
+    #[serde(rename = "enabled")]
+    pub enabled: bool,
 }
