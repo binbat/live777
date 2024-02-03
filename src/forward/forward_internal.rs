@@ -119,10 +119,11 @@ impl PeerForwardInternal {
     pub(crate) async fn remove_peer(&self, id: String) -> Result<bool> {
         let publish = self.publish.read().await;
         if publish.is_some() && publish.as_ref().unwrap().id == id {
-            publish.as_ref().unwrap().peer.close().await?;
+            drop(publish);
+            self.close().await?;
             return Ok(true);
         }
-        drop(publish);
+
         let subscribe_group = self.subscribe_group.read().await;
         for subscribe in subscribe_group.iter() {
             if subscribe.id == id {
@@ -131,6 +132,22 @@ impl PeerForwardInternal {
             }
         }
         Ok(false)
+    }
+
+    pub(crate) async fn close(&self) -> Result<()> {
+        let publish = self.publish.read().await;
+        let subscribe_group = self.subscribe_group.read().await;
+        let mut publish_tracks = self.publish_tracks.write().await;
+        if publish.is_some() {
+            publish.as_ref().unwrap().peer.close().await?;
+        }
+        for subscribe in subscribe_group.iter() {
+            subscribe.peer.close().await?;
+        }
+        publish_tracks.clear();
+        let _ = self.publish_tracks_change.0.send(());
+        info!("{} close", self.id);
+        Ok(())
     }
 
     async fn data_channel_forward(
