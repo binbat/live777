@@ -92,8 +92,8 @@ impl SubscribeRTCPeerConnection {
         info!("[{}] [{}] {} up", path, id, kind);
         let mut pre_rid: Option<String> = None;
         // empty broadcast channel
-        let (s, _) = broadcast::channel::<ForwardData>(1);
-        let mut recv = s.subscribe();
+        let (virtual_sender, _) = broadcast::channel::<ForwardData>(1);
+        let mut recv = virtual_sender.subscribe();
         let mut track = None;
         let mut sequence_number: u16 = 0;
         loop {
@@ -108,7 +108,7 @@ impl SubscribeRTCPeerConnection {
                         let current_rid = track_binding_publish_rid.get(&kind.clone().to_string());
                         if publish_tracks.len() == 0 {
                             debug!("{} {} publish track len 0 , probably offline",path,id);
-                            recv = s.subscribe();
+                            recv = virtual_sender.subscribe();
                             let _ = sender.replace_track(None).await;
                             track = None;
                             pre_rid = None;
@@ -206,7 +206,7 @@ impl SubscribeRTCPeerConnection {
                             };
                             if new_rid == constant::RID_DISABLE {
                                 if current_rid.is_some(){
-                                    recv = s.subscribe();
+                                    recv = virtual_sender.subscribe();
                                     let _ = sender.replace_track(None).await;
                                     track = None;
                                     pre_rid = Some(current_rid.unwrap());
