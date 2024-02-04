@@ -83,13 +83,15 @@ impl Client {
         let links = response.headers().get_all("Link");
         let mut ice_servers = vec![];
         for link in links {
-            let link_header = parse_link_header::parse_with_rel(link.to_str()?)?;
+            let mut link = link.to_str()?.to_owned();
+            link = link.replacen(":", "://", 1);
+            let link_header = parse_link_header::parse_with_rel(&link)?;
             for (rel, mut link) in link_header {
                 if &rel != "ice-server" {
                     continue;
                 }
                 ice_servers.push(RTCIceServer {
-                    urls: vec![link.uri.to_string()],
+                    urls: vec![link.uri.to_string().replacen("://", ":", 1)],
                     username: link.queries.remove("username").unwrap_or("".to_owned()),
                     credential: link.queries.remove("credential").unwrap_or("".to_owned()),
                     credential_type: link
