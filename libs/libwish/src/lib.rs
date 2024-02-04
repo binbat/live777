@@ -5,6 +5,7 @@ use reqwest::{
     Body, Method, Response, StatusCode,
 };
 use std::str::FromStr;
+use url::Url;
 use webrtc::{
     ice_transport::ice_server::RTCIceServer,
     peer_connection::sdp::session_description::RTCSessionDescription,
@@ -62,7 +63,16 @@ impl Client {
             .ok_or_else(|| anyhow::anyhow!("Response missing location header"))?
             .to_str()?
             .to_owned();
-        self.resource_url = Some(resource_url);
+        let mut url = Url::parse(self.url.as_str())?;
+        match Url::parse(resource_url.as_str()) {
+            Ok(url) => {
+                self.resource_url = Some(url.into());
+            }
+            Err(_) => {
+                url.set_path(resource_url.as_str());
+                self.resource_url = Some(url.into());
+            }
+        }
         let ice_servers = Self::parse_ide_servers(&response)?;
         let sdp =
             RTCSessionDescription::answer(String::from_utf8(response.bytes().await?.to_vec())?)?;
@@ -79,11 +89,7 @@ impl Client {
                     continue;
                 }
                 ice_servers.push(RTCIceServer {
-                    urls: vec![link
-                        .uri
-                        .to_string()
-                        .replacen("://", ":", 1)
-                        .replace('/', "")],
+                    urls: vec![link.uri.to_string()],
                     username: link.queries.remove("username").unwrap_or("".to_owned()),
                     credential: link.queries.remove("credential").unwrap_or("".to_owned()),
                     credential_type: link
