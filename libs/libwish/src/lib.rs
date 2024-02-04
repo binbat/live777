@@ -84,7 +84,7 @@ impl Client {
         let mut ice_servers = vec![];
         for link in links {
             let mut link = link.to_str()?.to_owned();
-            link = link.replacen(":", "://", 1);
+            link = link.replacen(':', "://", 1);
             let link_header = parse_link_header::parse_with_rel(&link)?;
             for (rel, mut link) in link_header {
                 if &rel != "ice-server" {
