@@ -328,6 +328,10 @@ vlc stream.sdp
 ## Sponsors
 
 <p align="center">
+  <a href="https://faculty.xidian.edu.cn/NGC/zh_CN/index.htm">
+    <img src="https://upload.wikimedia.org/wikipedia/en/2/2c/Xidian_logo.png" height="200" alt="Xi'an Electrical Science and Technology University logo.">
+  </a>
+  <br/>
   <a href="https://www.jetbrains.com/">
     <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg" height="200" alt="JetBrains Logo (Main) logo.">
   </a>
