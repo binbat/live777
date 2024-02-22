@@ -39,7 +39,7 @@ jobs:
       PKG_WHIPINTO_NAME: ""
     steps:
     - name: Checkout source code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Get the release version from the tag
       run: |
@@ -107,19 +107,19 @@ jobs:
         echo "PKG_WHIPINTO_NAME=whipinto-${PKG_BUILDNAME}" >> $GITHUB_ENV
 
     - name: Artifact Upload
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PKG_LIVE777_NAME }}
         path: ${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}
 
     - name: Artifact Upload Whepfrom
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PKG_WHEPFROM_NAME }}
         path: ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }}
 
     - name: Artifact Upload Whipinto
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PKG_WHIPINTO_NAME }}
         path: ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }}
