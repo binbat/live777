@@ -237,7 +237,7 @@ FFmpeg rtp-into    | :shit: | :star: | :star: | :star: | :star: | :star: |
 FFmpeg rtp-from    | :shit: | :star: | :star: | :star: | :star: | :star: |
 VLC rtp-into       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
 VLC rtp-from       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
-OBS Studio whip    | :shit: | :shit: | :shit: | :star: | :star: | :shit: |
+OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
 
 - :star: It's working
 - :shit: Don't support
@@ -245,6 +245,7 @@ OBS Studio whip    | :shit: | :shit: | :shit: | :star: | :star: | :shit: |
 - :tv: Note have some problem
   1. Working, But Browser can't player this video
   2. I don't know why av1 and whep error
+  3. [AV1 is now available, But not released](https://github.com/obsproject/obs-studio/pull/9331)
 
 ### whipinto
 
