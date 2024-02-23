@@ -9,8 +9,8 @@ description = "A very simple, high performance, edge WebRTC SFU"
 members = [".", "libs/cli", "libs/libwish", "tools/whepfrom", "tools/whipinto"]
 
 [dependencies]
-axum = { version = "0.6.20", features = ["multipart"] }
-tower-http = { version = "0.4.3", features = ["fs", "auth"] }
+axum = { version = "0.7.4", features = ["multipart"] }
+tower-http = { version = "0.5.2", features = ["fs", "auth"] }
 
 # TODO
 # There have error, Next commit can't work with obs studio
@@ -18,18 +18,18 @@ tower-http = { version = "0.4.3", features = ["fs", "auth"] }
 # Reference: https://github.com/binbat/live777/issues/39
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
 anyhow = { version = "1", features = ["backtrace"] }
-tokio = { version = "1.30", features = ["full"] }
-hyper = "0.14"
+tokio = { version = "1.36", features = ["full"] }
+hyper = "1.2.0"
 log = "0.4.20"
-env_logger = "0.10.0"
+env_logger = "0.11.2"
 serde = { version = "1.0.188", features = ["serde_derive"] }
-toml = "0.7.6"
-serde_json = "1.0.105"
-http = "0.2.9"
-http-body = "0.4.5"
-base64 = "0.21.3"
+toml = "0.8.10"
+serde_json = "1.0.114"
+http = "1.0.0"
+http-body = "1.0.0"
+base64 = "0.21.7"
 mime_guess = "2.0.4"
-rust-embed = { version = "8.0.0", features = ["axum-ex"] }
+rust-embed = { version = "8.2.0", features = ["axum-ex"] }
 prometheus = "0.13.3"
 lazy_static = "1.4.0"
 thiserror = "1"

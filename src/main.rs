@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -74,7 +75,7 @@ async fn main() {
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
-    let mut app = Router::new()
+    let app = Router::new()
         .route("/whip/:id", post(whip))
         .route("/whep/:id", post(whep))
         .route(
@@ -90,9 +91,8 @@ async fn main() {
         .layer(auth_layer)
         .route("/metrics", get(metrics))
         .with_state(app_state);
-    app = static_server(app);
     tokio::select! {
-        Err(e) = axum::Server::bind(&addr).serve(app.into_make_service()) => error!("Application error: {e}"),
+        Err(e) = axum::serve(tokio::net::TcpListener::bind(&addr).await.unwrap(), static_server(app)).into_future() => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
     }
     info!("Server shutdown");
