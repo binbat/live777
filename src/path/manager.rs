@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Result;
-use log::info;
 use tokio::sync::RwLock;
+use tracing::info;
 use webrtc::{
     ice_transport::ice_server::RTCIceServer,
     peer_connection::sdp::session_description::RTCSessionDescription,

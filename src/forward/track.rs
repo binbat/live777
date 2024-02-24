@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use log::{debug, info};
 use tokio::sync::broadcast;
+use tracing::{debug, info};
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_remote::TrackRemote;

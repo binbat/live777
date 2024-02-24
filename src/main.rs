@@ -1,11 +1,7 @@
-use std::collections::HashMap;
-use std::future::IntoFuture;
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::sync::Arc;
-
+use axum::body::{Body, Bytes};
+use axum::extract::Request;
 use axum::http::HeaderMap;
-
+use axum::middleware::Next;
 use axum::routing::get;
 use axum::Json;
 use axum::{
@@ -15,15 +11,24 @@ use axum::{
     routing::post,
     Router,
 };
-
 use forward::info::Layer;
 use http::header::ToStrError;
 use http::Uri;
-use log::{debug, error, info};
+use http_body_util::BodyExt;
+use std::collections::HashMap;
+use std::future::IntoFuture;
+use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::Arc;
 use thiserror::Error;
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
+use tracing::info_span;
+use tracing::{debug, error, info};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
@@ -51,16 +56,13 @@ async fn main() {
     metrics::REGISTRY
         .register(Box::new(metrics::SUBSCRIBE.clone()))
         .unwrap();
-
     let cfg = Config::parse();
-    env_logger::builder()
-        .filter_module(
-            "live777",
-            log::LevelFilter::from_str(cfg.log.level.as_str()).unwrap(),
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("live777={},webrtc=error", cfg.log.level).into()),
         )
-        .filter_module("webrtc", log::LevelFilter::Error)
-        .write_style(env_logger::WriteStyle::Auto)
-        .target(env_logger::Target::Stdout)
+        .with(tracing_subscriber::fmt::layer())
         .init();
     let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
@@ -90,7 +92,17 @@ async fn main() {
         )
         .layer(auth_layer)
         .route("/metrics", get(metrics))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(axum::middleware::from_fn(print_request_response))
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                info_span!(
+                    "http_request",
+                    uri = ?request.uri(),
+                    method = ?request.method(),
+                )
+            }),
+        );
     tokio::select! {
         Err(e) = axum::serve(tokio::net::TcpListener::bind(&addr).await.unwrap(), static_server(app)).into_future() => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
@@ -141,6 +153,50 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 struct AppState {
     config: Config,
     paths: Arc<Manager>,
+}
+
+async fn print_request_response(
+    req: Request,
+    next: Next,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let req_headers = req.headers().clone();
+    let (parts, body) = req.into_parts();
+    let bytes = buffer_and_print("request", req_headers, body).await?;
+    let req = Request::from_parts(parts, Body::from(bytes));
+
+    let res = next.run(req).await;
+    let res_headers = res.headers().clone();
+    let (parts, body) = res.into_parts();
+    let bytes = buffer_and_print("response", res_headers, body).await?;
+    let res = Response::from_parts(parts, Body::from(bytes));
+
+    Ok(res)
+}
+
+async fn buffer_and_print<B>(
+    direction: &str,
+    headers: HeaderMap,
+    body: B,
+) -> Result<Bytes, (StatusCode, String)>
+where
+    B: axum::body::HttpBody<Data = Bytes>,
+    B::Error: std::fmt::Display,
+{
+    let bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(err) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("failed to read {direction} body: {err}"),
+            ));
+        }
+    };
+
+    if let Ok(body) = std::str::from_utf8(&bytes) {
+        tracing::debug!("{direction} headers = {headers:?} body = {body:?}");
+    }
+
+    Ok(bytes)
 }
 
 async fn whip(

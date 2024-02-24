@@ -2,8 +2,8 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::{Ok, Result};
-use log::info;
 use tokio::sync::Mutex;
+use tracing::info;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;

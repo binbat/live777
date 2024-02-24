@@ -2,8 +2,8 @@ use std::borrow::ToOwned;
 use std::sync::Arc;
 
 use anyhow::Result;
-use log::{debug, info};
 use tokio::sync::{broadcast, RwLock};
+use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
