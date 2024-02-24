@@ -96,11 +96,14 @@ async fn main() {
         .layer(axum::middleware::from_fn(print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
-                info_span!(
+                let span = info_span!(
                     "http_request",
                     uri = ?request.uri(),
                     method = ?request.method(),
-                )
+                    span_id = tracing::field::Empty,
+                );
+                span.record("span_id", span.id().unwrap().into_u64());
+                span
             }),
         );
     tokio::select! {
