@@ -62,7 +62,7 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| format!("live777={},webrtc=error", cfg.log.level).into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_logfmt::layer())
         .init();
     let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
