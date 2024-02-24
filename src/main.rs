@@ -385,7 +385,6 @@ impl IntoResponse for AppError {
                 (StatusCode::NOT_FOUND, err.to_string()).into_response()
             }
             AppError::InternalServerError(err) => {
-                debug!("{:?}", err);
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
             }
             AppError::ResourceAlreadyExists(err) => {
