@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::Result;
+use crate::result::Result;
 use tokio::sync::RwLock;
 use tracing::info;
 use webrtc::{
@@ -40,7 +40,7 @@ impl Manager {
             let (sdp, key) = forward.set_publish(offer).await?;
             let mut paths = self.paths.write().await;
             if paths.contains_key(&path) {
-                return Err(anyhow::anyhow!("resource already exists"));
+                return Err(AppError::resource_already_exists("resource already exists"));
             }
             info!("add path : {}", path);
             paths.insert(path, forward);
@@ -55,11 +55,9 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_subscribe(offer).await
         } else {
-            Err(AppError::ResourceNotFound(
-                ("The requested resource not exist,please check the path and try again.")
-                    .to_string(),
-            )
-            .into())
+            Err(AppError::resource_not_fount(
+                "The requested resource not exist,please check the path and try again.",
+            ))
         }
     }
 
@@ -75,7 +73,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_ice_candidate(key, ice_candidates).await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(AppError::resource_not_fount("resource not exists"))
         }
     }
 
@@ -101,7 +99,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.layers().await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(AppError::resource_not_fount("resource not exists"))
         }
     }
 
@@ -117,7 +115,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.select_layer(key, layer).await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(AppError::resource_not_fount("resource not exists"))
         }
     }
 
@@ -133,7 +131,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.change_resource(key, change_resource).await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(AppError::resource_not_fount("resource not exists"))
         }
     }
 }

@@ -1293,7 +1293,6 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "toml",
  "tower-http",

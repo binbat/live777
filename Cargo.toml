@@ -34,7 +34,6 @@ mime_guess = "2.0.4"
 rust-embed = { version = "8.2.0", features = ["axum-ex"] }
 prometheus = "0.13.3"
 lazy_static = "1.4.0"
-thiserror = "1"
 md5 = "0.7.0"
 
 # cargo install cargo-deb
