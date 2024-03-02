@@ -224,10 +224,9 @@ impl PeerForwardInternal {
     pub(crate) async fn set_publish(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
         let mut publish = self.publish.write().await;
         if publish.is_some() {
-            return Err(AppError::ResourceAlreadyExists(
-                "A connection has already been established".to_string(),
-            )
-            .into());
+            return Err(AppError::resource_already_exists(
+                "A connection has already been established",
+            ));
         }
         let publish_peer = PublishRTCPeerConnection::new(
             self.id.clone(),

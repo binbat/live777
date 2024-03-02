@@ -249,7 +249,7 @@ impl SubscribeRTCPeerConnection {
 
     pub(crate) fn select_kind_rid(&self, kind: RTPCodecType, rid: String) -> Result<()> {
         if let Err(err) = self.select_layer_sender.send((kind, rid)) {
-            Err(AppError::Throw(format!("select layer send err: {}", err)))
+            Err(AppError::throw(format!("select layer send err: {}", err)))
         } else {
             Ok(())
         }
