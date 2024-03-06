@@ -21,6 +21,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 #[cfg(debug_assertions)]
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
@@ -34,7 +35,7 @@ use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::dto::req::{ChangeResource, SelectLayer};
 use crate::result::Result;
-use config::{IceServer,cors_layer};
+use config::IceServer;
 use path::manager::Manager;
 #[cfg(not(debug_assertions))]
 use {http::header, rust_embed::RustEmbed};
@@ -79,7 +80,6 @@ async fn main() {
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
-    let cors = cors_layer(cfg.http.cors);
     let app = Router::new()
         .route("/whip/:id", post(whip))
         .route("/whep/:id", post(whep))
@@ -96,7 +96,7 @@ async fn main() {
         .layer(auth_layer)
         .route("/metrics", get(metrics))
         .with_state(app_state)
-        .layer(cors)
+        .layer(cors_layer(cfg.http.cors))
         .layer(axum::middleware::from_fn(print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
@@ -121,6 +121,14 @@ async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
         .unwrap()
+}
+
+fn cors_layer(cfg: bool) -> CorsLayer {
+    if cfg {
+        CorsLayer::permissive()
+    } else {
+        CorsLayer::new()
+    }
 }
 
 #[cfg(not(debug_assertions))]

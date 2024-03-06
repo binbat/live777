@@ -5,24 +5,23 @@ use webrtc::{
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     Error,
 };
-use tower_http::cors::CorsLayer;
-
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
+    #[serde(default = "Http::default")]
+    pub http: Http,
     #[serde(default = "default_ice_servers")]
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
-    #[serde(default = "default_log")]
+    #[serde(default = "Log::default")]
     pub log: Log,
-    pub http: Http,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Http {
-    #[serde(default = "default_listen")]
+    #[serde(default = "default_http_listen")]
     pub listen: String,
+    #[serde(default)]
     pub cors: bool,
 }
 
@@ -48,8 +47,17 @@ pub struct Log {
     pub level: String,
 }
 
-fn default_listen() -> String {
+fn default_http_listen() -> String {
     format!("[::]:{}", env::var("PORT").unwrap_or(String::from("7777")))
+}
+
+impl Http {
+    fn default() -> Self {
+        Self {
+            listen: default_http_listen(),
+            cors: Default::default(),
+        }
+    }
 }
 
 fn default_ice_servers() -> Vec<IceServer> {
@@ -61,9 +69,11 @@ fn default_ice_servers() -> Vec<IceServer> {
     }]
 }
 
-fn default_log() -> Log {
-    Log {
-        level: default_log_level(),
+impl Log {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+        }
     }
 }
 
@@ -155,18 +165,17 @@ impl Config {
             result = fs::read_to_string("/etc/live777/config.toml");
         }
         if let Ok(cfg) = result {
-            let mut cfg: Self = toml::from_str(cfg.as_str()).expect("config parse error");
-            cfg.http_init();
+            let cfg: Self = toml::from_str(cfg.as_str()).expect("config parse error");
             match cfg.validate() {
                 Ok(_) => cfg,
                 Err(err) => panic!("config validate [{}]", err),
             }
         } else {
             Config {
+                http: Http::default(),
                 ice_servers: default_ice_servers(),
                 auth: Default::default(),
-                log: default_log(),
-                http: Http::default(),
+                log: Log::default(),
             }
         }
     }
@@ -178,34 +187,5 @@ impl Config {
                 .map_err(|e| anyhow::anyhow!(format!("ice_server error : {}", e)))?;
         }
         Ok(())
-    }
-
-    fn http_init(&mut self) {
-        let http_config = fs::read_to_string("config-dist.toml");
-        if let Ok(cfg) = http_config {
-            let config: toml::Value =toml::from_str(&cfg).expect("Failed to parse default config");
-            self.http.listen = config["http"]["listen"].as_str()
-            .unwrap_or("[::]:7777").to_string();
-            self.http.cors = config["http"]["cors"].as_bool()
-            .unwrap_or(false);
-        }
-    }
-}
-
-impl Http {
-    fn default() -> Self {
-        Self {
-            listen: String::from("[::]:7777"),
-            cors: false,
-        }
-    }
-}
-
-pub(crate) fn cors_layer(cfg: bool) -> CorsLayer {
-    if cfg {
-        CorsLayer::permissive()
-    } else {
-        let origins = [];
-        CorsLayer::new().allow_origin(origins)
     }
 }

@@ -1,5 +1,9 @@
+[http]
 # Http Server Listen Address
 # listen = "[::]:7777"
+# Cross-Origin Resource Sharing (CORS)
+# reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+# cors = false
 
 [[ice_servers]]
 urls = [
@@ -30,11 +34,4 @@ urls = [
 # Default: info
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
-
-[http]
-listen = "[::]:7777"
-# Cross-Origin Resource Sharing (CORS)
-# reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-cors = false
-
 
