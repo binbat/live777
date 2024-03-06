@@ -5,18 +5,27 @@ use webrtc::{
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     Error,
 };
+use tower_http::cors::CorsLayer;
+
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
-    #[serde(default = "default_listen")]
-    pub listen: String,
     #[serde(default = "default_ice_servers")]
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
     #[serde(default = "default_log")]
     pub log: Log,
+    pub http: Http,
 }
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct Http {
+    #[serde(default = "default_listen")]
+    pub listen: String,
+    pub cors: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
     #[serde(default)]
@@ -146,7 +155,8 @@ impl Config {
             result = fs::read_to_string("/etc/live777/config.toml");
         }
         if let Ok(cfg) = result {
-            let cfg: Self = toml::from_str(cfg.as_str()).expect("config parse error");
+            let mut cfg: Self = toml::from_str(cfg.as_str()).expect("config parse error");
+            cfg.http_init();
             match cfg.validate() {
                 Ok(_) => cfg,
                 Err(err) => panic!("config validate [{}]", err),
@@ -154,9 +164,9 @@ impl Config {
         } else {
             Config {
                 ice_servers: default_ice_servers(),
-                listen: default_listen(),
                 auth: Default::default(),
                 log: default_log(),
+                http: Http::default(),
             }
         }
     }
@@ -168,5 +178,34 @@ impl Config {
                 .map_err(|e| anyhow::anyhow!(format!("ice_server error : {}", e)))?;
         }
         Ok(())
+    }
+
+    fn http_init(&mut self) {
+        let http_config = fs::read_to_string("config-dist.toml");
+        if let Ok(cfg) = http_config {
+            let config: toml::Value =toml::from_str(&cfg).expect("Failed to parse default config");
+            self.http.listen = config["http"]["listen"].as_str()
+            .unwrap_or("[::]:7777").to_string();
+            self.http.cors = config["http"]["cors"].as_bool()
+            .unwrap_or(false);
+        }
+    }
+}
+
+impl Http {
+    fn default() -> Self {
+        Self {
+            listen: String::from("[::]:7777"),
+            cors: false,
+        }
+    }
+}
+
+pub(crate) fn cors_layer(cfg: bool) -> CorsLayer {
+    if cfg {
+        CorsLayer::permissive()
+    } else {
+        let origins = [];
+        CorsLayer::new().allow_origin(origins)
     }
 }

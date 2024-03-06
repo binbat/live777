@@ -34,7 +34,7 @@ use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::dto::req::{ChangeResource, SelectLayer};
 use crate::result::Result;
-use config::IceServer;
+use config::{IceServer,cors_layer};
 use path::manager::Manager;
 #[cfg(not(debug_assertions))]
 use {http::header, rust_embed::RustEmbed};
@@ -66,7 +66,7 @@ async fn main() {
         )
         .with(tracing_logfmt::layer())
         .init();
-    let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
+    let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
     let ice_servers = cfg
         .ice_servers
@@ -79,6 +79,7 @@ async fn main() {
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
+    let cors = cors_layer(cfg.http.cors);
     let app = Router::new()
         .route("/whip/:id", post(whip))
         .route("/whep/:id", post(whep))
@@ -95,6 +96,7 @@ async fn main() {
         .layer(auth_layer)
         .route("/metrics", get(metrics))
         .with_state(app_state)
+        .layer(cors)
         .layer(axum::middleware::from_fn(print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
@@ -370,3 +372,4 @@ fn string_encoder(s: &impl ToString) -> String {
     let s = serde_json::to_string(&s.to_string()).unwrap();
     s[1..s.len() - 1].to_string()
 }
+
