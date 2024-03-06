@@ -21,6 +21,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 #[cfg(debug_assertions)]
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
@@ -66,7 +67,7 @@ async fn main() {
         )
         .with(tracing_logfmt::layer())
         .init();
-    let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
+    let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
     let ice_servers = cfg
         .ice_servers
@@ -95,6 +96,7 @@ async fn main() {
         .layer(auth_layer)
         .route("/metrics", get(metrics))
         .with_state(app_state)
+        .layer(cors_layer(cfg.http.cors))
         .layer(axum::middleware::from_fn(print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
@@ -119,6 +121,14 @@ async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
         .unwrap()
+}
+
+fn cors_layer(cfg: bool) -> CorsLayer {
+    if cfg {
+        CorsLayer::permissive()
+    } else {
+        CorsLayer::new()
+    }
 }
 
 #[cfg(not(debug_assertions))]
@@ -370,3 +380,4 @@ fn string_encoder(s: &impl ToString) -> String {
     let s = serde_json::to_string(&s.to_string()).unwrap();
     s[1..s.len() - 1].to_string()
 }
+

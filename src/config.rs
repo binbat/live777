@@ -5,18 +5,26 @@ use webrtc::{
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     Error,
 };
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
-    #[serde(default = "default_listen")]
-    pub listen: String,
+    #[serde(default = "Http::default")]
+    pub http: Http,
     #[serde(default = "default_ice_servers")]
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
-    #[serde(default = "default_log")]
+    #[serde(default = "Log::default")]
     pub log: Log,
 }
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct Http {
+    #[serde(default = "default_http_listen")]
+    pub listen: String,
+    #[serde(default)]
+    pub cors: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
     #[serde(default)]
@@ -39,8 +47,17 @@ pub struct Log {
     pub level: String,
 }
 
-fn default_listen() -> String {
+fn default_http_listen() -> String {
     format!("[::]:{}", env::var("PORT").unwrap_or(String::from("7777")))
+}
+
+impl Http {
+    fn default() -> Self {
+        Self {
+            listen: default_http_listen(),
+            cors: Default::default(),
+        }
+    }
 }
 
 fn default_ice_servers() -> Vec<IceServer> {
@@ -52,9 +69,11 @@ fn default_ice_servers() -> Vec<IceServer> {
     }]
 }
 
-fn default_log() -> Log {
-    Log {
-        level: default_log_level(),
+impl Log {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+        }
     }
 }
 
@@ -153,10 +172,10 @@ impl Config {
             }
         } else {
             Config {
+                http: Http::default(),
                 ice_servers: default_ice_servers(),
-                listen: default_listen(),
                 auth: Default::default(),
-                log: default_log(),
+                log: Log::default(),
             }
         }
     }

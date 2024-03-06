@@ -11,7 +11,7 @@ members = [".", "libs/cli", "libs/libwish", "tools/whepfrom", "tools/whipinto"]
 [dependencies]
 http-body-util = "0.1.0"
 axum = { version = "0.7.4", features = ["multipart", "tracing"] }
-tower-http = { version = "0.5.2", features = ["fs", "auth", "trace"] }
+tower-http = { version = "0.5.2", features = ["fs", "auth", "trace","cors"] }
 
 # TODO
 # There have error, Next commit can't work with obs studio
