@@ -32,11 +32,14 @@
         <center>
         <section>
             <button id="whip-device-button" onclick="refreshDevice()">Use Device</button>
-            <br/>Audio Device: <select id="whip-audio-device"><option value="">none</option></select>
+            <div style="margin-top: 20px;">
+                Audio Device:
+                <select id="whip-audio-device"><option value="">none</option></select>
+            </div>
             <br/>Video Device: <select id="whip-video-device"><option value="">none</option></select>
         </section>
 
-        <section>
+        <section style="margin-top: 20px;">
             Audio Codec: <select id="whip-audio-codec">
             <option value="" selected>default</option>
             <option value="opus/48000">OPUS</option>
@@ -53,11 +56,11 @@
         <section>
             <video-size-select id="whip-video-size"></video-size-select>
         </section>
-        <section>SVC Layer: <select id="whip-layer-select"></select></section>
-        <section>
+        <section style="margin-top: 20px;">SVC Layer: <select id="whip-layer-select"></select></section>
+        <section style="margin-top: 20px;">
             <input type="checkbox" id="whip-pseudo-audio"/>Pseudo Audio Track
         </section>
-        <section>
+        <section style="margin-top: 20px;">
             <button onclick="startWhip()">Start</button>
             <button id="whip-button-stop">Stop</button>
         </section>
@@ -78,11 +81,11 @@
         <legend>WHEP</legend>
         <center>
         <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
-        <section>
+        <section style="margin-top: 20px;">
             <button id="whep-button-disable-audio">Disable Audio</button>
             <button id="whep-button-disable-video">Disable Video</button>
         </section>
-        <section>
+        <section style="margin-top: 20px;">
             <button onclick="startWhep()">Start</button>
             <button id="whep-button-stop">Stop</button>
         </section>
