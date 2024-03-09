@@ -1,17 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use log::debug;
 use tokio::sync::{broadcast, RwLock};
+use tracing::debug;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 
+use crate::error::AppError;
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
-use crate::{constant, AppResult};
+use crate::{constant, result::Result};
 
 use super::track::PublishTrackRemote;
 use super::{get_peer_id, info};
@@ -246,9 +247,9 @@ impl SubscribeRTCPeerConnection {
         info!("[{}] [{}] {} down", path, id, kind);
     }
 
-    pub(crate) fn select_kind_rid(&self, kind: RTPCodecType, rid: String) -> AppResult<()> {
+    pub(crate) fn select_kind_rid(&self, kind: RTPCodecType, rid: String) -> Result<()> {
         if let Err(err) = self.select_layer_sender.send((kind, rid)) {
-            Err(anyhow::anyhow!("select layer send err: {}", err).into())
+            Err(AppError::throw(format!("select layer send err: {}", err)))
         } else {
             Ok(())
         }

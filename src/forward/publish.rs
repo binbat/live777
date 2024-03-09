@@ -1,8 +1,8 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::{anyhow, Result};
-use log::debug;
 use tokio::sync::broadcast;
+use tracing::debug;
 use webrtc::peer_connection::RTCPeerConnection;
 
 use crate::forward::rtcp::RtcpMessage;

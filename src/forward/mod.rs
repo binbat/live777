@@ -1,9 +1,9 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use anyhow::{Ok, Result};
-use log::info;
+use crate::result::Result;
 use tokio::sync::Mutex;
+use tracing::info;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -52,17 +52,15 @@ impl PeerForward {
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if self.internal.publish_is_some().await {
-            return Err(AppError::ResourceAlreadyExists(
-                "A connection has already been established".to_string(),
-            )
-            .into());
+            return Err(AppError::resource_already_exists(
+                "A connection has already been established",
+            ));
         }
         let _ = self.publish_lock.lock().await;
         if self.internal.publish_is_some().await {
-            return Err(AppError::ResourceAlreadyExists(
-                "A connection has already been established".to_string(),
-            )
-            .into());
+            return Err(AppError::resource_already_exists(
+                "A connection has already been established",
+            ));
         }
         let peer = self
             .internal
@@ -122,7 +120,7 @@ impl PeerForward {
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if !self.internal.publish_is_ok().await {
-            return Err(anyhow::anyhow!("publish is not ok"));
+            return Err(AppError::throw("publish is not ok"));
         }
         let peer = self
             .internal
@@ -191,7 +189,7 @@ impl PeerForward {
             }
             Ok(layers)
         } else {
-            Err(anyhow::anyhow!("not layers"))
+            Err(AppError::throw("not layers"))
         }
     }
 
@@ -213,7 +211,7 @@ impl PeerForward {
     ) -> Result<()> {
         let codec_type = RTPCodecType::from(change_resource.kind.as_str());
         if codec_type == RTPCodecType::Unspecified {
-            return Err(anyhow::anyhow!("kind unspecified"));
+            return Err(AppError::throw("kind unspecified"));
         }
 
         let rid = if change_resource.enabled {
@@ -281,7 +279,7 @@ mod test {
     use crate::forward::parse_ice_candidate;
 
     #[test]
-    fn test_parse_ice_candidate() -> anyhow::Result<()> {
+    fn test_parse_ice_candidate() -> crate::result::Result<()> {
         let body = "a=ice-ufrag:EsAw
 a=ice-pwd:P2uYro0UCOQ4zxjKXaWCBui1
 m=audio 9 RTP/AVP 0

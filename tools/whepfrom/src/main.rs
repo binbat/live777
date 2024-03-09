@@ -137,9 +137,19 @@ async fn webrtc_start(
     )
     .await?;
     let offer = peer.create_offer(None).await?;
-    let (answer, _ice_servers) = client.wish(offer.sdp.clone()).await?;
-    peer.set_local_description(offer.clone()).await?;
-    peer.set_remote_description(answer).await?;
+
+    let mut gather_complete = peer.gathering_complete_promise().await;
+    peer.set_local_description(offer).await?;
+    let _ = gather_complete.recv().await;
+
+    let (answer, _ice_servers) = client
+        .wish(peer.local_description().await.unwrap().sdp.clone())
+        .await?;
+
+    peer.set_remote_description(answer)
+        .await
+        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+
     Ok(peer)
 }
 

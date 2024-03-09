@@ -1,11 +1,7 @@
-use std::collections::HashMap;
-use std::future::IntoFuture;
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::sync::Arc;
-
+use axum::body::{Body, Bytes};
+use axum::extract::Request;
 use axum::http::HeaderMap;
-
+use axum::middleware::Next;
 use axum::routing::get;
 use axum::Json;
 use axum::{
@@ -15,20 +11,30 @@ use axum::{
     routing::post,
     Router,
 };
-
+use error::AppError;
 use forward::info::Layer;
-use http::header::ToStrError;
 use http::Uri;
-use log::{debug, error, info};
-use thiserror::Error;
+use http_body_util::BodyExt;
+use std::collections::HashMap;
+use std::future::IntoFuture;
+use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::Arc;
 #[cfg(debug_assertions)]
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
+use tracing::info_span;
+use tracing::{debug, error, info};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::dto::req::{ChangeResource, SelectLayer};
+use crate::result::Result;
 use config::IceServer;
 use path::manager::Manager;
 #[cfg(not(debug_assertions))]
@@ -38,9 +44,11 @@ mod auth;
 mod config;
 mod constant;
 mod dto;
+mod error;
 mod forward;
 mod metrics;
 mod path;
+mod result;
 mod signal;
 
 #[tokio::main]
@@ -51,18 +59,15 @@ async fn main() {
     metrics::REGISTRY
         .register(Box::new(metrics::SUBSCRIBE.clone()))
         .unwrap();
-
     let cfg = Config::parse();
-    env_logger::builder()
-        .filter_module(
-            "live777",
-            log::LevelFilter::from_str(cfg.log.level.as_str()).unwrap(),
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("live777={},webrtc=error", cfg.log.level).into()),
         )
-        .filter_module("webrtc", log::LevelFilter::Error)
-        .write_style(env_logger::WriteStyle::Auto)
-        .target(env_logger::Target::Stdout)
+        .with(tracing_logfmt::layer())
         .init();
-    let addr = SocketAddr::from_str(&cfg.listen).expect("invalid listen address");
+    let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
     let ice_servers = cfg
         .ice_servers
@@ -90,7 +95,21 @@ async fn main() {
         )
         .layer(auth_layer)
         .route("/metrics", get(metrics))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(cors_layer(cfg.http.cors))
+        .layer(axum::middleware::from_fn(print_request_response))
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                let span = info_span!(
+                    "http_request",
+                    uri = ?request.uri(),
+                    method = ?request.method(),
+                    span_id = tracing::field::Empty,
+                );
+                span.record("span_id", span.id().unwrap().into_u64());
+                span
+            }),
+        );
     tokio::select! {
         Err(e) = axum::serve(tokio::net::TcpListener::bind(&addr).await.unwrap(), static_server(app)).into_future() => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
@@ -102,6 +121,14 @@ async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
         .unwrap()
+}
+
+fn cors_layer(cfg: bool) -> CorsLayer {
+    if cfg {
+        CorsLayer::permissive()
+    } else {
+        CorsLayer::new()
+    }
 }
 
 #[cfg(not(debug_assertions))]
@@ -143,12 +170,56 @@ struct AppState {
     paths: Arc<Manager>,
 }
 
+async fn print_request_response(
+    req: Request,
+    next: Next,
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    let req_headers = req.headers().clone();
+    let (parts, body) = req.into_parts();
+    let bytes = buffer_and_print("request", req_headers, body).await?;
+    let req = Request::from_parts(parts, Body::from(bytes));
+
+    let res = next.run(req).await;
+    let res_headers = res.headers().clone();
+    let (parts, body) = res.into_parts();
+    let bytes = buffer_and_print("response", res_headers, body).await?;
+    let res = Response::from_parts(parts, Body::from(bytes));
+
+    Ok(res)
+}
+
+async fn buffer_and_print<B>(
+    direction: &str,
+    headers: HeaderMap,
+    body: B,
+) -> std::result::Result<Bytes, (StatusCode, String)>
+where
+    B: axum::body::HttpBody<Data = Bytes>,
+    B::Error: std::fmt::Display,
+{
+    let bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(err) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("failed to read {direction} body: {err}"),
+            ));
+        }
+    };
+
+    if let Ok(body) = std::str::from_utf8(&bytes) {
+        tracing::debug!("{direction} headers = {headers:?} body = {body:?}");
+    }
+
+    Ok(bytes)
+}
+
 async fn whip(
     State(state): State<AppState>,
     Path(id): Path<String>,
     header: HeaderMap,
     body: String,
-) -> AppResult<Response<String>> {
+) -> Result<Response<String>> {
     let content_type = header
         .get("Content-Type")
         .ok_or(anyhow::anyhow!("Content-Type is required"))?;
@@ -173,7 +244,7 @@ async fn whep(
     Path(id): Path<String>,
     header: HeaderMap,
     body: String,
-) -> AppResult<Response<String>> {
+) -> Result<Response<String>> {
     let content_type = header
         .get("Content-Type")
         .ok_or(anyhow::anyhow!("Content-Type is required"))?;
@@ -207,7 +278,7 @@ async fn add_ice_candidate(
     Path((id, key)): Path<(String, String)>,
     header: HeaderMap,
     body: String,
-) -> AppResult<Response<String>> {
+) -> Result<Response<String>> {
     let content_type = header
         .get("Content-Type")
         .ok_or(AppError::from(anyhow::anyhow!("Content-Type is required")))?;
@@ -224,7 +295,7 @@ async fn remove_path_key(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
     _uri: Uri,
-) -> AppResult<Response<String>> {
+) -> Result<Response<String>> {
     state.paths.remove_path_key(id, key).await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -235,7 +306,7 @@ async fn change_resource(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
     Json(dto): Json<ChangeResource>,
-) -> AppResult<Json<HashMap<String, String>>> {
+) -> Result<Json<HashMap<String, String>>> {
     state.paths.change_resource(id, key, dto).await?;
     Ok(Json(HashMap::new()))
 }
@@ -243,7 +314,7 @@ async fn change_resource(
 async fn get_layer(
     State(state): State<AppState>,
     Path((id, _key)): Path<(String, String)>,
-) -> AppResult<Json<Vec<Layer>>> {
+) -> Result<Json<Vec<Layer>>> {
     let layers = state.paths.layers(id).await?;
     Ok(Json(layers))
 }
@@ -252,7 +323,7 @@ async fn select_layer(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
     Json(layer): Json<SelectLayer>,
-) -> AppResult<String> {
+) -> Result<String> {
     state
         .paths
         .select_layer(
@@ -267,7 +338,7 @@ async fn select_layer(
 async fn un_select_layer(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
-) -> AppResult<String> {
+) -> Result<String> {
     state
         .paths
         .select_layer(
@@ -310,55 +381,3 @@ fn string_encoder(s: &impl ToString) -> String {
     s[1..s.len() - 1].to_string()
 }
 
-pub type AppResult<T> = Result<T, AppError>;
-
-#[derive(Debug, Error)]
-pub enum AppError {
-    #[error("resource not found:{0}")]
-    ResourceNotFound(String),
-    #[error("resource already exists:{0}")]
-    ResourceAlreadyExists(String),
-    #[error("internal server error")]
-    InternalServerError(anyhow::Error),
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        match self {
-            AppError::ResourceNotFound(err) => {
-                (StatusCode::NOT_FOUND, err.to_string()).into_response()
-            }
-            AppError::InternalServerError(err) => {
-                debug!("{:?}", err);
-                (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-            }
-            AppError::ResourceAlreadyExists(err) => {
-                (StatusCode::CONFLICT, err.to_string()).into_response()
-            }
-        }
-    }
-}
-
-impl From<http::Error> for AppError {
-    fn from(err: http::Error) -> Self {
-        AppError::InternalServerError(err.into())
-    }
-}
-
-impl From<ToStrError> for AppError {
-    fn from(err: ToStrError) -> Self {
-        AppError::InternalServerError(err.into())
-    }
-}
-
-impl From<webrtc::Error> for AppError {
-    fn from(err: webrtc::Error) -> Self {
-        AppError::InternalServerError(err.into())
-    }
-}
-
-impl From<anyhow::Error> for AppError {
-    fn from(err: anyhow::Error) -> Self {
-        AppError::InternalServerError(err)
-    }
-}

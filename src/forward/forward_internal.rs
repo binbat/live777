@@ -1,9 +1,9 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
 
-use anyhow::Result;
-use log::{debug, info};
+use crate::result::Result;
 use tokio::sync::{broadcast, RwLock};
+use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
@@ -224,10 +224,9 @@ impl PeerForwardInternal {
     pub(crate) async fn set_publish(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
         let mut publish = self.publish.write().await;
         if publish.is_some() {
-            return Err(AppError::ResourceAlreadyExists(
-                "A connection has already been established".to_string(),
-            )
-            .into());
+            return Err(AppError::resource_already_exists(
+                "A connection has already been established",
+            ));
         }
         let publish_peer = PublishRTCPeerConnection::new(
             self.id.clone(),
@@ -247,7 +246,7 @@ impl PeerForwardInternal {
             return Ok(());
         }
         if publish.as_ref().unwrap().id != get_peer_id(&peer) {
-            return Err(anyhow::anyhow!("publish not myself"));
+            return Err(AppError::throw("publish not myself"));
         }
         let mut publish_tracks = self.publish_tracks.write().await;
         publish_tracks.clear();
@@ -281,7 +280,7 @@ impl PeerForwardInternal {
         media_info: MediaInfo,
     ) -> Result<Arc<RTCPeerConnection>> {
         if media_info.video_transceiver.0 > 1 && media_info.audio_transceiver.0 > 1 {
-            return Err(anyhow::anyhow!("sendonly is more than 1"));
+            return Err(AppError::throw("sendonly is more than 1"));
         }
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
@@ -367,10 +366,10 @@ impl PeerForwardInternal {
         media_info: MediaInfo,
     ) -> Result<Arc<RTCPeerConnection>> {
         if !self.publish_is_some().await {
-            return Err(anyhow::anyhow!("publish is none"));
+            return Err(AppError::throw("publish is none"));
         }
         if media_info.video_transceiver.1 > 1 && media_info.audio_transceiver.1 > 1 {
-            return Err(anyhow::anyhow!("sendonly is more than 1"));
+            return Err(AppError::throw("sendonly is more than 1"));
         }
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
