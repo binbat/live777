@@ -20,9 +20,11 @@ use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+
 #[cfg(debug_assertions)]
-use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
+
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::info_span;
@@ -96,7 +98,11 @@ async fn main() {
         .layer(auth_layer)
         .route("/metrics", get(metrics))
         .with_state(app_state)
-        .layer(cors_layer(cfg.http.cors))
+        .layer(if cfg.http.cors {
+            CorsLayer::permissive()
+        } else {
+            CorsLayer::new()
+        })
         .layer(axum::middleware::from_fn(print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
@@ -121,14 +127,6 @@ async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
         .unwrap()
-}
-
-fn cors_layer(cfg: bool) -> CorsLayer {
-    if cfg {
-        CorsLayer::permissive()
-    } else {
-        CorsLayer::new()
-    }
 }
 
 #[cfg(not(debug_assertions))]
@@ -380,4 +378,3 @@ fn string_encoder(s: &impl ToString) -> String {
     let s = serde_json::to_string(&s.to_string()).unwrap();
     s[1..s.len() - 1].to_string()
 }
-
