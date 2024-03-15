@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
 
-use crate::dto::ForwardInfo;
+use crate::forward::info::ForwardInfo;
 use crate::result::Result;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;

@@ -12,9 +12,9 @@ use axum::{
     Router,
 };
 use dto::req::QueryInfo;
-use dto::ForwardInfo;
+use dto::res::ForwardInfo;
+use dto::res::Layer;
 use error::AppError;
-use forward::info::Layer;
 use http::Uri;
 use http_body_util::BodyExt;
 use std::collections::HashMap;
@@ -316,8 +316,15 @@ async fn get_layer(
     State(state): State<AppState>,
     Path((id, _key)): Path<(String, String)>,
 ) -> Result<Json<Vec<Layer>>> {
-    let layers = state.paths.layers(id).await?;
-    Ok(Json(layers))
+    Ok(Json(
+        state
+            .paths
+            .layers(id)
+            .await?
+            .into_iter()
+            .map(|layer| layer.into())
+            .collect(),
+    ))
 }
 
 async fn select_layer(
@@ -330,7 +337,9 @@ async fn select_layer(
         .select_layer(
             id,
             key,
-            layer.encoding_id.map(|encoding_id| Layer { encoding_id }),
+            layer
+                .encoding_id
+                .map(|encoding_id| crate::forward::info::Layer { encoding_id }),
         )
         .await?;
     Ok("".to_string())
@@ -345,7 +354,7 @@ async fn un_select_layer(
         .select_layer(
             id,
             key,
-            Some(Layer {
+            Some(crate::forward::info::Layer {
                 encoding_id: constant::RID_DISABLE.to_string(),
             }),
         )
@@ -363,7 +372,10 @@ async fn infos(
             .info(qry.paths.map_or(vec![], |paths| {
                 paths.split(',').map(|path| path.to_string()).collect()
             }))
-            .await,
+            .await
+            .into_iter()
+            .map(|forward_info| forward_info.into())
+            .collect(),
     ))
 }
 

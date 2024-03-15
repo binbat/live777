@@ -10,8 +10,8 @@ use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 
-use crate::dto::SessionInfo;
 use crate::error::AppError;
+use crate::forward::info::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
 use crate::{constant, result::Result};

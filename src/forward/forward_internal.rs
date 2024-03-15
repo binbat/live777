@@ -1,7 +1,7 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
 
-use crate::dto::ForwardInfo;
+use crate::forward::info::ForwardInfo;
 use crate::result::Result;
 use chrono::Utc;
 use tokio::sync::{broadcast, RwLock};

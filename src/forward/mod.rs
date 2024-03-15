@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::dto::ForwardInfo;
+use crate::forward::info::ForwardInfo;
 use crate::result::Result;
 use tokio::sync::Mutex;
 use tracing::info;
