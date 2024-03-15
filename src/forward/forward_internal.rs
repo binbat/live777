@@ -1,7 +1,9 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
 
+use crate::dto::ForwardInfo;
 use crate::result::Result;
+use chrono::Utc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -54,6 +56,8 @@ type PublishRtcpChannel = (
 
 pub(crate) struct PeerForwardInternal {
     pub(crate) id: String,
+    create_time: i64,
+    publish_leave_time: RwLock<i64>,
     publish: RwLock<Option<PublishRTCPeerConnection>>,
     publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
     publish_tracks_change: (broadcast::Sender<()>, broadcast::Receiver<()>),
@@ -80,6 +84,8 @@ impl PeerForwardInternal {
         };
         PeerForwardInternal {
             id: id.to_string(),
+            create_time: Utc::now().timestamp_millis(),
+            publish_leave_time: RwLock::new(0),
             publish: RwLock::new(None),
             publish_tracks: Arc::new(RwLock::new(Vec::new())),
             publish_tracks_change,
@@ -87,6 +93,27 @@ impl PeerForwardInternal {
             subscribe_group: RwLock::new(Vec::new()),
             data_channel_forward,
             ice_server,
+        }
+    }
+
+    pub(crate) async fn info(&self) -> ForwardInfo {
+        ForwardInfo {
+            id: self.id.clone(),
+            create_time: self.create_time,
+            publish_leave_time: *self.publish_leave_time.read().await,
+            publish_session_info: self
+                .publish
+                .read()
+                .await
+                .as_ref()
+                .map(|publish| publish.info()),
+            subscribe_session_infos: self
+                .subscribe_group
+                .read()
+                .await
+                .iter()
+                .map(|subscribe| subscribe.info())
+                .collect(),
         }
     }
 
@@ -236,6 +263,8 @@ impl PeerForwardInternal {
         .await?;
         info!("[{}] [publish] set {}", self.id, publish_peer.id);
         *publish = Some(publish_peer);
+        let mut publish_leave_time = self.publish_leave_time.write().await;
+        *publish_leave_time = 0;
         metrics::PUBLISH.inc();
         Ok(())
     }
@@ -252,6 +281,8 @@ impl PeerForwardInternal {
         publish_tracks.clear();
         let _ = self.publish_tracks_change.0.send(());
         *publish = None;
+        let mut publish_leave_time = self.publish_leave_time.write().await;
+        *publish_leave_time = Utc::now().timestamp_millis();
         info!("[{}] [publish] set none", self.id);
         metrics::PUBLISH.dec();
         Ok(())

@@ -15,6 +15,8 @@ pub struct Config {
     pub auth: Auth,
     #[serde(default = "Log::default")]
     pub log: Log,
+    #[serde(default)]
+    pub publish_leave_timeout: PublishLeaveTimeout,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -45,6 +47,14 @@ pub struct Account {
 pub struct Log {
     #[serde(default = "default_log_level")]
     pub level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishLeaveTimeout(pub u64);
+impl Default for PublishLeaveTimeout {
+    fn default() -> Self {
+        PublishLeaveTimeout(15000)
+    }
 }
 
 fn default_http_listen() -> String {
@@ -176,6 +186,7 @@ impl Config {
                 ice_servers: default_ice_servers(),
                 auth: Default::default(),
                 log: Log::default(),
+                publish_leave_timeout: Default::default(),
             }
         }
     }

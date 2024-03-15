@@ -1,10 +1,12 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::{anyhow, Result};
+use chrono::Utc;
 use tokio::sync::broadcast;
 use tracing::debug;
 use webrtc::peer_connection::RTCPeerConnection;
 
+use crate::dto::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
 
 use super::get_peer_id;
@@ -14,6 +16,7 @@ pub(crate) struct PublishRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) peer: Arc<RTCPeerConnection>,
     pub(crate) media_info: MediaInfo,
+    pub(crate) create_time: i64,
 }
 
 impl PublishRTCPeerConnection {
@@ -35,7 +38,16 @@ impl PublishRTCPeerConnection {
             id,
             peer,
             media_info,
+            create_time: Utc::now().timestamp_millis(),
         })
+    }
+
+    pub(crate) fn info(&self) -> SessionInfo {
+        SessionInfo {
+            id: self.id.clone(),
+            create_time: self.create_time,
+            connect_state: crate::forward::peer_connect_state(&self.peer),
+        }
     }
 
     async fn peer_send_rtcp(

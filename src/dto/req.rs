@@ -12,3 +12,9 @@ pub struct ChangeResource {
     #[serde(rename = "enabled")]
     pub enabled: bool,
 }
+
+#[derive(Deserialize)]
+pub struct QueryInfo {
+    #[serde(default)]
+    pub paths: Option<String>,
+}

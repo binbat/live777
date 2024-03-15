@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use chrono::Utc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::debug;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -9,6 +10,7 @@ use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 
+use crate::dto::SessionInfo;
 use crate::error::AppError;
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
@@ -28,6 +30,7 @@ struct SubscribeForwardChannel {
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) peer: Arc<RTCPeerConnection>,
+    pub(crate) create_time: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
 }
 
@@ -77,7 +80,16 @@ impl SubscribeRTCPeerConnection {
         Self {
             id,
             peer,
+            create_time: Utc::now().timestamp_millis(),
             select_layer_sender,
+        }
+    }
+
+    pub(crate) fn info(&self) -> SessionInfo {
+        SessionInfo {
+            id: self.id.clone(),
+            create_time: self.create_time,
+            connect_state: crate::forward::peer_connect_state(&self.peer),
         }
     }
 

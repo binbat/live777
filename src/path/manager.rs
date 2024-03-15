@@ -1,6 +1,10 @@
+use std::time::Duration;
+use std::vec;
 use std::{collections::HashMap, sync::Arc};
 
+use crate::dto::ForwardInfo;
 use crate::result::Result;
+use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use tracing::info;
 use webrtc::{
@@ -22,10 +26,61 @@ pub struct Manager {
 pub type Response = (RTCSessionDescription, String);
 
 impl Manager {
-    pub fn new(ice_servers: Vec<RTCIceServer>) -> Self {
-        Manager {
-            ice_servers,
-            paths: Default::default(),
+    pub async fn new(ice_servers: Vec<RTCIceServer>, publish_leave_timeout: u64) -> Self {
+        let paths: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
+        tokio::spawn(Self::publish_leave_timeout_tick(
+            paths.clone(),
+            publish_leave_timeout,
+        ));
+        Manager { ice_servers, paths }
+    }
+
+    async fn publish_leave_timeout_tick(
+        paths: Arc<RwLock<HashMap<String, PeerForward>>>,
+        publish_leave_timeout: u64,
+    ) {
+        let publish_leave_timeout_i64: i64 = publish_leave_timeout.try_into().unwrap();
+        loop {
+            let timeout = tokio::time::sleep(Duration::from_millis(1000));
+            tokio::pin!(timeout);
+            let _ = timeout.as_mut().await;
+            let paths_read = paths.read().await;
+            let mut remove_paths = vec![];
+            for (path, forward) in paths_read.iter() {
+                let forward_info = forward.info().await;
+                if forward_info.publish_leave_time > 0
+                    && Utc::now().timestamp_millis() - forward_info.publish_leave_time
+                        > publish_leave_timeout_i64
+                {
+                    remove_paths.push(path.clone());
+                }
+            }
+            if remove_paths.is_empty() {
+                continue;
+            }
+            drop(paths_read);
+            let mut paths = paths.write().await;
+            for path in remove_paths.iter() {
+                if let Some(forward) = paths.get(path) {
+                    let forward_info = forward.info().await;
+                    if forward_info.publish_leave_time > 0
+                        && Utc::now().timestamp_millis() - forward_info.publish_leave_time
+                            > publish_leave_timeout_i64
+                    {
+                        let _ = forward.close().await;
+                        paths.remove(path);
+                        let publish_leave_time =
+                            DateTime::from_timestamp_millis(forward_info.publish_leave_time)
+                                .unwrap()
+                                .format("%Y-%m-%d %H:%M:%S")
+                                .to_string();
+                        info!(
+                            "path : {} publish leave timeout, publish leave time : {}",
+                            path, publish_leave_time
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -133,5 +188,18 @@ impl Manager {
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }
+    }
+
+    pub async fn info(&self, paths: Vec<String>) -> Vec<ForwardInfo> {
+        let mut paths = paths.clone();
+        paths.retain(|path| !path.trim().is_empty());
+        let mut resp = vec![];
+        let path_forwards = self.paths.read().await;
+        for (path, forward) in path_forwards.iter() {
+            if paths.is_empty() || paths.contains(path) {
+                resp.push(forward.info().await);
+            }
+        }
+        resp
     }
 }

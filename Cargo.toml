@@ -35,6 +35,7 @@ rust-embed = { version = "8.2.0", features = ["axum-ex"] }
 prometheus = "0.13.3"
 lazy_static = "1.4.0"
 md5 = "0.7.0"
+chrono = "0.4"
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb

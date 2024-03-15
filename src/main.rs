@@ -1,5 +1,5 @@
 use axum::body::{Body, Bytes};
-use axum::extract::Request;
+use axum::extract::{Query, Request};
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::routing::get;
@@ -11,6 +11,8 @@ use axum::{
     routing::post,
     Router,
 };
+use dto::req::QueryInfo;
+use dto::ForwardInfo;
 use error::AppError;
 use forward::info::Layer;
 use http::Uri;
@@ -78,7 +80,7 @@ async fn main() {
         .map(|i| i.into())
         .collect();
     let app_state = AppState {
-        paths: Arc::new(Manager::new(ice_servers)),
+        paths: Arc::new(Manager::new(ice_servers, cfg.publish_leave_timeout.0).await),
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
@@ -95,6 +97,7 @@ async fn main() {
             "/resource/:id/:key/layer",
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
+        .route("/infos", get(infos))
         .layer(auth_layer)
         .route("/metrics", get(metrics))
         .with_state(app_state)
@@ -348,6 +351,20 @@ async fn un_select_layer(
         )
         .await?;
     Ok("".to_string())
+}
+
+async fn infos(
+    State(state): State<AppState>,
+    Query(qry): Query<QueryInfo>,
+) -> Result<Json<Vec<ForwardInfo>>> {
+    Ok(Json(
+        state
+            .paths
+            .info(qry.paths.map_or(vec![], |paths| {
+                paths.split(',').map(|path| path.to_string()).collect()
+            }))
+            .await,
+    ))
 }
 
 fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
