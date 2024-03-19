@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::forward::info::ForwardInfo;
 use crate::result::Result;
+use crate::storage::{ClusterStorage, RoomOwnership};
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use tracing::info;
@@ -21,29 +22,44 @@ use crate::AppError;
 pub struct Manager {
     ice_servers: Vec<RTCIceServer>,
     paths: Arc<RwLock<HashMap<String, PeerForward>>>,
+    storage: Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
 }
 
 pub type Response = (RTCSessionDescription, String);
 
 impl Manager {
-    pub async fn new(ice_servers: Vec<RTCIceServer>, publish_leave_timeout: u64) -> Self {
+    pub async fn new(
+        ice_servers: Vec<RTCIceServer>,
+        publish_leave_timeout: u64,
+        storage: Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
+    ) -> Self {
         let paths: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
-        tokio::spawn(Self::publish_leave_timeout_tick(
+        tokio::spawn(Self::heartbeat_and_check_tick(
             paths.clone(),
             publish_leave_timeout,
+            storage.clone(),
         ));
-        Manager { ice_servers, paths }
+        Manager {
+            ice_servers,
+            paths,
+            storage,
+        }
     }
 
-    async fn publish_leave_timeout_tick(
+    async fn heartbeat_and_check_tick(
         paths: Arc<RwLock<HashMap<String, PeerForward>>>,
         publish_leave_timeout: u64,
+        storage: Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
     ) {
         let publish_leave_timeout_i64: i64 = publish_leave_timeout.try_into().unwrap();
         loop {
             let timeout = tokio::time::sleep(Duration::from_millis(1000));
             tokio::pin!(timeout);
             let _ = timeout.as_mut().await;
+            if let Some(storage) = &storage {
+                // TODO metadata
+                let _ = storage.registry("".to_string()).await;
+            }
             let paths_read = paths.read().await;
             let mut remove_paths = vec![];
             for (path, forward) in paths_read.iter() {
@@ -78,6 +94,7 @@ impl Manager {
                             "path : {} publish leave timeout, publish leave time : {}",
                             path, publish_leave_time
                         );
+                        let _ = Self::unregister_room(&storage, path.clone()).await;
                     }
                 }
             }
@@ -91,6 +108,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.set_publish(offer).await
         } else {
+            Self::check_room_ownership(&self.storage, path.clone()).await?;
             let forward = PeerForward::new(path.clone(), self.ice_servers.clone());
             let (sdp, key) = forward.set_publish(offer).await?;
             let mut paths = self.paths.write().await;
@@ -98,7 +116,8 @@ impl Manager {
                 return Err(AppError::resource_already_exists("resource already exists"));
             }
             info!("add path : {}", path);
-            paths.insert(path, forward);
+            paths.insert(path.clone(), forward);
+            Self::registry_room(&self.storage, path.clone()).await?;
             Ok((sdp, key))
         }
     }
@@ -114,6 +133,55 @@ impl Manager {
                 "The requested resource not exist,please check the path and try again.",
             ))
         }
+    }
+
+    async fn check_room_ownership(
+        storage: &Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
+        path: String,
+    ) -> Result<()> {
+        if let Some(storage) = storage {
+            if let RoomOwnership::Other(node_ip) = storage.room_ownership(path.clone()).await? {
+                return Err(AppError::throw(format!(
+                    "path {} at this node {}",
+                    path, node_ip
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn registry_room(
+        storage: &Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
+        path: String,
+    ) -> Result<()> {
+        if let Some(storage) = storage {
+            if let RoomOwnership::Other(node_ip) = storage.room_ownership(path.clone()).await? {
+                return Err(AppError::throw(format!(
+                    "room {} at this node {}",
+                    path, node_ip
+                )));
+            } else {
+                storage.registry_room(path.clone()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn unregister_room(
+        storage: &Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
+        path: String,
+    ) -> Result<()> {
+        if let Some(storage) = storage {
+            if let RoomOwnership::Other(node_ip) = storage.room_ownership(path.clone()).await? {
+                return Err(AppError::throw(format!(
+                    "room {} at this node {}",
+                    path, node_ip
+                )));
+            } else {
+                storage.unregister_room(path.clone()).await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn add_ice_candidate(
@@ -142,6 +210,7 @@ impl Manager {
                 let mut paths = self.paths.write().await;
                 info!("remove path : {}", path);
                 paths.remove(&path);
+                let _ = Self::unregister_room(&self.storage, path.clone()).await;
             }
         }
         Ok(())

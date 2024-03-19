@@ -1,3 +1,4 @@
+use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use std::{env, fs};
 use webrtc::{
@@ -5,6 +6,8 @@ use webrtc::{
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     Error,
 };
+
+use crate::storage::ClusterStorageModel;
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default = "Http::default")]
@@ -17,6 +20,8 @@ pub struct Config {
     pub log: Log,
     #[serde(default)]
     pub publish_leave_timeout: PublishLeaveTimeout,
+    #[serde(default)]
+    pub cluster: Cluster,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -57,8 +62,26 @@ impl Default for PublishLeaveTimeout {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Cluster {
+    pub storage: Option<ClusterStorageModel>,
+    #[serde(default = "default_registry_ip_port")]
+    pub registry_ip_port: String,
+}
+
 fn default_http_listen() -> String {
-    format!("[::]:{}", env::var("PORT").unwrap_or(String::from("7777")))
+    format!(
+        "0.0.0.0:{}",
+        env::var("PORT").unwrap_or(String::from("7777"))
+    )
+}
+
+fn default_registry_ip_port() -> String {
+    format!(
+        "{}:{}",
+        local_ip().unwrap(),
+        env::var("PORT").unwrap_or(String::from("7777"))
+    )
 }
 
 impl Http {
@@ -187,6 +210,7 @@ impl Config {
                 auth: Default::default(),
                 log: Log::default(),
                 publish_leave_timeout: Default::default(),
+                cluster: Default::default(),
             }
         }
     }

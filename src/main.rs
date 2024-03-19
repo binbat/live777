@@ -54,6 +54,7 @@ mod metrics;
 mod path;
 mod result;
 mod signal;
+mod storage;
 
 #[tokio::main]
 async fn main() {
@@ -72,6 +73,7 @@ async fn main() {
         .with(tracing_logfmt::layer())
         .init();
     let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
+    info!("config : {:?}", cfg);
     info!("Server listening on {}", addr);
     let ice_servers = cfg
         .ice_servers
@@ -79,8 +81,21 @@ async fn main() {
         .into_iter()
         .map(|i| i.into())
         .collect();
+    let cluster_storage = if let Some(cluster_storage) = &cfg.cluster.storage {
+        Some(Arc::new(
+            storage::new(
+                cfg.cluster.registry_ip_port.clone(),
+                cluster_storage.clone(),
+            )
+            .await,
+        ))
+    } else {
+        None
+    };
     let app_state = AppState {
-        paths: Arc::new(Manager::new(ice_servers, cfg.publish_leave_timeout.0).await),
+        paths: Arc::new(
+            Manager::new(ice_servers, cfg.publish_leave_timeout.0, cluster_storage).await,
+        ),
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
@@ -134,14 +149,14 @@ async fn metrics() -> String {
 
 #[cfg(not(debug_assertions))]
 #[derive(RustEmbed)]
-#[folder = "assets/"]
+#[folder = "gateway/assets/"]
 struct Assets;
 
 fn static_server(router: Router) -> Router {
     #[cfg(debug_assertions)]
     {
         let serve_dir =
-            ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
+            ServeDir::new("gateway/assets").not_found_service(ServeFile::new("assets/index.html"));
         router.nest_service("/", serve_dir.clone())
     }
     #[cfg(not(debug_assertions))]
