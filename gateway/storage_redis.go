@@ -26,7 +26,7 @@ func NewRedisStandaloneStorage(addr string) (*RedisStandaloneStorage, error) {
 	// check conn
 	cmd := client.Get(context.Background(), "hello world")
 	if cmd.Err() != nil && !errors.Is(cmd.Err(), redis.Nil) {
-		return nil, errors.New(fmt.Sprintf("redis conn cmd error : %v", cmd.Err()))
+		return nil, fmt.Errorf("redis conn cmd error : %v", cmd.Err())
 	}
 	return &RedisStandaloneStorage{
 		client: client,
@@ -37,7 +37,7 @@ func (r *RedisStandaloneStorage) GetAllNode(ctx context.Context) ([]Node, error)
 	getNodesCmd := r.client.SInter(ctx, NodesRegistryKey)
 	if getNodesCmd.Err() != nil {
 		if !errors.Is(getNodesCmd.Err(), redis.Nil) {
-			return nil, errors.New(fmt.Sprintf("redis conn getNodesCmd error : %v", getNodesCmd.Err()))
+			return nil, fmt.Errorf("redis conn getNodesCmd error : %v", getNodesCmd.Err())
 		}
 		return make([]Node, 0), nil
 	}
