@@ -35,6 +35,6 @@ urls = [
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
-[cluster.storage]
-model = "RedisStandalone"
-addr = "redis://127.0.0.1:6379"
+# [cluster.storage]
+# model = "RedisStandalone"
+# addr = "redis://127.0.0.1:6379"
