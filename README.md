@@ -20,6 +20,8 @@
 
 ---
 
+This work is completed by Xidian University.
+
 Live777 is an SFU server for real-time video streaming for the `WHIP`/`WHEP` as first protocol.
 
 Live777 media server is used with [Gstreamer](https://gstreamer.freedesktop.org/), [FFmpeg](https://ffmpeg.org/), [OBS Studio](https://obsproject.com/), [VLC](https://www.videolan.org/), [WebRTC](https://webrtc.org/) and other clients to provide the ability to receive and distribute streams, and is a typical publishing (pushing) and subscription (playing) server model.
