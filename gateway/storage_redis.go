@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -41,20 +42,31 @@ func (r *RedisStandaloneStorage) GetAllNode(ctx context.Context) ([]Node, error)
 		}
 		return make([]Node, 0), nil
 	}
-	val := getNodesCmd.Val()
-	nodes := make([]Node, 0)
-	for _, node := range val {
-		getNodeCmd := r.client.Get(ctx, fmt.Sprintf("%s:%s", NodeRegistryKey, node))
-		if getNodeCmd.Err() != nil {
-			if errors.Is(getNodeCmd.Err(), redis.Nil) {
-				r.client.SRem(ctx, NodesRegistryKey, node)
-			}
-			continue
-		}
-		nodeMetadata := getNodeCmd.Val()
-		nodes = append(nodes, Node{node, nodeMetadata})
+	nodes := getNodesCmd.Val()
+	nodeKeys := make([]string, len(nodes))
+	for i, node := range nodes {
+		nodeKeys[i] = fmt.Sprintf("%s:%s", NodeRegistryKey, node)
 	}
-	return nodes, nil
+	mgetCmd := r.client.MGet(ctx, nodeKeys...)
+	if mgetCmd.Err() != nil {
+		return nil, mgetCmd.Err()
+	}
+	nodeValues := mgetCmd.Val()
+	resNodes := make([]Node, 0)
+	delNodes := make([]interface{}, 0)
+	for index, node := range nodes {
+		nodeValue := nodeValues[index]
+		if nodeValue == nil {
+			delNodes = append(delNodes, node)
+		} else {
+			resNodes = append(resNodes, Node{
+				Addr:     node,
+				Metadata: fmt.Sprintf("%s", nodeValue),
+			})
+		}
+	}
+	r.client.SRem(ctx, NodesRegistryKey, delNodes...)
+	return resNodes, nil
 }
 
 func (r *RedisStandaloneStorage) GetRoomOwnership(ctx context.Context, room string) (*Node, error) {
