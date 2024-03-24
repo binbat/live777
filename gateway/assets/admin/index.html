@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <link rel="icon" href="./logo.svg"/>
+    <title>Live777</title>
+    <style>
+        table {
+            border: 2px solid rgb(140 140 140);
+        }
+
+        th, td {
+            border: 1px solid rgb(160 160 160);
+        }
+    </style>
+</head>
+<body>
+    <h1>Live777 Dashboard</h1>
+
+    <table>
+        <caption>
+            Server all connections
+        </caption>
+        <thead>
+            <tr>
+                <th scope="col">Id</th>
+                <th scope="col">Publisher</th>
+                <th scope="col">Subscriber</th>
+                <th scope="col">Create Time</th>
+                <th scope="col">Operate</th>
+            </tr>
+        </thead>
+        <tbody id="table"></tbody>
+        <tfoot>
+            <tr>
+                <th scope="row" colspan="4">Total Count</th>
+                <td id="total">0</td>
+            </tr>
+        </tfoot>
+    </table>
+
+    <script>
+
+    // - stream
+    // - client
+    async function delStream(streamId, clientId) {
+        const fetched = await fetch(`/resource/${streamId}/${clientId}`, {
+            method: "DELETE",
+        })
+    }
+
+    window.delStream = delStream
+
+    async function getAllData() {
+        const fetched = await fetch("/infos")
+        const data = await fetched.json()
+        const html = data.reduce((r, i) => r + `<tr>
+<th scope="row">${i.id}</th>
+<td>${i.publishLeaveTime === 0 ? "Ok" : "No"}</td>
+<td>${i.subscribeSessionInfos.length}</td>
+<td>${new Date(i.createTime)}</td>
+<td><button onclick="delStream('${i.id}', '${i.publishSessionInfo.id}')">Destroy</button></td>
+</tr>`, "")
+        document.getElementById("total").innerHTML = data.length
+        return html
+    }
+
+    async function sync() {
+        document.getElementById("table").innerHTML = await getAllData()
+    }
+
+    async function init() {
+        sync()
+        setInterval(sync, 3000)
+    }
+
+    init()
+    </script>
+</body>
+</html>
