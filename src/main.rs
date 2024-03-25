@@ -99,6 +99,7 @@ async fn main() {
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
+    let admin_auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.admin_auth));
     let app = Router::new()
         .route("/whip/:id", post(whip))
         .route("/whep/:id", post(whep))
@@ -112,8 +113,8 @@ async fn main() {
             "/resource/:id/:key/layer",
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
-        .route("/infos", get(infos))
         .layer(auth_layer)
+        .route("/infos", get(infos).layer(admin_auth_layer))
         .route("/metrics", get(metrics))
         .with_state(app_state)
         .layer(if cfg.http.cors {
