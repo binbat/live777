@@ -16,6 +16,8 @@ pub struct Config {
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
+    #[serde(default)]
+    pub admin_auth: Auth,
     #[serde(default = "Log::default")]
     pub log: Log,
     #[serde(default)]
@@ -208,6 +210,7 @@ impl Config {
                 http: Http::default(),
                 ice_servers: default_ice_servers(),
                 auth: Default::default(),
+                admin_auth: Default::default(),
                 log: Log::default(),
                 publish_leave_timeout: Default::default(),
                 cluster: Default::default(),
