@@ -19,6 +19,7 @@
 <body>
     <h1>Live777 Dashboard</h1>
 
+    <button onclick="toggleAutoRefresh()">Auto Refresh</button>
     <table>
         <caption>
             Server all connections
@@ -42,6 +43,8 @@
     </table>
 
     <script>
+
+    let timer = null
 
     // - stream
     // - client
@@ -71,9 +74,34 @@
         document.getElementById("table").innerHTML = await getAllData()
     }
 
+    const idAutoRefresh = "auto_refresh"
+
+    function setURLSearchParams(k, v) {
+        const params = new URLSearchParams((new URL(location.href)).search)
+        !!v ? params.set(k, v) : params.delete(k)
+        history.replaceState({}, "", "?" + params.toString())
+    }
+
+    function getURLSearchParams(k) {
+        const params = new URLSearchParams((new URL(location.href)).search)
+        return params.get(k)
+    }
+
+    function toggleAutoRefresh() {
+        if (timer) {
+            clearTimeout(timer)
+            timer = null
+            setURLSearchParams(idAutoRefresh)
+        } else {
+            timer = setInterval(sync, 3000)
+            setURLSearchParams(idAutoRefresh, true)
+        }
+    }
+    window.toggleAutoRefresh = toggleAutoRefresh
+
     async function init() {
         sync()
-        setInterval(sync, 3000)
+        if (getURLSearchParams(idAutoRefresh)) timer = setInterval(sync, 3000)
     }
 
     init()
