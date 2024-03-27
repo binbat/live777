@@ -18,10 +18,28 @@
         section {
             margin: 0.5rem;
         }
+
+        table {
+            border: 2px solid rgb(140 140 140);
+            border-radius: 0.5rem;
+        }
+
+        th, td {
+            border: 1px solid rgb(160 160 160);
+            border-radius: 0.25rem;
+        }
     </style>
 </head>
 
 <body>
+<fieldset>
+    <legend>Stream</legend>
+    <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
+                <admin-stream id="admin-stream"></admin-stream>
+    </section>
+
+</fieldset>
+
 <fieldset>
     <legend>Common</legend>
     <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
@@ -111,14 +129,17 @@
     import VideoSizeSelectElement from "./components/video-size-select.js"
     import DebugPlayer from "./components/debug-player.js"
     import DataChannel from "./components/data-channel.js"
+    import AdminStream from "./components/admin-stream.js"
 
     customElements.define("video-size-select", VideoSizeSelectElement)
     customElements.define("debug-player", DebugPlayer)
     customElements.define("data-channel", DataChannel)
+    customElements.define("admin-stream", AdminStream)
 
     // Common
     const idResourceId = "resource"
     const idBearerToken = "token"
+    const idAutoRefresh = "refresh"
 
     function setURLSearchParams(k, v) {
         const params = new URLSearchParams((new URL(location.href)).search)
@@ -392,6 +413,10 @@
     }
 
     window.startWhep = startWhep
+
+    const elAdminStream = document.getElementById("admin-stream")
+    elAdminStream.addEventListener("change", ev => setURLSearchParams(idAutoRefresh, ev.target.autorefresh))
+    elAdminStream.setAttribute("autorefresh", getURLSearchParams(idAutoRefresh))
 </script>
 </body>
 
