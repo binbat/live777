@@ -1,0 +1,21 @@
+{
+  "name": "webui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "preact": "^10.19.6"
+  },
+  "devDependencies": {
+    "@binbat/whip-whep": "^1.1.1-sdp",
+    "@preact/preset-vite": "^2.8.2",
+    "typescript": "^5.2.2",
+    "unocss": "^0.58.7",
+    "vite": "^5.2.0"
+  }
+}
