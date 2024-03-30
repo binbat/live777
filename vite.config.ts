@@ -12,6 +12,9 @@ export default defineConfig({
             '^/whep/.*': 'http://localhost:7777',
         },
     },
+    build: {
+        outDir: "gateway/assets/"
+    },
     plugins: [ unocss({
         shortcuts: [
             { 'cool-blue': 'bg-blue-500 text-white' },

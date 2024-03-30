@@ -1,6 +1,7 @@
 config.toml
 stream.sdp
 target
+gateway/assets
 
 # Logs
 logs
