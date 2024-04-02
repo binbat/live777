@@ -410,8 +410,6 @@ async fn re_forward(
         .re_forward(
             id,
             ReForwardInfo {
-                node: re_forward.node,
-                room: re_forward.room,
                 whip_url: re_forward.whip_url,
                 basic: re_forward.basic,
                 token: re_forward.token,

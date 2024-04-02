@@ -21,8 +21,6 @@ pub struct QueryInfoReq {
 
 #[derive(Deserialize)]
 pub struct ReForwardReq {
-    pub node: String,
-    pub room: String,
     #[serde(rename = "whipUrl")]
     pub whip_url: String,
     pub basic: Option<String>,
