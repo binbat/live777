@@ -23,6 +23,7 @@ use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::vec;
 
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
@@ -99,8 +100,12 @@ async fn main() {
         ),
         config: cfg.clone(),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
-    let admin_auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.admin_auth));
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![
+        cfg.auth,
+        cfg.admin_auth.clone(),
+    ]));
+    let admin_auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.admin_auth]));
     let app = Router::new()
         .route("/whip/:id", post(whip))
         .route("/whep/:id", post(whep))
