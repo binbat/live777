@@ -13,17 +13,19 @@ pub struct ManyValidate<ResBody> {
 }
 
 impl<ResBody> ManyValidate<ResBody> {
-    pub fn new(auth: Auth) -> Self
+    pub fn new(auths: Vec<Auth>) -> Self
     where
         ResBody: Body + Default,
     {
         let mut header_values = HashSet::new();
-        for account in auth.accounts {
-            let encoded = STANDARD.encode(format!("{}:{}", account.username, account.password));
-            header_values.insert(format!("Basic {}", encoded).parse().unwrap());
-        }
-        for token in auth.tokens {
-            header_values.insert(format!("Bearer {}", token).parse().unwrap());
+        for auth in auths {
+            for account in auth.accounts {
+                let encoded = STANDARD.encode(format!("{}:{}", account.username, account.password));
+                header_values.insert(format!("Basic {}", encoded).parse().unwrap());
+            }
+            for token in auth.tokens {
+                header_values.insert(format!("Bearer {}", token).parse().unwrap());
+            }
         }
         Self {
             header_values,
