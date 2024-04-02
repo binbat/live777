@@ -14,9 +14,24 @@ async function allStream(): Promise<any[]> {
     return (await fetch("/admin/infos")).json()
 }
 
+async function reforward(streamId: string, url: string): Promise<void> {
+    fetch(`/admin/re-forward/${streamId}`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            whipUrl: url,
+        }),
+    })
+}
+
 export function App() {
     const [items, setItems] = useState<any[]>([])
     const refTimer = useRef<null | ReturnType<typeof setInterval>>(null)
+    const refDialog = useRef()
+    const refConfirm = useRef()
+    const refInput = useRef()
 
     const triggerTimer = () => {
         if (refTimer.current) {
@@ -24,6 +39,19 @@ export function App() {
             refTimer.current = null
         } else {
             refTimer.current = setInterval(async () => setItems(await allStream()), 3000)
+        }
+    }
+
+    const triggerForward = (streamId: string) => {
+        refDialog.current?.showModal()
+
+        refInput.current.value = ""
+
+        refDialog.current.onclose = () => {
+            //whipUrl: "http://localhost:7777/whip/888",
+            const target = refDialog.current.returnValue
+            console.log(target)
+            if (target) reforward(streamId, target)
         }
     }
 
@@ -41,12 +69,28 @@ export function App() {
                 <span class="ms-3 text-sm font-medium dark:text-gray-300">Auto Refresh</span>
             </label>
 
+            <dialog ref={refDialog}>
+                <form method="dialog">
+                    <p>
+                        <label
+                        >Target Url:
+                            <input ref={refInput} type="text" onChange={e => refConfirm.current.value = e.target.value} />
+                        </label>
+                    </p>
+                    <div>
+                        <button value="">Cancel</button>
+                        <button ref={refConfirm} value="">Confirm</button>
+                    </div>
+                </form>
+            </dialog>
+
             <table>
                 <thead>
                     <tr>
                         <th>Id</th>
                         <th>Publisher</th>
                         <th>Subscriber</th>
+                        <th>Reforward</th>
                         <th>Create Time</th>
                         <th>Operate</th>
                     </tr>
@@ -56,8 +100,12 @@ export function App() {
                         <td>{i.id}</td>
                         <td>{i.publishLeaveTime === 0 ? "Ok" : "No"}</td>
                         <td>{i.subscribeSessionInfos.length}</td>
+                        <th>{i.subscribeSessionInfos.filter(i => i.reForward).length}</th>
                         <td>{i.createTime}</td>
-                        <td><button onClick={ () => delStream(i.id, i.publishSessionInfo.id) }>Destroy</button></td>
+                        <td>
+                            <button onClick={ () => delStream(i.id, i.publishSessionInfo.id) }>Destroy</button>
+                            <button onClick={ () => triggerForward(i.id)}>Reforward</button>
+                        </td>
                     </tr>)}
                 </tbody>
                 <tfoot>
