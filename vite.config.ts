@@ -6,7 +6,7 @@ import unocss from 'unocss/vite'
 export default defineConfig({
     server: {
         proxy: {
-            '^.*/infos': 'http://localhost:7777',
+            '^.*/admin/.*': 'http://localhost:7777',
             '^/resource/.*': 'http://localhost:7777',
             '^/whip/.*': 'http://localhost:7777',
             '^/whep/.*': 'http://localhost:7777',

@@ -11,7 +11,7 @@ async function delStream(streamId: string, clientId: string) {
 }
 
 async function allStream(): Promise<any[]> {
-    return (await fetch("/infos")).json()
+    return (await fetch("/admin/infos")).json()
 }
 
 export function App() {
