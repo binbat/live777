@@ -117,7 +117,7 @@ async fn main() {
         .layer(auth_layer)
         .route("/admin/infos", get(infos).layer(admin_auth_layer.clone()))
         .route(
-            "/admin/re-forward",
+            "/admin/re-forward/:id",
             post(re_forward).layer(admin_auth_layer),
         )
         .route("/metrics", get(metrics))
@@ -402,12 +402,13 @@ async fn infos(
 
 async fn re_forward(
     State(state): State<AppState>,
+    Path(id): Path<String>,
     Json(re_forward): Json<ReForwardReq>,
 ) -> Result<String> {
     state
         .paths
         .re_forward(
-            re_forward.self_room,
+            id,
             ReForwardInfo {
                 node: re_forward.node,
                 room: re_forward.room,
