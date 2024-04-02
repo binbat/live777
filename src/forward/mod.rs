@@ -240,13 +240,20 @@ impl PeerForward {
                 re_forward_info.token.clone(),
             ),
         );
-        let (target_sdp, _) = client.wish(description.sdp.clone()).await?;
-        let _ = target_peer.set_remote_description(target_sdp).await;
-        re_forward_info.resource_url = client.resource_url;
-        self.internal
-            .set_re_forward_info(target_peer, re_forward_info)
-            .await?;
-        Ok(())
+        match client.wish(description.sdp.clone()).await {
+            Ok((target_sdp, _)) => {
+                let _ = target_peer.set_remote_description(target_sdp).await;
+                re_forward_info.resource_url = client.resource_url;
+                self.internal
+                    .set_re_forward_info(target_peer, re_forward_info)
+                    .await?;
+                Ok(())
+            }
+            Err(err) => {
+                target_peer.close().await?;
+                Err(AppError::InternalServerError(err))
+            }
+        }
     }
 
     pub async fn add_ice_candidate(&self, key: String, ice_candidates: String) -> Result<()> {
