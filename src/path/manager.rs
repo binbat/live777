@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
 
-use crate::forward::info::ForwardInfo;
+use crate::forward::info::{ForwardInfo, ReForwardInfo};
 use crate::result::Result;
 use crate::storage::{ClusterStorage, RoomOwnership};
 use chrono::{DateTime, Utc};
@@ -13,7 +13,7 @@ use webrtc::{
     peer_connection::sdp::session_description::RTCSessionDescription,
 };
 
-use crate::dto::req::ChangeResource;
+use crate::dto::req::ChangeResourceReq;
 use crate::forward::info::Layer;
 use crate::forward::PeerForward;
 use crate::AppError;
@@ -247,7 +247,7 @@ impl Manager {
         &self,
         path: String,
         key: String,
-        change_resource: ChangeResource,
+        change_resource: ChangeResourceReq,
     ) -> Result<()> {
         let paths = self.paths.read().await;
         let forward = paths.get(&path).cloned();
@@ -270,5 +270,16 @@ impl Manager {
             }
         }
         resp
+    }
+
+    pub async fn re_forward(&self, path: String, re_forward_info: ReForwardInfo) -> Result<()> {
+        let paths = self.paths.read().await;
+        let forward = paths.get(&path).cloned();
+        drop(paths);
+        if let Some(forward) = forward {
+            forward.re_forward(re_forward_info).await
+        } else {
+            Err(AppError::resource_not_fount("resource not exists"))
+        }
     }
 }

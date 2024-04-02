@@ -12,13 +12,15 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 
+use libwish::Client;
 use webrtc::sdp::SessionDescription;
 
-use crate::dto::req::ChangeResource;
+use crate::dto::req::ChangeResourceReq;
 use crate::forward::forward_internal::PeerForwardInternal;
 use crate::forward::info::Layer;
 use crate::{constant, AppError};
 
+use self::info::ReForwardInfo;
 use self::media::MediaInfo;
 
 mod forward_internal;
@@ -125,7 +127,7 @@ impl PeerForward {
         }
         let peer = self
             .internal
-            .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?)
+            .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?, None)
             .await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
@@ -168,6 +170,85 @@ impl PeerForward {
         Ok((sdp, key))
     }
 
+    pub async fn re_forward(&self, re_forward_info: ReForwardInfo) -> Result<()> {
+        if !self.internal.publish_is_ok().await {
+            return Err(AppError::throw("publish is not ok"));
+        }
+        let publish_peer = self
+            .internal
+            .get_publish_peer()
+            .await
+            .ok_or(AppError::throw("not found publish peer"))?;
+        let mut media_info = MediaInfo::try_from(
+            publish_peer
+                .remote_description()
+                .await
+                .ok_or(AppError::throw("get publish peer sdp error"))?
+                .unmarshal()?,
+        )?;
+        if media_info.video_transceiver.2 {
+            return Err(AppError::throw("svc not support re forward"));
+        }
+        let video_publish = media_info.video_transceiver.0;
+        let audio_publish = media_info.audio_transceiver.0;
+        media_info.video_transceiver.0 = media_info.video_transceiver.1;
+        media_info.video_transceiver.1 = video_publish;
+        media_info.audio_transceiver.0 = media_info.audio_transceiver.1;
+        media_info.audio_transceiver.1 = audio_publish;
+        let mut re_forward_info = re_forward_info.clone();
+        re_forward_info.resource_url = None;
+        let target_peer = self
+            .internal
+            .new_subscription_peer(media_info, Some(re_forward_info.clone()))
+            .await?;
+        let internal = Arc::downgrade(&self.internal);
+        let pc = Arc::downgrade(&target_peer);
+        target_peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
+                tokio::spawn(async move {
+                    info!(
+                        "[{}] [re_forward] [{}] connection state changed: {}",
+                        internal.id,
+                        get_peer_id(&pc),
+                        s
+                    );
+                    match s {
+                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
+                            let _ = pc.close().await;
+                        }
+                        RTCPeerConnectionState::Closed => {
+                            let _ = internal.remove_subscribe(pc).await;
+                        }
+                        _ => {}
+                    }
+                });
+            }
+            Box::pin(async {})
+        }));
+        let offer = target_peer.create_offer(None).await?;
+        let mut gather_complete = target_peer.gathering_complete_promise().await;
+        target_peer.set_local_description(offer).await?;
+        let _ = gather_complete.recv().await;
+        let description = target_peer
+            .pending_local_description()
+            .await
+            .ok_or(AppError::throw("pending_local_description error"))?;
+        let mut client = Client::new(
+            re_forward_info.whip_url.clone(),
+            Client::get_auth_header_map(
+                re_forward_info.basic.clone(),
+                re_forward_info.token.clone(),
+            ),
+        );
+        let (target_sdp, _) = client.wish(description.sdp.clone()).await?;
+        let _ = target_peer.set_remote_description(target_sdp).await;
+        re_forward_info.resource_url = client.resource_url;
+        self.internal
+            .set_re_forward_info(target_peer, re_forward_info)
+            .await?;
+        Ok(())
+    }
+
     pub async fn add_ice_candidate(&self, key: String, ice_candidates: String) -> Result<()> {
         let ice_candidates = parse_ice_candidate(ice_candidates)?;
         if ice_candidates.is_empty() {
@@ -208,7 +289,7 @@ impl PeerForward {
     pub async fn change_resource(
         &self,
         key: String,
-        change_resource: ChangeResource,
+        change_resource: ChangeResourceReq,
     ) -> Result<()> {
         let codec_type = RTPCodecType::from(change_resource.kind.as_str());
         if codec_type == RTPCodecType::Unspecified {

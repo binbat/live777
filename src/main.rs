@@ -11,10 +11,11 @@ use axum::{
     routing::post,
     Router,
 };
-use dto::req::QueryInfo;
-use dto::res::ForwardInfo;
-use dto::res::Layer;
+use dto::req::QueryInfoReq;
+use dto::res::ForwardInfoRes;
+use dto::res::LayerRes;
 use error::AppError;
+use forward::info::ReForwardInfo;
 use http::Uri;
 use http_body_util::BodyExt;
 use std::collections::HashMap;
@@ -37,7 +38,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::dto::req::{ChangeResource, SelectLayer};
+use crate::dto::req::{ChangeResourceReq, ReForwardReq, SelectLayerReq};
 use crate::result::Result;
 use config::IceServer;
 use path::manager::Manager;
@@ -114,7 +115,11 @@ async fn main() {
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
         .layer(auth_layer)
-        .route("/infos", get(infos).layer(admin_auth_layer))
+        .route("/admin/infos", get(infos).layer(admin_auth_layer.clone()))
+        .route(
+            "/admin/re-forward",
+            post(re_forward).layer(admin_auth_layer),
+        )
         .route("/metrics", get(metrics))
         .with_state(app_state)
         .layer(if cfg.http.cors {
@@ -322,7 +327,7 @@ async fn remove_path_key(
 async fn change_resource(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
-    Json(dto): Json<ChangeResource>,
+    Json(dto): Json<ChangeResourceReq>,
 ) -> Result<Json<HashMap<String, String>>> {
     state.paths.change_resource(id, key, dto).await?;
     Ok(Json(HashMap::new()))
@@ -331,7 +336,7 @@ async fn change_resource(
 async fn get_layer(
     State(state): State<AppState>,
     Path((id, _key)): Path<(String, String)>,
-) -> Result<Json<Vec<Layer>>> {
+) -> Result<Json<Vec<LayerRes>>> {
     Ok(Json(
         state
             .paths
@@ -346,7 +351,7 @@ async fn get_layer(
 async fn select_layer(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
-    Json(layer): Json<SelectLayer>,
+    Json(layer): Json<SelectLayerReq>,
 ) -> Result<String> {
     state
         .paths
@@ -380,8 +385,8 @@ async fn un_select_layer(
 
 async fn infos(
     State(state): State<AppState>,
-    Query(qry): Query<QueryInfo>,
-) -> Result<Json<Vec<ForwardInfo>>> {
+    Query(qry): Query<QueryInfoReq>,
+) -> Result<Json<Vec<ForwardInfoRes>>> {
     Ok(Json(
         state
             .paths
@@ -393,6 +398,27 @@ async fn infos(
             .map(|forward_info| forward_info.into())
             .collect(),
     ))
+}
+
+async fn re_forward(
+    State(state): State<AppState>,
+    Json(re_forward): Json<ReForwardReq>,
+) -> Result<String> {
+    state
+        .paths
+        .re_forward(
+            re_forward.self_room,
+            ReForwardInfo {
+                node: re_forward.node,
+                room: re_forward.room,
+                whip_url: re_forward.whip_url,
+                basic: re_forward.basic,
+                token: re_forward.token,
+                resource_url: None,
+            },
+        )
+        .await?;
+    Ok("".to_string())
 }
 
 fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {

@@ -16,6 +16,7 @@ use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
 use crate::{constant, result::Result};
 
+use super::info::ReForwardInfo;
 use super::track::PublishTrackRemote;
 use super::{get_peer_id, info};
 
@@ -29,6 +30,7 @@ struct SubscribeForwardChannel {
 
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
+    pub(crate) re_forward_info: RwLock<Option<ReForwardInfo>>,
     pub(crate) peer: Arc<RTCPeerConnection>,
     pub(crate) create_time: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
@@ -36,13 +38,15 @@ pub(crate) struct SubscribeRTCPeerConnection {
 
 impl SubscribeRTCPeerConnection {
     pub(crate) async fn new(
+        re_forward_info: Option<ReForwardInfo>,
         path: String,
         peer: Arc<RTCPeerConnection>,
         publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
-        publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
-        publish_track_change: broadcast::Sender<()>, // use subscribe
-        video_sender: Option<Arc<RTCRtpSender>>,
-        audio_sender: Option<Arc<RTCRtpSender>>,
+        (publish_tracks, publish_track_change): (
+            Arc<RwLock<Vec<PublishTrackRemote>>>,
+            broadcast::Sender<()>, // use subscribe
+        ),
+        (video_sender, audio_sender): (Option<Arc<RTCRtpSender>>, Option<Arc<RTCRtpSender>>),
     ) -> Self {
         let (select_layer_sender, _) = broadcast::channel(1);
         let id = get_peer_id(&peer);
@@ -79,17 +83,19 @@ impl SubscribeRTCPeerConnection {
         let _ = publish_track_change.send(());
         Self {
             id,
+            re_forward_info: RwLock::new(re_forward_info),
             peer,
             create_time: Utc::now().timestamp_millis(),
             select_layer_sender,
         }
     }
 
-    pub(crate) fn info(&self) -> SessionInfo {
+    pub(crate) async fn info(&self) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
             create_time: self.create_time,
             connect_state: crate::forward::peer_connect_state(&self.peer),
+            re_forward: self.re_forward_info.read().await.as_ref().cloned(),
         }
     }
 

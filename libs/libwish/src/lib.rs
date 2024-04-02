@@ -13,9 +13,9 @@ use webrtc::{
 
 #[derive(Clone)]
 pub struct Client {
-    url: String,
-    resource_url: Option<String>,
-    default_headers: HeaderMap,
+    pub url: String,
+    pub resource_url: Option<String>,
+    pub default_headers: HeaderMap,
 }
 
 impl Client {
@@ -43,6 +43,18 @@ impl Client {
         Client {
             url,
             resource_url: None,
+            default_headers: defulat_headers.unwrap_or_default(),
+        }
+    }
+
+    pub fn build(
+        url: String,
+        resource_url: Option<String>,
+        defulat_headers: Option<HeaderMap>,
+    ) -> Self {
+        Client {
+            url,
+            resource_url,
             default_headers: defulat_headers.unwrap_or_default(),
         }
     }

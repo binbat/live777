@@ -1367,6 +1367,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.2.0",
  "lazy_static",
+ "libwish",
  "local-ip-address",
  "md5",
  "mime_guess",
