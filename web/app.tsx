@@ -29,9 +29,9 @@ async function reforward(streamId: string, url: string): Promise<void> {
 export function App() {
     const [items, setItems] = useState<any[]>([])
     const refTimer = useRef<null | ReturnType<typeof setInterval>>(null)
-    const refDialog = useRef()
-    const refConfirm = useRef()
-    const refInput = useRef()
+    const refDialog = useRef<HTMLDialogElement>(null)
+    const refConfirm = useRef<HTMLButtonElement>(null)
+    const refInput = useRef<HTMLInputElement>(null)
 
     const triggerTimer = () => {
         if (refTimer.current) {
@@ -45,11 +45,11 @@ export function App() {
     const triggerForward = (streamId: string) => {
         refDialog.current?.showModal()
 
-        refInput.current.value = ""
+        if (refInput.current) refInput.current.value = ""
 
-        refDialog.current.onclose = () => {
+        if (refDialog.current) refDialog.current.onclose = () => {
             //whipUrl: "http://localhost:7777/whip/888",
-            const target = refDialog.current.returnValue
+            const target = refDialog.current?.returnValue
             console.log(target)
             if (target) reforward(streamId, target)
         }
@@ -74,7 +74,12 @@ export function App() {
                     <p>
                         <label
                         >Target Url:
-                            <input ref={refInput} type="text" onChange={e => refConfirm.current.value = e.target.value} />
+                            <input ref={refInput} type="text" onChange={e => {
+                                if (refConfirm.current && e.target) {
+                                    //@ts-ignore
+                                    refConfirm.current.value = e.target.value
+                                }
+                            }} />
                         </label>
                     </p>
                     <div>
@@ -100,7 +105,7 @@ export function App() {
                         <td>{i.id}</td>
                         <td>{i.publishLeaveTime === 0 ? "Ok" : "No"}</td>
                         <td>{i.subscribeSessionInfos.length}</td>
-                        <th>{i.subscribeSessionInfos.filter(i => i.reForward).length}</th>
+                        <th>{i.subscribeSessionInfos.filter((t: any) => t.reForward).length}</th>
                         <td>{i.createTime}</td>
                         <td>
                             <button onClick={ () => delStream(i.id, i.publishSessionInfo.id) }>Destroy</button>
