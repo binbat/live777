@@ -1,33 +1,17 @@
 import { useState, useRef } from 'preact/hooks'
 import Logo from '/logo.svg'
 import './app.css'
-
-// - stream
-// - client
-async function delStream(streamId: string, clientId: string) {
-    return fetch(`/resource/${streamId}/${clientId}`, {
-        method: "DELETE",
-    })
-}
-
-async function allStream(): Promise<any[]> {
-    return (await fetch("/admin/infos")).json()
-}
-
-async function reforward(streamId: string, url: string): Promise<void> {
-    fetch(`/admin/reforward/${streamId}`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            targetUrl: url,
-        }),
-    })
-}
+import { Dialog } from './dialog'
+import {
+    allStream,
+    delStream,
+    reforward,
+} from './api'
 
 export function App() {
+    const [streamId, setStreamId] = useState<string>("")
     const [items, setItems] = useState<any[]>([])
+    const [pubItems, setPubItems] = useState<any[]>([])
     const refTimer = useRef<null | ReturnType<typeof setInterval>>(null)
     const refDialog = useRef<HTMLDialogElement>(null)
     const refConfirm = useRef<HTMLButtonElement>(null)
@@ -69,6 +53,8 @@ export function App() {
                 <span class="ms-3 text-sm font-medium dark:text-gray-300">Auto Refresh</span>
             </label>
 
+            <Dialog streamId={streamId} items={pubItems} />
+
             <dialog ref={refDialog}>
                 <form method="dialog">
                     <p>
@@ -105,11 +91,15 @@ export function App() {
                         <td>{i.id}</td>
                         <td>{i.publishLeaveTime === 0 ? "Ok" : "No"}</td>
                         <td>{i.subscribeSessionInfos.length}</td>
-                        <th>{i.subscribeSessionInfos.filter((t: any) => t.reForward).length}</th>
+                        <th>{i.subscribeSessionInfos.filter((t: any) => t.reforward).length}</th>
                         <td>{i.createTime}</td>
                         <td>
                             <button onClick={ () => delStream(i.id, i.publishSessionInfo.id) }>Destroy</button>
-                            <button onClick={ () => triggerForward(i.id)}>Reforward</button>
+                            <button onClick={ () => {
+                                setStreamId(i.id)
+                                setPubItems(i.subscribeSessionInfos)
+                            }}>Kick</button>
+                            <button onClick={ () => triggerForward(i.id) }>Reforward</button>
                         </td>
                     </tr>)}
                 </tbody>
