@@ -21,7 +21,7 @@ pub struct SessionInfo {
 
 #[derive(Clone)]
 pub struct ReforwardInfo {
-    pub whip_url: String,
+    pub target_url: String,
     pub basic: Option<String>,
     pub token: Option<String>,
     pub resource_url: Option<String>,

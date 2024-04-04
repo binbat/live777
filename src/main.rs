@@ -415,7 +415,7 @@ async fn reforward(
         .reforward(
             id,
             ReforwardInfo {
-                whip_url: reforward.whip_url,
+                target_url: reforward.target_url,
                 basic: reforward.basic,
                 token: reforward.token,
                 resource_url: None,

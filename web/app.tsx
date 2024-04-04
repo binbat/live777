@@ -21,7 +21,7 @@ async function reforward(streamId: string, url: string): Promise<void> {
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            whipUrl: url,
+            targetUrl: url,
         }),
     })
 }
@@ -48,7 +48,7 @@ export function App() {
         if (refInput.current) refInput.current.value = ""
 
         if (refDialog.current) refDialog.current.onclose = () => {
-            //whipUrl: "http://localhost:7777/whip/888",
+            //targetUrl: "http://localhost:7777/whip/888",
             const target = refDialog.current?.returnValue
             console.log(target)
             if (target) reforward(streamId, target)

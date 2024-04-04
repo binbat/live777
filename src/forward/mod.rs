@@ -234,7 +234,7 @@ impl PeerForward {
             .await
             .ok_or(AppError::throw("pending_local_description error"))?;
         let mut client = Client::new(
-            reforward_info.whip_url.clone(),
+            reforward_info.target_url.clone(),
             Client::get_auth_header_map(
                 reforward_info.basic.clone(),
                 reforward_info.token.clone(),

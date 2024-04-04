@@ -31,8 +31,8 @@ pub struct SessionInfoRes {
 
 #[derive(Serialize, Deserialize)]
 pub struct ReforwardInfo {
-    #[serde(rename = "whipUrl")]
-    pub whip_url: String,
+    #[serde(rename = "targetUrl")]
+    pub target_url: String,
     #[serde(rename = "resourceUrl")]
     pub resource_url: Option<String>,
 }
@@ -75,7 +75,7 @@ impl From<crate::forward::info::SessionInfo> for SessionInfoRes {
 impl From<crate::forward::info::ReforwardInfo> for ReforwardInfo {
     fn from(value: crate::forward::info::ReforwardInfo) -> Self {
         ReforwardInfo {
-            whip_url: value.whip_url,
+            target_url: value.target_url,
             resource_url: value.resource_url,
         }
     }

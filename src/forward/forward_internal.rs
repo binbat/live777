@@ -474,7 +474,7 @@ impl PeerForwardInternal {
                 let reforward_info = subscribe.reforward_info.read().await;
                 if let Some(reforward_info) = reforward_info.as_ref() {
                     let client = Client::build(
-                        reforward_info.whip_url.clone(),
+                        reforward_info.target_url.clone(),
                         reforward_info.resource_url.clone(),
                         Client::get_auth_header_map(
                             reforward_info.basic.clone(),
