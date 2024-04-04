@@ -15,7 +15,7 @@ async function allStream(): Promise<any[]> {
 }
 
 async function reforward(streamId: string, url: string): Promise<void> {
-    fetch(`/admin/re-forward/${streamId}`, {
+    fetch(`/admin/reforward/${streamId}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",

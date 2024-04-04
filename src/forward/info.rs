@@ -16,11 +16,11 @@ pub struct SessionInfo {
     pub id: String,
     pub create_time: i64,
     pub connect_state: u8,
-    pub re_forward: Option<ReForwardInfo>,
+    pub reforward: Option<ReforwardInfo>,
 }
 
 #[derive(Clone)]
-pub struct ReForwardInfo {
+pub struct ReforwardInfo {
     pub whip_url: String,
     pub basic: Option<String>,
     pub token: Option<String>,

@@ -25,12 +25,12 @@ pub struct SessionInfoRes {
     pub create_time: i64,
     #[serde(rename = "connectState")]
     pub connect_state: u8,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "reForward")]
-    pub re_forward: Option<ReForwardInfo>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "reforward")]
+    pub reforward: Option<ReforwardInfo>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ReForwardInfo {
+pub struct ReforwardInfo {
     #[serde(rename = "whipUrl")]
     pub whip_url: String,
     #[serde(rename = "resourceUrl")]
@@ -67,14 +67,14 @@ impl From<crate::forward::info::SessionInfo> for SessionInfoRes {
             id: value.id,
             create_time: value.create_time,
             connect_state: value.connect_state,
-            re_forward: value.re_forward.map(|re_forward| re_forward.into()),
+            reforward: value.reforward.map(|reforward| reforward.into()),
         }
     }
 }
 
-impl From<crate::forward::info::ReForwardInfo> for ReForwardInfo {
-    fn from(value: crate::forward::info::ReForwardInfo) -> Self {
-        ReForwardInfo {
+impl From<crate::forward::info::ReforwardInfo> for ReforwardInfo {
+    fn from(value: crate::forward::info::ReforwardInfo) -> Self {
+        ReforwardInfo {
             whip_url: value.whip_url,
             resource_url: value.resource_url,
         }

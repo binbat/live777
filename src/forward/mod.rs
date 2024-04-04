@@ -20,7 +20,7 @@ use crate::forward::forward_internal::PeerForwardInternal;
 use crate::forward::info::Layer;
 use crate::{constant, AppError};
 
-use self::info::ReForwardInfo;
+use self::info::ReforwardInfo;
 use self::media::MediaInfo;
 
 mod forward_internal;
@@ -170,7 +170,7 @@ impl PeerForward {
         Ok((sdp, key))
     }
 
-    pub async fn re_forward(&self, re_forward_info: ReForwardInfo) -> Result<()> {
+    pub async fn reforward(&self, reforward_info: ReforwardInfo) -> Result<()> {
         if !self.internal.publish_is_ok().await {
             return Err(AppError::throw("publish is not ok"));
         }
@@ -195,11 +195,11 @@ impl PeerForward {
         media_info.video_transceiver.1 = video_publish;
         media_info.audio_transceiver.0 = media_info.audio_transceiver.1;
         media_info.audio_transceiver.1 = audio_publish;
-        let mut re_forward_info = re_forward_info.clone();
-        re_forward_info.resource_url = None;
+        let mut reforward_info = reforward_info.clone();
+        reforward_info.resource_url = None;
         let target_peer = self
             .internal
-            .new_subscription_peer(media_info, Some(re_forward_info.clone()))
+            .new_subscription_peer(media_info, Some(reforward_info.clone()))
             .await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&target_peer);
@@ -207,7 +207,7 @@ impl PeerForward {
             if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
                     info!(
-                        "[{}] [re_forward] [{}] connection state changed: {}",
+                        "[{}] [reforward] [{}] connection state changed: {}",
                         internal.id,
                         get_peer_id(&pc),
                         s
@@ -234,18 +234,18 @@ impl PeerForward {
             .await
             .ok_or(AppError::throw("pending_local_description error"))?;
         let mut client = Client::new(
-            re_forward_info.whip_url.clone(),
+            reforward_info.whip_url.clone(),
             Client::get_auth_header_map(
-                re_forward_info.basic.clone(),
-                re_forward_info.token.clone(),
+                reforward_info.basic.clone(),
+                reforward_info.token.clone(),
             ),
         );
         match client.wish(description.sdp.clone()).await {
             Ok((target_sdp, _)) => {
                 let _ = target_peer.set_remote_description(target_sdp).await;
-                re_forward_info.resource_url = client.resource_url;
+                reforward_info.resource_url = client.resource_url;
                 self.internal
-                    .set_re_forward_info(target_peer, re_forward_info)
+                    .set_reforward_info(target_peer, reforward_info)
                     .await?;
                 Ok(())
             }

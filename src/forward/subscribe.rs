@@ -16,7 +16,7 @@ use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
 use crate::{constant, result::Result};
 
-use super::info::ReForwardInfo;
+use super::info::ReforwardInfo;
 use super::track::PublishTrackRemote;
 use super::{get_peer_id, info};
 
@@ -30,7 +30,7 @@ struct SubscribeForwardChannel {
 
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
-    pub(crate) re_forward_info: RwLock<Option<ReForwardInfo>>,
+    pub(crate) reforward_info: RwLock<Option<ReforwardInfo>>,
     pub(crate) peer: Arc<RTCPeerConnection>,
     pub(crate) create_time: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
@@ -38,7 +38,7 @@ pub(crate) struct SubscribeRTCPeerConnection {
 
 impl SubscribeRTCPeerConnection {
     pub(crate) async fn new(
-        re_forward_info: Option<ReForwardInfo>,
+        reforward_info: Option<ReforwardInfo>,
         path: String,
         peer: Arc<RTCPeerConnection>,
         publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
@@ -83,7 +83,7 @@ impl SubscribeRTCPeerConnection {
         let _ = publish_track_change.send(());
         Self {
             id,
-            re_forward_info: RwLock::new(re_forward_info),
+            reforward_info: RwLock::new(reforward_info),
             peer,
             create_time: Utc::now().timestamp_millis(),
             select_layer_sender,
@@ -95,7 +95,7 @@ impl SubscribeRTCPeerConnection {
             id: self.id.clone(),
             create_time: self.create_time,
             connect_state: crate::forward::peer_connect_state(&self.peer),
-            re_forward: self.re_forward_info.read().await.as_ref().cloned(),
+            reforward: self.reforward_info.read().await.as_ref().cloned(),
         }
     }
 

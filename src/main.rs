@@ -15,7 +15,7 @@ use dto::req::QueryInfoReq;
 use dto::res::ForwardInfoRes;
 use dto::res::LayerRes;
 use error::AppError;
-use forward::info::ReForwardInfo;
+use forward::info::ReforwardInfo;
 use http::Uri;
 use http_body_util::BodyExt;
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::dto::req::{ChangeResourceReq, ReForwardReq, SelectLayerReq};
+use crate::dto::req::{ChangeResourceReq, ReforwardReq, SelectLayerReq};
 use crate::result::Result;
 use config::IceServer;
 use path::manager::Manager;
@@ -122,8 +122,8 @@ async fn main() {
         .layer(auth_layer)
         .route("/admin/infos", get(infos).layer(admin_auth_layer.clone()))
         .route(
-            "/admin/re-forward/:id",
-            post(re_forward).layer(admin_auth_layer),
+            "/admin/reforward/:id",
+            post(reforward).layer(admin_auth_layer),
         )
         .route("/metrics", get(metrics))
         .with_state(app_state)
@@ -405,19 +405,19 @@ async fn infos(
     ))
 }
 
-async fn re_forward(
+async fn reforward(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(re_forward): Json<ReForwardReq>,
+    Json(reforward): Json<ReforwardReq>,
 ) -> Result<String> {
     state
         .paths
-        .re_forward(
+        .reforward(
             id,
-            ReForwardInfo {
-                whip_url: re_forward.whip_url,
-                basic: re_forward.basic,
-                token: re_forward.token,
+            ReforwardInfo {
+                whip_url: reforward.whip_url,
+                basic: reforward.basic,
+                token: reforward.token,
                 resource_url: None,
             },
         )

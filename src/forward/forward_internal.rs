@@ -33,7 +33,7 @@ use crate::forward::rtcp::RtcpMessage;
 use crate::metrics;
 use crate::AppError;
 
-use super::info::ReForwardInfo;
+use super::info::ReforwardInfo;
 use super::media::MediaInfo;
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
@@ -398,7 +398,7 @@ impl PeerForwardInternal {
     pub(crate) async fn new_subscription_peer(
         &self,
         media_info: MediaInfo,
-        re_forward_info: Option<ReForwardInfo>,
+        reforward_info: Option<ReforwardInfo>,
     ) -> Result<Arc<RTCPeerConnection>> {
         if !self.publish_is_some().await {
             return Err(AppError::throw("publish is none"));
@@ -423,7 +423,7 @@ impl PeerForwardInternal {
         };
         let peer = Arc::new(api.new_peer_connection(config).await?);
         let s = SubscribeRTCPeerConnection::new(
-            re_forward_info,
+            reforward_info,
             self.id.clone(),
             peer.clone(),
             self.publish_rtcp_channel.0.clone(),
@@ -471,21 +471,21 @@ impl PeerForwardInternal {
         for i in 0..subscribe_peers.len() {
             let subscribe = &mut subscribe_peers[i];
             if subscribe.id == get_peer_id(&peer) {
-                let re_forward_info = subscribe.re_forward_info.read().await;
-                if let Some(re_forward_info) = re_forward_info.as_ref() {
+                let reforward_info = subscribe.reforward_info.read().await;
+                if let Some(reforward_info) = reforward_info.as_ref() {
                     let client = Client::build(
-                        re_forward_info.whip_url.clone(),
-                        re_forward_info.resource_url.clone(),
+                        reforward_info.whip_url.clone(),
+                        reforward_info.resource_url.clone(),
                         Client::get_auth_header_map(
-                            re_forward_info.basic.clone(),
-                            re_forward_info.token.clone(),
+                            reforward_info.basic.clone(),
+                            reforward_info.token.clone(),
                         ),
                     );
                     tokio::spawn(async move {
                         let _ = client.remove_resource().await;
                     });
                 }
-                drop(re_forward_info);
+                drop(reforward_info);
                 subscribe_peers.remove(i);
                 break;
             }
@@ -493,16 +493,16 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    pub async fn set_re_forward_info(
+    pub async fn set_reforward_info(
         &self,
         peer: Arc<RTCPeerConnection>,
-        re_forward_info: ReForwardInfo,
+        reforward_info: ReforwardInfo,
     ) -> Result<()> {
-        let re_forward_group = self.subscribe_group.read().await;
-        for subscribe in re_forward_group.iter() {
+        let reforward_group = self.subscribe_group.read().await;
+        for subscribe in reforward_group.iter() {
             if get_peer_id(&peer) == subscribe.id {
-                let mut re_forward_info_mut = subscribe.re_forward_info.write().await;
-                *re_forward_info_mut = Some(re_forward_info);
+                let mut reforward_info_mut = subscribe.reforward_info.write().await;
+                *reforward_info_mut = Some(reforward_info);
                 return Ok(());
             }
         }

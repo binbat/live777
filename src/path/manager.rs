@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
 
-use crate::forward::info::{ForwardInfo, ReForwardInfo};
+use crate::forward::info::{ForwardInfo, ReforwardInfo};
 use crate::result::Result;
 use crate::storage::{ClusterStorage, RoomOwnership};
 use chrono::{DateTime, Utc};
@@ -272,12 +272,12 @@ impl Manager {
         resp
     }
 
-    pub async fn re_forward(&self, path: String, re_forward_info: ReForwardInfo) -> Result<()> {
+    pub async fn reforward(&self, path: String, reforward_info: ReforwardInfo) -> Result<()> {
         let paths = self.paths.read().await;
         let forward = paths.get(&path).cloned();
         drop(paths);
         if let Some(forward) = forward {
-            forward.re_forward(re_forward_info).await
+            forward.reforward(reforward_info).await
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }
