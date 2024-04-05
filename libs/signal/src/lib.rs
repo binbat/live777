@@ -38,6 +38,6 @@ async fn wait_for_signal_impl() -> String {
 
 /// Registers signal handlers and waits for a signal that
 /// indicates a shutdown request.
-pub(crate) async fn wait_for_stop_signal() -> String {
+pub async fn wait_for_stop_signal() -> String {
     wait_for_signal_impl().await
 }

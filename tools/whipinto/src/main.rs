@@ -8,7 +8,6 @@ use libwish::Client;
 use scopeguard::defer;
 use tokio::{
     net::UdpSocket,
-    signal,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
@@ -100,7 +99,7 @@ async fn main() -> Result<()> {
     });
     tokio::select! {
         _= complete_rx.recv() => { }
-        _= signal::ctrl_c() => {}
+        msg = signal::wait_for_stop_signal() => println!("Received signal: {}", msg)
     }
     println!("RTP listener closed");
     let _ = client.remove_resource().await;

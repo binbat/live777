@@ -55,7 +55,6 @@ mod forward;
 mod metrics;
 mod path;
 mod result;
-mod signal;
 mod storage;
 
 #[tokio::main]

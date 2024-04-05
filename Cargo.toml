@@ -6,7 +6,7 @@ license = "MPL-2.0"
 description = "A very simple, high performance, edge WebRTC SFU"
 
 [workspace]
-members = [".", "libs/cli", "libs/libwish", "tools/whepfrom", "tools/whipinto"]
+members = [".", "libs/cli", "libs/libwish", "libs/signal", "tools/whepfrom", "tools/whipinto"]
 
 [dependencies]
 http-body-util = "0.1.0"
@@ -40,6 +40,7 @@ async-trait = "0.1"
 local-ip-address = "0.6"
 redis = { version = "0.25", features = ["tokio-comp", "cluster", "json"] }
 libwish = { path = "libs/libwish" }
+signal = { path = "libs/signal" }
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb

@@ -12,4 +12,5 @@ anyhow = "1.0"
 tokio = { version = "1.36", features = ["full"] }
 cli = { path = "../../libs/cli" }
 libwish = { path = "../../libs/libwish" }
+signal = { path = "../../libs/signal" }
 scopeguard = "1.2.0"
