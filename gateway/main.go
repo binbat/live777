@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -22,7 +23,10 @@ var loadBalancing LoadBalancing
 var assets embed.FS
 
 func init() {
-	config = ParseConfig()
+	configPath := flag.String("config", "", "load config file")
+	flag.Parse()
+
+	config = ParseConfig(*configPath)
 	switch config.Model {
 	case "RedisStandalone":
 		storage, _ = NewRedisStandaloneStorage(config.Addr)
