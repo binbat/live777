@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e:cluster": "node cluster.js"
   },
   "dependencies": {
     "preact": "^10.19.6"
