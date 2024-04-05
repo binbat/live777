@@ -194,8 +194,11 @@ impl From<IceServer> for RTCIceServer {
 }
 
 impl Config {
-    pub(crate) fn parse() -> Self {
-        let mut result = fs::read_to_string("config.toml");
+    pub(crate) fn parse(path: Option<String>) -> Self {
+        let mut result = fs::read_to_string(match path {
+            Some(path) => path,
+            None => String::from("config.toml"),
+        });
         if result.is_err() {
             result = fs::read_to_string("/etc/live777/config.toml");
         }

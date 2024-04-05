@@ -19,6 +19,7 @@ tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 # Reference: https://github.com/binbat/live777/issues/39
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
 anyhow = { version = "1", features = ["backtrace"] }
+clap = { version = "4.5.1", features = ["derive"] }
 tokio = { version = "1.36", features = ["full"] }
 hyper = "1.2.0"
 tracing = "0.1"

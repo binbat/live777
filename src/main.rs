@@ -11,6 +11,7 @@ use axum::{
     routing::post,
     Router,
 };
+use clap::Parser;
 use dto::req::QueryInfoReq;
 use dto::res::ForwardInfoRes;
 use dto::res::LayerRes;
@@ -57,15 +58,24 @@ mod path;
 mod result;
 mod storage;
 
+#[derive(Parser)]
+#[command(version)]
+struct Args {
+    /// Set config file path
+    #[arg(short, long)]
+    config: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
+    let args = Args::parse();
     metrics::REGISTRY
         .register(Box::new(metrics::PUBLISH.clone()))
         .unwrap();
     metrics::REGISTRY
         .register(Box::new(metrics::SUBSCRIBE.clone()))
         .unwrap();
-    let cfg = Config::parse();
+    let cfg = Config::parse(args.config);
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -73,8 +83,8 @@ async fn main() {
         )
         .with(tracing_logfmt::layer())
         .init();
+    debug!("config : {:?}", cfg);
     let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
-    info!("config : {:?}", cfg);
     info!("Server listening on {}", addr);
     let ice_servers = cfg
         .ice_servers
