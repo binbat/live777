@@ -30,12 +30,14 @@ pub type Response = (RTCSessionDescription, String);
 impl Manager {
     pub async fn new(
         ice_servers: Vec<RTCIceServer>,
+        max: String,
         publish_leave_timeout: u64,
         storage: Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
     ) -> Self {
         let paths: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         tokio::spawn(Self::heartbeat_and_check_tick(
             paths.clone(),
+            max,
             publish_leave_timeout,
             storage.clone(),
         ));
@@ -48,6 +50,7 @@ impl Manager {
 
     async fn heartbeat_and_check_tick(
         paths: Arc<RwLock<HashMap<String, PeerForward>>>,
+        max: String,
         publish_leave_timeout: u64,
         storage: Option<Arc<Box<dyn ClusterStorage + 'static + Send + Sync>>>,
     ) {
@@ -58,7 +61,7 @@ impl Manager {
             let _ = timeout.as_mut().await;
             if let Some(storage) = &storage {
                 // TODO metadata
-                let _ = storage.registry("".to_string()).await;
+                let _ = storage.registry(max.to_owned()).await;
             }
             let paths_read = paths.read().await;
             let mut remove_paths = vec![];

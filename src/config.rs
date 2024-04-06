@@ -71,6 +71,7 @@ pub struct Cluster {
     pub storage: Option<ClusterStorageModel>,
     #[serde(default = "default_registry_ip_port")]
     pub registry_ip_port: String,
+    pub max: String,
 }
 
 fn default_http_listen() -> String {

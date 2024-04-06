@@ -105,7 +105,7 @@ async fn main() {
     };
     let app_state = AppState {
         paths: Arc::new(
-            Manager::new(ice_servers, cfg.publish_leave_timeout.0, cluster_storage).await,
+            Manager::new(ice_servers, cfg.cluster.max.clone(), cfg.publish_leave_timeout.0, cluster_storage).await,
         ),
         config: cfg.clone(),
     };
