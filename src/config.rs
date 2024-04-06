@@ -8,6 +8,7 @@ use webrtc::{
 };
 
 use crate::storage::ClusterStorageModel;
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default = "Http::default")]
@@ -58,6 +59,7 @@ pub struct Log {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishLeaveTimeout(pub u64);
+
 impl Default for PublishLeaveTimeout {
     fn default() -> Self {
         PublishLeaveTimeout(15000)
@@ -222,6 +224,11 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        if (!self.auth.accounts.is_empty() || !self.auth.tokens.is_empty())
+            && (self.admin_auth.accounts.is_empty() && self.admin_auth.tokens.is_empty())
+        {
+            return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
+        }
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()
