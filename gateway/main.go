@@ -9,6 +9,9 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
+	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -54,7 +57,7 @@ func main() {
 	}
 	r := mux.NewRouter()
 	r.HandleFunc("/whip/{room}", whipHandler)
-	r.HandleFunc("/whep/{room}", proxyHandler)
+	r.HandleFunc("/whep/{room}", whepHandler)
 	r.HandleFunc("/resource/{room}/{session}", proxyHandler)
 	r.HandleFunc("/resource/{room}/{session}/layer", proxyHandler)
 	r.PathPrefix("/").Handler(http.StripPrefix("/", http.FileServer(http.FS(assets))))
@@ -88,6 +91,70 @@ func whipHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	doProxy(w, r, next.Addr)
+}
+
+func whepHandler(w http.ResponseWriter, r *http.Request) {
+	room := extractRequestRoom(r)
+	ownership, err := storage.GetRoomOwnership(r.Context(), room)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("%+v\n", ownership)
+
+	res, err := request(http.MethodGet, "http://"+ownership.Addr+"/admin/infos", nil)
+	if err != nil {
+		panic(err)
+	}
+
+	type Info struct {
+		Id                    string `json:"id"`
+		PublishLeaveTime      int    `json:"publishLeaveTime"`
+		SubscribeSessionInfos []struct {
+			Id string `json:"id"`
+		} `json:"subscribeSessionInfos"`
+	}
+
+	infos := []Info{}
+	if err := json.NewDecoder(res.Body).Decode(&infos); err != nil {
+		panic(err)
+	}
+
+	var info Info
+	for _, i := range infos {
+		if i.Id == room {
+			info = i
+		}
+	}
+
+	max, _ := strconv.Atoi(ownership.Metadata)
+	if len(info.SubscribeSessionInfos) >= max {
+		next, err := loadBalancing.Next(r.Context(), storage)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Println("P2P => SFU")
+
+		// P2P => SFU
+		apiUrl := "http://" + ownership.Addr + "/admin/reforward/" + room
+		whipUrl := "http://" + next.Addr + "/whip/" + room + "0"
+		whepUrl := "http://" + next.Addr + "/whep/" + room + "0"
+		if _, err := request(http.MethodPost, apiUrl, &map[string]string{
+			"targetUrl": whipUrl,
+		}); err != nil {
+			panic(err)
+		}
+
+		time.Sleep(3 * time.Second)
+		r.URL, _ = url.Parse(whepUrl)
+		fmt.Println("P2P => SFU END")
+		doProxy(w, r, next.Addr)
+	} else {
+		doProxy(w, r, ownership.Addr)
+	}
 }
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
