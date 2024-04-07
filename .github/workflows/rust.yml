@@ -14,14 +14,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v1
         with:
-          node-version: "20"
-          cache: "npm"
+          bun-version: latest
       - name: Install
-        run: npm install
+        run: bun install
       - name: Build Webui
-        run: npm run build
+        run: bun run build
       - name: Build
         run: cargo build --verbose
       - name: Run tests
