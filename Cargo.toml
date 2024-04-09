@@ -1,33 +1,83 @@
 [package]
 name = "live777"
-version = "0.2.0"
+version = "0.4.1"
 edition = "2021"
+license = "MPL-2.0"
+description = "A very simple, high performance, edge WebRTC SFU"
 
 [workspace]
 members = [".", "libs/cli", "libs/libwish", "tools/whepfrom", "tools/whipinto"]
 
 [dependencies]
-axum = { version = "0.6.20", features = ["multipart"] }
-tower-http = { version = "0.4.3", features = ["fs", "auth"] }
+http-body-util = "0.1.0"
+axum = { version = "0.7.4", features = ["multipart", "tracing"] }
+tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 
 # TODO
 # There have error, Next commit can't work with obs studio
 # webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "9c0570ad562b226cc9c6c0a3c7a9a28e1d43e08f" }
 # Reference: https://github.com/binbat/live777/issues/39
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
-anyhow = "1.0"
-tokio = { version = "1.30", features = ["full"] }
-hyper = "0.14"
-log = "0.4.20"
-env_logger = "0.10.0"
+anyhow = { version = "1", features = ["backtrace"] }
+tokio = { version = "1.36", features = ["full"] }
+hyper = "1.2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-logfmt = { version = "0.3.3", features = ["ansi_logs"] }
 serde = { version = "1.0.188", features = ["serde_derive"] }
-toml = "0.7.6"
-serde_json = "1.0.105"
-http = "0.2.9"
-http-body = "0.4.5"
-base64 = "0.21.3"
+toml = "0.8.10"
+serde_json = "1.0.114"
+http = "1.0.0"
+http-body = "1.0.0"
+base64 = "0.21.7"
 mime_guess = "2.0.4"
-rust-embed = { version = "8.0.0", features = ["axum-ex"] }
+rust-embed = { version = "8.2.0", features = ["axum-ex"] }
 prometheus = "0.13.3"
 lazy_static = "1.4.0"
-thiserror = "1"
+md5 = "0.7.0"
+
+# cargo install cargo-deb
+# Reference:  https://github.com/kornelski/cargo-deb
+[package.metadata.deb]
+maintainer = "Metal A-Wing <1@233.email>"
+copyright = "BinBat LTD <hey@binbat.com>"
+license-file = ["LICENSE"]
+extended-description = """\
+A very simple, high performance, edge WebRTC SFU.\
+Real-time video streaming for the `WHIP`/`WHEP` as first protocol.\
+"""
+depends = "libc6 systemd"
+section = "utility"
+priority = "optional"
+assets = [
+    [
+        "target/release/live777",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "target/release/whipinto",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "target/release/whepfrom",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "config-dist.toml",
+        "etc/live777/config.toml",
+        "644",
+    ],
+    [
+        "live777.service",
+        "usr/lib/systemd/system/live777.service",
+        "644",
+    ],
+    [
+        "README.md",
+        "usr/share/doc/live777/README",
+        "644",
+    ],
+]

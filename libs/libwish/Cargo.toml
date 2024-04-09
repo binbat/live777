@@ -10,8 +10,9 @@ crate-type = ["lib"]
 [dependencies]
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
 anyhow = "1.0"
-reqwest = { version = "0.11.20", features = [
+reqwest = { version = "0.11.24", features = [
     "rustls-tls",
 ], default-features = false }
 parse_link_header = "0.3"
-base64 = "0.21.3"
+base64 = "0.21.7"
+url = "2.5"

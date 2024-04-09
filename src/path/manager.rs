@@ -1,15 +1,16 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::Result;
-use log::info;
+use crate::result::Result;
 use tokio::sync::RwLock;
+use tracing::info;
 use webrtc::{
     ice_transport::ice_server::RTCIceServer,
     peer_connection::sdp::session_description::RTCSessionDescription,
 };
 
+use crate::dto::req::ChangeResource;
+use crate::forward::info::Layer;
 use crate::forward::PeerForward;
-use crate::layer::Layer;
 use crate::AppError;
 
 #[derive(Clone)]
@@ -33,13 +34,13 @@ impl Manager {
         let forward = paths.get(&path).cloned();
         drop(paths);
         if let Some(forward) = forward {
-            forward.set_anchor(offer).await
+            forward.set_publish(offer).await
         } else {
             let forward = PeerForward::new(path.clone(), self.ice_servers.clone());
-            let (sdp, key) = forward.set_anchor(offer).await?;
+            let (sdp, key) = forward.set_publish(offer).await?;
             let mut paths = self.paths.write().await;
             if paths.contains_key(&path) {
-                return Err(anyhow::anyhow!("resource already exists"));
+                return Err(AppError::resource_already_exists("resource already exists"));
             }
             info!("add path : {}", path);
             paths.insert(path, forward);
@@ -54,11 +55,9 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_subscribe(offer).await
         } else {
-            Err(AppError::ResourceNotFound(
-                ("The requested resource not exist,please check the path and try again.")
-                    .to_string(),
-            )
-            .into())
+            Err(AppError::resource_not_fount(
+                "The requested resource not exist,please check the path and try again.",
+            ))
         }
     }
 
@@ -74,7 +73,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_ice_candidate(key, ice_candidates).await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(AppError::resource_not_fount("resource not exists"))
         }
     }
 
@@ -100,7 +99,39 @@ impl Manager {
         if let Some(forward) = forward {
             forward.layers().await
         } else {
-            Err(anyhow::anyhow!("resource not exists"))
+            Err(AppError::resource_not_fount("resource not exists"))
+        }
+    }
+
+    pub async fn select_layer(
+        &self,
+        path: String,
+        key: String,
+        layer: Option<Layer>,
+    ) -> Result<()> {
+        let paths = self.paths.read().await;
+        let forward = paths.get(&path).cloned();
+        drop(paths);
+        if let Some(forward) = forward {
+            forward.select_layer(key, layer).await
+        } else {
+            Err(AppError::resource_not_fount("resource not exists"))
+        }
+    }
+
+    pub async fn change_resource(
+        &self,
+        path: String,
+        key: String,
+        change_resource: ChangeResource,
+    ) -> Result<()> {
+        let paths = self.paths.read().await;
+        let forward = paths.get(&path).cloned();
+        drop(paths);
+        if let Some(forward) = forward {
+            forward.change_resource(key, change_resource).await
+        } else {
+            Err(AppError::resource_not_fount("resource not exists"))
         }
     }
 }

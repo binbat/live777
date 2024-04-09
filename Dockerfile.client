@@ -1,4 +1,4 @@
-FROM debian:sid-20230919-slim AS common
+FROM debian:sid-slim AS common
 
 RUN apt update -y && apt install -y --no-install-recommends ca-certificates
 
@@ -15,14 +15,28 @@ RUN apt install -y --no-install-recommends cargo cargo-c
 
 WORKDIR /app
 
-ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.6/gst-plugins-rs-gstreamer-1.22.6.tar.gz gst-plugins-rs-gstreamer.tar.gz
+ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.8/gst-plugins-rs-gstreamer-1.22.8.tar.gz gst-plugins-rs-gstreamer.tar.gz
 
 RUN tar -xf gst-plugins-rs-gstreamer.tar.gz --strip-components 1
 
 # whip / whep: protocol support
-RUN cargo cinstall -p gst-plugin-webrtchttp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
+RUN cargo cinstall -p gst-plugin-webrtchttp --libdir=pkg/usr/lib/$(gcc -dumpmachine)
+# gst-plugin-webrtchttp
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.a
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.so
+# - usr/lib/$(gcc -dumpmachine)/pkgconfig/gstwebrtchttp.pc
+RUN rm pkg/usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.a
 
 # rtpav1pay / rtpav1depay: RTP (de)payloader for the AV1 video codec.
-RUN cargo cinstall -p gst-plugin-rtp --prefix=/usr --libdir=/usr/lib/$(gcc -dumpmachine)
+RUN cargo cinstall -p gst-plugin-rtp --libdir=pkg/usr/lib/$(gcc -dumpmachine)
+# gst-plugin-rtp
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.a
+# - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.so
+# - usr/lib/$(gcc -dumpmachine)/pkgconfig/gstrsrtp.pc
+RUN rm pkg/usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.a
 
-CMD ["sh", "-c", "gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint=http://localhost:3000/whip/777"]
+FROM common
+
+COPY --from=builder /app/pkg/ /
+
+CMD ["sh", "-c", "gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,format=I420 ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint=http://localhost:7777/whip/777"]

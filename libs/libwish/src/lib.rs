@@ -5,14 +5,17 @@ use reqwest::{
     Body, Method, Response, StatusCode,
 };
 use std::str::FromStr;
+use url::Url;
 use webrtc::{
     ice_transport::ice_server::RTCIceServer,
     peer_connection::sdp::session_description::RTCSessionDescription,
 };
+
 #[derive(Clone)]
 pub struct Client {
     url: String,
-    defulat_headers: HeaderMap,
+    resource_url: Option<String>,
+    default_headers: HeaderMap,
 }
 
 impl Client {
@@ -39,53 +42,56 @@ impl Client {
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
         Client {
             url,
-            defulat_headers: defulat_headers.unwrap_or_default(),
+            resource_url: None,
+            default_headers: defulat_headers.unwrap_or_default(),
         }
     }
 
-    pub async fn get_answer(&self, sdp: String) -> Result<(RTCSessionDescription, String)> {
-        let mut header_map = self.defulat_headers.clone();
+    pub async fn wish(
+        &mut self,
+        sdp: String,
+    ) -> Result<(RTCSessionDescription, Vec<RTCIceServer>)> {
+        let mut header_map = self.default_headers.clone();
         header_map.insert("Content-Type", HeaderValue::from_str("application/sdp")?);
         let response = request(self.url.clone(), "POST", header_map, sdp).await?;
         if response.status() != StatusCode::CREATED {
             return Err(anyhow::anyhow!(get_response_error(response).await));
         }
-        let etag = response
+        let resource_url = response
             .headers()
-            .get("E-Tag")
-            .ok_or_else(|| anyhow::anyhow!("response no E-Tag header"))?
+            .get("location")
+            .ok_or_else(|| anyhow::anyhow!("Response missing location header"))?
             .to_str()?
             .to_owned();
+        let mut url = Url::parse(self.url.as_str())?;
+        match Url::parse(resource_url.as_str()) {
+            Ok(url) => {
+                self.resource_url = Some(url.into());
+            }
+            Err(_) => {
+                url.set_path(resource_url.as_str());
+                self.resource_url = Some(url.into());
+            }
+        }
+        let ice_servers = Self::parse_ide_servers(&response)?;
         let sdp =
             RTCSessionDescription::answer(String::from_utf8(response.bytes().await?.to_vec())?)?;
-        Ok((sdp, etag))
+        Ok((sdp, ice_servers))
     }
 
-    pub async fn get_ide_servers(&self) -> Result<Vec<RTCIceServer>> {
-        let response = request(
-            self.url.clone(),
-            "OPTIONS",
-            self.defulat_headers.clone(),
-            "",
-        )
-        .await?;
-        if response.status() != StatusCode::NO_CONTENT {
-            return Err(anyhow::anyhow!(get_response_error(response).await));
-        }
+    fn parse_ide_servers(response: &Response) -> Result<Vec<RTCIceServer>> {
         let links = response.headers().get_all("Link");
-        let mut _ice_servers = vec![];
+        let mut ice_servers = vec![];
         for link in links {
-            let link_header = parse_link_header::parse_with_rel(link.to_str()?)?;
+            let mut link = link.to_str()?.to_owned();
+            link = link.replacen(':', "://", 1);
+            let link_header = parse_link_header::parse_with_rel(&link)?;
             for (rel, mut link) in link_header {
                 if &rel != "ice-server" {
                     continue;
                 }
-                _ice_servers.push(RTCIceServer {
-                    urls: vec![link
-                        .uri
-                        .to_string()
-                        .replacen("://", ":", 1)
-                        .replace('/', "")],
+                ice_servers.push(RTCIceServer {
+                    urls: vec![link.uri.to_string().replacen("://", ":", 1)],
                     username: link.queries.remove("username").unwrap_or("".to_owned()),
                     credential: link.queries.remove("credential").unwrap_or("".to_owned()),
                     credential_type: link
@@ -97,13 +103,16 @@ impl Client {
                 })
             }
         }
-        Ok(_ice_servers)
+        Ok(ice_servers)
     }
 
-    pub async fn remove_resource(&self, key: String) -> Result<()> {
-        let mut header_map = self.defulat_headers.clone();
-        header_map.insert("If-Match", HeaderValue::from_str(&key)?);
-        let response = request(self.url.clone(), "DELETE", header_map, "").await?;
+    pub async fn remove_resource(&self) -> Result<()> {
+        let resource_url = self
+            .resource_url
+            .clone()
+            .ok_or(anyhow::anyhow!("there is no resource url"))?;
+        let header_map = self.default_headers.clone();
+        let response = request(resource_url, "DELETE", header_map, "").await?;
         if response.status() != StatusCode::NO_CONTENT {
             Err(anyhow::anyhow!(get_response_error(response).await))
         } else {

@@ -1,19 +1,60 @@
 use webrtc::{
     rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters},
+        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
         PayloadType, RTCPFeedback,
     },
     sdp::{Error, MediaDescription, SessionDescription},
 };
 
-pub fn codecs_capability_from_media_description(
-    m: &MediaDescription,
-) -> Result<Vec<RTCRtpCodecCapability>, Error> {
-    let codecs_parameters = codecs_from_media_description(m)?;
-    Ok(codecs_parameters
-        .into_iter()
-        .map(|c| c.capability)
-        .collect())
+pub(crate) struct MediaInfo {
+    pub(crate) _codec: Vec<RTCRtpCodecParameters>,
+    pub(crate) video_transceiver: (u8, u8, bool), // (send,recv,svc)
+    pub(crate) audio_transceiver: (u8, u8),       // (send,recv)
+}
+
+impl TryFrom<SessionDescription> for MediaInfo {
+    type Error = anyhow::Error;
+
+    fn try_from(value: SessionDescription) -> Result<Self, Self::Error> {
+        let media_descriptions = value.media_descriptions;
+        let mut codec = Vec::new();
+        let mut video_transceiver = (0, 0, false);
+        let mut audio_transceiver = (0, 0, false);
+        for md in &media_descriptions {
+            let media = md.media_name.media.clone();
+            let update = match RTPCodecType::from(media.as_str()) {
+                RTPCodecType::Video => &mut video_transceiver,
+                RTPCodecType::Audio => &mut audio_transceiver,
+                _ => {
+                    continue;
+                }
+            };
+            codec.append(&mut codecs_from_media_description(md)?);
+            for attribute in &md.attributes {
+                match attribute.key.as_str() {
+                    "sendonly" => {
+                        update.0 += 1;
+                    }
+                    "recvonly" => {
+                        update.1 += 1;
+                    }
+                    "sendrecv" => {
+                        update.0 += 1;
+                        update.1 += 1;
+                    }
+                    "simulcast" => {
+                        update.2 = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(Self {
+            _codec: codec,
+            video_transceiver,
+            audio_transceiver: (audio_transceiver.0, audio_transceiver.1),
+        })
+    }
 }
 
 // from https://github.com/webrtc-rs/webrtc/blob/master/webrtc/src/peer_connection/sdp/mod.rs
@@ -73,49 +114,4 @@ pub fn codecs_from_media_description(
     }
 
     Ok(out)
-}
-
-pub fn count_sends(mds: &Vec<MediaDescription>) -> usize {
-    let mut count = 0;
-    for md in mds {
-        count += count_send(md);
-    }
-    count
-}
-
-pub fn count_send(md: &MediaDescription) -> usize {
-    let mut count = 0;
-    let mut minus = 0;
-    for attribute in &md.attributes {
-        match attribute.key.as_str() {
-            "sendonly" | "sendrecv" => {
-                count += 1;
-                minus += 1;
-            }
-            "simulcast" => {
-                let val = attribute.value.clone().unwrap_or("".to_string());
-                if !val.starts_with("send ") {
-                    break;
-                }
-                count += val.replace("send ", "").split(';').count() - minus;
-                break;
-            }
-            _ => {}
-        }
-    }
-    count
-}
-
-pub fn rids(md: &MediaDescription) -> Vec<String> {
-    let mut rids = vec![];
-    for attribute in &md.attributes {
-        match attribute.key.as_str() {
-            "rid" => {
-                let val = attribute.value.clone().unwrap();
-                rids.push(val.split(" ").next().unwrap().to_string())
-            }
-            _ => {}
-        }
-    }
-    rids
 }

@@ -11,6 +11,7 @@ use tokio::{
     signal,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
+use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::ice_server::RTCIceServer,
@@ -30,7 +31,7 @@ use webrtc::{
 const PREFIX_LIB: &str = "WEBRTC";
 
 #[derive(Parser)]
-#[command(author, version, about,long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long, default_value_t = 0)]
     port: u16,
@@ -56,7 +57,7 @@ async fn main() -> Result<()> {
     let listener = UdpSocket::bind(format!("0.0.0.0:{}", args.port)).await?;
     let port = listener.local_addr()?.port();
     println!("=== RTP listener started : {} ===", port);
-    let client = Client::new(
+    let mut client = Client::new(
         args.url,
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
     );
@@ -74,7 +75,7 @@ async fn main() -> Result<()> {
         }
     });
     let (complete_tx, mut complete_rx) = unbounded_channel();
-    let (peer, sender, etag) = webrtc_start(client.clone(), args.codec.into(), complete_tx.clone())
+    let (peer, sender) = webrtc_start(&mut client, args.codec.into(), complete_tx.clone())
         .await
         .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
     tokio::spawn(rtp_listener(listener, sender));
@@ -102,7 +103,7 @@ async fn main() -> Result<()> {
         _= signal::ctrl_c() => {}
     }
     println!("RTP listener closed");
-    let _ = client.remove_resource(etag).await;
+    let _ = client.remove_resource().await;
     let _ = peer.close().await;
     Ok(())
 }
@@ -116,22 +117,30 @@ async fn rtp_listener(socker: UdpSocket, sender: UnboundedSender<Vec<u8>>) {
 }
 
 async fn webrtc_start(
-    client: Client,
+    client: &mut Client,
     codec: RTCRtpCodecCapability,
     complete_tx: UnboundedSender<()>,
-) -> Result<(Arc<RTCPeerConnection>, UnboundedSender<Vec<u8>>, String)> {
-    let ide_servers = client.get_ide_servers().await?;
-    let (peer, sender) = new_peer(codec, ide_servers, complete_tx.clone()).await?;
-    let offser = peer.create_offer(None).await?;
-    peer.set_local_description(offser.clone()).await?;
-    let (answer, etag) = client.get_answer(offser.sdp).await?;
-    peer.set_remote_description(answer).await?;
-    Ok((peer, sender, etag))
+) -> Result<(Arc<RTCPeerConnection>, UnboundedSender<Vec<u8>>)> {
+    let (peer, sender) = new_peer(codec, complete_tx.clone()).await?;
+    let offer = peer.create_offer(None).await?;
+
+    let mut gather_complete = peer.gathering_complete_promise().await;
+    peer.set_local_description(offer).await?;
+    let _ = gather_complete.recv().await;
+
+    let (answer, _ice_servers) = client
+        .wish(peer.local_description().await.unwrap().sdp)
+        .await?;
+
+    peer.set_remote_description(answer)
+        .await
+        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+
+    Ok((peer, sender))
 }
 
 async fn new_peer(
     codec: RTCRtpCodecCapability,
-    ice_servers: Vec<RTCIceServer>,
     complete_tx: UnboundedSender<()>,
 ) -> Result<(Arc<RTCPeerConnection>, UnboundedSender<Vec<u8>>)> {
     let mut m = MediaEngine::default();
@@ -143,7 +152,14 @@ async fn new_peer(
         .with_interceptor_registry(registry)
         .build();
     let config = RTCConfiguration {
-        ice_servers,
+        ice_servers: vec![{
+            RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                username: "".to_string(),
+                credential: "".to_string(),
+                credential_type: RTCIceCredentialType::Unspecified,
+            }
+        }],
         ..Default::default()
     };
 

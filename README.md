@@ -1,10 +1,24 @@
 <h1 align="center">
-  <img src="./docs/logo.svg" alt="Live777" width="200">
+  <img src="./assets/logo.svg" alt="Live777" width="200">
   <br>Live777<br>
 </h1>
 
+<div align="center">
+
 [![Rust](https://github.com/binbat/live777/actions/workflows/rust.yml/badge.svg)](https://github.com/binbat/live777/actions/workflows/rust.yml)
 [![GitHub release](https://img.shields.io/github/tag/binbat/live777.svg?label=release)](https://github.com/binbat/live777/releases)
+
+</div>
+
+<div align="center">
+    <a href="https://discord.gg/mtSpDNwCAz"><img src="https://img.shields.io/badge/-Discord-424549?style=social&logo=discord" height=25></a>
+    &nbsp;
+    <a href="https://t.me/binbatlib"><img src="https://img.shields.io/badge/-Telegram-red?style=social&logo=telegram" height=25></a>
+    &nbsp;
+    <a href="https://twitter.com/binbatlab"><img src="https://img.shields.io/badge/-Twitter-red?style=social&logo=twitter" height=25></a>
+</div>
+
+---
 
 Live777 is an SFU server for real-time video streaming for the `WHIP`/`WHEP` as first protocol.
 
@@ -35,11 +49,19 @@ Live777 has the following characteristics:
 
   Support a variety of video encoding and audio encoding formats, providing a wider range of compatibility to help enable adaptive streaming.
 
+### DataChannel Forward
+
+> NOTE: About `createDataChannel()`
+> 1. Live777 Don't support `label`, `createDataChannel(label)` this `label` is not used
+> 2. Live777 Don't support `negotiated`, `{ id: 42, negotiated: true }` this don't support
+
+![live777-datachannel](./docs/live777-datachannel.excalidraw.svg)
+
 ## Current support encode
 | protocol | video codecs                | audio codecs   |
 | -------- | --------------------------- | -------------- |
-| `WHIP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
-| `WHEP`   | `AV1`, `VP8`, `VP9`, `H264` | `Opus`, `G722` |
+| `WHIP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
+| `WHEP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
 
 ## Quickstart
 
@@ -49,31 +71,25 @@ Live777 has the following characteristics:
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
-Windows install
+### Windows install
+
 **Winget**
+
 ```bash
 winget install live777
 ```
 
 ### Gstreamer WHIP/WHEP client
 
-- Use docker of [Gstreamer](https://gstreamer.freedesktop.org/download/) to publish:
+**Open your browser, enter the URL: http://localhost:7777/**
+
+### Gstreamer `WHIP`/`WHEP` client
 
 This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
 
-> *Note: supports multiple encoding formats*
+You can use this docker [images](https://github.com/binbat/live777/pkgs/container/live777-client) of Gstreamer
 
 #### Video: AV1
-
-**Note: AV1 has a lot of problem**
-- 🚧 browser whip av1
-- 🚧 browser whep av1
-- ✅ gstreamer whip av1
-- 🚧 gstreamer whep av1
-- ✅ gstreamer rtp av1 src
-- ✅ gstreamer rtp av1 sink
-- 🚧 ffmpeg rtp av1 src
-- 🚧 ffmpeg rtp av1 sink
 
 `WHIP`:
 
@@ -219,6 +235,28 @@ For Example:
 ffmpeg -> whipinto -> live777 -> whepfrom -> ffplay
 ```
 
+Application        | `AV1`  | `VP9`  | `VP8`  | `H264` | `OPUS` | `G722` |
+------------------ | ------ | ------ | ------ | ------ | ------ | ------ |
+Browser whip       | :star: | :star: | :star: | :star: | :star: | :star: |
+Browser whep       | :star: | :star: | :star: | :star: | :star: | :star: |
+Gstreamer whip     | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
+Gstreamer whep     | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
+Gstreamer rtp-into | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
+Gstreamer rtp-from | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
+FFmpeg rtp-into    | :shit: | :star: | :star: | :star: | :star: | :star: |
+FFmpeg rtp-from    | :shit: | :star: | :star: | :star: | :star: | :star: |
+VLC rtp-into       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
+VLC rtp-from       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
+OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
+
+- :star: It's working
+- :shit: Don't support
+- :bulb: I don't know, No testing
+- :tv: Note have some problem
+  1. Working, But Browser can't player this video
+  2. I don't know why av1 and whep error
+  3. [AV1 is now available, But not released](https://github.com/obsproject/obs-studio/pull/9331)
+
 ### whipinto
 
 This tool is `rtp2whip`
@@ -313,6 +351,10 @@ vlc stream.sdp
 ## Sponsors
 
 <p align="center">
+  <a href="https://faculty.xidian.edu.cn/NGC/zh_CN/index.htm">
+    <img src="https://upload.wikimedia.org/wikipedia/en/2/2c/Xidian_logo.png" height="200" alt="Xi'an Electrical Science and Technology University logo.">
+  </a>
+  <br/>
   <a href="https://www.jetbrains.com/">
     <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg" height="200" alt="JetBrains Logo (Main) logo.">
   </a>

@@ -1,60 +1,70 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use anyhow::{Ok, Result};
-use log::info;
+use crate::result::Result;
 use tokio::sync::Mutex;
+use tracing::info;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::sdp::{MediaDescription, SessionDescription};
 
-use crate::forward::forward_internal::{get_peer_key, PeerForwardInternal};
-use crate::layer::Layer;
-use crate::AppError;
-use crate::{media, metrics};
+use webrtc::sdp::SessionDescription;
+
+use crate::dto::req::ChangeResource;
+use crate::forward::forward_internal::PeerForwardInternal;
+use crate::forward::info::Layer;
+use crate::{constant, AppError};
+
+use self::media::MediaInfo;
 
 mod forward_internal;
+pub mod info;
+mod media;
+mod publish;
 mod rtcp;
-mod track_match;
+mod subscribe;
+mod track;
+
+pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
+    let digest = md5::compute(peer.get_stats_id());
+    format!("{:x}", digest)
+}
 
 #[derive(Clone)]
 pub struct PeerForward {
-    anchor_lock: Arc<Mutex<()>>,
+    publish_lock: Arc<Mutex<()>>,
     internal: Arc<PeerForwardInternal>,
 }
 
 impl PeerForward {
     pub fn new(id: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         PeerForward {
-            anchor_lock: Arc::new(Mutex::new(())),
+            publish_lock: Arc::new(Mutex::new(())),
             internal: Arc::new(PeerForwardInternal::new(id, ice_server)),
         }
     }
 
-    pub async fn set_anchor(
+    pub async fn set_publish(
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        if self.internal.anchor_is_some().await {
-            return Err(AppError::ResourceAlreadyExists(
-                "A connection has already been established".to_string(),
-            )
-            .into());
+        if self.internal.publish_is_some().await {
+            return Err(AppError::resource_already_exists(
+                "A connection has already been established",
+            ));
         }
-        let _ = self.anchor_lock.lock().await;
-        if self.internal.anchor_is_some().await {
-            return Err(AppError::ResourceAlreadyExists(
-                "A connection has already been established".to_string(),
-            )
-            .into());
+        let _ = self.publish_lock.lock().await;
+        if self.internal.publish_is_some().await {
+            return Err(AppError::resource_already_exists(
+                "A connection has already been established",
+            ));
         }
         let peer = self
             .internal
-            .new_publish_peer(get_media_descriptions(offer.unmarshal()?, true)?)
+            .new_publish_peer(MediaInfo::try_from(offer.unmarshal()?)?)
             .await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
@@ -62,21 +72,17 @@ impl PeerForward {
             if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
                     info!(
-                        "[{}] [anchor] [{}] connection state changed: {}",
+                        "[{}] [publish] [{}] connection state changed: {}",
                         internal.id,
-                        pc.get_stats_id(),
+                        get_peer_id(&pc),
                         s
                     );
                     match s {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
-                        RTCPeerConnectionState::Connected => {
-                            metrics::PUBLISH.inc();
-                        }
                         RTCPeerConnectionState::Closed => {
-                            metrics::PUBLISH.dec();
-                            let _ = internal.remove_anchor(pc).await;
+                            let _ = internal.remove_publish(pc).await;
                         }
                         _ => {}
                     };
@@ -89,26 +95,36 @@ impl PeerForward {
         peer.on_track(Box::new(move |track, _, _| {
             if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
                 tokio::spawn(async move {
-                    let _ = internal.anchor_track_up(pc, track).await;
+                    let _ = internal.publish_track_up(pc, track).await;
+                });
+            }
+            Box::pin(async {})
+        }));
+        let internal = Arc::downgrade(&self.internal);
+        let pc = Arc::downgrade(&peer);
+        peer.on_data_channel(Box::new(move |dc| {
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
+                tokio::spawn(async move {
+                    let _ = internal.publish_data_channel(pc, dc).await;
                 });
             }
             Box::pin(async {})
         }));
         let description = peer_complete(offer, peer.clone()).await?;
-        self.internal.set_anchor(peer.clone()).await?;
-        Ok((description, get_peer_key(peer)))
+        self.internal.set_publish(peer.clone()).await?;
+        Ok((description, get_peer_id(&peer)))
     }
 
     pub async fn add_subscribe(
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        if !self.internal.anchor_is_ok().await {
-            return Err(anyhow::anyhow!("anchor is not ok"));
+        if !self.internal.publish_is_ok().await {
+            return Err(AppError::throw("publish is not ok"));
         }
         let peer = self
             .internal
-            .new_subscription_peer(get_media_descriptions(offer.unmarshal()?, false)?)
+            .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?)
             .await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
@@ -118,19 +134,14 @@ impl PeerForward {
                     info!(
                         "[{}] [subscribe] [{}] connection state changed: {}",
                         internal.id,
-                        pc.get_stats_id(),
+                        get_peer_id(&pc),
                         s
                     );
                     match s {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
-                        RTCPeerConnectionState::Connected => {
-                            metrics::SUBSCRIBE.inc();
-                            let _ = internal.add_subscribe(pc).await;
-                        }
                         RTCPeerConnectionState::Closed => {
-                            metrics::SUBSCRIBE.dec();
                             let _ = internal.remove_subscribe(pc).await;
                         }
                         _ => {}
@@ -139,10 +150,21 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
-        Ok((
+        let internal = Arc::downgrade(&self.internal);
+        let pc = Arc::downgrade(&peer);
+        peer.on_data_channel(Box::new(move |dc| {
+            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
+                tokio::spawn(async move {
+                    let _ = internal.subscribe_data_channel(pc, dc).await;
+                });
+            }
+            Box::pin(async {})
+        }));
+        let (sdp, key) = (
             peer_complete(offer, peer.clone()).await?,
-            get_peer_key(peer),
-        ))
+            get_peer_id(&peer),
+        );
+        Ok((sdp, key))
     }
 
     pub async fn add_ice_candidate(&self, key: String, ice_candidates: String) -> Result<()> {
@@ -167,10 +189,40 @@ impl PeerForward {
             }
             Ok(layers)
         } else {
-            Err(anyhow::anyhow!("not layers"))
+            Err(AppError::throw("not layers"))
         }
     }
+
+    pub async fn select_layer(&self, key: String, layer: Option<Layer>) -> Result<()> {
+        let rid = if let Some(layer) = layer {
+            layer.encoding_id
+        } else {
+            self.internal.publish_svc_rids().await?[0].clone()
+        };
+        self.internal
+            .select_kind_rid(key, RTPCodecType::Video, rid)
+            .await
+    }
+
+    pub async fn change_resource(
+        &self,
+        key: String,
+        change_resource: ChangeResource,
+    ) -> Result<()> {
+        let codec_type = RTPCodecType::from(change_resource.kind.as_str());
+        if codec_type == RTPCodecType::Unspecified {
+            return Err(AppError::throw("kind unspecified"));
+        }
+
+        let rid = if change_resource.enabled {
+            constant::RID_ENABLE.to_string()
+        } else {
+            constant::RID_DISABLE.to_string()
+        };
+        self.internal.select_kind_rid(key, codec_type, rid).await
+    }
 }
+
 async fn peer_complete(
     offer: RTCSessionDescription,
     peer: Arc<RTCPeerConnection>,
@@ -222,40 +274,12 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
     Ok(ice_candidates)
 }
 
-fn get_media_descriptions(sd: SessionDescription, publish: bool) -> Result<Vec<MediaDescription>> {
-    let mut media_descriptions = sd.media_descriptions;
-    media_descriptions.retain(|md| publish == (media::count_send(md) > 0));
-    let mut video = false;
-    let mut audio = false;
-    for md in &media_descriptions {
-        let media = md.media_name.media.clone();
-        match RTPCodecType::from(media.as_str()) {
-            RTPCodecType::Video => {
-                if video {
-                    return Err(anyhow::anyhow!("only one video media is supported"));
-                }
-                video = true;
-            }
-            RTPCodecType::Audio => {
-                if audio {
-                    return Err(anyhow::anyhow!("only one audio media is supported"));
-                }
-                audio = true;
-            }
-            RTPCodecType::Unspecified => {
-                return Err(anyhow::anyhow!("unknown media kind: {}", media));
-            }
-        }
-    }
-    Ok(media_descriptions)
-}
-
 #[cfg(test)]
 mod test {
     use crate::forward::parse_ice_candidate;
 
     #[test]
-    fn test_parse_ice_candidate() -> anyhow::Result<()> {
+    fn test_parse_ice_candidate() -> crate::result::Result<()> {
         let body = "a=ice-ufrag:EsAw
 a=ice-pwd:P2uYro0UCOQ4zxjKXaWCBui1
 m=audio 9 RTP/AVP 0

@@ -2,550 +2,397 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <link rel="icon" href="./logo.svg"/>
     <title>Live777</title>
     <style>
-        html,
-        body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
+        fieldset {
+            border-style: dotted;
+            border-width: 0.25rem;
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+            margin: 0.5rem;
         }
 
-        body {
-            display: flex;
-            flex-direction: column;
-        }
-
-        #video {
-            height: 100%;
-            background: black;
-            flex-grow: 1;
-            min-height: 0;
-        }
-
-        #remoteVideos {
-            height: 100%;
-            flex-grow: 1;
-            min-height: 0;
-            margin: 0 auto;
-        }
-
-        #controls {
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 200px;
-            padding: 10px;
-        }
-
-        #device {
-            flex-direction: column;
-        }
-
-        #device>div {
-            margin: 10px 0;
-            display: flex;
-            gap: 20px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        #device>div>div {
-            display: flex;
-            gap: 20px;
-        }
-
-        #error-message {
-            text-align: center;
-        }
-
-        select {
-            width: 200px;
+        section {
+            margin: 0.5rem;
         }
     </style>
 </head>
 
 <body>
-    <video id="video" muted controls autoplay playsinline></video>
-    <div id="remoteVideos" style="display: none"></div>
-    <div id="controls">
-        <div id="initializing" style="display: block">initializing</div>
-        <div id="device" style="display: none">
-            <div id="device_line">
-                <div id="device_media">
-                    video device
-                    <select id="video_device">
-                        <option value="none">none</option>
-                    </select>
-                </div>
-                <div id="audio_device">
-                    audio input
-                    <select id="audio_input">
-                        <option value="none">none</option>
-                    </select>
-                    audio output
-                    <select id="audio_output">
-                        <option value="none">none</option>
-                    </select>
-                </div>
-            </div>
-            <div id="codec_line">
-                <div>
-                    video codec
-                    <select id="video_codec"></select>
-                </div>
+<fieldset>
+    <legend>Common</legend>
+    <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
+        <div>Resource ID: <input id="resource" type="text"/></div>
+        <div>Bearer Token: <input id="token" type="text"/></div>
+    </section>
+</fieldset>
 
-                <div>
-                    audio codec
-                    <select id="audio_codec"></select>
-                </div>
-            </div>
-            <div id="bitrate_line">
-                <div>
-                    video bitrate (kbps)
-                    <input id="video_bitrate" type="text" value="10000" />
-                </div>
+<div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
+    <fieldset>
+        <legend>WHIP</legend>
+        <center>
+        <section>
+            <button id="whip-device-button" onclick="refreshDevice()">Use Device</button>
+            <div style="margin: 0.2rem">Audio Device: <select id="whip-audio-device"><option value="">none</option></select></div>
+            <div style="margin: 0.2rem">Video Device: <select id="whip-video-device"><option value="">none</option></select></div>
+        </section>
 
-                <div>
-                    audio bitrate (kbps)
-                    <input id="audio_bitrate" type="text" value="32" />
-                </div>
-                <div>
-                    <input id="audio_voice" type="checkbox" checked />
-                    <label for="audio_voice">optimize for voice</label>
-                </div>
-            </div>
+        <section>
+            Audio Codec: <select id="whip-audio-codec">
+            <option value="" selected>default</option>
+            <option value="opus/48000">OPUS</option>
+            <option value="g722/8000">G722</option>
+        </select>
+            Video Codec: <select id="whip-video-codec">
+            <option value="" selected>default</option>
+            <option value="av1/90000">AV1</option>
+            <option value="vp9/90000">VP9</option>
+            <option value="vp8/90000">VP8</option>
+            <option value="h264/90000">H264</option>
+        </select>
+        </section>
+        <section>
+            <video-size-select id="whip-video-size"></video-size-select>
+        </section>
+        <section>SVC Layer: <select id="whip-layer-select"></select></section>
+        <section>
+            <input type="checkbox" id="whip-pseudo-audio"/>Pseudo Audio Track
+        </section>
+        <section>
+            <button onclick="startWhip()">Start</button>
+            <button id="whip-button-stop">Stop</button>
+        </section>
 
-            <div id="SVC">
-                SVC Level
-                <select id="svc_level">
-                    <option value="b">Basic</option>
-                    <option value="a">Enhanced 1</option>
-                </select>
-            </div>
-            <div>
-                ID
-                <input id="resource" type="text" />
-                Bearer token
-                <input id="token" type="text" />
-            </div>
-            <div id="submit_line">
-                <button onclick="startWhip()">WebRTC Start Whip</button>
-                <button onclick="startWhep()">WebRTC Start Whep</button>
-            </div>
-        </div>
-        <div id="transmitting" style="display: none">publishing</div>
-        <div id="error" style="display: none">
-            <span id="error-message"></span>
-        </div>
-    </div>
-    <script src="whip.js"></script>
-    <script src="whep.js"></script>
-    <script>
-        // onRemoteAnswer
-        /**
-         * Processes a media streaming answer, modifying it with specified parameters.
-         *
-         * @param {string} answer - The media streaming answer to be modified.
-         * @returns {string} - The modified media streaming answer.
-         */
-        function onRemoteAnswer(answer) {
-            return editAnswer(
-                answer,
-                document.getElementById("video_codec").value,
-                document.getElementById("audio_codec").value,
-                document.getElementById("video_bitrate").value,
-                document.getElementById("audio_bitrate").value,
-                document.getElementById("audio_voice").value,
-            );
+        <section>
+            <h3>WHIP Video:</h3>
+            <debug-player controls autoplay id="whip-video-player"></debug-player>
+        </section>
+        <section>
+            <data-channel id="whip-datachannel"></data-channel>
+        </section>
+        <br/>Logs: <br/>
+        <div id="whip-logs"></div>
+        <center>
+    </fieldset>
+
+    <fieldset>
+        <legend>WHEP</legend>
+        <center>
+        <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
+        <section>
+            <button id="whep-button-disable-audio">Disable Audio</button>
+            <button id="whep-button-disable-video">Disable Video</button>
+        </section>
+        <section>
+            <button onclick="startWhep()">Start</button>
+            <button id="whep-button-stop">Stop</button>
+        </section>
+
+        <section>
+            <h3>WHEP Video:</h3>
+            <debug-player controls autoplay id="whep-video-player"></debug-player>
+        </section>
+        <section>
+            <data-channel id="whep-datachannel"></data-channel>
+        </section>
+        <br/>Logs: <br/>
+        <div id="whep-logs"></div>
+        </center>
+    </fieldset>
+</div>
+<script type="module">
+    import convertSessionDescription from "./sdp.js"
+    import {WHIPClient} from "./whip.js"
+    import {WHEPClient} from "./whep.js"
+
+    import VideoSizeSelectElement from "./components/video-size-select.js"
+    import DebugPlayer from "./components/debug-player.js"
+    import DataChannel from "./components/data-channel.js"
+
+    customElements.define("video-size-select", VideoSizeSelectElement)
+    customElements.define("debug-player", DebugPlayer)
+    customElements.define("data-channel", DataChannel)
+
+    // Common
+    const idResourceId = "resource"
+    const idBearerToken = "token"
+
+    function setURLSearchParams(k, v) {
+        const params = new URLSearchParams((new URL(location.href)).search)
+        !!v ? params.set(k, v) : params.delete(k)
+        history.replaceState({}, "", "?" + params.toString())
+    }
+
+    function getURLSearchParams(k) {
+        const params = new URLSearchParams((new URL(location.href)).search)
+        return params.get(k)
+    }
+
+    function initCommonInput(elementId, paramId) {
+        const element = document.getElementById(elementId)
+        if (element) {
+            element.addEventListener('input', ev => setURLSearchParams(paramId, ev.target.value))
+            element.value = getURLSearchParams(paramId)
         }
-        // editAnswer
-        function editAnswer(answer, videoCodec, audioCodec, videoBitrate, audioBitrate, audioVoice) {
-            const sections = answer.split("m=");
-            for (let i = 0; i < sections.length; i++) {
-                const section = sections[i];
-                if (section.startsWith("video")) {
-                    sections[i] = setVideoBitrate(setCodec(section, videoCodec), videoBitrate);
-                } else if (section.startsWith("audio")) {
-                    sections[i] = setAudioBitrate(setCodec(section, audioCodec), audioBitrate, audioVoice);
-                }
-            }
+    }
 
-            return sections.join("m=");
+    initCommonInput(idResourceId, idResourceId)
+    initCommonInput(idBearerToken, idBearerToken)
+
+    function log(el, num, msg) {
+        el.innerHTML += (!!num ? `[${num}]: ` : '') + msg + '<br>'
+    }
+
+    function logWhip(num, msg) {
+        log(document.getElementById('whip-logs'), num, msg)
+    }
+
+    function logWhep(num, msg) {
+        log(document.getElementById('whep-logs'), num, msg)
+    }
+
+    function getElementValue(elementId) {
+        const el = document.getElementById(elementId)
+        return el ? el.value : ""
+    }
+
+    // NOTE:
+    // https://github.com/livekit/client-sdk-js/blob/761711adb4195dc49a0b32e1e4f88726659dac94/src/room/track/LocalVideoTrack.ts#L492
+    // - f: HIGH
+    // - h: MEDIUM
+    // - q: LOW
+    const layers = [
+        {rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3'},
+        {rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3'},
+        {rid: 'f', scalabilityMode: 'L1T3'}
+    ]
+
+    function initLayerSelect(elementId, opts) {
+        const selectLayer = document.getElementById(elementId)
+        if (selectLayer) opts.map(i => {
+            const opt = document.createElement("option")
+            opt.value = i.value
+            opt.text = i.text
+            selectLayer.appendChild(opt)
+        })
+    }
+
+    // WHIP
+    let whipNum = 0
+
+    const idWhipLayerSelect = "whip-layer-select"
+    const idWhipAudioCodec = "whip-audio-codec"
+    const idWhipVideoCodec = "whip-video-codec"
+    const idWhipAudioDevice = "whip-audio-device"
+    const idWhipVideoDevice = "whip-video-device"
+    const idWhipVideoSize = "whip-video-size"
+    const idWhipButtonStop = "whip-button-stop"
+    const idWhipPseudoAudio = "whip-pseudo-audio"
+    const idWhipDataChannel = "whip-datachannel"
+
+    initLayerSelect(idWhipLayerSelect, [
+        {value: "f", text: "Base"},
+        {value: "h", text: "Base + 1/2"},
+        {value: "q", text: "Base + 1/2 + 1/4"},
+    ])
+
+    async function refreshDevice() {
+        const mediaStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true})
+        mediaStream.getTracks().map(track => track.stop())
+
+        const devices = (await navigator.mediaDevices.enumerateDevices()).filter(i => !!i.deviceId)
+        initLayerSelect(idWhipAudioDevice, devices.filter(i => i.kind === 'audioinput').map(i => {
+            return {value: i.deviceId, text: i.label}
+        }))
+        initLayerSelect(idWhipVideoDevice, devices.filter(i => i.kind === 'videoinput').map(i => {
+            return {value: i.deviceId, text: i.label}
+        }))
+    }
+
+    window.refreshDevice = () => {
+        refreshDevice()
+        document.getElementById("whip-device-button").disabled = true
+    }
+
+    async function startWhip() {
+        const resource = getElementValue(idResourceId)
+        if (!resource) {
+            alert("input resource")
+            return
         }
-        // setVideoBitrate
-        function setVideoBitrate(section, bitrate) {
-            let lines = section.split("\r\n");
+        const num = whipNum++
+        logWhip(num, "started")
+        const videoSize = document.getElementById(idWhipVideoSize).params
+        document.getElementById(idWhipVideoSize).disabled = true
+        logWhip(num, `video width: ${!videoSize.width ? "default" : videoSize.width}, height: ${!videoSize.height ? "default" : videoSize.height}`)
 
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith("c=")) {
-                    lines = [
-                        ...lines.slice(0, i + 1),
-                        "b=TIAS:" + (parseInt(bitrate) * 1024).toString(),
-                        ...lines.slice(i + 1),
-                    ];
-                    break;
-                }
-            }
+        const audioDevice = getElementValue(idWhipAudioDevice)
+        const videoDevice = getElementValue(idWhipVideoDevice)
+        logWhip(num, `audio device: ${!audioDevice ? "none" : audioDevice}`)
+        logWhip(num, `video device: ${!videoDevice ? "none" : videoDevice}`)
 
-            return lines.join("\r\n");
-        }
-        // setAudioBitrate
-        function setAudioBitrate(section, bitrate, voice) {
-            let opusPayloadFormat = "";
-            let lines = section.split("\r\n");
-
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith("a=rtpmap:") && lines[i].toLowerCase().includes("opus/")) {
-                    opusPayloadFormat = lines[i].slice("a=rtpmap:".length).split(" ")[0];
-                    break;
-                }
-            }
-
-            if (opusPayloadFormat === "") {
-                return section;
-            }
-
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].startsWith("a=fmtp:" + opusPayloadFormat + " ")) {
-                    if (voice) {
-                        lines[i] =
-                            "a=fmtp:" +
-                            opusPayloadFormat +
-                            " minptime=10;useinbandfec=1;maxaveragebitrate=" +
-                            (parseInt(bitrate) * 1024).toString();
-                    } else {
-                        lines[i] =
-                            "a=fmtp:" +
-                            opusPayloadFormat +
-                            " maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate" +
-                            (parseInt(bitrate) * 1024).toString();
-                    }
-                }
-            }
-
-            return lines.join("\r\n");
-        }
-        // setCodec
-        function setCodec(section, codec) {
-            const lines = section.split("\r\n");
-            const lines2 = [];
-            const payloadFormats = [];
-
-            for (const line of lines) {
-                if (!line.startsWith("a=rtpmap:")) {
-                    lines2.push(line);
-                } else {
-                    if (line.toLowerCase().includes(codec)) {
-                        payloadFormats.push(line.slice("a=rtpmap:".length).split(" ")[0]);
-                        lines2.push(line);
-                    }
-                }
-            }
-
-            const lines3 = [];
-
-            for (const line of lines2) {
-                if (line.startsWith("a=fmtp:")) {
-                    if (payloadFormats.includes(line.slice("a=fmtp:".length).split(" ")[0])) {
-                        lines3.push(line);
-                    }
-                } else if (line.startsWith("a=rtcp-fb:")) {
-                    if (payloadFormats.includes(line.slice("a=rtcp-fb:".length).split(" ")[0])) {
-                        lines3.push(line);
-                    }
-                } else {
-                    lines3.push(line);
-                }
-            }
-
-            return lines3.join("\r\n");
-        }
-        // Initializes the application.
-        function initialize() {
-            navigator.mediaDevices
-                .enumerateDevices()
-                .then((devices) => {
-                    const videoDevices = devices.filter((device) => device.kind === "videoinput");
-
-                    // Decide whether to request video based on the presence of the camera device
-                    const mediaConstraints = {
-                        video: videoDevices.length > 0,
-                        audio: true,
-                    };
-
-                    navigator.mediaDevices
-                        .getUserMedia(mediaConstraints)
-                        .then(() => Promise.all([populateDevices(), populateCodecs()]))
-                        .then(() => {
-                            state = DEVICE;
-                            render();
-                        })
-                        .catch((err) => {
-                            state = ERROR;
-                            errorMessage = err.toString();
-                            render();
-                        });
-                })
-                .catch((error) => {
-                    console.error("Error while enumerating devices: ", error);
-                });
-        }
-        // Renders the UI based on the current state.
-        function render() {
-            for (const el of ["initializing", "device", "transmitting", "error"]) {
-                document.getElementById(el).style.display = "none";
-            }
-
-            switch (state) {
-                case DEVICE:
-                    document.getElementById("device").style.display = "flex";
-                    break;
-
-                case TRANSMITTING:
-                    document.getElementById("transmitting").style.display = "flex";
-                    break;
-
-                case ERROR:
-                    document.getElementById("error").style.display = "flex";
-                    document.getElementById("error-message").innerHTML = "error: " + errorMessage;
-                    break;
-            }
-        }
-        // Populates video and audio devices in the UI.
-        function populateDevices() {
-            return navigator.mediaDevices.enumerateDevices().then((devices) => {
-                for (const device of devices) {
-                    switch (device.kind) {
-                        case "videoinput":
-                            {
-                                const opt = document.createElement("option");
-                                opt.value = device.deviceId;
-                                opt.text = device.label;
-                                document.getElementById("video_device").appendChild(opt);
-                            }
-                            break;
-
-                        case "audioinput":
-                            {
-                                const opt = document.createElement("option");
-                                opt.value = device.deviceId;
-                                opt.text = device.label;
-                                document.getElementById("audio_input").appendChild(opt);
-                            }
-                            break;
-
-                        case "audiooutput":
-                            {
-                                const opt = document.createElement("option");
-                                opt.value = device.deviceId;
-                                opt.text = device.label;
-                                document.getElementById("audio_output").appendChild(opt);
-                            }
-                            break;
-                    }
-                }
-                const elVideoDevice = document.getElementById("video_device");
-                const elAudioInput = document.getElementById("audio_input");
-                const elAudioOutput = document.getElementById("audio_output");
-                if (navigator.mediaDevices.getDisplayMedia !== undefined) {
-                    const opt = document.createElement("option");
-                    opt.value = "screen";
-                    opt.text = "screen";
-                    elVideoDevice.appendChild(opt);
-                }
-
-                if (elVideoDevice.children.length !== 0) {
-                    elVideoDevice.value = elVideoDevice.children[1].value;
-                }
-
-                if (elAudioInput.children.length !== 0) {
-                    elAudioInput.value = elAudioInput.children[1].value;
-                }
-
-                if (elAudioOutput.children.length !== 0) {
-                    elAudioOutput.value = elAudioOutput.children[1].value;
-                }
-            });
-        }
-        // Populates video and audio codecs in the UI.
-        function populateCodecs() {
-            const pc = new RTCPeerConnection({});
-            pc.addTransceiver("video", { direction: "sendonly" });
-            pc.addTransceiver("audio", { direction: "sendonly" });
-
-            return pc.createOffer().then((desc) => {
-                const sdp = desc.sdp.toLowerCase();
-
-                for (const codec of ["av1/90000", "vp9/90000", "vp8/90000", "h264/90000"]) {
-                    if (sdp.includes(codec)) {
-                        const opt = document.createElement("option");
-                        opt.value = codec;
-                        opt.text = codec.split("/")[0].toUpperCase();
-                        document.getElementById("video_codec").appendChild(opt);
-                    }
-                }
-
-                for (const codec of ["opus/48000", "g722/8000", "pcmu/8000", "pcma/8000"]) {
-                    if (sdp.includes(codec)) {
-                        const opt = document.createElement("option");
-                        opt.value = codec;
-                        opt.text = codec.split("/")[0].toUpperCase();
-                        document.getElementById("audio_codec").appendChild(opt);
-                    }
-                }
-
-                pc.close();
-            });
-        }
-        // Initiates the publishing process
-        function onPublish() {
-            state = TRANSMITTING;
-            render();
-
-            const videoId = document.getElementById("video_device").value;
-            const audioId = document.getElementById("audio_input").value;
-
-            if (videoId !== "screen") {
-                let video = false;
-                if (videoId !== "none") {
-                    video = {
-                        deviceId: videoId,
-                    };
-                }
-
-                let audio = false;
-
-                if (audioId !== "none") {
-                    audio = {
-                        deviceId: audioId,
-                    };
-
-                    const voice = document.getElementById("audio_voice").checked;
-                    if (!voice) {
-                        audio.autoGainControl = false;
-                        audio.echoCancellation = false;
-                        audio.noiseSuppression = false;
-                    }
-                }
-
-                navigator.mediaDevices
-                    .getUserMedia({ video: true, audio: true })
-                    .then(onTransmitSVC)
-                    .catch((err) => {
-                        state = ERROR;
-                        errorMessage = err.toString();
-                        render();
-                    });
-            } else {
-                navigator.mediaDevices
-                    .getDisplayMedia({
-                        video: {
-                            width: { ideal: 1920 },
-                            height: { ideal: 1080 },
-                            frameRate: { ideal: 30 },
-                            cursor: "always",
-                        },
-                        audio: true,
-                    })
-                    .then(onTransmitSVC)
-                    .catch((err) => {
-                        state = ERROR;
-                        errorMessage = err.toString();
-                        render();
-                    });
-            }
-        }
-        // Initiates media streaming with SVC .
-        function onTransmitSVC(stream) {
-            document.getElementById("video").srcObject = stream;
-            const resource = document.getElementById("resource").value;
-            // Get svc_level
-            const rid_value = document.getElementById("svc_level").value;
-            var sendEncodings = [];
-            if (rid_value == "a") {
-                sendEncodings = [
-                    { rid: 'q', scaleResolutionDownBy: 4.0, scalabilityMode: 'L1T3' },
-                    { rid: 'h', scaleResolutionDownBy: 2.0, scalabilityMode: 'L1T3' },
-                ];
-            } else {
-                sendEncodings = [{ rid: "b", scaleResolutionDownBy: 2.0 }];
-            }
-
-            const pc = new RTCPeerConnection();
-            pc.addTransceiver(stream.getVideoTracks()[0], {
-                direction: "sendonly",
-                sendEncodings: sendEncodings,
-            });
-            // If audioTracks exit
-            const audioTracks = stream.getAudioTracks();
-            if (audioTracks.length > 0) {
-                pc.addTransceiver(audioTracks[0], { direction: "sendonly" });
-            }
-            const whip = new WHIPClient();
-            const url = location.origin + "/whip/" + resource;
-            const token = document.getElementById("token").value;
-            whip.publish(pc, url, token);
+        let stream
+        if (!audioDevice && !videoDevice) {
+            stream = await navigator.mediaDevices.getDisplayMedia({audio: false, video: videoSize})
+        } else {
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: {deviceId: audioDevice},
+                video: {deviceId: videoDevice, ...videoSize}
+            })
         }
 
-        async function startWhip() {
-            const resource = document.getElementById("resource").value;
-            if (!resource) {
-                alert("input resource");
-                return;
-            }
-            onPublish();
+        const el = document.getElementById("whip-video-player")
+        if (el) el.srcObject = stream
+
+        const pc = new RTCPeerConnection()
+
+        // NOTE:
+        // 1. Live777 Don't support label
+        // 2. Live777 Don't support negotiated
+        document.getElementById(idWhipDataChannel).dataChannel = pc.createDataChannel("")
+
+        pc.oniceconnectionstatechange = e => logWhip(num, pc.iceConnectionState)
+
+        const layer = getElementValue(idWhipLayerSelect)
+        const index = layers.findIndex(i => i.rid === layer)
+
+        pc.addTransceiver(stream.getVideoTracks()[0], {
+            direction: 'sendonly',
+            sendEncodings: layers.slice(0 - (layers.length - index)),
+        })
+
+        if (document.getElementById(idWhipPseudoAudio).checked) {
+            pc.addTransceiver('audio', { 'direction': 'sendonly' })
+        } else {
+            stream.getAudioTracks().map(track => pc.addTrack(track))
         }
 
-        async function startWhep() {
-            document.getElementById("video").style.display = "none";
-            document.getElementById("remoteVideos").style.display = "block";
-            const resource = document.getElementById("resource").value;
-            if (!resource) {
-                alert("input resource");
-                return;
-            }
-            const pc = (window.pc = new RTCPeerConnection());
-            pc.addTransceiver("video", { direction: "recvonly" });
-            pc.addTransceiver("audio", { direction: "recvonly" });
-            pc.ontrack = (event) => {
-                console.log(event);
-                if (event.track.kind == "video") {
-                    var el = document.createElement(event.track.kind);
-                    el.srcObject = event.streams[0];
-                    el.autoplay = true;
-                    el.controls = true;
-                    el.style.height = "100%";
-                    document.getElementById("remoteVideos").appendChild(el);
-                }
-                if (event.track.kind == "audio") {
-                    var el = document.createElement(event.track.kind);
-                    el.srcObject = event.streams[0];
-                    el.autoplay = true;
-                    el.controls = true;
-                    document.getElementById("remoteVideos").appendChild(el);
-                }
-            };
-            const whep = new WHEPClient();
-            const url = location.origin + "/whep/" + resource;
-            const token = document.getElementById("token").value;
-            whep.view(pc, url, token);
+        const audioCodec = getElementValue(idWhipAudioCodec)
+        document.getElementById(idWhipAudioCodec).disabled = true
+        logWhip(num, `audio codec: ${!audioCodec ? "default" : audioCodec}`)
+
+        const videoCodec = getElementValue(idWhipVideoCodec)
+        document.getElementById(idWhipVideoCodec).disabled = true
+        logWhip(num, `video codec: ${!videoCodec ? "default" : videoCodec}`)
+
+        const whip = new WHIPClient()
+        whip.onAnswer = answer => convertSessionDescription(answer, audioCodec, videoCodec)
+
+        const url = location.origin + "/whip/" + resource
+        const token = getElementValue(idBearerToken)
+        try {
+            logWhip(num, "http begined")
+            await whip.publish(pc, url, token)
+        } catch (e) {
+            logWhip(num, e)
         }
 
-        // Define four states
-        const INITIALIZING = 0;
-        const DEVICE = 1;
-        const TRANSMITTING = 2;
-        const ERROR = 3;
+        const stop = async () => {
+            await whip.stop()
+            logWhip(num, "stopped")
+            stream.getTracks().map(track => track.stop())
 
-        let state = INITIALIZING;
-        let errorMessage = "";
+            if (el) el.srcObject = null
+        }
 
-        initialize();
-    </script>
+        const element = document.getElementById(idWhipButtonStop)
+        if (element) element.addEventListener('click', stop)
+
+        document.getElementById(idWhipLayerSelect).disabled = true
+    }
+
+    window.startWhip = startWhip
+
+    // WHEP
+    let whepNum = 0
+
+    const idWhepLayerSelect = "whep-layer-select"
+    const idWhepButtonStop = "whep-button-stop"
+    const idWhepButtonDisableAudio = "whep-button-disable-audio"
+    const idWhepButtonDisableVideo = "whep-button-disable-video"
+    const idWhepDataChannel = "whep-datachannel"
+
+    initLayerSelect(idWhepLayerSelect, [
+        {value: "", text: "AUTO"},
+        {value: "q", text: "LOW"},
+        {value: "h", text: "MEDIUM"},
+        {value: "f", text: "HIGH"},
+    ])
+
+    async function startWhep() {
+        const resource = getElementValue(idResourceId)
+        if (!resource) {
+            alert("input resource")
+            return
+        }
+        const num = whepNum++
+        logWhep(num, "started")
+        const pc = new RTCPeerConnection()
+
+        // NOTE:
+        // 1. Live777 Don't support label
+        // 2. Live777 Don't support negotiated
+        document.getElementById(idWhepDataChannel).dataChannel = pc.createDataChannel("")
+
+        pc.oniceconnectionstatechange = e => logWhep(num, pc.iceConnectionState)
+        pc.addTransceiver('video', {'direction': 'recvonly'})
+        pc.addTransceiver('audio', {'direction': 'recvonly'})
+        pc.ontrack = ev => {
+            logWhep(num, `track: ${ev.track.kind}`)
+            if (ev.track.kind === "video") {
+                if (ev.streams.length !== 0) document.getElementById("whep-video-player").srcObject = ev.streams[0]
+            }
+        }
+        const whep = new WHEPClient()
+        const url = location.origin + "/whep/" + resource
+        const token = getElementValue(idBearerToken)
+
+        try {
+            logWhep(num, "http begined")
+            await whep.view(pc, url, token)
+        } catch (e) {
+            logWhep(num, e)
+        }
+
+        const element = document.getElementById(idWhepButtonStop)
+        if (element) element.addEventListener('click', async () => {
+            await whep.stop()
+            logWhep(num, "stopped")
+        })
+
+        const buttonDisableAudio = document.getElementById(idWhepButtonDisableAudio)
+        let flagButtonDisableAudio = false
+        buttonDisableAudio.onclick = async () => {
+            await whep.mute({ kind: "audio", enabled: flagButtonDisableAudio })
+            buttonDisableAudio.innerText = flagButtonDisableAudio ? "Disable Audio" : "Enable Audio"
+            flagButtonDisableAudio = !flagButtonDisableAudio
+        }
+
+        const buttonDisableVideo = document.getElementById(idWhepButtonDisableVideo)
+        let flagButtonDisableVideo = false
+        buttonDisableVideo.onclick = async () => {
+            await whep.mute({ kind: "video", enabled: flagButtonDisableVideo })
+            buttonDisableVideo.innerText = flagButtonDisableVideo ? "Disable Video" : "Enable Video"
+            flagButtonDisableVideo = !flagButtonDisableVideo
+        }
+
+        const initEvevt = () => {
+            const el = document.getElementById(idWhepLayerSelect)
+            if (el) el.onchange = ev => !ev.target.value ? whep.unselectLayer() : whep.selectLayer({"encodingId": ev.target.value}).catch(e => logWhep(e))
+        }
+
+        if (whep.layerUrl) {
+            const selectLayer = document.getElementById(idWhepLayerSelect)
+            if (selectLayer) selectLayer.disabled = false
+            initEvevt()
+        }
+    }
+
+    window.startWhep = startWhep
+</script>
 </body>
 
 </html>
