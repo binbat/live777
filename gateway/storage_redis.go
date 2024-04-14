@@ -51,17 +51,17 @@ func (r *RedisStandaloneStorage) GetRoomNodes(ctx context.Context, room string) 
 	if err != nil {
 		return nil, err
 	}
-	r.client.ZRem(ctx, NodesRegistryKey, delNodes...)
+	r.client.SRem(ctx, NodesRegistryKey, delNodes...)
 	finalNodes := make([]Node, 0)
 	for _, node := range nodes {
 		info, _ := node.GetRoomInfo(room)
 		if info == nil {
-			r.client.ZRem(ctx, fmt.Sprintf("%s:%s", RoomRegistryKey, room), node.Addr)
+			delNodes = append(delNodes, node.Addr)
 		} else {
 			finalNodes = append(finalNodes, node)
 		}
 	}
-
+	r.client.ZRem(ctx, fmt.Sprintf("%s:%s", RoomRegistryKey, room), delNodes...)
 	return finalNodes, nil
 }
 
