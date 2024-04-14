@@ -35,10 +35,16 @@ urls = [
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
-# [cluster]
-# max = "1"
-# registry_ip_port = "localhost:7777"
-
-# [cluster.storage]
+# [node_info]
+# ip_port = "localhost:7777"
+#
+# [node_info.storage]
 # model = "RedisStandalone"
 # addr = "redis://127.0.0.1:6379"
+#
+# [node_info.meta_data]
+# pub_max = 1
+# sub_max = 1
+# reforward_cascade = false
+# reforward_close_sub = false
+
