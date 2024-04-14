@@ -124,7 +124,16 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func whepGetReforwardNode(roomNodes []Node, ctx context.Context, room string) (*Node, error) {
-	reforwardNode := roomNodes[len(roomNodes)-1]
+	var reforwardNode *Node
+	for _, node := range roomNodes {
+		if !node.Metadata.ReforwardCascade {
+			reforwardNode = &node
+			break
+		}
+	}
+	if reforwardNode == nil {
+		reforwardNode = &roomNodes[len(roomNodes)-1]
+	}
 	nodes, err := storage.GetNodes(ctx)
 	if err != nil {
 		return nil, err

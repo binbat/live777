@@ -32,6 +32,7 @@ type NodeMetaData struct {
 	PubMax                   uint64  `json:"pubMax"`
 	SubMax                   uint64  `json:"subMax"`
 	ReforwardMaximumIdleTime uint64  `json:"reforwardMaximumIdleTime"`
+	ReforwardCascade         bool    `json:"ReforwardCascade"`
 	Authorization            *string `json:"authorization,omitempty"`
 	AdminAuthorization       *string `json:"adminAuthorization,omitempty"`
 }

@@ -264,7 +264,15 @@ impl Manager {
         let forward = rooms.get(&room).cloned();
         drop(rooms);
         if let Some(forward) = forward {
-            forward.reforward(reforward_info).await
+            forward.reforward(reforward_info).await?;
+            if self.config.meta_data.reforward_close_sub {
+                for subscribe_session_info in forward.info().await.subscribe_session_infos {
+                    if subscribe_session_info.reforward.is_none() {
+                        let _ = forward.remove_peer(subscribe_session_info.id).await;
+                    }
+                }
+            }
+            Ok(())
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }

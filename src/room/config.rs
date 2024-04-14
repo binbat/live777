@@ -21,6 +21,10 @@ pub struct MetaData {
     pub sub_max: u64,
     #[serde(rename = "reforwardMaximumIdleTime")]
     pub reforward_maximum_idle_time: u64,
+    #[serde(rename = "reforwardCascade")]
+    pub reforward_cascade: bool,
+    #[serde(rename = "reforwardCloseSub")]
+    pub reforward_close_sub: bool,
     pub authorization: Option<String>,
     #[serde(rename = "adminAuthorization")]
     pub admin_authorization: Option<String>,
@@ -32,6 +36,8 @@ impl From<Config> for MetaData {
             pub_max: value.node_info.meta_data.pub_max.0,
             sub_max: value.node_info.meta_data.sub_max.0,
             reforward_maximum_idle_time: value.node_info.meta_data.reforward_maximum_idle_time.0,
+            reforward_cascade: value.node_info.meta_data.reforward_cascade,
+            reforward_close_sub: value.node_info.meta_data.reforward_close_sub,
             authorization: value.auth.to_authorizations().first().cloned(),
             admin_authorization: value.admin_auth.to_authorizations().first().cloned(),
         }

@@ -105,6 +105,10 @@ pub struct MetaData {
     pub sub_max: MetaDataSubMax,
     #[serde(default)]
     pub reforward_maximum_idle_time: ReforwardMaximumIdleTime,
+    #[serde(default)]
+    pub reforward_cascade: bool,
+    #[serde(default)]
+    pub reforward_close_sub: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
