@@ -138,23 +138,23 @@ func whepGetReforwardNode(roomNodes []Node, ctx context.Context, room string) (*
 	if err != nil {
 		return nil, err
 	}
-	idlenessNode, err := GetMaxIdlenessNode(ctx, nodes, true)
+	targetNode, err := GetMaxIdlenessNode(ctx, nodes, true)
 	if err != nil {
 		return nil, err
 	}
-	err = reforwardNode.Reforward(*idlenessNode, room, room)
-	slog.Info("reforward", "room", room, "reforwardNode", reforwardNode, "targetNode", idlenessNode, "error", err)
+	err = reforwardNode.Reforward(*targetNode, room, room)
+	slog.Info("reforward", "room", room, "reforwardNode", reforwardNode, "targetNode", targetNode, "error", err)
 	if err != nil {
 		return nil, err
 	}
 	for i := 0; i < config.ReforwardCheckFrequency; i++ {
 		time.Sleep(time.Millisecond * 50)
-		info, _ := idlenessNode.GetRoomInfo(room)
+		info, _ := targetNode.GetRoomInfo(room)
 		if info != nil && info.PublishSessionInfo != nil && info.PublishSessionInfo.ConnectState == RTCPeerConnectionStateConnected {
 			break
 		}
 	}
-	return idlenessNode, nil
+	return targetNode, nil
 }
 
 func resourceHandler(w http.ResponseWriter, r *http.Request) {
