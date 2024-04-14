@@ -12,6 +12,8 @@ pub struct ForwardInfoRes {
     pub create_time: i64,
     #[serde(rename = "publishLeaveTime")]
     pub publish_leave_time: i64,
+    #[serde(rename = "subscribeLeaveTime")]
+    pub subscribe_leave_time: i64,
     #[serde(rename = "publishSessionInfo")]
     pub publish_session_info: Option<SessionInfoRes>,
     #[serde(rename = "subscribeSessionInfos")]
@@ -51,6 +53,7 @@ impl From<crate::forward::info::ForwardInfo> for ForwardInfoRes {
             id: value.id,
             create_time: value.create_time,
             publish_leave_time: value.publish_leave_time,
+            subscribe_leave_time: value.subscribe_leave_time,
             publish_session_info: value.publish_session_info.map(|session| session.into()),
             subscribe_session_infos: value
                 .subscribe_session_infos

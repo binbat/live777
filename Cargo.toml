@@ -6,7 +6,14 @@ license = "MPL-2.0"
 description = "A very simple, high performance, edge WebRTC SFU"
 
 [workspace]
-members = [".", "libs/cli", "libs/libwish", "libs/signal", "tools/whepfrom", "tools/whipinto"]
+members = [
+    ".",
+    "libs/cli",
+    "libs/libwish",
+    "libs/signal",
+    "tools/whepfrom",
+    "tools/whipinto",
+]
 
 [dependencies]
 http-body-util = "0.1.0"
@@ -24,7 +31,6 @@ tokio = { version = "1.36", features = ["full"] }
 hyper = "1.2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-logfmt = { version = "0.3.3", features = ["ansi_logs"] }
 serde = { version = "1.0.188", features = ["serde_derive"] }
 toml = "0.8.10"
 serde_json = "1.0.114"

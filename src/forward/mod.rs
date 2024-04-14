@@ -76,7 +76,7 @@ impl PeerForward {
                 tokio::spawn(async move {
                     info!(
                         "[{}] [publish] [{}] connection state changed: {}",
-                        internal.id,
+                        internal.room,
                         get_peer_id(&pc),
                         s
                     );
@@ -136,7 +136,7 @@ impl PeerForward {
                 tokio::spawn(async move {
                     info!(
                         "[{}] [subscribe] [{}] connection state changed: {}",
-                        internal.id,
+                        internal.room,
                         get_peer_id(&pc),
                         s
                     );
@@ -163,11 +163,11 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
-        let (sdp, key) = (
+        let (sdp, session) = (
             peer_complete(offer, peer.clone()).await?,
             get_peer_id(&peer),
         );
-        Ok((sdp, key))
+        Ok((sdp, session))
     }
 
     pub async fn reforward(&self, reforward_info: ReforwardInfo) -> Result<()> {
@@ -208,7 +208,7 @@ impl PeerForward {
                 tokio::spawn(async move {
                     info!(
                         "[{}] [reforward] [{}] connection state changed: {}",
-                        internal.id,
+                        internal.room,
                         get_peer_id(&pc),
                         s
                     );
@@ -233,12 +233,10 @@ impl PeerForward {
             .pending_local_description()
             .await
             .ok_or(AppError::throw("pending_local_description error"))?;
+
         let mut client = Client::new(
             reforward_info.target_url.clone(),
-            Client::get_auth_header_map(
-                reforward_info.basic.clone(),
-                reforward_info.token.clone(),
-            ),
+            Client::get_authorization_header_map(reforward_info.admin_authorization.clone()),
         );
         match client.wish(description.sdp.clone()).await {
             Ok((target_sdp, _)) => {
@@ -256,16 +254,18 @@ impl PeerForward {
         }
     }
 
-    pub async fn add_ice_candidate(&self, key: String, ice_candidates: String) -> Result<()> {
+    pub async fn add_ice_candidate(&self, session: String, ice_candidates: String) -> Result<()> {
         let ice_candidates = parse_ice_candidate(ice_candidates)?;
         if ice_candidates.is_empty() {
             return Ok(());
         }
-        self.internal.add_ice_candidate(key, ice_candidates).await
+        self.internal
+            .add_ice_candidate(session, ice_candidates)
+            .await
     }
 
-    pub async fn remove_peer(&self, key: String) -> Result<bool> {
-        self.internal.remove_peer(key).await
+    pub async fn remove_peer(&self, session: String) -> Result<bool> {
+        self.internal.remove_peer(session).await
     }
 
     pub async fn layers(&self) -> Result<Vec<Layer>> {
@@ -282,20 +282,20 @@ impl PeerForward {
         }
     }
 
-    pub async fn select_layer(&self, key: String, layer: Option<Layer>) -> Result<()> {
+    pub async fn select_layer(&self, session: String, layer: Option<Layer>) -> Result<()> {
         let rid = if let Some(layer) = layer {
             layer.encoding_id
         } else {
             self.internal.publish_svc_rids().await?[0].clone()
         };
         self.internal
-            .select_kind_rid(key, RTPCodecType::Video, rid)
+            .select_kind_rid(session, RTPCodecType::Video, rid)
             .await
     }
 
     pub async fn change_resource(
         &self,
-        key: String,
+        session: String,
         change_resource: ChangeResourceReq,
     ) -> Result<()> {
         let codec_type = RTPCodecType::from(change_resource.kind.as_str());
@@ -308,7 +308,9 @@ impl PeerForward {
         } else {
             constant::RID_DISABLE.to_string()
         };
-        self.internal.select_kind_rid(key, codec_type, rid).await
+        self.internal
+            .select_kind_rid(session, codec_type, rid)
+            .await
     }
 
     pub async fn close(&self) -> Result<()> {

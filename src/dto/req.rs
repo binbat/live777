@@ -16,13 +16,13 @@ pub struct ChangeResourceReq {
 #[derive(Deserialize)]
 pub struct QueryInfoReq {
     #[serde(default)]
-    pub paths: Option<String>,
+    pub rooms: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct ReforwardReq {
     #[serde(rename = "targetUrl")]
     pub target_url: String,
-    pub basic: Option<String>,
-    pub token: Option<String>,
+    #[serde(rename = "adminAuthorization")]
+    pub admin_authorization: Option<String>,
 }

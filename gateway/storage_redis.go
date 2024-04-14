@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -34,22 +35,54 @@ func NewRedisStandaloneStorage(addr string) (*RedisStandaloneStorage, error) {
 	}, nil
 }
 
-func (r *RedisStandaloneStorage) GetAllNode(ctx context.Context) ([]Node, error) {
-	getNodesCmd := r.client.SInter(ctx, NodesRegistryKey)
+func (r *RedisStandaloneStorage) GetNodes(ctx context.Context) ([]Node, error) {
+	getNodesCmd := r.client.SMembers(ctx, NodesRegistryKey)
+	nodes, delNodes, err := r.getFinalNodes(ctx, getNodesCmd)
+	if err != nil {
+		return nil, err
+	}
+	r.client.SRem(ctx, NodesRegistryKey, delNodes...)
+	return nodes, nil
+}
+
+func (r *RedisStandaloneStorage) GetRoomNodes(ctx context.Context, room string) ([]Node, error) {
+	getNodesCmd := r.client.ZRange(ctx, fmt.Sprintf("%s:%s", RoomRegistryKey, room), 0, -1)
+	nodes, delNodes, err := r.getFinalNodes(ctx, getNodesCmd)
+	if err != nil {
+		return nil, err
+	}
+	r.client.ZRem(ctx, NodesRegistryKey, delNodes...)
+	finalNodes := make([]Node, 0)
+	for _, node := range nodes {
+		info, _ := node.GetRoomInfo(room)
+		if info == nil {
+			r.client.ZRem(ctx, fmt.Sprintf("%s:%s", RoomRegistryKey, room), node.Addr)
+		} else {
+			finalNodes = append(finalNodes, node)
+		}
+	}
+
+	return finalNodes, nil
+}
+
+func (r *RedisStandaloneStorage) getFinalNodes(ctx context.Context, getNodesCmd *redis.StringSliceCmd) ([]Node, []interface{}, error) {
 	if getNodesCmd.Err() != nil {
 		if !errors.Is(getNodesCmd.Err(), redis.Nil) {
-			return nil, fmt.Errorf("redis conn getNodesCmd error : %v", getNodesCmd.Err())
+			return nil, nil, fmt.Errorf("redis conn getNodesCmd error : %v", getNodesCmd.Err())
 		}
-		return make([]Node, 0), nil
+		return make([]Node, 0), nil, nil
 	}
 	nodes := getNodesCmd.Val()
+	if len(nodes) == 0 {
+		return nil, nil, nil
+	}
 	nodeKeys := make([]string, len(nodes))
 	for i, node := range nodes {
 		nodeKeys[i] = fmt.Sprintf("%s:%s", NodeRegistryKey, node)
 	}
 	mgetCmd := r.client.MGet(ctx, nodeKeys...)
 	if mgetCmd.Err() != nil {
-		return nil, mgetCmd.Err()
+		return nil, nil, mgetCmd.Err()
 	}
 	nodeValues := mgetCmd.Val()
 	resNodes := make([]Node, 0)
@@ -59,30 +92,13 @@ func (r *RedisStandaloneStorage) GetAllNode(ctx context.Context) ([]Node, error)
 		if nodeValue == nil {
 			delNodes = append(delNodes, node)
 		} else {
+			metaData := NodeMetaData{}
+			json.Unmarshal([]byte(fmt.Sprintf("%s", nodeValue)), &metaData)
 			resNodes = append(resNodes, Node{
 				Addr:     node,
-				Metadata: fmt.Sprintf("%s", nodeValue),
+				Metadata: metaData,
 			})
 		}
 	}
-	r.client.SRem(ctx, NodesRegistryKey, delNodes...)
-	return resNodes, nil
-}
-
-func (r *RedisStandaloneStorage) GetRoomOwnership(ctx context.Context, room string) (*Node, error) {
-	getRoomCmd := r.client.Get(ctx, fmt.Sprintf("%s:%s", RoomRegistryKey, room))
-	if getRoomCmd.Err() != nil {
-		if errors.Is(getRoomCmd.Err(), redis.Nil) {
-			return nil, nil
-		}
-		return nil, getRoomCmd.Err()
-	}
-	roomNode := getRoomCmd.Val()
-	getNodeCmd := r.client.Get(ctx, fmt.Sprintf("%s:%s", NodeRegistryKey, roomNode))
-	if getNodeCmd.Err() != nil {
-		return nil, getNodeCmd.Err()
-	}
-	return &Node{
-		roomNode, getNodeCmd.Val(),
-	}, nil
+	return resNodes, delNodes, nil
 }

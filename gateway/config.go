@@ -3,18 +3,22 @@ package main
 import "github.com/BurntSushi/toml"
 
 type Config struct {
-	LoadBalancing string
-	ListenAddr    string
-	Model         string
-	Addr          string
+	ListenAddr              string
+	Model                   string
+	Addr                    string
+	Level                   string
+	ReforwardCheckFrequency int
+	CheckReforwardTickTime  int
 }
 
 func ParseConfig(path string) *Config {
 	cfg := &Config{
-		LoadBalancing: "random",
-		ListenAddr:    ":8080",
-		Model:         "RedisStandalone",
-		Addr:          "localhost:6379",
+		ListenAddr:              ":8080",
+		Model:                   "RedisStandalone",
+		Addr:                    "localhost:6379",
+		Level:                   "DEBUG",
+		ReforwardCheckFrequency: 5,
+		CheckReforwardTickTime:  3000,
 	}
 	_, err := toml.DecodeFile(path, cfg)
 	if err != nil {

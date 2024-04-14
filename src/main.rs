@@ -20,11 +20,12 @@ use forward::info::ReforwardInfo;
 use http::Uri;
 use http_body_util::BodyExt;
 use std::collections::HashMap;
+use std::env;
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::vec;
+use tracing_subscriber::EnvFilter;
 
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
@@ -34,16 +35,15 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::info_span;
 use tracing::{debug, error, info};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::dto::req::{ChangeResourceReq, ReforwardReq, SelectLayerReq};
 use crate::result::Result;
+use crate::room::config::ManagerConfig;
 use config::IceServer;
-use path::manager::Manager;
+use room::manager::Manager;
 #[cfg(not(debug_assertions))]
 use {http::header, rust_embed::RustEmbed};
 
@@ -54,8 +54,8 @@ mod dto;
 mod error;
 mod forward;
 mod metrics;
-mod path;
 mod result;
+mod room;
 mod storage;
 
 #[derive(Parser)]
@@ -68,45 +68,15 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    metrics_register();
     let args = Args::parse();
-    metrics::REGISTRY
-        .register(Box::new(metrics::PUBLISH.clone()))
-        .unwrap();
-    metrics::REGISTRY
-        .register(Box::new(metrics::SUBSCRIBE.clone()))
-        .unwrap();
     let cfg = Config::parse(args.config);
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| format!("live777={},webrtc=error", cfg.log.level).into()),
-        )
-        .with(tracing_logfmt::layer())
-        .init();
+    set_log(format!("live777={},webrtc=error", cfg.log.level));
     debug!("config : {:?}", cfg);
     let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
-    let ice_servers = cfg
-        .ice_servers
-        .clone()
-        .into_iter()
-        .map(|i| i.into())
-        .collect();
-    let cluster_storage = if let Some(cluster_storage) = &cfg.cluster.storage {
-        Some(Arc::new(
-            storage::new(
-                cfg.cluster.registry_ip_port.clone(),
-                cluster_storage.clone(),
-            )
-            .await,
-        ))
-    } else {
-        None
-    };
     let app_state = AppState {
-        paths: Arc::new(
-            Manager::new(ice_servers, cfg.cluster.max.clone(), cfg.publish_leave_timeout.0, cluster_storage).await,
-        ),
+        room_manager: Arc::new(Manager::new(ManagerConfig::from_config(cfg.clone()).await).await),
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![
@@ -116,22 +86,22 @@ async fn main() {
     let admin_auth_layer =
         ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.admin_auth]));
     let app = Router::new()
-        .route("/whip/:id", post(whip))
-        .route("/whep/:id", post(whep))
+        .route("/whip/:room", post(whip))
+        .route("/whep/:room", post(whep))
         .route(
-            "/resource/:id/:key",
+            "/resource/:room/:session",
             post(change_resource)
                 .patch(add_ice_candidate)
-                .delete(remove_path_key),
+                .delete(remove_room_session),
         )
         .route(
-            "/resource/:id/:key/layer",
+            "/resource/:room/:session/layer",
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
         .layer(auth_layer)
         .route("/admin/infos", get(infos).layer(admin_auth_layer.clone()))
         .route(
-            "/admin/reforward/:id",
+            "/admin/reforward/:room",
             post(reforward).layer(admin_auth_layer),
         )
         .route("/metrics", get(metrics))
@@ -161,6 +131,36 @@ async fn main() {
     info!("Server shutdown");
 }
 
+fn set_log(env_filter: String) {
+    let _ = env::var("RUST_LOG").is_err_and(|_| {
+        env::set_var("RUST_LOG", env_filter);
+        true
+    });
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .compact()
+        .with_file(true)
+        .with_line_number(true)
+        .with_thread_ids(true)
+        .with_target(true)
+        .init();
+}
+
+fn metrics_register() {
+    metrics::REGISTRY
+        .register(Box::new(metrics::ROOM.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::PUBLISH.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::SUBSCRIBE.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::REFORWARD.clone()))
+        .unwrap();
+}
+
 async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
@@ -188,12 +188,12 @@ fn static_server(router: Router) -> Router {
 #[cfg(not(debug_assertions))]
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/');
-    if path.is_empty() {
-        path = "index.html";
+    if room.is_empty() {
+        room = "index.html";
     }
-    match Assets::get(path) {
+    match Assets::get(room) {
         Some(content) => {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            let mime = mime_guess::from_path(room).first_or_octet_stream();
             ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
@@ -203,7 +203,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 #[derive(Clone)]
 struct AppState {
     config: Config,
-    paths: Arc<Manager>,
+    room_manager: Arc<Manager>,
 }
 
 async fn print_request_response(
@@ -244,7 +244,7 @@ where
     };
 
     if let Ok(body) = std::str::from_utf8(&bytes) {
-        tracing::debug!("{direction} headers = {headers:?} body = {body:?}");
+        debug!("{direction} headers = {headers:?} body = {body:?}");
     }
 
     Ok(bytes)
@@ -252,7 +252,7 @@ where
 
 async fn whip(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(room): Path<String>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -263,12 +263,12 @@ async fn whip(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.publish(id.clone(), offer).await?;
+    let (answer, session) = state.room_manager.publish(room.clone(), offer).await?;
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", id, key));
+        .header("Location", format!("/resource/{}/{}", room, session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
@@ -277,7 +277,7 @@ async fn whip(
 
 async fn whep(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(room): Path<String>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -288,21 +288,21 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.subscribe(id.clone(), offer).await?;
+    let (answer, session) = state.room_manager.subscribe(room.clone(), offer).await?;
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", id, key));
+        .header("Location", format!("/resource/{}/{}", room, session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
-    if state.paths.layers(id.clone()).await.is_ok() {
+    if state.room_manager.layers(room.clone()).await.is_ok() {
         builder = builder.header(
             "Link",
             format!(
                 "</resource/{}/{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                id, key
+                room, session
             ),
         )
     }
@@ -311,7 +311,7 @@ async fn whep(
 
 async fn add_ice_candidate(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((room, session)): Path<(String, String)>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -321,18 +321,24 @@ async fn add_ice_candidate(
     if content_type.to_str()? != "application/trickle-ice-sdpfrag" {
         return Err(anyhow::anyhow!("Content-Type must be application/trickle-ice-sdpfrag").into());
     }
-    state.paths.add_ice_candidate(id, key, body).await?;
+    state
+        .room_manager
+        .add_ice_candidate(room, session, body)
+        .await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)
 }
 
-async fn remove_path_key(
+async fn remove_room_session(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((room, session)): Path<(String, String)>,
     _uri: Uri,
 ) -> Result<Response<String>> {
-    state.paths.remove_path_key(id, key).await?;
+    state
+        .room_manager
+        .remove_room_session(room, session)
+        .await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)
@@ -340,21 +346,24 @@ async fn remove_path_key(
 
 async fn change_resource(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((room, session)): Path<(String, String)>,
     Json(dto): Json<ChangeResourceReq>,
 ) -> Result<Json<HashMap<String, String>>> {
-    state.paths.change_resource(id, key, dto).await?;
+    state
+        .room_manager
+        .change_resource(room, session, dto)
+        .await?;
     Ok(Json(HashMap::new()))
 }
 
 async fn get_layer(
     State(state): State<AppState>,
-    Path((id, _key)): Path<(String, String)>,
+    Path((room, _session)): Path<(String, String)>,
 ) -> Result<Json<Vec<LayerRes>>> {
     Ok(Json(
         state
-            .paths
-            .layers(id)
+            .room_manager
+            .layers(room)
             .await?
             .into_iter()
             .map(|layer| layer.into())
@@ -364,17 +373,17 @@ async fn get_layer(
 
 async fn select_layer(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((room, session)): Path<(String, String)>,
     Json(layer): Json<SelectLayerReq>,
 ) -> Result<String> {
     state
-        .paths
+        .room_manager
         .select_layer(
-            id,
-            key,
+            room,
+            session,
             layer
                 .encoding_id
-                .map(|encoding_id| crate::forward::info::Layer { encoding_id }),
+                .map(|encoding_id| forward::info::Layer { encoding_id }),
         )
         .await?;
     Ok("".to_string())
@@ -382,14 +391,14 @@ async fn select_layer(
 
 async fn un_select_layer(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((room, session)): Path<(String, String)>,
 ) -> Result<String> {
     state
-        .paths
+        .room_manager
         .select_layer(
-            id,
-            key,
-            Some(crate::forward::info::Layer {
+            room,
+            session,
+            Some(forward::info::Layer {
                 encoding_id: constant::RID_DISABLE.to_string(),
             }),
         )
@@ -403,9 +412,9 @@ async fn infos(
 ) -> Result<Json<Vec<ForwardInfoRes>>> {
     Ok(Json(
         state
-            .paths
-            .info(qry.paths.map_or(vec![], |paths| {
-                paths.split(',').map(|path| path.to_string()).collect()
+            .room_manager
+            .info(qry.rooms.map_or(vec![], |rooms| {
+                rooms.split(',').map(|room| room.to_string()).collect()
             }))
             .await
             .into_iter()
@@ -416,17 +425,16 @@ async fn infos(
 
 async fn reforward(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(room): Path<String>,
     Json(reforward): Json<ReforwardReq>,
 ) -> Result<String> {
     state
-        .paths
+        .room_manager
         .reforward(
-            id,
+            room,
             ReforwardInfo {
                 target_url: reforward.target_url,
-                basic: reforward.basic,
-                token: reforward.token,
+                admin_authorization: reforward.admin_authorization,
                 resource_url: None,
             },
         )

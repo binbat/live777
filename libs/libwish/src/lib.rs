@@ -39,6 +39,14 @@ impl Client {
         }
     }
 
+    pub fn get_authorization_header_map(authorization: Option<String>) -> Option<HeaderMap> {
+        authorization.map(|authorization| {
+            let mut header_map = HeaderMap::new();
+            header_map.insert("Authorization", authorization.parse().unwrap());
+            header_map
+        })
+    }
+
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
         Client {
             url,

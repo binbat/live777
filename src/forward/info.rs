@@ -8,6 +8,7 @@ pub struct ForwardInfo {
     pub id: String,
     pub create_time: i64,
     pub publish_leave_time: i64,
+    pub subscribe_leave_time: i64,
     pub publish_session_info: Option<SessionInfo>,
     pub subscribe_session_infos: Vec<SessionInfo>,
 }
@@ -22,7 +23,6 @@ pub struct SessionInfo {
 #[derive(Clone)]
 pub struct ReforwardInfo {
     pub target_url: String,
-    pub basic: Option<String>,
-    pub token: Option<String>,
+    pub admin_authorization: Option<String>,
     pub resource_url: Option<String>,
 }
