@@ -183,7 +183,7 @@ func extractRequestRoom(r *http.Request) string {
 }
 
 func doProxy(w http.ResponseWriter, r *http.Request, node Node) {
-	slog.Info("doProxy", "URI", r.RequestURI, "node", node)
+	slog.Info("http server request proxy", "URI", r.RequestURI, "node", node)
 	proxy := httputil.ReverseProxy{
 		Transport: &loggingTransport{
 			operation: "PROXY",
