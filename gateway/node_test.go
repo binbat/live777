@@ -16,9 +16,9 @@ func TestNode_GetMetrics(t *testing.T) {
 	fmt.Printf("%s", data)
 }
 
-func TestNode_GetRoomInfos(t *testing.T) {
+func TestNode_GetStreamInfos(t *testing.T) {
 	node := Node{Addr: "127.0.0.1:7777"}
-	infos, err := node.GetRoomInfos()
+	infos, err := node.GetStreamInfos()
 	if err != nil {
 		panic(err)
 	}
@@ -26,9 +26,9 @@ func TestNode_GetRoomInfos(t *testing.T) {
 	fmt.Printf("%s", data)
 }
 
-func TestNode_GetRoomInfo(t *testing.T) {
+func TestNode_GetStreamInfo(t *testing.T) {
 	node := Node{Addr: "127.0.0.1:7777"}
-	info, err := node.GetRoomInfo("7777")
+	info, err := node.GetStreamInfo("7777")
 	if err != nil {
 		panic(err)
 	}
@@ -36,9 +36,9 @@ func TestNode_GetRoomInfo(t *testing.T) {
 	fmt.Printf("%s", data)
 }
 
-func TestReforwardInfo_ParseNodeAndRoom(t *testing.T) {
-	node, room := ReforwardInfo{TargetUrl: "http://127.0.0.1:7777/whip/7777"}.ParseNodeAndRoom()
-	fmt.Printf("node : %s, room : %s\n", node, room)
+func TestReforwardInfo_ParseNodeAndStream(t *testing.T) {
+	node, stream := ReforwardInfo{TargetUrl: "http://127.0.0.1:7777/whip/7777"}.ParseNodeAndStream()
+	fmt.Printf("node : %s, stream : %s\n", node, stream)
 }
 
 func TestNode_Reforward(t *testing.T) {

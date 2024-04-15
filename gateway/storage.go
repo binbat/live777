@@ -7,24 +7,24 @@ import (
 	"sync"
 )
 
-var NoAvailableNodeErr = errors.New("No Available Node")
+var ErrNoAvailableNode = errors.New("no available node")
 
 type Storage interface {
 	// get all node, no sort
 	GetNodes(ctx context.Context) ([]Node, error)
-	// get room node,sort by time,the first master node
-	GetRoomNodes(ctx context.Context, room string) ([]Node, error)
+	// get stream node,sort by time,the first master node
+	GetStreamNodes(ctx context.Context, stream string) ([]Node, error)
 }
 
 func GetMaxIdlenessNode(ctx context.Context, nodes []Node, checkPub bool) (*Node, error) {
 	if len(nodes) == 0 {
-		return nil, NoAvailableNodeErr
+		return nil, ErrNoAvailableNode
 	}
 	nodes = slices.Clone(nodes)
 	nodeMetricsMap := GetNodesMetrics(nodes)
 	nodes = GetAvailableNodes(nodes, nodeMetricsMap, checkPub)
 	if len(nodes) == 0 {
-		return nil, NoAvailableNodeErr
+		return nil, ErrNoAvailableNode
 	}
 	NodeSort(nodes, nodeMetricsMap)
 	return &nodes[len(nodes)-1], nil
@@ -55,7 +55,7 @@ func GetAvailableNodes(nodes []Node, nodeMetricsMap map[string]*NodeMetrics, che
 	nodes = slices.DeleteFunc(nodes, func(node Node) bool {
 		metrics := nodeMetricsMap[node.Addr]
 		metadata := node.Metadata
-		return metrics == nil || (checkPub && metrics.Room >= metadata.PubMax) || metrics.Subscribe >= metadata.SubMax
+		return metrics == nil || (checkPub && metrics.Stream >= metadata.PubMax) || metrics.Subscribe >= metadata.SubMax
 	})
 	return nodes
 }

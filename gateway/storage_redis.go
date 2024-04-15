@@ -13,7 +13,7 @@ const NodesRegistryKey = "live777:nodes"
 
 const NodeRegistryKey = "live777:node"
 
-const RoomRegistryKey = "live777:room"
+const StreamRegistryKey = "live777:stream"
 
 type RedisStandaloneStorage struct {
 	client *redis.Client
@@ -45,8 +45,8 @@ func (r *RedisStandaloneStorage) GetNodes(ctx context.Context) ([]Node, error) {
 	return nodes, nil
 }
 
-func (r *RedisStandaloneStorage) GetRoomNodes(ctx context.Context, room string) ([]Node, error) {
-	getNodesCmd := r.client.ZRange(ctx, fmt.Sprintf("%s:%s", RoomRegistryKey, room), 0, -1)
+func (r *RedisStandaloneStorage) GetStreamNodes(ctx context.Context, stream string) ([]Node, error) {
+	getNodesCmd := r.client.ZRange(ctx, fmt.Sprintf("%s:%s", StreamRegistryKey, stream), 0, -1)
 	nodes, delNodes, err := r.getFinalNodes(ctx, getNodesCmd)
 	if err != nil {
 		return nil, err
@@ -54,14 +54,14 @@ func (r *RedisStandaloneStorage) GetRoomNodes(ctx context.Context, room string) 
 	r.client.SRem(ctx, NodesRegistryKey, delNodes...)
 	finalNodes := make([]Node, 0)
 	for _, node := range nodes {
-		info, _ := node.GetRoomInfo(room)
+		info, _ := node.GetStreamInfo(stream)
 		if info == nil {
 			delNodes = append(delNodes, node.Addr)
 		} else {
 			finalNodes = append(finalNodes, node)
 		}
 	}
-	r.client.ZRem(ctx, fmt.Sprintf("%s:%s", RoomRegistryKey, room), delNodes...)
+	r.client.ZRem(ctx, fmt.Sprintf("%s:%s", StreamRegistryKey, stream), delNodes...)
 	return finalNodes, nil
 }
 

@@ -13,14 +13,14 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use crate::dto::req::ChangeResourceReq;
 use crate::forward::info::Layer;
 use crate::forward::PeerForward;
-use crate::room::config::ManagerConfig;
+use crate::stream::config::ManagerConfig;
 use crate::{metrics, AppError};
 
 use super::config::MetaData;
 
 #[derive(Clone)]
 pub struct Manager {
-    room_map: Arc<RwLock<HashMap<String, PeerForward>>>,
+    stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
     config: ManagerConfig,
 }
 
@@ -28,21 +28,21 @@ pub type Response = (RTCSessionDescription, String);
 
 impl Manager {
     pub async fn new(cfg: ManagerConfig) -> Self {
-        let room_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
+        let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         tokio::spawn(Self::heartbeat_and_check_tick(
-            room_map.clone(),
+            stream_map.clone(),
             cfg.meta_data.clone(),
             cfg.publish_leave_timeout,
             cfg.storage.clone(),
         ));
         Manager {
-            room_map,
+            stream_map,
             config: cfg,
         }
     }
 
     async fn heartbeat_and_check_tick(
-        room_map: Arc<RwLock<HashMap<String, PeerForward>>>,
+        stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
         meta_data: MetaData,
         publish_leave_timeout: u64,
         storage: Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
@@ -57,89 +57,93 @@ impl Manager {
                     .registry(serde_json::to_string(&meta_data).unwrap())
                     .await;
             }
-            let room_map_read = room_map.read().await;
-            let mut remove_rooms = vec![];
-            for (room, forward) in room_map_read.iter() {
+            let stream_map_read = stream_map.read().await;
+            let mut remove_streams = vec![];
+            for (stream, forward) in stream_map_read.iter() {
                 let forward_info = forward.info().await;
                 if forward_info.publish_leave_time > 0
                     && Utc::now().timestamp_millis() - forward_info.publish_leave_time
                         > publish_leave_timeout_i64
                 {
-                    remove_rooms.push(room.clone());
+                    remove_streams.push(stream.clone());
                 }
             }
-            if remove_rooms.is_empty() {
+            if remove_streams.is_empty() {
                 continue;
             }
-            drop(room_map_read);
-            let mut room_map = room_map.write().await;
-            for room in remove_rooms.iter() {
-                if let Some(forward) = room_map.get(room) {
+            drop(stream_map_read);
+            let mut stream_map = stream_map.write().await;
+            for stream in remove_streams.iter() {
+                if let Some(forward) = stream_map.get(stream) {
                     let forward_info = forward.info().await;
                     if forward_info.publish_leave_time > 0
                         && Utc::now().timestamp_millis() - forward_info.publish_leave_time
                             > publish_leave_timeout_i64
                     {
                         let _ = forward.close().await;
-                        room_map.remove(room);
-                        metrics::ROOM.dec();
+                        stream_map.remove(stream);
+                        metrics::STREAM.dec();
                         let publish_leave_time =
                             DateTime::from_timestamp_millis(forward_info.publish_leave_time)
                                 .unwrap()
                                 .format("%Y-%m-%d %H:%M:%S")
                                 .to_string();
                         info!(
-                            "room : {}, publish leave timeout, publish leave time : {}",
-                            room, publish_leave_time
+                            "stream : {}, publish leave timeout, publish leave time : {}",
+                            stream, publish_leave_time
                         );
-                        let _ = Self::unregister_room(&storage, room.clone()).await;
+                        let _ = Self::unregister_stream(&storage, stream.clone()).await;
                     }
                 }
             }
         }
     }
 
-    pub async fn publish(&self, room: String, offer: RTCSessionDescription) -> Result<Response> {
-        let room_map = self.room_map.read().await;
-        let forward = room_map.get(&room).cloned();
-        drop(room_map);
+    pub async fn publish(&self, stream: String, offer: RTCSessionDescription) -> Result<Response> {
+        let stream_map = self.stream_map.read().await;
+        let forward = stream_map.get(&stream).cloned();
+        drop(stream_map);
         if let Some(forward) = forward {
             forward.set_publish(offer).await
         } else {
-            if metrics::ROOM.get() >= self.config.meta_data.pub_max as f64 {
+            if metrics::STREAM.get() >= self.config.meta_data.pub_max as f64 {
                 return Err(AppError::LackOfResources);
             }
-            let forward = PeerForward::new(room.clone(), self.config.ice_servers.clone());
+            let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
             let (sdp, session) = forward.set_publish(offer).await?;
-            let mut room_map = self.room_map.write().await;
-            if room_map.contains_key(&room) {
+            let mut stream_map = self.stream_map.write().await;
+            if stream_map.contains_key(&stream) {
                 let _ = forward.close().await;
                 return Err(AppError::resource_already_exists("resource already exists"));
             }
-            if room_map.len() >= self.config.meta_data.pub_max as usize {
-                warn!("room {} set publish ok,but exceeded the limit", room);
+            if stream_map.len() >= self.config.meta_data.pub_max as usize {
+                warn!("stream {} set publish ok,but exceeded the limit", stream);
                 let _ = forward.close().await;
                 return Err(AppError::LackOfResources);
             }
-            info!("add room : {}", room);
-            room_map.insert(room.clone(), forward);
-            metrics::ROOM.inc();
-            Self::registry_room(&self.config.storage, room.clone()).await?;
+            info!("add stream : {}", stream);
+            stream_map.insert(stream.clone(), forward);
+            metrics::STREAM.inc();
+            Self::registry_stream(&self.config.storage, stream.clone()).await?;
             Ok((sdp, session))
         }
     }
 
-    pub async fn subscribe(&self, room: String, offer: RTCSessionDescription) -> Result<Response> {
+    pub async fn subscribe(
+        &self,
+        stream: String,
+        offer: RTCSessionDescription,
+    ) -> Result<Response> {
         if metrics::SUBSCRIBE.get() >= self.config.meta_data.sub_max as f64 {
             return Err(AppError::LackOfResources);
         }
-        let room_map = self.room_map.read().await;
-        let forward = room_map.get(&room).cloned();
-        drop(room_map);
+        let stream_map = self.stream_map.read().await;
+        let forward = stream_map.get(&stream).cloned();
+        drop(stream_map);
         if let Some(forward) = forward {
             let (sdp, session) = forward.add_subscribe(offer).await?;
             if metrics::SUBSCRIBE.get() > self.config.meta_data.sub_max as f64 {
-                warn!("room {} add subscribe ok,but exceeded the limit", room);
+                warn!("stream {} add subscribe ok,but exceeded the limit", stream);
                 let _ = forward.remove_peer(session).await;
                 Err(AppError::LackOfResources)
             } else {
@@ -150,35 +154,35 @@ impl Manager {
         }
     }
 
-    async fn registry_room(
+    async fn registry_stream(
         storage: &Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
-        room: String,
+        stream: String,
     ) -> Result<()> {
         if let Some(storage) = storage {
-            storage.registry_room(room.clone()).await?;
+            storage.registry_stream(stream.clone()).await?;
         }
         Ok(())
     }
 
-    async fn unregister_room(
+    async fn unregister_stream(
         storage: &Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
-        room: String,
+        stream: String,
     ) -> Result<()> {
         if let Some(storage) = storage {
-            storage.unregister_room(room.clone()).await?;
+            storage.unregister_stream(stream.clone()).await?;
         }
         Ok(())
     }
 
     pub async fn add_ice_candidate(
         &self,
-        room: String,
+        stream: String,
         session: String,
         ice_candidates: String,
     ) -> Result<()> {
-        let rooms = self.room_map.read().await;
-        let forward = rooms.get(&room).cloned();
-        drop(rooms);
+        let streams = self.stream_map.read().await;
+        let forward = streams.get(&stream).cloned();
+        drop(streams);
         if let Some(forward) = forward {
             forward.add_ice_candidate(session, ice_candidates).await
         } else {
@@ -186,27 +190,27 @@ impl Manager {
         }
     }
 
-    pub async fn remove_room_session(&self, room: String, session: String) -> Result<()> {
-        let rooms = self.room_map.read().await;
-        let forward = rooms.get(&room).cloned();
-        drop(rooms);
+    pub async fn remove_stream_session(&self, stream: String, session: String) -> Result<()> {
+        let streams = self.stream_map.read().await;
+        let forward = streams.get(&stream).cloned();
+        drop(streams);
         if let Some(forward) = forward {
             let is_publish = forward.remove_peer(session.clone()).await?;
             if is_publish {
-                let mut room_map = self.room_map.write().await;
-                info!("remove room : {}", room);
-                room_map.remove(&room);
-                metrics::ROOM.dec();
-                let _ = Self::unregister_room(&self.config.storage, room.clone()).await;
+                let mut stream_map = self.stream_map.write().await;
+                info!("remove stream : {}", stream);
+                stream_map.remove(&stream);
+                metrics::STREAM.dec();
+                let _ = Self::unregister_stream(&self.config.storage, stream.clone()).await;
             }
         }
         Ok(())
     }
 
-    pub async fn layers(&self, room: String) -> Result<Vec<Layer>> {
-        let room_map = self.room_map.read().await;
-        let forward = room_map.get(&room).cloned();
-        drop(room_map);
+    pub async fn layers(&self, stream: String) -> Result<Vec<Layer>> {
+        let stream_map = self.stream_map.read().await;
+        let forward = stream_map.get(&stream).cloned();
+        drop(stream_map);
         if let Some(forward) = forward {
             forward.layers().await
         } else {
@@ -216,13 +220,13 @@ impl Manager {
 
     pub async fn select_layer(
         &self,
-        room: String,
+        stream: String,
         session: String,
         layer: Option<Layer>,
     ) -> Result<()> {
-        let room_map = self.room_map.read().await;
-        let forward = room_map.get(&room).cloned();
-        drop(room_map);
+        let stream_map = self.stream_map.read().await;
+        let forward = stream_map.get(&stream).cloned();
+        drop(stream_map);
         if let Some(forward) = forward {
             forward.select_layer(session, layer).await
         } else {
@@ -232,13 +236,13 @@ impl Manager {
 
     pub async fn change_resource(
         &self,
-        room: String,
+        stream: String,
         session: String,
         change_resource: ChangeResourceReq,
     ) -> Result<()> {
-        let room_map = self.room_map.read().await;
-        let forward = room_map.get(&room).cloned();
-        drop(room_map);
+        let stream_map = self.stream_map.read().await;
+        let forward = stream_map.get(&stream).cloned();
+        drop(stream_map);
         if let Some(forward) = forward {
             forward.change_resource(session, change_resource).await
         } else {
@@ -246,23 +250,23 @@ impl Manager {
         }
     }
 
-    pub async fn info(&self, rooms: Vec<String>) -> Vec<ForwardInfo> {
-        let mut rooms = rooms.clone();
-        rooms.retain(|room| !room.trim().is_empty());
+    pub async fn info(&self, streams: Vec<String>) -> Vec<ForwardInfo> {
+        let mut streams = streams.clone();
+        streams.retain(|stream| !stream.trim().is_empty());
         let mut resp = vec![];
-        let room_map = self.room_map.read().await;
-        for (room, forward) in room_map.iter() {
-            if rooms.is_empty() || rooms.contains(room) {
+        let stream_map = self.stream_map.read().await;
+        for (stream, forward) in stream_map.iter() {
+            if streams.is_empty() || streams.contains(stream) {
                 resp.push(forward.info().await);
             }
         }
         resp
     }
 
-    pub async fn reforward(&self, room: String, reforward_info: ReforwardInfo) -> Result<()> {
-        let rooms = self.room_map.read().await;
-        let forward = rooms.get(&room).cloned();
-        drop(rooms);
+    pub async fn reforward(&self, stream: String, reforward_info: ReforwardInfo) -> Result<()> {
+        let streams = self.stream_map.read().await;
+        let forward = streams.get(&stream).cloned();
+        drop(streams);
         if let Some(forward) = forward {
             forward.reforward(reforward_info).await?;
             if self.config.meta_data.reforward_close_sub {

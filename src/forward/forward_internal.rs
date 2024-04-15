@@ -59,7 +59,7 @@ type PublishRtcpChannel = (
 );
 
 pub(crate) struct PeerForwardInternal {
-    pub(crate) room: String,
+    pub(crate) stream: String,
     create_time: i64,
     publish_leave_time: RwLock<i64>,
     subscribe_leave_time: RwLock<i64>,
@@ -73,7 +73,7 @@ pub(crate) struct PeerForwardInternal {
 }
 
 impl PeerForwardInternal {
-    pub(crate) fn new(room: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
+    pub(crate) fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         let publish_tracks_change = broadcast::channel(1024);
         let data_channel_forward_publish = broadcast::channel(1024);
         let data_channel_forward_subscribe = broadcast::channel(1024);
@@ -88,7 +88,7 @@ impl PeerForwardInternal {
             ),
         };
         PeerForwardInternal {
-            room: room.to_string(),
+            stream: stream.to_string(),
             create_time: Utc::now().timestamp_millis(),
             publish_leave_time: RwLock::new(0),
             subscribe_leave_time: RwLock::new(Utc::now().timestamp_millis()),
@@ -109,7 +109,7 @@ impl PeerForwardInternal {
             subscribe_session_infos.push(subscribe.info().await);
         }
         ForwardInfo {
-            id: self.room.clone(),
+            id: self.stream.clone(),
             create_time: self.create_time,
             publish_leave_time: *self.publish_leave_time.read().await,
             subscribe_leave_time: *self.subscribe_leave_time.read().await,
@@ -179,7 +179,7 @@ impl PeerForwardInternal {
         }
         publish_tracks.clear();
         let _ = self.publish_tracks_change.0.send(());
-        info!("{} close", self.room);
+        info!("{} close", self.stream);
         Ok(())
     }
 
@@ -262,12 +262,12 @@ impl PeerForwardInternal {
             ));
         }
         let publish_peer = PublishRTCPeerConnection::new(
-            self.room.clone(),
+            self.stream.clone(),
             peer.clone(),
             self.publish_rtcp_channel.0.subscribe(),
         )
         .await?;
-        info!("[{}] [publish] set {}", self.room, publish_peer.id);
+        info!("[{}] [publish] set {}", self.stream, publish_peer.id);
         *publish = Some(publish_peer);
         let mut publish_leave_time = self.publish_leave_time.write().await;
         *publish_leave_time = 0;
@@ -289,7 +289,7 @@ impl PeerForwardInternal {
         *publish = None;
         let mut publish_leave_time = self.publish_leave_time.write().await;
         *publish_leave_time = Utc::now().timestamp_millis();
-        info!("[{}] [publish] set none", self.room);
+        info!("[{}] [publish] set none", self.stream);
         metrics::PUBLISH.dec();
         Ok(())
     }
@@ -376,7 +376,7 @@ impl PeerForwardInternal {
         track: Arc<TrackRemote>,
     ) -> Result<()> {
         let publish_track_remote =
-            PublishTrackRemote::new(self.room.clone(), get_peer_id(&peer), track).await;
+            PublishTrackRemote::new(self.stream.clone(), get_peer_id(&peer), track).await;
         let mut publish_tracks = self.publish_tracks.write().await;
         publish_tracks.push(publish_track_remote);
         publish_tracks.sort_by(|a, b| a.rid.cmp(&b.rid));
@@ -427,7 +427,7 @@ impl PeerForwardInternal {
         let peer = Arc::new(api.new_peer_connection(config).await?);
         let s = SubscribeRTCPeerConnection::new(
             reforward_info.clone(),
-            self.room.clone(),
+            self.stream.clone(),
             peer.clone(),
             self.publish_rtcp_channel.0.clone(),
             (

@@ -12,13 +12,13 @@ use tokio::sync::RwLock;
 
 const NODES_REGISTRY_KEY: &str = "live777:nodes";
 const NODE_REGISTRY_KEY: &str = "live777:node";
-const ROOM_REGISTRY_KEY: &str = "live777:room";
+const STREAM_REGISTRY_KEY: &str = "live777:stream";
 
 #[derive(Clone)]
 pub struct RedisStandaloneStorage {
     ip_port: String,
     client: Client,
-    rooms: Arc<RwLock<HashSet<String>>>,
+    streams: Arc<RwLock<HashSet<String>>>,
 }
 
 impl RedisStandaloneStorage {
@@ -26,7 +26,7 @@ impl RedisStandaloneStorage {
         let storage = RedisStandaloneStorage {
             ip_port: node_ip_port,
             client: Client::open(addr.clone()).unwrap(),
-            rooms: Default::default(),
+            streams: Default::default(),
         };
         // check conn
         let mut conn = storage
@@ -48,22 +48,22 @@ impl RedisStandaloneStorage {
             .unwrap();
         // let storage_copy = storage.clone();
         // tokio::spawn(async move {
-        //     storage_copy.room_heartbeat().await;
+        //     storage_copy.stream_heartbeat().await;
         // });
         storage
     }
 
-    // async fn room_heartbeat(&self) {
+    // async fn stream_heartbeat(&self) {
     //     loop {
     //         let timeout = tokio::time::sleep(Duration::from_millis(1000));
     //         tokio::pin!(timeout);
     //         let _ = timeout.as_mut().await;
     //         if let Ok(mut conn) = self.client.get_multiplexed_async_connection().await {
-    //             let rooms = self.rooms.read().await;
-    //             for room in rooms.iter() {
+    //             let streams = self.streams.read().await;
+    //             for stream in streams.iter() {
     //                 let _ = conn
     //                     .set_options::<String, String, String>(
-    //                         format!("{}:{}", ROOM_REGISTRY_KEY, room),
+    //                         format!("{}:{}", stream_REGISTRY_KEY, stream),
     //                         self.node_ip_port.clone(),
     //                         SetOptions::default()
     //                             .conditional_set(redis::ExistenceCheck::XX)
@@ -86,23 +86,23 @@ impl Storage for RedisStandaloneStorage {
         Ok(())
     }
 
-    async fn registry_room(&self, room: String) -> Result<()> {
-        self.rooms.write().await.insert(room.clone());
+    async fn registry_stream(&self, stream: String) -> Result<()> {
+        self.streams.write().await.insert(stream.clone());
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         conn.zadd(
-            format!("{}:{}", ROOM_REGISTRY_KEY, room),
+            format!("{}:{}", STREAM_REGISTRY_KEY, stream),
             self.ip_port.clone(),
             Utc::now().timestamp_millis(),
         )
         .await?;
-        self.rooms.write().await.insert(room.clone());
+        self.streams.write().await.insert(stream.clone());
         Ok(())
     }
-    async fn unregister_room(&self, room: String) -> Result<()> {
-        self.rooms.write().await.remove(&room);
+    async fn unregister_stream(&self, stream: String) -> Result<()> {
+        self.streams.write().await.remove(&stream);
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         conn.zrem(
-            format!("{}:{}", ROOM_REGISTRY_KEY, room),
+            format!("{}:{}", STREAM_REGISTRY_KEY, stream),
             self.ip_port.clone(),
         )
         .await?;

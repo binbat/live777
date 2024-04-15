@@ -5,7 +5,6 @@ import (
 	"embed"
 	"errors"
 	"flag"
-	"github.com/gorilla/mux"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 var config *Config
@@ -53,10 +54,10 @@ func main() {
 		panic(err)
 	}
 	r := mux.NewRouter()
-	r.HandleFunc("/whip/{room}", whipHandler)
-	r.HandleFunc("/whep/{room}", whepHandler)
-	r.HandleFunc("/resource/{room}/{session}", resourceHandler)
-	r.HandleFunc("/resource/{room}/{session}/layer", resourceHandler)
+	r.HandleFunc("/whip/{stream}", whipHandler)
+	r.HandleFunc("/whep/{stream}", whepHandler)
+	r.HandleFunc("/resource/{stream}/{session}", resourceHandler)
+	r.HandleFunc("/resource/{stream}/{session}/layer", resourceHandler)
 	r.PathPrefix("/").Handler(http.StripPrefix("/", http.FileServer(http.FS(assets))))
 	r.Use(loggingMiddleware)
 	r.Use(mux.CORSMethodMiddleware(r))
@@ -67,8 +68,8 @@ func main() {
 
 func whipHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	room := extractRequestRoom(r)
-	nodes, err := storage.GetRoomNodes(ctx, room)
+	stream := extractRequestStream(r)
+	nodes, err := storage.GetStreamNodes(ctx, stream)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -94,23 +95,23 @@ func whipHandler(w http.ResponseWriter, r *http.Request) {
 
 func whepHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	room := extractRequestRoom(r)
-	roomNodes, err := storage.GetRoomNodes(ctx, room)
+	stream := extractRequestStream(r)
+	streamNodes, err := storage.GetStreamNodes(ctx, stream)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if len(roomNodes) == 0 {
-		http.Error(w, "the room does not exist", http.StatusNotFound)
+	if len(streamNodes) == 0 {
+		http.Error(w, "the stream does not exist", http.StatusNotFound)
 		return
 	}
 	var targetNode *Node
-	node, err := GetMaxIdlenessNode(ctx, roomNodes, false)
+	node, err := GetMaxIdlenessNode(ctx, streamNodes, false)
 	if err == nil {
 		targetNode = node
 	} else {
-		if errors.Is(err, NoAvailableNodeErr) {
-			targetNode, err = whepGetReforwardNode(roomNodes, ctx, room)
+		if errors.Is(err, ErrNoAvailableNode) {
+			targetNode, err = whepGetReforwardNode(streamNodes, ctx, stream)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -123,16 +124,16 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 	doProxy(w, r, *targetNode)
 }
 
-func whepGetReforwardNode(roomNodes []Node, ctx context.Context, room string) (*Node, error) {
+func whepGetReforwardNode(streamNodes []Node, ctx context.Context, stream string) (*Node, error) {
 	var reforwardNode *Node
-	for _, node := range roomNodes {
+	for _, node := range streamNodes {
 		if !node.Metadata.ReforwardCascade {
 			reforwardNode = &node
 			break
 		}
 	}
 	if reforwardNode == nil {
-		reforwardNode = &roomNodes[len(roomNodes)-1]
+		reforwardNode = &streamNodes[len(streamNodes)-1]
 	}
 	nodes, err := storage.GetNodes(ctx)
 	if err != nil {
@@ -142,14 +143,14 @@ func whepGetReforwardNode(roomNodes []Node, ctx context.Context, room string) (*
 	if err != nil {
 		return nil, err
 	}
-	err = reforwardNode.Reforward(*targetNode, room, room)
-	slog.Info("reforward", "room", room, "reforwardNode", reforwardNode, "targetNode", targetNode, "error", err)
+	err = reforwardNode.Reforward(*targetNode, stream, stream)
+	slog.Info("reforward", "stream", stream, "reforwardNode", reforwardNode, "targetNode", targetNode, "error", err)
 	if err != nil {
 		return nil, err
 	}
 	for i := 0; i < config.ReforwardCheckFrequency; i++ {
 		time.Sleep(time.Millisecond * 50)
-		info, _ := targetNode.GetRoomInfo(room)
+		info, _ := targetNode.GetStreamInfo(stream)
 		if info != nil && info.PublishSessionInfo != nil && info.PublishSessionInfo.ConnectState == RTCPeerConnectionStateConnected {
 			break
 		}
@@ -160,15 +161,15 @@ func whepGetReforwardNode(roomNodes []Node, ctx context.Context, room string) (*
 func resourceHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vars := mux.Vars(r)
-	room := vars["room"]
+	stream := vars["stream"]
 	session := vars["session"]
-	nodes, err := storage.GetRoomNodes(ctx, room)
+	nodes, err := storage.GetStreamNodes(ctx, stream)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	for _, node := range nodes {
-		info, _ := node.GetRoomInfo(room)
+		info, _ := node.GetStreamInfo(stream)
 		if info == nil {
 			continue
 		}
@@ -186,9 +187,9 @@ func resourceHandler(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "the session does not exist", http.StatusNotFound)
 }
 
-func extractRequestRoom(r *http.Request) string {
+func extractRequestStream(r *http.Request) string {
 	vars := mux.Vars(r)
-	return vars["room"]
+	return vars["stream"]
 }
 
 func doProxy(w http.ResponseWriter, r *http.Request, node Node) {
@@ -232,29 +233,29 @@ func doCheckReforward(ctx context.Context) {
 	for _, node := range nodes {
 		nodeMap[node.Addr] = node
 	}
-	nodesRoomInfos := getNodesRoomInfos(nodes)
+	nodesStreamInfos := getNodesStreamInfos(nodes)
 	for _, node := range nodes {
-		roomInfos := nodesRoomInfos[node.Addr]
-		for _, roomInfo := range roomInfos {
-			for _, subscribeSessionInfo := range roomInfo.SubscribeSessionInfos {
+		streamInfos := nodesStreamInfos[node.Addr]
+		for _, streamInfo := range streamInfos {
+			for _, subscribeSessionInfo := range streamInfo.SubscribeSessionInfos {
 				if subscribeSessionInfo.Reforward != nil {
-					reforwardNodeAddr, reforwardNodeRoom := subscribeSessionInfo.Reforward.ParseNodeAndRoom()
+					reforwardNodeAddr, reforwardNodestream := subscribeSessionInfo.Reforward.ParseNodeAndStream()
 					reforwardNode, ok := nodeMap[reforwardNodeAddr]
 					if !ok {
 						continue
 					}
-					reforwardNodeRoomInfo, err := reforwardNode.GetRoomInfo(reforwardNodeRoom)
+					reforwardNodeStreamInfo, err := reforwardNode.GetStreamInfo(reforwardNodestream)
 					if err != nil {
 						continue
 					}
-					if reforwardNodeRoomInfo.SubscribeLeaveTime != 0 && time.Now().UnixMilli() >= int64(reforwardNodeRoomInfo.SubscribeLeaveTime)+int64(node.Metadata.ReforwardMaximumIdleTime) {
+					if reforwardNodeStreamInfo.SubscribeLeaveTime != 0 && time.Now().UnixMilli() >= int64(reforwardNodeStreamInfo.SubscribeLeaveTime)+int64(node.Metadata.ReforwardMaximumIdleTime) {
 						slog.Info("reforward idle for long periods of time",
 							"node", node,
-							"room", roomInfo.Id,
+							"stream", streamInfo.Id,
 							"session", subscribeSessionInfo.Id,
 							"reforwardNode", reforwardNode,
-							"reforwardNodeRoomInfo", reforwardNodeRoomInfo)
-						_ = node.ResourceDelete(roomInfo.Id, subscribeSessionInfo.Id)
+							"reforwardNodeStreamInfo", reforwardNodeStreamInfo)
+						_ = node.ResourceDelete(streamInfo.Id, subscribeSessionInfo.Id)
 					}
 				}
 			}
@@ -262,22 +263,22 @@ func doCheckReforward(ctx context.Context) {
 	}
 }
 
-func getNodesRoomInfos(nodes []Node) map[string][]RoomInfo {
-	nodeRoomInfosMap := make(map[string][]RoomInfo)
+func getNodesStreamInfos(nodes []Node) map[string][]StreamInfo {
+	nodeStreamInfosMap := make(map[string][]StreamInfo)
 	var lock sync.Mutex
 	var waitGroup sync.WaitGroup
 	for _, node := range nodes {
 		waitGroup.Add(1)
 		go func(node Node) {
 			defer waitGroup.Done()
-			infos, err := node.GetRoomInfos()
+			infos, err := node.GetStreamInfos()
 			if err == nil {
 				lock.Lock()
 				defer lock.Unlock()
-				nodeRoomInfosMap[node.Addr] = infos
+				nodeStreamInfosMap[node.Addr] = infos
 			}
 		}(node)
 	}
 	waitGroup.Wait()
-	return nodeRoomInfosMap
+	return nodeStreamInfosMap
 }

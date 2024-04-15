@@ -41,9 +41,9 @@ use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::dto::req::{ChangeResourceReq, ReforwardReq, SelectLayerReq};
 use crate::result::Result;
-use crate::room::config::ManagerConfig;
+use crate::stream::config::ManagerConfig;
 use config::IceServer;
-use room::manager::Manager;
+use stream::manager::Manager;
 #[cfg(not(debug_assertions))]
 use {http::header, rust_embed::RustEmbed};
 
@@ -55,8 +55,8 @@ mod error;
 mod forward;
 mod metrics;
 mod result;
-mod room;
 mod storage;
+mod stream;
 
 #[derive(Parser)]
 #[command(version)]
@@ -76,7 +76,7 @@ async fn main() {
     let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
     let app_state = AppState {
-        room_manager: Arc::new(Manager::new(ManagerConfig::from_config(cfg.clone()).await).await),
+        stream_manager: Arc::new(Manager::new(ManagerConfig::from_config(cfg.clone()).await).await),
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![
@@ -86,22 +86,22 @@ async fn main() {
     let admin_auth_layer =
         ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.admin_auth]));
     let app = Router::new()
-        .route("/whip/:room", post(whip))
-        .route("/whep/:room", post(whep))
+        .route("/whip/:stream", post(whip))
+        .route("/whep/:stream", post(whep))
         .route(
-            "/resource/:room/:session",
+            "/resource/:stream/:session",
             post(change_resource)
                 .patch(add_ice_candidate)
-                .delete(remove_room_session),
+                .delete(remove_stream_session),
         )
         .route(
-            "/resource/:room/:session/layer",
+            "/resource/:stream/:session/layer",
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
         .layer(auth_layer)
         .route("/admin/infos", get(infos).layer(admin_auth_layer.clone()))
         .route(
-            "/admin/reforward/:room",
+            "/admin/reforward/:stream",
             post(reforward).layer(admin_auth_layer),
         )
         .route("/metrics", get(metrics))
@@ -148,7 +148,7 @@ fn set_log(env_filter: String) {
 
 fn metrics_register() {
     metrics::REGISTRY
-        .register(Box::new(metrics::ROOM.clone()))
+        .register(Box::new(metrics::STREAM.clone()))
         .unwrap();
     metrics::REGISTRY
         .register(Box::new(metrics::PUBLISH.clone()))
@@ -188,12 +188,12 @@ fn static_server(router: Router) -> Router {
 #[cfg(not(debug_assertions))]
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/');
-    if room.is_empty() {
-        room = "index.html";
+    if path.is_empty() {
+        path = "index.html";
     }
-    match Assets::get(room) {
+    match Assets::get(path) {
         Some(content) => {
-            let mime = mime_guess::from_path(room).first_or_octet_stream();
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
             ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
@@ -203,7 +203,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 #[derive(Clone)]
 struct AppState {
     config: Config,
-    room_manager: Arc<Manager>,
+    stream_manager: Arc<Manager>,
 }
 
 async fn print_request_response(
@@ -252,7 +252,7 @@ where
 
 async fn whip(
     State(state): State<AppState>,
-    Path(room): Path<String>,
+    Path(stream): Path<String>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -263,12 +263,12 @@ async fn whip(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, session) = state.room_manager.publish(room.clone(), offer).await?;
+    let (answer, session) = state.stream_manager.publish(stream.clone(), offer).await?;
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", room, session));
+        .header("Location", format!("/resource/{}/{}", stream, session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
@@ -277,7 +277,7 @@ async fn whip(
 
 async fn whep(
     State(state): State<AppState>,
-    Path(room): Path<String>,
+    Path(stream): Path<String>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -288,21 +288,24 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, session) = state.room_manager.subscribe(room.clone(), offer).await?;
+    let (answer, session) = state
+        .stream_manager
+        .subscribe(stream.clone(), offer)
+        .await?;
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", room, session));
+        .header("Location", format!("/resource/{}/{}", stream, session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
-    if state.room_manager.layers(room.clone()).await.is_ok() {
+    if state.stream_manager.layers(stream.clone()).await.is_ok() {
         builder = builder.header(
             "Link",
             format!(
                 "</resource/{}/{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                room, session
+                stream, session
             ),
         )
     }
@@ -311,7 +314,7 @@ async fn whep(
 
 async fn add_ice_candidate(
     State(state): State<AppState>,
-    Path((room, session)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -322,22 +325,22 @@ async fn add_ice_candidate(
         return Err(anyhow::anyhow!("Content-Type must be application/trickle-ice-sdpfrag").into());
     }
     state
-        .room_manager
-        .add_ice_candidate(room, session, body)
+        .stream_manager
+        .add_ice_candidate(stream, session, body)
         .await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)
 }
 
-async fn remove_room_session(
+async fn remove_stream_session(
     State(state): State<AppState>,
-    Path((room, session)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
     _uri: Uri,
 ) -> Result<Response<String>> {
     state
-        .room_manager
-        .remove_room_session(room, session)
+        .stream_manager
+        .remove_stream_session(stream, session)
         .await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -346,24 +349,24 @@ async fn remove_room_session(
 
 async fn change_resource(
     State(state): State<AppState>,
-    Path((room, session)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
     Json(dto): Json<ChangeResourceReq>,
 ) -> Result<Json<HashMap<String, String>>> {
     state
-        .room_manager
-        .change_resource(room, session, dto)
+        .stream_manager
+        .change_resource(stream, session, dto)
         .await?;
     Ok(Json(HashMap::new()))
 }
 
 async fn get_layer(
     State(state): State<AppState>,
-    Path((room, _session)): Path<(String, String)>,
+    Path((stream, _session)): Path<(String, String)>,
 ) -> Result<Json<Vec<LayerRes>>> {
     Ok(Json(
         state
-            .room_manager
-            .layers(room)
+            .stream_manager
+            .layers(stream)
             .await?
             .into_iter()
             .map(|layer| layer.into())
@@ -373,13 +376,13 @@ async fn get_layer(
 
 async fn select_layer(
     State(state): State<AppState>,
-    Path((room, session)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
     Json(layer): Json<SelectLayerReq>,
 ) -> Result<String> {
     state
-        .room_manager
+        .stream_manager
         .select_layer(
-            room,
+            stream,
             session,
             layer
                 .encoding_id
@@ -391,12 +394,12 @@ async fn select_layer(
 
 async fn un_select_layer(
     State(state): State<AppState>,
-    Path((room, session)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
 ) -> Result<String> {
     state
-        .room_manager
+        .stream_manager
         .select_layer(
-            room,
+            stream,
             session,
             Some(forward::info::Layer {
                 encoding_id: constant::RID_DISABLE.to_string(),
@@ -412,9 +415,12 @@ async fn infos(
 ) -> Result<Json<Vec<ForwardInfoRes>>> {
     Ok(Json(
         state
-            .room_manager
-            .info(qry.rooms.map_or(vec![], |rooms| {
-                rooms.split(',').map(|room| room.to_string()).collect()
+            .stream_manager
+            .info(qry.streams.map_or(vec![], |streams| {
+                streams
+                    .split(',')
+                    .map(|stream| stream.to_string())
+                    .collect()
             }))
             .await
             .into_iter()
@@ -425,13 +431,13 @@ async fn infos(
 
 async fn reforward(
     State(state): State<AppState>,
-    Path(room): Path<String>,
+    Path(stream): Path<String>,
     Json(reforward): Json<ReforwardReq>,
 ) -> Result<String> {
     state
-        .room_manager
+        .stream_manager
         .reforward(
-            room,
+            stream,
             ReforwardInfo {
                 target_url: reforward.target_url,
                 admin_authorization: reforward.admin_authorization,
