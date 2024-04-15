@@ -15,7 +15,7 @@ func ParseConfig(path string) *Config {
 	cfg := &Config{
 		ListenAddr:              ":8080",
 		Model:                   "RedisStandalone",
-		Addr:                    "localhost:6379",
+		Addr:                    "redis://localhost:6379",
 		Level:                   "DEBUG",
 		ReforwardCheckFrequency: 5,
 		CheckReforwardTickTime:  3000,
