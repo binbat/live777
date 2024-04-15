@@ -16,7 +16,7 @@ pub struct ChangeResourceReq {
 #[derive(Deserialize)]
 pub struct QueryInfoReq {
     #[serde(default)]
-    pub rooms: Option<String>,
+    pub streams: Option<String>,
 }
 
 #[derive(Deserialize)]

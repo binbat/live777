@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use prometheus::{Gauge, Registry, TextEncoder};
 
 lazy_static! {
-    pub static ref ROOM: Gauge = Gauge::new("room", "room number").unwrap();
+    pub static ref STREAM: Gauge = Gauge::new("stream", "stream number").unwrap();
     pub static ref PUBLISH: Gauge = Gauge::new("publish", "publish number").unwrap();
     pub static ref SUBSCRIBE: Gauge = Gauge::new("subscribe", "subscribe number").unwrap();
     pub static ref REFORWARD: Gauge = Gauge::new("reforward", "reforward number").unwrap();

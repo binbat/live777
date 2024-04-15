@@ -37,7 +37,7 @@ type NodeMetaData struct {
 	AdminAuthorization       *string `json:"adminAuthorization,omitempty"`
 }
 
-type RoomInfo struct {
+type StreamInfo struct {
 	Id                    string        `json:"id"`
 	CreateTime            int64         `json:"createTime"`
 	PublishLeaveTime      int           `json:"publishLeaveTime"`
@@ -58,7 +58,7 @@ type ReforwardInfo struct {
 	ResourceUrl string `json:"resourceUrl"`
 }
 
-func (reforward ReforwardInfo) ParseNodeAndRoom() (string, string) {
+func (reforward ReforwardInfo) ParseNodeAndStream() (string, string) {
 	targetUrl := reforward.TargetUrl
 	parse, _ := url.Parse(targetUrl)
 	split := strings.Split(parse.RequestURI(), "/")
@@ -68,14 +68,14 @@ func (reforward ReforwardInfo) ParseNodeAndRoom() (string, string) {
 const metricsPrefix = "live777_"
 
 type NodeMetrics struct {
-	Room      uint64 `json:"room"`
+	Stream    uint64 `json:"stream"`
 	Publish   uint64 `json:"publish"`
 	Subscribe uint64 `json:"subscribe"`
 	Reforward uint64 `json:"reforward"`
 }
 
-func (node *Node) GetRoomInfo(room string) (*RoomInfo, error) {
-	infos, err := node.GetRoomInfos(room)
+func (node *Node) GetStreamInfo(stream string) (*StreamInfo, error) {
+	infos, err := node.GetStreamInfos(stream)
 	if err != nil {
 		return nil, err
 	}
@@ -85,14 +85,14 @@ func (node *Node) GetRoomInfo(room string) (*RoomInfo, error) {
 	return &infos[0], nil
 }
 
-func (node *Node) GetRoomInfos(room ...string) ([]RoomInfo, error) {
-	response, err := request("GET", fmt.Sprintf("http://%s/admin/infos?rooms=%s", node.Addr, strings.Join(room, ",")), node.Metadata.AdminAuthorization, nil)
+func (node *Node) GetStreamInfos(stream ...string) ([]StreamInfo, error) {
+	response, err := request("GET", fmt.Sprintf("http://%s/admin/infos?streams=%s", node.Addr, strings.Join(stream, ",")), node.Metadata.AdminAuthorization, nil)
 	if err != nil {
 		return nil, err
 	}
 	body := response.Body
 	defer body.Close()
-	infos := make([]RoomInfo, 0)
+	infos := make([]StreamInfo, 0)
 	err = json.NewDecoder(body).Decode(&infos)
 	return infos, err
 }
@@ -116,8 +116,8 @@ func (node *Node) GetMetrics() (*NodeMetrics, error) {
 				return nil, err
 			}
 			switch split[0] {
-			case "room":
-				metrics.Room = val
+			case "stream":
+				metrics.Stream = val
 			case "publish":
 				metrics.Publish = val
 			case "subscribe":
@@ -130,13 +130,13 @@ func (node *Node) GetMetrics() (*NodeMetrics, error) {
 	return metrics, nil
 }
 
-func (node *Node) Reforward(targetNode Node, nodeRoom, targetRoom string) error {
+func (node *Node) Reforward(targetNode Node, nodestream, targetstream string) error {
 	type ReforwardReq struct {
 		TargetUrl          string  `json:"targetUrl"`
 		AdminAuthorization *string `json:"adminAuthorization,omitempty"`
 	}
-	response, err := request("POST", fmt.Sprintf("http://%s/admin/reforward/%s", node.Addr, nodeRoom), node.Metadata.AdminAuthorization, ReforwardReq{
-		TargetUrl:          fmt.Sprintf("http://%s/whip/%s", targetNode.Addr, targetRoom),
+	response, err := request("POST", fmt.Sprintf("http://%s/admin/reforward/%s", node.Addr, nodestream), node.Metadata.AdminAuthorization, ReforwardReq{
+		TargetUrl:          fmt.Sprintf("http://%s/whip/%s", targetNode.Addr, targetstream),
 		AdminAuthorization: targetNode.Metadata.AdminAuthorization,
 	})
 	if err != nil {
@@ -146,8 +146,8 @@ func (node *Node) Reforward(targetNode Node, nodeRoom, targetRoom string) error 
 	return nil
 }
 
-func (node *Node) ResourceDelete(room, session string) error {
-	response, err := request("DELETE", fmt.Sprintf("http://%s/resource/%s/%s", node.Addr, room, session), node.Metadata.Authorization, nil)
+func (node *Node) ResourceDelete(stream, session string) error {
+	response, err := request("DELETE", fmt.Sprintf("http://%s/resource/%s/%s", node.Addr, stream, session), node.Metadata.Authorization, nil)
 	if err != nil {
 		return err
 	}

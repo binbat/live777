@@ -8,8 +8,8 @@ use self::redis::RedisStandaloneStorage;
 #[async_trait]
 pub trait Storage {
     async fn registry(&self, value: String) -> Result<()>;
-    async fn registry_room(&self, room: String) -> Result<()>;
-    async fn unregister_room(&self, room: String) -> Result<()>;
+    async fn registry_stream(&self, stream: String) -> Result<()>;
+    async fn unregister_stream(&self, stream: String) -> Result<()>;
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

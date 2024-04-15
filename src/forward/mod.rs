@@ -76,7 +76,7 @@ impl PeerForward {
                 tokio::spawn(async move {
                     info!(
                         "[{}] [publish] [{}] connection state changed: {}",
-                        internal.room,
+                        internal.stream,
                         get_peer_id(&pc),
                         s
                     );
@@ -136,7 +136,7 @@ impl PeerForward {
                 tokio::spawn(async move {
                     info!(
                         "[{}] [subscribe] [{}] connection state changed: {}",
-                        internal.room,
+                        internal.stream,
                         get_peer_id(&pc),
                         s
                     );
@@ -208,7 +208,7 @@ impl PeerForward {
                 tokio::spawn(async move {
                     info!(
                         "[{}] [reforward] [{}] connection state changed: {}",
-                        internal.room,
+                        internal.stream,
                         get_peer_id(&pc),
                         s
                     );
