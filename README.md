@@ -73,6 +73,16 @@ Live777 has the following characteristics:
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
+### Windows install
+
+**Winget**
+
+```bash
+winget install live777
+```
+
+### Gstreamer WHIP/WHEP client
+
 **Open your browser, enter the URL: http://localhost:7777/**
 
 ### Gstreamer `WHIP`/`WHEP` client
@@ -263,6 +273,12 @@ cargo build --package=whipinto --release
 whipinto -c vp8 -u http://localhost:7777/whip/777 --port 5003
 ```
 
+Windows install
+**Winget**
+```bash
+winget install whipinto
+```
+
 Video Test Src
 
 ```bash
@@ -292,6 +308,12 @@ Build
 
 ```bash
 cargo build --package=whepfrom --release
+```
+
+Windows install
+**Winget**
+```bash
+winget install whepfrom
 ```
 
 Use WHEP protocol pull stream convert rtp sender
