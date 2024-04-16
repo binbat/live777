@@ -231,9 +231,7 @@ gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink 
 
 We have tools for support rtp -> whip/whep convert
 
-![live777-apps](./docs/live777-apps.excalidraw.svg#gh-light-mode-only)
-![live777-apps](./docs/live777-apps.dark.svg#gh-dark-mode-only)
-
+![live777-apps](./docs/live777-apps.excalidraw.svg)
 
 For Example:
 
