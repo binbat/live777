@@ -44,6 +44,7 @@ Example:
 -->
 
 - Metal A-wing, @a-wing, 2023/10/10
+- Guanchong Niu, @RobertGCNiu, 2023/10/10
 - Yabin Yang, @Marsyew, 2023/10/10
 - Wen Yang, @fastfeee, 2023/10/10
 - Hongcha Zhang, @hongcha98, 2023/10/10
