@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use chrono::Utc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::debug;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -10,10 +11,12 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 
 use crate::error::AppError;
+use crate::forward::info::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::ForwardData;
 use crate::{constant, result::Result};
 
+use super::info::ReforwardInfo;
 use super::track::PublishTrackRemote;
 use super::{get_peer_id, info};
 
@@ -27,19 +30,23 @@ struct SubscribeForwardChannel {
 
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
+    pub(crate) reforward_info: RwLock<Option<ReforwardInfo>>,
     pub(crate) peer: Arc<RTCPeerConnection>,
+    pub(crate) create_time: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
 }
 
 impl SubscribeRTCPeerConnection {
     pub(crate) async fn new(
-        path: String,
+        reforward_info: Option<ReforwardInfo>,
+        stream: String,
         peer: Arc<RTCPeerConnection>,
         publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
-        publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
-        publish_track_change: broadcast::Sender<()>, // use subscribe
-        video_sender: Option<Arc<RTCRtpSender>>,
-        audio_sender: Option<Arc<RTCRtpSender>>,
+        (publish_tracks, publish_track_change): (
+            Arc<RwLock<Vec<PublishTrackRemote>>>,
+            broadcast::Sender<()>, // use subscribe
+        ),
+        (video_sender, audio_sender): (Option<Arc<RTCRtpSender>>, Option<Arc<RTCRtpSender>>),
     ) -> Self {
         let (select_layer_sender, _) = broadcast::channel(1);
         let id = get_peer_id(&peer);
@@ -60,7 +67,7 @@ impl SubscribeRTCPeerConnection {
                 publish_rtcp_sender.clone(),
             ));
             tokio::spawn(Self::sender_forward_rtp(
-                path.clone(),
+                stream.clone(),
                 id.clone(),
                 sender,
                 kind,
@@ -76,13 +83,24 @@ impl SubscribeRTCPeerConnection {
         let _ = publish_track_change.send(());
         Self {
             id,
+            reforward_info: RwLock::new(reforward_info),
             peer,
+            create_time: Utc::now().timestamp_millis(),
             select_layer_sender,
         }
     }
 
+    pub(crate) async fn info(&self) -> SessionInfo {
+        SessionInfo {
+            id: self.id.clone(),
+            create_time: self.create_time,
+            connect_state: crate::forward::peer_connect_state(&self.peer),
+            reforward: self.reforward_info.read().await.as_ref().cloned(),
+        }
+    }
+
     async fn sender_forward_rtp(
-        path: String,
+        stream: String,
         id: String,
         sender: Arc<RTCRtpSender>,
         kind: RTPCodecType,
@@ -90,7 +108,7 @@ impl SubscribeRTCPeerConnection {
         publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
         mut forward_channel: SubscribeForwardChannel,
     ) {
-        info!("[{}] [{}] {} up", path, id, kind);
+        info!("[{}] [{}] {} up", stream, id, kind);
         let mut pre_rid: Option<String> = None;
         // empty broadcast channel
         let (virtual_sender, _) = broadcast::channel::<ForwardData>(1);
@@ -100,7 +118,7 @@ impl SubscribeRTCPeerConnection {
         loop {
             tokio::select! {
                 publish_change = forward_channel.publish_track_change.recv() =>{
-                    debug!("{} {} recv publish track_change",path,id);
+                    debug!("{} {} recv publish track_change",stream,id);
                     if publish_change.is_err() {
                         continue;
                     }
@@ -108,7 +126,7 @@ impl SubscribeRTCPeerConnection {
                         let publish_tracks = publish_tracks.read().await;
                         let current_rid = track_binding_publish_rid.get(&kind.clone().to_string());
                         if publish_tracks.len() == 0 {
-                            debug!("{} {} publish track len 0 , probably offline",path,id);
+                            debug!("{} {} publish track len 0 , probably offline",stream,id);
                             recv = virtual_sender.subscribe();
                             let _ = sender.replace_track(None).await;
                             track = None;
@@ -133,14 +151,14 @@ impl SubscribeRTCPeerConnection {
                                     );
                                     match sender.replace_track(Some(new_track.clone())).await {
                                      Ok(_) => {
-                                        debug!("[{}] [{}] {} track replace ok", path, id,kind);
+                                        debug!("[{}] [{}] {} track replace ok", stream, id,kind);
                                         recv = publish_track.subscribe();
                                         track = Some(new_track);
                                         let _ = forward_channel.publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc()));
                                         track_binding_publish_rid.insert(kind.clone().to_string(), publish_track.rid.clone());
                                     }
                                      Err(e) => {
-                                        debug!("[{}] [{}] {} track replace err: {}", path, id,kind, e);
+                                        debug!("[{}] [{}] {} track replace err: {}", stream, id,kind, e);
                                     }};
                                      break;
                        }
@@ -156,7 +174,7 @@ impl SubscribeRTCPeerConnection {
                                     let mut packet = packet.as_ref().clone();
                                     packet.header.sequence_number = sequence_number;
                                     if let Err(err) = track.write_rtp(&packet).await {
-                                        debug!("[{}] [{}] {} track write err: {}", path, id,kind, err);
+                                        debug!("[{}] [{}] {} track write err: {}", stream, id,kind, err);
                                         break;
                                     }
                                     sequence_number = sequence_number.wrapping_add(1);
@@ -164,7 +182,7 @@ impl SubscribeRTCPeerConnection {
                             }
                         }
                         Err(err) => {
-                            debug!("[{}] [{}] {} rtp receiver err: {}", path, id, kind,err);
+                            debug!("[{}] [{}] {} rtp receiver err: {}", stream, id, kind,err);
                         }
                     }
                 }
@@ -222,15 +240,15 @@ impl SubscribeRTCPeerConnection {
                                     );
                                     match sender.replace_track(Some(new_track.clone())).await {
                                      Ok(_) => {
-                                        debug!("[{}] [{}] {} track replace ok", path, id,kind);
+                                        debug!("[{}] [{}] {} track replace ok", stream, id,kind);
                                         recv = publish_track.subscribe();
                                         track = Some(new_track);
                                         let _ = forward_channel.publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc())).unwrap();
                                         track_binding_publish_rid.insert(kind.clone().to_string(), new_rid.clone());
-                                        info!("[{}] [{}] {} select layer to {}", path, id, kind,new_rid);
+                                        info!("[{}] [{}] {} select layer to {}", stream, id, kind,new_rid);
                                     }
                                      Err(e) => {
-                                        debug!("[{}] [{}] {} track replace err: {}", path, id,kind, e);
+                                        debug!("[{}] [{}] {} track replace err: {}", stream, id,kind, e);
                                     }};
                                     break;
                                 }
@@ -244,7 +262,7 @@ impl SubscribeRTCPeerConnection {
                 }
             }
         }
-        info!("[{}] [{}] {} down", path, id, kind);
+        info!("[{}] [{}] {} down", stream, id, kind);
     }
 
     pub(crate) fn select_kind_rid(&self, kind: RTPCodecType, rid: String) -> Result<()> {

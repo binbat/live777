@@ -1,6 +1,10 @@
 name: WHIP Endpoint Conformance Tests
 
-on: push
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   test:
@@ -9,6 +13,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install
+        run: npm install
+      - name: Build Webui
+        run: npm run build
       - name: Build
         run: cargo build --release --verbose
       - name: Checkout tools repo

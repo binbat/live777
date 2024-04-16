@@ -13,9 +13,9 @@ use webrtc::{
 
 #[derive(Clone)]
 pub struct Client {
-    url: String,
-    resource_url: Option<String>,
-    default_headers: HeaderMap,
+    pub url: String,
+    pub resource_url: Option<String>,
+    pub default_headers: HeaderMap,
 }
 
 impl Client {
@@ -39,10 +39,30 @@ impl Client {
         }
     }
 
+    pub fn get_authorization_header_map(authorization: Option<String>) -> Option<HeaderMap> {
+        authorization.map(|authorization| {
+            let mut header_map = HeaderMap::new();
+            header_map.insert("Authorization", authorization.parse().unwrap());
+            header_map
+        })
+    }
+
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
         Client {
             url,
             resource_url: None,
+            default_headers: defulat_headers.unwrap_or_default(),
+        }
+    }
+
+    pub fn build(
+        url: String,
+        resource_url: Option<String>,
+        defulat_headers: Option<HeaderMap>,
+    ) -> Self {
+        Client {
+            url,
+            resource_url,
             default_headers: defulat_headers.unwrap_or_default(),
         }
     }

@@ -1,5 +1,5 @@
 use axum::body::{Body, Bytes};
-use axum::extract::Request;
+use axum::extract::{Query, Request};
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::routing::get;
@@ -11,15 +11,21 @@ use axum::{
     routing::post,
     Router,
 };
+use clap::Parser;
+use dto::req::QueryInfoReq;
+use dto::res::ForwardInfoRes;
+use dto::res::LayerRes;
 use error::AppError;
-use forward::info::Layer;
+use forward::info::ReforwardInfo;
 use http::Uri;
 use http_body_util::BodyExt;
 use std::collections::HashMap;
+use std::env;
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
@@ -29,16 +35,15 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::info_span;
 use tracing::{debug, error, info};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::dto::req::{ChangeResource, SelectLayer};
+use crate::dto::req::{ChangeResourceReq, ReforwardReq, SelectLayerReq};
 use crate::result::Result;
+use crate::stream::config::ManagerConfig;
 use config::IceServer;
-use path::manager::Manager;
+use stream::manager::Manager;
 #[cfg(not(debug_assertions))]
 use {http::header, rust_embed::RustEmbed};
 
@@ -49,53 +54,56 @@ mod dto;
 mod error;
 mod forward;
 mod metrics;
-mod path;
 mod result;
-mod signal;
+mod storage;
+mod stream;
+
+#[derive(Parser)]
+#[command(version)]
+struct Args {
+    /// Set config file path
+    #[arg(short, long)]
+    config: Option<String>,
+}
 
 #[tokio::main]
 async fn main() {
-    metrics::REGISTRY
-        .register(Box::new(metrics::PUBLISH.clone()))
-        .unwrap();
-    metrics::REGISTRY
-        .register(Box::new(metrics::SUBSCRIBE.clone()))
-        .unwrap();
-    let cfg = Config::parse();
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| format!("live777={},webrtc=error", cfg.log.level).into()),
-        )
-        .with(tracing_logfmt::layer())
-        .init();
+    metrics_register();
+    let args = Args::parse();
+    let cfg = Config::parse(args.config);
+    set_log(format!("live777={},webrtc=error", cfg.log.level));
+    debug!("config : {:?}", cfg);
     let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
-    let ice_servers = cfg
-        .ice_servers
-        .clone()
-        .into_iter()
-        .map(|i| i.into())
-        .collect();
     let app_state = AppState {
-        paths: Arc::new(Manager::new(ice_servers)),
+        stream_manager: Arc::new(Manager::new(ManagerConfig::from_config(cfg.clone()).await).await),
         config: cfg.clone(),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth));
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![
+        cfg.auth,
+        cfg.admin_auth.clone(),
+    ]));
+    let admin_auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.admin_auth]));
     let app = Router::new()
-        .route("/whip/:id", post(whip))
-        .route("/whep/:id", post(whep))
+        .route("/whip/:stream", post(whip))
+        .route("/whep/:stream", post(whep))
         .route(
-            "/resource/:id/:key",
+            "/resource/:stream/:session",
             post(change_resource)
                 .patch(add_ice_candidate)
-                .delete(remove_path_key),
+                .delete(remove_stream_session),
         )
         .route(
-            "/resource/:id/:key/layer",
+            "/resource/:stream/:session/layer",
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
         .layer(auth_layer)
+        .route("/admin/infos", get(infos).layer(admin_auth_layer.clone()))
+        .route(
+            "/admin/reforward/:stream",
+            post(reforward).layer(admin_auth_layer),
+        )
         .route("/metrics", get(metrics))
         .with_state(app_state)
         .layer(if cfg.http.cors {
@@ -123,6 +131,36 @@ async fn main() {
     info!("Server shutdown");
 }
 
+fn set_log(env_filter: String) {
+    let _ = env::var("RUST_LOG").is_err_and(|_| {
+        env::set_var("RUST_LOG", env_filter);
+        true
+    });
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .compact()
+        .with_file(true)
+        .with_line_number(true)
+        .with_thread_ids(true)
+        .with_target(true)
+        .init();
+}
+
+fn metrics_register() {
+    metrics::REGISTRY
+        .register(Box::new(metrics::STREAM.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::PUBLISH.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::SUBSCRIBE.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::REFORWARD.clone()))
+        .unwrap();
+}
+
 async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
@@ -131,14 +169,14 @@ async fn metrics() -> String {
 
 #[cfg(not(debug_assertions))]
 #[derive(RustEmbed)]
-#[folder = "assets/"]
+#[folder = "gateway/assets/"]
 struct Assets;
 
 fn static_server(router: Router) -> Router {
     #[cfg(debug_assertions)]
     {
         let serve_dir =
-            ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
+            ServeDir::new("gateway/assets").not_found_service(ServeFile::new("assets/index.html"));
         router.nest_service("/", serve_dir.clone())
     }
     #[cfg(not(debug_assertions))]
@@ -165,7 +203,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 #[derive(Clone)]
 struct AppState {
     config: Config,
-    paths: Arc<Manager>,
+    stream_manager: Arc<Manager>,
 }
 
 async fn print_request_response(
@@ -206,7 +244,7 @@ where
     };
 
     if let Ok(body) = std::str::from_utf8(&bytes) {
-        tracing::debug!("{direction} headers = {headers:?} body = {body:?}");
+        debug!("{direction} headers = {headers:?} body = {body:?}");
     }
 
     Ok(bytes)
@@ -214,7 +252,7 @@ where
 
 async fn whip(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(stream): Path<String>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -225,12 +263,12 @@ async fn whip(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.publish(id.clone(), offer).await?;
+    let (answer, session) = state.stream_manager.publish(stream.clone(), offer).await?;
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", id, key));
+        .header("Location", format!("/resource/{}/{}", stream, session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
@@ -239,7 +277,7 @@ async fn whip(
 
 async fn whep(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(stream): Path<String>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -250,21 +288,24 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
-    let (answer, key) = state.paths.subscribe(id.clone(), offer).await?;
+    let (answer, session) = state
+        .stream_manager
+        .subscribe(stream.clone(), offer)
+        .await?;
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", id, key));
+        .header("Location", format!("/resource/{}/{}", stream, session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
-    if state.paths.layers(id.clone()).await.is_ok() {
+    if state.stream_manager.layers(stream.clone()).await.is_ok() {
         builder = builder.header(
             "Link",
             format!(
                 "</resource/{}/{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                id, key
+                stream, session
             ),
         )
     }
@@ -273,7 +314,7 @@ async fn whep(
 
 async fn add_ice_candidate(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
     header: HeaderMap,
     body: String,
 ) -> Result<Response<String>> {
@@ -283,18 +324,24 @@ async fn add_ice_candidate(
     if content_type.to_str()? != "application/trickle-ice-sdpfrag" {
         return Err(anyhow::anyhow!("Content-Type must be application/trickle-ice-sdpfrag").into());
     }
-    state.paths.add_ice_candidate(id, key, body).await?;
+    state
+        .stream_manager
+        .add_ice_candidate(stream, session, body)
+        .await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)
 }
 
-async fn remove_path_key(
+async fn remove_stream_session(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
     _uri: Uri,
 ) -> Result<Response<String>> {
-    state.paths.remove_path_key(id, key).await?;
+    state
+        .stream_manager
+        .remove_stream_session(stream, session)
+        .await?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body("".to_string())?)
@@ -302,32 +349,44 @@ async fn remove_path_key(
 
 async fn change_resource(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
-    Json(dto): Json<ChangeResource>,
+    Path((stream, session)): Path<(String, String)>,
+    Json(dto): Json<ChangeResourceReq>,
 ) -> Result<Json<HashMap<String, String>>> {
-    state.paths.change_resource(id, key, dto).await?;
+    state
+        .stream_manager
+        .change_resource(stream, session, dto)
+        .await?;
     Ok(Json(HashMap::new()))
 }
 
 async fn get_layer(
     State(state): State<AppState>,
-    Path((id, _key)): Path<(String, String)>,
-) -> Result<Json<Vec<Layer>>> {
-    let layers = state.paths.layers(id).await?;
-    Ok(Json(layers))
+    Path((stream, _session)): Path<(String, String)>,
+) -> Result<Json<Vec<LayerRes>>> {
+    Ok(Json(
+        state
+            .stream_manager
+            .layers(stream)
+            .await?
+            .into_iter()
+            .map(|layer| layer.into())
+            .collect(),
+    ))
 }
 
 async fn select_layer(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
-    Json(layer): Json<SelectLayer>,
+    Path((stream, session)): Path<(String, String)>,
+    Json(layer): Json<SelectLayerReq>,
 ) -> Result<String> {
     state
-        .paths
+        .stream_manager
         .select_layer(
-            id,
-            key,
-            layer.encoding_id.map(|encoding_id| Layer { encoding_id }),
+            stream,
+            session,
+            layer
+                .encoding_id
+                .map(|encoding_id| forward::info::Layer { encoding_id }),
         )
         .await?;
     Ok("".to_string())
@@ -335,16 +394,55 @@ async fn select_layer(
 
 async fn un_select_layer(
     State(state): State<AppState>,
-    Path((id, key)): Path<(String, String)>,
+    Path((stream, session)): Path<(String, String)>,
 ) -> Result<String> {
     state
-        .paths
+        .stream_manager
         .select_layer(
-            id,
-            key,
-            Some(Layer {
+            stream,
+            session,
+            Some(forward::info::Layer {
                 encoding_id: constant::RID_DISABLE.to_string(),
             }),
+        )
+        .await?;
+    Ok("".to_string())
+}
+
+async fn infos(
+    State(state): State<AppState>,
+    Query(qry): Query<QueryInfoReq>,
+) -> Result<Json<Vec<ForwardInfoRes>>> {
+    Ok(Json(
+        state
+            .stream_manager
+            .info(qry.streams.map_or(vec![], |streams| {
+                streams
+                    .split(',')
+                    .map(|stream| stream.to_string())
+                    .collect()
+            }))
+            .await
+            .into_iter()
+            .map(|forward_info| forward_info.into())
+            .collect(),
+    ))
+}
+
+async fn reforward(
+    State(state): State<AppState>,
+    Path(stream): Path<String>,
+    Json(reforward): Json<ReforwardReq>,
+) -> Result<String> {
+    state
+        .stream_manager
+        .reforward(
+            stream,
+            ReforwardInfo {
+                target_url: reforward.target_url,
+                admin_authorization: reforward.admin_authorization,
+                resource_url: None,
+            },
         )
         .await?;
     Ok("".to_string())

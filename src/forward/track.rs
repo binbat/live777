@@ -17,13 +17,13 @@ pub(crate) struct PublishTrackRemote {
 }
 
 impl PublishTrackRemote {
-    pub async fn new(path: String, id: String, track: Arc<TrackRemote>) -> Self {
+    pub async fn new(stream: String, id: String, track: Arc<TrackRemote>) -> Self {
         let (rtp_sender, mut rtp_recv) = broadcast::channel(128);
         tokio::spawn(async move { while rtp_recv.recv().await.is_ok() {} });
         let rid = track.rid().to_owned();
         let kind = track.kind();
         tokio::spawn(Self::track_forward(
-            path,
+            stream,
             id,
             track.clone(),
             rtp_sender.clone(),
@@ -37,14 +37,14 @@ impl PublishTrackRemote {
     }
 
     async fn track_forward(
-        path: String,
+        stream: String,
         id: String,
         track: Arc<TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
     ) {
         info!(
             "[{}] [{}] track : {:?} rid :{} ssrc: {} start forward",
-            path,
+            stream,
             id,
             track.kind(),
             track.rid(),
@@ -57,7 +57,7 @@ impl PublishTrackRemote {
                     if let Err(err) = rtp_sender.send(Arc::new(rtp_packet)) {
                         debug!(
                             "[{}] [{}] track : {:?} {} rtp broadcast error : {}",
-                            path,
+                            stream,
                             id,
                             track.kind(),
                             track.rid(),
@@ -69,7 +69,7 @@ impl PublishTrackRemote {
                 Err(err) => {
                     debug!(
                         "[{}] [{}] track : {:?} {} read error : {}",
-                        path,
+                        stream,
                         id,
                         track.kind(),
                         track.rid(),
@@ -81,7 +81,7 @@ impl PublishTrackRemote {
         }
         info!(
             "[{}] [{}] track : {:?} rid :{} ssrc: {} stop forward",
-            path,
+            stream,
             id,
             track.kind(),
             track.rid(),

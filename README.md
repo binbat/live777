@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="./assets/logo.svg" alt="Live777" width="200">
+  <img src="./public/logo.svg" alt="Live777" width="200">
   <br>Live777<br>
 </h1>
 

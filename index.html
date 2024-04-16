@@ -2,10 +2,11 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <link rel="icon" href="./logo.svg"/>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Live777</title>
+
     <style>
         fieldset {
             border-style: dotted;
@@ -22,6 +23,8 @@
 </head>
 
 <body>
+    <div id="app"></div>
+    <script type="module" src="/web/main.tsx"></script>
 <fieldset>
     <legend>Common</legend>
     <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
@@ -104,13 +107,13 @@
     </fieldset>
 </div>
 <script type="module">
-    import convertSessionDescription from "./sdp.js"
-    import {WHIPClient} from "./whip.js"
-    import {WHEPClient} from "./whep.js"
+    import convertSessionDescription from "./web/old/sdp.js"
+    import {WHIPClient} from "@binbat/whip-whep/whip.js"
+    import {WHEPClient} from "@binbat/whip-whep/whep.js"
 
-    import VideoSizeSelectElement from "./components/video-size-select.js"
-    import DebugPlayer from "./components/debug-player.js"
-    import DataChannel from "./components/data-channel.js"
+    import VideoSizeSelectElement from "./web/old/components/video-size-select.js"
+    import DebugPlayer from "./web/old/components/debug-player.js"
+    import DataChannel from "./web/old/components/data-channel.js"
 
     customElements.define("video-size-select", VideoSizeSelectElement)
     customElements.define("debug-player", DebugPlayer)

@@ -1,3 +1,6 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use std::{env, fs};
 use webrtc::{
@@ -5,19 +8,28 @@ use webrtc::{
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     Error,
 };
+
+use crate::storage::StorageModel;
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
-    #[serde(default = "Http::default")]
+    #[serde(default)]
     pub http: Http,
     #[serde(default = "default_ice_servers")]
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
-    #[serde(default = "Log::default")]
+    #[serde(default)]
+    pub admin_auth: Auth,
+    #[serde(default)]
     pub log: Log,
+    #[serde(default)]
+    pub publish_leave_timeout: PublishLeaveTimeout,
+    #[serde(default)]
+    pub node_info: NodeInfo,
 }
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http {
     #[serde(default = "default_http_listen")]
     pub listen: String,
@@ -33,6 +45,19 @@ pub struct Auth {
     pub tokens: Vec<String>,
 }
 
+impl Auth {
+    pub fn to_authorizations(&self) -> Vec<String> {
+        let mut authorizations = vec![];
+        for account in self.accounts.iter() {
+            authorizations.push(account.to_authorization());
+        }
+        for token in self.tokens.iter() {
+            authorizations.push(format!("Bearer {}", token));
+        }
+        authorizations
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     #[serde(default)]
@@ -41,17 +66,94 @@ pub struct Account {
     pub password: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+impl Account {
+    pub fn to_authorization(&self) -> String {
+        let encoded = STANDARD.encode(format!("{}:{}", self.username, self.password));
+        format!("Basic {}", encoded)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Log {
     #[serde(default = "default_log_level")]
     pub level: String,
 }
 
-fn default_http_listen() -> String {
-    format!("[::]:{}", env::var("PORT").unwrap_or(String::from("7777")))
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishLeaveTimeout(pub u64);
+
+impl Default for PublishLeaveTimeout {
+    fn default() -> Self {
+        PublishLeaveTimeout(15000)
+    }
 }
 
-impl Http {
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NodeInfo {
+    pub storage: Option<StorageModel>,
+    #[serde(default = "default_registry_ip_port")]
+    pub ip_port: String,
+    #[serde(default)]
+    pub meta_data: MetaData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetaData {
+    #[serde(default)]
+    pub pub_max: MetaDataPubMax,
+    #[serde(default)]
+    pub sub_max: MetaDataSubMax,
+    #[serde(default)]
+    pub reforward_maximum_idle_time: ReforwardMaximumIdleTime,
+    #[serde(default)]
+    pub reforward_cascade: bool,
+    #[serde(default)]
+    pub reforward_close_sub: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaDataPubMax(pub u64);
+
+impl Default for MetaDataPubMax {
+    fn default() -> Self {
+        MetaDataPubMax(u64::MAX)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaDataSubMax(pub u64);
+
+impl Default for MetaDataSubMax {
+    fn default() -> Self {
+        MetaDataSubMax(u64::MAX)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReforwardMaximumIdleTime(pub u64);
+
+impl Default for ReforwardMaximumIdleTime {
+    fn default() -> Self {
+        ReforwardMaximumIdleTime(1800000)
+    }
+}
+
+fn default_http_listen() -> String {
+    format!(
+        "0.0.0.0:{}",
+        env::var("PORT").unwrap_or(String::from("7777"))
+    )
+}
+
+fn default_registry_ip_port() -> String {
+    format!(
+        "{}:{}",
+        local_ip().unwrap(),
+        env::var("PORT").unwrap_or(String::from("7777"))
+    )
+}
+
+impl Default for Http {
     fn default() -> Self {
         Self {
             listen: default_http_listen(),
@@ -69,7 +171,7 @@ fn default_ice_servers() -> Vec<IceServer> {
     }]
 }
 
-impl Log {
+impl Default for Log {
     fn default() -> Self {
         Self {
             level: default_log_level(),
@@ -159,28 +261,38 @@ impl From<IceServer> for RTCIceServer {
 }
 
 impl Config {
-    pub(crate) fn parse() -> Self {
-        let mut result = fs::read_to_string("config.toml");
-        if result.is_err() {
-            result = fs::read_to_string("/etc/live777/config.toml");
-        }
-        if let Ok(cfg) = result {
-            let cfg: Self = toml::from_str(cfg.as_str()).expect("config parse error");
-            match cfg.validate() {
-                Ok(_) => cfg,
-                Err(err) => panic!("config validate [{}]", err),
-            }
-        } else {
-            Config {
-                http: Http::default(),
-                ice_servers: default_ice_servers(),
-                auth: Default::default(),
-                log: Log::default(),
-            }
+    pub(crate) fn parse(path: Option<String>) -> Self {
+        let result = fs::read_to_string(path.unwrap_or_else(|| String::from("config.toml")))
+            .or_else(|_| fs::read_to_string("/etc/live777/config.toml"))
+            .unwrap_or("".to_string());
+        let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
+        match cfg.validate() {
+            Ok(_) => cfg,
+            Err(err) => panic!("config validate [{}]", err),
         }
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        if (!self.auth.accounts.is_empty() || !self.auth.tokens.is_empty())
+            && (self.admin_auth.accounts.is_empty() && self.admin_auth.tokens.is_empty())
+        {
+            return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
+        }
+        if self.node_info.meta_data.pub_max.0 == 0 {
+            return Err(anyhow::anyhow!(
+                "node_info.meta_data.pub_max cannot be equal to 0"
+            ));
+        }
+        if self.node_info.meta_data.sub_max.0 == 0 {
+            return Err(anyhow::anyhow!(
+                "node_info.meta_data.sub_max cannot be equal to 0"
+            ));
+        }
+        if self.node_info.meta_data.pub_max.0 > self.node_info.meta_data.sub_max.0 {
+            return Err(anyhow::anyhow!(
+                "node_info.meta_data.pub_max cannot be greater than node_info.meta_data.sub_max"
+            ));
+        }
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()
