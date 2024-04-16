@@ -51,6 +51,10 @@ Live777 has the following characteristics:
 
   Support a variety of video encoding and audio encoding formats, providing a wider range of compatibility to help enable adaptive streaming.
 
+### Cluster
+
+![live777-cluster](./docs/live777-cluster.excalidraw.svg)
+
 ### DataChannel Forward
 
 > NOTE: About `createDataChannel()`
