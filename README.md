@@ -69,6 +69,41 @@ Live777 has the following characteristics:
 | `WHIP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
 | `WHEP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
 
+## For developer
+
+Depends:
+- [bun](https://bun.sh/) Or [nodejs](https://nodejs.org/)
+- [cargo](https://www.rust-lang.org/)
+- [go](https://go.dev/)
+- [redis (opt)](https://redis.io/)
+
+### WebUI
+
+```bash
+bun install
+bun run dev
+```
+
+### Live777
+
+```bash
+cargo run -- -c config-dist.toml
+```
+
+### whipinto && whepfrom
+
+```bash
+cargo run --package=whipinto
+cargo run --package=whepfrom
+```
+
+### Gateway
+
+```bash
+docker run -d --name redis --rm -p 6379:6379 redis
+go run -C ./gateway .
+```
+
 ## Quickstart
 
 ### Run Live777 using docker:
