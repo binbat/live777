@@ -8,7 +8,7 @@ edition = "2021"
 crate-type = ["lib"]
 
 [dependencies]
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
+webrtc = { git = "https://github.com/a-wing/webrtc-rs", rev = "b5cc6a35446793bd7923ef1f49b44cbce77cf21e" }
 anyhow = "1.0"
 reqwest = { version = "0.11.24", features = [
     "rustls-tls",

@@ -24,7 +24,9 @@ tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 # There have error, Next commit can't work with obs studio
 # webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "9c0570ad562b226cc9c6c0a3c7a9a28e1d43e08f" }
 # Reference: https://github.com/binbat/live777/issues/39
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
+# webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "3f34e2e055463e88f5e68ef09f98f9c5c674ff42" }
+# https://github.com/webrtc-rs/webrtc/pull/557
+webrtc = { git = "https://github.com/a-wing/webrtc-rs", rev = "b5cc6a35446793bd7923ef1f49b44cbce77cf21e" }
 anyhow = { version = "1", features = ["backtrace"] }
 clap = { version = "4.5.1", features = ["derive"] }
 tokio = { version = "1.36", features = ["full"] }
