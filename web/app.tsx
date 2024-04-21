@@ -6,6 +6,7 @@ import { formatTime } from './utils'
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
 import { IReforwardDialog, ReforwardDialog } from './dialog-reforward'
 import { IPreviewDialog, PreviewDialog } from './dialog-preview'
+import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 
 export function App() {
     const [streams, setStreams] = useState<StreamInfo[]>([])
@@ -14,6 +15,9 @@ export function App() {
     const refReforward = useRef<IReforwardDialog>(null)
     const refClients = useRef<IClientsDialog>(null)
     const refPreview = useRef<IPreviewDialog>(null)
+    const [webStreams, setWebStreams] = useState<string[]>([])
+    const [newResourceId, setNewResourceId] = useState('')
+    const refWebStreams = useRef<Map<string, IWebStreamDialog>>(new Map())
 
     const updateAllStreams = async () => {
         setStreams(await allStream())
@@ -45,6 +49,41 @@ export function App() {
         refPreview.current?.show(id)
     }
 
+    const handleNewStream = () => {
+        const prefix = 'web-'
+        const existingIds = webStreams.concat(streams.filter(s => s.id.startsWith(prefix)).map(s => s.id))
+        let i = 0
+        let newResourceId = `${prefix}${i}`
+        while (existingIds.includes(newResourceId)) {
+            i++
+            newResourceId = `${prefix}${i}`
+        }
+        setWebStreams([...webStreams, newResourceId])
+        setNewResourceId(newResourceId)
+    }
+
+    useEffect(() => {
+        refWebStreams.current.get(newResourceId)?.show(newResourceId)
+    }, [newResourceId])
+
+    const handleWebStreamIdChange = (id: string, newId: string) => {
+        const refMap = refWebStreams.current
+        const ref = refMap.get(id)
+        if (ref) {
+            refMap.delete(id)
+            refMap.set(newId, ref)
+            setWebStreams(webStreams.map(s => s === id ? newId : s))
+        }
+    }
+
+    const handleOpenWebStream = (id: string) => {
+        refWebStreams.current.get(id)?.show(id)
+    }
+
+    const handleWebStreamStop = (id: string) => {
+        setWebStreams(webStreams.filter(s => s !== id))
+    }
+
     return (
         <>
             <div class="flex flex-justify-center">
@@ -58,6 +97,21 @@ export function App() {
             <ReforwardDialog ref={refReforward} />
 
             <PreviewDialog ref={refPreview} />
+
+            {webStreams.map(s =>
+                <WebStreamDialog
+                    ref={(instance: IWebStreamDialog | null) => {
+                        if (instance) {
+                            refWebStreams.current.set(s, instance)
+                        } else {
+                            refWebStreams.current.delete(s)
+                        }
+                        return
+                    }}
+                    onResourceIdChange={newId => handleWebStreamIdChange(s, newId)}
+                    onStop={() => { handleWebStreamStop(s) }}
+                />
+            )}
 
             <fieldset>
                 <legend class="inline-flex items-center">
@@ -99,6 +153,12 @@ export function App() {
                         )}
                     </tbody>
                 </table>
+                <div>
+                    <button onClick={handleNewStream}>New Stream</button>
+                    {webStreams.map(s =>
+                        <button onClick={() => { handleOpenWebStream(s) }}>{s}</button>
+                    )}
+                </div>
             </fieldset>
         </>
     )

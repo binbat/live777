@@ -1,6 +1,6 @@
 import { useRef, useImperativeHandle, useState } from 'preact/hooks'
 import { forwardRef } from 'preact/compat'
-import { WHEPClient } from "@binbat/whip-whep/whep.js"
+import { WHEPClient } from '@binbat/whip-whep/whep.js'
 
 export interface IPreviewDialog {
     show(resourceId: string): void
@@ -35,17 +35,17 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
 
     const handlePreviewStart = (resourceId: string) => {
         const pc = new RTCPeerConnection()
-        pc.addTransceiver('video', { 'direction': 'recvonly' })
-        pc.addTransceiver('audio', { 'direction': 'recvonly' })
+        pc.addTransceiver('video', { direction: 'recvonly' })
+        pc.addTransceiver('audio', { direction: 'recvonly' })
         pc.ontrack = ev => {
-            if (ev.track.kind === "video" && ev.streams.length > 0) {
+            if (ev.track.kind === 'video' && ev.streams.length > 0) {
                 if (refVideo.current) {
                     refVideo.current.srcObject = ev.streams[0]
                 }
             }
         }
         const whep = new WHEPClient()
-        const url = location.origin + "/whep/" + resourceId
+        const url = `${location.origin}/whep/${resourceId}`
         const token = ''
         setWhepClient(whep)
         whep.view(pc, url, token)
@@ -55,7 +55,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
         <dialog ref={refDialog} onClose={handleDialogClose}>
             <h3>Preview {resourceId}</h3>
             <div>
-                <video ref={refVideo} controls autoplay></video>
+                <video ref={refVideo} controls autoplay style={{ maxWidth: '90vw' }}></video>
             </div>
             <form method="dialog">
                 <button>Close</button>
