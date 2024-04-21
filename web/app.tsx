@@ -5,13 +5,15 @@ import { StreamInfo, allStream, delStream } from './api'
 import { formatTime } from './utils'
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
 import { IReforwardDialog, ReforwardDialog } from './dialog-reforward'
+import { IPreviewDialog, PreviewDialog } from './dialog-preview'
 
 export function App() {
     const [streams, setStreams] = useState<StreamInfo[]>([])
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const [refreshTimer, setRefershTimer] = useState(-1)
     const refReforward = useRef<IReforwardDialog>(null)
-    const refViewClients = useRef<IClientsDialog>(null)
+    const refClients = useRef<IClientsDialog>(null)
+    const refPreview = useRef<IPreviewDialog>(null)
 
     const updateAllStreams = async () => {
         setStreams(await allStream())
@@ -32,11 +34,15 @@ export function App() {
 
     const handleViewClients = (id: string) => {
         setSelectedStreamId(id)
-        refViewClients.current?.show()
+        refClients.current?.show()
     }
 
     const handleReforwardStream = (id: string) => {
         refReforward.current?.show(id)
+    }
+
+    const handlePreview = (id: string) => {
+        refPreview.current?.show(id)
     }
 
     return (
@@ -47,9 +53,11 @@ export function App() {
                 </a>
             </div>
 
-            <ClientsDialog ref={refViewClients} id={selectedStreamId} clients={streams.find(s => s.id == selectedStreamId)?.subscribeSessionInfos ?? []} />
+            <ClientsDialog ref={refClients} id={selectedStreamId} clients={streams.find(s => s.id == selectedStreamId)?.subscribeSessionInfos ?? []} />
 
             <ReforwardDialog ref={refReforward} />
+
+            <PreviewDialog ref={refPreview} />
 
             <fieldset>
                 <legend class="inline-flex items-center">
@@ -82,9 +90,10 @@ export function App() {
                                 <td class="text-center">{i.subscribeSessionInfos.filter((t: any) => t.reforward).length}</td>
                                 <td class="text-center">{formatTime(i.createTime)}</td>
                                 <td>
-                                    <button onClick={() => delStream(i.id, i.publishSessionInfo.id)}>Destroy</button>
+                                    <button onClick={() => handlePreview(i.id)}>Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
                                     <button onClick={() => handleReforwardStream(i.id)}>Reforward</button>
+                                    <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publishSessionInfo.id)}>Destroy</button>
                                 </td>
                             </tr>
                         )}

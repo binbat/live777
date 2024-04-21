@@ -46,8 +46,9 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                     )}
                 </tbody>
             </table>
-            <br />
-            <button onClick={() => refDialog.current?.close()}>Close</button>
+            <form method="dialog">
+                <button>Close</button>
+            </form>
         </dialog>
     )
 })
