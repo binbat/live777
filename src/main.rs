@@ -186,7 +186,7 @@ fn static_server(router: Router) -> Router {
     #[cfg(debug_assertions)]
     {
         let serve_dir =
-            ServeDir::new("gateway/assets").not_found_service(ServeFile::new("assets/index.html"));
+            ServeDir::new("assets").not_found_service(ServeFile::new("assets/index.html"));
         router.nest_service("/", serve_dir.clone())
     }
     #[cfg(not(debug_assertions))]
