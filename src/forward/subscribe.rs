@@ -94,7 +94,7 @@ impl SubscribeRTCPeerConnection {
         SessionInfo {
             id: self.id.clone(),
             create_time: self.create_time,
-            connect_state: crate::forward::peer_connect_state(&self.peer),
+            connect_state: self.peer.connection_state(),
             reforward: self.reforward_info.read().await.as_ref().cloned(),
         }
     }

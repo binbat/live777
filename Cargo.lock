@@ -1239,6 +1239,7 @@ dependencies = [
  "hyper 1.2.0",
  "lazy_static",
  "libwish",
+ "live777_http",
  "local-ip-address",
  "md5",
  "mime_guess",
@@ -1254,6 +1255,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webrtc",
+]
+
+[[package]]
+name = "live777_http"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

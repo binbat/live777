@@ -1,10 +1,12 @@
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+
 #[derive(Clone)]
 pub struct Layer {
     pub encoding_id: String,
 }
 
 #[derive(Clone)]
-pub struct ForwardInfo {
+pub struct StreamInfo {
     pub id: String,
     pub create_time: i64,
     pub publish_leave_time: i64,
@@ -16,7 +18,7 @@ pub struct ForwardInfo {
 pub struct SessionInfo {
     pub id: String,
     pub create_time: i64,
-    pub connect_state: u8,
+    pub connect_state: RTCPeerConnectionState,
     pub reforward: Option<ReforwardInfo>,
 }
 

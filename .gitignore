@@ -2,6 +2,7 @@ config.toml
 stream.sdp
 target
 gateway/assets
+package-lock.json
 
 # Logs
 logs

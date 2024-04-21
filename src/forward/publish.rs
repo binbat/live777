@@ -46,7 +46,7 @@ impl PublishRTCPeerConnection {
         SessionInfo {
             id: self.id.clone(),
             create_time: self.create_time,
-            connect_state: crate::forward::peer_connect_state(&self.peer),
+            connect_state: self.peer.connection_state(),
             reforward: Option::None,
         }
     }

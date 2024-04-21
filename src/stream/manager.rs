@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
 
-use crate::forward::info::{ForwardInfo, ReforwardInfo};
+use crate::forward::info::{ReforwardInfo, StreamInfo};
 use crate::result::Result;
 use crate::storage::Storage;
 use chrono::{DateTime, Utc};
@@ -10,7 +10,6 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use crate::dto::req::ChangeResourceReq;
 use crate::forward::info::Layer;
 use crate::forward::PeerForward;
 use crate::stream::config::ManagerConfig;
@@ -238,19 +237,19 @@ impl Manager {
         &self,
         stream: String,
         session: String,
-        change_resource: ChangeResourceReq,
+        change: (String, bool),
     ) -> Result<()> {
         let stream_map = self.stream_map.read().await;
         let forward = stream_map.get(&stream).cloned();
         drop(stream_map);
         if let Some(forward) = forward {
-            forward.change_resource(session, change_resource).await
+            forward.change_resource(session, change).await
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }
     }
 
-    pub async fn info(&self, streams: Vec<String>) -> Vec<ForwardInfo> {
+    pub async fn info(&self, streams: Vec<String>) -> Vec<StreamInfo> {
         let mut streams = streams.clone();
         streams.retain(|stream| !stream.trim().is_empty());
         let mut resp = vec![];

@@ -12,9 +12,7 @@ use axum::{
     Router,
 };
 use clap::Parser;
-use dto::req::QueryInfoReq;
-use dto::res::ForwardInfoRes;
-use dto::res::LayerRes;
+
 use error::AppError;
 use forward::info::ReforwardInfo;
 use http::Uri;
@@ -39,7 +37,6 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::dto::req::{ChangeResourceReq, ReforwardReq, SelectLayerReq};
 use crate::result::Result;
 use crate::stream::config::ManagerConfig;
 use config::IceServer;
@@ -50,7 +47,7 @@ use {http::header, rust_embed::RustEmbed};
 mod auth;
 mod config;
 mod constant;
-mod dto;
+mod convert;
 mod error;
 mod forward;
 mod metrics;
@@ -86,25 +83,28 @@ async fn main() {
     let admin_auth_layer =
         ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.admin_auth]));
     let app = Router::new()
-        .route("/whip/:stream", post(whip))
-        .route("/whep/:stream", post(whep))
+        .route(&live777_http::path::whip(":stream"), post(whip))
+        .route(&live777_http::path::whep(":stream"), post(whep))
         .route(
-            "/resource/:stream/:session",
+            &live777_http::path::resource(":stream", ":session"),
             post(change_resource)
                 .patch(add_ice_candidate)
                 .delete(remove_stream_session),
         )
         .route(
-            "/resource/:stream/:session/layer",
+            &live777_http::path::resource_layer(":stream", ":session"),
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
         .layer(auth_layer)
-        .route("/admin/infos", get(infos).layer(admin_auth_layer.clone()))
         .route(
-            "/admin/reforward/:stream",
+            live777_http::path::ADMIN_INFOS,
+            get(infos).layer(admin_auth_layer.clone()),
+        )
+        .route(
+            &live777_http::path::reforward(":stream"),
             post(reforward).layer(admin_auth_layer),
         )
-        .route("/metrics", get(metrics))
+        .route(live777_http::path::METRICS, get(metrics))
         .with_state(app_state)
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
@@ -268,7 +268,7 @@ async fn whip(
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", stream, session));
+        .header("Location", live777_http::path::resource(&stream, &session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
@@ -296,7 +296,7 @@ async fn whep(
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", format!("/resource/{}/{}", stream, session));
+        .header("Location", live777_http::path::resource(&stream, &session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
@@ -304,8 +304,8 @@ async fn whep(
         builder = builder.header(
             "Link",
             format!(
-                "</resource/{}/{}/layer>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                stream, session
+                "<{}>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
+                live777_http::path::resource_layer(&stream, &session)
             ),
         )
     }
@@ -350,11 +350,11 @@ async fn remove_stream_session(
 async fn change_resource(
     State(state): State<AppState>,
     Path((stream, session)): Path<(String, String)>,
-    Json(dto): Json<ChangeResourceReq>,
+    Json(req): Json<live777_http::request::ChangeResource>,
 ) -> Result<Json<HashMap<String, String>>> {
     state
         .stream_manager
-        .change_resource(stream, session, dto)
+        .change_resource(stream, session, (req.kind, req.enabled))
         .await?;
     Ok(Json(HashMap::new()))
 }
@@ -362,7 +362,7 @@ async fn change_resource(
 async fn get_layer(
     State(state): State<AppState>,
     Path((stream, _session)): Path<(String, String)>,
-) -> Result<Json<Vec<LayerRes>>> {
+) -> Result<Json<Vec<live777_http::response::Layer>>> {
     Ok(Json(
         state
             .stream_manager
@@ -377,15 +377,14 @@ async fn get_layer(
 async fn select_layer(
     State(state): State<AppState>,
     Path((stream, session)): Path<(String, String)>,
-    Json(layer): Json<SelectLayerReq>,
+    Json(req): Json<live777_http::request::SelectLayer>,
 ) -> Result<String> {
     state
         .stream_manager
         .select_layer(
             stream,
             session,
-            layer
-                .encoding_id
+            req.encoding_id
                 .map(|encoding_id| forward::info::Layer { encoding_id }),
         )
         .await?;
@@ -411,12 +410,12 @@ async fn un_select_layer(
 
 async fn infos(
     State(state): State<AppState>,
-    Query(qry): Query<QueryInfoReq>,
-) -> Result<Json<Vec<ForwardInfoRes>>> {
+    Query(req): Query<live777_http::request::QueryInfo>,
+) -> Result<Json<Vec<live777_http::response::StreamInfo>>> {
     Ok(Json(
         state
             .stream_manager
-            .info(qry.streams.map_or(vec![], |streams| {
+            .info(req.streams.map_or(vec![], |streams| {
                 streams
                     .split(',')
                     .map(|stream| stream.to_string())
@@ -432,15 +431,15 @@ async fn infos(
 async fn reforward(
     State(state): State<AppState>,
     Path(stream): Path<String>,
-    Json(reforward): Json<ReforwardReq>,
+    Json(req): Json<live777_http::request::Reforward>,
 ) -> Result<String> {
     state
         .stream_manager
         .reforward(
             stream,
             ReforwardInfo {
-                target_url: reforward.target_url,
-                admin_authorization: reforward.admin_authorization,
+                target_url: req.target_url,
+                admin_authorization: req.admin_authorization,
                 resource_url: None,
             },
         )
