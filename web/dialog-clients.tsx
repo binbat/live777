@@ -1,11 +1,11 @@
 import { useRef, useImperativeHandle } from 'preact/hooks'
 import { forwardRef } from 'preact/compat'
-import { delStream } from './api'
+import { SubscribeSessionInfo, delStream } from './api'
 import { formatTime } from './utils'
 
 interface Props {
     id: string
-    clients: any[]
+    clients: SubscribeSessionInfo[]
 }
 
 export interface IClientsDialog {
