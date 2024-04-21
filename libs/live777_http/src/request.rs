@@ -1,26 +1,25 @@
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-pub struct SelectLayerReq {
+pub struct SelectLayer {
     #[serde(rename = "encodingId")]
     pub encoding_id: Option<String>,
 }
 
 #[derive(Deserialize)]
-pub struct ChangeResourceReq {
+pub struct ChangeResource {
     pub kind: String,
-    #[serde(rename = "enabled")]
     pub enabled: bool,
 }
 
 #[derive(Deserialize)]
-pub struct QueryInfoReq {
+pub struct QueryInfo {
     #[serde(default)]
     pub streams: Option<String>,
 }
 
 #[derive(Deserialize)]
-pub struct ReforwardReq {
+pub struct Reforward {
     #[serde(rename = "targetUrl")]
     pub target_url: String,
     #[serde(rename = "adminAuthorization")]

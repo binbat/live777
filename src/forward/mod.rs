@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::forward::info::ForwardInfo;
+use crate::forward::info::StreamInfo;
 use crate::result::Result;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -15,7 +15,6 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use libwish::Client;
 use webrtc::sdp::SessionDescription;
 
-use crate::dto::req::ChangeResourceReq;
 use crate::forward::forward_internal::PeerForwardInternal;
 use crate::forward::info::Layer;
 use crate::{constant, AppError};
@@ -296,14 +295,14 @@ impl PeerForward {
     pub async fn change_resource(
         &self,
         session: String,
-        change_resource: ChangeResourceReq,
+        (kind, enabled): (String, bool),
     ) -> Result<()> {
-        let codec_type = RTPCodecType::from(change_resource.kind.as_str());
+        let codec_type = RTPCodecType::from(kind.as_str());
         if codec_type == RTPCodecType::Unspecified {
             return Err(AppError::throw("kind unspecified"));
         }
 
-        let rid = if change_resource.enabled {
+        let rid = if enabled {
             constant::RID_ENABLE.to_string()
         } else {
             constant::RID_DISABLE.to_string()
@@ -318,7 +317,7 @@ impl PeerForward {
         Ok(())
     }
 
-    pub async fn info(&self) -> ForwardInfo {
+    pub async fn info(&self) -> StreamInfo {
         self.internal.info().await
     }
 }
@@ -372,10 +371,6 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
         }
     }
     Ok(ice_candidates)
-}
-
-pub(crate) fn peer_connect_state(peer: &Arc<RTCPeerConnection>) -> String {
-    format!("{}", peer.connection_state())
 }
 
 #[cfg(test)]

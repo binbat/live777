@@ -1,7 +1,7 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
 
-use crate::forward::info::ForwardInfo;
+use crate::forward::info::StreamInfo;
 use crate::result::Result;
 use chrono::Utc;
 
@@ -102,13 +102,13 @@ impl PeerForwardInternal {
         }
     }
 
-    pub(crate) async fn info(&self) -> ForwardInfo {
+    pub(crate) async fn info(&self) -> StreamInfo {
         let mut subscribe_session_infos = vec![];
         let subscribe_group = self.subscribe_group.read().await;
         for subscribe in subscribe_group.iter() {
             subscribe_session_infos.push(subscribe.info().await);
         }
-        ForwardInfo {
+        StreamInfo {
             id: self.stream.clone(),
             create_time: self.create_time,
             publish_leave_time: *self.publish_leave_time.read().await,

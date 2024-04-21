@@ -11,9 +11,13 @@ members = [
     "libs/cli",
     "libs/libwish",
     "libs/signal",
+    "libs/live777_http",
     "tools/whepfrom",
     "tools/whipinto",
 ]
+[workspace.dependencies]
+serde = '1'
+
 
 [dependencies]
 http-body-util = "0.1.0"
@@ -33,7 +37,7 @@ tokio = { version = "1.36", features = ["full"] }
 hyper = "1.2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { version = "1.0.188", features = ["serde_derive"] }
+serde = { workspace = true, features = ["serde_derive"] }
 toml = "0.8.10"
 serde_json = "1.0.114"
 http = "1.0.0"
@@ -50,6 +54,7 @@ local-ip-address = "0.6"
 redis = { version = "0.25", features = ["tokio-comp", "cluster", "json"] }
 libwish = { path = "libs/libwish" }
 signal = { path = "libs/signal" }
+live777_http = { path = "libs/live777_http" }
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb
