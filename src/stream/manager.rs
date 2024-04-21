@@ -4,8 +4,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::forward::info::{ReforwardInfo, StreamInfo};
 use crate::result::Result;
-use crate::storage::Storage;
 use chrono::{DateTime, Utc};
+use live777_storage::{NodeMetaData, Storage};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -14,8 +14,6 @@ use crate::forward::info::Layer;
 use crate::forward::PeerForward;
 use crate::stream::config::ManagerConfig;
 use crate::{metrics, AppError};
-
-use super::config::MetaData;
 
 #[derive(Clone)]
 pub struct Manager {
@@ -30,7 +28,7 @@ impl Manager {
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         tokio::spawn(Self::heartbeat_and_check_tick(
             stream_map.clone(),
-            cfg.meta_data.clone(),
+            cfg.metadata.clone(),
             cfg.publish_leave_timeout,
             cfg.storage.clone(),
         ));
@@ -42,7 +40,7 @@ impl Manager {
 
     async fn heartbeat_and_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        meta_data: MetaData,
+        meta_data: NodeMetaData,
         publish_leave_timeout: u64,
         storage: Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
     ) {
@@ -52,9 +50,7 @@ impl Manager {
             tokio::pin!(timeout);
             let _ = timeout.as_mut().await;
             if let Some(storage) = &storage {
-                let _ = storage
-                    .registry(serde_json::to_string(&meta_data).unwrap())
-                    .await;
+                let _ = storage.registry(meta_data.clone()).await;
             }
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
@@ -105,7 +101,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.set_publish(offer).await
         } else {
-            if metrics::STREAM.get() >= self.config.meta_data.pub_max as f64 {
+            if metrics::STREAM.get() >= self.config.metadata.pub_max as f64 {
                 return Err(AppError::LackOfResources);
             }
             let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
@@ -115,7 +111,7 @@ impl Manager {
                 let _ = forward.close().await;
                 return Err(AppError::resource_already_exists("resource already exists"));
             }
-            if stream_map.len() >= self.config.meta_data.pub_max as usize {
+            if stream_map.len() >= self.config.metadata.pub_max as usize {
                 warn!("stream {} set publish ok,but exceeded the limit", stream);
                 let _ = forward.close().await;
                 return Err(AppError::LackOfResources);
@@ -133,7 +129,7 @@ impl Manager {
         stream: String,
         offer: RTCSessionDescription,
     ) -> Result<Response> {
-        if metrics::SUBSCRIBE.get() >= self.config.meta_data.sub_max as f64 {
+        if metrics::SUBSCRIBE.get() >= self.config.metadata.sub_max as f64 {
             return Err(AppError::LackOfResources);
         }
         let stream_map = self.stream_map.read().await;
@@ -141,7 +137,7 @@ impl Manager {
         drop(stream_map);
         if let Some(forward) = forward {
             let (sdp, session) = forward.add_subscribe(offer).await?;
-            if metrics::SUBSCRIBE.get() > self.config.meta_data.sub_max as f64 {
+            if metrics::SUBSCRIBE.get() > self.config.metadata.sub_max as f64 {
                 warn!("stream {} add subscribe ok,but exceeded the limit", stream);
                 let _ = forward.remove_peer(session).await;
                 Err(AppError::LackOfResources)
@@ -268,7 +264,7 @@ impl Manager {
         drop(streams);
         if let Some(forward) = forward {
             forward.reforward(reforward_info).await?;
-            if self.config.meta_data.reforward_close_sub {
+            if self.config.metadata.reforward_close_sub {
                 for subscribe_session_info in forward.info().await.subscribe_session_infos {
                     if subscribe_session_info.reforward.is_none() {
                         let _ = forward.remove_peer(subscribe_session_info.id).await;

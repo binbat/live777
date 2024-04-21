@@ -1,24 +1,24 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SelectLayer {
     #[serde(rename = "encodingId")]
     pub encoding_id: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ChangeResource {
     pub kind: String,
     pub enabled: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct QueryInfo {
     #[serde(default)]
     pub streams: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Reforward {
     #[serde(rename = "targetUrl")]
     pub target_url: String,

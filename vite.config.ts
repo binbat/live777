@@ -1,6 +1,6 @@
-import { defineConfig } from 'vite'
 import preact from '@preact/preset-vite'
 import unocss from 'unocss/vite'
+import { defineConfig } from 'vite'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -13,9 +13,9 @@ export default defineConfig({
         },
     },
     build: {
-        outDir: "gateway/assets/"
+        outDir: "assets/"
     },
-    plugins: [ unocss({
+    plugins: [unocss({
         shortcuts: [
             { 'cool-blue': 'bg-blue-500 text-white' },
             { 'cool-green': 'bg-green-500 text-black' },

@@ -1,4 +1,5 @@
 pub const METRICS: &str = "/metrics";
+pub const METRICS_JSON: &str = "/metrics/json";
 pub const ADMIN_INFOS: &str = "/admin/infos";
 
 pub fn whip(stream: &str) -> String {
@@ -17,4 +18,8 @@ pub fn resource(stream: &str, session: &str) -> String {
 }
 pub fn resource_layer(stream: &str, session: &str) -> String {
     format!("/resource/{}/{}/layer", stream, session)
+}
+
+pub fn infos(streams: Vec<String>) -> String {
+    format!("/admin/infos?streams={}", streams.join(","))
 }

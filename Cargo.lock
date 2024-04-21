@@ -1075,6 +1075,7 @@ dependencies = [
  "pin-project-lite",
  "smallvec",
  "tokio",
+ "want",
 ]
 
 [[package]]
@@ -1098,6 +1099,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca38ef113da30126bbff9cd1705f9273e15d45498615d138b0c20279ac7a76aa"
 dependencies = [
  "bytes",
+ "futures-channel",
  "futures-util",
  "http 1.0.0",
  "http-body 1.0.0",
@@ -1105,6 +1107,9 @@ dependencies = [
  "pin-project-lite",
  "socket2",
  "tokio",
+ "tower",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1240,6 +1245,7 @@ dependencies = [
  "lazy_static",
  "libwish",
  "live777_http",
+ "live777_storage",
  "local-ip-address",
  "md5",
  "mime_guess",
@@ -1258,10 +1264,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "live777_gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.21.7",
+ "chrono",
+ "clap",
+ "http 1.0.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "hyper 1.2.0",
+ "hyper-util",
+ "live777_http",
+ "live777_storage",
+ "serde",
+ "signal",
+ "tokio",
+ "toml",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "live777_http"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "live777_storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "live777_http",
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

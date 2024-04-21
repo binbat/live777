@@ -40,6 +40,7 @@ use crate::config::Config;
 use crate::result::Result;
 use crate::stream::config::ManagerConfig;
 use config::IceServer;
+use live777_http::response::Metrics;
 use stream::manager::Manager;
 #[cfg(not(debug_assertions))]
 use {http::header, rust_embed::RustEmbed};
@@ -52,7 +53,6 @@ mod error;
 mod forward;
 mod metrics;
 mod result;
-mod storage;
 mod stream;
 
 #[derive(Parser)]
@@ -105,6 +105,7 @@ async fn main() {
             post(reforward).layer(admin_auth_layer),
         )
         .route(live777_http::path::METRICS, get(metrics))
+        .route(live777_http::path::METRICS_JSON, get(metrics_json))
         .with_state(app_state)
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
@@ -167,9 +168,18 @@ async fn metrics() -> String {
         .unwrap()
 }
 
+async fn metrics_json() -> Json<Metrics> {
+    Json::from(Metrics {
+        stream: metrics::STREAM.get() as u64,
+        publish: metrics::PUBLISH.get() as u64,
+        subscribe: metrics::SUBSCRIBE.get() as u64,
+        reforward: metrics::REFORWARD.get() as u64,
+    })
+}
+
 #[cfg(not(debug_assertions))]
 #[derive(RustEmbed)]
-#[folder = "gateway/assets/"]
+#[folder = "assets/"]
 struct Assets;
 
 fn static_server(router: Router) -> Router {

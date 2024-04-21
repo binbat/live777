@@ -43,7 +43,7 @@ impl IntoResponse for AppError {
             }
             AppError::Throw(err) => (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
             AppError::LackOfResources => {
-                (StatusCode::INSUFFICIENT_STORAGE, "lack of resources").into_response()
+                (StatusCode::SERVICE_UNAVAILABLE, "lack of resources").into_response()
             }
         }
     }

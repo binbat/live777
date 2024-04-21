@@ -12,8 +12,10 @@ members = [
     "libs/libwish",
     "libs/signal",
     "libs/live777_http",
+    "libs/live777_storage",
     "tools/whepfrom",
     "tools/whipinto",
+    "./live777_gateway",
 ]
 [workspace.dependencies]
 serde = '1'
@@ -55,6 +57,7 @@ redis = { version = "0.25", features = ["tokio-comp", "cluster", "json"] }
 libwish = { path = "libs/libwish" }
 signal = { path = "libs/signal" }
 live777_http = { path = "libs/live777_http" }
+live777_storage = { path = "libs/live777_storage" }
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb

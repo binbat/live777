@@ -9,8 +9,6 @@ use webrtc::{
     Error,
 };
 
-use crate::storage::StorageModel;
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -86,6 +84,12 @@ impl Default for PublishLeaveTimeout {
     fn default() -> Self {
         PublishLeaveTimeout(15000)
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "model")]
+pub enum StorageModel {
+    RedisStandalone { addr: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
