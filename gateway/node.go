@@ -14,13 +14,13 @@ import (
 )
 
 const (
-	RTCPeerConnectionStateUnspecified = iota
-	RTCPeerConnectionStateNew
-	RTCPeerConnectionStateConnecting
-	RTCPeerConnectionStateConnected
-	RTCPeerConnectionStateDisconnected
-	RTCPeerConnectionStateFailed
-	RTCPeerConnectionStateClosed
+	RTCPeerConnectionStateUnspecified  = "Unspecified"
+	RTCPeerConnectionStateNew          = "new"
+	RTCPeerConnectionStateConnecting   = "connecting"
+	RTCPeerConnectionStateConnected    = "connected"
+	RTCPeerConnectionStateDisconnected = "disconnected"
+	RTCPeerConnectionStateFailed       = "failed"
+	RTCPeerConnectionStateClosed       = "closed"
 )
 
 type Node struct {
@@ -49,7 +49,7 @@ type StreamInfo struct {
 type SessionInfo struct {
 	Id           string         `json:"id"`
 	CreateTime   int64          `json:"createTime"`
-	ConnectState int            `json:"connectState"`
+	ConnectState string         `json:"connectState"`
 	Reforward    *ReforwardInfo `json:"reforward,omitempty"`
 }
 

@@ -374,16 +374,8 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
     Ok(ice_candidates)
 }
 
-pub(crate) fn peer_connect_state(peer: &Arc<RTCPeerConnection>) -> u8 {
-    match peer.connection_state() {
-        RTCPeerConnectionState::Unspecified => 0,
-        RTCPeerConnectionState::New => 1,
-        RTCPeerConnectionState::Connecting => 2,
-        RTCPeerConnectionState::Connected => 3,
-        RTCPeerConnectionState::Disconnected => 4,
-        RTCPeerConnectionState::Failed => 5,
-        RTCPeerConnectionState::Closed => 6,
-    }
+pub(crate) fn peer_connect_state(peer: &Arc<RTCPeerConnection>) -> String {
+    format!("{}", peer.connection_state())
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ pub struct SessionInfoRes {
     #[serde(rename = "createTime")]
     pub create_time: i64,
     #[serde(rename = "connectState")]
-    pub connect_state: u8,
+    pub connect_state: String,
     #[serde(skip_serializing_if = "Option::is_none", rename = "reforward")]
     pub reforward: Option<ReforwardInfo>,
 }

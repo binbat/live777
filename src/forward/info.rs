@@ -16,7 +16,7 @@ pub struct ForwardInfo {
 pub struct SessionInfo {
     pub id: String,
     pub create_time: i64,
-    pub connect_state: u8,
+    pub connect_state: String,
     pub reforward: Option<ReforwardInfo>,
 }
 
