@@ -137,7 +137,7 @@ fn set_log(env_filter: String) {
 
 #[cfg(not(debug_assertions))]
 #[derive(RustEmbed)]
-#[folder = "assets/"]
+#[folder = "../assets/"]
 struct Assets;
 
 fn static_server(router: Router) -> Router {

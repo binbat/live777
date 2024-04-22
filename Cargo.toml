@@ -46,7 +46,7 @@ http = "1.0.0"
 http-body = "1.0.0"
 base64 = "0.21.7"
 mime_guess = "2.0.4"
-rust-embed = { version = "8.2.0", features = ["axum-ex"] }
+rust-embed = { version = "8.3.0", features = ["axum-ex"] }
 prometheus = "0.13.3"
 lazy_static = "1.4.0"
 md5 = "0.7.0"
