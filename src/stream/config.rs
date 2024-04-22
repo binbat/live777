@@ -1,7 +1,5 @@
 use crate::config::Config;
-use crate::storage;
-use crate::storage::Storage;
-use serde::Serialize;
+use live777_storage::{NodeMetaData, Storage};
 use std::sync::Arc;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
@@ -10,27 +8,10 @@ pub struct ManagerConfig {
     pub ice_servers: Vec<RTCIceServer>,
     pub publish_leave_timeout: u64,
     pub storage: Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
-    pub meta_data: MetaData,
+    pub metadata: NodeMetaData,
 }
 
-#[derive(Serialize, Clone)]
-pub struct MetaData {
-    #[serde(rename = "pubMax")]
-    pub pub_max: u64,
-    #[serde(rename = "subMax")]
-    pub sub_max: u64,
-    #[serde(rename = "reforwardMaximumIdleTime")]
-    pub reforward_maximum_idle_time: u64,
-    #[serde(rename = "reforwardCascade")]
-    pub reforward_cascade: bool,
-    #[serde(rename = "reforwardCloseSub")]
-    pub reforward_close_sub: bool,
-    pub authorization: Option<String>,
-    #[serde(rename = "adminAuthorization")]
-    pub admin_authorization: Option<String>,
-}
-
-impl From<Config> for MetaData {
+impl From<Config> for NodeMetaData {
     fn from(value: Config) -> Self {
         Self {
             pub_max: value.node_info.meta_data.pub_max.0,
@@ -54,7 +35,9 @@ impl ManagerConfig {
             .collect();
         let storage = if let Some(storage) = &cfg.node_info.storage {
             Some(Arc::new(
-                storage::new(cfg.node_info.ip_port.clone(), storage.clone()).await,
+                live777_storage::new(cfg.node_info.ip_port.clone(), storage.clone().into())
+                    .await
+                    .unwrap(),
             ))
         } else {
             None
@@ -63,7 +46,7 @@ impl ManagerConfig {
             ice_servers,
             publish_leave_timeout: cfg.publish_leave_timeout.0,
             storage,
-            meta_data: MetaData::from(cfg.clone()),
+            metadata: NodeMetaData::from(cfg.clone()),
         }
     }
 }

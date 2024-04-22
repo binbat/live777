@@ -101,7 +101,7 @@ cargo run --package=whepfrom
 
 ```bash
 docker run -d --name redis --rm -p 6379:6379 redis
-go run -C ./gateway .
+cargo run --package=gateway
 ```
 
 ## Quickstart

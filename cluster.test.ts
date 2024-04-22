@@ -21,11 +21,9 @@ async function reforward(server: string, streamId: string, url: string) {
 describe("test cluster", () => {
     const localhost = "127.0.0.1"
 
-    //const appRust = "target/debug/"
     const appRust = "target/release/"
-    const appGo   = "gateway/"
 
-    const appGateway  = appGo   + "gateway"
+    const appGateway  = appRust + "gateway"
     const appLive777  = appRust + "live777"
     const appWhipinto = appRust + "whipinto"
     const appWhepfrom = appRust + "whepfrom"

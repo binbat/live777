@@ -1,11 +1,20 @@
 use serde::{Deserialize, Serialize};
-#[derive(Serialize, Deserialize)]
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Metrics {
+    pub stream: u64,
+    pub publish: u64,
+    pub subscribe: u64,
+    pub reforward: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Layer {
     #[serde(rename = "encodingId")]
     pub encoding_id: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StreamInfo {
     pub id: String,
     #[serde(rename = "createTime")]
@@ -20,7 +29,7 @@ pub struct StreamInfo {
     pub subscribe_session_infos: Vec<SessionInfo>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionInfo {
     pub id: String,
     #[serde(rename = "createTime")]
@@ -31,7 +40,7 @@ pub struct SessionInfo {
     pub reforward: Option<ReforwardInfo>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ReforwardInfo {
     #[serde(rename = "targetUrl")]
     pub target_url: String,
