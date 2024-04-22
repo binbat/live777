@@ -16,6 +16,9 @@ export default defineConfig({
         outDir: "assets/"
     },
     plugins: [unocss({
+        rules: [
+            [/^mw-([\.\d]+)$/, ([_, num]) => ({ 'min-width': `${num}px` })],
+        ],
         shortcuts: [
             { 'cool-blue': 'bg-blue-500 text-white' },
             { 'cool-green': 'bg-green-500 text-black' },
