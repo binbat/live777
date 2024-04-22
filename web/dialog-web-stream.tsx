@@ -3,7 +3,6 @@ import { forwardRef } from 'preact/compat'
 import { WHIPClient } from '@binbat/whip-whep/whip'
 
 interface Props {
-    onResourceIdChange(s: string): void
     onStop(): void
 }
 
@@ -29,12 +28,6 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
 
     const handleCloseDialog = () => {
         refDialog.current?.close()
-    }
-
-    const handleResourceIdInput = (e: Event) => {
-        const value = (e.target as HTMLInputElement).value
-        setResourceId(value)
-        props.onResourceIdChange(value)
     }
 
     const handleStreamStart = async () => {
@@ -74,13 +67,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
 
     return (
         <dialog ref={refDialog}>
-            <h3>New Stream {resourceId}</h3>
-            <p>
-                <label>
-                    <span>Resource ID:</span>
-                    <input type="text" value={resourceId} onChange={handleResourceIdInput}></input>
-                </label>
-            </p>
+            <h3>Web Stream {resourceId}</h3>
             <div>
                 <video ref={refVideo} controls autoplay style={{ maxWidth: '90vw' }}></video>
             </div>

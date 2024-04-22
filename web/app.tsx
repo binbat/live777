@@ -7,6 +7,7 @@ import { IClientsDialog, ClientsDialog } from './dialog-clients'
 import { IReforwardDialog, ReforwardDialog } from './dialog-reforward'
 import { IPreviewDialog, PreviewDialog } from './dialog-preview'
 import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
+import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
 export function App() {
     const [streams, setStreams] = useState<StreamInfo[]>([])
@@ -15,6 +16,7 @@ export function App() {
     const refReforward = useRef<IReforwardDialog>(null)
     const refClients = useRef<IClientsDialog>(null)
     const refPreview = useRef<IPreviewDialog>(null)
+    const refNewStream = useRef<INewStreamDialog>(null)
     const [webStreams, setWebStreams] = useState<string[]>([])
     const [newResourceId, setNewResourceId] = useState('')
     const refWebStreams = useRef<Map<string, IWebStreamDialog>>(new Map())
@@ -58,23 +60,17 @@ export function App() {
             i++
             newResourceId = `${prefix}${i}`
         }
-        setWebStreams([...webStreams, newResourceId])
-        setNewResourceId(newResourceId)
+        refNewStream.current?.show(newResourceId)
+    }
+
+    const handleNewResourceId = (id: string) => {
+        setWebStreams([...webStreams, id])
+        setNewResourceId(id)
     }
 
     useEffect(() => {
         refWebStreams.current.get(newResourceId)?.show(newResourceId)
     }, [newResourceId])
-
-    const handleWebStreamIdChange = (id: string, newId: string) => {
-        const refMap = refWebStreams.current
-        const ref = refMap.get(id)
-        if (ref) {
-            refMap.delete(id)
-            refMap.set(newId, ref)
-            setWebStreams(webStreams.map(s => s === id ? newId : s))
-        }
-    }
 
     const handleOpenWebStream = (id: string) => {
         refWebStreams.current.get(id)?.show(id)
@@ -98,6 +94,8 @@ export function App() {
 
             <PreviewDialog ref={refPreview} />
 
+            <NewStreamDialog ref={refNewStream} onNewResourceId={handleNewResourceId} />
+
             {webStreams.map(s =>
                 <WebStreamDialog
                     ref={(instance: IWebStreamDialog | null) => {
@@ -106,9 +104,7 @@ export function App() {
                         } else {
                             refWebStreams.current.delete(s)
                         }
-                        return
                     }}
-                    onResourceIdChange={newId => handleWebStreamIdChange(s, newId)}
                     onStop={() => { handleWebStreamStop(s) }}
                 />
             )}

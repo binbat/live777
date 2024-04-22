@@ -25,7 +25,7 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
 
     return (
         <dialog ref={refDialog}>
-            <h3>Clients</h3>
+            <h3>Clients of {props.id}</h3>
             <table>
                 <thead>
                     <tr>
