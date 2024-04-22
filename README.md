@@ -101,7 +101,7 @@ cargo run --package=whepfrom
 
 ```bash
 docker run -d --name redis --rm -p 6379:6379 redis
-cargo run --package=gateway
+cargo run --package=live777-gateway
 ```
 
 ## Quickstart

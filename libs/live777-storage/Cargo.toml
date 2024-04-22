@@ -1,5 +1,5 @@
 [package]
-name = "live777_storage"
+name = "live777-storage"
 version = "0.1.0"
 edition = "2021"
 
@@ -14,7 +14,7 @@ serde_json = "1.0.114"
 redis = { version = "0.25", features = ["tokio-comp"] }
 chrono = "0.4"
 anyhow = "1.0"
-live777_http = { path = "../live777_http", optional = true }
+live777-http = { path = "../live777-http", optional = true }
 reqwest = { version = "0.11.24", features = [
     "rustls-tls",
 ], default-features = false }
@@ -24,4 +24,4 @@ tracing = "0.1"
 default = ["storage_operate"]
 full = ["storage_operate", "node_operate"]
 storage_operate = []
-node_operate = ["dep:live777_http"]
+node_operate = ["dep:live777-http"]

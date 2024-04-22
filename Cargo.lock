@@ -831,34 +831,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gateway"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.21.7",
- "chrono",
- "clap",
- "http 1.0.0",
- "http-body 1.0.0",
- "http-body-util",
- "hyper 1.2.0",
- "hyper-util",
- "live777_http",
- "live777_storage",
- "mime_guess",
- "rust-embed",
- "serde",
- "signal",
- "tokio",
- "toml",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1272,8 +1244,8 @@ dependencies = [
  "hyper 1.2.0",
  "lazy_static",
  "libwish",
- "live777_http",
- "live777_storage",
+ "live777-http",
+ "live777-storage",
  "local-ip-address",
  "md5",
  "mime_guess",
@@ -1292,20 +1264,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "live777_http"
+name = "live777-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.21.7",
+ "chrono",
+ "clap",
+ "http 1.0.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "hyper 1.2.0",
+ "hyper-util",
+ "live777-http",
+ "live777-storage",
+ "mime_guess",
+ "rust-embed",
+ "serde",
+ "signal",
+ "tokio",
+ "toml",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "live777-http"
 version = "0.1.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
-name = "live777_storage"
+name = "live777-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "live777_http",
+ "live777-http",
  "redis",
  "reqwest",
  "serde",
