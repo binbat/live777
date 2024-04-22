@@ -24,15 +24,13 @@ const STREAM_REGISTRY_KEY: &str = "live777:stream";
 
 #[derive(Clone)]
 pub struct RedisStandaloneStorage {
-    node: String,
     client: Client,
 }
 
 impl RedisStandaloneStorage {
-    pub async fn new(node: String, addr: String) -> Result<Self> {
+    pub async fn new(addr: String) -> Result<Self> {
         let storage = RedisStandaloneStorage {
-            node,
-            client: Client::open(addr.clone()).unwrap(),
+            client: Client::open(addr.clone())?,
         };
         // check conn
         let mut conn = storage.client.get_multiplexed_async_connection().await?;
@@ -44,11 +42,11 @@ impl RedisStandaloneStorage {
 #[async_trait]
 impl Storage for RedisStandaloneStorage {
     #[cfg(feature = "storage_operate")]
-    async fn registry(&self, metadata: NodeMetaData) -> Result<()> {
+    async fn registry(&self, node_addr: String, metadata: NodeMetaData) -> Result<()> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
-        conn.sadd(NODES_REGISTRY_KEY, self.node.clone()).await?;
+        conn.sadd(NODES_REGISTRY_KEY, node_addr.clone()).await?;
         conn.set_ex(
-            format!("{}:{}", NODE_REGISTRY_KEY, self.node),
+            format!("{}:{}", NODE_REGISTRY_KEY, node_addr),
             serde_json::to_string(&metadata)?,
             3,
         )
@@ -56,22 +54,22 @@ impl Storage for RedisStandaloneStorage {
         Ok(())
     }
     #[cfg(feature = "storage_operate")]
-    async fn registry_stream(&self, stream: String) -> Result<()> {
+    async fn registry_stream(&self, node_addr: String, stream: String) -> Result<()> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         conn.zadd(
             format!("{}:{}", STREAM_REGISTRY_KEY, stream),
-            self.node.clone(),
+            node_addr.clone(),
             Utc::now().timestamp_millis(),
         )
         .await?;
         Ok(())
     }
     #[cfg(feature = "storage_operate")]
-    async fn unregister_stream(&self, stream: String) -> Result<()> {
+    async fn unregister_stream(&self, node_addr: String, stream: String) -> Result<()> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         conn.zrem(
             format!("{}:{}", STREAM_REGISTRY_KEY, stream),
-            self.node.clone(),
+            node_addr.clone(),
         )
         .await?;
         Ok(())

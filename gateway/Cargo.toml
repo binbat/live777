@@ -1,5 +1,5 @@
 [package]
-name = "gateway"
+name = "live777-gateway"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,8 +9,8 @@ axum = { version = "0.7.4", features = ["multipart", "tracing"] }
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 anyhow = { version = "1", features = ["backtrace"] }
 signal = { path = "../libs/signal" }
-live777_http = { path = "../libs/live777_http" }
-live777_storage = { path = "../libs/live777_storage", features = ["full"] }
+live777-http = { path = "../libs/live777-http" }
+live777-storage = { path = "../libs/live777-storage", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5.1", features = ["derive"] }

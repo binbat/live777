@@ -31,11 +31,11 @@ pub struct NodeMetaData {
 #[async_trait]
 pub trait Storage {
     #[cfg(feature = "storage_operate")]
-    async fn registry(&self, metadata: NodeMetaData) -> Result<()>;
+    async fn registry(&self, node_addr: String, metadata: NodeMetaData) -> Result<()>;
     #[cfg(feature = "storage_operate")]
-    async fn registry_stream(&self, stream: String) -> Result<()>;
+    async fn registry_stream(&self, node_addr: String, stream: String) -> Result<()>;
     #[cfg(feature = "storage_operate")]
-    async fn unregister_stream(&self, stream: String) -> Result<()>;
+    async fn unregister_stream(&self, node_addr: String, stream: String) -> Result<()>;
     #[cfg(feature = "node_operate")]
     async fn nodes(&self) -> Result<Vec<Node>>;
     #[cfg(feature = "node_operate")]
@@ -47,13 +47,10 @@ pub enum StorageModel {
     RedisStandalone { addr: String },
 }
 
-pub async fn new(
-    node_ip_port: String,
-    storage: StorageModel,
-) -> Result<Box<dyn Storage + 'static + Send + Sync>> {
+pub async fn new(storage: StorageModel) -> Result<Box<dyn Storage + 'static + Send + Sync>> {
     match storage {
-        StorageModel::RedisStandalone { addr } => Ok(Box::new(
-            RedisStandaloneStorage::new(node_ip_port, addr).await?,
-        )),
+        StorageModel::RedisStandalone { addr } => {
+            Ok(Box::new(RedisStandaloneStorage::new(addr).await?))
+        }
     }
 }

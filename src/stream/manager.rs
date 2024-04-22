@@ -28,7 +28,7 @@ impl Manager {
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         tokio::spawn(Self::heartbeat_and_check_tick(
             stream_map.clone(),
-            cfg.metadata.clone(),
+            (cfg.node_addr.clone(), cfg.metadata.clone()),
             cfg.publish_leave_timeout,
             cfg.storage.clone(),
         ));
@@ -40,7 +40,7 @@ impl Manager {
 
     async fn heartbeat_and_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        meta_data: NodeMetaData,
+        (node_addr, metadata): (String, NodeMetaData),
         publish_leave_timeout: u64,
         storage: Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
     ) {
@@ -50,7 +50,7 @@ impl Manager {
             tokio::pin!(timeout);
             let _ = timeout.as_mut().await;
             if let Some(storage) = &storage {
-                let _ = storage.registry(meta_data.clone()).await;
+                let _ = storage.registry(node_addr.clone(), metadata.clone()).await;
             }
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
@@ -87,7 +87,9 @@ impl Manager {
                             "stream : {}, publish leave timeout, publish leave time : {}",
                             stream, publish_leave_time
                         );
-                        let _ = Self::unregister_stream(&storage, stream.clone()).await;
+                        let _ =
+                            Self::unregister_stream(&storage, node_addr.clone(), stream.clone())
+                                .await;
                     }
                 }
             }
@@ -119,7 +121,12 @@ impl Manager {
             info!("add stream : {}", stream);
             stream_map.insert(stream.clone(), forward);
             metrics::STREAM.inc();
-            Self::registry_stream(&self.config.storage, stream.clone()).await?;
+            Self::registry_stream(
+                &self.config.storage,
+                self.config.node_addr.clone(),
+                stream.clone(),
+            )
+            .await?;
             Ok((sdp, session))
         }
     }
@@ -151,20 +158,22 @@ impl Manager {
 
     async fn registry_stream(
         storage: &Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
+        node_addr: String,
         stream: String,
     ) -> Result<()> {
         if let Some(storage) = storage {
-            storage.registry_stream(stream.clone()).await?;
+            storage.registry_stream(node_addr, stream).await?;
         }
         Ok(())
     }
 
     async fn unregister_stream(
         storage: &Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
+        node_addr: String,
         stream: String,
     ) -> Result<()> {
         if let Some(storage) = storage {
-            storage.unregister_stream(stream.clone()).await?;
+            storage.unregister_stream(node_addr, stream).await?;
         }
         Ok(())
     }
@@ -196,7 +205,12 @@ impl Manager {
                 info!("remove stream : {}", stream);
                 stream_map.remove(&stream);
                 metrics::STREAM.dec();
-                let _ = Self::unregister_stream(&self.config.storage, stream.clone()).await;
+                let _ = Self::unregister_stream(
+                    &self.config.storage,
+                    self.config.node_addr.clone(),
+                    stream.clone(),
+                )
+                .await;
             }
         }
         Ok(())
