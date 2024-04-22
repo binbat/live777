@@ -8,6 +8,7 @@ pub struct ManagerConfig {
     pub ice_servers: Vec<RTCIceServer>,
     pub publish_leave_timeout: u64,
     pub storage: Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
+    pub node_addr: String,
     pub metadata: NodeMetaData,
 }
 
@@ -35,9 +36,7 @@ impl ManagerConfig {
             .collect();
         let storage = if let Some(storage) = &cfg.node_info.storage {
             Some(Arc::new(
-                live777_storage::new(cfg.node_info.ip_port.clone(), storage.clone().into())
-                    .await
-                    .unwrap(),
+                live777_storage::new(storage.clone().into()).await.unwrap(),
             ))
         } else {
             None
@@ -46,6 +45,7 @@ impl ManagerConfig {
             ice_servers,
             publish_leave_timeout: cfg.publish_leave_timeout.0,
             storage,
+            node_addr: cfg.node_info.ip_port.clone(),
             metadata: NodeMetaData::from(cfg.clone()),
         }
     }

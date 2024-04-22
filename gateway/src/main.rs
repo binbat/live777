@@ -73,11 +73,7 @@ async fn main() {
             .build(HttpConnector::new());
     let app_state = AppState {
         config: cfg.clone(),
-        storage: Arc::new(
-            live777_storage::new("".to_string(), cfg.storage.into())
-                .await
-                .unwrap(),
-        ),
+        storage: Arc::new(live777_storage::new(cfg.storage.into()).await.unwrap()),
         client,
     };
     tokio::spawn(tick::reforward_check(app_state.clone()));
