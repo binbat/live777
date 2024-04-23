@@ -77,6 +77,13 @@ Depends:
 - [go](https://go.dev/)
 - [redis (opt)](https://redis.io/)
 
+If you need configuration, you can use
+
+```bash
+cp conf/live777.toml live777.toml
+cp conf/gateway.toml gateway.toml
+```
+
 ### WebUI
 
 ```bash
@@ -102,6 +109,24 @@ cargo run --package=whepfrom
 ```bash
 docker run -d --name redis --rm -p 6379:6379 redis
 cargo run --package=live777-gateway
+```
+
+## How to build
+
+```bash
+# Build Web UI
+bun install
+bun run build
+
+# Live777 Core
+cargo build --release
+
+# Live777 Gateway
+cargo build --release --package=live777-gateway
+
+# whipinto / whepfrom
+cargo build --release --package=whipinto
+cargo build --release --package=whepfrom
 ```
 
 ## Quickstart

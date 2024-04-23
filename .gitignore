@@ -4,6 +4,9 @@ target
 assets
 package-lock.json
 
+live777.toml
+gateway.toml
+
 # Logs
 logs
 *.log

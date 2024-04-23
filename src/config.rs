@@ -266,8 +266,8 @@ impl From<IceServer> for RTCIceServer {
 
 impl Config {
     pub(crate) fn parse(path: Option<String>) -> Self {
-        let result = fs::read_to_string(path.unwrap_or_else(|| String::from("config.toml")))
-            .or_else(|_| fs::read_to_string("/etc/live777/config.toml"))
+        let result = fs::read_to_string(path.unwrap_or(String::from("live777.toml")))
+            .or(fs::read_to_string("/etc/live777/live777.toml"))
             .unwrap_or("".to_string());
         let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
         match cfg.validate() {

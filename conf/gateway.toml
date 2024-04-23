@@ -1,0 +1,32 @@
+[http]
+# Http Server Listen Address
+# listen = "[::]:8888"
+# Cross-Origin Resource Sharing (CORS)
+# reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+# cors = false
+
+# WHIP/WHEP auth token
+# Headers["Authorization"] = "Bearer {token}"
+# [auth]
+# tokens = ["live777"]
+
+# Not WHIP/WHEP standard
+# https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication#basic
+# Headers["Authorization"] = "Basic {Base64.encode({username}:{password})}"
+# [[auth.accounts]]
+# username = "live777"
+# password = "live777"
+
+# [log]
+# Env: `LOG_LEVEL`
+# Default: info
+# Values: off, error, warn, info, debug, trace
+# level = "warn"
+
+# [storage]
+# model = "RedisStandalone"
+# addr = "redis://127.0.0.1:6379"
+
+# [reforward]
+# reforward_check_frequency: 5
+# check_reforward_tick_time: 3000
