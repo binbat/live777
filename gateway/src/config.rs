@@ -152,8 +152,8 @@ impl Default for CheckReforwardTickTime {
 
 impl Config {
     pub(crate) fn parse(path: Option<String>) -> Self {
-        let result = fs::read_to_string(path.unwrap_or_else(|| String::from("config.toml")))
-            .or_else(|_| fs::read_to_string("/etc/live777/gateway/config.toml"))
+        let result = fs::read_to_string(path.unwrap_or(String::from("gateway.toml")))
+            .or(fs::read_to_string("/etc/live777/gateway.toml"))
             .unwrap_or("".to_string());
         let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
         cfg
