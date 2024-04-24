@@ -28,5 +28,9 @@
 # addr = "redis://127.0.0.1:6379"
 
 # [reforward]
+# When a new whep begun, and trigger reforward, check reforward status done times
+# Every times check after wait 50ms. If Mare than 5 * 50ms return error
 # reforward_check_frequency: 5
+# Check cluster all node reforward status time interval
+# Default: 3000ms (3s)
 # check_reforward_tick_time: 3000
