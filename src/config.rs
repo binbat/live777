@@ -138,7 +138,7 @@ pub struct ReforwardMaximumIdleTime(pub u64);
 
 impl Default for ReforwardMaximumIdleTime {
     fn default() -> Self {
-        ReforwardMaximumIdleTime(1800000)
+        ReforwardMaximumIdleTime(60000)
     }
 }
 
