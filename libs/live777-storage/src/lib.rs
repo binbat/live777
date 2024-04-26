@@ -13,6 +13,20 @@ use crate::node_operate::Node;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NodeMetaData {
+    pub auth: Auth,
+    #[serde(rename = "streamInfo")]
+    pub stream_info: StreamInfo,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Auth {
+    pub authorization: Option<String>,
+    #[serde(rename = "adminAuthorization")]
+    pub admin_authorization: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StreamInfo {
     #[serde(rename = "pubMax")]
     pub pub_max: u64,
     #[serde(rename = "subMax")]
@@ -21,11 +35,6 @@ pub struct NodeMetaData {
     pub reforward_maximum_idle_time: u64,
     #[serde(rename = "reforwardCascade")]
     pub reforward_cascade: bool,
-    #[serde(rename = "reforwardCloseSub")]
-    pub reforward_close_sub: bool,
-    pub authorization: Option<String>,
-    #[serde(rename = "adminAuthorization")]
-    pub admin_authorization: Option<String>,
 }
 
 #[async_trait]

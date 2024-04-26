@@ -46,7 +46,8 @@ async fn do_reforward_check(state: AppState) -> Result<()> {
                                 if target_stream_info.subscribe_leave_time != 0
                                     && Utc::now().timestamp_millis()
                                         >= target_stream_info.subscribe_leave_time
-                                            + node.metadata.reforward_maximum_idle_time as i64
+                                            + node.metadata.stream_info.reforward_maximum_idle_time
+                                                as i64
                                 {
                                     info!(
                                         ?node,

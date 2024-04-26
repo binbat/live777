@@ -264,7 +264,7 @@ async fn whep_reforward_node(
 ) -> Result<Node> {
     let mut reforward_node = stream_nodes.first().cloned().unwrap();
     for stream_node in stream_nodes {
-        if !stream_node.metadata.reforward_cascade {
+        if !stream_node.metadata.stream_info.reforward_cascade {
             reforward_node = stream_node.clone();
             break;
         }

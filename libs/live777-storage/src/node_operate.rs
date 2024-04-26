@@ -38,7 +38,7 @@ impl Node {
         let data = request(
             self.path_url(&path::infos(streams)),
             "GET",
-            self.metadata.admin_authorization.clone(),
+            self.metadata.auth.admin_authorization.clone(),
             "",
         )
         .await?;
@@ -59,10 +59,10 @@ impl Node {
         let _ = request(
             self.path_url(&path::reforward(&node_stream)),
             "POST",
-            self.metadata.admin_authorization.clone(),
+            self.metadata.auth.admin_authorization.clone(),
             serde_json::to_string(&Reforward {
                 target_url: target_node.path_url(&path::whip(&target_stream)),
-                admin_authorization: target_node.metadata.admin_authorization.clone(),
+                admin_authorization: target_node.metadata.auth.admin_authorization.clone(),
             })?,
         )
         .await;
@@ -73,7 +73,7 @@ impl Node {
         let _ = request(
             self.path_url(&path::resource(&stream, &session)),
             "DELETE",
-            self.metadata.admin_authorization.clone(),
+            self.metadata.auth.admin_authorization.clone(),
             "",
         )
         .await?;
@@ -87,16 +87,16 @@ pub async fn maximum_idle_node(mut nodes: Vec<Node>, check_pub: bool) -> Result<
     let node_metrics_map_temp = node_metrics_map.clone();
     nodes.retain(move |node| match node_metrics_map_temp.get(&node.addr) {
         Some(node_metrics) => {
-            (!check_pub || node_metrics.stream < node.metadata.pub_max)
-                && node_metrics.subscribe < node.metadata.sub_max
+            (!check_pub || node_metrics.stream < node.metadata.stream_info.pub_max)
+                && node_metrics.subscribe < node.metadata.stream_info.sub_max
         }
         None => false,
     });
     nodes.sort_by(move |a, b| {
         let a_node_available_sub =
-            a.metadata.sub_max - node_metrics_map.get(&a.addr).unwrap().subscribe;
+            a.metadata.stream_info.sub_max - node_metrics_map.get(&a.addr).unwrap().subscribe;
         let b_node_available_sub =
-            b.metadata.sub_max - node_metrics_map.get(&b.addr).unwrap().subscribe;
+            b.metadata.stream_info.sub_max - node_metrics_map.get(&b.addr).unwrap().subscribe;
         b_node_available_sub.cmp(&a_node_available_sub)
     });
     Ok(nodes.first().cloned())

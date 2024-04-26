@@ -22,9 +22,9 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub publish_leave_timeout: PublishLeaveTimeout,
-    #[serde(default)]
     pub node_info: NodeInfo,
+    #[serde(default)]
+    pub stream_info: StreamInfo,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -93,6 +93,18 @@ pub enum StorageModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamInfo {
+    #[serde(default)]
+    pub pub_max: MetaDataPubMax,
+    #[serde(default)]
+    pub sub_max: MetaDataSubMax,
+    #[serde(default)]
+    pub reforward_close_sub: bool,
+    #[serde(default)]
+    pub publish_leave_timeout: PublishLeaveTimeout,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeInfo {
     pub storage: Option<StorageModel>,
     #[serde(default = "default_registry_ip_port")]
@@ -104,15 +116,9 @@ pub struct NodeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetaData {
     #[serde(default)]
-    pub pub_max: MetaDataPubMax,
-    #[serde(default)]
-    pub sub_max: MetaDataSubMax,
-    #[serde(default)]
     pub reforward_maximum_idle_time: ReforwardMaximumIdleTime,
     #[serde(default)]
     pub reforward_cascade: bool,
-    #[serde(default)]
-    pub reforward_close_sub: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,19 +288,15 @@ impl Config {
         {
             return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
         }
-        if self.node_info.meta_data.pub_max.0 == 0 {
-            return Err(anyhow::anyhow!(
-                "node_info.meta_data.pub_max cannot be equal to 0"
-            ));
+        if self.stream_info.pub_max.0 == 0 {
+            return Err(anyhow::anyhow!("stream_info.pub_max cannot be equal to 0"));
         }
-        if self.node_info.meta_data.sub_max.0 == 0 {
-            return Err(anyhow::anyhow!(
-                "node_info.meta_data.sub_max cannot be equal to 0"
-            ));
+        if self.stream_info.sub_max.0 == 0 {
+            return Err(anyhow::anyhow!("stream_info.sub_max cannot be equal to 0"));
         }
-        if self.node_info.meta_data.pub_max.0 > self.node_info.meta_data.sub_max.0 {
+        if self.stream_info.pub_max.0 > self.stream_info.sub_max.0 {
             return Err(anyhow::anyhow!(
-                "node_info.meta_data.pub_max cannot be greater than node_info.meta_data.sub_max"
+                "stream_info.pub_max cannot be greater than stream_info.sub_max"
             ));
         }
         for ice_server in self.ice_servers.iter() {
