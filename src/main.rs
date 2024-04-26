@@ -17,6 +17,7 @@ use error::AppError;
 use forward::info::ReforwardInfo;
 use http::Uri;
 use http_body_util::BodyExt;
+use local_ip_address::local_ip;
 use std::collections::HashMap;
 use std::env;
 use std::future::IntoFuture;
@@ -67,11 +68,20 @@ struct Args {
 async fn main() {
     metrics_register();
     let args = Args::parse();
-    let cfg = Config::parse(args.config);
+    let mut cfg = Config::parse(args.config);
     set_log(format!("live777={},webrtc=error", cfg.log.level));
     debug!("config : {:?}", cfg);
-    let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
+    let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
     info!("Server listening on {}", addr);
+    if cfg.node_info.ip_port.is_none() {
+        let port = addr.port();
+        cfg.node_info.ip_port =
+            Some(SocketAddr::from_str(&format!("{}:{}", local_ip().unwrap(), port)).unwrap());
+        debug!("config : {:?}", cfg);
+    }
     let app_state = AppState {
         stream_manager: Arc::new(Manager::new(ManagerConfig::from_config(cfg.clone()).await).await),
         config: cfg.clone(),
@@ -126,7 +136,7 @@ async fn main() {
             }),
         );
     tokio::select! {
-        Err(e) = axum::serve(tokio::net::TcpListener::bind(&addr).await.unwrap(), static_server(app)).into_future() => error!("Application error: {e}"),
+        Err(e) = axum::serve(listener, static_server(app)).into_future() => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
     }
     info!("Server shutdown");

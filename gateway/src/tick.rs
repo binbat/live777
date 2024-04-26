@@ -1,6 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use crate::{error::AppError, result::Result};
+use anyhow::anyhow;
 use chrono::Utc;
 use tracing::info;
 use url::Url;
@@ -26,20 +27,20 @@ async fn do_reforward_check(state: AppState) -> Result<()> {
     let mut node_map = HashMap::new();
     let mut node_streams_map = HashMap::new();
     for node in nodes.iter() {
-        node_map.insert(node.addr.clone(), node.clone());
+        node_map.insert(node.addr, node.clone());
         if let Ok(streams) = node.stream_infos(vec![]).await {
-            node_streams_map.insert(node.addr.clone(), streams);
+            node_streams_map.insert(node.addr, streams);
         }
     }
-    for (node_addr, streams) in node_streams_map.iter() {
-        let node = node_map.get(node_addr).unwrap();
+    for (addr, streams) in node_streams_map.iter() {
+        let node = node_map.get(addr).unwrap();
         for stream_info in streams {
             for session_info in &stream_info.subscribe_session_infos {
                 if let Some(reforward_info) = &session_info.reforward {
-                    if let Ok((target_node_addr, target_stream)) =
+                    if let Ok((target_addr, target_stream)) =
                         parse_node_and_stream(reforward_info.target_url.clone())
                     {
-                        if let Some(target_node) = node_map.get(&target_node_addr) {
+                        if let Some(target_node) = node_map.get(&target_addr) {
                             if let Ok(Some(target_stream_info)) =
                                 target_node.stream_info(target_stream).await
                             {
@@ -74,17 +75,17 @@ async fn do_reforward_check(state: AppState) -> Result<()> {
     Ok(())
 }
 
-fn parse_node_and_stream(url: String) -> Result<(String, String)> {
+fn parse_node_and_stream(url: String) -> Result<(SocketAddr, String)> {
     let url = Url::parse(&url)?;
     let split: Vec<&str> = url.path().split('/').collect();
+    let scheme = url.scheme();
+    let addr = url
+        .socket_addrs(move || Some(if scheme == "http" { 80 } else { 443 }))?
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow!("get socket addr error"))?;
     Ok((
-        format!(
-            "{}:{}",
-            url.host_str()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("host error")))?,
-            url.port()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("port error")))?
-        ),
+        addr,
         split
             .last()
             .cloned()

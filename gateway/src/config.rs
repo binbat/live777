@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::{env, fs};
+use std::{env, fs, net::SocketAddr, str::FromStr};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -20,7 +20,7 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http {
     #[serde(default = "default_http_listen")]
-    pub listen: String,
+    pub listen: SocketAddr,
     #[serde(default)]
     pub cors: bool,
 }
@@ -90,11 +90,12 @@ impl Default for StorageModel {
     }
 }
 
-fn default_http_listen() -> String {
-    format!(
+fn default_http_listen() -> SocketAddr {
+    SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
-        env::var("PORT").unwrap_or(String::from("8080"))
-    )
+        env::var("LIVE777_GATEWAY_PORT").unwrap_or(String::from("8080"))
+    ))
+    .expect("invalid listen address")
 }
 
 impl Default for Http {

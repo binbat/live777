@@ -5,6 +5,7 @@ pub mod redis;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 use self::redis::RedisStandaloneStorage;
 
@@ -40,11 +41,11 @@ pub struct StreamInfo {
 #[async_trait]
 pub trait Storage {
     #[cfg(feature = "storage_operate")]
-    async fn registry(&self, node_addr: String, metadata: NodeMetaData) -> Result<()>;
+    async fn registry(&self, addr: SocketAddr, metadata: NodeMetaData) -> Result<()>;
     #[cfg(feature = "storage_operate")]
-    async fn registry_stream(&self, node_addr: String, stream: String) -> Result<()>;
+    async fn registry_stream(&self, addr: SocketAddr, stream: String) -> Result<()>;
     #[cfg(feature = "storage_operate")]
-    async fn unregister_stream(&self, node_addr: String, stream: String) -> Result<()>;
+    async fn unregister_stream(&self, addr: SocketAddr, stream: String) -> Result<()>;
     #[cfg(feature = "node_operate")]
     async fn nodes(&self) -> Result<Vec<Node>>;
     #[cfg(feature = "node_operate")]

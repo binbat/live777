@@ -35,25 +35,28 @@ urls = [
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
+# [stream_info]
+# Producer Max Count, Maybe You don't need change this
+# pub_max = 1
+# Consumer Max Count, only this node instance max
+# sub_max = 1
+# reforward_close_sub = false
+# publish_leave_timeout = 10000
+
+
 # [node_info]
-# ip_port = "localhost:7777"
+# Don't use localhost, If not filled in, the value will be assigned based on the listening port and local IP.
+# ip_port = "127.0.0.1:7777"
 #
 # [node_info.storage]
 # model = "RedisStandalone"
 # addr = "redis://127.0.0.1:6379"
 #
 # [node_info.meta_data]
-# Producer Max Count, Maybe You don't need change this
-# pub_max = 1
-# Consumer Max Count, only this node instance max
-# sub_max = 1
 # If reforward is working, but no consumer subscription, This reforward status is: `idle`
 # When status `idle` more than this time duration, close this reforward.
 # Default: 60s
 # reforward_maximum_idle_time: 60000
 # This node is allowed as reforward target
 # reforward_cascade = false
-# The reforward is special sub, so when you up reforward, The will: sub + 1
-# If sub > sub_max, if enable this, random close a subscription
-# reforward_close_sub = false
 

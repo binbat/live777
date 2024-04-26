@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::Result;
 use live777_http::{
@@ -14,7 +14,7 @@ use crate::NodeMetaData;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Node {
-    pub addr: String,
+    pub addr: SocketAddr,
     pub metadata: NodeMetaData,
 }
 
@@ -102,12 +102,12 @@ pub async fn maximum_idle_node(mut nodes: Vec<Node>, check_pub: bool) -> Result<
     Ok(nodes.first().cloned())
 }
 
-async fn node_metrics_map(nodes: &Vec<Node>) -> HashMap<String, Metrics> {
-    let mut node_metrics_map: HashMap<String, Metrics> = HashMap::new();
+async fn node_metrics_map(nodes: &Vec<Node>) -> HashMap<SocketAddr, Metrics> {
+    let mut node_metrics_map = HashMap::new();
     for node in nodes {
         match node.metrics().await {
             Ok(metrics) => {
-                node_metrics_map.insert(node.addr.clone(), metrics);
+                node_metrics_map.insert(node.addr, metrics);
             }
             Err(err) => {
                 info!("node : {} ,metrics request error : {}", node.addr, err);
@@ -115,7 +115,7 @@ async fn node_metrics_map(nodes: &Vec<Node>) -> HashMap<String, Metrics> {
         }
 
         if let Ok(metrics) = node.metrics().await {
-            node_metrics_map.insert(node.addr.clone(), metrics);
+            node_metrics_map.insert(node.addr, metrics);
         };
     }
     node_metrics_map

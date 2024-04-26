@@ -1,10 +1,10 @@
 use crate::NodeMetaData;
 
 use super::Storage;
-
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
+use std::net::SocketAddr;
 
 use redis::AsyncCommands;
 use redis::Client;
@@ -15,6 +15,8 @@ use crate::Node;
 use redis::aio::MultiplexedConnection;
 #[cfg(feature = "node_operate")]
 use redis::RedisError;
+#[cfg(feature = "node_operate")]
+use std::str::FromStr;
 #[cfg(feature = "node_operate")]
 use std::vec;
 
@@ -30,7 +32,7 @@ pub struct RedisStandaloneStorage {
 impl RedisStandaloneStorage {
     pub async fn new(addr: String) -> Result<Self> {
         let storage = RedisStandaloneStorage {
-            client: Client::open(addr.clone())?,
+            client: Client::open(addr.to_string())?,
         };
         // check conn
         let mut conn = storage.client.get_multiplexed_async_connection().await?;
@@ -42,11 +44,11 @@ impl RedisStandaloneStorage {
 #[async_trait]
 impl Storage for RedisStandaloneStorage {
     #[cfg(feature = "storage_operate")]
-    async fn registry(&self, node_addr: String, metadata: NodeMetaData) -> Result<()> {
+    async fn registry(&self, addr: SocketAddr, metadata: NodeMetaData) -> Result<()> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
-        conn.sadd(NODES_REGISTRY_KEY, node_addr.clone()).await?;
+        conn.sadd(NODES_REGISTRY_KEY, addr.to_string()).await?;
         conn.set_ex(
-            format!("{}:{}", NODE_REGISTRY_KEY, node_addr),
+            format!("{}:{}", NODE_REGISTRY_KEY, addr),
             serde_json::to_string(&metadata)?,
             3,
         )
@@ -54,22 +56,22 @@ impl Storage for RedisStandaloneStorage {
         Ok(())
     }
     #[cfg(feature = "storage_operate")]
-    async fn registry_stream(&self, node_addr: String, stream: String) -> Result<()> {
+    async fn registry_stream(&self, addr: SocketAddr, stream: String) -> Result<()> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         conn.zadd(
             format!("{}:{}", STREAM_REGISTRY_KEY, stream),
-            node_addr.clone(),
+            addr.to_string(),
             Utc::now().timestamp_millis(),
         )
         .await?;
         Ok(())
     }
     #[cfg(feature = "storage_operate")]
-    async fn unregister_stream(&self, node_addr: String, stream: String) -> Result<()> {
+    async fn unregister_stream(&self, addr: SocketAddr, stream: String) -> Result<()> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         conn.zrem(
             format!("{}:{}", STREAM_REGISTRY_KEY, stream),
-            node_addr.clone(),
+            addr.to_string(),
         )
         .await?;
         Ok(())
@@ -109,7 +111,7 @@ impl Storage for RedisStandaloneStorage {
             if some {
                 final_nodes.push(node);
             } else if ok {
-                remove_nodes.push(node.addr.clone());
+                remove_nodes.push(node.addr.to_string());
             }
         }
         if !remove_nodes.is_empty() {
@@ -124,34 +126,37 @@ impl Storage for RedisStandaloneStorage {
 #[cfg(feature = "node_operate")]
 impl RedisStandaloneStorage {
     async fn final_nodes(
-        nodes_host: Vec<String>,
+        node_addrs: Vec<String>,
         conn: &mut MultiplexedConnection,
     ) -> Result<(Vec<Node>, Vec<String>)> {
         let mut nodes = vec![];
         let mut remove_nodes = vec![];
-        if nodes_host.is_empty() {
+        if node_addrs.is_empty() {
             return Ok((nodes, remove_nodes));
         }
         let nodes_mget: Vec<Option<String>> = conn
             .mget(
-                nodes_host
+                node_addrs
                     .iter()
-                    .map(|host| format!("{}:{}", NODE_REGISTRY_KEY, host))
+                    .map(|addr| format!("{}:{}", NODE_REGISTRY_KEY, addr))
                     .collect::<Vec<String>>(),
             )
             .await?;
-        for i in 0..nodes_host.len() {
-            let host = nodes_host.get(i).unwrap();
+        for i in 0..node_addrs.len() {
+            let addr = node_addrs.get(i).unwrap();
             let metadata = nodes_mget.get(i).unwrap();
             if metadata.is_none() {
-                remove_nodes.push(host.clone());
+                remove_nodes.push(addr.clone());
                 continue;
             }
-            let metadata = metadata.clone().unwrap();
-            nodes.push(Node {
-                addr: host.clone(),
-                metadata: serde_json::from_str(&metadata)?,
-            });
+            if let Ok(addr) = SocketAddr::from_str(addr) {
+                let metadata = metadata.clone().unwrap();
+                if let Ok(metadata) = serde_json::from_str(&metadata) {
+                    nodes.push(Node { addr, metadata })
+                }
+            } else {
+                remove_nodes.push(addr.clone());
+            }
         }
         Ok((nodes, remove_nodes))
     }

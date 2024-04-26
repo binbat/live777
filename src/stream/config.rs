@@ -1,6 +1,6 @@
 use crate::config::Config;
 use live777_storage::{Auth, NodeMetaData, Storage, StreamInfo};
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
 #[derive(Clone)]
@@ -9,7 +9,7 @@ pub struct ManagerConfig {
     pub reforward_close_sub: bool,
     pub publish_leave_timeout: u64,
     pub storage: Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
-    pub node_addr: String,
+    pub addr: SocketAddr,
     pub metadata: NodeMetaData,
 }
 
@@ -54,7 +54,7 @@ impl ManagerConfig {
             reforward_close_sub: cfg.stream_info.reforward_close_sub,
             publish_leave_timeout: cfg.stream_info.publish_leave_timeout.0,
             storage,
-            node_addr: cfg.node_info.ip_port.clone(),
+            addr: cfg.node_info.ip_port.unwrap(),
             metadata: NodeMetaData::from(cfg.clone()),
         }
     }

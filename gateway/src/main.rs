@@ -22,8 +22,6 @@ use live777_storage::node_operate::Node;
 use live777_storage::Storage;
 use std::env;
 use std::future::IntoFuture;
-use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -66,8 +64,10 @@ async fn main() {
         cfg.log.level, cfg.log.level
     ));
     debug!("config : {:?}", cfg);
-    let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
-    info!("Server listening on {}", addr);
+    let listener = tokio::net::TcpListener::bind(cfg.http.listen)
+        .await
+        .unwrap();
+    info!("Server listening on {}", listener.local_addr().unwrap());
     let client: Client =
         hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
             .build(HttpConnector::new());
@@ -110,7 +110,7 @@ async fn main() {
             }),
         );
     tokio::select! {
-        Err(e) = axum::serve(tokio::net::TcpListener::bind(&addr).await.unwrap(), static_server(app)).into_future() => error!("Application error: {e}"),
+        Err(e) = axum::serve(listener, static_server(app)).into_future() => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
     }
     info!("Server shutdown");

@@ -1,8 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
-use std::{env, fs};
+use std::{env, fs, net::SocketAddr, str::FromStr};
 use webrtc::{
     ice,
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
@@ -30,7 +29,7 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http {
     #[serde(default = "default_http_listen")]
-    pub listen: String,
+    pub listen: SocketAddr,
     #[serde(default)]
     pub cors: bool,
 }
@@ -107,8 +106,7 @@ pub struct StreamInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeInfo {
     pub storage: Option<StorageModel>,
-    #[serde(default = "default_registry_ip_port")]
-    pub ip_port: String,
+    pub ip_port: Option<SocketAddr>,
     #[serde(default)]
     pub meta_data: MetaData,
 }
@@ -148,19 +146,12 @@ impl Default for ReforwardMaximumIdleTime {
     }
 }
 
-fn default_http_listen() -> String {
-    format!(
+fn default_http_listen() -> SocketAddr {
+    SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
-        env::var("PORT").unwrap_or(String::from("7777"))
-    )
-}
-
-fn default_registry_ip_port() -> String {
-    format!(
-        "{}:{}",
-        local_ip().unwrap(),
-        env::var("PORT").unwrap_or(String::from("7777"))
-    )
+        env::var("LIVE777_PORT").unwrap_or(String::from("7777"))
+    ))
+    .expect("invalid listen address")
 }
 
 impl Default for Http {
