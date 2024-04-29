@@ -17,8 +17,11 @@ jobs:
       matrix:
         job:
         - { target: aarch64-apple-darwin        , os: macos-13                      }
+        - { target: aarch64-pc-windows-gnu      , os: windows-2022                  }
+        - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
         - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: true }
         - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
+        - { target: aarch64-unknown-linux-musl  , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
         - { target: i686-pc-windows-msvc        , os: windows-2022                  }
@@ -40,6 +43,16 @@ jobs:
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
+
+    - uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest
+
+    - name: Install
+      run: bun install
+
+    - name: Build Webui
+      run: bun run build
 
     - name: Get the release version from the tag
       run: |
@@ -116,7 +129,7 @@ jobs:
 
         mkdir -p "${ARCHIVE_DIR}"
         cp "${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
-        cp "README.md" "LICENSE" "config-dist.toml" "live777.service" "$ARCHIVE_DIR"
+        cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
 
         # base compressed package
         case ${{ matrix.job.target }} in
