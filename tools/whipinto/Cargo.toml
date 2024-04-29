@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.1", features = ["derive"] }
-webrtc = { git = "https://github.com/a-wing/webrtc-rs", rev = "b5cc6a35446793bd7923ef1f49b44cbce77cf21e" }
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
 anyhow = "1.0"
 tokio = { version = "1.36", features = ["full"] }
 cli = { path = "../../libs/cli" }
