@@ -23,14 +23,14 @@ describe("test cluster", () => {
 
     const appRust = "target/release/"
 
-    const appGateway  = appRust + "gateway"
+    const appGateway  = appRust + "live777-gateway"
     const appLive777  = appRust + "live777"
     const appWhipinto = appRust + "whipinto"
     const appWhepfrom = appRust + "whepfrom"
 
     const tmpFileConfigEdge  = "test_config-edge.toml"
     const tmpFileConfigCloud = "test_config-cloud.toml"
-    //const tmpFileConfigGate  = "test_config-gate.toml"
+    const tmpFileConfigGate  = "test_config-gate.toml"
     const tmpFileFFplaySdp   = "test_stream.sdp"
 
     const live777EdgePort = "7778"
@@ -79,9 +79,16 @@ sub_max = 100
 reforward_cascade = false
 reforward_close_sub = true
 `
+     const fileContentGate = `
+[node_info.storage]
+model = "RedisStandalone"
+addr = "redis://127.0.0.1:6379"
+`
+
         try {
             await writeFile(tmpFileConfigEdge, fileContentEdge)
             await writeFile(tmpFileConfigCloud, fileContentCloud)
+            await writeFile(tmpFileConfigGate, fileContentGate)
         } catch (err) {
             console.error(err)
         }
@@ -90,16 +97,17 @@ reforward_close_sub = true
 
         live777Edge = spawn([appLive777, "--config", tmpFileConfigEdge], {
             env: { PORT: live777EdgePort },
-            onExit: e => { e.exitCode && console.log(e.stderr) },
+            onExit: e => { e.exitCode && console.log("live777Edge", e.stderr) },
         })
 
         live777Cloud = spawn([appLive777, "--config", tmpFileConfigCloud], {
             env: { PORT: live777CloudPort },
-            onExit: e => { e.exitCode && console.log(e.stderr) },
+            onExit: e => { e.exitCode && console.log("live777Cloud", e.stderr) },
         })
 
-        live777Gateway = spawn([appGateway], {
-            onExit: e => { e.exitCode && console.log(e.stderr) },
+        live777Gateway = spawn([appGateway, "--config", tmpFileConfigGate], {
+            env: { PORT: live777GatewayPort },
+            onExit: e => { e.exitCode && console.log("live777Gateway", e.stderr) },
         })
     })
 
@@ -163,13 +171,13 @@ a=rtpmap:96 VP8/90000
     })
 
     test("p2p to sfu", async () => {
-        const whipintoPort = "5003"
+        const whipintoPort = "5005"
         const whipinto = spawn([
             appWhipinto,
             "--codec", "vp8",
             "--url", `${live777EdgeHost}/whip/${live777EdgeStream}`,
             "--port", whipintoPort,
-        ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
+        ], { onExit: e => { e.exitCode && console.log("whipinto", e.stderr) } })
 
         const ffmpeg = spawn([
             "ffmpeg", "-re", "-f", "lavfi",
@@ -185,13 +193,13 @@ a=rtpmap:96 VP8/90000
 
         await sleep(1000)
 
-        const whepfromPort = "5004"
+        const whepfromPort = "5006"
         const whepfrom1 = spawn([
             appWhepfrom,
             "--codec", "vp8",
             "--url", `${live777GatewayHost}/whep/${live777GatewayStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
-        ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
+        ], { onExit: e => { e.exitCode && console.log("whepfrom 1", e.stderr) } })
 
         await sleep(1000)
 
@@ -200,7 +208,7 @@ a=rtpmap:96 VP8/90000
             "--codec", "vp8",
             "--url", `${live777GatewayHost}/whep/${live777GatewayStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
-        ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
+        ], { onExit: e => { e.exitCode && console.log("whepfrom 2", e.stderr) } })
 
         await sleep(1000)
 
@@ -217,11 +225,10 @@ a=rtpmap:96 VP8/90000
         whipinto.kill()
     })
 
-
     afterAll(async () => {
         await rm(tmpFileConfigEdge)
         await rm(tmpFileConfigCloud)
-        //await rm(tmpFileConfigGate)
+        await rm(tmpFileConfigGate)
         live777Edge.kill()
         live777Cloud.kill()
         live777Gateway.kill()
