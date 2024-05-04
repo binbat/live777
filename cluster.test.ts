@@ -18,6 +18,29 @@ async function reforward(server: string, streamId: string, url: string) {
     })
 }
 
+interface ServerOptions {
+    name: string;
+    cmd: string[];
+    env: Record<string, string>;
+}
+
+class UpCluster {
+    srvs: any[]
+    constructor(servers: ServerOptions[]) {
+        this.srvs = servers.map(s => spawn(s.cmd, {
+            env: s.env,
+            onExit: e => {
+                e.exitCode && console.log(`${s.name}: ${e.stderr}`)
+                this.down()
+            },
+        }))
+    }
+
+    down() {
+        this.srvs.forEach(s => s.kill())
+    }
+}
+
 describe("test cluster", () => {
     const localhost = "127.0.0.1"
 
@@ -28,14 +51,14 @@ describe("test cluster", () => {
     const appWhipinto = appRust + "whipinto"
     const appWhepfrom = appRust + "whepfrom"
 
-    const tmpFileConfigEdge  = "test_config-edge.toml"
+    const tmpFileConfigVerge  = "test_config-edge.toml"
     const tmpFileConfigCloud = "test_config-cloud.toml"
     const tmpFileConfigGate  = "test_config-gate.toml"
     const tmpFileFFplaySdp   = "test_stream.sdp"
 
-    const live777EdgePort = "7778"
-    const live777EdgeHost = `http://${localhost}:${live777EdgePort}`
-    const live777EdgeStream = "888"
+    const live777VergePort = "7778"
+    const live777VergeHost = `http://${localhost}:${live777VergePort}`
+    const live777VergeStream = "888"
 
     const live777CloudPort = "7779"
     const live777CloudHost = `http://${localhost}:${live777CloudPort}`
@@ -45,14 +68,12 @@ describe("test cluster", () => {
     const live777GatewayHost = `http://${localhost}:${live777GatewayPort}`
     const live777GatewayStream = "888"
 
-    let live777Edge: any
-    let live777Cloud: any
-    let live777Gateway: any
+    let serv: UpCluster
 
     beforeAll(async () => {
-        const fileContentEdge = `
+        const fileContentVerge = `
 [node_info]
-ip_port = "${localhost}:${live777EdgePort}"
+ip_port = "${localhost}:${live777VergePort}"
 
 [node_info.storage]
 model = "RedisStandalone"
@@ -86,7 +107,7 @@ addr = "redis://127.0.0.1:6379"
 `
 
         try {
-            await writeFile(tmpFileConfigEdge, fileContentEdge)
+            await writeFile(tmpFileConfigVerge, fileContentVerge)
             await writeFile(tmpFileConfigCloud, fileContentCloud)
             await writeFile(tmpFileConfigGate, fileContentGate)
         } catch (err) {
@@ -95,20 +116,21 @@ addr = "redis://127.0.0.1:6379"
 
         console.log(spawnSync(["docker", "run", "-d", "--name", "redis", "--rm", "-p", "6379:6379", "redis"]).stderr.toString())
 
-        live777Edge = spawn([appLive777, "--config", tmpFileConfigEdge], {
-            env: { PORT: live777EdgePort },
-            onExit: e => { e.exitCode && console.log("live777Edge", e.stderr) },
-        })
-
-        live777Cloud = spawn([appLive777, "--config", tmpFileConfigCloud], {
-            env: { PORT: live777CloudPort },
-            onExit: e => { e.exitCode && console.log("live777Cloud", e.stderr) },
-        })
-
-        live777Gateway = spawn([appGateway, "--config", tmpFileConfigGate], {
-            env: { PORT: live777GatewayPort },
-            onExit: e => { e.exitCode && console.log("live777Gateway", e.stderr) },
-        })
+        serv = new UpCluster([
+            {
+                name: "live777Verge",
+                cmd: [appLive777, "--config", tmpFileConfigVerge],
+                env: { PORT: live777VergePort },
+            }, {
+                name: "live777Cloud",
+                cmd: [appLive777, "--config", tmpFileConfigCloud],
+                env: { PORT: live777CloudPort },
+            }, {
+                name: "live777Gateway",
+                cmd: [appGateway, "--config", tmpFileConfigGate],
+                env: { PORT: live777GatewayPort },
+            }
+        ])
     })
 
     test("reforward", async () => {
@@ -116,7 +138,7 @@ addr = "redis://127.0.0.1:6379"
         const whipinto = spawn([
             appWhipinto,
             "--codec", "vp8",
-            "--url", `${live777EdgeHost}/whip/${live777EdgeStream}`,
+            "--url", `${live777VergeHost}/whip/${live777VergeStream}`,
             "--port", whipintoPort,
         ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
 
@@ -135,7 +157,7 @@ addr = "redis://127.0.0.1:6379"
         await sleep(1000)
 
         try {
-            const res = await reforward(`http://127.0.0.1:${live777EdgePort}`, live777EdgeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
+            const res = await reforward(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
             console.log(res.status === 200 ? "reforward success" : res.status)
         } catch (e) {
             console.log(e)
@@ -175,7 +197,7 @@ a=rtpmap:96 VP8/90000
         const whipinto = spawn([
             appWhipinto,
             "--codec", "vp8",
-            "--url", `${live777EdgeHost}/whip/${live777EdgeStream}`,
+            "--url", `${live777VergeHost}/whip/${live777VergeStream}`,
             "--port", whipintoPort,
         ], { onExit: e => { e.exitCode && console.log("whipinto", e.stderr) } })
 
@@ -212,7 +234,7 @@ a=rtpmap:96 VP8/90000
 
         await sleep(1000)
 
-        const res1 = (await info(live777EdgeHost)).find(r => r.id === live777GatewayStream)
+        const res1 = (await info(live777VergeHost)).find(r => r.id === live777GatewayStream)
         expect(res1).toBeTruthy()
         expect(res1.subscribeSessionInfos.length).toEqual(1)
         const res2 = (await info(live777CloudHost)).find(r => r.id === live777GatewayStream)
@@ -226,12 +248,10 @@ a=rtpmap:96 VP8/90000
     })
 
     afterAll(async () => {
-        await rm(tmpFileConfigEdge)
+        await rm(tmpFileConfigVerge)
         await rm(tmpFileConfigCloud)
         await rm(tmpFileConfigGate)
-        live777Edge.kill()
-        live777Cloud.kill()
-        live777Gateway.kill()
+        serv.down()
 
         console.log(spawnSync(["docker", "stop", "redis"]).stderr.toString())
         console.log("=== All Done! ===")
