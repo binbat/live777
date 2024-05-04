@@ -2,12 +2,13 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use clap::ValueEnum;
 use cli::{create_child, Codec};
 
 use libwish::Client;
 use scopeguard::defer;
 use tokio::{
-    net::UdpSocket,
+    net::{TcpListener, UdpSocket},
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
@@ -27,11 +28,23 @@ use webrtc::{
     util::Unmarshal,
 };
 
+mod rtsp;
+
 const PREFIX_LIB: &str = "WEBRTC";
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Mode {
+    Rtsp,
+    Rtp,
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    #[arg(short, long, value_enum, default_value_t = Mode::Rtsp)]
+    mode: Mode,
+    #[arg(long, default_value_t = String::from("[::1]"))]
+    host: String,
     #[arg(short, long, default_value_t = 0)]
     port: u16,
     #[arg(short, long, value_enum)]
@@ -53,9 +66,63 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let listener = UdpSocket::bind(format!("0.0.0.0:{}", args.port)).await?;
+
+    let host = args.host.clone();
+    let mut codec = args.codec;
+    let mut rtp_port = args.port;
+    if args.mode == Mode::Rtsp {
+        let (tx, mut rx) = unbounded_channel::<String>();
+
+        tokio::spawn(async move {
+            let listener = TcpListener::bind(format!("{}:{}", host, args.port))
+                .await
+                .unwrap();
+            println!(
+                "=== RTSP listener started : {} ===",
+                listener.local_addr().unwrap()
+            );
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                match rtsp::process_socket(socket, tx.clone()).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("=== RTSP listener error: {} ===", e);
+                    }
+                };
+                println!("=== RTSP client socket closed ===");
+            }
+        });
+
+        match rx.recv().await {
+            Some(rtpmap) => {
+                println!("=== Received RTPMAP: {} ===", rtpmap);
+                match rtpmap.split_once(' ') {
+                    Some((pt, code)) => {
+                        println!("=== Received PT: {} CODEC: {} ===", pt, code);
+                        codec = match code {
+                            "AV1/90000" => Codec::AV1,
+                            "VP8/90000" => Codec::Vp8,
+                            "VP9/90000" => Codec::Vp9,
+                            "H264/90000" => Codec::H264,
+                            _ => Codec::H264,
+                        };
+                    }
+                    None => {}
+                };
+            }
+            None => {
+                println!("=== No RTPMAP received ===");
+            }
+        };
+        //rtp_port += 1;
+        rtp_port = 8000;
+    }
+    let listener = UdpSocket::bind(format!("{}:{}", args.host, rtp_port)).await?;
     let port = listener.local_addr()?.port();
-    println!("=== RTP listener started : {} ===", port);
+    println!(
+        "=== RTP listener started : {} ===",
+        listener.local_addr().unwrap()
+    );
     let mut client = Client::new(
         args.url,
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
@@ -74,7 +141,7 @@ async fn main() -> Result<()> {
         }
     });
     let (complete_tx, mut complete_rx) = unbounded_channel();
-    let (peer, sender) = webrtc_start(&mut client, args.codec.into(), complete_tx.clone())
+    let (peer, sender) = webrtc_start(&mut client, codec.into(), complete_tx.clone())
         .await
         .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
     tokio::spawn(rtp_listener(listener, sender));

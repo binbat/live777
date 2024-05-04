@@ -525,6 +525,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "cookie-factory"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9885fa71e26b8ab7855e2ec7cae6e9b380edff76cd052e07c683a0319d51b3a2"
+dependencies = [
+ "futures",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2059,6 +2068,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsp-types"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c5c11e0af63f1ac6057f9029f7ddf1c677bade51e449f75be25c8b29f59474c"
+dependencies = [
+ "cookie-factory",
+ "nom",
+ "tinyvec",
+ "url",
+]
+
+[[package]]
 name = "rust-embed"
 version = "8.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2222,6 +2243,18 @@ dependencies = [
 name = "sdp"
 version = "0.6.1"
 source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+dependencies = [
+ "rand",
+ "substring",
+ "thiserror",
+ "url",
+]
+
+[[package]]
+name = "sdp"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13254db766b17451aced321e7397ebf0a446ef0c8d2942b6e67a95815421093f"
 dependencies = [
  "rand",
  "substring",
@@ -3084,7 +3117,7 @@ dependencies = [
  "rtcp",
  "rtp",
  "rustls 0.23.5",
- "sdp",
+ "sdp 0.6.1",
  "serde",
  "serde_json",
  "sha2",
@@ -3285,7 +3318,9 @@ dependencies = [
  "clap",
  "cli",
  "libwish",
+ "rtsp-types",
  "scopeguard",
+ "sdp 0.6.2",
  "signal",
  "tokio",
  "webrtc",

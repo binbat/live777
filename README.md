@@ -323,12 +323,24 @@ OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
 
 ### whipinto
 
-This tool is `rtp2whip`
+This tool support `RTP` / `RTSP` Sever
 
 Build
 
 ```bash
 cargo build --package=whipinto --release
+```
+
+**RTSP Server**
+
+```bash
+whipinto -c vp8 -u http://localhost:7777/whip/777 --port 8554
+```
+
+Must add `-pkt_size 1200`
+
+```bash
+ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -f rtsp -pkt_size 1200 'rtsp://[::1]:8554/live/xxx'
 ```
 
 ```bash
