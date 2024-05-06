@@ -14,7 +14,7 @@ use axum::{
 use clap::Parser;
 
 use error::AppError;
-use forward::info::ReforwardInfo;
+use forward::message::ReforwardInfo;
 use http::Uri;
 use http_body_util::BodyExt;
 use local_ip_address::local_ip;
@@ -39,9 +39,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::result::Result;
-use crate::stream::config::ManagerConfig;
 use config::IceServer;
-use live777_http::response::Metrics;
 use stream::manager::Manager;
 #[cfg(not(debug_assertions))]
 use {http::header, rust_embed::RustEmbed};
@@ -52,6 +50,7 @@ mod constant;
 mod convert;
 mod error;
 mod forward;
+mod hook;
 mod metrics;
 mod result;
 mod stream;
@@ -76,14 +75,14 @@ async fn main() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
     info!("Server listening on {}", addr);
-    if cfg.node_info.ip_port.is_none() {
+    if cfg.node_addr.is_none() {
         let port = addr.port();
-        cfg.node_info.ip_port =
+        cfg.node_addr =
             Some(SocketAddr::from_str(&format!("{}:{}", local_ip().unwrap(), port)).unwrap());
         debug!("config : {:?}", cfg);
     }
     let app_state = AppState {
-        stream_manager: Arc::new(Manager::new(ManagerConfig::from_config(cfg.clone()).await).await),
+        stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![
@@ -115,8 +114,7 @@ async fn main() {
             post(reforward).layer(admin_auth_layer),
         )
         .route(live777_http::path::METRICS, get(metrics))
-        .route(live777_http::path::METRICS_JSON, get(metrics_json))
-        .with_state(app_state)
+        .with_state(app_state.clone())
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
         } else {
@@ -139,6 +137,7 @@ async fn main() {
         Err(e) = axum::serve(listener, static_server(app)).into_future() => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
     }
+    let _ = app_state.stream_manager.shotdown().await;
     info!("Server shutdown");
 }
 
@@ -176,15 +175,6 @@ async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
         .unwrap()
-}
-
-async fn metrics_json() -> Json<Metrics> {
-    Json::from(Metrics {
-        stream: metrics::STREAM.get() as u64,
-        publish: metrics::PUBLISH.get() as u64,
-        subscribe: metrics::SUBSCRIBE.get() as u64,
-        reforward: metrics::REFORWARD.get() as u64,
-    })
 }
 
 #[cfg(not(debug_assertions))]
@@ -405,7 +395,7 @@ async fn select_layer(
             stream,
             session,
             req.encoding_id
-                .map(|encoding_id| forward::info::Layer { encoding_id }),
+                .map(|encoding_id| forward::message::Layer { encoding_id }),
         )
         .await?;
     Ok("".to_string())
@@ -420,7 +410,7 @@ async fn un_select_layer(
         .select_layer(
             stream,
             session,
-            Some(forward::info::Layer {
+            Some(forward::message::Layer {
                 encoding_id: constant::RID_DISABLE.to_string(),
             }),
         )

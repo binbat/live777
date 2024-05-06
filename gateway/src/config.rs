@@ -128,17 +128,21 @@ fn default_log_level() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Reforward {
     #[serde(default)]
-    pub reforward_check_frequency: ReforwardCheckFrequency,
+    pub whep_check_frequency: WhepReforwardCheckFrequency,
     #[serde(default)]
-    pub check_reforward_tick_time: CheckReforwardTickTime,
+    pub check_tick_time: CheckReforwardTickTime,
+    #[serde(default)]
+    pub maximum_idle_time: ReforwardMaximumIdleTime,
+    #[serde(default)]
+    pub cascade: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardCheckFrequency(pub u8);
+pub struct WhepReforwardCheckFrequency(pub u8);
 
-impl Default for ReforwardCheckFrequency {
+impl Default for WhepReforwardCheckFrequency {
     fn default() -> Self {
-        ReforwardCheckFrequency(5)
+        WhepReforwardCheckFrequency(5)
     }
 }
 
@@ -158,5 +162,14 @@ impl Config {
             .unwrap_or("".to_string());
         let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
         cfg
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReforwardMaximumIdleTime(pub u64);
+
+impl Default for ReforwardMaximumIdleTime {
+    fn default() -> Self {
+        ReforwardMaximumIdleTime(60000)
     }
 }

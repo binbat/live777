@@ -1,7 +1,7 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
 
-use crate::forward::info::StreamInfo;
+use crate::forward::message::ForwardInfo;
 use crate::result::Result;
 use chrono::Utc;
 
@@ -33,8 +33,8 @@ use crate::forward::rtcp::RtcpMessage;
 use crate::metrics;
 use crate::AppError;
 
-use super::info::ReforwardInfo;
 use super::media::MediaInfo;
+use super::message::{ForwardEvent, ForwardEventType, ReforwardInfo};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::PublishTrackRemote;
@@ -70,6 +70,7 @@ pub(crate) struct PeerForwardInternal {
     subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
+    event_sender: broadcast::Sender<ForwardEvent>,
 }
 
 impl PeerForwardInternal {
@@ -87,6 +88,8 @@ impl PeerForwardInternal {
                 Arc::new(data_channel_forward_subscribe.1),
             ),
         };
+        let (event_sender, mut recv) = broadcast::channel(16);
+        tokio::spawn(async move { while recv.recv().await.is_ok() {} });
         PeerForwardInternal {
             stream: stream.to_string(),
             create_time: Utc::now().timestamp_millis(),
@@ -99,16 +102,21 @@ impl PeerForwardInternal {
             subscribe_group: RwLock::new(Vec::new()),
             data_channel_forward,
             ice_server,
+            event_sender,
         }
     }
 
-    pub(crate) async fn info(&self) -> StreamInfo {
+    pub(crate) fn subscribe_event(&self) -> broadcast::Receiver<ForwardEvent> {
+        self.event_sender.subscribe()
+    }
+
+    pub(crate) async fn info(&self) -> ForwardInfo {
         let mut subscribe_session_infos = vec![];
         let subscribe_group = self.subscribe_group.read().await;
         for subscribe in subscribe_group.iter() {
             subscribe_session_infos.push(subscribe.info().await);
         }
-        StreamInfo {
+        ForwardInfo {
             id: self.stream.clone(),
             create_time: self.create_time,
             publish_leave_time: *self.publish_leave_time.read().await,
@@ -152,8 +160,7 @@ impl PeerForwardInternal {
     pub(crate) async fn remove_peer(&self, id: String) -> Result<bool> {
         let publish = self.publish.read().await;
         if publish.is_some() && publish.as_ref().unwrap().id == id {
-            drop(publish);
-            self.close().await?;
+            publish.as_ref().unwrap().peer.close().await?;
             return Ok(true);
         }
 
@@ -170,15 +177,12 @@ impl PeerForwardInternal {
     pub(crate) async fn close(&self) -> Result<()> {
         let publish = self.publish.read().await;
         let subscribe_group = self.subscribe_group.read().await;
-        let mut publish_tracks = self.publish_tracks.write().await;
         if publish.is_some() {
             publish.as_ref().unwrap().peer.close().await?;
         }
         for subscribe in subscribe_group.iter() {
             subscribe.peer.close().await?;
         }
-        publish_tracks.clear();
-        let _ = self.publish_tracks_change.0.send(());
         info!("{} close", self.stream);
         Ok(())
     }
@@ -255,42 +259,56 @@ impl PeerForwardInternal {
     }
 
     pub(crate) async fn set_publish(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
-        let mut publish = self.publish.write().await;
-        if publish.is_some() {
-            return Err(AppError::resource_already_exists(
-                "A connection has already been established",
-            ));
+        {
+            let mut publish = self.publish.write().await;
+            if publish.is_some() {
+                return Err(AppError::resource_already_exists(
+                    "A connection has already been established",
+                ));
+            }
+            let publish_peer = PublishRTCPeerConnection::new(
+                self.stream.clone(),
+                peer.clone(),
+                self.publish_rtcp_channel.0.subscribe(),
+            )
+            .await?;
+            info!("[{}] [publish] set {}", self.stream, publish_peer.id);
+            *publish = Some(publish_peer);
         }
-        let publish_peer = PublishRTCPeerConnection::new(
-            self.stream.clone(),
-            peer.clone(),
-            self.publish_rtcp_channel.0.subscribe(),
-        )
-        .await?;
-        info!("[{}] [publish] set {}", self.stream, publish_peer.id);
-        *publish = Some(publish_peer);
-        let mut publish_leave_time = self.publish_leave_time.write().await;
-        *publish_leave_time = 0;
+        {
+            let mut publish_leave_time = self.publish_leave_time.write().await;
+            *publish_leave_time = 0;
+        }
         metrics::PUBLISH.inc();
+        self.send_event(ForwardEventType::PublishUp, get_peer_id(&peer))
+            .await;
         Ok(())
     }
 
     pub(crate) async fn remove_publish(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
-        let mut publish = self.publish.write().await;
-        if publish.is_none() {
-            return Ok(());
+        {
+            let mut publish = self.publish.write().await;
+            if publish.is_none() {
+                return Err(AppError::throw("publish is none"));
+            }
+            if publish.as_ref().unwrap().id != get_peer_id(&peer) {
+                return Err(AppError::throw("publish not myself"));
+            }
+            *publish = None;
         }
-        if publish.as_ref().unwrap().id != get_peer_id(&peer) {
-            return Err(AppError::throw("publish not myself"));
+        {
+            let mut publish_tracks = self.publish_tracks.write().await;
+            publish_tracks.clear();
+            let _ = self.publish_tracks_change.0.send(());
         }
-        let mut publish_tracks = self.publish_tracks.write().await;
-        publish_tracks.clear();
-        let _ = self.publish_tracks_change.0.send(());
-        *publish = None;
-        let mut publish_leave_time = self.publish_leave_time.write().await;
-        *publish_leave_time = Utc::now().timestamp_millis();
+        {
+            let mut publish_leave_time = self.publish_leave_time.write().await;
+            *publish_leave_time = Utc::now().timestamp_millis();
+        }
         info!("[{}] [publish] set none", self.stream);
         metrics::PUBLISH.dec();
+        self.send_event(ForwardEventType::PublishDown, get_peer_id(&peer))
+            .await;
         Ok(())
     }
 
@@ -425,30 +443,36 @@ impl PeerForwardInternal {
             ..Default::default()
         };
         let peer = Arc::new(api.new_peer_connection(config).await?);
-        let s = SubscribeRTCPeerConnection::new(
-            reforward_info.clone(),
-            self.stream.clone(),
-            peer.clone(),
-            self.publish_rtcp_channel.0.clone(),
-            (
-                self.publish_tracks.clone(),
-                self.publish_tracks_change.0.clone(),
-            ),
-            (
-                Self::new_sender(&peer, RTPCodecType::Video, media_info.video_transceiver.1)
-                    .await?,
-                Self::new_sender(&peer, RTPCodecType::Audio, media_info.audio_transceiver.1)
-                    .await?,
-            ),
-        )
-        .await;
-
-        self.subscribe_group.write().await.push(s);
-        *self.subscribe_leave_time.write().await = 0;
+        {
+            let s = SubscribeRTCPeerConnection::new(
+                reforward_info.clone(),
+                self.stream.clone(),
+                peer.clone(),
+                self.publish_rtcp_channel.0.clone(),
+                (
+                    self.publish_tracks.clone(),
+                    self.publish_tracks_change.0.clone(),
+                ),
+                (
+                    Self::new_sender(&peer, RTPCodecType::Video, media_info.video_transceiver.1)
+                        .await?,
+                    Self::new_sender(&peer, RTPCodecType::Audio, media_info.audio_transceiver.1)
+                        .await?,
+                ),
+            )
+            .await;
+            self.subscribe_group.write().await.push(s);
+            *self.subscribe_leave_time.write().await = 0;
+        }
         metrics::SUBSCRIBE.inc();
+        self.send_event(ForwardEventType::SubscribeUp, get_peer_id(&peer))
+            .await;
         if reforward_info.is_some() {
             metrics::REFORWARD.inc();
+            self.send_event(ForwardEventType::ReforwardUp, get_peer_id(&peer))
+                .await;
         }
+
         Ok(peer)
     }
 
@@ -476,34 +500,52 @@ impl PeerForwardInternal {
     }
 
     pub async fn remove_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
-        let mut subscribe_peers = self.subscribe_group.write().await;
-        for i in 0..subscribe_peers.len() {
-            let subscribe = &mut subscribe_peers[i];
-            if subscribe.id == get_peer_id(&peer) {
-                metrics::SUBSCRIBE.dec();
-                let reforward_info = subscribe.reforward_info.read().await;
-                if let Some(reforward_info) = reforward_info.as_ref() {
-                    metrics::REFORWARD.dec();
-                    let client = Client::build(
-                        reforward_info.target_url.clone(),
-                        reforward_info.resource_url.clone(),
-                        Client::get_authorization_header_map(
-                            reforward_info.admin_authorization.clone(),
-                        ),
-                    );
-                    tokio::spawn(async move {
-                        let _ = client.remove_resource().await;
-                    });
+        let mut flag = false;
+        let mut reforward_flat = false;
+        let session = get_peer_id(&peer);
+        {
+            let mut subscribe_peers = self.subscribe_group.write().await;
+            for i in 0..subscribe_peers.len() {
+                let subscribe = &mut subscribe_peers[i];
+                if subscribe.id == session {
+                    flag = true;
+                    metrics::SUBSCRIBE.dec();
+                    let reforward_info = subscribe.reforward_info.read().await;
+                    if let Some(reforward_info) = reforward_info.as_ref() {
+                        reforward_flat = true;
+                        metrics::REFORWARD.dec();
+
+                        let client = Client::build(
+                            reforward_info.target_url.clone(),
+                            reforward_info.resource_url.clone(),
+                            Client::get_authorization_header_map(
+                                reforward_info.admin_authorization.clone(),
+                            ),
+                        );
+                        tokio::spawn(async move {
+                            let _ = client.remove_resource().await;
+                        });
+                    }
+                    drop(reforward_info);
+                    subscribe_peers.remove(i);
+                    break;
                 }
-                drop(reforward_info);
-                subscribe_peers.remove(i);
-                break;
+            }
+            if subscribe_peers.is_empty() {
+                *self.subscribe_leave_time.write().await = Utc::now().timestamp_millis();
             }
         }
-        if subscribe_peers.is_empty() {
-            *self.subscribe_leave_time.write().await = Utc::now().timestamp_millis();
+        if flag {
+            self.send_event(ForwardEventType::SubscribeDown, get_peer_id(&peer))
+                .await;
+            if reforward_flat {
+                self.send_event(ForwardEventType::ReforwardDown, get_peer_id(&peer))
+                    .await;
+            }
+            Ok(())
+        } else {
+            Err(AppError::throw("not found session"))
         }
-        Ok(())
     }
 
     pub async fn set_reforward_info(
@@ -547,5 +589,13 @@ impl PeerForwardInternal {
     pub(crate) async fn get_publish_peer(&self) -> Option<Arc<RTCPeerConnection>> {
         let publish = self.publish.read().await;
         publish.as_ref().map(|p| p.peer.clone())
+    }
+
+    async fn send_event(&self, r#type: ForwardEventType, session: String) {
+        let _ = self.event_sender.send(ForwardEvent {
+            r#type,
+            session,
+            stream_info: self.info().await,
+        });
     }
 }

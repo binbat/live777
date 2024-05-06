@@ -21,9 +21,11 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub node_info: NodeInfo,
+    pub node_addr: Option<SocketAddr>,
     #[serde(default)]
     pub stream_info: StreamInfo,
+    #[serde(default)]
+    pub webhooks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -101,22 +103,6 @@ pub struct StreamInfo {
     pub reforward_close_sub: bool,
     #[serde(default)]
     pub publish_leave_timeout: PublishLeaveTimeout,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeInfo {
-    pub storage: Option<StorageModel>,
-    pub ip_port: Option<SocketAddr>,
-    #[serde(default)]
-    pub meta_data: MetaData,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MetaData {
-    #[serde(default)]
-    pub reforward_maximum_idle_time: ReforwardMaximumIdleTime,
-    #[serde(default)]
-    pub reforward_cascade: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

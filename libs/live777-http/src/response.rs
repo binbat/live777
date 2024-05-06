@@ -1,50 +1,35 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Metrics {
-    pub stream: u64,
-    pub publish: u64,
-    pub subscribe: u64,
-    pub reforward: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct Layer {
-    #[serde(rename = "encodingId")]
     pub encoding_id: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamInfo {
     pub id: String,
-    #[serde(rename = "createTime")]
     pub create_time: i64,
-    #[serde(rename = "publishLeaveTime")]
     pub publish_leave_time: i64,
-    #[serde(rename = "subscribeLeaveTime")]
     pub subscribe_leave_time: i64,
-    #[serde(rename = "publishSessionInfo")]
     pub publish_session_info: Option<SessionInfo>,
-    #[serde(rename = "subscribeSessionInfos")]
     pub subscribe_session_infos: Vec<SessionInfo>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub id: String,
-    #[serde(rename = "createTime")]
     pub create_time: i64,
-    #[serde(rename = "connectState")]
     pub connect_state: RTCPeerConnectionState,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "reforward")]
     pub reforward: Option<ReforwardInfo>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ReforwardInfo {
-    #[serde(rename = "targetUrl")]
     pub target_url: String,
-    #[serde(rename = "resourceUrl")]
     pub resource_url: Option<String>,
 }
 

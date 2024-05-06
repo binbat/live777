@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
-use crate::{error::AppError, result::Result};
+use crate::{error::AppError, model::Node, result::Result};
 use anyhow::anyhow;
 use chrono::Utc;
 use tracing::info;
@@ -11,7 +11,7 @@ use crate::AppState;
 pub async fn reforward_check(state: AppState) {
     loop {
         let timeout = tokio::time::sleep(Duration::from_millis(
-            state.config.reforward.check_reforward_tick_time.0,
+            state.config.reforward.check_tick_time.0,
         ));
         tokio::pin!(timeout);
         let _ = timeout.as_mut().await;
@@ -20,16 +20,16 @@ pub async fn reforward_check(state: AppState) {
 }
 
 async fn do_reforward_check(state: AppState) -> Result<()> {
-    let nodes = state.storage.nodes().await?;
+    let nodes = Node::nodes(&state.pool).await?;
     if nodes.is_empty() {
         return Ok(());
     }
     let mut node_map = HashMap::new();
     let mut node_streams_map = HashMap::new();
     for node in nodes.iter() {
-        node_map.insert(node.addr, node.clone());
+        node_map.insert(node.addr.clone(), node.clone());
         if let Ok(streams) = node.stream_infos(vec![]).await {
-            node_streams_map.insert(node.addr, streams);
+            node_streams_map.insert(node.addr.clone(), streams);
         }
     }
     for (addr, streams) in node_streams_map.iter() {
@@ -40,15 +40,14 @@ async fn do_reforward_check(state: AppState) -> Result<()> {
                     if let Ok((target_addr, target_stream)) =
                         parse_node_and_stream(reforward_info.target_url.clone())
                     {
-                        if let Some(target_node) = node_map.get(&target_addr) {
+                        if let Some(target_node) = node_map.get(&target_addr.to_string()) {
                             if let Ok(Some(target_stream_info)) =
                                 target_node.stream_info(target_stream).await
                             {
                                 if target_stream_info.subscribe_leave_time != 0
                                     && Utc::now().timestamp_millis()
                                         >= target_stream_info.subscribe_leave_time
-                                            + node.metadata.stream_info.reforward_maximum_idle_time
-                                                as i64
+                                            + node.reforward_maximum_idle_time as i64
                                 {
                                     info!(
                                         ?node,

@@ -1,9 +1,9 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::forward::info::StreamInfo;
+use crate::forward::message::ForwardInfo;
 use crate::result::Result;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tracing::info;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -15,16 +15,16 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use libwish::Client;
 use webrtc::sdp::SessionDescription;
 
-use crate::forward::forward_internal::PeerForwardInternal;
-use crate::forward::info::Layer;
+use crate::forward::internal::PeerForwardInternal;
+use crate::forward::message::Layer;
 use crate::{constant, AppError};
 
-use self::info::ReforwardInfo;
 use self::media::MediaInfo;
+use self::message::{ForwardEvent, ReforwardInfo};
 
-mod forward_internal;
-pub mod info;
+mod internal;
 mod media;
+pub mod message;
 mod publish;
 mod rtcp;
 mod subscribe;
@@ -42,11 +42,15 @@ pub struct PeerForward {
 }
 
 impl PeerForward {
-    pub fn new(id: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
+    pub fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         PeerForward {
             publish_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(id, ice_server)),
+            internal: Arc::new(PeerForwardInternal::new(stream, ice_server)),
         }
+    }
+
+    pub fn subscribe_event(&self) -> broadcast::Receiver<ForwardEvent> {
+        self.internal.subscribe_event()
     }
 
     pub async fn set_publish(
@@ -114,7 +118,8 @@ impl PeerForward {
         }));
         let description = peer_complete(offer, peer.clone()).await?;
         self.internal.set_publish(peer.clone()).await?;
-        Ok((description, get_peer_id(&peer)))
+        let session = get_peer_id(&peer);
+        Ok((description, session))
     }
 
     pub async fn add_subscribe(
@@ -143,6 +148,7 @@ impl PeerForward {
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                             let _ = pc.close().await;
                         }
+
                         RTCPeerConnectionState::Closed => {
                             let _ = internal.remove_subscribe(pc).await;
                         }
@@ -317,7 +323,7 @@ impl PeerForward {
         Ok(())
     }
 
-    pub async fn info(&self) -> StreamInfo {
+    pub async fn info(&self) -> ForwardInfo {
         self.internal.info().await
     }
 }
