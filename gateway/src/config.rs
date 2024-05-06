@@ -15,6 +15,8 @@ pub struct Config {
     pub storage: StorageModel,
     #[serde(default)]
     pub reforward: Reforward,
+    #[serde(default = "default_db_url")]
+    pub db_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -96,6 +98,10 @@ fn default_http_listen() -> SocketAddr {
         env::var("LIVE777_GATEWAY_PORT").unwrap_or(String::from("8080"))
     ))
     .expect("invalid listen address")
+}
+
+fn default_db_url() -> String {
+    "mysql://root:root@localhost:3306/live777".to_string()
 }
 
 impl Default for Http {

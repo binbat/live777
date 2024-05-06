@@ -74,8 +74,7 @@ async fn main() {
         .await
         .unwrap();
     info!("Server listening on {}", listener.local_addr().unwrap());
-    let pool_connect_options =
-        MySqlConnectOptions::from_str("mysql://root:root@localhost:3306/live777").unwrap();
+    let pool_connect_options = MySqlConnectOptions::from_str(&cfg.db_url).unwrap();
     let client: Client =
         hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
             .build(HttpConnector::new());
