@@ -11,6 +11,7 @@ webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb
 anyhow = "1.0"
 tokio = { version = "1.36", features = ["full"] }
 cli = { path = "../../libs/cli" }
+rtsp = { path = "../../libs/rtsp" }
 libwish = { path = "../../libs/libwish" }
 signal = { path = "../../libs/signal" }
 scopeguard = "1.2.0"

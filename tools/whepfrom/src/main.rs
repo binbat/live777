@@ -2,10 +2,12 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use clap::ValueEnum;
 use cli::{create_child, get_codec_type, Codec};
 
 use libwish::Client;
 use scopeguard::defer;
+use tokio::net::TcpListener;
 use tokio::{
     net::UdpSocket,
     sync::mpsc::{unbounded_channel, UnboundedSender},
@@ -29,9 +31,21 @@ use webrtc::{
 
 const PREFIX_LIB: &str = "WEBRTC";
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Mode {
+    Rtsp,
+    Rtp,
+}
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    #[arg(short, long, value_enum, default_value_t = Mode::Rtsp)]
+    mode: Mode,
+    #[arg(long, default_value_t = String::from("[::1]"))]
+    host: String,
+    #[arg(long, default_value_t = 0)]
+    port: u16,
     #[arg(short, long)]
     target: String,
     #[arg(short, long, value_enum)]
@@ -56,10 +70,61 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    let host = args.host.clone();
+    let mut codec = args.codec;
+    let mut rtp_port = args.port;
+
+    let udp_socket = UdpSocket::bind("[::]:8000").await?;
+
+    if args.mode == Mode::Rtsp {
+        let (tx, mut rx) = unbounded_channel::<String>();
+
+        let mut handler = rtsp::Handler::new(tx);
+        handler.set_sdp(
+            r#"v=0
+m=video 8000 RTP/AVP 96
+c=IN IP6 ::1
+a=rtpmap:96 VP8/90000"#
+                .as_bytes()
+                .to_vec(),
+        );
+
+        tokio::spawn(async move {
+            let listener = TcpListener::bind(format!("{}:{}", host, args.port))
+                .await
+                .unwrap();
+            println!(
+                "=== RTSP listener started : {} ===",
+                listener.local_addr().unwrap()
+            );
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                match rtsp::process_socket(socket, &mut handler).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("=== RTSP listener error: {} ===", e);
+                    }
+                };
+                println!("=== RTSP client socket closed ===");
+            }
+        });
+
+        match rx.recv().await {
+            Some(rtpmap) => {
+                println!("=== Received RTPMAP: {} ===", rtpmap);
+                rtp_port = rtpmap.parse::<u16>().unwrap();
+            }
+            None => {
+                println!("=== No RTPMAP received ===");
+            }
+        };
+        println!("rtp_port: {}", rtp_port);
+    }
+
     let payload_type = args.payload_type;
     assert!((96..=127).contains(&payload_type));
-    let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
-    udp_socket.connect(&args.target).await?;
+    udp_socket.connect(format!("[::1]:{}", rtp_port)).await?;
     let mut client = Client::new(
         args.url,
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
@@ -109,6 +174,7 @@ async fn main() -> Result<()> {
             None => println!("No child process"),
         }
     });
+
     tokio::select! {
         _= complete_rx.recv() => { }
         msg = signal::wait_for_stop_signal() => println!("Received signal: {}", msg)

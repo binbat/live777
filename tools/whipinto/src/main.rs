@@ -28,8 +28,6 @@ use webrtc::{
     util::Unmarshal,
 };
 
-mod rtsp;
-
 const PREFIX_LIB: &str = "WEBRTC";
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -72,6 +70,7 @@ async fn main() -> Result<()> {
     let mut rtp_port = args.port;
     if args.mode == Mode::Rtsp {
         let (tx, mut rx) = unbounded_channel::<String>();
+        let mut handler = rtsp::Handler::new(tx);
 
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host, args.port))
@@ -83,7 +82,7 @@ async fn main() -> Result<()> {
             );
             loop {
                 let (socket, _) = listener.accept().await.unwrap();
-                match rtsp::process_socket(socket, tx.clone()).await {
+                match rtsp::process_socket(socket, &mut handler).await {
                     Ok(_) => {}
                     Err(e) => {
                         println!("=== RTSP listener error: {} ===", e);
