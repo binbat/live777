@@ -1,6 +1,8 @@
+import { resolve } from 'node:path'
+
+import { defineConfig } from 'vite'
 import preact from '@preact/preset-vite'
 import unocss from 'unocss/vite'
-import { defineConfig } from 'vite'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -13,7 +15,13 @@ export default defineConfig({
         },
     },
     build: {
-        outDir: "assets/"
+        outDir: 'assets/',
+        rollupOptions: {
+            input: {
+                index: resolve(__dirname, 'index.html'),
+                player: resolve(__dirname, 'web/player.html')
+            }
+        }
     },
     plugins: [unocss({
         rules: [
