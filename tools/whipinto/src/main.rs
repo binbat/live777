@@ -68,9 +68,12 @@ async fn main() -> Result<()> {
     let host = args.host.clone();
     let mut codec = args.codec;
     let mut rtp_port = args.port;
+
+    let (complete_tx, mut complete_rx) = unbounded_channel();
+
     if args.mode == Mode::Rtsp {
         let (tx, mut rx) = unbounded_channel::<String>();
-        let mut handler = rtsp::Handler::new(tx);
+        let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
 
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host, args.port))
@@ -94,20 +97,20 @@ async fn main() -> Result<()> {
 
         match rx.recv().await {
             Some(rtpmap) => {
-                println!("=== Received RTPMAP: {} ===", rtpmap);
-                match rtpmap.split_once(' ') {
-                    Some((pt, code)) => {
-                        println!("=== Received PT: {} CODEC: {} ===", pt, code);
-                        codec = match code {
-                            "AV1/90000" => Codec::AV1,
-                            "VP8/90000" => Codec::Vp8,
-                            "VP9/90000" => Codec::Vp9,
-                            "H264/90000" => Codec::H264,
-                            _ => Codec::H264,
-                        };
-                    }
-                    None => {}
-                };
+                //println!("=== Received RTPMAP: {} ===", rtpmap);
+                //match rtpmap.split_once(' ') {
+                //    Some((pt, code)) => {
+                //        println!("=== Received PT: {} CODEC: {} ===", pt, code);
+                //        codec = match code {
+                //            "AV1/90000" => Codec::AV1,
+                //            "VP8/90000" => Codec::Vp8,
+                //            "VP9/90000" => Codec::Vp9,
+                //            "H264/90000" => Codec::H264,
+                //            _ => Codec::H264,
+                //        };
+                //    }
+                //    None => {}
+                //};
             }
             None => {
                 println!("=== No RTPMAP received ===");
@@ -139,7 +142,6 @@ async fn main() -> Result<()> {
             }
         }
     });
-    let (complete_tx, mut complete_rx) = unbounded_channel();
     let (peer, sender) = webrtc_start(&mut client, codec.into(), complete_tx.clone())
         .await
         .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;

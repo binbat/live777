@@ -77,10 +77,12 @@ async fn main() -> Result<()> {
 
     let udp_socket = UdpSocket::bind("[::]:8000").await?;
 
+    let (complete_tx, mut complete_rx) = unbounded_channel();
+
     if args.mode == Mode::Rtsp {
         let (tx, mut rx) = unbounded_channel::<String>();
 
-        let mut handler = rtsp::Handler::new(tx);
+        let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
         handler.set_sdp(
             r#"v=0
 m=video 8000 RTP/AVP 96
@@ -137,7 +139,6 @@ a=rtpmap:96 VP8/90000"#
             }
         }
     });
-    let (complete_tx, mut complete_rx) = unbounded_channel();
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
 
     let peer = webrtc_start(

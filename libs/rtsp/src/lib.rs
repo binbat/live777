@@ -11,15 +11,17 @@ const SERVER_NAME: &str = "whipinto";
 pub struct Handler {
     sdp: Option<Vec<u8>>,
     rtp: Option<u16>,
-    tx: UnboundedSender<String>,
+    up_tx: UnboundedSender<String>,
+    dn_tx: UnboundedSender<()>,
 }
 
 impl Handler {
-    pub fn new(tx: UnboundedSender<String>) -> Handler {
+    pub fn new(up_tx: UnboundedSender<String>, dn_tx: UnboundedSender<()>) -> Handler {
         Self {
             sdp: None,
             rtp: None,
-            tx: tx,
+            up_tx: up_tx,
+            dn_tx: dn_tx,
         }
     }
 
@@ -32,10 +34,21 @@ impl Handler {
     }
 
     fn todo(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+        unimplemented!("{:?}", req.method());
+    }
+
+    fn play(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         Response::builder(req.version(), StatusCode::Ok)
             .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
             .header(headers::SERVER, "whipinto")
-            .build(Vec::new())
+            .build(self.sdp.clone().unwrap())
+    }
+
+    fn record(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+        Response::builder(req.version(), StatusCode::Ok)
+            .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+            .header(headers::SERVER, "whipinto")
+            .build(self.sdp.clone().unwrap())
     }
 
     fn describe(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
@@ -63,7 +76,7 @@ impl Handler {
                 let (rtp, rtcp) = rtp_transport.params.client_port.unwrap();
                 println!("rtp: {:?}, rtcp: {:?}", rtp, rtcp);
                 self.rtp = Some(rtp);
-                self.tx.send(rtp.to_string()).unwrap();
+                self.up_tx.send(rtp.to_string()).unwrap();
             }
             transport::Transport::Other(other_transport) => {
                 println!("other_transport {:?}", other_transport);
@@ -89,34 +102,42 @@ impl Handler {
             .build(Vec::new())
     }
 
-    fn announce(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    fn announce(&mut self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+        self.set_sdp(req.body().to_vec());
         // sdp-types = "0.1.6"
         // https://crates.io/crates/sdp-types
         // let sdp = sdp_types::Session::parse(req.body()).unwrap();
         // let rtpmap = sdp.medias.first().unwrap().attributes.first().unwrap().value.clone().unwrap_or("".to_string());
 
         // webrtc-sdp
-        let sdp = sdp::description::session::SessionDescription::unmarshal(
-            &mut std::io::Cursor::new(req.body()),
-        )
-        .unwrap();
-        let rtpmap = sdp
-            .media_descriptions
-            .first()
-            .unwrap()
-            .attributes
-            .first()
-            .unwrap()
-            .value
-            .clone()
-            .unwrap_or("".to_string());
-
-        println!("{:?}", sdp);
-        self.tx.send(rtpmap).unwrap();
+        // let sdp = sdp::description::session::SessionDescription::unmarshal(
+        //     &mut std::io::Cursor::new(req.body()),
+        // )
+        // .unwrap();
+        // println!("{:?}", sdp);
+        //let rtpmap = sdp
+        //    .media_descriptions
+        //    .first()
+        //    .unwrap()
+        //    .attributes
+        //    .first()
+        //    .unwrap()
+        //    .value
+        //    .clone()
+        //    .unwrap_or("".to_string());
 
         Response::builder(req.version(), StatusCode::Ok)
             .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
             .header(headers::SERVER, SERVER_NAME)
+            .build(Vec::new())
+    }
+
+    fn teardown(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+        self.dn_tx.send(()).unwrap();
+
+        Response::builder(req.version(), StatusCode::Ok)
+            .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+            .header(headers::SERVER, "whipinto")
             .build(Vec::new())
     }
 
@@ -155,11 +176,24 @@ pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Res
                 match message {
                     Message::Request(ref request) => {
                         let response = match request.method() {
+                            // push, pull
                             Method::Options => handler.options(request),
-                            Method::Describe => handler.describe(request),
+
+                            // push
                             Method::Announce => handler.announce(request),
+                            // pull
+                            Method::Describe => handler.describe(request),
+
+                            // push, pull
                             Method::Setup => handler.setup(request),
-                            Method::Teardown => handler.todo(request),
+
+                            // push
+                            Method::Record => handler.record(request),
+                            // pull
+                            Method::Play => handler.record(request),
+
+                            // push, pull
+                            Method::Teardown => handler.teardown(request),
                             _ => handler.todo(request),
                         };
 
