@@ -31,8 +31,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::info_span;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, info_span, warn};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
@@ -69,6 +68,7 @@ async fn main() {
     let args = Args::parse();
     let cfg = Config::parse(args.config);
     set_log(format!("live777={},webrtc=error", cfg.log.level));
+    warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
     let addr = SocketAddr::from_str(&cfg.http.listen).expect("invalid listen address");
     info!("Server listening on {}", addr);
