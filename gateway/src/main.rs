@@ -274,7 +274,10 @@ async fn whep(
     }
     let mut nodes_sort = nodes.clone();
     nodes_sort.sort();
-    let max_idlest_node = nodes.iter().filter(|node| node.available(false)).last();
+    let max_idlest_node = nodes_sort
+        .iter()
+        .filter(|node| node.available(false))
+        .last();
     if let Some(maximum_idle_node) = max_idlest_node {
         request_proxy(state.clone(), req, maximum_idle_node).await
     } else {
