@@ -235,12 +235,9 @@ async fn whip(
         let node = Node::max_idlest_node(&state.pool).await?;
         match node {
             Some(node) => {
-                let stream = add_node_stream(&node, stream, &state.pool).await;
                 let resp = request_proxy(state.clone(), req, &node).await;
-                if stream.is_ok()
-                    && (resp.is_err() || !resp.as_ref().unwrap().status().is_success())
-                {
-                    let _ = stream.unwrap().db_remove(&state.pool).await;
+                if resp.is_ok() && resp.as_ref().unwrap().status().is_success() {
+                    let _ = add_node_stream(&node, stream, &state.pool).await;
                 }
                 resp
             }
@@ -282,10 +279,9 @@ async fn whep(
         request_proxy(state.clone(), req, maximum_idle_node).await
     } else {
         let reforward_node = whep_reforward_node(state.clone(), &nodes, stream.clone()).await?;
-        let stream = add_node_stream(&reforward_node, stream, &state.pool).await;
         let resp = request_proxy(state.clone(), req, &reforward_node).await;
-        if stream.is_ok() && (resp.is_err() || !resp.as_ref().unwrap().status().is_success()) {
-            let _ = stream.unwrap().db_remove(&state.pool).await;
+        if resp.is_ok() && resp.as_ref().unwrap().status().is_success() {
+            let _ = add_node_stream(&reforward_node, stream, &state.pool).await;
         }
         resp
     }
