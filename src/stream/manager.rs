@@ -56,9 +56,7 @@ impl Manager {
 
     async fn keep_alive_tick(event_sender: broadcast::Sender<Event>) {
         loop {
-            let timeout = tokio::time::sleep(Duration::from_millis(5000));
-            tokio::pin!(timeout);
-            let _ = timeout.as_mut().await;
+            tokio::time::sleep(Duration::from_millis(5000)).await;
             let _ = event_sender.send(Event::Node(NodeEvent::KeepAlive));
         }
     }
@@ -70,9 +68,7 @@ impl Manager {
     ) {
         let publish_leave_timeout_i64: i64 = publish_leave_timeout.try_into().unwrap();
         loop {
-            let timeout = tokio::time::sleep(Duration::from_millis(1000));
-            tokio::pin!(timeout);
-            let _ = timeout.as_mut().await;
+            tokio::time::sleep(Duration::from_millis(1000)).await;
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
@@ -322,9 +318,7 @@ impl Manager {
 
     pub async fn shotdown(&self) -> Result<()> {
         let _ = self.event_sender.send(Event::Node(NodeEvent::Down));
-        let timeout = tokio::time::sleep(Duration::from_millis(3000));
-        tokio::pin!(timeout);
-        let _ = timeout.as_mut().await;
+        tokio::time::sleep(Duration::from_millis(3000)).await;
         Ok(())
     }
 }

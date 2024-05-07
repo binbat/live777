@@ -102,9 +102,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                let timeout = tokio::time::sleep(Duration::from_secs(1));
-                tokio::pin!(timeout);
-                let _ = timeout.as_mut().await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
             },
             None => println!("No child process"),
         }

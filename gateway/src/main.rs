@@ -304,9 +304,7 @@ async fn whep_reforward_node(state: AppState, nodes: &Vec<Node>, stream: String)
             .reforward(&target_node, stream.clone(), stream.clone())
             .await?;
         for _ in 0..state.config.reforward.whep_check_frequency.0 {
-            let timeout = tokio::time::sleep(Duration::from_millis(50));
-            tokio::pin!(timeout);
-            let _ = timeout.as_mut().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
             let stream_info = target_node.stream_info(stream.clone()).await;
             if stream_info.is_ok() && stream_info.unwrap().is_some() {
                 break;

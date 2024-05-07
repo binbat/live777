@@ -10,11 +10,10 @@ use crate::AppState;
 
 pub async fn reforward_check(state: AppState) {
     loop {
-        let timeout = tokio::time::sleep(Duration::from_millis(
+        tokio::time::sleep(Duration::from_millis(
             state.config.reforward.check_tick_time.0,
-        ));
-        tokio::pin!(timeout);
-        let _ = timeout.as_mut().await;
+        ))
+        .await;
         let _ = do_reforward_check(state.clone()).await;
     }
 }
