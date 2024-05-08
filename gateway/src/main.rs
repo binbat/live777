@@ -36,8 +36,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::info_span;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, info_span, warn};
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
@@ -69,6 +68,7 @@ async fn main() {
         "live777_gateway={},live777_storage={},sqlx={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
+    warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await

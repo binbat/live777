@@ -21,9 +21,9 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::info_span;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, info_span, warn};
 use tracing_subscriber::EnvFilter;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
@@ -57,6 +57,7 @@ async fn main() {
     let args = Args::parse();
     let mut cfg = Config::parse(args.config);
     set_log(format!("live777={},webrtc=error", cfg.log.level));
+    warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
     let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
         .await

@@ -145,9 +145,20 @@ docker run --name live777-server --rm --network host ghcr.io/binbat/live777-serv
 winget install live777
 ```
 
-### Gstreamer WHIP/WHEP client
+### Web WHIP/WHEP client
 
 **Open your browser, enter the URL: http://localhost:7777/**
+
+### Single Page Player
+
+example: http://localhost:7777/web/player.html?resource=web-0&autoplay&mute&reconnect=2000
+
+URL params:
+
+- `resource`: string, live777 resource ID
+- `autoplay`: boolean
+- `mute`: boolean, whether to mute by default
+- `reconnect`: number, reconnect timeout in millisecond
 
 ### Gstreamer `WHIP`/`WHEP` client
 
