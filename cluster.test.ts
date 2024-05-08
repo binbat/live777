@@ -177,7 +177,7 @@ a=rtpmap:96 VP8/90000
             "--codec", "vp8",
             "--url", `${live777CloudHost}/whep/${live777CloudStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
-            "--command", `ffplay -protocol_whitelist rtp,file,udp -i ${tmpFileFFplaySdp}`
+            "--command", `ffplay -nodisp -protocol_whitelist rtp,file,udp -i ${tmpFileFFplaySdp}`
         ], {
                 stdout: null,
                 stderr: null,
