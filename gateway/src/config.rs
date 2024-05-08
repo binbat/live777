@@ -12,8 +12,6 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub storage: StorageModel,
-    #[serde(default)]
     pub reforward: Reforward,
     #[serde(default = "default_db_url")]
     pub db_url: String,
@@ -78,24 +76,10 @@ impl Default for PublishLeaveTimeout {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "model")]
-pub enum StorageModel {
-    RedisStandalone { addr: String },
-}
-
-impl Default for StorageModel {
-    fn default() -> Self {
-        StorageModel::RedisStandalone {
-            addr: "redis://127.0.0.1:6379".to_string(),
-        }
-    }
-}
-
 fn default_http_listen() -> SocketAddr {
     SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
-        env::var("LIVE777_GATEWAY_PORT").unwrap_or(String::from("8080"))
+        env::var("PORT").unwrap_or(String::from("8080"))
     ))
     .expect("invalid listen address")
 }

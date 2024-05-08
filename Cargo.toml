@@ -45,7 +45,6 @@ md5 = "0.7.0"
 chrono = "0.4"
 async-trait = "0.1"
 local-ip-address = "0.6"
-redis = { version = "0.25", features = ["tokio-comp", "cluster", "json"] }
 libwish = { path = "libs/libwish" }
 signal = { path = "libs/signal" }
 live777-http = { path = "libs/live777-http" }

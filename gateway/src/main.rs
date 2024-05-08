@@ -80,7 +80,10 @@ async fn main() {
             .build(HttpConnector::new());
     let app_state = AppState {
         config: cfg.clone(),
-        pool: MySqlPool::connect_with(pool_connect_options).await.unwrap(),
+        pool: MySqlPool::connect_with(pool_connect_options)
+            .await
+            .map_err(|e| anyhow::anyhow!(format!("MySQL error : {}", e)))
+            .unwrap(),
         client,
     };
     tokio::spawn(tick::reforward_check(app_state.clone()));

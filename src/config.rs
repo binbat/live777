@@ -87,12 +87,6 @@ impl Default for PublishLeaveTimeout {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "model")]
-pub enum StorageModel {
-    RedisStandalone { addr: String },
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamInfo {
     #[serde(default)]
@@ -135,7 +129,7 @@ impl Default for ReforwardMaximumIdleTime {
 fn default_http_listen() -> SocketAddr {
     SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
-        env::var("LIVE777_PORT").unwrap_or(String::from("7777"))
+        env::var("PORT").unwrap_or(String::from("7777"))
     ))
     .expect("invalid listen address")
 }

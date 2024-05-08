@@ -23,7 +23,6 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{debug, error, info, info_span, warn};
 use tracing_subscriber::EnvFilter;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
@@ -68,7 +67,10 @@ async fn main() {
         let port = addr.port();
         cfg.node_addr =
             Some(SocketAddr::from_str(&format!("{}:{}", local_ip().unwrap(), port)).unwrap());
-        debug!("config : {:?}", cfg);
+        warn!(
+            "config node_addr not set, auto detect local_ip_port : {:?}",
+            cfg.node_addr.unwrap()
+        );
     }
     let app_state = AppState {
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
