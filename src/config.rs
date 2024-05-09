@@ -1,7 +1,5 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-// 使用条件编译排除在Android平台使用local_ip_address
-#[cfg(not(target_os = "android"))]
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use std::{env, fs};
@@ -10,20 +8,6 @@ use webrtc::{
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     Error,
 };
-
-#[cfg(target_os = "android")]
-fn get_local_ip_address() -> Option<String> {
-    // 对于Android平台，直接返回None或者一个固定的IP地址
-    None
-}
-
-#[cfg(not(target_os = "android"))]
-fn get_local_ip_address() -> Option<String> {
-    // 在支持的平台上使用local_ip_address包获取IP地址，并将IpAddr转换为String
-    local_ip().map(|ip| ip.to_string()).ok()
-}
-
-
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -165,14 +149,14 @@ fn default_http_listen() -> String {
     )
 }
 
-// 修改这里来使用上面定义的 get_local_ip_address 函数
 fn default_registry_ip_port() -> String {
     format!(
         "{}:{}",
-        get_local_ip_address().unwrap_or_else(|| "127.0.0.1".to_string()),
+        local_ip().unwrap(),
         env::var("PORT").unwrap_or(String::from("7777"))
     )
 }
+
 impl Default for Http {
     fn default() -> Self {
         Self {
