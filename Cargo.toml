@@ -45,12 +45,14 @@ lazy_static = "1.4.0"
 md5 = "0.7.0"
 chrono = "0.4"
 async-trait = "0.1"
-local-ip-address = "0.6"
 redis = { version = "0.25", features = ["tokio-comp", "cluster", "json"] }
 libwish = { path = "libs/libwish" }
 signal = { path = "libs/signal" }
 live777-http = { path = "libs/live777-http" }
 live777-storage = { path = "libs/live777-storage" }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+local-ip-address = "0.6"
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb
