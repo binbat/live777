@@ -110,8 +110,8 @@ impl Node {
 impl Stream {
     pub async fn db_insert(&self, pool: &MySqlPool) -> Result<()> {
         sqlx::query(
-            r#"INSERT INTO streams (stream,addr) 
-            VALUES (?, ?) 
+            r#"INSERT INTO streams (stream,addr,publish) 
+            VALUES (?, ?,1) 
             ON DUPLICATE KEY UPDATE publish=1,subscribe=0 ,reforward=0"#,
         )
         .bind(self.stream.clone().clone())
