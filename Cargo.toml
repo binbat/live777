@@ -37,7 +37,7 @@ toml = "0.8.10"
 serde_json = "1.0.114"
 http = "1.0.0"
 http-body = "1.0.0"
-base64 = "0.21.7"
+base64 = "0.22.1"
 mime_guess = "2.0.4"
 rust-embed = { version = "8.3.0", features = ["axum-ex"] }
 prometheus = "0.13.3"
