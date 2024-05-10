@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 use tracing::debug;
 use webrtc::peer_connection::RTCPeerConnection;
 
-use crate::forward::info::SessionInfo;
+use crate::forward::message::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
 
 use super::get_peer_id;

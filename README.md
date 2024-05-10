@@ -106,8 +106,17 @@ cargo run --package=whepfrom
 
 ### Gateway
 
+Database:
+
 ```bash
-docker run -d --name redis --rm -p 6379:6379 redis
+docker run -d --rm --name mysql -p 6379:6379 \
+-v `pwd`/sql:/docker-entrypoint-initdb.d \
+-e MYSQL_ROOT_PASSWORD=password \
+-e MYSQL_DATABASE=live777 \
+mysql
+```
+
+```bash
 cargo run --package=live777-gateway
 ```
 
