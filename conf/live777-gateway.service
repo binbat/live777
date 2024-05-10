@@ -6,7 +6,8 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/live777-gateway
-Restart=always
+Restart=on-failure
+RestartSec=5s
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
