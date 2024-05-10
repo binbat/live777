@@ -1,5 +1,4 @@
-
-db_url = "mysql://root:root@localhost:3306/live777"
+# db_url = "mysql://root:password@localhost/live777"
 
 [http]
 # Http Server Listen Address

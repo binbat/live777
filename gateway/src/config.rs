@@ -85,7 +85,7 @@ fn default_http_listen() -> SocketAddr {
 }
 
 fn default_db_url() -> String {
-    "mysql://root:root@localhost:3306/live777".to_string()
+    "mysql://root:password@localhost:3306/live777".to_string()
 }
 
 impl Default for Http {
