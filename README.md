@@ -109,7 +109,7 @@ cargo run --package=whepfrom
 Database:
 
 ```bash
-docker run -d --rm --name mysql -p 6379:6379 \
+docker run -d --rm --name mysql -p 3306:3306 \
 -v `pwd`/sql:/docker-entrypoint-initdb.d \
 -e MYSQL_ROOT_PASSWORD=password \
 -e MYSQL_DATABASE=live777 \
