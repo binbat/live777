@@ -24,11 +24,9 @@ use live777_http::event::Event;
 use model::{Node, Stream};
 use sqlx::mysql::MySqlConnectOptions;
 use sqlx::MySqlPool;
-use std::env;
 use std::future::IntoFuture;
 use std::str::FromStr;
 use std::time::Duration;
-use tracing_subscriber::EnvFilter;
 
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
@@ -64,7 +62,7 @@ async fn main() {
     sqlx::any::install_default_drivers();
     let args = Args::parse();
     let cfg = Config::parse(args.config);
-    set_log(format!(
+    utils::set_log(format!(
         "live777_gateway={},live777_storage={},sqlx={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
@@ -125,21 +123,6 @@ async fn main() {
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
     }
     info!("Server shutdown");
-}
-
-fn set_log(env_filter: String) {
-    let _ = env::var("RUST_LOG").is_err_and(|_| {
-        env::set_var("RUST_LOG", env_filter);
-        true
-    });
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .compact()
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(true)
-        .with_target(true)
-        .init();
 }
 
 #[cfg(not(debug_assertions))]

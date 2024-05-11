@@ -1498,6 +1498,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "utils",
  "webrtc",
 ]
 
@@ -1529,6 +1530,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "utils",
 ]
 
 [[package]]
@@ -3512,6 +3514,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
 
 [[package]]
+name = "utils"
+version = "0.1.0"
+dependencies = [
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "uuid"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3880,6 +3889,8 @@ dependencies = [
  "scopeguard",
  "signal",
  "tokio",
+ "tracing",
+ "utils",
  "webrtc",
 ]
 
@@ -3894,6 +3905,8 @@ dependencies = [
  "scopeguard",
  "signal",
  "tokio",
+ "tracing",
+ "utils",
  "webrtc",
 ]
 

@@ -13,7 +13,6 @@ use clap::Parser;
 use error::AppError;
 use http_body_util::BodyExt;
 use local_ip_address::local_ip;
-use std::env;
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -22,7 +21,6 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{debug, error, info, info_span, warn};
-use tracing_subscriber::EnvFilter;
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
@@ -55,7 +53,7 @@ async fn main() {
     metrics_register();
     let args = Args::parse();
     let mut cfg = Config::parse(args.config);
-    set_log(format!("live777={},webrtc=error", cfg.log.level));
+    utils::set_log(format!("live777={},webrtc=error", cfg.log.level));
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
     let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
@@ -116,21 +114,6 @@ async fn main() {
     }
     let _ = app_state.stream_manager.shotdown().await;
     info!("Server shutdown");
-}
-
-fn set_log(env_filter: String) {
-    let _ = env::var("RUST_LOG").is_err_and(|_| {
-        env::set_var("RUST_LOG", env_filter);
-        true
-    });
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .compact()
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(true)
-        .with_target(true)
-        .init();
 }
 
 fn metrics_register() {

@@ -13,4 +13,6 @@ tokio = { version = "1.36", features = ["full"] }
 cli = { path = "../../libs/cli" }
 libwish = { path = "../../libs/libwish" }
 signal = { path = "../../libs/signal" }
+utils = { path = "../../libs/utils" }
 scopeguard = "1.2.0"
+tracing = "0.1"
