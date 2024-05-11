@@ -6,6 +6,7 @@ export function Player() {
     const [autoPlay, setAutoPlay] = useState(false)
     const [muted, setMuted] = useState(false)
     const [reconnect, setReconnect] = useState(0)
+    const [iceServers, setIceServers] = useState<string[]>([])
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null)
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
@@ -17,6 +18,7 @@ export function Player() {
         setMuted(params.has('mute'))
         const n = Number.parseInt(params.get('reconnect') ?? '0', 10)
         setReconnect(Number.isNaN(n) ? 0 : n)
+        setIceServers(params.getAll('ice') ?? [])
     })
 
     useEffect(() => {
@@ -37,7 +39,13 @@ export function Player() {
     }, [muted])
 
     const handlePlay = async () => {
-        const pc = new RTCPeerConnection()
+        const cfg: RTCConfiguration = {};
+        if (iceServers.length > 0) {
+            cfg.iceServers = iceServers.map(s => {
+                return { urls: s }
+            })
+        }
+        const pc = new RTCPeerConnection(cfg)
         setPeerConnection(pc)
         pc.addTransceiver('video', { direction: 'recvonly' })
         pc.addTransceiver('audio', { direction: 'recvonly' })
@@ -52,7 +60,7 @@ export function Player() {
             switch (pc.connectionState) {
                 case 'disconnected': {
                     handleStop()
-                    break;
+                    break
                 }
             }
         }
