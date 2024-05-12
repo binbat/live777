@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use cli::{create_child, get_codec_type, Codec};
 
 use libwish::Client;
@@ -10,6 +10,7 @@ use tokio::{
     net::UdpSocket,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
+use tracing::{info, trace, warn, Level};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
@@ -32,6 +33,9 @@ const PREFIX_LIB: &str = "WEBRTC";
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Verbose mode (-v, -vv, -vvv)
+    #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
+    verbose: u8,
     #[arg(short, long)]
     target: String,
     #[arg(short, long, value_enum)]
@@ -56,6 +60,17 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    utils::set_log(format!(
+        "whipinto={},webrtc=error",
+        match args.verbose {
+            0 => Level::WARN,
+            1 => Level::INFO,
+            2 => Level::DEBUG,
+            _ => Level::TRACE,
+        }
+    ));
+
     let payload_type = args.payload_type;
     assert!((96..=127).contains(&payload_type));
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
@@ -104,12 +119,12 @@ async fn main() -> Result<()> {
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             },
-            None => println!("No child process"),
+            None => info!("No child process"),
         }
     });
     tokio::select! {
         _= complete_rx.recv() => { }
-        msg = signal::wait_for_stop_signal() => println!("Received signal: {}", msg)
+        msg = signal::wait_for_stop_signal() => warn!("Received signal: {}", msg)
     }
     let _ = client.remove_resource().await;
     let _ = peer.close().await;
@@ -195,7 +210,7 @@ async fn new_peer(
         let pc = pc.clone();
         let complete_tx = complete_tx.clone();
         tokio::spawn(async move {
-            println!("connection state changed: {}", s);
+            warn!("connection state changed: {}", s);
             match s {
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                     let _ = pc.close().await;
@@ -213,6 +228,7 @@ async fn new_peer(
         tokio::spawn(async move {
             let mut b = [0u8; 1500];
             while let Ok((rtp_packet, _)) = track.read(&mut b).await {
+                trace!("received packet: {}", rtp_packet);
                 let size = rtp_packet.marshal_size();
                 let data = b[0..size].to_vec();
                 let _ = sender.send(data);

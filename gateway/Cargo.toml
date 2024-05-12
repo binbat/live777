@@ -10,6 +10,7 @@ tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 anyhow = { version = "1", features = ["backtrace"] }
 signal = { path = "../libs/signal" }
 live777-http = { path = "../libs/live777-http" }
+utils = { path = "../libs/utils" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5.1", features = ["derive"] }
