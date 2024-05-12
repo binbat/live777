@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use live777_http::event::{EventBody, NodeMetaData, NodeMetrics};
 use reqwest::{header::HeaderMap, Client, Method};
 use tokio::sync::broadcast;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{Event, EventHook, NodeEvent};
 use crate::{error::AppError, metrics, result::Result};
@@ -51,17 +51,31 @@ impl WebHook {
             .await
         {
             Ok(response) => {
+                let status = response.status();
                 let success = response.status().is_success();
                 let res_body = response.text().await?;
-                debug!(url = self.url, req_body, success, res_body, "event webhook");
-                if !success {
-                    Err(AppError::throw(res_body))
-                } else {
+                if success {
+                    debug!(
+                        url = self.url,
+                        ?status,
+                        req_body,
+                        res_body,
+                        "event webhook success"
+                    );
                     Ok(())
+                } else {
+                    warn!(
+                        url = self.url,
+                        ?status,
+                        req_body,
+                        res_body,
+                        "event webhook error"
+                    );
+                    Err(AppError::throw(res_body))
                 }
             }
             Err(err) => {
-                debug!(url = self.url, req_body, ?err, "event webhook error");
+                warn!(url = self.url, req_body, ?err, "event webhook error");
                 Err(err.into())
             }
         }

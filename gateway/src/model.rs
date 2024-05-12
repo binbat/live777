@@ -8,9 +8,10 @@ use live777_http::{
     request::{QueryInfo, Reforward},
     response::StreamInfo,
 };
-use reqwest::{header::HeaderMap, Body, Method};
+use reqwest::{header::HeaderMap, Method};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
+use tracing::{debug, warn};
 
 #[derive(Serialize, Deserialize, Clone, Debug, FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -139,7 +140,7 @@ impl Node {
             self.path_url(&path::infos(QueryInfo { streams })),
             "GET",
             self.admin_authorization.clone(),
-            "",
+            "".to_string(),
         )
         .await?;
         serde_json::from_str::<Vec<StreamInfo>>(&data).map_err(|e| e.into())
@@ -169,18 +170,18 @@ impl Node {
             self.path_url(&path::resource(&stream, &session)),
             "DELETE",
             self.admin_authorization.clone(),
-            "",
+            "".to_string(),
         )
         .await?;
         Ok(())
     }
 }
 
-async fn request<T: Into<Body>>(
+async fn request(
     url: String,
     method: &str,
     authorization: Option<String>,
-    body: T,
+    body: String,
 ) -> Result<String> {
     let mut headers = HeaderMap::new();
     headers.append("Content-Type", "application/json".parse().unwrap());
@@ -191,16 +192,41 @@ async fn request<T: Into<Body>>(
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_millis(5000))
         .build()?;
-    let response = client
-        .request(Method::from_str(method)?, url)
+
+    match client
+        .request(Method::from_str(method)?, url.clone())
         .headers(headers)
-        .body(body)
+        .body(body.clone())
         .send()
-        .await?;
-    let success = response.status().is_success();
-    let body = response.text().await?;
-    if !success {
-        return Err(AppError::InternalServerError(anyhow!(body)));
+        .await
+    {
+        Ok(response) => {
+            let status = response.status();
+            let success = response.status().is_success();
+            let res_body = response.text().await?;
+            if success {
+                debug!(
+                    url,
+                    ?status,
+                    req_body = body,
+                    res_body,
+                    "request node success"
+                );
+                Ok(res_body)
+            } else {
+                warn!(
+                    url,
+                    ?status,
+                    req_body = body,
+                    res_body,
+                    "request node error"
+                );
+                Err(AppError::InternalServerError(anyhow!(res_body)))
+            }
+        }
+        Err(err) => {
+            warn!(url, req_body = body, ?err, "request node error");
+            Err(err.into())
+        }
     }
-    Ok(body)
 }
