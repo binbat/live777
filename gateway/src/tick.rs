@@ -111,7 +111,7 @@ pub async fn node_sync_info(node: Node, pool: &Pool<MySql>) -> Result<()> {
                     let _ = current_stream.db_update_metrics(pool).await;
                 }
             } else {
-                let _ = current_stream.db_insert(pool).await;
+                let _ = current_stream.db_save_or_update(pool).await;
             }
         })
         .await;

@@ -48,7 +48,7 @@ impl Node {
         Ok(node)
     }
 
-    pub async fn db_insert(&self, pool: &MySqlPool) -> Result<()> {
+    pub async fn db_save_or_update(&self, pool: &MySqlPool) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO nodes ( addr, authorization, admin_authorization, pub_max, sub_max, reforward_maximum_idle_time, reforward_cascade) 
              VALUES (?, ?, ?, ?, ?, ?, ?) 
@@ -123,14 +123,20 @@ impl Node {
 }
 
 impl Stream {
-    pub async fn db_insert(&self, pool: &MySqlPool) -> Result<()> {
+    pub async fn db_save_or_update(&self, pool: &MySqlPool) -> Result<()> {
         sqlx::query(
-            r#"INSERT INTO streams (stream,addr,publish) 
-            VALUES (?, ?,1) 
-            ON DUPLICATE KEY UPDATE publish=1,subscribe=0 ,reforward=0"#,
+            r#"INSERT INTO streams (stream,addr,publish,subscribe,reforward) 
+            VALUES (?, ?,?,?,?) 
+            ON DUPLICATE KEY UPDATE publish=?,subscribe=? ,reforward=?"#,
         )
         .bind(self.stream.clone().clone())
         .bind(self.addr.clone())
+        .bind(self.publish)
+        .bind(self.subscribe)
+        .bind(self.reforward)
+        .bind(self.publish)
+        .bind(self.subscribe)
+        .bind(self.reforward)
         .execute(pool)
         .await?;
         Ok(())

@@ -247,7 +247,7 @@ async fn add_node_stream(node: &Node, stream: String, pool: &MySqlPool) -> Resul
         updated_at: Utc::now(),
         id: 0,
     };
-    stream.db_insert(pool).await?;
+    stream.db_save_or_update(pool).await?;
     Ok(stream)
 }
 
@@ -377,14 +377,14 @@ async fn webhook(
             node.pub_max = metadata.pub_max;
             node.sub_max = metadata.sub_max;
             match r#type {
-                live777_http::event::NodeEventType::Up => node.db_insert(pool).await?,
+                live777_http::event::NodeEventType::Up => node.db_save_or_update(pool).await?,
                 live777_http::event::NodeEventType::Down => {
                     node.db_remove(pool).await?;
                     Stream::db_remove_addr_stream(pool, addr.to_string()).await?
                 }
                 live777_http::event::NodeEventType::KeepAlive => {
                     if node.db_update_metrics(pool).await.is_err() {
-                        node.db_insert(pool).await?;
+                        node.db_save_or_update(pool).await?;
                     }
                 }
             }
@@ -400,7 +400,9 @@ async fn webhook(
                 ..Default::default()
             };
             match r#type {
-                live777_http::event::StreamEventType::StreamUp => db_stream.db_insert(pool).await?,
+                live777_http::event::StreamEventType::StreamUp => {
+                    db_stream.db_save_or_update(pool).await?
+                }
                 live777_http::event::StreamEventType::StreamDown => {
                     db_stream.db_remove(pool).await?
                 }
