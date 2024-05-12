@@ -5,6 +5,7 @@ use tokio::{
     net::TcpStream,
     sync::mpsc::UnboundedSender,
 };
+use rtsp_types::ParseError;
 
 const SERVER_NAME: &str = "whipinto";
 
@@ -160,48 +161,51 @@ impl Handler {
 
 pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Result<(), Error> {
     let (mut reader, mut writer) = socket.split();
-    let mut buf = vec![0; 1024];
+    let mut accumulated_buf = Vec::new();  
+
     loop {
+        let mut buf = vec![0; 1024];  
         match reader.read(&mut buf).await {
             Ok(0) => return Err(anyhow!("Client already closed")),
             Ok(n) => {
-                let (message, _consumed): (Message<Vec<u8>>, _) = match Message::parse(&buf[..n]) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        println!("{:?}", e);
-                        continue;
-                    }
-                };
+                accumulated_buf.extend_from_slice(&buf[..n]);
 
-                match message {
-                    Message::Request(ref request) => {
-                        let response = match request.method() {
-                            // push, pull
-                            Method::Options => handler.options(request),
-
-                            // push
-                            Method::Announce => handler.announce(request),
-                            // pull
-                            Method::Describe => handler.describe(request),
-
-                            // push, pull
-                            Method::Setup => handler.setup(request),
-
-                            // push
-                            Method::Record => handler.record(request),
-                            // pull
-                            Method::Play => handler.record(request),
-
-                            // push, pull
-                            Method::Teardown => handler.teardown(request),
-                            _ => handler.todo(request),
+                match Message::parse(&accumulated_buf) {
+                    Ok((message, consumed)) => {
+                        accumulated_buf.drain(..consumed);
+                        let response = match message {
+                            Message::Request(ref request) => match request.method() {
+                                // push, pull
+                                Method::Options => handler.options(request),
+                                // push
+                                Method::Announce => handler.announce(request),
+                                // pull
+                                Method::Describe => handler.describe(request),
+                                // push, pull
+                                Method::Setup => handler.setup(request),
+                                // push
+                                Method::Record => handler.record(request),
+                                // pull
+                                Method::Play => handler.play(request),
+                                // push, pull
+                                Method::Teardown => handler.teardown(request),
+                                _ => handler.todo(request),
+                            },
+                            _ => continue,
                         };
 
-                        let mut buffer: Vec<u8> = Vec::new();
+                        let mut buffer = Vec::new();
                         response.write(&mut buffer)?;
+                        // println!("send response: {:?}", buffer); 
                         writer.write_all(&buffer).await?;
                     }
-                    _ => unreachable!(),
+                    Err(ParseError::Incomplete(_)) => {
+                        continue;
+                    }
+                    Err(e) => {
+                        println!("parse error: {:?}", e);
+                        return Err(anyhow!("parse error: {:?}", e));
+                    }
                 }
             }
             Err(e) => return Err(anyhow!(e)),
