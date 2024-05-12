@@ -35,7 +35,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{debug, error, info, info_span, warn, Span};
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
@@ -113,6 +113,7 @@ async fn main() {
                     uri = ?request.uri(),
                     method = ?request.method(),
                     span_id = tracing::field::Empty,
+                    target_addr = tracing::field::Empty,
                 );
                 span.record("span_id", span.id().unwrap().into_u64());
                 span
@@ -413,6 +414,7 @@ async fn webhook(
 }
 
 async fn request_proxy(state: AppState, mut req: Request, target_node: &Node) -> Result<Response> {
+    Span::current().record("target_addr", target_node.addr.clone());
     let path = req.uri().path();
     let path_query = req
         .uri()
