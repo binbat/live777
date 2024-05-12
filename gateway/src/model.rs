@@ -33,6 +33,16 @@ pub struct Node {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Node {
+    pub fn active_time_point() -> DateTime<Utc> {
+        Utc::now() - Duration::from_millis(10000)
+    }
+
+    pub fn deactivate_time() -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(0).unwrap()
+    }
+}
+
 impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         self.addr == other.addr

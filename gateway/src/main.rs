@@ -85,7 +85,6 @@ async fn main() {
             .unwrap(),
         client,
     };
-    tokio::spawn(tick::reforward_check(app_state.clone()));
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
     let app = Router::new()
         .route(&live777_http::path::whip(":stream"), post(whip))
@@ -100,7 +99,7 @@ async fn main() {
         )
         .layer(auth_layer)
         .route("/webhook", post(webhook))
-        .with_state(app_state)
+        .with_state(app_state.clone())
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
         } else {
@@ -119,6 +118,7 @@ async fn main() {
                 span
             }),
         );
+    tokio::spawn(tick::run(app_state));
     tokio::select! {
         Err(e) = axum::serve(listener, static_server(app)).into_future() => error!("Application error: {e}"),
         msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
@@ -403,7 +403,9 @@ async fn webhook(
                 live777_http::event::StreamEventType::StreamDown => {
                     db_stream.db_remove(pool).await?
                 }
-                _ => db_stream.db_update_metrics(pool).await?,
+                _ => {
+                    db_stream.db_update_metrics(pool).await?;
+                }
             }
         }
     }
