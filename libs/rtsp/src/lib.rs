@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Error, Result};
+use rtsp_types::ParseError;
 use rtsp_types::{headers, headers::transport, Message, Method, Request, Response, StatusCode};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc::UnboundedSender,
 };
-use rtsp_types::ParseError;
 
 const SERVER_NAME: &str = "whipinto";
 
@@ -161,10 +161,10 @@ impl Handler {
 
 pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Result<(), Error> {
     let (mut reader, mut writer) = socket.split();
-    let mut accumulated_buf = Vec::new();  
+    let mut accumulated_buf = Vec::new();
 
     loop {
-        let mut buf = vec![0; 1024];  
+        let mut buf = vec![0; 1024];
         match reader.read(&mut buf).await {
             Ok(0) => return Err(anyhow!("Client already closed")),
             Ok(n) => {
@@ -196,7 +196,7 @@ pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Res
 
                         let mut buffer = Vec::new();
                         response.write(&mut buffer)?;
-                        // println!("send response: {:?}", buffer); 
+                        // println!("send response: {:?}", buffer);
                         writer.write_all(&buffer).await?;
                     }
                     Err(ParseError::Incomplete(_)) => {

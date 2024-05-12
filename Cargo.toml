@@ -12,7 +12,6 @@ members = [
     "libs/libwish",
     "libs/signal",
     "libs/live777-http",
-    "libs/live777-storage",
     "tools/whepfrom",
     "tools/whipinto",
     "./gateway",
@@ -37,7 +36,7 @@ toml = "0.8.10"
 serde_json = "1.0.114"
 http = "1.0.0"
 http-body = "1.0.0"
-base64 = "0.21.7"
+base64 = "0.22.1"
 mime_guess = "2.0.4"
 rust-embed = { version = "8.3.0", features = ["axum-ex"] }
 prometheus = "0.13.3"
@@ -46,12 +45,13 @@ md5 = "0.7.0"
 chrono = "0.4"
 async-trait = "0.1"
 local-ip-address = "0.6"
-redis = { version = "0.25", features = ["tokio-comp", "cluster", "json"] }
 libwish = { path = "libs/libwish" }
 signal = { path = "libs/signal" }
 live777-http = { path = "libs/live777-http" }
-live777-storage = { path = "libs/live777-storage" }
-
+utils = { path = "libs/utils" }
+reqwest = { version = "0.11.24", features = [
+    "rustls-tls",
+], default-features = false }
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb
 [package.metadata.deb]

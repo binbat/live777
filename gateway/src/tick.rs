@@ -1,6 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
-use crate::{error::AppError, result::Result};
+use crate::{error::AppError, model::Node, result::Result};
+use anyhow::anyhow;
 use chrono::Utc;
 use tracing::info;
 use url::Url;
@@ -9,17 +10,16 @@ use crate::AppState;
 
 pub async fn reforward_check(state: AppState) {
     loop {
-        let timeout = tokio::time::sleep(Duration::from_millis(
-            state.config.reforward.check_reforward_tick_time.0,
-        ));
-        tokio::pin!(timeout);
-        let _ = timeout.as_mut().await;
+        tokio::time::sleep(Duration::from_millis(
+            state.config.reforward.check_tick_time.0,
+        ))
+        .await;
         let _ = do_reforward_check(state.clone()).await;
     }
 }
 
 async fn do_reforward_check(state: AppState) -> Result<()> {
-    let nodes = state.storage.nodes().await?;
+    let nodes = Node::nodes(&state.pool).await?;
     if nodes.is_empty() {
         return Ok(());
     }
@@ -31,22 +31,22 @@ async fn do_reforward_check(state: AppState) -> Result<()> {
             node_streams_map.insert(node.addr.clone(), streams);
         }
     }
-    for (node_addr, streams) in node_streams_map.iter() {
-        let node = node_map.get(node_addr).unwrap();
+    for (addr, streams) in node_streams_map.iter() {
+        let node = node_map.get(addr).unwrap();
         for stream_info in streams {
             for session_info in &stream_info.subscribe_session_infos {
                 if let Some(reforward_info) = &session_info.reforward {
-                    if let Ok((target_node_addr, target_stream)) =
+                    if let Ok((target_addr, target_stream)) =
                         parse_node_and_stream(reforward_info.target_url.clone())
                     {
-                        if let Some(target_node) = node_map.get(&target_node_addr) {
+                        if let Some(target_node) = node_map.get(&target_addr.to_string()) {
                             if let Ok(Some(target_stream_info)) =
                                 target_node.stream_info(target_stream).await
                             {
                                 if target_stream_info.subscribe_leave_time != 0
                                     && Utc::now().timestamp_millis()
                                         >= target_stream_info.subscribe_leave_time
-                                            + node.metadata.reforward_maximum_idle_time as i64
+                                            + node.reforward_maximum_idle_time as i64
                                 {
                                     info!(
                                         ?node,
@@ -73,17 +73,17 @@ async fn do_reforward_check(state: AppState) -> Result<()> {
     Ok(())
 }
 
-fn parse_node_and_stream(url: String) -> Result<(String, String)> {
+fn parse_node_and_stream(url: String) -> Result<(SocketAddr, String)> {
     let url = Url::parse(&url)?;
     let split: Vec<&str> = url.path().split('/').collect();
+    let scheme = url.scheme();
+    let addr = url
+        .socket_addrs(move || Some(if scheme == "http" { 80 } else { 443 }))?
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow!("get socket addr error"))?;
     Ok((
-        format!(
-            "{}:{}",
-            url.host_str()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("host error")))?,
-            url.port()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("port error")))?
-        ),
+        addr,
         split
             .last()
             .cloned()

@@ -14,4 +14,6 @@ cli = { path = "../../libs/cli" }
 rtsp = { path = "../../libs/rtsp" }
 libwish = { path = "../../libs/libwish" }
 signal = { path = "../../libs/signal" }
+utils = { path = "../../libs/utils" }
 scopeguard = "1.2.0"
+tracing = "0.1"

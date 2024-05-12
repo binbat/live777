@@ -1,15 +1,18 @@
+use live777_http::event::NodeMetaData;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
-impl From<crate::forward::info::Layer> for live777_http::response::Layer {
-    fn from(value: crate::forward::info::Layer) -> Self {
+use crate::config::Config;
+
+impl From<crate::forward::message::Layer> for live777_http::response::Layer {
+    fn from(value: crate::forward::message::Layer) -> Self {
         live777_http::response::Layer {
             encoding_id: value.encoding_id,
         }
     }
 }
 
-impl From<crate::forward::info::StreamInfo> for live777_http::response::StreamInfo {
-    fn from(value: crate::forward::info::StreamInfo) -> Self {
+impl From<crate::forward::message::ForwardInfo> for live777_http::response::StreamInfo {
+    fn from(value: crate::forward::message::ForwardInfo) -> Self {
         live777_http::response::StreamInfo {
             id: value.id,
             create_time: value.create_time,
@@ -25,8 +28,8 @@ impl From<crate::forward::info::StreamInfo> for live777_http::response::StreamIn
     }
 }
 
-impl From<crate::forward::info::SessionInfo> for live777_http::response::SessionInfo {
-    fn from(value: crate::forward::info::SessionInfo) -> Self {
+impl From<crate::forward::message::SessionInfo> for live777_http::response::SessionInfo {
+    fn from(value: crate::forward::message::SessionInfo) -> Self {
         live777_http::response::SessionInfo {
             id: value.id,
             create_time: value.create_time,
@@ -36,11 +39,22 @@ impl From<crate::forward::info::SessionInfo> for live777_http::response::Session
     }
 }
 
-impl From<crate::forward::info::ReforwardInfo> for live777_http::response::ReforwardInfo {
-    fn from(value: crate::forward::info::ReforwardInfo) -> Self {
+impl From<crate::forward::message::ReforwardInfo> for live777_http::response::ReforwardInfo {
+    fn from(value: crate::forward::message::ReforwardInfo) -> Self {
         live777_http::response::ReforwardInfo {
             target_url: value.target_url,
             resource_url: value.resource_url,
+        }
+    }
+}
+
+impl From<Config> for NodeMetaData {
+    fn from(value: Config) -> Self {
+        Self {
+            authorization: value.auth.to_authorizations().first().cloned(),
+            admin_authorization: value.admin_auth.to_authorizations().first().cloned(),
+            pub_max: value.stream_info.pub_max.0,
+            sub_max: value.stream_info.sub_max.0,
         }
     }
 }
@@ -69,15 +83,5 @@ fn convert_connect_state(
         RTCPeerConnectionState::Failed => live777_http::response::RTCPeerConnectionState::Failed,
 
         RTCPeerConnectionState::Closed => live777_http::response::RTCPeerConnectionState::Closed,
-    }
-}
-
-impl From<crate::config::StorageModel> for live777_storage::StorageModel {
-    fn from(value: crate::config::StorageModel) -> Self {
-        match value {
-            crate::config::StorageModel::RedisStandalone { addr } => {
-                live777_storage::StorageModel::RedisStandalone { addr }
-            }
-        }
     }
 }

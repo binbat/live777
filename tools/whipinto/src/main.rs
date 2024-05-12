@@ -1,8 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
-use clap::Parser;
-use clap::ValueEnum;
+use clap::{ArgAction, Parser, ValueEnum};
 use cli::{create_child, Codec};
 
 use libwish::Client;
@@ -11,6 +10,7 @@ use tokio::{
     net::{TcpListener, UdpSocket},
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
+use tracing::{info, trace, warn, Level};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
@@ -39,6 +39,9 @@ enum Mode {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Verbose mode (-v, -vv, -vvv)
+    #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
+    verbose: u8,
     #[arg(short, long, value_enum, default_value_t = Mode::Rtsp)]
     mode: Mode,
     #[arg(long, default_value_t = String::from("[::1]"))]
@@ -64,6 +67,16 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    utils::set_log(format!(
+        "whipinto={},webrtc=error",
+        match args.verbose {
+            0 => Level::WARN,
+            1 => Level::INFO,
+            2 => Level::DEBUG,
+            _ => Level::TRACE,
+        }
+    ));
 
     let host = args.host.clone();
     let mut codec = args.codec;
@@ -121,7 +134,7 @@ async fn main() -> Result<()> {
     }
     let listener = UdpSocket::bind(format!("{}:{}", args.host, rtp_port)).await?;
     let port = listener.local_addr()?.port();
-    println!(
+    info!(
         "=== RTP listener started : {} ===",
         listener.local_addr().unwrap()
     );
@@ -158,18 +171,16 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                let timeout = tokio::time::sleep(Duration::from_secs(1));
-                tokio::pin!(timeout);
-                let _ = timeout.as_mut().await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
             },
-            None => println!("No child process"),
+            None => info!("No child process"),
         }
     });
     tokio::select! {
         _= complete_rx.recv() => { }
-        msg = signal::wait_for_stop_signal() => println!("Received signal: {}", msg)
+        msg = signal::wait_for_stop_signal() => warn!("Received signal: {}", msg)
     }
-    println!("RTP listener closed");
+    warn!("RTP listener closed");
     let _ = client.remove_resource().await;
     let _ = peer.close().await;
     Ok(())
@@ -240,7 +251,7 @@ async fn new_peer(
         let pc = pc.clone();
         let complete_tx = complete_tx.clone();
         tokio::spawn(async move {
-            println!("connection state changed: {}", s);
+            warn!("connection state changed: {}", s);
             match s {
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                     let _ = pc.close().await;
@@ -267,6 +278,7 @@ async fn new_peer(
         let mut sequence_number: u16 = 0;
         while let Some(data) = recv.recv().await {
             if let Ok(mut packet) = rtp::packet::Packet::unmarshal(&mut data.as_slice()) {
+                trace!("received packet: {}", packet);
                 packet.header.sequence_number = sequence_number;
                 let _ = track.write_rtp(&packet).await;
                 sequence_number = sequence_number.wrapping_add(1);

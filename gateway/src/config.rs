@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::{env, fs};
+use std::{env, fs, net::SocketAddr, str::FromStr};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -12,15 +12,15 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub storage: StorageModel,
-    #[serde(default)]
     pub reforward: Reforward,
+    #[serde(default = "default_db_url")]
+    pub db_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http {
     #[serde(default = "default_http_listen")]
-    pub listen: String,
+    pub listen: SocketAddr,
     #[serde(default)]
     pub cors: bool,
 }
@@ -76,25 +76,16 @@ impl Default for PublishLeaveTimeout {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "model")]
-pub enum StorageModel {
-    RedisStandalone { addr: String },
-}
-
-impl Default for StorageModel {
-    fn default() -> Self {
-        StorageModel::RedisStandalone {
-            addr: "redis://127.0.0.1:6379".to_string(),
-        }
-    }
-}
-
-fn default_http_listen() -> String {
-    format!(
+fn default_http_listen() -> SocketAddr {
+    SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
         env::var("PORT").unwrap_or(String::from("8080"))
-    )
+    ))
+    .expect("invalid listen address")
+}
+
+fn default_db_url() -> String {
+    "mysql://root:password@localhost:3306/live777".to_string()
 }
 
 impl Default for Http {
@@ -127,17 +118,21 @@ fn default_log_level() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Reforward {
     #[serde(default)]
-    pub reforward_check_frequency: ReforwardCheckFrequency,
+    pub whep_check_frequency: WhepReforwardCheckFrequency,
     #[serde(default)]
-    pub check_reforward_tick_time: CheckReforwardTickTime,
+    pub check_tick_time: CheckReforwardTickTime,
+    #[serde(default)]
+    pub maximum_idle_time: ReforwardMaximumIdleTime,
+    #[serde(default)]
+    pub cascade: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardCheckFrequency(pub u8);
+pub struct WhepReforwardCheckFrequency(pub u8);
 
-impl Default for ReforwardCheckFrequency {
+impl Default for WhepReforwardCheckFrequency {
     fn default() -> Self {
-        ReforwardCheckFrequency(5)
+        WhepReforwardCheckFrequency(5)
     }
 }
 
@@ -157,5 +152,14 @@ impl Config {
             .unwrap_or("".to_string());
         let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
         cfg
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReforwardMaximumIdleTime(pub u64);
+
+impl Default for ReforwardMaximumIdleTime {
+    fn default() -> Self {
+        ReforwardMaximumIdleTime(60000)
     }
 }
