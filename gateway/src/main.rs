@@ -12,6 +12,7 @@ use axum::{
     routing::post,
     Router,
 };
+use axum_extra::extract::Query;
 use chrono::Utc;
 use clap::Parser;
 
@@ -341,8 +342,35 @@ async fn resource(
     Err(AppError::ResourceNotFound)
 }
 
+use serde::{Deserialize, Serialize};
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct WebHookQuery {
+    token: String,
+    reforward_maximum_idle_time: Option<u64>,
+    reforward_cascade: Option<bool>,
+}
+
+impl WebHookQuery {
+    fn get_reforward_maximum_idle_time(&self) -> u64 {
+        if let Some(reforward_maximum_idle_time) = self.reforward_maximum_idle_time {
+            reforward_maximum_idle_time
+        } else {
+            0
+        }
+    }
+    fn get_reforward_cascade(&self) -> bool {
+        if let Some(reforward_cascade) = self.reforward_cascade {
+            reforward_cascade
+        } else {
+            false
+        }
+    }
+}
+
 async fn webhook(
     State(state): State<AppState>,
+    Query(qry): Query<WebHookQuery>,
     Json(event_body): Json<live777_http::event::EventBody>,
 ) -> Result<String> {
     let pool = &state.pool;
@@ -354,6 +382,8 @@ async fn webhook(
         publish: metrics.publish,
         subscribe: metrics.subscribe,
         reforward: metrics.reforward,
+        reforward_maximum_idle_time: qry.get_reforward_maximum_idle_time(),
+        reforward_cascade: qry.get_reforward_cascade(),
         ..Default::default()
     };
     match event_body.event {

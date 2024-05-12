@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use crate::{
     error::AppError,
@@ -9,12 +9,34 @@ use chrono::{DateTime, Utc};
 use sqlx::MySqlPool;
 
 impl Node {
-    pub async fn nodes(pool: &sqlx::mysql::MySqlPool) -> Result<Vec<Node>> {
-        let nodes: Vec<Node> = sqlx::query_as(r#"select * from nodes updated_at >= ?"#)
+    pub async fn _nodes(pool: &sqlx::mysql::MySqlPool) -> Result<Vec<Node>> {
+        let nodes: Vec<Node> = sqlx::query_as(r#"select * from nodes"#)
             .bind(Utc::now() - Duration::from_millis(10000))
             .fetch_all(pool)
             .await?;
         Ok(nodes)
+    }
+
+    pub async fn db_find_reforward_nodes(pool: &sqlx::mysql::MySqlPool) -> Result<Vec<Node>> {
+        let nodes: Vec<Node> =
+            sqlx::query_as(r#"select * from nodes where updated_at >= ? and reforward > 0"#)
+                .bind(Utc::now() - Duration::from_millis(10000))
+                .fetch_all(pool)
+                .await?;
+        Ok(nodes)
+    }
+
+    pub async fn db_find_by_addr(
+        pool: &sqlx::mysql::MySqlPool,
+        addr: SocketAddr,
+    ) -> Result<Option<Node>> {
+        let node: Option<Node> =
+            sqlx::query_as(r#"select * from nodes updated_at >= ? and addr = ?"#)
+                .bind(Utc::now() - Duration::from_millis(10000))
+                .bind(addr.to_string())
+                .fetch_optional(pool)
+                .await?;
+        Ok(node)
     }
 
     pub async fn max_idlest_node(pool: &sqlx::mysql::MySqlPool) -> Result<Option<Node>> {
@@ -26,11 +48,11 @@ impl Node {
         and stream < pub_max
         order by sub_max - subscribe desc limit 1
         "#;
-        let mut nodes: Vec<Node> = sqlx::query_as(sql)
+        let node: Option<Node> = sqlx::query_as(sql)
             .bind(Utc::now() - Duration::from_millis(10000))
-            .fetch_all(pool)
+            .fetch_optional(pool)
             .await?;
-        Ok(nodes.pop())
+        Ok(node)
     }
 
     pub async fn db_insert(&self, pool: &MySqlPool) -> Result<()> {

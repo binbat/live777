@@ -1,8 +1,9 @@
 use crate::forward::message::ReforwardInfo;
 use crate::AppState;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_extra::extract::Query;
 pub fn route() -> Router<AppState> {
     Router::new()
         .route(live777_http::path::ADMIN_INFOS, get(infos))
@@ -15,12 +16,7 @@ async fn infos(
     Ok(Json(
         state
             .stream_manager
-            .info(req.streams.map_or(vec![], |streams| {
-                streams
-                    .split(',')
-                    .map(|stream| stream.to_string())
-                    .collect()
-            }))
+            .info(req.streams)
             .await
             .into_iter()
             .map(|forward_info| forward_info.into())

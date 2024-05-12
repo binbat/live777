@@ -1,9 +1,13 @@
-use std::{cmp::Ordering, str::FromStr};
+use std::{cmp::Ordering, str::FromStr, time::Duration};
 
 use crate::{error::AppError, result::Result};
 use anyhow::anyhow;
 use chrono::{serde::ts_milliseconds, DateTime, Utc};
-use live777_http::{path, request::Reforward, response::StreamInfo};
+use live777_http::{
+    path,
+    request::{QueryInfo, Reforward},
+    response::StreamInfo,
+};
 use reqwest::{header::HeaderMap, Body, Method};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
@@ -122,7 +126,7 @@ impl Node {
 
     pub async fn stream_infos(&self, streams: Vec<String>) -> Result<Vec<StreamInfo>> {
         let data = request(
-            self.path_url(&path::infos(streams)),
+            self.path_url(&path::infos(QueryInfo { streams })),
             "GET",
             self.admin_authorization.clone(),
             "",
@@ -173,7 +177,10 @@ async fn request<T: Into<Body>>(
     if let Some(authorization) = authorization {
         headers.append("Authorization", authorization.parse().unwrap());
     }
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_millis(5000))
+        .build()?;
     let response = client
         .request(Method::from_str(method)?, url)
         .headers(headers)

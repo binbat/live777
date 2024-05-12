@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::{net::SocketAddr, str::FromStr, time::Duration};
 
 use async_trait::async_trait;
 
@@ -24,7 +24,11 @@ impl WebHook {
             url,
             addr,
             metadata,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_millis(300))
+                .timeout(Duration::from_millis(500))
+                .build()
+                .unwrap(),
         }
     }
 
