@@ -33,7 +33,7 @@ const PREFIX_LIB: &str = "WEBRTC";
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Verbose mode (-v, -vv, -vvv)
+    /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
     #[arg(short, long)]
