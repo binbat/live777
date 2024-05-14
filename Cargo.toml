@@ -52,6 +52,7 @@ utils = { path = "libs/utils" }
 reqwest = { version = "0.11.24", features = [
     "rustls-tls",
 ], default-features = false }
+axum-extra = { version = "0.9.3", features = ["query"] }
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb
 [package.metadata.deb]

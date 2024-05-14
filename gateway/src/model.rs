@@ -1,12 +1,17 @@
-use std::{cmp::Ordering, str::FromStr};
+use std::{cmp::Ordering, str::FromStr, time::Duration};
 
 use crate::{error::AppError, result::Result};
 use anyhow::anyhow;
 use chrono::{serde::ts_milliseconds, DateTime, Utc};
-use live777_http::{path, request::Reforward, response::StreamInfo};
-use reqwest::{header::HeaderMap, Body, Method};
+use live777_http::{
+    path,
+    request::{QueryInfo, Reforward},
+    response::StreamInfo,
+};
+use reqwest::{header::HeaderMap, Method};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
+use tracing::{debug, warn};
 
 #[derive(Serialize, Deserialize, Clone, Debug, FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +32,16 @@ pub struct Node {
     pub created_at: DateTime<Utc>,
     #[serde(with = "ts_milliseconds")]
     pub updated_at: DateTime<Utc>,
+}
+
+impl Node {
+    pub fn active_time_point() -> DateTime<Utc> {
+        Utc::now() - Duration::from_millis(10000)
+    }
+
+    pub fn deactivate_time() -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(0).unwrap()
+    }
 }
 
 impl PartialEq for Node {
@@ -122,10 +137,10 @@ impl Node {
 
     pub async fn stream_infos(&self, streams: Vec<String>) -> Result<Vec<StreamInfo>> {
         let data = request(
-            self.path_url(&path::infos(streams)),
+            self.path_url(&path::infos(QueryInfo { streams })),
             "GET",
             self.admin_authorization.clone(),
-            "",
+            "".to_string(),
         )
         .await?;
         serde_json::from_str::<Vec<StreamInfo>>(&data).map_err(|e| e.into())
@@ -155,35 +170,63 @@ impl Node {
             self.path_url(&path::resource(&stream, &session)),
             "DELETE",
             self.admin_authorization.clone(),
-            "",
+            "".to_string(),
         )
         .await?;
         Ok(())
     }
 }
 
-async fn request<T: Into<Body>>(
+async fn request(
     url: String,
     method: &str,
     authorization: Option<String>,
-    body: T,
+    body: String,
 ) -> Result<String> {
     let mut headers = HeaderMap::new();
     headers.append("Content-Type", "application/json".parse().unwrap());
     if let Some(authorization) = authorization {
         headers.append("Authorization", authorization.parse().unwrap());
     }
-    let client = reqwest::Client::new();
-    let response = client
-        .request(Method::from_str(method)?, url)
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_millis(5000))
+        .build()?;
+
+    match client
+        .request(Method::from_str(method)?, url.clone())
         .headers(headers)
-        .body(body)
+        .body(body.clone())
         .send()
-        .await?;
-    let success = response.status().is_success();
-    let body = response.text().await?;
-    if !success {
-        return Err(AppError::InternalServerError(anyhow!(body)));
+        .await
+    {
+        Ok(response) => {
+            let status = response.status();
+            let success = response.status().is_success();
+            let res_body = response.text().await?;
+            if success {
+                debug!(
+                    url,
+                    ?status,
+                    req_body = body,
+                    res_body,
+                    "request node success"
+                );
+                Ok(res_body)
+            } else {
+                warn!(
+                    url,
+                    ?status,
+                    req_body = body,
+                    res_body,
+                    "request node error"
+                );
+                Err(AppError::InternalServerError(anyhow!(res_body)))
+            }
+        }
+        Err(err) => {
+            warn!(url, req_body = body, ?err, "request node error");
+            Err(err.into())
+        }
     }
-    Ok(body)
 }

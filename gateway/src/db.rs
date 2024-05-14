@@ -1,23 +1,38 @@
-use std::time::Duration;
-
 use crate::{
     error::AppError,
     model::{Node, Stream},
     result::Result,
 };
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use sqlx::MySqlPool;
 
 impl Node {
-    pub async fn nodes(pool: &sqlx::mysql::MySqlPool) -> Result<Vec<Node>> {
-        let nodes: Vec<Node> = sqlx::query_as(r#"select * from nodes updated_at >= ?"#)
-            .bind(Utc::now() - Duration::from_millis(10000))
+    pub async fn db_find_not_deactivate_nodes(pool: &MySqlPool) -> Result<Vec<Node>> {
+        let nodes: Vec<Node> = sqlx::query_as("select * from nodes where updated_at != ?")
+            .bind(Node::deactivate_time())
             .fetch_all(pool)
             .await?;
         Ok(nodes)
     }
 
-    pub async fn max_idlest_node(pool: &sqlx::mysql::MySqlPool) -> Result<Option<Node>> {
+    pub async fn db_find_reforward_nodes(pool: &MySqlPool) -> Result<Vec<Node>> {
+        let nodes: Vec<Node> =
+            sqlx::query_as("select * from nodes where updated_at >= ? and reforward > 0")
+                .bind(Node::active_time_point())
+                .fetch_all(pool)
+                .await?;
+        Ok(nodes)
+    }
+
+    pub async fn db_find_by_addr(pool: &MySqlPool, addr: String) -> Result<Option<Node>> {
+        let node: Option<Node> = sqlx::query_as("select * from nodes where addr = ?")
+            .bind(addr)
+            .fetch_optional(pool)
+            .await?;
+        Ok(node)
+    }
+
+    pub async fn max_idlest_node(pool: &MySqlPool) -> Result<Option<Node>> {
         let sql = r#"
         select * from nodes
         where
@@ -26,14 +41,14 @@ impl Node {
         and stream < pub_max
         order by sub_max - subscribe desc limit 1
         "#;
-        let mut nodes: Vec<Node> = sqlx::query_as(sql)
-            .bind(Utc::now() - Duration::from_millis(10000))
-            .fetch_all(pool)
+        let node: Option<Node> = sqlx::query_as(sql)
+            .bind(Node::active_time_point())
+            .fetch_optional(pool)
             .await?;
-        Ok(nodes.pop())
+        Ok(node)
     }
 
-    pub async fn db_insert(&self, pool: &MySqlPool) -> Result<()> {
+    pub async fn db_save_or_update(&self, pool: &MySqlPool) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO nodes ( addr, authorization, admin_authorization, pub_max, sub_max, reforward_maximum_idle_time, reforward_cascade) 
              VALUES (?, ?, ?, ?, ?, ?, ?) 
@@ -83,7 +98,7 @@ impl Node {
 
     pub async fn db_remove(&self, pool: &MySqlPool) -> Result<()> {
         sqlx::query(r#"UPDATE nodes SET updated_at = ? WHERE addr = ?"#)
-            .bind(DateTime::from_timestamp_millis(0).unwrap())
+            .bind(Node::deactivate_time())
             .bind(self.addr.clone())
             .execute(pool)
             .await?;
@@ -100,7 +115,7 @@ impl Node {
         "#,
         )
         .bind(stream)
-        .bind(Utc::now() - Duration::from_millis(10000))
+        .bind(Node::active_time_point())
         .fetch_all(pool)
         .await?;
         Ok(nodes)
@@ -108,14 +123,20 @@ impl Node {
 }
 
 impl Stream {
-    pub async fn db_insert(&self, pool: &MySqlPool) -> Result<()> {
+    pub async fn db_save_or_update(&self, pool: &MySqlPool) -> Result<()> {
         sqlx::query(
-            r#"INSERT INTO streams (stream,addr,publish) 
-            VALUES (?, ?,1) 
-            ON DUPLICATE KEY UPDATE publish=1,subscribe=0 ,reforward=0"#,
+            r#"INSERT INTO streams (stream,addr,publish,subscribe,reforward) 
+            VALUES (?, ?,?,?,?) 
+            ON DUPLICATE KEY UPDATE publish=?,subscribe=? ,reforward=?"#,
         )
         .bind(self.stream.clone().clone())
         .bind(self.addr.clone())
+        .bind(self.publish)
+        .bind(self.subscribe)
+        .bind(self.reforward)
+        .bind(self.publish)
+        .bind(self.subscribe)
+        .bind(self.reforward)
         .execute(pool)
         .await?;
         Ok(())
@@ -150,5 +171,13 @@ impl Stream {
             .execute(pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn db_find_node_stream(pool: &MySqlPool, addr: String) -> Result<Vec<Stream>> {
+        let streams: Vec<Stream> = sqlx::query_as("select * from streams where addr = ?")
+            .bind(addr)
+            .fetch_all(pool)
+            .await?;
+        Ok(streams)
     }
 }

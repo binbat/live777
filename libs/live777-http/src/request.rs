@@ -15,7 +15,7 @@ pub struct ChangeResource {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct QueryInfo {
     #[serde(default)]
-    pub streams: Option<String>,
+    pub streams: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
