@@ -15,6 +15,8 @@ pub struct Config {
     pub reforward: Reforward,
     #[serde(default = "default_db_url")]
     pub db_url: String,
+    #[serde(default)]
+    pub node_sync_tick_time: NodeSyncTickTime,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -73,6 +75,15 @@ pub struct PublishLeaveTimeout(pub u64);
 impl Default for PublishLeaveTimeout {
     fn default() -> Self {
         PublishLeaveTimeout(15000)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeSyncTickTime(pub u64);
+
+impl Default for NodeSyncTickTime {
+    fn default() -> Self {
+        NodeSyncTickTime(5000)
     }
 }
 
