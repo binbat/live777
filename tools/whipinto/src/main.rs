@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, vec};
 
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser};
@@ -10,23 +10,24 @@ use tokio::{
     net::UdpSocket,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
-use tracing::{info, trace, warn, Level};
-use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
+use tracing::{debug, info, trace, warn, Level};
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
-    ice_transport::ice_server::RTCIceServer,
+    ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     interceptor::registry::Registry,
     peer_connection::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
         RTCPeerConnection,
     },
-    rtp,
+    rtp::packet::Packet,
     rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
     },
     util::Unmarshal,
 };
+
+mod payload;
 
 const PREFIX_LIB: &str = "WEBRTC";
 
@@ -196,11 +197,12 @@ async fn new_peer(
                 RTCPeerConnectionState::Closed => {
                     let _ = complete_tx.send(());
                 }
-                _ => {}
+                v => debug!("{}", v),
             };
         });
         Box::pin(async {})
     }));
+    let mime_type = codec.mime_type.clone();
     let track = Arc::new(TrackLocalStaticRTP::new(
         codec,
         "webrtc".to_owned(),
@@ -211,14 +213,22 @@ async fn new_peer(
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
+
     tokio::spawn(async move {
-        let mut sequence_number: u16 = 0;
+        debug!("Codec is: {}", mime_type);
+        let mut handler: Box<dyn payload::RePayload + Send> = match mime_type.as_str() {
+            MIME_TYPE_VP8 => Box::new(payload::RePayloadVpx::new(mime_type)),
+            MIME_TYPE_VP9 => Box::new(payload::RePayloadVpx::new(mime_type)),
+            _ => Box::new(payload::Forward::new()),
+        };
+
         while let Some(data) = recv.recv().await {
-            if let Ok(mut packet) = rtp::packet::Packet::unmarshal(&mut data.as_slice()) {
+            if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
                 trace!("received packet: {}", packet);
-                packet.header.sequence_number = sequence_number;
-                let _ = track.write_rtp(&packet).await;
-                sequence_number = sequence_number.wrapping_add(1);
+                for packet in handler.payload(packet) {
+                    trace!("send packet: {}", packet);
+                    let _ = track.write_rtp(&packet).await;
+                }
             }
         }
     });
