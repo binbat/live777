@@ -71,11 +71,11 @@ async fn main() {
         client,
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
-    let manage_auth_layer =
-        ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.manage_auth]));
+    let manager_auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.manager_auth]));
     let app = Router::new()
         .merge(route::proxy::route().layer(auth_layer))
-        .merge(route::manager::route().layer(manage_auth_layer))
+        .merge(route::manager::route().layer(manager_auth_layer))
         .merge(route::hook::route())
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {

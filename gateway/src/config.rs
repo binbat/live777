@@ -10,7 +10,7 @@ pub struct Config {
     #[serde(default)]
     pub auth: Auth,
     #[serde(default)]
-    pub manage_auth: Auth,
+    pub manager_auth: Auth,
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
