@@ -37,3 +37,5 @@ reqwest = { version = "0.11.24", features = [
 ], default-features = false }
 futures-util = "0.3"
 axum-extra = { version = "0.9.3", features = ["query"] }
+validator = { version = "0.18.1", features = ["derive"] }
+axum-valid = "0.18.0"
