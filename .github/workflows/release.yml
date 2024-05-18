@@ -3,10 +3,10 @@ name: Release
 on:
   push:
     branches:
-    - test
+      - test
   release:
     types:
-    - 'published'
+      - 'published'
 
 jobs:
   build:
@@ -19,7 +19,7 @@ jobs:
         - { target: aarch64-apple-darwin        , os: macos-13                      }
         - { target: aarch64-pc-windows-gnu      , os: windows-2022                  }
         - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
-        - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: true }
+        - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: false }
         - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
         - { target: aarch64-unknown-linux-musl  , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
@@ -40,6 +40,8 @@ jobs:
       PKG_LIVE777_NAME: ""
       PKG_WHEPFROM_NAME: ""
       PKG_WHIPINTO_NAME: ""
+      CARGO_NDK_ANDROID_PLATFORM: 25 # Specify the API level here
+
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
@@ -58,11 +60,43 @@ jobs:
       run: |
         echo "version is: ${{ env.VERSION }}"
 
+    - name: Download Android NDK on Ubuntu
+      if: runner.os == 'Linux'
+      run: |
+        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+        unzip android-ndk-r26d-linux.zip
+        echo "NDK_PATH=${{ github.workspace }}/android-ndk-r26d" >> $GITHUB_ENV
+
+    - name: Download Android NDK on Windows
+      if: runner.os == 'Windows'
+      run: |
+        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r26d-windows.zip" -OutFile "android-ndk-r26d-windows.zip"
+        Expand-Archive -Path "android-ndk-r26d-windows.zip" -DestinationPath "${{ github.workspace }}"
+        echo "NDK_PATH=${{ github.workspace }}\android-ndk-r26d" >> $GITHUB_ENV
+
     - name: Install cargo-ndk
       if: contains(matrix.job.target, 'android')
+      run: cargo install cargo-ndk
+
+    - name: Create .cargo/config.toml if not exists
+      if: contains(matrix.job.target, 'android')
       run: |
-        cargo install cargo-ndk
-        echo "BUILD_NDK=ndk -t arm64-v8a" >> $GITHUB_ENV
+        mkdir -p .cargo
+        echo -e "[target.aarch64-linux-android]\nar = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar\"\nlinker = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android{CARGO_NDK_ANDROID_PLATFORM}-clang\"" > .cargo/config.toml
+
+    - name: Set environment variables for Android build
+      if: contains(matrix.job.target, 'android')
+      run: |
+        echo "AR=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+        echo "CC_aarch64_linux_android=clang --target=aarch64-linux-android${{ env.CARGO_NDK_ANDROID_PLATFORM }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+        echo "CXX_aarch64_linux_android=clang++ --target=aarch64-linux-android${{ env.CARGO_NDK_ANDROID_PLATFORM }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+        echo "RUSTFLAGS=-C link-arg=--sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+
+    - name: Replace placeholders in .cargo/config.toml
+      if: contains(matrix.job.target, 'android')
+      run: |
+        sed -i "s|{NDK_PATH}|${{ env.NDK_PATH }}|g" .cargo/config.toml
+        sed -i "s|{CARGO_NDK_ANDROID_PLATFORM}|${{ env.CARGO_NDK_ANDROID_PLATFORM }}|g" .cargo/config.toml
 
     - name: Install prerequisites
       shell: bash
@@ -103,12 +137,22 @@ jobs:
         cargo -V
         rustc -V
 
-    - name: Build
+    - name: Build for Android
+      if: contains(matrix.job.target, 'android')
       shell: bash
       run: |
-        $BUILD_CMD $BUILD_NDK build --locked --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whipinto --release --target=${{ matrix.job.target }}
+        rustup target add aarch64-linux-android
+        cargo ndk -t arm64-v8a --platform ${{ env.CARGO_NDK_ANDROID_PLATFORM }} build --release
+        cargo ndk -t arm64-v8a --platform ${{ env.CARGO_NDK_ANDROID_PLATFORM }} build --release --package=whepfrom
+        cargo ndk -t arm64-v8a --platform ${{ env.CARGO_NDK_ANDROID_PLATFORM }} build --release --package=whipinto
+
+    - name: Build for other targets
+      if: "!contains(matrix.job.target, 'android')"
+      shell: bash
+      run: |
+        $BUILD_CMD build --locked --release --target=${{ matrix.job.target }}
+        $BUILD_CMD build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
+        $BUILD_CMD build --locked --package=whipinto --release --target=${{ matrix.job.target }}
 
     - name: Archive
       shell: bash
@@ -170,4 +214,3 @@ jobs:
       run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
       env:
         GH_TOKEN: ${{ github.token }}
-
