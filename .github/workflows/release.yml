@@ -17,7 +17,7 @@ jobs:
       matrix:
         job:
         - { target: aarch64-apple-darwin        , os: macos-13                      }
-        - { target: aarch64-pc-windows-gnu      , os: windows-2022, use-nightly: true }
+        - { target: aarch64-pc-windows-gnu      , os: windows-2022                  }
         - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
         - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: false }
         - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
@@ -107,23 +107,20 @@ jobs:
         esac
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: ${{ matrix.job.target }}
+      run: |
+        if [ "${{ matrix.job.target }}" = "aarch64-pc-windows-gnu" ]; then
+          rustup toolchain install nightly
+          rustup target add aarch64-pc-windows-gnu --toolchain nightly
+        else
+          rustup toolchain install stable
+          rustup target add ${{ matrix.job.target }}
+        fi
 
     - name: Install cross
       if: matrix.job.use-cross
       uses: taiki-e/install-action@v2
       with:
         tool: cross
-
-    - name: Install nightly Rust toolchain for aarch64-pc-windows-gnu
-      if: matrix.job.use-nightly
-      run: |
-        rustup toolchain install nightly
-        rustup target add aarch64-pc-windows-gnu --toolchain nightly
-      env:
-        RUSTUP_TOOLCHAIN: nightly
 
     - name: Overwrite build command env variable
       if: matrix.job.use-cross
@@ -155,7 +152,7 @@ jobs:
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whipinto
 
     - name: Build for aarch64-pc-windows-gnu using nightly
-      if: matrix.job.use-nightly
+      if: matrix.job.target == 'aarch64-pc-windows-gnu'
       shell: bash
       run: |
         rustup run nightly cargo build --locked --release --target=${{ matrix.job.target }}
@@ -163,7 +160,7 @@ jobs:
         rustup run nightly cargo build --locked --package=whipinto --release --target=${{ matrix.job.target }}
 
     - name: Build for other targets
-      if: "!matrix.job.use-nightly && !contains(matrix.job.target, 'android')"
+      if: "!matrix.job.use-cross && !contains(matrix.job.target, 'android') && matrix.job.target != 'aarch64-pc-windows-gnu'"
       shell: bash
       run: |
         $BUILD_CMD build --locked --release --target=${{ matrix.job.target }}
