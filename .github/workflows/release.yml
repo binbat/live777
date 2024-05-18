@@ -3,10 +3,10 @@ name: Release
 on:
   push:
     branches:
-    - test
+      - test
   release:
     types:
-    - 'published'
+      - 'published'
 
 jobs:
   build:
@@ -70,12 +70,19 @@ jobs:
       if: contains(matrix.job.target, 'android')
       run: cargo install cargo-ndk
 
+    - name: Create .cargo/config.toml if not exists
+      if: contains(matrix.job.target, 'android')
+      run: |
+        mkdir -p .cargo
+        echo -e "[target.aarch64-linux-android]\nar = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar\"\nlinker = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android{API_LEVEL}-clang\"" > .cargo/config.toml
+
     - name: Set environment variables for Android build
       if: contains(matrix.job.target, 'android')
       run: |
         echo "AR=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
         echo "CC_aarch64_linux_android=clang --target=aarch64-linux-android${{ env.API_LEVEL }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
         echo "CXX_aarch64_linux_android=clang++ --target=aarch64-linux-android${{ env.API_LEVEL }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+        echo "RUSTFLAGS=-C link-arg=--sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
 
     - name: Replace placeholders in .cargo/config.toml
       if: contains(matrix.job.target, 'android')
@@ -126,6 +133,7 @@ jobs:
       if: contains(matrix.job.target, 'android')
       shell: bash
       run: |
+        rustup target add aarch64-linux-android
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whepfrom
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whipinto
