@@ -40,6 +40,8 @@ jobs:
       PKG_LIVE777_NAME: ""
       PKG_WHEPFROM_NAME: ""
       PKG_WHIPINTO_NAME: ""
+      API_LEVEL: 25 # Specify the API level here
+
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
@@ -58,11 +60,23 @@ jobs:
       run: |
         echo "version is: ${{ env.VERSION }}"
 
+    - name: Download Android NDK
+      run: |
+        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+        unzip android-ndk-r26d-linux.zip
+        echo "NDK_PATH=${{ github.workspace }}/android-ndk-r26d" >> $GITHUB_ENV
+
     - name: Install cargo-ndk
       if: contains(matrix.job.target, 'android')
+      run: cargo install cargo-ndk
+
+    - name: Set environment variables for Android build
+      if: contains(matrix.job.target, 'android')
       run: |
-        cargo install cargo-ndk
-        echo "BUILD_NDK=ndk -t arm64-v8a" >> $GITHUB_ENV
+        echo "AR=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+        echo "CC_aarch64_linux_android=clang --target=aarch64-linux-android${{ env.API_LEVEL }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+        echo "CXX_aarch64_linux_android=clang++ --target=aarch64-linux-android${{ env.API_LEVEL }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+        echo "BUILD_NDK=ndk -t arm64-v8a --api-level ${{ env.API_LEVEL }}" >> $GITHUB_ENV
 
     - name: Install prerequisites
       shell: bash
@@ -163,11 +177,5 @@ jobs:
       run: |
         mv ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }} ${{ env.PKG_WHEPFROM_NAME }}
         mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
-
-    - name: Upload release archive
-      shell: bash
-      if: github.ref_type == 'tag'
-      run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
       env:
         GH_TOKEN: ${{ github.token }}
-
