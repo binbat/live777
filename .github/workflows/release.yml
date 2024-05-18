@@ -60,19 +60,11 @@ jobs:
       run: |
         echo "version is: ${{ env.VERSION }}"
 
-    - name: Download Android NDK on Ubuntu
-      if: runner.os == 'Linux'
+    - name: Download Android NDK
       run: |
         wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
         unzip android-ndk-r26d-linux.zip
         echo "NDK_PATH=${{ github.workspace }}/android-ndk-r26d" >> $GITHUB_ENV
-
-    - name: Download Android NDK on Windows
-      if: runner.os == 'Windows'
-      run: |
-        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r26d-windows.zip" -OutFile "android-ndk-r26d-windows.zip"
-        Expand-Archive -Path "android-ndk-r26d-windows.zip" -DestinationPath "${{ github.workspace }}"
-        echo "NDK_PATH=${{ github.workspace }}\android-ndk-r26d" >> $GITHUB_ENV
 
     - name: Install cargo-ndk
       if: contains(matrix.job.target, 'android')
@@ -107,14 +99,9 @@ jobs:
         esac
 
     - name: Install Rust toolchain
-      run: |
-        if [ "${{ matrix.job.target }}" = "aarch64-pc-windows-gnu" ]; then
-          rustup toolchain install nightly
-          rustup target add aarch64-pc-windows-gnu --toolchain nightly
-        else
-          rustup toolchain install stable
-          rustup target add ${{ matrix.job.target }}
-        fi
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.job.target }}
 
     - name: Install cross
       if: matrix.job.use-cross
@@ -151,16 +138,8 @@ jobs:
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whepfrom
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whipinto
 
-    - name: Build for aarch64-pc-windows-gnu using nightly
-      if: matrix.job.target == 'aarch64-pc-windows-gnu'
-      shell: bash
-      run: |
-        rustup run nightly cargo build --locked --release --target=${{ matrix.job.target }}
-        rustup run nightly cargo build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
-        rustup run nightly cargo build --locked --package=whipinto --release --target=${{ matrix.job.target }}
-
     - name: Build for other targets
-      if: "!matrix.job.use-cross && !contains(matrix.job.target, 'android') && matrix.job.target != 'aarch64-pc-windows-gnu'"
+      if: "!contains(matrix.job.target, 'android')"
       shell: bash
       run: |
         $BUILD_CMD build --locked --release --target=${{ matrix.job.target }}
