@@ -19,7 +19,7 @@ jobs:
         - { target: aarch64-apple-darwin        , os: macos-13                      }
         - { target: aarch64-pc-windows-gnu      , os: windows-2022                  }
         - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
-        - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: true }
+        - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: false }
         - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
         - { target: aarch64-unknown-linux-musl  , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
@@ -76,7 +76,12 @@ jobs:
         echo "AR=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
         echo "CC_aarch64_linux_android=clang --target=aarch64-linux-android${{ env.API_LEVEL }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
         echo "CXX_aarch64_linux_android=clang++ --target=aarch64-linux-android${{ env.API_LEVEL }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
-        echo "BUILD_NDK=ndk -t arm64-v8a --api-level ${{ env.API_LEVEL }}" >> $GITHUB_ENV
+
+    - name: Replace placeholders in .cargo/config.toml
+      if: contains(matrix.job.target, 'android')
+      run: |
+        sed -i "s|{NDK_PATH}|${{ env.NDK_PATH }}|g" .cargo/config.toml
+        sed -i "s|{API_LEVEL}|${{ env.API_LEVEL }}|g" .cargo/config.toml
 
     - name: Install prerequisites
       shell: bash
@@ -117,12 +122,21 @@ jobs:
         cargo -V
         rustc -V
 
-    - name: Build
+    - name: Build for Android
+      if: contains(matrix.job.target, 'android')
       shell: bash
       run: |
-        $BUILD_CMD $BUILD_NDK build --locked --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whipinto --release --target=${{ matrix.job.target }}
+        cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release
+        cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whepfrom
+        cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whipinto
+
+    - name: Build for other targets
+      if: "!contains(matrix.job.target, 'android')"
+      shell: bash
+      run: |
+        $BUILD_CMD build --locked --release --target=${{ matrix.job.target }}
+        $BUILD_CMD build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
+        $BUILD_CMD build --locked --package=whipinto --release --target=${{ matrix.job.target }}
 
     - name: Archive
       shell: bash
@@ -177,5 +191,10 @@ jobs:
       run: |
         mv ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }} ${{ env.PKG_WHEPFROM_NAME }}
         mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
+
+    - name: Upload release archive
+      shell: bash
+      if: github.ref_type == 'tag'
+      run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
       env:
         GH_TOKEN: ${{ github.token }}
