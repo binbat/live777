@@ -106,10 +106,19 @@ jobs:
           aarch64-unknown-linux-gnu) sudo apt-get -y update ; sudo apt-get -y install gcc-aarch64-linux-gnu ;;
         esac
 
-    - name: Install Rust toolchain
+    - name: Install Rust toolchain for stable
+      if: matrix.job.target != 'aarch64-pc-windows-gnu'
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ matrix.job.target }}
+
+    - name: Install Rust toolchain for aarch64-pc-windows-gnu
+      if: matrix.job.target == 'aarch64-pc-windows-gnu'
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        target: aarch64-pc-windows-gnu
+        profile: minimal
 
     - name: Install cross
       if: matrix.job.use-cross
@@ -146,8 +155,15 @@ jobs:
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whepfrom
         cargo ndk -t arm64-v8a --platform ${{ env.API_LEVEL }} build --release --package=whipinto
 
+    - name: Build for aarch64-pc-windows-gnu using nightly
+      if: matrix.job.target == 'aarch64-pc-windows-gnu'
+      run: |
+        cargo +nightly build --locked --release --target=${{ matrix.job.target }}
+        cargo +nightly build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
+        cargo +nightly build --locked --package=whipinto --release --target=${{ matrix.job.target }}
+
     - name: Build for other targets
-      if: "!contains(matrix.job.target, 'android')"
+      if: "!contains(matrix.job.target, 'android') && matrix.job.target != 'aarch64-pc-windows-gnu'"
       shell: bash
       run: |
         $BUILD_CMD build --locked --release --target=${{ matrix.job.target }}
