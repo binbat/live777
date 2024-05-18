@@ -3,10 +3,10 @@ name: Build Android Rust
 on:
   push:
     branches:
-      - main
+      - test
   pull_request:
     branches:
-      - main
+      - test
 
 jobs:
   build:
