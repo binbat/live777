@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct SelectLayer {
-    #[serde(rename = "encodingId")]
     pub encoding_id: Option<String>,
 }
 
@@ -15,13 +15,12 @@ pub struct ChangeResource {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct QueryInfo {
     #[serde(default)]
-    pub streams: Option<String>,
+    pub streams: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Reforward {
-    #[serde(rename = "targetUrl")]
     pub target_url: String,
-    #[serde(rename = "adminAuthorization")]
     pub admin_authorization: Option<String>,
 }

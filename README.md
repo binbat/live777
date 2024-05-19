@@ -106,8 +106,17 @@ cargo run --package=whepfrom
 
 ### Gateway
 
+Database:
+
 ```bash
-docker run -d --name redis --rm -p 6379:6379 redis
+docker run -d --rm --name mysql -p 3306:3306 \
+-v `pwd`/sql:/docker-entrypoint-initdb.d \
+-e MYSQL_ROOT_PASSWORD=password \
+-e MYSQL_DATABASE=live777 \
+mysql
+```
+
+```bash
 cargo run --package=live777-gateway
 ```
 
@@ -145,9 +154,20 @@ docker run --name live777-server --rm --network host ghcr.io/binbat/live777-serv
 winget install live777
 ```
 
-### Gstreamer WHIP/WHEP client
+### Web WHIP/WHEP client
 
 **Open your browser, enter the URL: http://localhost:7777/**
+
+### Single Page Player
+
+example: http://localhost:7777/web/player.html?resource=web-0&autoplay&mute&reconnect=2000
+
+URL params:
+
+- `resource`: string, live777 resource ID
+- `autoplay`: boolean
+- `mute`: boolean, whether to mute by default
+- `reconnect`: number, reconnect timeout in millisecond
 
 ### Gstreamer `WHIP`/`WHEP` client
 
@@ -322,6 +342,20 @@ OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
   3. [AV1 is now available, But not released](https://github.com/obsproject/obs-studio/pull/9331)
 
 ### whipinto
+
+**NOTE: About `pkt_size=1200`**
+
+WebRTC must need `pkt_size=1200`
+
+If `pkt_size > 1200` (most tool `> 1200`, for example: `ffmpeg` default `1472`), we need to de-payload after re-payload
+
+But now, We support re-size `pkt_size` in `VP8` and `VP9`, You can use any `pkt_size` value in `VP8` and `VP9`
+
+Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `OPUS` | `G722` |
+----------------- | ------ | ------ | ------ | ------ | ------ | ------ |
+`pkt_size > 1200` | :shit: | :star: | :star: | :shit: | :shit: | :shit: |
+
+* * *
 
 This tool is `rtp2whip`
 

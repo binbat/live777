@@ -1,3 +1,5 @@
+# db_url = "mysql://root:password@localhost/live777"
+
 [http]
 # Http Server Listen Address
 # listen = "[::]:8888"
@@ -17,20 +19,21 @@
 # username = "live777"
 # password = "live777"
 
-# [log]
+[log]
 # Env: `LOG_LEVEL`
 # Default: info
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
-# [storage]
-# model = "RedisStandalone"
-# addr = "redis://127.0.0.1:6379"
-
-# [reforward]
-# When a new whep begun, and trigger reforward, check reforward status done times
+[reforward]
+# When a new whep beginning, and trigger reforward, check reforward status done times
 # Every times check after wait 50ms. If Mare than 5 * 50ms return error
-# reforward_check_frequency: 5
+# whep_check_frequency = 5
 # Check cluster all node reforward status time interval
 # Default: 3000ms (3s)
-# check_reforward_tick_time: 3000
+# check_tick_time = 3000
+# If reforward is working, but no consumer subscription, This reforward status is: `idle`
+# When status `idle` more than this time duration, close this reforward.
+# Default: 10s
+# maximum_idle_time = 60000
+# cascade = false

@@ -1,16 +1,18 @@
+use crate::config::Config;
+use crate::forward::message::{ForwardInfo, ReforwardInfo};
+use crate::hook::webhook::WebHook;
+use crate::hook::{Event, EventHook, NodeEvent, Stream, StreamEvent, StreamEventType};
+use crate::result::Result;
+use chrono::{DateTime, Utc};
+use live777_http::event::NodeMetaData;
 use std::time::Duration;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
-
-use crate::forward::info::{ReforwardInfo, StreamInfo};
-use crate::result::Result;
-use chrono::{DateTime, Utc};
-use live777_storage::{NodeMetaData, Storage};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use crate::forward::info::Layer;
+use crate::forward::message::Layer;
 use crate::forward::PeerForward;
 use crate::stream::config::ManagerConfig;
 use crate::{metrics, AppError};
@@ -19,39 +21,54 @@ use crate::{metrics, AppError};
 pub struct Manager {
     stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
     config: ManagerConfig,
+    event_sender: broadcast::Sender<Event>,
 }
 
 pub type Response = (RTCSessionDescription, String);
 
 impl Manager {
-    pub async fn new(cfg: ManagerConfig) -> Self {
+    pub async fn new(config: Config) -> Self {
+        let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
-        tokio::spawn(Self::heartbeat_and_check_tick(
+        let (send, mut recv) = broadcast::channel(4);
+        tokio::spawn(async move { while recv.recv().await.is_ok() {} });
+        let metadata: NodeMetaData = config.into();
+        for web_hook_url in cfg.webhooks.iter() {
+            let webhook = WebHook::new(web_hook_url.clone(), cfg.addr, metadata.clone());
+            let recv = send.subscribe();
+            tokio::spawn(async move {
+                webhook.hook(recv).await;
+            });
+        }
+        let _ = send.send(Event::Node(NodeEvent::Up));
+        tokio::spawn(Self::keep_alive_tick(send.clone()));
+        tokio::spawn(Self::publish_check_tick(
             stream_map.clone(),
-            (cfg.node_addr.clone(), cfg.metadata.clone()),
             cfg.publish_leave_timeout,
-            cfg.storage.clone(),
+            send.clone(),
         ));
         Manager {
             stream_map,
             config: cfg,
+            event_sender: send,
         }
     }
 
-    async fn heartbeat_and_check_tick(
+    async fn keep_alive_tick(event_sender: broadcast::Sender<Event>) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(5000)).await;
+            let _ = event_sender.send(Event::Node(NodeEvent::KeepAlive));
+        }
+    }
+
+    async fn publish_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        (node_addr, metadata): (String, NodeMetaData),
         publish_leave_timeout: u64,
-        storage: Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
+        event_sender: broadcast::Sender<Event>,
     ) {
         let publish_leave_timeout_i64: i64 = publish_leave_timeout.try_into().unwrap();
         loop {
-            let timeout = tokio::time::sleep(Duration::from_millis(1000));
-            tokio::pin!(timeout);
-            let _ = timeout.as_mut().await;
-            if let Some(storage) = &storage {
-                let _ = storage.registry(node_addr.clone(), metadata.clone()).await;
-            }
+            tokio::time::sleep(Duration::from_millis(1000)).await;
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
@@ -87,12 +104,28 @@ impl Manager {
                             "stream : {}, publish leave timeout, publish leave time : {}",
                             stream, publish_leave_time
                         );
-                        let _ =
-                            Self::unregister_stream(&storage, node_addr.clone(), stream.clone())
-                                .await;
+                        let _ = event_sender.send(Event::Stream(StreamEvent {
+                            r#type: StreamEventType::Down,
+                            stream: Stream {
+                                stream: stream.clone(),
+                                session: None,
+                                publish: 0,
+                                subscribe: 0,
+                                reforward: 0,
+                            },
+                        }));
                     }
                 }
             }
+        }
+    }
+
+    pub async fn forward_event_handler(
+        mut stream_event: broadcast::Receiver<crate::forward::message::ForwardEvent>,
+        hook_event: broadcast::Sender<Event>,
+    ) {
+        while let Ok(event) = stream_event.recv().await {
+            let _ = hook_event.send(Event::Forward(event));
         }
     }
 
@@ -103,17 +136,22 @@ impl Manager {
         if let Some(forward) = forward {
             forward.set_publish(offer).await
         } else {
-            if metrics::STREAM.get() >= self.config.metadata.pub_max as f64 {
+            if metrics::STREAM.get() >= self.config.pub_max as f64 {
                 return Err(AppError::LackOfResources);
             }
             let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
+            let subscribe_event = forward.subscribe_event();
+            tokio::spawn(Self::forward_event_handler(
+                subscribe_event,
+                self.event_sender.clone(),
+            ));
             let (sdp, session) = forward.set_publish(offer).await?;
             let mut stream_map = self.stream_map.write().await;
             if stream_map.contains_key(&stream) {
                 let _ = forward.close().await;
                 return Err(AppError::resource_already_exists("resource already exists"));
             }
-            if stream_map.len() >= self.config.metadata.pub_max as usize {
+            if stream_map.len() >= self.config.pub_max as usize {
                 warn!("stream {} set publish ok,but exceeded the limit", stream);
                 let _ = forward.close().await;
                 return Err(AppError::LackOfResources);
@@ -121,12 +159,16 @@ impl Manager {
             info!("add stream : {}", stream);
             stream_map.insert(stream.clone(), forward);
             metrics::STREAM.inc();
-            Self::registry_stream(
-                &self.config.storage,
-                self.config.node_addr.clone(),
-                stream.clone(),
-            )
-            .await?;
+            let _ = self.event_sender.send(Event::Stream(StreamEvent {
+                stream: Stream {
+                    stream,
+                    session: None,
+                    publish: 1,
+                    subscribe: 0,
+                    reforward: 0,
+                },
+                r#type: StreamEventType::Up,
+            }));
             Ok((sdp, session))
         }
     }
@@ -136,7 +178,7 @@ impl Manager {
         stream: String,
         offer: RTCSessionDescription,
     ) -> Result<Response> {
-        if metrics::SUBSCRIBE.get() >= self.config.metadata.sub_max as f64 {
+        if metrics::SUBSCRIBE.get() >= self.config.sub_max as f64 {
             return Err(AppError::LackOfResources);
         }
         let stream_map = self.stream_map.read().await;
@@ -144,7 +186,7 @@ impl Manager {
         drop(stream_map);
         if let Some(forward) = forward {
             let (sdp, session) = forward.add_subscribe(offer).await?;
-            if metrics::SUBSCRIBE.get() > self.config.metadata.sub_max as f64 {
+            if metrics::SUBSCRIBE.get() > self.config.sub_max as f64 {
                 warn!("stream {} add subscribe ok,but exceeded the limit", stream);
                 let _ = forward.remove_peer(session).await;
                 Err(AppError::LackOfResources)
@@ -154,28 +196,6 @@ impl Manager {
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }
-    }
-
-    async fn registry_stream(
-        storage: &Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
-        node_addr: String,
-        stream: String,
-    ) -> Result<()> {
-        if let Some(storage) = storage {
-            storage.registry_stream(node_addr, stream).await?;
-        }
-        Ok(())
-    }
-
-    async fn unregister_stream(
-        storage: &Option<Arc<Box<dyn Storage + 'static + Send + Sync>>>,
-        node_addr: String,
-        stream: String,
-    ) -> Result<()> {
-        if let Some(storage) = storage {
-            storage.unregister_stream(node_addr, stream).await?;
-        }
-        Ok(())
     }
 
     pub async fn add_ice_candidate(
@@ -201,16 +221,21 @@ impl Manager {
         if let Some(forward) = forward {
             let is_publish = forward.remove_peer(session.clone()).await?;
             if is_publish {
+                let _ = forward.close().await;
                 let mut stream_map = self.stream_map.write().await;
                 info!("remove stream : {}", stream);
                 stream_map.remove(&stream);
                 metrics::STREAM.dec();
-                let _ = Self::unregister_stream(
-                    &self.config.storage,
-                    self.config.node_addr.clone(),
-                    stream.clone(),
-                )
-                .await;
+                let _ = self.event_sender.send(Event::Stream(StreamEvent {
+                    stream: Stream {
+                        stream,
+                        publish: 0,
+                        subscribe: 0,
+                        reforward: 0,
+                        session: None,
+                    },
+                    r#type: StreamEventType::Down,
+                }));
             }
         }
         Ok(())
@@ -259,7 +284,7 @@ impl Manager {
         }
     }
 
-    pub async fn info(&self, streams: Vec<String>) -> Vec<StreamInfo> {
+    pub async fn info(&self, streams: Vec<String>) -> Vec<ForwardInfo> {
         let mut streams = streams.clone();
         streams.retain(|stream| !stream.trim().is_empty());
         let mut resp = vec![];
@@ -278,7 +303,7 @@ impl Manager {
         drop(streams);
         if let Some(forward) = forward {
             forward.reforward(reforward_info).await?;
-            if self.config.metadata.reforward_close_sub {
+            if self.config.reforward_close_sub {
                 for subscribe_session_info in forward.info().await.subscribe_session_infos {
                     if subscribe_session_info.reforward.is_none() {
                         let _ = forward.remove_peer(subscribe_session_info.id).await;
@@ -289,5 +314,11 @@ impl Manager {
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }
+    }
+
+    pub async fn shotdown(&self) -> Result<()> {
+        let _ = self.event_sender.send(Event::Node(NodeEvent::Down));
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+        Ok(())
     }
 }

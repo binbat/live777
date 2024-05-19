@@ -1,8 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
-use std::{env, fs};
+use std::{env, fs, net::SocketAddr, str::FromStr};
 use webrtc::{
     ice,
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
@@ -22,15 +21,17 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub publish_leave_timeout: PublishLeaveTimeout,
+    pub node_addr: Option<SocketAddr>,
     #[serde(default)]
-    pub node_info: NodeInfo,
+    pub stream_info: StreamInfo,
+    #[serde(default)]
+    pub webhooks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http {
     #[serde(default = "default_http_listen")]
-    pub listen: String,
+    pub listen: SocketAddr,
     #[serde(default)]
     pub cors: bool,
 }
@@ -86,33 +87,16 @@ impl Default for PublishLeaveTimeout {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "model")]
-pub enum StorageModel {
-    RedisStandalone { addr: String },
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeInfo {
-    pub storage: Option<StorageModel>,
-    #[serde(default = "default_registry_ip_port")]
-    pub ip_port: String,
-    #[serde(default)]
-    pub meta_data: MetaData,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MetaData {
+pub struct StreamInfo {
     #[serde(default)]
     pub pub_max: MetaDataPubMax,
     #[serde(default)]
     pub sub_max: MetaDataSubMax,
     #[serde(default)]
-    pub reforward_maximum_idle_time: ReforwardMaximumIdleTime,
-    #[serde(default)]
-    pub reforward_cascade: bool,
-    #[serde(default)]
     pub reforward_close_sub: bool,
+    #[serde(default)]
+    pub publish_leave_timeout: PublishLeaveTimeout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,19 +126,12 @@ impl Default for ReforwardMaximumIdleTime {
     }
 }
 
-fn default_http_listen() -> String {
-    format!(
+fn default_http_listen() -> SocketAddr {
+    SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
         env::var("PORT").unwrap_or(String::from("7777"))
-    )
-}
-
-fn default_registry_ip_port() -> String {
-    format!(
-        "{}:{}",
-        local_ip().unwrap(),
-        env::var("PORT").unwrap_or(String::from("7777"))
-    )
+    ))
+    .expect("invalid listen address")
 }
 
 impl Default for Http {
@@ -282,19 +259,15 @@ impl Config {
         {
             return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
         }
-        if self.node_info.meta_data.pub_max.0 == 0 {
-            return Err(anyhow::anyhow!(
-                "node_info.meta_data.pub_max cannot be equal to 0"
-            ));
+        if self.stream_info.pub_max.0 == 0 {
+            return Err(anyhow::anyhow!("stream_info.pub_max cannot be equal to 0"));
         }
-        if self.node_info.meta_data.sub_max.0 == 0 {
-            return Err(anyhow::anyhow!(
-                "node_info.meta_data.sub_max cannot be equal to 0"
-            ));
+        if self.stream_info.sub_max.0 == 0 {
+            return Err(anyhow::anyhow!("stream_info.sub_max cannot be equal to 0"));
         }
-        if self.node_info.meta_data.pub_max.0 > self.node_info.meta_data.sub_max.0 {
+        if self.stream_info.pub_max.0 > self.stream_info.sub_max.0 {
             return Err(anyhow::anyhow!(
-                "node_info.meta_data.pub_max cannot be greater than node_info.meta_data.sub_max"
+                "stream_info.pub_max cannot be greater than stream_info.sub_max"
             ));
         }
         for ice_server in self.ice_servers.iter() {

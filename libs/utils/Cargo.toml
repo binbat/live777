@@ -1,5 +1,5 @@
 [package]
-name = "live777-http"
+name = "utils"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,5 +8,4 @@ edition = "2021"
 crate-type = ["lib"]
 
 [dependencies]
-serde = { workspace = true, features = ["serde_derive"] }
-serde_html_form = "0.2.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

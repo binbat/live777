@@ -1,7 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, vec};
 
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use cli::{create_child, Codec};
 
 use libwish::Client;
@@ -10,16 +10,16 @@ use tokio::{
     net::UdpSocket,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
-use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
+use tracing::{debug, info, trace, warn, Level};
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
-    ice_transport::ice_server::RTCIceServer,
+    ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     interceptor::registry::Registry,
     peer_connection::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
         RTCPeerConnection,
     },
-    rtp,
+    rtp::packet::Packet,
     rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
@@ -27,11 +27,16 @@ use webrtc::{
     util::Unmarshal,
 };
 
+mod payload;
+
 const PREFIX_LIB: &str = "WEBRTC";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
+    #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
+    verbose: u8,
     #[arg(short, long, default_value_t = 0)]
     port: u16,
     #[arg(short, long, value_enum)]
@@ -53,9 +58,23 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    utils::set_log(format!(
+        "whipinto={},webrtc=error",
+        match args.verbose {
+            0 => Level::WARN,
+            1 => Level::INFO,
+            2 => Level::DEBUG,
+            _ => Level::TRACE,
+        }
+    ));
+
     let listener = UdpSocket::bind(format!("0.0.0.0:{}", args.port)).await?;
     let port = listener.local_addr()?.port();
-    println!("=== RTP listener started : {} ===", port);
+    info!(
+        "=== RTP listener started : {} ===",
+        listener.local_addr().unwrap()
+    );
     let mut client = Client::new(
         args.url,
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
@@ -90,18 +109,16 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                let timeout = tokio::time::sleep(Duration::from_secs(1));
-                tokio::pin!(timeout);
-                let _ = timeout.as_mut().await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
             },
-            None => println!("No child process"),
+            None => info!("No child process"),
         }
     });
     tokio::select! {
         _= complete_rx.recv() => { }
-        msg = signal::wait_for_stop_signal() => println!("Received signal: {}", msg)
+        msg = signal::wait_for_stop_signal() => warn!("Received signal: {}", msg)
     }
-    println!("RTP listener closed");
+    warn!("RTP listener closed");
     let _ = client.remove_resource().await;
     let _ = peer.close().await;
     Ok(())
@@ -172,7 +189,7 @@ async fn new_peer(
         let pc = pc.clone();
         let complete_tx = complete_tx.clone();
         tokio::spawn(async move {
-            println!("connection state changed: {}", s);
+            warn!("connection state changed: {}", s);
             match s {
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                     let _ = pc.close().await;
@@ -180,11 +197,12 @@ async fn new_peer(
                 RTCPeerConnectionState::Closed => {
                     let _ = complete_tx.send(());
                 }
-                _ => {}
+                v => debug!("{}", v),
             };
         });
         Box::pin(async {})
     }));
+    let mime_type = codec.mime_type.clone();
     let track = Arc::new(TrackLocalStaticRTP::new(
         codec,
         "webrtc".to_owned(),
@@ -195,13 +213,22 @@ async fn new_peer(
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
+
     tokio::spawn(async move {
-        let mut sequence_number: u16 = 0;
+        debug!("Codec is: {}", mime_type);
+        let mut handler: Box<dyn payload::RePayload + Send> = match mime_type.as_str() {
+            MIME_TYPE_VP8 => Box::new(payload::RePayloadVpx::new(mime_type)),
+            MIME_TYPE_VP9 => Box::new(payload::RePayloadVpx::new(mime_type)),
+            _ => Box::new(payload::Forward::new()),
+        };
+
         while let Some(data) = recv.recv().await {
-            if let Ok(mut packet) = rtp::packet::Packet::unmarshal(&mut data.as_slice()) {
-                packet.header.sequence_number = sequence_number;
-                let _ = track.write_rtp(&packet).await;
-                sequence_number = sequence_number.wrapping_add(1);
+            if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
+                trace!("received packet: {}", packet);
+                for packet in handler.payload(packet) {
+                    trace!("send packet: {}", packet);
+                    let _ = track.write_rtp(&packet).await;
+                }
             }
         }
     });
