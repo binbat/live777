@@ -82,21 +82,21 @@ jobs:
       if: contains(matrix.job.target, 'android')
       run: |
         mkdir -p .cargo
-        echo -e "[target.aarch64-linux-android]\nar = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar\"\nlinker = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android{CARGO_NDK_ANDROID_PLATFORM}-clang\"" > .cargo/config.toml
+        echo -e "[target.aarch64-linux-android]\nar = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar\"\nlinker = \"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-clang\"" > .cargo/config.toml
 
     - name: Set environment variables for Android build
       if: contains(matrix.job.target, 'android')
       run: |
         echo "AR=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
-        echo "CC_aarch64_linux_android=clang --target=aarch64-linux-android${{ env.CARGO_NDK_ANDROID_PLATFORM }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
-        echo "CXX_aarch64_linux_android=clang++ --target=aarch64-linux-android${{ env.CARGO_NDK_ANDROID_PLATFORM }} --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+        echo "CC_aarch64_linux_android=clang --target=aarch64-linux-android --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+        echo "CXX_aarch64_linux_android=clang++ --target=aarch64-linux-android --sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
         echo "RUSTFLAGS=-C link-arg=--sysroot=${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
 
     - name: Replace placeholders in .cargo/config.toml
       if: contains(matrix.job.target, 'android')
       run: |
         sed -i "s|{NDK_PATH}|${{ env.NDK_PATH }}|g" .cargo/config.toml
-        sed -i "s|{CARGO_NDK_ANDROID_PLATFORM}|${{ env.CARGO_NDK_ANDROID_PLATFORM }}|g" .cargo/config.toml
+
 
     - name: Install prerequisites
       shell: bash
