@@ -40,7 +40,7 @@ jobs:
       PKG_LIVE777_NAME: ""
       PKG_WHEPFROM_NAME: ""
       PKG_WHIPINTO_NAME: ""
-      CARGO_NDK_ANDROID_PLATFORM: 25 # Specify the API level here
+    
 
     steps:
     - name: Checkout source code
@@ -142,9 +142,9 @@ jobs:
       shell: bash
       run: |
         rustup target add aarch64-linux-android
-        cargo ndk -t arm64-v8a --platform ${{ env.CARGO_NDK_ANDROID_PLATFORM }} build --release
-        cargo ndk -t arm64-v8a --platform ${{ env.CARGO_NDK_ANDROID_PLATFORM }} build --release --package=whepfrom
-        cargo ndk -t arm64-v8a --platform ${{ env.CARGO_NDK_ANDROID_PLATFORM }} build --release --package=whipinto
+        cargo ndk -t arm64-v8a --platform 25 build --release
+        cargo ndk -t arm64-v8a --platform 25 build --release --package=whepfrom
+        cargo ndk -t arm64-v8a --platform 25 build --release --package=whipinto
 
     - name: Build for other targets
       if: "!contains(matrix.job.target, 'android')"
