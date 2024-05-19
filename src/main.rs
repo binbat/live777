@@ -13,7 +13,7 @@ use clap::Parser;
 use error::AppError;
 use http_body_util::BodyExt;
 use local_ip_address::local_ip;
-use std::future::IntoFuture;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -56,13 +56,8 @@ async fn main() {
     utils::set_log(format!("live777={},webrtc=error", cfg.log.level));
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
-    let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    info!("Server listening on {}", addr);
     if cfg.node_addr.is_none() {
-        let port = addr.port();
+        let port = cfg.http.listen.port();
         cfg.node_addr =
             Some(SocketAddr::from_str(&format!("{}:{}", local_ip().unwrap(), port)).unwrap());
         warn!(
@@ -70,6 +65,21 @@ async fn main() {
             cfg.node_addr.unwrap()
         );
     }
+
+    server_up(cfg, shutdown_signal()).await;
+    info!("Server shutdown");
+}
+
+async fn server_up<F>(cfg: Config, signal: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    info!("Server listening on {}", addr);
+
     let app_state = AppState {
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
@@ -108,12 +118,16 @@ async fn main() {
                 span
             }),
         );
-    tokio::select! {
-        Err(e) = axum::serve(listener, static_server(app)).into_future() => error!("Application error: {e}"),
-        msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
-    }
+
+    axum::serve(listener, static_server(app))
+        .with_graceful_shutdown(signal)
+        .await
+        .unwrap_or_else(|e| error!("Application error: {e}"));
     let _ = app_state.stream_manager.shotdown().await;
-    info!("Server shutdown");
+}
+
+async fn shutdown_signal() {
+    debug!("Received signal: {}", signal::wait_for_stop_signal().await)
 }
 
 fn metrics_register() {
