@@ -17,6 +17,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
@@ -56,8 +57,13 @@ async fn main() {
     utils::set_log(format!("live777={},webrtc=error", cfg.log.level));
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
+    let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    info!("Server listening on {}", addr);
     if cfg.node_addr.is_none() {
-        let port = cfg.http.listen.port();
+        let port = addr.port();
         cfg.node_addr =
             Some(SocketAddr::from_str(&format!("{}:{}", local_ip().unwrap(), port)).unwrap());
         warn!(
@@ -66,20 +72,14 @@ async fn main() {
         );
     }
 
-    server_up(cfg, shutdown_signal()).await;
+    server_up(cfg, listener, shutdown_signal()).await;
     info!("Server shutdown");
 }
 
-async fn server_up<F>(cfg: Config, signal: F)
+pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    info!("Server listening on {}", addr);
-
     let app_state = AppState {
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
