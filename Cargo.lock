@@ -1545,36 +1545,13 @@ checksum = "01cda141df6706de531b6c46c3a33ecca755538219bd484262fa09410c13539c"
 name = "live777"
 version = "0.4.1"
 dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "axum-extra",
- "base64 0.22.1",
- "chrono",
  "clap",
- "http 1.1.0",
- "http-body 1.0.0",
- "http-body-util",
- "hyper 1.3.1",
- "lazy_static",
- "libwish",
- "live777-http",
+ "liveion",
  "local-ip-address",
- "md5",
- "mime_guess",
- "prometheus",
- "reqwest 0.11.27",
- "rust-embed",
- "serde",
- "serde_json",
  "signal",
  "tokio",
- "toml",
- "tower-http",
  "tracing",
- "tracing-subscriber",
  "utils",
- "webrtc",
 ]
 
 [[package]]
@@ -1618,6 +1595,42 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_html_form",
+]
+
+[[package]]
+name = "liveion"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "http 1.1.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "hyper 1.3.1",
+ "lazy_static",
+ "libwish",
+ "live777-http",
+ "local-ip-address",
+ "md5",
+ "mime_guess",
+ "prometheus",
+ "reqwest 0.11.27",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "signal",
+ "tokio",
+ "toml",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "utils",
+ "webrtc",
 ]
 
 [[package]]

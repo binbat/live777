@@ -11,7 +11,7 @@ use {
 
 #[cfg(not(debug_assertions))]
 #[derive(RustEmbed)]
-#[folder = "assets/"]
+#[folder = "../assets/"]
 struct Assets;
 
 pub fn static_server(router: Router) -> Router {

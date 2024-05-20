@@ -242,7 +242,7 @@ impl From<IceServer> for RTCIceServer {
 }
 
 impl Config {
-    pub(crate) fn parse(path: Option<String>) -> Self {
+    pub fn parse(path: Option<String>) -> Self {
         let result = fs::read_to_string(path.unwrap_or(String::from("live777.toml")))
             .or(fs::read_to_string("/etc/live777/live777.toml"))
             .unwrap_or("".to_string());
