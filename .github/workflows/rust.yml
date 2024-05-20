@@ -30,6 +30,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Show version information
+        run: |
+          cargo --version
+          cargo clippy --version
+
       - name: Cargo clippy
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 
