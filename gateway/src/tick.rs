@@ -82,7 +82,7 @@ pub async fn node_sync_info(node: Node, pool: &Pool<MySql>) -> Result<()> {
         .into_iter()
         .map(|stream_info| {
             let mut stream = Stream::from(stream_info);
-            stream.addr = node.addr.clone();
+            stream.addr.clone_from(&node.addr);
             (stream.stream.clone(), stream.clone())
         })
         .collect();
