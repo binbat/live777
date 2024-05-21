@@ -11,12 +11,12 @@ crate-type = ["lib"]
 [dependencies]
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
 
+http-utils = { path = "../libs/http-utils" }
 libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
 live777-http = { path = "../libs/live777-http" }
 utils = { path = "../libs/utils" }
 
-http-body-util = "0.1.0"
 axum = { version = "0.7.4", features = ["multipart", "tracing"] }
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 anyhow = { version = "1", features = ["backtrace"] }
