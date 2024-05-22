@@ -6,6 +6,9 @@ use tokio::{
     net::TcpStream,
     sync::mpsc::UnboundedSender,
 };
+use crate::sdp::{Sdp,Unmarshal};
+
+pub mod sdp;
 
 const SERVER_NAME: &str = "whipinto";
 
@@ -104,7 +107,18 @@ impl Handler {
     }
 
     fn announce(&mut self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
-        self.set_sdp(req.body().to_vec());
+        let sdp_data = req.body();
+        if let Ok(sdp_str) = std::str::from_utf8(sdp_data) {
+            if let Some(sdp) = Sdp::unmarshal(sdp_str) {
+                println!("Parsed SDP: {:?}", sdp);
+                self.set_sdp(sdp_data.clone());
+            } else {
+                println!("Failed to unmarshal SDP data");
+            }
+        } else {
+            println!("Failed to convert SDP");
+        }
+        // self.set_sdp(req.body().to_vec());
         // sdp-types = "0.1.6"
         // https://crates.io/crates/sdp-types
         // let sdp = sdp_types::Session::parse(req.body()).unwrap();

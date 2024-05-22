@@ -2369,6 +2369,8 @@ name = "rtsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "bytes",
  "rtsp-types",
  "sdp 0.6.2",
  "tokio",
