@@ -8,9 +8,10 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use sqlx::mysql::MySqlConnectOptions;
 use sqlx::MySqlPool;
-use std::future::IntoFuture;
+use std::future::Future;
 use std::str::FromStr;
 
+use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
@@ -42,8 +43,8 @@ async fn main() {
     let args = Args::parse();
     let cfg = Config::parse(args.config);
     utils::set_log(format!(
-        "live777_gateway={},live777_storage={},sqlx={},webrtc=error",
-        cfg.log.level, cfg.log.level, cfg.log.level
+        "live777_gateway={},sqlx={},webrtc=error",
+        cfg.log.level, cfg.log.level
     ));
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
@@ -51,6 +52,15 @@ async fn main() {
         .await
         .unwrap();
     info!("Server listening on {}", listener.local_addr().unwrap());
+
+    server_up(cfg, listener, shutdown_signal()).await;
+    info!("Server shutdown");
+}
+
+pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let pool_connect_options = MySqlConnectOptions::from_str(&cfg.db_url).unwrap();
     let client: Client =
         hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
@@ -76,7 +86,9 @@ async fn main() {
         } else {
             CorsLayer::new()
         })
-        .layer(axum::middleware::from_fn(http_utils::print_request_response))
+        .layer(axum::middleware::from_fn(
+            http_utils::print_request_response,
+        ))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
                 let span = info_span!(
@@ -91,11 +103,15 @@ async fn main() {
             }),
         );
     tokio::spawn(tick::run(app_state));
-    tokio::select! {
-        Err(e) = axum::serve(listener, static_server(app)).into_future() => error!("Application error: {e}"),
-        msg = signal::wait_for_stop_signal() => debug!("Received signal: {}", msg),
-    }
-    info!("Server shutdown");
+    axum::serve(listener, static_server(app))
+        .with_graceful_shutdown(signal)
+        .await
+        .unwrap_or_else(|e| error!("Application error: {e}"));
+}
+
+async fn shutdown_signal() {
+    let str = signal::wait_for_stop_signal().await;
+    debug!("Received signal: {}", str);
 }
 
 type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
