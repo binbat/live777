@@ -429,6 +429,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05efc5cfd9110c8416e471df0e96702d58690178e206e61b7173706673c93706"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -856,6 +865,12 @@ name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
+
+[[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
 name = "fastrand"
@@ -2369,10 +2384,9 @@ name = "rtsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
- "bytes",
  "rtsp-types",
  "sdp 0.6.2",
+ "sdp-types",
  "tokio",
 ]
 
@@ -2606,6 +2620,16 @@ dependencies = [
  "substring",
  "thiserror",
  "url",
+]
+
+[[package]]
+name = "sdp-types"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc1e17b07a224c21a31b5f7ed74cbbb189d26a0b8cdbfc8b57fa5940c89f086"
+dependencies = [
+ "bstr",
+ "fallible-iterator",
 ]
 
 [[package]]

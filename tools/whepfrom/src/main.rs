@@ -13,6 +13,7 @@ use tokio::{
 };
 use tracing::{info, trace, warn, Level};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::ice_server::RTCIceServer,
@@ -28,6 +29,7 @@ use webrtc::{
     },
     util::MarshalSize,
 };
+
 
 const PREFIX_LIB: &str = "WEBRTC";
 
@@ -100,7 +102,7 @@ async fn main() -> Result<()> {
     );
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
 
-    let peer = webrtc_start(
+    let (peer,answer) = webrtc_start(
         &mut client,
         args.codec.into(),
         send,
@@ -110,17 +112,13 @@ async fn main() -> Result<()> {
     .await
     .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
 
-    let answer = client
-    .wish(peer.local_description().await.unwrap().sdp.clone())
-    .await?
-     .0;
-    println!("sdp:{:?}",answer.sdp);
 
     if args.mode == Mode::Rtsp {
         let (tx, mut rx) = unbounded_channel::<String>();
 
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
         handler.set_sdp(answer.sdp.as_bytes().to_vec());
+        println!("sdp:{:?}",answer.sdp);
 
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host, args.port))
@@ -203,7 +201,7 @@ async fn webrtc_start(
     send: UnboundedSender<Vec<u8>>,
     payload_type: u8,
     complete_tx: UnboundedSender<()>,
-) -> Result<Arc<RTCPeerConnection>> {
+) -> Result<(Arc<RTCPeerConnection>, RTCSessionDescription)> {
     let peer = new_peer(
         RTCRtpCodecParameters {
             capability: codec,
@@ -224,13 +222,12 @@ async fn webrtc_start(
         .wish(peer.local_description().await.unwrap().sdp.clone())
         .await?;
 
-    peer.set_remote_description(answer)
+    peer.set_remote_description(answer.clone())
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 
-    Ok(peer)
+    Ok((peer, answer))
 }
-
 async fn new_peer(
     codec: RTCRtpCodecParameters,
     complete_tx: UnboundedSender<()>,
