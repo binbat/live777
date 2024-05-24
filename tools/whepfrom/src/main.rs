@@ -30,7 +30,6 @@ use webrtc::{
     util::MarshalSize,
 };
 
-
 const PREFIX_LIB: &str = "WEBRTC";
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -87,7 +86,7 @@ async fn main() -> Result<()> {
     ));
 
     let host = args.host.clone();
-    let mut codec = args.codec;
+    let mut _codec = args.codec;
     let mut rtp_port = args.port;
 
     let udp_socket = UdpSocket::bind("[::]:8000").await?;
@@ -102,7 +101,7 @@ async fn main() -> Result<()> {
     );
     let (send, mut recv) = unbounded_channel::<Vec<u8>>();
 
-    let (peer,answer) = webrtc_start(
+    let (peer, answer) = webrtc_start(
         &mut client,
         args.codec.into(),
         send,
@@ -112,13 +111,12 @@ async fn main() -> Result<()> {
     .await
     .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
 
-
     if args.mode == Mode::Rtsp {
         let (tx, mut rx) = unbounded_channel::<String>();
 
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
         handler.set_sdp(answer.sdp.as_bytes().to_vec());
-        println!("sdp:{:?}",answer.sdp);
+        println!("sdp:{:?}", answer.sdp);
 
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host, args.port))
@@ -161,7 +159,6 @@ async fn main() -> Result<()> {
             }
         }
     });
-   
 
     tokio::spawn(async move {
         while let Some(data) = recv.recv().await {
