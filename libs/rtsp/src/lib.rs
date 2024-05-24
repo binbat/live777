@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Error, Result};
 use rtsp_types::ParseError;
 use rtsp_types::{headers, headers::transport, Message, Method, Request, Response, StatusCode};
+use sdp_types::Session;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -21,8 +22,8 @@ impl Handler {
         Self {
             sdp: None,
             rtp: None,
-            up_tx: up_tx,
-            dn_tx: dn_tx,
+            up_tx,
+            dn_tx,
         }
     }
 
@@ -105,6 +106,9 @@ impl Handler {
 
     fn announce(&mut self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         self.set_sdp(req.body().to_vec());
+        let sdp = Session::parse(req.body()).unwrap();
+        println!("parsed sdp: {:?}", sdp);
+        // self.set_sdp(req.body().to_vec());
         // sdp-types = "0.1.6"
         // https://crates.io/crates/sdp-types
         // let sdp = sdp_types::Session::parse(req.body()).unwrap();

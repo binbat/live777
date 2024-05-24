@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     ));
 
     let host = args.host.clone();
-    let mut codec = args.codec;
+    let codec = args.codec;
     let mut rtp_port = args.port;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
         });
 
         match rx.recv().await {
-            Some(rtpmap) => {
+            Some(_rtpmap) => {
                 //println!("=== Received RTPMAP: {} ===", rtpmap);
                 //match rtpmap.split_once(' ') {
                 //    Some((pt, code)) => {

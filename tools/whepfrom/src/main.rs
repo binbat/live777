@@ -13,6 +13,7 @@ use tokio::{
 };
 use tracing::{info, trace, warn, Level};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::ice_server::RTCIceServer,
@@ -85,25 +86,37 @@ async fn main() -> Result<()> {
     ));
 
     let host = args.host.clone();
-    let mut codec = args.codec;
+    let mut _codec = args.codec;
     let mut rtp_port = args.port;
 
     let udp_socket = UdpSocket::bind("[::]:8000").await?;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
 
+    let payload_type = args.payload_type;
+    assert!((96..=127).contains(&payload_type));
+    let mut client = Client::new(
+        args.url,
+        Client::get_auth_header_map(args.auth_basic, args.auth_token),
+    );
+    let (send, mut recv) = unbounded_channel::<Vec<u8>>();
+
+    let (peer, answer) = webrtc_start(
+        &mut client,
+        args.codec.into(),
+        send,
+        payload_type,
+        complete_tx.clone(),
+    )
+    .await
+    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
+
     if args.mode == Mode::Rtsp {
         let (tx, mut rx) = unbounded_channel::<String>();
 
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
-        handler.set_sdp(
-            r#"v=0
-m=video 8000 RTP/AVP 96
-c=IN IP6 ::1
-a=rtpmap:96 VP8/90000"#
-                .as_bytes()
-                .to_vec(),
-        );
+        handler.set_sdp(answer.sdp.as_bytes().to_vec());
+        println!("sdp:{:?}", answer.sdp);
 
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host, args.port))
@@ -137,13 +150,7 @@ a=rtpmap:96 VP8/90000"#
         println!("rtp_port: {}", rtp_port);
     }
 
-    let payload_type = args.payload_type;
-    assert!((96..=127).contains(&payload_type));
     udp_socket.connect(format!("[::1]:{}", rtp_port)).await?;
-    let mut client = Client::new(
-        args.url,
-        Client::get_auth_header_map(args.auth_basic, args.auth_token),
-    );
     let child = Arc::new(create_child(args.command)?);
     defer!({
         if let Some(child) = child.as_ref() {
@@ -152,17 +159,6 @@ a=rtpmap:96 VP8/90000"#
             }
         }
     });
-    let (send, mut recv) = unbounded_channel::<Vec<u8>>();
-
-    let peer = webrtc_start(
-        &mut client,
-        args.codec.into(),
-        send,
-        payload_type,
-        complete_tx.clone(),
-    )
-    .await
-    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
 
     tokio::spawn(async move {
         while let Some(data) = recv.recv().await {
@@ -202,7 +198,7 @@ async fn webrtc_start(
     send: UnboundedSender<Vec<u8>>,
     payload_type: u8,
     complete_tx: UnboundedSender<()>,
-) -> Result<Arc<RTCPeerConnection>> {
+) -> Result<(Arc<RTCPeerConnection>, RTCSessionDescription)> {
     let peer = new_peer(
         RTCRtpCodecParameters {
             capability: codec,
@@ -223,13 +219,12 @@ async fn webrtc_start(
         .wish(peer.local_description().await.unwrap().sdp.clone())
         .await?;
 
-    peer.set_remote_description(answer)
+    peer.set_remote_description(answer.clone())
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 
-    Ok(peer)
+    Ok((peer, answer))
 }
-
 async fn new_peer(
     codec: RTCRtpCodecParameters,
     complete_tx: UnboundedSender<()>,
