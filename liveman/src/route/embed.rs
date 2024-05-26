@@ -6,10 +6,11 @@ use std::time::{Duration, Instant, SystemTime};
 use live777_http::response::StreamInfo;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
+use std::hash::{Hash, Hasher};
 
 const SYNC_API: &str = "/admin/infos";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
     #[serde(default)]
     pub key: String,
@@ -29,6 +30,12 @@ impl Default for Server {
             pub_max: u16::MAX,
             sub_max: u16::MAX,
         }
+    }
+}
+
+impl Hash for Server {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
     }
 }
 

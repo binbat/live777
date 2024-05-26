@@ -4,8 +4,10 @@ use axum::{
 };
 use http::Uri;
 use live777_http::response::StreamInfo;
-use tracing::{debug, error, warn, Span};
+use tracing::{debug, error, info, warn, Span};
 use crate::Server;
+use std::collections::HashSet;
+use live777_http::request::Reforward;
 
 pub fn route() -> Router<AppState> {
     Router::new()
@@ -103,67 +105,63 @@ async fn whep(
             resp
         },
         None => {
-            let reforward_node = whep_reforward_node(state.clone(), &servers, stream).await?;
+            let reforward_node = whep_reforward_node(state.clone(), servers.clone(), stream).await?;
             request_proxy(state.clone(), req, &reforward_node).await
         }
     }
 }
 
-async fn whep_reforward_node(state: AppState, nodes: &Vec<Server>, stream: String) -> Result<Server> {
-    Ok(nodes.first().unwrap().clone())
-    //let mut reforward_node = stream_nodes.first().cloned().unwrap();
-    //for stream_node in stream_nodes {
-    //    if !stream_node.metadata.stream_info.reforward_cascade {
-    //        reforward_node = stream_node.clone();
+async fn whep_reforward_node(mut state: AppState, nodes: Vec<Server>, stream: String) -> Result<Server> {
+    let set_all: HashSet<Server> = state
+        .storage
+        .nodes()
+        .await
+        .into_iter()
+        .clone()
+        .collect();
+
+    let set_src: HashSet<Server> = nodes
+        .clone()
+        .into_iter()
+        .collect();
+
+    let set_dst: HashSet<&Server> = set_all
+        .difference(&set_src)
+        .collect();
+
+    let arr = set_dst.into_iter().collect::<Vec<&Server>>();
+
+    let server_src = nodes.first().unwrap().clone();
+    let server_dst = *arr.first().unwrap();
+
+    info!("reforward from: {:?}, to: {:?}", server_src, server_dst);
+
+    reforward(server_src, server_dst.clone(), stream.clone()).await;
+    //for _ in 0..state.config.reforward.reforward_check_frequency.0 {
+    //    let timeout = tokio::time::sleep(Duration::from_millis(50));
+    //    tokio::pin!(timeout);
+    //    let _ = timeout.as_mut().await;
+    //    let stream_info = target_node.stream_info(stream.clone()).await;
+    //    if stream_info.is_ok() && stream_info.unwrap().is_some() {
     //        break;
     //    }
     //}
-    //let nodes = state.storage.nodes().await?;
-    //if nodes.is_empty() {
-    //    return Err(AppError::NoAvailableNode);
-    //}
-    //if let Some(target_node) = live777_storage::node_operate::maximum_idle_node(nodes, true).await?
-    //{
-    //    reforward_node
-    //        .reforward(&target_node, stream.clone(), stream.clone())
-    //        .await?;
-    //    for _ in 0..state.config.reforward.reforward_check_frequency.0 {
-    //        let timeout = tokio::time::sleep(Duration::from_millis(50));
-    //        tokio::pin!(timeout);
-    //        let _ = timeout.as_mut().await;
-    //        let stream_info = target_node.stream_info(stream.clone()).await;
-    //        if stream_info.is_ok() && stream_info.unwrap().is_some() {
-    //            break;
-    //        }
-    //    }
-    //    Ok(target_node)
-    //} else {
-    //    Err(AppError::NoAvailableNode)
-    //}
 
+    Ok(server_dst.clone())
+}
 
-    //let mut reforward_node = nodes.first().cloned().unwrap();
-    //for stream_node in nodes {
-    //    if !stream_node.reforward_cascade {
-    //        reforward_node = stream_node.clone();
-    //        break;
-    //    }
-    //}
-    //if let Some(target_node) = Node::max_idlest_node(&state.pool).await? {
-    //    reforward_node
-    //        .reforward(&target_node, stream.clone(), stream.clone())
-    //        .await?;
-    //    for _ in 0..state.config.reforward.whep_check_frequency.0 {
-    //        tokio::time::sleep(Duration::from_millis(50)).await;
-    //        let stream_info = target_node.stream_info(stream.clone()).await;
-    //        if stream_info.is_ok() && stream_info.unwrap().is_some() {
-    //            break;
-    //        }
-    //    }
-    //    Ok(target_node)
-    //} else {
-    //    Err(AppError::NoAvailableNode)
-    //}
+async fn reforward(server_src: Server, server_dst: Server, stream: String) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/admin/reforward/{}", server_src.url, stream);
+    let body = serde_json::to_string(&Reforward {
+            target_url: format!("{}/whip/{}", server_dst.url, stream),
+            admin_authorization: None,
+        }).unwrap();
+
+    let response = client.post(url)
+        .body(body)
+        .send()
+        .await;
 }
 
 async fn resource(
