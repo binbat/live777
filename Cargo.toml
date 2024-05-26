@@ -16,6 +16,7 @@ members = [
     "tools/whipinto",
     "gateway",
     "liveion",
+    "liveman",
 ]
 [workspace.dependencies]
 serde = '1'
