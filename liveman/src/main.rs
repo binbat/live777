@@ -53,6 +53,7 @@ async fn main() {
     cfg.servers = addrs.iter().enumerate().map(|(i, addr)| Server {
         key: format!("buildin-{}", i),
         url: format!("http://{}", addr),
+        ..Default::default()
     }).collect();
     utils::set_log(format!(
         "liveman={},liveion={},http_utils={},webrtc=error",

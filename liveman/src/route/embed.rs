@@ -15,7 +15,26 @@ pub struct Server {
     pub key: String,
     #[serde(default)]
     pub url: String,
+    //#[serde(default = "u16_max_value")]
+    pub pub_max: u16,
+    //#[serde(default = "u16_max_value")]
+    pub sub_max: u16,
 }
+
+impl Default for Server {
+    fn default() -> Self {
+        Server {
+            key: String::default(),
+            url: String::default(),
+            pub_max: u16::MAX,
+            sub_max: u16::MAX,
+        }
+    }
+}
+
+//fn u16_max_value() -> u16 {
+//    u16::MAX
+//}
 
 #[derive(Clone)]
 pub struct EmbedStorage {
@@ -23,7 +42,7 @@ pub struct EmbedStorage {
     server: Arc<RwLock<HashMap<String, Server>>>,
     client: reqwest::Client,
     info: Arc<RwLock<HashMap<String, Vec<StreamInfo>>>>,
-    stream: Arc<RwLock<HashMap<String, Server>>>,
+    stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
     resource: Arc<RwLock<HashMap<String, Server>>>,
     servers: Vec<Server>,
 }
@@ -31,6 +50,8 @@ pub struct EmbedStorage {
 impl EmbedStorage {
     pub fn new(_addr: String, servers: Vec<Server>) -> Self {
         let server = Arc::new(RwLock::new(HashMap::new()));
+
+        warn!("EmbedStorage: {:?}", servers);
 
         for s in servers.clone() {
             server.write().unwrap().insert(s.key.clone(), s.clone());
@@ -60,7 +81,7 @@ impl EmbedStorage {
         Ok(())
     }
 
-    pub async fn _info_get(&mut self, key: String) -> Result<Vec<StreamInfo>, Error> {
+    pub async fn info_get(&mut self, key: String) -> Result<Vec<StreamInfo>, Error> {
         self.update().await;
         match self.info.read().unwrap().get(&key) {
             Some(server) => Ok(server.clone()),
@@ -77,16 +98,26 @@ impl EmbedStorage {
         Ok(result)
     }
 
+    pub async fn info_raw_all(&mut self) -> Result<HashMap<String,Vec<StreamInfo>>, Error> {
+        self.update().await;
+        Ok(self.info.read().unwrap().clone())
+    }
+
     pub async fn stream_put(&self, stream: String, target: Server) -> Result<()> {
-        self.stream.write().unwrap().insert(stream, target);
+        {
+            let mut ctx= self.stream.write().unwrap();
+            let mut arr = ctx.get(&stream).unwrap_or(&Vec::new()).clone();
+            arr.push(target);
+            ctx.insert(stream, arr);
+        }
         Ok(())
     }
 
-    pub async fn stream_get(&mut self, stream: String) -> Result<Server, Error> {
+    pub async fn stream_get(&mut self, stream: String) -> Result<Vec<Server>, Error> {
         self.update().await;
         match self.stream.read().unwrap().get(&stream) {
             Some(server) => Ok(server.clone()),
-            None => Err(anyhow!("stream not found")),
+            None => Ok(Vec::new()),
         }
     }
 
@@ -132,7 +163,7 @@ impl EmbedStorage {
         }
 
         self.info.write().unwrap().clear();
-        self.stream.write().unwrap().clear();
+        //self.stream.write().unwrap().clear();
         //self.resource.write().unwrap().clear();
 
         for handle in handles {

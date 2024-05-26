@@ -3,6 +3,7 @@ use axum::{
     extract::{Path, Request, State}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router
 };
 use http::Uri;
+use live777_http::response::StreamInfo;
 use tracing::{debug, error, warn, Span};
 use crate::Server;
 
@@ -38,17 +39,15 @@ async fn whip(
     Path(stream): Path<String>,
     req: Request,
 ) -> Result<Response> {
-    // TODO:
-    //let stream_nodes = state.storage.stream_get(stream.clone()).await?;
-    //warn!("{:?}", stream_nodes);
-    let stream_nodes = vec![];
+    let stream_nodes = state.storage.stream_get(stream.clone()).await?;
+    debug!("{:?}", stream_nodes);
     if stream_nodes.is_empty() {
         let nodes = state.storage.nodes().await;
         warn!("{:?}", nodes);
         if nodes.is_empty() {
             return Err(AppError::NoAvailableNode);
         };
-        match maximum_idle_node(nodes, true).await? {
+        match maximum_idle_node(state.clone(), nodes, stream.clone()).await? {
             Some(node) => {
                 warn!("node: {:?}", node);
                 let resp = request_proxy(state.clone(), req, &node).await;
@@ -82,65 +81,36 @@ async fn whep(
     Path(stream): Path<String>,
     req: Request,
 ) -> Result<Response> {
-    //let stream_nodes = state.storage.stream_nodes(stream.clone()).await?;
-    //if stream_nodes.is_empty() {
-    //    return Err(AppError::ResourceNotFound);
-    //}
-    //let maximum_idle_node =
-    //live777_storage::node_operate::maximum_idle_node(stream_nodes.clone(), false).await?;
-    let maximum_idle_node = state.storage.stream_get(stream).await.unwrap();
-    //match maximum_idle_node {
-    //    Some(maximum_idle_node) => {
+    let servers = state.storage.stream_get(stream.clone()).await.unwrap();
+    if servers.is_empty() {
+        return Err(AppError::ResourceNotFound);
+    }
+    let maximum_idle_node = maximum_idle_node(state.clone(), servers.clone(), stream.clone()).await.unwrap();
+    match maximum_idle_node {
+        Some(maximum_idle_node) => {
             debug!("{:?}", maximum_idle_node);
             let resp = request_proxy(state.clone(), req, &maximum_idle_node).await;
             match resp.as_ref() {
                 Ok(res) => {
-                    //warn!("{:?}", res.status());
-                    //warn!("{:?}", res);
                     match res.headers().get("Location") {
-                        Some(location) => {
-                            state.storage.resource_put(String::from(location.to_str().unwrap()), maximum_idle_node).await.unwrap();
-                        },
+                        Some(location) =>
+                        state.storage.resource_put(String::from(location.to_str().unwrap()), maximum_idle_node).await.unwrap(),
                         None => error!("WHEP Error: Location not found"),
                     }
                 }
-                Err(e) => {
-                    error!("WHEP Error: {:?}", e);
-                }
+                Err(e) => error!("WHEP Error: {:?}", e),
             }
             resp
-    //    },
-    //    None => {
-    //        let reforward_node = whep_reforward_node(state.clone(), &stream_nodes, stream).await?;
-    //        request_proxy(state.clone(), req, &reforward_node).await
-    //    }
-    //}
-
-
-    //let nodes: Vec<Node> = Node::find_stream_node(&state.pool, stream.clone()).await?;
-    //if nodes.is_empty() {
-    //    return Err(AppError::ResourceNotFound);
-    //}
-    //let mut nodes_sort = nodes.clone();
-    //nodes_sort.sort();
-    //let max_idlest_node = nodes_sort
-    //    .iter()
-    //    .filter(|node| node.available(false))
-    //    .last();
-    //if let Some(maximum_idle_node) = max_idlest_node {
-    //    request_proxy(state.clone(), req, maximum_idle_node).await
-    //} else {
-    //    let reforward_node = whep_reforward_node(state.clone(), &nodes, stream.clone()).await?;
-    //    let resp = request_proxy(state.clone(), req, &reforward_node).await;
-    //    if resp.is_ok() && resp.as_ref().unwrap().status().is_success() {
-    //        let _ = add_node_stream(&reforward_node, stream, &state.pool).await;
-    //    }
-    //    resp
-    //}
+        },
+        None => {
+            let reforward_node = whep_reforward_node(state.clone(), &servers, stream).await?;
+            request_proxy(state.clone(), req, &reforward_node).await
+        }
+    }
 }
 
-//async fn whep_reforward_node(state: AppState, nodes: &Vec<Node>, stream: String) -> Result<Node> {
-//    Ok(nodes.first().unwrap().clone())
+async fn whep_reforward_node(state: AppState, nodes: &Vec<Server>, stream: String) -> Result<Server> {
+    Ok(nodes.first().unwrap().clone())
     //let mut reforward_node = stream_nodes.first().cloned().unwrap();
     //for stream_node in stream_nodes {
     //    if !stream_node.metadata.stream_info.reforward_cascade {
@@ -194,7 +164,7 @@ async fn whep(
     //} else {
     //    Err(AppError::NoAvailableNode)
     //}
-//}
+}
 
 async fn resource(
     State(mut state): State<AppState>,
@@ -231,6 +201,36 @@ async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Re
         .into_response())
 }
 
-async fn maximum_idle_node(nodes: Vec<Server>, _check_pub: bool) -> Result<Option<Server>> {
-   Ok(nodes.first().cloned())
+async fn maximum_idle_node(mut state: AppState, servers: Vec<Server>, stream: String) -> Result<Option<Server>> {
+    let mut max = 0;
+    let mut result = None;
+    let info = state.storage.info_raw_all().await.unwrap();
+    let infos: Vec<(String, Option<StreamInfo>)> = servers.clone().iter()
+        .map(|i| {
+            let streams = info.get(&i.key).unwrap().clone();
+            let stream =  streams
+                .into_iter()
+                .find(|x| x.id == stream);
+            (i.key.clone(), stream)
+        })
+        .collect();
+    debug!("{:?}", infos);
+
+    for (key, i) in infos {
+        for s in servers.clone() {
+            if s.key == key {
+                let remain = match i.clone() {
+                    Some(x) => s.pub_max - x.subscribe_session_infos.len() as u16,
+                    None => s.pub_max,
+                };
+
+                if remain > max {
+                    max = remain;
+                    result = Some(s);
+                }
+
+            }
+        }
+    }
+    Ok(result)
 }
