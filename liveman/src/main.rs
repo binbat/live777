@@ -6,10 +6,7 @@ use clap::Parser;
 
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
-use sqlx::mysql::MySqlConnectOptions;
-use sqlx::MySqlPool;
 use std::future::Future;
-use std::str::FromStr;
 
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -23,12 +20,9 @@ use crate::route::embed::{Server, EmbedStorage};
 
 mod auth;
 mod config;
-mod db;
 mod error;
-mod model;
 mod result;
 mod route;
-mod tick;
 
 mod cluster;
 
@@ -43,18 +37,8 @@ struct Args {
 #[cfg(debug_assertions)]
 #[tokio::main]
 async fn main() {
-
-    let addrs = cluster::cluster_up(5).await;
-    println!("{:?}", addrs);
-
-    sqlx::any::install_default_drivers();
     let args = Args::parse();
     let mut cfg = Config::parse(args.config);
-    cfg.servers = addrs.iter().enumerate().map(|(i, addr)| Server {
-        key: format!("buildin-{}", i),
-        url: format!("http://{}", addr),
-        ..Default::default()
-    }).collect();
     utils::set_log(format!(
         "liveman={},liveion={},http_utils={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
@@ -62,6 +46,15 @@ async fn main() {
 
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
+
+    let addrs = cluster::cluster_up(5).await;
+    info!("{:?}", addrs);
+
+    cfg.servers = addrs.iter().enumerate().map(|(i, addr)| Server {
+        key: format!("buildin-{}", i),
+        url: format!("http://{}", addr),
+        ..Default::default()
+    }).collect();
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
         .unwrap();
@@ -74,11 +67,10 @@ async fn main() {
 #[cfg(not(debug_assertions))]
 #[tokio::main]
 async fn main() {
-    sqlx::any::install_default_drivers();
     let args = Args::parse();
     let cfg = Config::parse(args.config);
     utils::set_log(format!(
-        "live777_gateway={},sqlx={},webrtc=error",
+        "liveman={},http_utils={},webrtc=error",
         cfg.log.level, cfg.log.level
     ));
     warn!("set log level : {}", cfg.log.level);
@@ -96,26 +88,17 @@ pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let pool_connect_options = MySqlConnectOptions::from_str(&cfg.db_url).unwrap();
     let client: Client =
         hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
             .build(HttpConnector::new());
     let app_state = AppState {
         config: cfg.clone(),
-        pool: MySqlPool::connect_with(pool_connect_options)
-            .await
-            .map_err(|e| anyhow::anyhow!(format!("MySQL error : {}", e)))
-            .unwrap(),
         client,
         storage: EmbedStorage::new("live777_db".to_string(), cfg.servers),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
-    let manager_auth_layer =
-        ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.manager_auth]));
     let app = Router::new()
         .merge(route::proxy::route().layer(auth_layer))
-        .merge(route::manager::route().layer(manager_auth_layer))
-        .merge(route::hook::route())
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
@@ -155,7 +138,6 @@ type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
 #[derive(Clone)]
 struct AppState {
     config: Config,
-    pool: MySqlPool,
     client: Client,
     storage: EmbedStorage,
     //storage: Arc<Box<dyn Storage + 'static + Send + Sync>>,

@@ -7,6 +7,7 @@ use live777_http::response::StreamInfo;
 use tracing::{debug, error, info, warn, Span};
 use crate::Server;
 use std::collections::HashSet;
+use std::time::Duration;
 use live777_http::request::Reforward;
 
 pub fn route() -> Router<AppState> {
@@ -136,18 +137,42 @@ async fn whep_reforward_node(mut state: AppState, nodes: Vec<Server>, stream: St
 
     info!("reforward from: {:?}, to: {:?}", server_src, server_dst);
 
-    reforward(server_src, server_dst.clone(), stream.clone()).await;
-    //for _ in 0..state.config.reforward.reforward_check_frequency.0 {
-    //    let timeout = tokio::time::sleep(Duration::from_millis(50));
-    //    tokio::pin!(timeout);
-    //    let _ = timeout.as_mut().await;
-    //    let stream_info = target_node.stream_info(stream.clone()).await;
-    //    if stream_info.is_ok() && stream_info.unwrap().is_some() {
-    //        break;
-    //    }
-    //}
+    reforward(server_src.clone(), server_dst.clone(), stream.clone()).await;
+    for _ in 0..state.config.reforward.check_frequency.0 {
+        let timeout = tokio::time::sleep(Duration::from_millis(50));
+        tokio::pin!(timeout);
+        let _ = timeout.as_mut().await;
+        if force_info(server_src.clone(), stream.clone()).await.unwrap_or(false) {
+            break;
+        };
+    }
 
     Ok(server_dst.clone())
+}
+
+async fn force_info(server_src: Server, stream: String) -> Result<bool> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/admin/infos/{}", server_src.url, stream);
+
+    let res = client.post(url)
+        .send()
+        .await;
+
+    match res {
+        Ok(v) => {
+            match serde_json::from_str::<Vec<StreamInfo>>(&v.text().await.unwrap()) {
+                Ok(s) => {
+                    match s.iter().find(|f| f.id == stream) {
+                        Some(_) => Ok(true),
+                        None => Ok(false),
+                    }
+                }
+                Err(_) => Err(AppError::ResourceNotFound),
+            }
+        },
+        Err(_) => Err(AppError::ResourceNotFound)
+    }
+
 }
 
 async fn reforward(server_src: Server, server_dst: Server, stream: String) {
@@ -158,7 +183,8 @@ async fn reforward(server_src: Server, server_dst: Server, stream: String) {
             admin_authorization: None,
         }).unwrap();
 
-    let response = client.post(url)
+    //let response = client.post(url)
+    let _ = client.post(url)
         .body(body)
         .send()
         .await;

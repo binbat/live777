@@ -15,10 +15,10 @@ pub struct Config {
     pub log: Log,
     #[serde(default)]
     pub reforward: Reforward,
-    #[serde(default = "default_db_url")]
-    pub db_url: String,
-    #[serde(default)]
-    pub node_sync_tick_time: NodeSyncTickTime,
+    //#[serde(default = "default_db_url")]
+    //pub db_url: String,
+    //#[serde(default)]
+    //pub node_sync_tick_time: NodeSyncTickTime,
     #[serde(default)]
     pub servers: Vec<crate::route::embed::Server>,
 }
@@ -99,9 +99,9 @@ fn default_http_listen() -> SocketAddr {
     .expect("invalid listen address")
 }
 
-fn default_db_url() -> String {
-    "mysql://root:password@localhost:3306/live777".to_string()
-}
+//fn default_db_url() -> String {
+//    "mysql://root:password@localhost:3306/live777".to_string()
+//}
 
 impl Default for Http {
     fn default() -> Self {
@@ -133,21 +133,21 @@ fn default_log_level() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Reforward {
     #[serde(default)]
-    pub whep_check_frequency: WhepReforwardCheckFrequency,
-    #[serde(default)]
-    pub check_tick_time: CheckReforwardTickTime,
-    #[serde(default)]
-    pub maximum_idle_time: ReforwardMaximumIdleTime,
-    #[serde(default)]
-    pub cascade: bool,
+    pub check_frequency: ReforwardCheckFrequency,
+    //#[serde(default)]
+    //pub check_tick_time: CheckReforwardTickTime,
+    //#[serde(default)]
+    //pub maximum_idle_time: ReforwardMaximumIdleTime,
+    //#[serde(default)]
+    //pub cascade: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WhepReforwardCheckFrequency(pub u8);
+pub struct ReforwardCheckFrequency(pub u8);
 
-impl Default for WhepReforwardCheckFrequency {
+impl Default for ReforwardCheckFrequency {
     fn default() -> Self {
-        WhepReforwardCheckFrequency(5)
+        ReforwardCheckFrequency(5)
     }
 }
 
