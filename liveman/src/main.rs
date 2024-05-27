@@ -53,6 +53,7 @@ async fn main() {
     cfg.servers = addrs.iter().enumerate().map(|(i, addr)| Server {
         key: format!("buildin-{}", i),
         url: format!("http://{}", addr),
+        pub_max: 1,
         ..Default::default()
     }).collect();
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)

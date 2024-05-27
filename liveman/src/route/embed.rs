@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 use std::hash::{Hash, Hasher};
 
-const SYNC_API: &str = "/admin/infos";
+pub const SYNC_API: &str = "/admin/infos";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {

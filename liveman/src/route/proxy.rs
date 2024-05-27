@@ -2,6 +2,7 @@ use crate::{error::AppError, result::Result, AppState};
 use axum::{
     extract::{Path, Request, State}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router
 };
+use reqwest::header::HeaderMap;
 use http::Uri;
 use live777_http::response::StreamInfo;
 use tracing::{debug, error, info, warn, Span};
@@ -86,6 +87,7 @@ async fn whep(
 ) -> Result<Response> {
     let servers = state.storage.stream_get(stream.clone()).await.unwrap();
     if servers.is_empty() {
+        debug!("whep servers is empty");
         return Err(AppError::ResourceNotFound);
     }
     let maximum_idle_node = maximum_idle_node(state.clone(), servers.clone(), stream.clone()).await.unwrap();
@@ -106,6 +108,7 @@ async fn whep(
             resp
         },
         None => {
+            info!("whep Reforwarding...");
             let reforward_node = whep_reforward_node(state.clone(), servers.clone(), stream).await?;
             request_proxy(state.clone(), req, &reforward_node).await
         }
@@ -139,10 +142,10 @@ async fn whep_reforward_node(mut state: AppState, nodes: Vec<Server>, stream: St
 
     reforward(server_src.clone(), server_dst.clone(), stream.clone()).await;
     for _ in 0..state.config.reforward.check_frequency.0 {
-        let timeout = tokio::time::sleep(Duration::from_millis(50));
+        let timeout = tokio::time::sleep(Duration::from_millis(1000));
         tokio::pin!(timeout);
         let _ = timeout.as_mut().await;
-        if force_info(server_src.clone(), stream.clone()).await.unwrap_or(false) {
+        if force_info(server_dst.clone(), stream.clone()).await.unwrap_or(false) {
             break;
         };
     }
@@ -150,44 +153,67 @@ async fn whep_reforward_node(mut state: AppState, nodes: Vec<Server>, stream: St
     Ok(server_dst.clone())
 }
 
-async fn force_info(server_src: Server, stream: String) -> Result<bool> {
+async fn force_info(server: Server, stream: String) -> Result<bool> {
     let client = reqwest::Client::new();
-    let url = format!("{}/admin/infos/{}", server_src.url, stream);
+    let url = format!("{}{}", server.url, crate::route::embed::SYNC_API);
 
-    let res = client.post(url)
+    let res = client.get(url)
         .send()
         .await;
 
+    warn!("{:?}", res);
     match res {
         Ok(v) => {
             match serde_json::from_str::<Vec<StreamInfo>>(&v.text().await.unwrap()) {
                 Ok(s) => {
+                    warn!("{:?}", s);
                     match s.iter().find(|f| f.id == stream) {
                         Some(_) => Ok(true),
-                        None => Ok(false),
+                        None => {
+                            error!("Not Found stream");
+                            Ok(false)
+                        },
                     }
                 }
-                Err(_) => Err(AppError::ResourceNotFound),
+                Err(e) => {
+                    error!("Parse Error: {:?}", e);
+                    Err(AppError::ResourceNotFound)
+                },
             }
         },
-        Err(_) => Err(AppError::ResourceNotFound)
+        Err(e) => {
+            error!("Request Error: {:?}", e);
+            Err(AppError::ResourceNotFound)
+        }
     }
 
 }
 
 async fn reforward(server_src: Server, server_dst: Server, stream: String) {
+    let mut headers = HeaderMap::new();
+    headers.append("Content-Type", "application/json".parse().unwrap());
     let client = reqwest::Client::new();
     let url = format!("{}/admin/reforward/{}", server_src.url, stream);
     let body = serde_json::to_string(&Reforward {
             target_url: format!("{}/whip/{}", server_dst.url, stream),
             admin_authorization: None,
         }).unwrap();
+    error!("{:?}", body);
 
-    //let response = client.post(url)
-    let _ = client.post(url)
+    let response = client.post(url)
+        .headers(headers)
         .body(body)
         .send()
         .await;
+    match response {
+        Ok(res) => {
+            if !res.status().is_success() {
+                error!("{:?}", res);
+                error!("{:?}", res.text().await);
+            }
+        },
+        Err(e) => error!("{:?}", e),
+    }
 }
 
 async fn resource(
@@ -244,8 +270,8 @@ async fn maximum_idle_node(mut state: AppState, servers: Vec<Server>, stream: St
         for s in servers.clone() {
             if s.key == key {
                 let remain = match i.clone() {
-                    Some(x) => s.pub_max - x.subscribe_session_infos.len() as u16,
-                    None => s.pub_max,
+                    Some(x) => s.pub_max as i32 - x.subscribe_session_infos.len() as i32,
+                    None => s.pub_max as i32,
                 };
 
                 if remain > max {
