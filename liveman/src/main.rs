@@ -23,6 +23,7 @@ mod config;
 mod error;
 mod result;
 mod route;
+mod tick;
 
 mod cluster;
 
@@ -122,7 +123,7 @@ where
                 span
             }),
         );
-    //tokio::spawn(tick::run(app_state));
+    tokio::spawn(tick::reforward_check(app_state.clone()));
     axum::serve(listener, static_server(app))
         .with_graceful_shutdown(signal)
         .await

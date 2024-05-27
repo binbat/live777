@@ -1,0 +1,99 @@
+use std::{collections::HashMap, time::Duration};
+use chrono::Utc;
+use tracing::{info, error};
+use url::Url;
+
+use crate::{AppState, error::AppError, result::Result, route::utils::resource_delete};
+
+pub async fn reforward_check(state: AppState) {
+    loop {
+        let timeout = tokio::time::sleep(Duration::from_millis(
+            state.config.reforward.check_tick_time.0,
+        ));
+        tokio::pin!(timeout);
+        let _ = timeout.as_mut().await;
+        let _ = do_reforward_check(state.clone()).await;
+    }
+}
+
+async fn do_reforward_check(mut state: AppState) -> Result<()> {
+    let servers = state.storage.nodes().await;
+
+    let mut map_url_server = HashMap::new();
+    for s in servers.clone() {
+        map_url_server.insert(s.url.clone(), s.clone());
+    }
+
+    let map_server = state.storage.get_map_server();
+    let nodes = state.storage.info_raw_all().await?;
+    if nodes.is_empty() {
+        return Ok(());
+    }
+
+    for (key, streams) in nodes.iter() {
+        let server = map_server.get(key).unwrap();
+        for stream_info in streams {
+            for session_info in &stream_info.subscribe_session_infos {
+                if let Some(reforward_info) = &session_info.reforward {
+                    if let Ok((target_node_addr, target_stream)) =
+                        parse_node_and_stream(reforward_info.target_url.clone())
+                    {
+                        if let Some(target_node) = map_url_server.get(&target_node_addr) {
+                            if let Some(target_stream_info) = nodes.get(&target_node.key).unwrap().iter().find(|i| i.id == target_stream) {
+                                if target_stream_info.subscribe_leave_time != 0
+                                    && Utc::now().timestamp_millis()
+                                        >= target_stream_info.subscribe_leave_time + state
+                                    .config
+                                    .reforward
+                                    .maximum_idle_time
+                                     as i64
+                                {
+                                    info!(
+                                        ?server,
+                                        stream_info.id,
+                                        session_info.id,
+                                        ?target_stream_info,
+                                        "reforward idle for long periods of time"
+                                    );
+                                    match resource_delete(
+                                        server.clone(),
+                                        stream_info.id.clone(),
+                                            session_info.id.clone(),
+                                        )
+                                        .await {
+                                        Ok(_) => {},
+                                        Err(e) => error!("reforward resource delete error: {:?}", e),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_node_and_stream(url: String) -> Result<(String, String)> {
+    let url = Url::parse(&url)?;
+    let split: Vec<&str> = url.path().split('/').collect();
+    Ok((
+        format!(
+            "{}://{}:{}",
+            url.scheme(),
+            url.host_str()
+                .ok_or(AppError::InternalServerError(anyhow::anyhow!("host error")))?,
+            url.port()
+                .ok_or(AppError::InternalServerError(anyhow::anyhow!("port error")))?
+        ),
+        split
+            .last()
+            .cloned()
+            .ok_or(AppError::InternalServerError(anyhow::anyhow!(
+                "url path split error"
+            )))?
+            .to_string(),
+    ))
+}

@@ -15,10 +15,6 @@ pub struct Config {
     pub log: Log,
     #[serde(default)]
     pub reforward: Reforward,
-    //#[serde(default = "default_db_url")]
-    //pub db_url: String,
-    //#[serde(default)]
-    //pub node_sync_tick_time: NodeSyncTickTime,
     #[serde(default)]
     pub servers: Vec<crate::route::embed::Server>,
 }
@@ -99,10 +95,6 @@ fn default_http_listen() -> SocketAddr {
     .expect("invalid listen address")
 }
 
-//fn default_db_url() -> String {
-//    "mysql://root:password@localhost:3306/live777".to_string()
-//}
-
 impl Default for Http {
     fn default() -> Self {
         Self {
@@ -134,10 +126,10 @@ fn default_log_level() -> String {
 pub struct Reforward {
     #[serde(default)]
     pub check_attempts: ReforwardCheckAttempts,
-    //#[serde(default)]
-    //pub check_tick_time: CheckReforwardTickTime,
-    //#[serde(default)]
-    //pub maximum_idle_time: ReforwardMaximumIdleTime,
+    #[serde(default)]
+    pub check_tick_time: CheckReforwardTickTime,
+    #[serde(default = "default_reforward_maximum_idle_time")]
+    pub maximum_idle_time: u64,
     //#[serde(default)]
     //pub cascade: bool,
 }
@@ -151,14 +143,14 @@ impl Default for ReforwardCheckAttempts {
     }
 }
 
-//#[derive(Debug, Clone, Serialize, Deserialize)]
-//pub struct CheckReforwardTickTime(pub u64);
-//
-//impl Default for CheckReforwardTickTime {
-//    fn default() -> Self {
-//        CheckReforwardTickTime(3000)
-//    }
-//}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckReforwardTickTime(pub u64);
+
+impl Default for CheckReforwardTickTime {
+    fn default() -> Self {
+        CheckReforwardTickTime(60 * 1000)
+    }
+}
 
 impl Config {
     pub(crate) fn parse(path: Option<String>) -> Self {
@@ -170,11 +162,7 @@ impl Config {
     }
 }
 
-//#[derive(Debug, Clone, Serialize, Deserialize)]
-//pub struct ReforwardMaximumIdleTime(pub u64);
-//
-//impl Default for ReforwardMaximumIdleTime {
-//    fn default() -> Self {
-//        ReforwardMaximumIdleTime(60000)
-//    }
-//}
+fn default_reforward_maximum_idle_time() -> u64 {
+    60 * 1000
+}
+

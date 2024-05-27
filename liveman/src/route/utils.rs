@@ -57,3 +57,20 @@ pub async fn reforward(server_src: Server, server_dst: Server, stream: String) -
         Err(anyhow!("http status not success"))
     }
 }
+
+pub async fn resource_delete(server: Server, stream: String, session: String) -> Result<(), Error> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/resource/{}/{}", server.url, stream, session);
+
+    let response = client.delete(url)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        error!("{:?} {:?}", response.status(), response.text().await?);
+        Err(anyhow!("http status not success"))
+    }
+}
+

@@ -78,6 +78,10 @@ impl EmbedStorage {
         }
     }
 
+    pub fn get_map_server(&self) -> HashMap<String, Server> {
+        self.server.read().unwrap().clone()
+    }
+
     pub async fn nodes(&mut self) -> Vec<Server> {
         self.update().await;
         self.servers.clone()
