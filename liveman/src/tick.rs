@@ -1,9 +1,9 @@
-use std::{collections::HashMap, time::Duration};
 use chrono::Utc;
-use tracing::{info, error};
+use std::{collections::HashMap, time::Duration};
+use tracing::{error, info};
 use url::Url;
 
-use crate::{AppState, error::AppError, result::Result, route::utils::resource_delete};
+use crate::{error::AppError, result::Result, route::utils::resource_delete, AppState};
 
 pub async fn reforward_check(state: AppState) {
     loop {
@@ -39,14 +39,16 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                         parse_node_and_stream(reforward_info.target_url.clone())
                     {
                         if let Some(target_node) = map_url_server.get(&target_node_addr) {
-                            if let Some(target_stream_info) = nodes.get(&target_node.key).unwrap().iter().find(|i| i.id == target_stream) {
+                            if let Some(target_stream_info) = nodes
+                                .get(&target_node.key)
+                                .unwrap()
+                                .iter()
+                                .find(|i| i.id == target_stream)
+                            {
                                 if target_stream_info.subscribe_leave_time != 0
                                     && Utc::now().timestamp_millis()
-                                        >= target_stream_info.subscribe_leave_time + state
-                                    .config
-                                    .reforward
-                                    .maximum_idle_time
-                                     as i64
+                                        >= target_stream_info.subscribe_leave_time
+                                            + state.config.reforward.maximum_idle_time as i64
                                 {
                                     info!(
                                         ?server,
@@ -58,11 +60,14 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                     match resource_delete(
                                         server.clone(),
                                         stream_info.id.clone(),
-                                            session_info.id.clone(),
-                                        )
-                                        .await {
-                                        Ok(_) => {},
-                                        Err(e) => error!("reforward resource delete error: {:?}", e),
+                                        session_info.id.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            error!("reforward resource delete error: {:?}", e)
+                                        }
                                     }
                                 }
                             }

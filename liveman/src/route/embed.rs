@@ -5,8 +5,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use live777_http::response::StreamInfo;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, warn};
 use std::hash::{Hash, Hasher};
+use tracing::{debug, error, info, warn};
 
 pub const SYNC_API: &str = "/admin/infos";
 
@@ -70,7 +70,8 @@ impl EmbedStorage {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_millis(500))
                 .timeout(Duration::from_millis(1000))
-                .build().unwrap(),
+                .build()
+                .unwrap(),
             servers,
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
@@ -105,18 +106,18 @@ impl EmbedStorage {
         let mut result = Vec::new();
         for mut v in self.info.read().unwrap().values().cloned() {
             result.append(&mut v);
-        };
+        }
         Ok(result)
     }
 
-    pub async fn info_raw_all(&mut self) -> Result<HashMap<String,Vec<StreamInfo>>, Error> {
+    pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<StreamInfo>>, Error> {
         self.update().await;
         Ok(self.info.read().unwrap().clone())
     }
 
     pub async fn stream_put(&self, stream: String, target: Server) -> Result<()> {
         {
-            let mut ctx= self.stream.write().unwrap();
+            let mut ctx = self.stream.write().unwrap();
             let mut arr = ctx.get(&stream).unwrap_or(&Vec::new()).clone();
             arr.push(target);
             ctx.insert(stream, arr);
@@ -147,7 +148,7 @@ impl EmbedStorage {
 
     async fn update(&mut self) {
         if self.time.elapsed().unwrap() < Duration::from_secs(3) {
-            return
+            return;
         }
         self.time = SystemTime::now();
 
@@ -156,14 +157,23 @@ impl EmbedStorage {
         let mut requests = Vec::new();
 
         for server in servers {
-            requests.push((server.key, self.client.get(format!("{}{}", server.url, SYNC_API)).send()));
+            requests.push((
+                server.key,
+                self.client
+                    .get(format!("{}{}", server.url, SYNC_API))
+                    .send(),
+            ));
         }
 
-        let handles = requests.into_iter().map(|(key, value)| {
-            tokio::spawn(async move {
-                (key, value.await)
-            })
-        }).collect::<Vec<tokio::task::JoinHandle<(std::string::String, std::result::Result<reqwest::Response, reqwest::Error>)>>>();
+        let handles = requests
+            .into_iter()
+            .map(|(key, value)| tokio::spawn(async move { (key, value.await) }))
+            .collect::<Vec<
+                tokio::task::JoinHandle<(
+                    std::string::String,
+                    std::result::Result<reqwest::Response, reqwest::Error>,
+                )>,
+            >>();
 
         let duration = start.elapsed();
 
@@ -180,7 +190,7 @@ impl EmbedStorage {
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
-                (Ok((key , Ok(res))),) => {
+                (Ok((key, Ok(res))),) => {
                     debug!("{}: Response: {:?}", key, res);
 
                     match serde_json::from_str::<Vec<StreamInfo>>(&res.text().await.unwrap()) {
@@ -189,23 +199,19 @@ impl EmbedStorage {
                             self.info_put(key.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
                                 let target = self.server.read().unwrap().get(&key).unwrap().clone();
-                                self.stream_put(
-                                    stream.id,
-                                    target,
-                                ).await.unwrap();
+                                self.stream_put(stream.id, target).await.unwrap();
 
                                 // TODO: resource
-                            };
-                        },
+                            }
+                        }
                         Err(e) => error!("Error: {:?}", e),
                     };
-                },
+                }
                 (Ok((name, Err(e))),) => {
                     error!("{}: Error: {:?}", name, e);
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
     }
-
 }

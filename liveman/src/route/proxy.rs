@@ -1,5 +1,8 @@
 use axum::{
-    extract::{Path, Request, State}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router
+    extract::{Path, Request, State},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
 };
 use http::Uri;
 use std::collections::HashSet;
@@ -8,9 +11,9 @@ use tracing::{debug, error, info, warn, Span};
 
 use live777_http::response::StreamInfo;
 
-use crate::{error::AppError, result::Result, AppState};
-use crate::Server;
 use crate::route::utils::{force_check, reforward};
+use crate::Server;
+use crate::{error::AppError, result::Result, AppState};
 
 pub fn route() -> Router<AppState> {
     Router::new()
@@ -24,19 +27,14 @@ pub fn route() -> Router<AppState> {
             &live777_http::path::resource_layer(":stream", ":session"),
             get(resource).post(resource).delete(resource),
         )
-        .route(
-            "/admin/infos",
-            get(info),
-        )
+        .route("/admin/infos", get(info))
 }
 
 async fn info(
     State(mut state): State<AppState>,
     _req: Request,
 ) -> crate::result::Result<Json<Vec<live777_http::response::StreamInfo>>> {
-    Ok(Json(
-        state.storage.info_all().await.unwrap()
-    ))
+    Ok(Json(state.storage.info_all().await.unwrap()))
 }
 
 async fn whip(
@@ -62,9 +60,17 @@ async fn whip(
                             Some(location) => {
                                 //state.storage.registry_stream(node.addr, stream).await;
                                 //state.storage.put_resource(String::from(location.to_str().unwrap()), node).await.unwrap();
-                                state.storage.stream_put(stream, node.clone()).await.unwrap();
-                                state.storage.resource_put(String::from(location.to_str().unwrap()), node).await.unwrap();
-                            },
+                                state
+                                    .storage
+                                    .stream_put(stream, node.clone())
+                                    .await
+                                    .unwrap();
+                                state
+                                    .storage
+                                    .resource_put(String::from(location.to_str().unwrap()), node)
+                                    .await
+                                    .unwrap();
+                            }
                             None => error!("WHIP Error: Location not found"),
                         }
                     }
@@ -73,7 +79,7 @@ async fn whip(
                     }
                 }
                 resp
-            },
+            }
             None => Err(AppError::NoAvailableNode),
         }
     } else {
@@ -91,48 +97,45 @@ async fn whep(
         debug!("whep servers is empty");
         return Err(AppError::ResourceNotFound);
     }
-    let maximum_idle_node = maximum_idle_node(state.clone(), servers.clone(), stream.clone()).await.unwrap();
+    let maximum_idle_node = maximum_idle_node(state.clone(), servers.clone(), stream.clone())
+        .await
+        .unwrap();
     match maximum_idle_node {
         Some(maximum_idle_node) => {
             debug!("{:?}", maximum_idle_node);
             let resp = request_proxy(state.clone(), req, &maximum_idle_node).await;
             match resp.as_ref() {
-                Ok(res) => {
-                    match res.headers().get("Location") {
-                        Some(location) =>
-                        state.storage.resource_put(String::from(location.to_str().unwrap()), maximum_idle_node).await.unwrap(),
-                        None => error!("WHEP Error: Location not found"),
-                    }
-                }
+                Ok(res) => match res.headers().get("Location") {
+                    Some(location) => state
+                        .storage
+                        .resource_put(String::from(location.to_str().unwrap()), maximum_idle_node)
+                        .await
+                        .unwrap(),
+                    None => error!("WHEP Error: Location not found"),
+                },
                 Err(e) => error!("WHEP Error: {:?}", e),
             }
             resp
-        },
+        }
         None => {
             info!("whep Reforwarding...");
-            let reforward_node = whep_reforward_node(state.clone(), servers.clone(), stream).await?;
+            let reforward_node =
+                whep_reforward_node(state.clone(), servers.clone(), stream).await?;
             request_proxy(state.clone(), req, &reforward_node).await
         }
     }
 }
 
-async fn whep_reforward_node(mut state: AppState, nodes: Vec<Server>, stream: String) -> Result<Server> {
-    let set_all: HashSet<Server> = state
-        .storage
-        .nodes()
-        .await
-        .into_iter()
-        .clone()
-        .collect();
+async fn whep_reforward_node(
+    mut state: AppState,
+    nodes: Vec<Server>,
+    stream: String,
+) -> Result<Server> {
+    let set_all: HashSet<Server> = state.storage.nodes().await.into_iter().clone().collect();
 
-    let set_src: HashSet<Server> = nodes
-        .clone()
-        .into_iter()
-        .collect();
+    let set_src: HashSet<Server> = nodes.clone().into_iter().collect();
 
-    let set_dst: HashSet<&Server> = set_all
-        .difference(&set_src)
-        .collect();
+    let set_dst: HashSet<&Server> = set_all.difference(&set_src).collect();
 
     let arr = set_dst.into_iter().collect::<Vec<&Server>>();
 
@@ -147,17 +150,20 @@ async fn whep_reforward_node(mut state: AppState, nodes: Vec<Server>, stream: St
                 let timeout = tokio::time::sleep(Duration::from_millis(1000));
                 tokio::pin!(timeout);
                 let _ = timeout.as_mut().await;
-                if force_check(server_dst.clone(), stream.clone()).await.unwrap_or(false) {
+                if force_check(server_dst.clone(), stream.clone())
+                    .await
+                    .unwrap_or(false)
+                {
                     debug!("reforward success, check attempts: {}", i);
                     break;
                 };
             }
             Ok(server_dst.clone())
-        },
+        }
         Err(e) => {
             error!("reforward error: {:?}", e);
             Err(AppError::InternalServerError(e))
-        },
+        }
     }
 }
 
@@ -169,7 +175,7 @@ async fn resource(
     let resource = format!("/resource/{}/{}", stream, session);
     match state.storage.resource_get(resource).await {
         Ok(server) => request_proxy(state, req, &server).await,
-        Err(_) => Err(AppError::ResourceNotFound)
+        Err(_) => Err(AppError::ResourceNotFound),
     }
 }
 
@@ -196,16 +202,20 @@ async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Re
         .into_response())
 }
 
-async fn maximum_idle_node(mut state: AppState, servers: Vec<Server>, stream: String) -> Result<Option<Server>> {
+async fn maximum_idle_node(
+    mut state: AppState,
+    servers: Vec<Server>,
+    stream: String,
+) -> Result<Option<Server>> {
     let mut max = 0;
     let mut result = None;
     let info = state.storage.info_raw_all().await.unwrap();
-    let infos: Vec<(String, Option<StreamInfo>)> = servers.clone().iter()
+    let infos: Vec<(String, Option<StreamInfo>)> = servers
+        .clone()
+        .iter()
         .map(|i| {
             let streams = info.get(&i.key).unwrap().clone();
-            let stream =  streams
-                .into_iter()
-                .find(|x| x.id == stream);
+            let stream = streams.into_iter().find(|x| x.id == stream);
             (i.key.clone(), stream)
         })
         .collect();
@@ -223,7 +233,6 @@ async fn maximum_idle_node(mut state: AppState, servers: Vec<Server>, stream: St
                     max = remain;
                     result = Some(s);
                 }
-
             }
         }
     }

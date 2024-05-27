@@ -1,6 +1,6 @@
-use tracing::debug;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use tracing::debug;
 
 //#[cfg(debug_assertions)]
 pub async fn cluster_up(num: u8) -> Vec<String> {

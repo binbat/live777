@@ -16,7 +16,7 @@ use tracing::{debug, error, info, info_span, warn};
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::route::embed::{Server, EmbedStorage};
+use crate::route::embed::{EmbedStorage, Server};
 
 mod auth;
 mod config;
@@ -51,12 +51,16 @@ async fn main() {
     let addrs = cluster::cluster_up(5).await;
     info!("{:?}", addrs);
 
-    cfg.servers = addrs.iter().enumerate().map(|(i, addr)| Server {
-        key: format!("buildin-{}", i),
-        url: format!("http://{}", addr),
-        pub_max: 1,
-        ..Default::default()
-    }).collect();
+    cfg.servers = addrs
+        .iter()
+        .enumerate()
+        .map(|(i, addr)| Server {
+            key: format!("buildin-{}", i),
+            url: format!("http://{}", addr),
+            pub_max: 1,
+            ..Default::default()
+        })
+        .collect();
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
         .unwrap();

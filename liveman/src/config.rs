@@ -165,4 +165,3 @@ impl Config {
 fn default_reforward_maximum_idle_time() -> u64 {
     60 * 1000
 }
-
