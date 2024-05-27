@@ -133,7 +133,7 @@ fn default_log_level() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Reforward {
     #[serde(default)]
-    pub check_frequency: ReforwardCheckFrequency,
+    pub check_attempts: ReforwardCheckAttempts,
     //#[serde(default)]
     //pub check_tick_time: CheckReforwardTickTime,
     //#[serde(default)]
@@ -143,22 +143,22 @@ pub struct Reforward {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardCheckFrequency(pub u8);
+pub struct ReforwardCheckAttempts(pub u8);
 
-impl Default for ReforwardCheckFrequency {
+impl Default for ReforwardCheckAttempts {
     fn default() -> Self {
-        ReforwardCheckFrequency(5)
+        ReforwardCheckAttempts(5)
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckReforwardTickTime(pub u64);
-
-impl Default for CheckReforwardTickTime {
-    fn default() -> Self {
-        CheckReforwardTickTime(3000)
-    }
-}
+//#[derive(Debug, Clone, Serialize, Deserialize)]
+//pub struct CheckReforwardTickTime(pub u64);
+//
+//impl Default for CheckReforwardTickTime {
+//    fn default() -> Self {
+//        CheckReforwardTickTime(3000)
+//    }
+//}
 
 impl Config {
     pub(crate) fn parse(path: Option<String>) -> Self {
@@ -170,11 +170,11 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardMaximumIdleTime(pub u64);
-
-impl Default for ReforwardMaximumIdleTime {
-    fn default() -> Self {
-        ReforwardMaximumIdleTime(60000)
-    }
-}
+//#[derive(Debug, Clone, Serialize, Deserialize)]
+//pub struct ReforwardMaximumIdleTime(pub u64);
+//
+//impl Default for ReforwardMaximumIdleTime {
+//    fn default() -> Self {
+//        ReforwardMaximumIdleTime(60000)
+//    }
+//}

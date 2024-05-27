@@ -1,15 +1,16 @@
-use crate::{error::AppError, result::Result, AppState};
 use axum::{
     extract::{Path, Request, State}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router
 };
-use reqwest::header::HeaderMap;
 use http::Uri;
-use live777_http::response::StreamInfo;
-use tracing::{debug, error, info, warn, Span};
-use crate::Server;
 use std::collections::HashSet;
 use std::time::Duration;
-use live777_http::request::Reforward;
+use tracing::{debug, error, info, warn, Span};
+
+use live777_http::response::StreamInfo;
+
+use crate::{error::AppError, result::Result, AppState};
+use crate::Server;
+use crate::route::utils::{force_check, reforward};
 
 pub fn route() -> Router<AppState> {
     Router::new()
@@ -140,79 +141,23 @@ async fn whep_reforward_node(mut state: AppState, nodes: Vec<Server>, stream: St
 
     info!("reforward from: {:?}, to: {:?}", server_src, server_dst);
 
-    reforward(server_src.clone(), server_dst.clone(), stream.clone()).await;
-    for _ in 0..state.config.reforward.check_frequency.0 {
-        let timeout = tokio::time::sleep(Duration::from_millis(1000));
-        tokio::pin!(timeout);
-        let _ = timeout.as_mut().await;
-        if force_info(server_dst.clone(), stream.clone()).await.unwrap_or(false) {
-            break;
-        };
-    }
-
-    Ok(server_dst.clone())
-}
-
-async fn force_info(server: Server, stream: String) -> Result<bool> {
-    let client = reqwest::Client::new();
-    let url = format!("{}{}", server.url, crate::route::embed::SYNC_API);
-
-    let res = client.get(url)
-        .send()
-        .await;
-
-    warn!("{:?}", res);
-    match res {
-        Ok(v) => {
-            match serde_json::from_str::<Vec<StreamInfo>>(&v.text().await.unwrap()) {
-                Ok(s) => {
-                    warn!("{:?}", s);
-                    match s.iter().find(|f| f.id == stream) {
-                        Some(_) => Ok(true),
-                        None => {
-                            error!("Not Found stream");
-                            Ok(false)
-                        },
-                    }
-                }
-                Err(e) => {
-                    error!("Parse Error: {:?}", e);
-                    Err(AppError::ResourceNotFound)
-                },
+    match reforward(server_src.clone(), server_dst.clone(), stream.clone()).await {
+        Ok(()) => {
+            for i in 0..state.config.reforward.check_attempts.0 {
+                let timeout = tokio::time::sleep(Duration::from_millis(1000));
+                tokio::pin!(timeout);
+                let _ = timeout.as_mut().await;
+                if force_check(server_dst.clone(), stream.clone()).await.unwrap_or(false) {
+                    debug!("reforward success, check attempts: {}", i);
+                    break;
+                };
             }
+            Ok(server_dst.clone())
         },
         Err(e) => {
-            error!("Request Error: {:?}", e);
-            Err(AppError::ResourceNotFound)
-        }
-    }
-
-}
-
-async fn reforward(server_src: Server, server_dst: Server, stream: String) {
-    let mut headers = HeaderMap::new();
-    headers.append("Content-Type", "application/json".parse().unwrap());
-    let client = reqwest::Client::new();
-    let url = format!("{}/admin/reforward/{}", server_src.url, stream);
-    let body = serde_json::to_string(&Reforward {
-            target_url: format!("{}/whip/{}", server_dst.url, stream),
-            admin_authorization: None,
-        }).unwrap();
-    error!("{:?}", body);
-
-    let response = client.post(url)
-        .headers(headers)
-        .body(body)
-        .send()
-        .await;
-    match response {
-        Ok(res) => {
-            if !res.status().is_success() {
-                error!("{:?}", res);
-                error!("{:?}", res.text().await);
-            }
+            error!("reforward error: {:?}", e);
+            Err(AppError::InternalServerError(e))
         },
-        Err(e) => error!("{:?}", e),
     }
 }
 
