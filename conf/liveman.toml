@@ -35,6 +35,13 @@
 # Default: 60s
 # maximum_idle_time = 60000
 
+# Build in Live777 SFU Server
+# Currently: only debug mode
+[liveion]
+# Number of instances, if == 0, Disable
+count = 3
+# If port == 0, use random port. If count > 1, port must use 0
+# address = "127.0.0.1:0"
 
 [[servers]]
 # Globally unique id

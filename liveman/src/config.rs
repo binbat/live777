@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
+    pub liveion: Liveion,
+    #[serde(default)]
     pub reforward: Reforward,
     #[serde(default)]
     pub servers: Vec<crate::route::embed::Server>,
@@ -90,7 +92,7 @@ impl Default for NodeSyncTickTime {
 fn default_http_listen() -> SocketAddr {
     SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
-        env::var("PORT").unwrap_or(String::from("8080"))
+        env::var("PORT").unwrap_or(String::from("8888"))
     ))
     .expect("invalid listen address")
 }
@@ -120,6 +122,27 @@ fn default_log_level() -> String {
             "info".to_string()
         }
     })
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Liveion {
+    #[serde(default = "default_liveion_address")]
+    pub address: SocketAddr,
+    #[serde(default)]
+    pub count: u16,
+}
+
+impl Default for Liveion {
+    fn default() -> Self {
+        Self {
+            address: default_liveion_address(),
+            count: Default::default(),
+        }
+    }
+}
+
+fn default_liveion_address() -> SocketAddr {
+    SocketAddr::from_str("127.0.0.1:0").unwrap()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -158,7 +181,20 @@ impl Config {
             .or(fs::read_to_string("/etc/live777/liveman.toml"))
             .unwrap_or("".to_string());
         let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
-        cfg
+        match cfg.validate() {
+            Ok(_) => cfg,
+            Err(err) => panic!("config validate [{}]", err),
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.liveion.count > 1 && self.liveion.address.port() != 0 {
+            return Err(anyhow::anyhow!(
+                "Multiple Liveion must use random port ':0'"
+            ));
+        }
+
+        Ok(())
     }
 }
 

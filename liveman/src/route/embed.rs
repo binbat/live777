@@ -16,9 +16,9 @@ pub struct Server {
     pub key: String,
     #[serde(default)]
     pub url: String,
-    //#[serde(default = "u16_max_value")]
+    #[serde(default = "u16_max_value")]
     pub pub_max: u16,
-    //#[serde(default = "u16_max_value")]
+    #[serde(default = "u16_max_value")]
     pub sub_max: u16,
 }
 
@@ -39,9 +39,9 @@ impl Hash for Server {
     }
 }
 
-//fn u16_max_value() -> u16 {
-//    u16::MAX
-//}
+fn u16_max_value() -> u16 {
+    u16::MAX
+}
 
 #[derive(Clone)]
 pub struct EmbedStorage {

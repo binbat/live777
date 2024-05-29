@@ -48,7 +48,7 @@ async fn main() {
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
 
-    let addrs = cluster::cluster_up(5).await;
+    let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
     info!("{:?}", addrs);
 
     cfg.servers = addrs
