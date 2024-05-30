@@ -184,6 +184,8 @@ impl EmbedStorage {
         }
 
         self.info.write().unwrap().clear();
+
+        // Maybe Don't need clear "stream" and "resource"
         //self.stream.write().unwrap().clear();
         //self.resource.write().unwrap().clear();
 
@@ -199,9 +201,14 @@ impl EmbedStorage {
                             self.info_put(key.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
                                 let target = self.server.read().unwrap().get(&key).unwrap().clone();
-                                self.stream_put(stream.id, target).await.unwrap();
+                                self.stream_put(stream.id, target.clone()).await.unwrap();
 
-                                // TODO: resource
+                                for subscriber in stream.subscribe_session_infos {
+                                    match self.resource_put(subscriber.id, target.clone()).await {
+                                        Ok(_) => {}
+                                        Err(e) => error!("Put Resource Error: {:?}", e),
+                                    }
+                                }
                             }
                         }
                         Err(e) => error!("Error: {:?}", e),
