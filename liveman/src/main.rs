@@ -51,16 +51,13 @@ async fn main() {
     let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
     info!("{:?}", addrs);
 
-    cfg.servers = addrs
-        .iter()
-        .enumerate()
-        .map(|(i, addr)| Server {
+    cfg.servers
+        .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
             key: format!("buildin-{}", i),
             url: format!("http://{}", addr),
             pub_max: 1,
             ..Default::default()
-        })
-        .collect();
+        }));
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
         .unwrap();
@@ -74,11 +71,21 @@ async fn main() {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let cfg = Config::parse(args.config);
+    let mut cfg = Config::parse(args.config);
     utils::set_log(format!(
         "liveman={},http_utils={},webrtc=error",
         cfg.log.level, cfg.log.level
     ));
+    let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
+    info!("{:?}", addrs);
+
+    cfg.servers
+        .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
+            key: format!("buildin-{}", i),
+            url: format!("http://{}", addr),
+            ..Default::default()
+        }));
+
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)

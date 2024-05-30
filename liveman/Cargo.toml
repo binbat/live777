@@ -18,6 +18,7 @@ clap = { version = "4.5.1", features = ["derive"] }
 http = "1.0.0"
 http-body = "1.0.0"
 hyper-util = { version = "0.1.1", features = ["client-legacy"] }
+mime_guess = "2.0.4"
 reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }

@@ -1657,6 +1657,7 @@ dependencies = [
  "hyper-util",
  "live777-http",
  "liveion",
+ "mime_guess",
  "reqwest 0.12.4",
  "rust-embed",
  "serde",
