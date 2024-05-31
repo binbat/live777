@@ -1,13 +1,29 @@
 use anyhow::{anyhow, Error};
 use live777_http::request::Reforward;
 use reqwest::header::HeaderMap;
+use std::time::Duration;
 use tracing::{debug, error, info, trace};
 
 use live777_http::response::StreamInfo;
 
 use crate::Server;
 
-pub async fn force_check(server: Server, stream: String) -> Result<bool, Error> {
+pub async fn force_check_times(server: Server, stream: String, count: u8) -> Result<u8, Error> {
+    for i in 0..count {
+        let timeout = tokio::time::sleep(Duration::from_millis(1000));
+        tokio::pin!(timeout);
+        let _ = timeout.as_mut().await;
+        if force_check(server.clone(), stream.clone())
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(i);
+        };
+    }
+    Err(anyhow!("reforward check failed"))
+}
+
+async fn force_check(server: Server, stream: String) -> Result<bool, Error> {
     let client = reqwest::Client::new();
     let url = format!("{}{}", server.url, crate::route::embed::SYNC_API);
 

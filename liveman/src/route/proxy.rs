@@ -6,12 +6,11 @@ use axum::{
 };
 use http::Uri;
 use std::collections::HashSet;
-use std::time::Duration;
 use tracing::{debug, error, info, warn, Span};
 
 use live777_http::response::StreamInfo;
 
-use crate::route::utils::{force_check, reforward};
+use crate::route::utils::{force_check_times, reforward};
 use crate::Server;
 use crate::{error::AppError, result::Result, AppState};
 
@@ -146,17 +145,15 @@ async fn whep_reforward_node(
 
     match reforward(server_src.clone(), server_dst.clone(), stream.clone()).await {
         Ok(()) => {
-            for i in 0..state.config.reforward.check_attempts.0 {
-                let timeout = tokio::time::sleep(Duration::from_millis(1000));
-                tokio::pin!(timeout);
-                let _ = timeout.as_mut().await;
-                if force_check(server_dst.clone(), stream.clone())
-                    .await
-                    .unwrap_or(false)
-                {
-                    debug!("reforward success, check attempts: {}", i);
-                    break;
-                };
+            match force_check_times(
+                server_dst.clone(),
+                stream.clone(),
+                state.config.reforward.check_attempts.0,
+            )
+            .await
+            {
+                Ok(count) => info!("reforward success, checked attempts: {}", count),
+                Err(e) => error!("reforward check error: {:?}", e),
             }
             Ok(server_dst.clone())
         }
