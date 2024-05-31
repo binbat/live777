@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use live777_http::response::StreamInfo;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub const SYNC_API: &str = "/admin/infos";
 
@@ -58,7 +58,7 @@ impl EmbedStorage {
     pub fn new(_addr: String, servers: Vec<Server>) -> Self {
         let server = Arc::new(RwLock::new(HashMap::new()));
 
-        warn!("EmbedStorage: {:?}", servers);
+        info!("EmbedStorage: {:?}", servers);
 
         for s in servers.clone() {
             server.write().unwrap().insert(s.key.clone(), s.clone());
@@ -180,7 +180,7 @@ impl EmbedStorage {
         if duration > Duration::from_secs(1) {
             warn!("update duration: {:?}", duration);
         } else {
-            info!("update duration: {:?}", duration);
+            debug!("update duration: {:?}", duration);
         }
 
         self.info.write().unwrap().clear();
@@ -197,7 +197,7 @@ impl EmbedStorage {
 
                     match serde_json::from_str::<Vec<StreamInfo>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
-                            info!("{:?}", streams.clone());
+                            trace!("{:?}", streams.clone());
                             self.info_put(key.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
                                 let target = self.server.read().unwrap().get(&key).unwrap().clone();
