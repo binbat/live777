@@ -111,7 +111,7 @@ async fn whep(
                         .resource_put(String::from(location.to_str().unwrap()), maximum_idle_node)
                         .await
                         .unwrap(),
-                    None => error!("WHEP Error: Location not found"),
+                    None => error!("WHEP Error: Location not found {:?}", res),
                 },
                 Err(e) => error!("WHEP Error: {:?}", e),
             }

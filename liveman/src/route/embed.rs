@@ -184,9 +184,9 @@ impl EmbedStorage {
         }
 
         self.info.write().unwrap().clear();
+        self.stream.write().unwrap().clear();
 
-        // Maybe Don't need clear "stream" and "resource"
-        //self.stream.write().unwrap().clear();
+        // Maybe Don't need clear "resource"
         //self.resource.write().unwrap().clear();
 
         for handle in handles {
