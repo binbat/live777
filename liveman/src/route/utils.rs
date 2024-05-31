@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Error};
-use live777_http::request::Reforward;
+use live777_http::{request::Reforward, response::RTCPeerConnectionState};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tracing::{debug, error, info, trace};
@@ -36,11 +36,11 @@ async fn force_check(server: Server, stream: String) -> Result<bool, Error> {
         let streams = serde_json::from_str::<Vec<StreamInfo>>(body)?;
         debug!("{:?}", streams);
         return match streams.into_iter().find(|f| f.id == stream) {
-            Some(_) => Ok(true),
-            None => {
-                error!("Not Found stream");
-                Ok(false)
-            }
+            Some(stream) => match stream.publish_session_info {
+                Some(session) => Ok(session.connect_state == RTCPeerConnectionState::Connected),
+                None => Err(anyhow!("Not Found stream publisher")),
+            },
+            None => Err(anyhow!("Not Found stream")),
         };
     }
     info!("{:?} {:?}", status, *body);
