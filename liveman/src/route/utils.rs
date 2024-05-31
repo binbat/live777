@@ -2,7 +2,7 @@ use anyhow::{anyhow, Error};
 use live777_http::{request::Reforward, response::RTCPeerConnectionState};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use live777_http::response::StreamInfo;
 
@@ -13,17 +13,15 @@ pub async fn force_check_times(server: Server, stream: String, count: u8) -> Res
         let timeout = tokio::time::sleep(Duration::from_millis(1000));
         tokio::pin!(timeout);
         let _ = timeout.as_mut().await;
-        if force_check(server.clone(), stream.clone())
-            .await
-            .unwrap_or(false)
-        {
-            return Ok(i);
+        match force_check(server.clone(), stream.clone()).await {
+            Ok(()) => return Ok(i),
+            Err(e) => warn!("force_check failed {:?}", e),
         };
     }
     Err(anyhow!("reforward check failed"))
 }
 
-async fn force_check(server: Server, stream: String) -> Result<bool, Error> {
+async fn force_check(server: Server, stream: String) -> Result<(), Error> {
     let client = reqwest::Client::new();
     let url = format!("{}{}", server.url, crate::route::embed::SYNC_API);
 
@@ -37,7 +35,13 @@ async fn force_check(server: Server, stream: String) -> Result<bool, Error> {
         debug!("{:?}", streams);
         return match streams.into_iter().find(|f| f.id == stream) {
             Some(stream) => match stream.publish_session_info {
-                Some(session) => Ok(session.connect_state == RTCPeerConnectionState::Connected),
+                Some(session) => {
+                    if session.connect_state == RTCPeerConnectionState::Connected {
+                        Ok(())
+                    } else {
+                        Err(anyhow!("connect state is {:?}", session.connect_state))
+                    }
+                }
                 None => Err(anyhow!("Not Found stream publisher")),
             },
             None => Err(anyhow!("Not Found stream")),
