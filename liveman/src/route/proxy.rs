@@ -43,46 +43,47 @@ async fn whip(
 ) -> Result<Response> {
     let stream_nodes = state.storage.stream_get(stream.clone()).await?;
     debug!("{:?}", stream_nodes);
-    if stream_nodes.is_empty() {
-        let nodes = state.storage.nodes().await;
-        warn!("{:?}", nodes);
-        if nodes.is_empty() {
-            return Err(AppError::NoAvailableNode);
-        };
-        match maximum_idle_node(state.clone(), nodes, stream.clone()).await? {
-            Some(node) => {
-                warn!("node: {:?}", node);
-                let resp = request_proxy(state.clone(), req, &node).await;
-                match resp.as_ref() {
-                    Ok(res) => {
-                        match res.headers().get("Location") {
-                            Some(location) => {
-                                //state.storage.registry_stream(node.addr, stream).await;
-                                //state.storage.put_resource(String::from(location.to_str().unwrap()), node).await.unwrap();
-                                state
-                                    .storage
-                                    .stream_put(stream, node.clone())
-                                    .await
-                                    .unwrap();
-                                state
-                                    .storage
-                                    .resource_put(String::from(location.to_str().unwrap()), node)
-                                    .await
-                                    .unwrap();
-                            }
-                            None => error!("WHIP Error: Location not found"),
-                        }
-                    }
-                    Err(e) => {
-                        error!("WHIP Error: {:?}", e);
-                    }
-                }
-                resp
-            }
-            None => Err(AppError::NoAvailableNode),
+    let target = match stream_nodes.is_empty() {
+        true => {
+            let nodes = state.storage.nodes().await;
+            warn!("{:?}", nodes);
+            maximum_idle_node(state.clone(), nodes, stream.clone()).await
         }
-    } else {
-        request_proxy(state.clone(), req, stream_nodes.first().unwrap()).await
+        false => match stream_nodes.first() {
+            Some(node) => Some(node.clone()),
+            None => {
+                error!("WHIP Error: No available node");
+                None
+            }
+        },
+    };
+
+    match target {
+        Some(node) => {
+            let resp = request_proxy(state.clone(), req, &node).await;
+            match resp.as_ref() {
+                Ok(res) => match res.headers().get("Location") {
+                    Some(location) => {
+                        state
+                            .storage
+                            .stream_put(stream, node.clone())
+                            .await
+                            .unwrap();
+                        state
+                            .storage
+                            .resource_put(String::from(location.to_str().unwrap()), node.clone())
+                            .await
+                            .unwrap();
+                    }
+                    None => error!("WHIP Error: Location not found"),
+                },
+                Err(e) => {
+                    error!("WHIP Error: {:?}", e);
+                }
+            }
+            resp
+        }
+        None => Err(AppError::NoAvailableNode),
     }
 }
 
@@ -96,18 +97,25 @@ async fn whep(
         debug!("whep servers is empty");
         return Err(AppError::ResourceNotFound);
     }
-    let maximum_idle_node = maximum_idle_node(state.clone(), servers.clone(), stream.clone())
-        .await
-        .unwrap();
-    match maximum_idle_node {
-        Some(maximum_idle_node) => {
-            debug!("{:?}", maximum_idle_node);
-            let resp = request_proxy(state.clone(), req, &maximum_idle_node).await;
+    let maximum_idle_node = maximum_idle_node(state.clone(), servers.clone(), stream.clone()).await;
+
+    let target = match maximum_idle_node {
+        Some(server) => Some(server),
+        None => match whep_reforward_node(state.clone(), servers.clone(), stream.clone()).await {
+            Ok(server) => Some(server),
+            Err(e) => return Err(e),
+        },
+    };
+
+    match target {
+        Some(server) => {
+            debug!("{:?}", server);
+            let resp = request_proxy(state.clone(), req, &server).await;
             match resp.as_ref() {
                 Ok(res) => match res.headers().get("Location") {
                     Some(location) => state
                         .storage
-                        .resource_put(String::from(location.to_str().unwrap()), maximum_idle_node)
+                        .resource_put(String::from(location.to_str().unwrap()), server)
                         .await
                         .unwrap(),
                     None => error!("WHEP Error: Location not found {:?}", res),
@@ -117,10 +125,8 @@ async fn whep(
             resp
         }
         None => {
-            info!("whep Reforwarding...");
-            let reforward_node =
-                whep_reforward_node(state.clone(), servers.clone(), stream).await?;
-            request_proxy(state.clone(), req, &reforward_node).await
+            error!("WHEP Error: No available node");
+            Err(AppError::NoAvailableNode)
         }
     }
 }
@@ -131,9 +137,7 @@ async fn whep_reforward_node(
     stream: String,
 ) -> Result<Server> {
     let set_all: HashSet<Server> = state.storage.nodes().await.into_iter().clone().collect();
-
     let set_src: HashSet<Server> = nodes.clone().into_iter().collect();
-
     let set_dst: HashSet<&Server> = set_all.difference(&set_src).collect();
 
     let arr = set_dst.into_iter().collect::<Vec<&Server>>();
@@ -203,7 +207,10 @@ async fn maximum_idle_node(
     mut state: AppState,
     servers: Vec<Server>,
     stream: String,
-) -> Result<Option<Server>> {
+) -> Option<Server> {
+    if servers.is_empty() {
+        return None;
+    }
     let mut max = 0;
     let mut result = None;
     let info = state.storage.info_raw_all().await.unwrap();
@@ -233,5 +240,5 @@ async fn maximum_idle_node(
             }
         }
     }
-    Ok(result)
+    result
 }
