@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn, Span};
 
 use live777_http::response::StreamInfo;
 
-use crate::route::utils::{force_check_times, reforward};
+use crate::route::utils::{force_check_times, reforward, resource_delete};
 use crate::Server;
 use crate::{error::AppError, result::Result, AppState};
 
@@ -156,7 +156,12 @@ async fn whep_reforward_node(
             )
             .await
             {
-                Ok(count) => info!("reforward success, checked attempts: {}", count),
+                Ok(count) => {
+                    if state.config.reforward.close_other_sub {
+                        reforward_close_other_sub(state, server_src, stream).await
+                    }
+                    info!("reforward success, checked attempts: {}", count)
+                }
                 Err(e) => error!("reforward check error: {:?}", e),
             }
             Ok(server_dst.clone())
@@ -165,6 +170,31 @@ async fn whep_reforward_node(
             error!("reforward error: {:?}", e);
             Err(AppError::InternalServerError(e))
         }
+    }
+}
+
+async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: String) {
+    match state.storage.info_get(server.clone().key).await {
+        Ok(streams) => {
+            for stream_info in streams.into_iter() {
+                if stream_info.id == stream {
+                    for sub_info in stream_info.subscribe_session_infos.into_iter() {
+                        match sub_info.reforward {
+                            Some(v) => info!("Skip. Is Reforward: {:?}", v),
+                            None => {
+                                match resource_delete(server.clone(), stream.clone(), sub_info.id)
+                                    .await
+                                {
+                                    Ok(_) => {}
+                                    Err(e) => error!("reforward close other sub error: {:?}", e),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => error!("reforward don't closed other sub: {:?}", e),
     }
 }
 

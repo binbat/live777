@@ -93,7 +93,7 @@ impl EmbedStorage {
         Ok(())
     }
 
-    pub async fn _info_get(&mut self, key: String) -> Result<Vec<StreamInfo>, Error> {
+    pub async fn info_get(&mut self, key: String) -> Result<Vec<StreamInfo>, Error> {
         self.update().await;
         match self.info.read().unwrap().get(&key) {
             Some(server) => Ok(server.clone()),

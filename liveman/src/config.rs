@@ -153,8 +153,8 @@ pub struct Reforward {
     pub check_tick_time: CheckReforwardTickTime,
     #[serde(default = "default_reforward_maximum_idle_time")]
     pub maximum_idle_time: u64,
-    //#[serde(default)]
-    //pub cascade: bool,
+    #[serde(default)]
+    pub close_other_sub: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
