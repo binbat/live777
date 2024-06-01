@@ -48,7 +48,7 @@ async fn main() {
     let cfg = Config::parse(args.config);
 
     utils::set_log(format!(
-        "liveman={},liveion={},http_utils={},webrtc=error",
+        "liveman={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
 
@@ -89,7 +89,7 @@ async fn main() {
     let cfg = Config::parse(args.config);
 
     utils::set_log(format!(
-        "liveman={},http_utils={},webrtc=error",
+        "liveman={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level
     ));
 
@@ -139,10 +139,11 @@ where
             CorsLayer::new()
         })
         .layer(axum::middleware::from_fn(
-            http_utils::print_request_response,
+            http_log::print_request_response,
         ))
         .layer(
-            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
                 let span = info_span!(
                     "http_request",
                     uri = ?request.uri(),

@@ -59,7 +59,7 @@ where
             CorsLayer::new()
         })
         .layer(axum::middleware::from_fn(
-            http_utils::print_request_response,
+            http_log::print_request_response,
         ))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {

@@ -11,7 +11,7 @@ crate-type = ["lib"]
 [dependencies]
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
 
-http-utils = { path = "../libs/http-utils" }
+http-log = { path = "../libs/http-log" }
 libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
 live777-http = { path = "../libs/live777-http" }

@@ -18,8 +18,8 @@ async fn main() {
     let args = Args::parse();
     let mut cfg = liveion::config::Config::parse(args.config);
     utils::set_log(format!(
-        "live777={},liveion={},webrtc=error",
-        cfg.log.level, cfg.log.level
+        "live777={},liveion={},http_log={},webrtc=error",
+        cfg.log.level, cfg.log.level, cfg.log.level
     ));
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);

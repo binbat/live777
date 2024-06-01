@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 liveion = { path = "../liveion", optional = true }
 
-http-utils = { path = "../libs/http-utils" }
+http-log = { path = "../libs/http-log" }
 signal = { path = "../libs/signal" }
 live777-http = { path = "../libs/live777-http" }
 utils = { path = "../libs/utils" }

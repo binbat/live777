@@ -9,6 +9,7 @@ description = "A very simple, high performance, edge WebRTC SFU"
 members = [
     ".",
     "libs/cli",
+    "libs/http-log",
     "libs/libwish",
     "libs/signal",
     "libs/live777-http",
