@@ -35,7 +35,8 @@
 # Default: 60s
 # maximum_idle_time = 60000
 
-# Build in Live777 SFU Server
+# Build-in Live777 SFU Server
+# Need enable `--features=liveion`
 [liveion]
 # Number of instances, if == 0, Disable
 count = 3

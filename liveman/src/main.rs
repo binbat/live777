@@ -25,6 +25,7 @@ mod result;
 mod route;
 mod tick;
 
+#[cfg(feature = "liveion")]
 mod cluster;
 
 #[derive(Parser)]
@@ -39,7 +40,13 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    #[cfg(feature = "liveion")]
     let mut cfg = Config::parse(args.config);
+
+    #[cfg(not(feature = "liveion"))]
+    let cfg = Config::parse(args.config);
+
     utils::set_log(format!(
         "liveman={},liveion={},http_utils={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
@@ -48,16 +55,19 @@ async fn main() {
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
 
-    let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
-    info!("{:?}", addrs);
+    #[cfg(feature = "liveion")]
+    {
+        let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
+        info!("{:?}", addrs);
 
-    cfg.servers
-        .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-            key: format!("buildin-{}", i),
-            url: format!("http://{}", addr),
-            pub_max: 1,
-            ..Default::default()
-        }));
+        cfg.servers
+            .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
+                key: format!("buildin-{}", i),
+                url: format!("http://{}", addr),
+                pub_max: 1,
+                ..Default::default()
+            }));
+    }
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
         .unwrap();
@@ -71,20 +81,30 @@ async fn main() {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    #[cfg(feature = "liveion")]
     let mut cfg = Config::parse(args.config);
+
+    #[cfg(not(feature = "liveion"))]
+    let cfg = Config::parse(args.config);
+
     utils::set_log(format!(
         "liveman={},http_utils={},webrtc=error",
         cfg.log.level, cfg.log.level
     ));
-    let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
-    info!("{:?}", addrs);
 
-    cfg.servers
-        .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-            key: format!("buildin-{}", i),
-            url: format!("http://{}", addr),
-            ..Default::default()
-        }));
+    #[cfg(feature = "liveion")]
+    {
+        let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
+        info!("{:?}", addrs);
+
+        cfg.servers
+            .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
+                key: format!("buildin-{}", i),
+                url: format!("http://{}", addr),
+                ..Default::default()
+            }));
+    }
 
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
