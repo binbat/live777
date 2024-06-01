@@ -86,9 +86,7 @@ where
         } else {
             CorsLayer::new()
         })
-        .layer(axum::middleware::from_fn(
-            http_log::print_request_response,
-        ))
+        .layer(axum::middleware::from_fn(http_log::print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
                 let span = info_span!(
