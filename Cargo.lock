@@ -1643,6 +1643,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "liveman"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "http 1.1.0",
+ "http-body 1.0.0",
+ "http-utils",
+ "hyper-util",
+ "live777-http",
+ "liveion",
+ "mime_guess",
+ "reqwest 0.12.4",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "signal",
+ "tokio",
+ "toml",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "utils",
+]
+
+[[package]]
 name = "local-ip-address"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

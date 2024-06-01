@@ -1,0 +1,34 @@
+[package]
+name = "liveman"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+liveion = { path = "../liveion" }
+http-utils = { path = "../libs/http-utils" }
+signal = { path = "../libs/signal" }
+live777-http = { path = "../libs/live777-http" }
+utils = { path = "../libs/utils" }
+
+axum = { version = "0.7.4", features = ["multipart", "tracing"] }
+anyhow = { version = "1", features = ["backtrace"] }
+base64 = "0.22.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5.1", features = ["derive"] }
+http = "1.0.0"
+http-body = "1.0.0"
+hyper-util = { version = "0.1.1", features = ["client-legacy"] }
+mime_guess = "2.0.4"
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+], default-features = false }
+rust-embed = { version = "8.3.0", features = ["axum-ex"] }
+serde = { workspace = true, features = ["serde_derive"] }
+serde_json = "1.0.114"
+tokio = { version = "1.36", features = ["full"] }
+toml = "0.8.10"
+tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.5"
+
