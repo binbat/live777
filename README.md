@@ -89,13 +89,12 @@ Depends:
 - [bun](https://bun.sh/) Or [nodejs](https://nodejs.org/)
 - [cargo](https://www.rust-lang.org/)
 - [go](https://go.dev/)
-- [redis (opt)](https://redis.io/)
 
 If you need configuration, you can use
 
 ```bash
 cp conf/live777.toml live777.toml
-cp conf/gateway.toml gateway.toml
+cp conf/liveman.toml liveman.toml
 ```
 
 ### WebUI
@@ -124,22 +123,6 @@ cargo run --package=whipinto
 cargo run --package=whepfrom
 ```
 
-### Gateway
-
-Database:
-
-```bash
-docker run -d --rm --name mysql -p 3306:3306 \
--v `pwd`/sql:/docker-entrypoint-initdb.d \
--e MYSQL_ROOT_PASSWORD=password \
--e MYSQL_DATABASE=live777 \
-mysql
-```
-
-```bash
-cargo run --package=live777-gateway
-```
-
 ## How to build
 
 ```bash
@@ -150,8 +133,8 @@ bun run build
 # Live777 Core
 cargo build --release
 
-# Live777 Gateway
-cargo build --release --package=live777-gateway
+# Live777 Manager
+cargo build --release --package=liveman
 
 # whipinto / whepfrom
 cargo build --release --package=whipinto

@@ -15,7 +15,6 @@ members = [
     "libs/live777-http",
     "tools/whepfrom",
     "tools/whipinto",
-    "gateway",
     "liveion",
     "liveman",
 ]
