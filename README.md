@@ -31,6 +31,20 @@ Live777 supports the conversion of audio and video protocols widely used in the 
 ![live777-arch](./docs/live777-arch.excalidraw.svg#gh-light-mode-only)
 ![live777-arch](./docs/live777-arch.dark.svg#gh-dark-mode-only)
 
+## Introduction
+
+### Live777 Core (liveion)
+
+A Pure Single SFU Server for WebRTC.
+
+### Live777 Manager (liveman)
+
+Live777 Cluster manager.
+
+### whipinto and whepfrom
+
+Stream convert tool.
+
 ## Features
 
 Live777 has the following characteristics:
@@ -95,6 +109,12 @@ bun run dev
 
 ```bash
 cargo run -- -c config-dist.toml
+```
+
+### LiveMan
+
+```bash
+cargo run --package=liveman --features=liveion -- -c conf/liveman.toml
 ```
 
 ### whipinto && whepfrom
