@@ -44,7 +44,7 @@ fn u16_max_value() -> u16 {
 }
 
 #[derive(Clone)]
-pub struct EmbedStorage {
+pub struct MemStorage {
     time: SystemTime,
     server: Arc<RwLock<HashMap<String, Server>>>,
     client: reqwest::Client,
@@ -54,11 +54,11 @@ pub struct EmbedStorage {
     servers: Vec<Server>,
 }
 
-impl EmbedStorage {
-    pub fn new(_addr: String, servers: Vec<Server>) -> Self {
+impl MemStorage {
+    pub fn new(servers: Vec<Server>) -> Self {
         let server = Arc::new(RwLock::new(HashMap::new()));
 
-        info!("EmbedStorage: {:?}", servers);
+        info!("MemStorage: {:?}", servers);
 
         for s in servers.clone() {
             server.write().unwrap().insert(s.key.clone(), s.clone());

@@ -23,7 +23,7 @@ pub async fn force_check_times(server: Server, stream: String, count: u8) -> Res
 
 async fn force_check(server: Server, stream: String) -> Result<(), Error> {
     let client = reqwest::Client::new();
-    let url = format!("{}{}", server.url, crate::route::embed::SYNC_API);
+    let url = format!("{}{}", server.url, crate::mem::SYNC_API);
 
     let response = client.get(url).send().await?;
 

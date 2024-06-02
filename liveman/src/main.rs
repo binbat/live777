@@ -16,11 +16,12 @@ use tracing::{debug, error, info, info_span, warn};
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::route::embed::{EmbedStorage, Server};
+use crate::mem::{MemStorage, Server};
 
 mod auth;
 mod config;
 mod error;
+mod mem;
 mod result;
 mod route;
 mod tick;
@@ -127,7 +128,7 @@ where
     let app_state = AppState {
         config: cfg.clone(),
         client,
-        storage: EmbedStorage::new("live777_db".to_string(), cfg.servers),
+        storage: MemStorage::new(cfg.servers),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
     let app = Router::new()
@@ -170,5 +171,5 @@ type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
 struct AppState {
     config: Config,
     client: Client,
-    storage: EmbedStorage,
+    storage: MemStorage,
 }
