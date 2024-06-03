@@ -32,39 +32,22 @@ impl RePayload for Forward {
     }
 }
 
-pub(crate) struct RePayloadVpx {
+pub(crate) struct RePayloadBase {
     buffer: Vec<Bytes>,
-    encoder: Box<dyn Payloader + Send>,
-    decoder: Box<dyn Depacketizer + Send>,
     sequence_number: u16,
-    /// In order to verify that the sequence number is correct
-    /// If network have some error loss some packet, We need detect it
     src_sequence_number: u16,
 }
 
-impl RePayloadVpx {
-    pub fn new(mime_type: String) -> RePayloadVpx {
-        RePayloadVpx {
+impl RePayloadBase {
+    pub fn new() -> RePayloadBase {
+        RePayloadBase {
             buffer: Vec::new(),
-            decoder: match mime_type.as_str() {
-                MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Packet>,
-                MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Packet>,
-                _ => Box::default() as Box<vp8::Vp8Packet>,
-            },
-            encoder: match mime_type.as_str() {
-                MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Payloader>,
-                MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Payloader>,
-                _ => Box::default() as Box<vp8::Vp8Payloader>,
-            },
             sequence_number: 0,
             src_sequence_number: 0,
         }
     }
-}
 
-impl RePayload for RePayloadVpx {
-    fn payload(&mut self, packet: Packet) -> Vec<Packet> {
-        // verify the sequence number is linear
+    fn verify_sequence_number(&mut self, packet: &Packet) {
         if self.src_sequence_number + 1 != packet.header.sequence_number
             && self.src_sequence_number != 0
         {
@@ -75,28 +58,63 @@ impl RePayload for RePayloadVpx {
             );
         }
         self.src_sequence_number = packet.header.sequence_number;
+    }
+
+    fn clear_buffer(&mut self) {
+        self.buffer.clear();
+    }
+}
+
+pub(crate) struct RePayloadCodec {
+    base: RePayloadBase,
+    encoder: Box<dyn Payloader + Send>,
+    decoder: Box<dyn Depacketizer + Send>,
+}
+
+impl RePayloadCodec {
+    pub fn new(mime_type: String) -> RePayloadCodec {
+        RePayloadCodec {
+            base: RePayloadBase::new(),
+            decoder: match mime_type.as_str() {
+                MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Packet>,
+                MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Packet>,
+                MIME_TYPE_H264 => Box::default() as Box<h264::H264Packet>,
+                _ => Box::default() as Box<vp8::Vp8Packet>,
+            },
+            encoder: match mime_type.as_str() {
+                MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Payloader>,
+                MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Payloader>,
+                MIME_TYPE_H264 => Box::default() as Box<h264::H264Payloader>,
+                _ => Box::default() as Box<vp8::Vp8Payloader>,
+            },
+        }
+    }
+}
+
+impl RePayload for RePayloadCodec {
+    fn payload(&mut self, packet: Packet) -> Vec<Packet> {
+        self.base.verify_sequence_number(&packet);
 
         match self.decoder.depacketize(&packet.payload) {
-            Ok(data) => self.buffer.push(data),
+            Ok(data) => self.base.buffer.push(data),
             Err(e) => error!("{}", e),
         };
 
         if packet.header.marker {
             let packets = match self
                 .encoder
-                .payload(RTP_OUTBOUND_MTU, &Bytes::from(self.buffer.concat()))
+                .payload(RTP_OUTBOUND_MTU, &Bytes::from(self.base.buffer.concat()))
             {
                 Ok(payloads) => {
                     let length = payloads.len();
                     payloads
                         .into_iter()
                         .enumerate()
-                        .map(|(i, payload)| -> Packet {
+                        .map(|(i, payload)| {
                             let mut header = packet.clone().header;
-                            header.sequence_number = self.sequence_number;
-                            header.marker = matches!(i, x if x == length - 1);
-
-                            self.sequence_number = self.sequence_number.wrapping_add(1);
+                            header.sequence_number = self.base.sequence_number;
+                            header.marker = i == length - 1;
+                            self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
                             Packet { header, payload }
                         })
                         .collect::<Vec<Packet>>()
@@ -106,10 +124,10 @@ impl RePayload for RePayloadVpx {
                     vec![]
                 }
             };
-
-            self.buffer.clear();
-            return packets;
+            self.base.clear_buffer();
+            packets
+        } else {
+            vec![]
         }
-        vec![]
     }
 }
