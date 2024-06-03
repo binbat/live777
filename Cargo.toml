@@ -19,7 +19,7 @@ members = [
     "liveman",
 ]
 [workspace.dependencies]
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "08189da87cb7baf085ab9e8d824859b623b85940" }
 
 anyhow = "1.0"
 clap = "4.5"

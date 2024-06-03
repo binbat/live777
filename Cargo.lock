@@ -1151,8 +1151,8 @@ dependencies = [
 
 [[package]]
 name = "interceptor"
-version = "0.11.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.12.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1949,8 +1949,8 @@ dependencies = [
 
 [[package]]
 name = "rtcp"
-version = "0.10.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.11.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "bytes",
  "thiserror",
@@ -1959,8 +1959,8 @@ dependencies = [
 
 [[package]]
 name = "rtp"
-version = "0.10.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.11.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "bytes",
  "portable-atomic",
@@ -2115,8 +2115,8 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdp"
-version = "0.6.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.6.2"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "rand",
  "substring",
@@ -2344,8 +2344,8 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stun"
-version = "0.5.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.6.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "base64 0.21.7",
  "crc",
@@ -2720,8 +2720,8 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "turn"
-version = "0.7.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.8.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
@@ -2962,8 +2962,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc"
-version = "0.10.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.11.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3005,8 +3005,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-data"
-version = "0.8.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.9.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "bytes",
  "log",
@@ -3019,8 +3019,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-dtls"
-version = "0.9.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.10.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3055,8 +3055,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-ice"
-version = "0.10.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.11.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3079,8 +3079,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-mdns"
-version = "0.6.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.7.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "log",
  "socket2",
@@ -3091,8 +3091,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-media"
-version = "0.7.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.8.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "byteorder",
  "bytes",
@@ -3103,8 +3103,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-sctp"
-version = "0.9.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.10.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3120,8 +3120,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-srtp"
-version = "0.12.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.13.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "aead",
  "aes",
@@ -3142,8 +3142,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-util"
-version = "0.8.1"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=49140eabfe2bb18cb92ac595888be35ab3b6e5b9#49140eabfe2bb18cb92ac595888be35ab3b6e5b9"
+version = "0.9.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=08189da87cb7baf085ab9e8d824859b623b85940#08189da87cb7baf085ab9e8d824859b623b85940"
 dependencies = [
  "async-trait",
  "bitflags 1.3.2",
