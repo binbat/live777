@@ -282,6 +282,7 @@ async fn new_peer(
         let mut handler: Box<dyn payload::RePayload + Send> = match mime_type.as_str() {
             MIME_TYPE_VP8 => Box::new(payload::RePayloadVpx::new(mime_type)),
             MIME_TYPE_VP9 => Box::new(payload::RePayloadVpx::new(mime_type)),
+            MIME_TYPE_H264 => Box::new(payload::RePayloadH264::new()),
             _ => Box::new(payload::Forward::new()),
         };
 
