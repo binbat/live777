@@ -14,7 +14,6 @@ use webrtc::{
 /// WebRTC Build-in RTP must less 1200
 const RTP_OUTBOUND_MTU: usize = 1200;
 
-
 pub(crate) trait RePayload {
     fn payload(&mut self, packet: Packet) -> Vec<Packet>;
 }
@@ -66,31 +65,33 @@ impl RePayloadBase {
     }
 }
 
-pub(crate) struct RePayloadVpx {
+pub(crate) struct RePayloadCodec {
     base: RePayloadBase,
     encoder: Box<dyn Payloader + Send>,
     decoder: Box<dyn Depacketizer + Send>,
 }
 
-impl RePayloadVpx {
-    pub fn new(mime_type: String) -> RePayloadVpx {
-        RePayloadVpx {
+impl RePayloadCodec {
+    pub fn new(mime_type: String) -> RePayloadCodec {
+        RePayloadCodec {
             base: RePayloadBase::new(),
             decoder: match mime_type.as_str() {
                 MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Packet>,
                 MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Packet>,
+                MIME_TYPE_H264 => Box::default() as Box<h264::H264Packet>,
                 _ => Box::default() as Box<vp8::Vp8Packet>,
             },
             encoder: match mime_type.as_str() {
                 MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Payloader>,
                 MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Payloader>,
+                MIME_TYPE_H264 => Box::default() as Box<h264::H264Payloader>,
                 _ => Box::default() as Box<vp8::Vp8Payloader>,
             },
         }
     }
 }
 
-impl RePayload for RePayloadVpx {
+impl RePayload for RePayloadCodec {
     fn payload(&mut self, packet: Packet) -> Vec<Packet> {
         self.base.verify_sequence_number(&packet);
 
@@ -100,66 +101,23 @@ impl RePayload for RePayloadVpx {
         };
 
         if packet.header.marker {
-            let packets = match self.encoder.payload(RTP_OUTBOUND_MTU, &Bytes::from(self.base.buffer.concat())) {
+            let packets = match self
+                .encoder
+                .payload(RTP_OUTBOUND_MTU, &Bytes::from(self.base.buffer.concat()))
+            {
                 Ok(payloads) => {
                     let length = payloads.len();
-                    payloads.into_iter().enumerate().map(|(i, payload)| {
-                        let mut header = packet.clone().header;
-                        header.sequence_number = self.base.sequence_number;
-                        header.marker = i == length - 1;
-                        self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
-                        Packet { header, payload }
-                    }).collect::<Vec<Packet>>()
-                }
-                Err(e) => {
-                    error!("{}", e);
-                    vec![]
-                }
-            };
-            self.base.clear_buffer();
-            packets
-        } else {
-            vec![]
-        }
-    }
-}
-
-pub(crate) struct RePayloadH264 {
-    base: RePayloadBase,
-    encoder: h264::H264Payloader,
-    decoder: h264::H264Packet,
-}
-
-impl RePayloadH264 {
-    pub fn new() -> RePayloadH264 {
-        RePayloadH264 {
-            base: RePayloadBase::new(),
-            decoder: h264::H264Packet::default(),
-            encoder: h264::H264Payloader::default(),
-        }
-    }
-}
-
-impl RePayload for RePayloadH264 {
-    fn payload(&mut self, packet: Packet) -> Vec<Packet> {
-        self.base.verify_sequence_number(&packet);
-
-        match self.decoder.depacketize(&packet.payload) {
-            Ok(data) => self.base.buffer.push(data),
-            Err(e) => error!("{}", e),
-        };
-
-        if packet.header.marker {
-            let packets = match self.encoder.payload(RTP_OUTBOUND_MTU, &Bytes::from(self.base.buffer.concat())) {
-                Ok(payloads) => {
-                    let length = payloads.len();
-                    payloads.into_iter().enumerate().map(|(i, payload)| {
-                        let mut header = packet.clone().header;
-                        header.sequence_number = self.base.sequence_number;
-                        header.marker = i == length - 1;
-                        self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
-                        Packet { header, payload }
-                    }).collect::<Vec<Packet>>()
+                    payloads
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, payload)| {
+                            let mut header = packet.clone().header;
+                            header.sequence_number = self.base.sequence_number;
+                            header.marker = i == length - 1;
+                            self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
+                            Packet { header, payload }
+                        })
+                        .collect::<Vec<Packet>>()
                 }
                 Err(e) => {
                     error!("{}", e);
