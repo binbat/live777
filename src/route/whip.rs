@@ -25,7 +25,6 @@ async fn whip(
     }
     let offer = RTCSessionDescription::offer(body)?;
     let (answer, session) = state.stream_manager.publish(stream.clone(), offer).await?;
-    println!("main whip\r\n");
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
