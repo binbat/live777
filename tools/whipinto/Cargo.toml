@@ -3,18 +3,18 @@ name = "whipinto"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-clap = { version = "4.5.1", features = ["derive"] }
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
-bytes = "1.6.0"
-anyhow = "1.0"
-tokio = { version = "1.36", features = ["full"] }
 cli = { path = "../../libs/cli" }
 rtsp = { path = "../../libs/rtsp" }
 libwish = { path = "../../libs/libwish" }
 signal = { path = "../../libs/signal" }
 utils = { path = "../../libs/utils" }
+
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+webrtc = { workspace = true }
+
+bytes = "1.6.0"
 scopeguard = "1.2.0"
-tracing = "0.1"

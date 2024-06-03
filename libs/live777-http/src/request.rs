@@ -22,5 +22,6 @@ pub struct QueryInfo {
 #[serde(rename_all = "camelCase")]
 pub struct Reforward {
     pub target_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub admin_authorization: Option<String>,
 }
