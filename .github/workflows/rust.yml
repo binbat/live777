@@ -26,6 +26,18 @@ jobs:
       - name: Run tests
         run: cargo test --all --verbose
 
+  check_format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show version information
+        run: |
+          cargo --version
+          cargo fmt --version
+
+      - name: Cargo format
+        run: cargo fmt --all -- --check
+
   check_clippy:
     runs-on: ubuntu-latest
     steps:
