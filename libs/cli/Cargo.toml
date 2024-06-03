@@ -3,12 +3,12 @@ name = "cli"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 crate-type = ["lib"]
 
 [dependencies]
-clap = { version = "4.5.1", features = ["derive"] }
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+webrtc = { workspace = true }
+
 shellwords = "1.1.0"
-anyhow = "1.0"
