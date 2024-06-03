@@ -1,0 +1,12 @@
+[package]
+name = "http-log"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+axum = "0.7.4"
+http-body-util = "0.1.0"
+tracing = "0.1"

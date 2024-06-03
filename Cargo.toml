@@ -9,50 +9,28 @@ description = "A very simple, high performance, edge WebRTC SFU"
 members = [
     ".",
     "libs/cli",
+    "libs/http-log",
     "libs/libwish",
     "libs/signal",
     "libs/live777-http",
     "tools/whepfrom",
     "tools/whipinto",
-    "./gateway",
+    "liveion",
+    "liveman",
 ]
 [workspace.dependencies]
 serde = '1'
 
-
 [dependencies]
-http-body-util = "0.1.0"
-axum = { version = "0.7.4", features = ["multipart", "tracing"] }
-tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
-anyhow = { version = "1", features = ["backtrace"] }
-clap = { version = "4.5.1", features = ["derive"] }
-tokio = { version = "1.36", features = ["full"] }
-hyper = "1.2.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { workspace = true, features = ["serde_derive"] }
-toml = "0.8.10"
-serde_json = "1.0.114"
-http = "1.0.0"
-http-body = "1.0.0"
-base64 = "0.22.1"
-mime_guess = "2.0.4"
-rust-embed = { version = "8.3.0", features = ["axum-ex"] }
-prometheus = "0.13.3"
-lazy_static = "1.4.0"
-md5 = "0.7.0"
-chrono = "0.4"
-async-trait = "0.1"
-local-ip-address = "0.6"
-libwish = { path = "libs/libwish" }
+liveion = { path = "liveion" }
 signal = { path = "libs/signal" }
-live777-http = { path = "libs/live777-http" }
 utils = { path = "libs/utils" }
-reqwest = { version = "0.11.24", features = [
-    "rustls-tls",
-], default-features = false }
-axum-extra = { version = "0.9.3", features = ["query"] }
+
+clap = { version = "4.5.1", features = ["derive"] }
+local-ip-address = "0.6"
+tokio = { version = "1.36", features = ["full"] }
+tracing = "0.1"
+
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb
 [package.metadata.deb]

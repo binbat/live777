@@ -31,6 +31,20 @@ Live777 supports the conversion of audio and video protocols widely used in the 
 ![live777-arch](./docs/live777-arch.excalidraw.svg#gh-light-mode-only)
 ![live777-arch](./docs/live777-arch.dark.svg#gh-dark-mode-only)
 
+## Introduction
+
+### Live777 Core (liveion)
+
+A Pure Single SFU Server for WebRTC.
+
+### Live777 Manager (liveman)
+
+Live777 Cluster manager.
+
+### whipinto and whepfrom
+
+Stream convert tool.
+
 ## Features
 
 Live777 has the following characteristics:
@@ -75,13 +89,12 @@ Depends:
 - [bun](https://bun.sh/) Or [nodejs](https://nodejs.org/)
 - [cargo](https://www.rust-lang.org/)
 - [go](https://go.dev/)
-- [redis (opt)](https://redis.io/)
 
 If you need configuration, you can use
 
 ```bash
 cp conf/live777.toml live777.toml
-cp conf/gateway.toml gateway.toml
+cp conf/liveman.toml liveman.toml
 ```
 
 ### WebUI
@@ -97,27 +110,17 @@ bun run dev
 cargo run -- -c config-dist.toml
 ```
 
+### LiveMan
+
+```bash
+cargo run --package=liveman --features=liveion -- -c conf/liveman.toml
+```
+
 ### whipinto && whepfrom
 
 ```bash
 cargo run --package=whipinto
 cargo run --package=whepfrom
-```
-
-### Gateway
-
-Database:
-
-```bash
-docker run -d --rm --name mysql -p 3306:3306 \
--v `pwd`/sql:/docker-entrypoint-initdb.d \
--e MYSQL_ROOT_PASSWORD=password \
--e MYSQL_DATABASE=live777 \
-mysql
-```
-
-```bash
-cargo run --package=live777-gateway
 ```
 
 ## How to build
@@ -130,8 +133,8 @@ bun run build
 # Live777 Core
 cargo build --release
 
-# Live777 Gateway
-cargo build --release --package=live777-gateway
+# Live777 Manager
+cargo build --release --package=liveman
 
 # whipinto / whepfrom
 cargo build --release --package=whipinto

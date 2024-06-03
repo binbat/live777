@@ -1,0 +1,45 @@
+[package]
+name = "liveion"
+version = "0.4.1"
+edition = "2021"
+license = "MPL-2.0"
+description = "A very simple, high performance, edge WebRTC SFU"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
+
+http-log = { path = "../libs/http-log" }
+libwish = { path = "../libs/libwish" }
+signal = { path = "../libs/signal" }
+live777-http = { path = "../libs/live777-http" }
+utils = { path = "../libs/utils" }
+
+axum = { version = "0.7.4", features = ["multipart", "tracing"] }
+tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
+anyhow = { version = "1", features = ["backtrace"] }
+clap = { version = "4.5.1", features = ["derive"] }
+tokio = { version = "1.36", features = ["full"] }
+hyper = "1.2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { workspace = true, features = ["serde_derive"] }
+toml = "0.8.10"
+serde_json = "1.0.114"
+http = "1.0.0"
+http-body = "1.0.0"
+base64 = "0.22.1"
+mime_guess = "2.0.4"
+rust-embed = { version = "8.3.0", features = ["axum-ex"] }
+prometheus = "0.13.3"
+lazy_static = "1.4.0"
+md5 = "0.7.0"
+chrono = "0.4"
+async-trait = "0.1"
+local-ip-address = "0.6"
+reqwest = { version = "0.11.24", features = [
+    "rustls-tls",
+], default-features = false }
+axum-extra = { version = "0.9.3", features = ["query"] }

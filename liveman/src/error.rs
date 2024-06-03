@@ -16,7 +16,7 @@ impl IntoResponse for AppError {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
             }
             AppError::RequestProxyError => {
-                (StatusCode::BAD_REQUEST, "reqeust error".to_string()).into_response()
+                (StatusCode::BAD_REQUEST, "request error".to_string()).into_response()
             }
             AppError::NoAvailableNode => (
                 StatusCode::SERVICE_UNAVAILABLE,
