@@ -1,14 +1,27 @@
 use crate::config::Config;
 use crate::forward::message::{ForwardInfo, ReforwardInfo};
+
+#[cfg(feature = "webhook")]
 use crate::hook::webhook::WebHook;
-use crate::hook::{Event, EventHook, NodeEvent, Stream, StreamEvent, StreamEventType};
+
+#[cfg(feature = "webhook")]
+use crate::hook::EventHook;
+
+use crate::hook::{Event, NodeEvent, Stream, StreamEvent, StreamEventType};
+
 use crate::result::Result;
+
 use chrono::{DateTime, Utc};
-use live777_http::event::NodeMetaData;
 use std::time::Duration;
+
+#[cfg(feature = "webhook")]
+use live777_http::event::NodeMetaData;
+
+use tokio::sync::broadcast;
+
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 use tracing::{info, warn};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -32,13 +45,17 @@ impl Manager {
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         let (send, mut recv) = broadcast::channel(4);
         tokio::spawn(async move { while recv.recv().await.is_ok() {} });
-        let metadata: NodeMetaData = config.into();
-        for web_hook_url in cfg.webhooks.iter() {
-            let webhook = WebHook::new(web_hook_url.clone(), cfg.addr, metadata.clone());
-            let recv = send.subscribe();
-            tokio::spawn(async move {
-                webhook.hook(recv).await;
-            });
+
+        #[cfg(feature = "webhook")]
+        {
+            let metadata: NodeMetaData = config.into();
+            for web_hook_url in cfg.webhooks.iter() {
+                let webhook = WebHook::new(web_hook_url.clone(), cfg.addr, metadata.clone());
+                let recv = send.subscribe();
+                tokio::spawn(async move {
+                    webhook.hook(recv).await;
+                });
+            }
         }
         let _ = send.send(Event::Node(NodeEvent::Up));
         tokio::spawn(Self::keep_alive_tick(send.clone()));
@@ -318,7 +335,11 @@ impl Manager {
 
     pub async fn shotdown(&self) -> Result<()> {
         let _ = self.event_sender.send(Event::Node(NodeEvent::Down));
-        tokio::time::sleep(Duration::from_millis(3000)).await;
+        #[cfg(feature = "webhook")]
+        {
+            tokio::time::sleep(Duration::from_millis(3000)).await;
+        }
+
         Ok(())
     }
 }

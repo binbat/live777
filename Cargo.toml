@@ -38,6 +38,9 @@ tracing = { workspace = true }
 
 local-ip-address = "0.6"
 
+[features]
+webhook = ["liveion/webhook"]
+
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb
 [package.metadata.deb]
