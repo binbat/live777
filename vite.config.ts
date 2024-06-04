@@ -19,7 +19,8 @@ export default defineConfig({
         rollupOptions: {
             input: {
                 index: resolve(__dirname, 'index.html'),
-                player: resolve(__dirname, 'web/player.html')
+                player: resolve(__dirname, 'web/player.html'),
+                debugger: resolve(__dirname, 'web/debugger.html')
             }
         }
     },
