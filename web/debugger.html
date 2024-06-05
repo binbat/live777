@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live777 Stream Debugger</title>
+    <style>
+        body {
+            margin: 0;
+        }
+        fieldset {
+            border-style: dotted;
+            border-width: 0.25rem;
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+            margin: 0.5rem;
+        }
+        section {
+            margin: 0.5rem;
+        }
+    </style>
+</head>
+
+<body>
+    <fieldset>
+        <legend>Common</legend>
+        <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
+            <div>Resource ID: <input id="resource" type="text"/></div>
+            <div>Bearer Token: <input id="token" type="text"/></div>
+        </section>
+    </fieldset>
+
+    <div style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
+        <fieldset>
+            <legend>WHIP</legend>
+            <center>
+            <section>
+                <button id="whip-device-button" onclick="refreshDevice()">Use Device</button>
+                <div style="margin: 0.2rem">Audio Device: <select id="whip-audio-device"><option value="">none</option></select></div>
+                <div style="margin: 0.2rem">Video Device: <select id="whip-video-device"><option value="">none</option></select></div>
+            </section>
+
+            <section>
+                Audio Codec: <select id="whip-audio-codec">
+                <option value="" selected>default</option>
+                <option value="opus/48000">OPUS</option>
+                <option value="g722/8000">G722</option>
+            </select>
+                Video Codec: <select id="whip-video-codec">
+                <option value="" selected>default</option>
+                <option value="av1/90000">AV1</option>
+                <option value="vp9/90000">VP9</option>
+                <option value="vp8/90000">VP8</option>
+                <option value="h264/90000">H264</option>
+            </select>
+            </section>
+            <section>
+                <video-size-select id="whip-video-size"></video-size-select>
+            </section>
+            <section>SVC Layer: <select id="whip-layer-select"></select></section>
+            <section>
+                <input type="checkbox" id="whip-pseudo-audio"/>Pseudo Audio Track
+            </section>
+            <section>
+                <button onclick="startWhip()">Start</button>
+                <button id="whip-button-stop">Stop</button>
+            </section>
+
+            <section>
+                <h3>WHIP Video:</h3>
+                <debug-player controls autoplay id="whip-video-player"></debug-player>
+            </section>
+            <section>
+                <data-channel id="whip-datachannel"></data-channel>
+            </section>
+            <br/>Logs: <br/>
+            <div id="whip-logs"></div>
+            </center>
+        </fieldset>
+
+        <fieldset>
+            <legend>WHEP</legend>
+            <center>
+            <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
+            <section>
+                <button id="whep-button-disable-audio">Disable Audio</button>
+                <button id="whep-button-disable-video">Disable Video</button>
+            </section>
+            <section>
+                <button onclick="startWhep()">Start</button>
+                <button id="whep-button-stop">Stop</button>
+            </section>
+
+            <section>
+                <h3>WHEP Video:</h3>
+                <debug-player controls autoplay id="whep-video-player"></debug-player>
+            </section>
+            <section>
+                <data-channel id="whep-datachannel"></data-channel>
+            </section>
+            <br/>Logs: <br/>
+            <div id="whep-logs"></div>
+            </center>
+        </fieldset>
+    </div>
+    <script type="module" src="./old/debugger.js"></script>
+</body>
+
+</html>
