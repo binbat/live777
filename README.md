@@ -28,8 +28,7 @@ Live777 media server is used with [Gstreamer](https://gstreamer.freedesktop.org/
 
 Live777 supports the conversion of audio and video protocols widely used in the Internet, such as RTP to WHIP or WHEP and other protocols.
 
-![live777-arch](./docs/live777-arch.excalidraw.svg#gh-light-mode-only)
-![live777-arch](./docs/live777-arch.dark.svg#gh-dark-mode-only)
+![live777-arch](./docs/live777-arch.excalidraw.svg)
 
 ## Introduction
 
