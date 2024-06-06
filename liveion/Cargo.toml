@@ -35,10 +35,13 @@ local-ip-address = "0.6"
 md5 = "0.7.0"
 mime_guess = "2.0.4"
 prometheus = "0.13.3"
-reqwest = { version = "0.12", features = [
-    "rustls-tls",
-], default-features = false }
 rust-embed = { version = "8.3.0", features = ["axum-ex"] }
 serde_json = "1.0.114"
 toml = "0.8.10"
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
+
+reqwest = { version = "0.12", optional = true, features = ["rustls-tls"], default-features = false }
+
+[features]
+webhook = ["dep:reqwest"]
+

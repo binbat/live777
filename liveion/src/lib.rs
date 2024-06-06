@@ -17,8 +17,9 @@ use crate::route::r#static::static_server;
 use crate::route::{admin, resource, whep, whip, AppState};
 use stream::manager::Manager;
 
-mod auth;
 pub mod config;
+
+mod auth;
 mod constant;
 mod convert;
 mod error;
