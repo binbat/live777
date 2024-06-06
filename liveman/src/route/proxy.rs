@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use http::Uri;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn, Span};
 
 use live777_http::response::StreamInfo;
@@ -27,6 +27,44 @@ pub fn route() -> Router<AppState> {
             get(resource).post(resource).delete(resource),
         )
         .route("/admin/infos", get(info))
+        .route("/api/admin/-/infos", get(api_info))
+        .route("/api/whip/:alias/:stream", post(api_whip))
+        .route("/api/whep/:alias/:stream", post(api_whep))
+}
+
+async fn api_info(
+    State(mut state): State<AppState>,
+    _req: Request,
+) -> crate::result::Result<Json<HashMap<String, Vec<live777_http::response::StreamInfo>>>> {
+    Ok(Json(state.storage.info_raw_all().await.unwrap()))
+}
+
+async fn api_whip(
+    State(state): State<AppState>,
+    Path((alias, stream)): Path<(String, String)>,
+    mut req: Request,
+) -> Result<Response> {
+    let uri = format!("/whip/{}", stream);
+    *req.uri_mut() = Uri::try_from(uri).unwrap();
+
+    match state.storage.get_map_server().get(&alias) {
+        Some(server) => request_proxy(state, req, server).await,
+        None => Err(AppError::NoAvailableNode),
+    }
+}
+
+async fn api_whep(
+    State(state): State<AppState>,
+    Path((alias, stream)): Path<(String, String)>,
+    mut req: Request,
+) -> Result<Response> {
+    let uri = format!("/whep/{}", stream);
+    *req.uri_mut() = Uri::try_from(uri).unwrap();
+
+    match state.storage.get_map_server().get(&alias) {
+        Some(server) => request_proxy(state, req, server).await,
+        None => Err(AppError::NoAvailableNode),
+    }
 }
 
 async fn info(
