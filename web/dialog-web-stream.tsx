@@ -14,6 +14,8 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     const [resourceId, setResourceId] = useState('')
     const [mediaStream, setMediaStream] = useState<MediaStream | null>()
     const [whipClient, setWhipClient] = useState<WHIPClient | null>()
+    const [connState, setConnState] = useState('')
+    const refLogs = useRef<string[]>([])
     const refDialog = useRef<HTMLDialogElement>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
 
@@ -30,7 +32,18 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         refDialog.current?.close()
     }
 
+    const log = (str: string) => {
+        refLogs.current!!.push(str)
+    }
+
+    const updateConnState = (state: string) => {
+        setConnState(state)
+        log(state)
+    }
+
     const handleStreamStart = async () => {
+        refLogs.current = []
+        log('started')
         const stream = await navigator.mediaDevices.getDisplayMedia({
             audio: true,
             video: true
@@ -40,13 +53,22 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             refVideo.current.srcObject = stream
         }
         const pc = new RTCPeerConnection()
+        pc.addEventListener('iceconnectionstatechange', () => {
+            updateConnState(pc.iceConnectionState)
+        })
         pc.addTransceiver(stream.getVideoTracks()[0], { direction: 'sendonly' })
         stream.getAudioTracks().forEach(track => pc.addTrack(track))
         const whipClient = new WHIPClient()
         const url = `${location.origin}/whip/${resourceId}`
         const token = ''
+        // @ts-ignore
+        whipClient.onAnswer = (sdp: RTCSessionDescription) => {
+            log('http answer received')
+            return sdp
+        }
         setWhipClient(whipClient)
         whipClient.publish(pc, url, token)
+        log('http offer sent')
     }
 
     const handleStreamStop = async () => {
@@ -71,6 +93,13 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             <div>
                 <video ref={refVideo} controls autoplay style={{ maxWidth: '90vw' }}></video>
             </div>
+            <details>
+                <summary>
+                    <b>Connection Status: </b>
+                    <code>{connState}</code>
+                </summary>
+                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{refLogs.current!!.join('\n')}</pre>
+            </details>
             <div>
                 <button onClick={() => { handleCloseDialog() }}>Hide</button>
                 {whipClient
