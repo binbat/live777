@@ -1,5 +1,6 @@
 import { useState, useRef, useImperativeHandle } from 'preact/hooks'
-import { forwardRef } from 'preact/compat';
+import { forwardRef, TargetedEvent } from 'preact/compat';
+
 import { reforward } from './api'
 
 export interface IReforwardDialog {
@@ -28,14 +29,24 @@ export const ReforwardDialog = forwardRef<IReforwardDialog>((_props, ref) => {
         }
     })
 
+    const handleURLInputChange = (e: TargetedEvent<HTMLInputElement>) => {
+        setReforwardURL(e.currentTarget.value)
+    }
+
     return (
         <dialog ref={refDialog}>
             <form method="dialog">
                 <h3>Reforward</h3>
                 <p>
-                    <label>Target URL:
-                        <input type="text" value={reforwardURL} onChange={e => setReforwardURL((e.target as HTMLInputElement)?.value)} />
-                    </label>
+                    <label htmlFor="reforward-url">Target URL:</label>
+                    <br />
+                    <input
+                        type="text"
+                        value={reforwardURL}
+                        id="reforward-url"
+                        className="min-w-sm"
+                        onChange={handleURLInputChange}
+                    />
                 </p>
                 <div>
                     <button value="">Cancel</button>
