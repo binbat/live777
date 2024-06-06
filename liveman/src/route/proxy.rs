@@ -259,8 +259,8 @@ async fn maximum_idle_node(
         for s in servers.clone() {
             if s.key == key {
                 let remain = match i.clone() {
-                    Some(x) => s.pub_max as i32 - x.subscribe_session_infos.len() as i32,
-                    None => s.pub_max as i32,
+                    Some(x) => s.sub_max as i32 - x.subscribe_session_infos.len() as i32,
+                    None => s.sub_max as i32,
                 };
 
                 if remain > max {
