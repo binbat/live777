@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Error};
-use live777_http::request::Reforward;
+use live777_http::{request::Reforward, response::RTCPeerConnectionState};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
@@ -35,17 +35,12 @@ async fn force_check(server: Server, stream: String) -> Result<(), Error> {
         debug!("{:?}", streams);
         return match streams.into_iter().find(|f| f.id == stream) {
             Some(stream) => match stream.publish_session_info {
-                Some(_session) => {
-                    Ok(())
-
-                    // NOTE:
-                    // Don't sync do this, because this detect connect state is slow
-                    // parallel is more fast is new connection
-                    //if session.connect_state == RTCPeerConnectionState::Connected {
-                    //    Ok(())
-                    //} else {
-                    //    Err(anyhow!("connect state is {:?}", session.connect_state))
-                    //}
+                Some(session) => {
+                    if session.connect_state == RTCPeerConnectionState::Connected {
+                        Ok(())
+                    } else {
+                        Err(anyhow!("connect state is {:?}", session.connect_state))
+                    }
                 }
                 None => Err(anyhow!("Not Found stream publisher")),
             },
