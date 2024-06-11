@@ -85,9 +85,8 @@ Live777 has the following characteristics:
 ## For developer
 
 Depends:
-- [bun](https://bun.sh/) Or [nodejs](https://nodejs.org/)
 - [cargo](https://www.rust-lang.org/)
-- [go](https://go.dev/)
+- [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
 If you need configuration, you can use
 
