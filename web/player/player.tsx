@@ -5,6 +5,7 @@ export function Player() {
     const [resourceId, setResourceId] = useState('')
     const [autoPlay, setAutoPlay] = useState(false)
     const [muted, setMuted] = useState(false)
+    const [controls, setControls] = useState(false)
     const [reconnect, setReconnect] = useState(0)
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null)
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
@@ -14,6 +15,7 @@ export function Player() {
         const params = new URLSearchParams(location.search)
         setResourceId(params.get('resource') ?? '')
         setAutoPlay(params.has('autoplay'))
+        setControls(params.has('controls'))
         setMuted(params.has('mute'))
         const n = Number.parseInt(params.get('reconnect') ?? '0', 10)
         setReconnect(Number.isNaN(n) ? 0 : n)
@@ -96,7 +98,7 @@ export function Player() {
 
     return (
         <div id="player">
-            <video ref={refVideo} controls onClick={() => handleVideoClick()}></video>
+            <video ref={refVideo} controls={controls} onClick={() => handleVideoClick()}></video>
         </div>
     )
 }
