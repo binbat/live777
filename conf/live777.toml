@@ -42,10 +42,6 @@ urls = [
 # level = "warn"
 
 [stream_info]
-# Producer Max Count, Maybe You don't need change this
-# pub_max = 1
-# Consumer Max Count, only this node instance max
-# sub_max = 1
 # If reforward is beginning, close all subscriber
 # reforward_close_sub = false
 # publish_leave_timeout = 10000

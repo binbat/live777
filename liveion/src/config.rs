@@ -90,31 +90,9 @@ impl Default for PublishLeaveTimeout {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamInfo {
     #[serde(default)]
-    pub pub_max: MetaDataPubMax,
-    #[serde(default)]
-    pub sub_max: MetaDataSubMax,
-    #[serde(default)]
     pub reforward_close_sub: bool,
     #[serde(default)]
     pub publish_leave_timeout: PublishLeaveTimeout,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetaDataPubMax(pub u64);
-
-impl Default for MetaDataPubMax {
-    fn default() -> Self {
-        MetaDataPubMax(u64::MAX)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetaDataSubMax(pub u64);
-
-impl Default for MetaDataSubMax {
-    fn default() -> Self {
-        MetaDataSubMax(u64::MAX)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,17 +237,7 @@ impl Config {
         {
             return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
         }
-        if self.stream_info.pub_max.0 == 0 {
-            return Err(anyhow::anyhow!("stream_info.pub_max cannot be equal to 0"));
-        }
-        if self.stream_info.sub_max.0 == 0 {
-            return Err(anyhow::anyhow!("stream_info.sub_max cannot be equal to 0"));
-        }
-        if self.stream_info.pub_max.0 > self.stream_info.sub_max.0 {
-            return Err(anyhow::anyhow!(
-                "stream_info.pub_max cannot be greater than stream_info.sub_max"
-            ));
-        }
+
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()

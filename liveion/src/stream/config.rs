@@ -9,8 +9,6 @@ pub struct ManagerConfig {
     pub reforward_close_sub: bool,
     pub publish_leave_timeout: u64,
     pub addr: SocketAddr,
-    pub pub_max: u64,
-    pub sub_max: u64,
     pub webhooks: Vec<String>,
 }
 
@@ -28,8 +26,6 @@ impl ManagerConfig {
             publish_leave_timeout: cfg.stream_info.publish_leave_timeout.0,
             addr: cfg.node_addr.unwrap(),
             webhooks: cfg.webhooks.clone(),
-            pub_max: cfg.stream_info.pub_max.0,
-            sub_max: cfg.stream_info.sub_max.0,
         }
     }
 }

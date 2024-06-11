@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::forward::message::Layer;
@@ -153,9 +153,6 @@ impl Manager {
         if let Some(forward) = forward {
             forward.set_publish(offer).await
         } else {
-            if metrics::STREAM.get() >= self.config.pub_max as f64 {
-                return Err(AppError::LackOfResources);
-            }
             let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
             let subscribe_event = forward.subscribe_event();
             tokio::spawn(Self::forward_event_handler(
@@ -167,11 +164,6 @@ impl Manager {
             if stream_map.contains_key(&stream) {
                 let _ = forward.close().await;
                 return Err(AppError::resource_already_exists("resource already exists"));
-            }
-            if stream_map.len() >= self.config.pub_max as usize {
-                warn!("stream {} set publish ok,but exceeded the limit", stream);
-                let _ = forward.close().await;
-                return Err(AppError::LackOfResources);
             }
             info!("add stream : {}", stream);
             stream_map.insert(stream.clone(), forward);
@@ -195,21 +187,11 @@ impl Manager {
         stream: String,
         offer: RTCSessionDescription,
     ) -> Result<Response> {
-        if metrics::SUBSCRIBE.get() >= self.config.sub_max as f64 {
-            return Err(AppError::LackOfResources);
-        }
         let stream_map = self.stream_map.read().await;
         let forward = stream_map.get(&stream).cloned();
         drop(stream_map);
         if let Some(forward) = forward {
-            let (sdp, session) = forward.add_subscribe(offer).await?;
-            if metrics::SUBSCRIBE.get() > self.config.sub_max as f64 {
-                warn!("stream {} add subscribe ok,but exceeded the limit", stream);
-                let _ = forward.remove_peer(session).await;
-                Err(AppError::LackOfResources)
-            } else {
-                Ok((sdp, session))
-            }
+            Ok(forward.add_subscribe(offer).await?)
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }
