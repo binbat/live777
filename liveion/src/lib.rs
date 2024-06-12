@@ -52,6 +52,7 @@ where
                 .layer(auth_layer),
         )
         .merge(admin::route().layer(admin_auth_layer))
+        .merge(crate::route::stream::route())
         .route(live777_http::path::METRICS, get(metrics))
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {

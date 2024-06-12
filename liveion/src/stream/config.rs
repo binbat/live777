@@ -10,6 +10,11 @@ pub struct ManagerConfig {
     pub publish_leave_timeout: u64,
     pub addr: SocketAddr,
     pub webhooks: Vec<String>,
+
+    pub create_whip: bool,
+    pub create_whep: bool,
+    pub delete_whip: i64,
+    pub delete_whep: i64,
 }
 
 impl ManagerConfig {
@@ -26,6 +31,10 @@ impl ManagerConfig {
             publish_leave_timeout: cfg.stream_info.publish_leave_timeout.0,
             addr: cfg.node_addr.unwrap(),
             webhooks: cfg.webhooks.clone(),
+            create_whip: true,
+            create_whep: true,
+            delete_whip: 60000,
+            delete_whep: 60000,
         }
     }
 }
