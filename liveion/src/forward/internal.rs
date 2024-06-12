@@ -7,7 +7,7 @@ use chrono::Utc;
 
 use libwish::Client;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
@@ -422,7 +422,7 @@ impl PeerForwardInternal {
         reforward_info: Option<ReforwardInfo>,
     ) -> Result<Arc<RTCPeerConnection>> {
         if !self.publish_is_some().await {
-            return Err(AppError::throw("publish is none"));
+            warn!("publish is none");
         }
         if media_info.video_transceiver.1 > 1 && media_info.audio_transceiver.1 > 1 {
             return Err(AppError::throw("sendonly is more than 1"));
