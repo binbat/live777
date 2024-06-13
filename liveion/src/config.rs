@@ -78,29 +78,30 @@ pub struct Log {
     pub level: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublishLeaveTimeout(pub u64);
-
-impl Default for PublishLeaveTimeout {
-    fn default() -> Self {
-        PublishLeaveTimeout(15000)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamInfo {
     #[serde(default)]
     pub reforward_close_sub: bool,
+    #[serde(default = "default_true")]
+    pub auto_create_whip: bool,
     #[serde(default)]
-    pub publish_leave_timeout: PublishLeaveTimeout,
+    pub auto_create_whep: bool,
+    #[serde(default)]
+    pub auto_delete_whip: AutoDestrayTime,
+    #[serde(default)]
+    pub auto_delete_whep: AutoDestrayTime,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardMaximumIdleTime(pub u64);
+pub struct AutoDestrayTime(pub i64);
 
-impl Default for ReforwardMaximumIdleTime {
+impl Default for AutoDestrayTime {
     fn default() -> Self {
-        ReforwardMaximumIdleTime(60000)
+        AutoDestrayTime(60)
     }
 }
 

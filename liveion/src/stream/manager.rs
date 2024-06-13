@@ -60,18 +60,18 @@ impl Manager {
         let _ = send.send(Event::Node(NodeEvent::Up));
         tokio::spawn(Self::keep_alive_tick(send.clone()));
 
-        if cfg.delete_whip >= 0 {
+        if cfg.auto_delete_pub >= 0 {
             tokio::spawn(Self::publish_check_tick(
                 stream_map.clone(),
-                cfg.delete_whip,
+                cfg.auto_delete_pub,
                 send.clone(),
             ));
         }
 
-        if cfg.delete_whep >= 0 {
+        if cfg.auto_delete_sub >= 0 {
             tokio::spawn(Self::subscribe_check_tick(
                 stream_map.clone(),
-                cfg.delete_whep,
+                cfg.auto_delete_sub,
                 send.clone(),
             ));
         }
@@ -287,7 +287,7 @@ impl Manager {
     pub async fn publish(&self, stream: String, offer: RTCSessionDescription) -> Result<Response> {
         let mut stream_map = self.stream_map.write().await;
         let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.create_whip {
+        if forward.is_none() && self.config.auto_create_pub {
             let raw_forward = self.do_stream_create(stream.clone()).await;
             stream_map.insert(stream.clone(), raw_forward.clone());
             forward = Some(raw_forward);
@@ -307,7 +307,7 @@ impl Manager {
     ) -> Result<Response> {
         let mut stream_map = self.stream_map.write().await;
         let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.create_whep {
+        if forward.is_none() && self.config.auto_create_sub {
             let raw_forward = self.do_stream_create(stream.clone()).await;
             stream_map.insert(stream.clone(), raw_forward.clone());
             forward = Some(raw_forward);
