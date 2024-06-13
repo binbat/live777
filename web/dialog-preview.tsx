@@ -1,6 +1,8 @@
 import { useRef, useImperativeHandle, useState } from 'preact/hooks'
-import { forwardRef } from 'preact/compat'
+import { TargetedEvent, forwardRef } from 'preact/compat'
 import { WHEPClient } from '@binbat/whip-whep/whep.js'
+
+import { formatVideoTrackResolution } from './utils'
 
 export interface IPreviewDialog {
     show(resourceId: string): void
@@ -9,7 +11,9 @@ export interface IPreviewDialog {
 export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
     const [resourceId, setResourceId] = useState('')
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
+    const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>()
     const [connState, setConnState] = useState('')
+    const [videoResolution, setVideoResolution] = useState('')
     const refLogs = useRef<string[]>([])
     const refDialog = useRef<HTMLDialogElement>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
@@ -53,6 +57,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
         pc.addEventListener('track', ev => {
             log(`track: ${ev.track.kind}`)
             if (ev.track.kind === 'video' && ev.streams.length > 0) {
+                setVideoTrack(ev.track)
                 if (refVideo.current) {
                     refVideo.current.srcObject = ev.streams[0]
                 }
@@ -74,11 +79,17 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
         log('http offer sent')
     }
 
+    const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
+        if (videoTrack) {
+            setVideoResolution(formatVideoTrackResolution(videoTrack))
+        }
+    }
+
     return (
         <dialog ref={refDialog} onClose={handleDialogClose}>
-            <h3>Preview {resourceId}</h3>
+            <h3>Preview {resourceId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay style={{ maxWidth: '90vw' }}></video>
+                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '90vh' }}></video>
             </div>
             <details>
                 <summary>

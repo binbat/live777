@@ -1,6 +1,8 @@
 import { useRef, useImperativeHandle, useState } from 'preact/hooks'
-import { forwardRef } from 'preact/compat'
+import { TargetedEvent, forwardRef } from 'preact/compat'
 import { WHIPClient } from '@binbat/whip-whep/whip'
+
+import { formatVideoTrackResolution } from './utils'
 
 interface Props {
     onStop(): void
@@ -15,6 +17,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     const [mediaStream, setMediaStream] = useState<MediaStream | null>()
     const [whipClient, setWhipClient] = useState<WHIPClient | null>()
     const [connState, setConnState] = useState('')
+    const [videoResolution, setVideoResolution] = useState('')
     const refLogs = useRef<string[]>([])
     const refDialog = useRef<HTMLDialogElement>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
@@ -52,11 +55,13 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         if (refVideo.current) {
             refVideo.current.srcObject = stream
         }
+        const videoTrack = stream.getVideoTracks()[0]
+        setVideoResolution(formatVideoTrackResolution(videoTrack))
         const pc = new RTCPeerConnection()
         pc.addEventListener('iceconnectionstatechange', () => {
             updateConnState(pc.iceConnectionState)
         })
-        pc.addTransceiver(stream.getVideoTracks()[0], { direction: 'sendonly' })
+        pc.addTransceiver(videoTrack, { direction: 'sendonly' })
         stream.getAudioTracks().forEach(track => pc.addTrack(track))
         const whipClient = new WHIPClient()
         const url = `${location.origin}/whip/${resourceId}`
@@ -87,11 +92,18 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         handleCloseDialog()
     }
 
+    const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
+        const videoTrack = mediaStream?.getVideoTracks()[0]
+        if (videoTrack) {
+            setVideoResolution(formatVideoTrackResolution(videoTrack))
+        }
+    }
+
     return (
         <dialog ref={refDialog}>
-            <h3>Web Stream {resourceId}</h3>
+            <h3>Web Stream {resourceId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay style={{ maxWidth: '90vw' }}></video>
+                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '90vh' }}></video>
             </div>
             <details>
                 <summary>
