@@ -7,14 +7,13 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 pub struct ManagerConfig {
     pub ice_servers: Vec<RTCIceServer>,
     pub reforward_close_sub: bool,
-    pub publish_leave_timeout: u64,
     pub addr: SocketAddr,
     pub webhooks: Vec<String>,
 
-    pub create_whip: bool,
-    pub create_whep: bool,
-    pub delete_whip: i64,
-    pub delete_whep: i64,
+    pub auto_create_pub: bool,
+    pub auto_create_sub: bool,
+    pub auto_delete_pub: i64,
+    pub auto_delete_sub: i64,
 }
 
 impl ManagerConfig {
@@ -28,13 +27,12 @@ impl ManagerConfig {
         Self {
             ice_servers,
             reforward_close_sub: cfg.stream_info.reforward_close_sub,
-            publish_leave_timeout: cfg.stream_info.publish_leave_timeout.0,
             addr: cfg.node_addr.unwrap(),
             webhooks: cfg.webhooks.clone(),
-            create_whip: true,
-            create_whep: true,
-            delete_whip: 60000,
-            delete_whep: 60000,
+            auto_create_pub: cfg.stream_info.auto_create_whip,
+            auto_create_sub: cfg.stream_info.auto_create_whep,
+            auto_delete_pub: cfg.stream_info.auto_delete_whip.0 * 1000,
+            auto_delete_sub: cfg.stream_info.auto_delete_whep.0 * 1000,
         }
     }
 }
