@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::forward::message::ForwardInfo;
 use crate::result::Result;
 use tokio::sync::{broadcast, Mutex};
-use tracing::info;
+use tracing::{info, warn};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -127,7 +127,7 @@ impl PeerForward {
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if !self.internal.publish_is_ok().await {
-            return Err(AppError::throw("publish is not ok"));
+            warn!("publish is not ok");
         }
         let peer = self
             .internal
