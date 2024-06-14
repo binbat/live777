@@ -2,7 +2,6 @@ config.toml
 stream.sdp
 target
 assets
-package-lock.json
 
 live777.toml
 gateway.toml

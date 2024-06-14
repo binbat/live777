@@ -98,8 +98,8 @@ cp conf/liveman.toml liveman.toml
 ### WebUI
 
 ```bash
-bun install
-bun run dev
+npm install
+npm run dev
 ```
 
 ### Live777
