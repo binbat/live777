@@ -103,7 +103,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         <dialog ref={refDialog}>
             <h3>Web Stream {resourceId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '90vh' }}></video>
+                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
             </div>
             <details>
                 <summary>

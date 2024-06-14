@@ -89,7 +89,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
         <dialog ref={refDialog} onClose={handleDialogClose}>
             <h3>Preview {resourceId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '90vh' }}></video>
+                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
             </div>
             <details>
                 <summary>
