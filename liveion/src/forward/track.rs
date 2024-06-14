@@ -1,10 +1,17 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_remote::TrackRemote;
+
+fn codec_string(params: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters) -> String {
+    format!(
+        "{}[{}],{}",
+        params.capability.mime_type, params.payload_type, params.capability.sdp_fmtp_line,
+    )
+}
 
 pub(crate) type ForwardData = Arc<Packet>;
 
@@ -43,20 +50,22 @@ impl PublishTrackRemote {
         rtp_sender: broadcast::Sender<ForwardData>,
     ) {
         info!(
-            "[{}] [{}] track : {:?} rid :{} ssrc: {} start forward",
+            "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {}, codec: {} start forward",
             stream,
             id,
             track.kind(),
             track.rid(),
-            track.ssrc()
+            track.ssrc(),
+            codec_string(track.codec()),
         );
+        trace!("codec: {:?}", track.codec());
         let mut b = vec![0u8; 1500];
         loop {
             match track.read(&mut b).await {
                 Ok((rtp_packet, _)) => {
                     if let Err(err) = rtp_sender.send(Arc::new(rtp_packet)) {
                         debug!(
-                            "[{}] [{}] track : {:?} {} rtp broadcast error : {}",
+                            "[{}] [{}] [track] kind: {:?}, rid: {}, rtp broadcast error : {}",
                             stream,
                             id,
                             track.kind(),
@@ -68,7 +77,7 @@ impl PublishTrackRemote {
                 }
                 Err(err) => {
                     debug!(
-                        "[{}] [{}] track : {:?} {} read error : {}",
+                        "[{}] [{}] [track] kind: {:?}, {} read error : {}",
                         stream,
                         id,
                         track.kind(),
@@ -80,7 +89,7 @@ impl PublishTrackRemote {
             }
         }
         info!(
-            "[{}] [{}] track : {:?} rid :{} ssrc: {} stop forward",
+            "[{}] [{}] [track] kind: {:?}, rid :{}, ssrc: {} stop forward",
             stream,
             id,
             track.kind(),
