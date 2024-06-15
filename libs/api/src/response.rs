@@ -36,14 +36,11 @@ pub struct ReforwardInfo {
 /// PeerConnectionState indicates the state of the PeerConnection.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RTCPeerConnectionState {
-    #[default]
-    #[serde(rename = "Unspecified")]
-    Unspecified,
-
     /// PeerConnectionStateNew indicates that any of the ICETransports or
     /// DTLSTransports are in the "new" state and none of the transports are
     /// in the "connecting", "checking", "failed" or "disconnected" state, or
     /// all transports are in the "closed" state, or there are no transports.
+    #[default]
     #[serde(rename = "new")]
     New,
 

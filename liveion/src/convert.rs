@@ -61,22 +61,14 @@ fn convert_connect_state(
     connect_state: RTCPeerConnectionState,
 ) -> api::response::RTCPeerConnectionState {
     match connect_state {
-        RTCPeerConnectionState::Unspecified => {
-            api::response::RTCPeerConnectionState::Unspecified
-        }
+        RTCPeerConnectionState::Unspecified => api::response::RTCPeerConnectionState::New,
 
         RTCPeerConnectionState::New => api::response::RTCPeerConnectionState::New,
-        RTCPeerConnectionState::Connecting => {
-            api::response::RTCPeerConnectionState::Connecting
-        }
+        RTCPeerConnectionState::Connecting => api::response::RTCPeerConnectionState::Connecting,
 
-        RTCPeerConnectionState::Connected => {
-            api::response::RTCPeerConnectionState::Connected
-        }
+        RTCPeerConnectionState::Connected => api::response::RTCPeerConnectionState::Connected,
 
-        RTCPeerConnectionState::Disconnected => {
-            api::response::RTCPeerConnectionState::Disconnected
-        }
+        RTCPeerConnectionState::Disconnected => api::response::RTCPeerConnectionState::Disconnected,
 
         RTCPeerConnectionState::Failed => api::response::RTCPeerConnectionState::Failed,
 

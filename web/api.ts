@@ -5,7 +5,6 @@ export async function delStream(streamId: string, clientId: string) {
 }
 
 type SessionConnectionState =
-    'Unspecified' |
     'new' |
     'connecting' |
     'connected' |

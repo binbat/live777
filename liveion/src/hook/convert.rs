@@ -39,21 +39,11 @@ impl From<message::ForwardEventType> for api::event::StreamEventType {
     fn from(value: message::ForwardEventType) -> Self {
         match value {
             message::ForwardEventType::PublishUp => api::event::StreamEventType::PublishUp,
-            message::ForwardEventType::PublishDown => {
-                api::event::StreamEventType::PublishDown
-            }
-            message::ForwardEventType::SubscribeUp => {
-                api::event::StreamEventType::SubscribeUp
-            }
-            message::ForwardEventType::SubscribeDown => {
-                api::event::StreamEventType::SubscribeDown
-            }
-            message::ForwardEventType::ReforwardUp => {
-                api::event::StreamEventType::ReforwardUp
-            }
-            message::ForwardEventType::ReforwardDown => {
-                api::event::StreamEventType::ReforwardDown
-            }
+            message::ForwardEventType::PublishDown => api::event::StreamEventType::PublishDown,
+            message::ForwardEventType::SubscribeUp => api::event::StreamEventType::SubscribeUp,
+            message::ForwardEventType::SubscribeDown => api::event::StreamEventType::SubscribeDown,
+            message::ForwardEventType::ReforwardUp => api::event::StreamEventType::ReforwardUp,
+            message::ForwardEventType::ReforwardDown => api::event::StreamEventType::ReforwardDown,
         }
     }
 }
