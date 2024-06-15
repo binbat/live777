@@ -161,11 +161,11 @@ winget install live777
 
 ### Single Page Player
 
-example: http://localhost:7777/web/player.html?resource=web-0&autoplay&controls&mute&reconnect=2000
+example: http://localhost:7777/web/player.html?id=web-0&autoplay&controls&mute&reconnect=2000
 
 URL params:
 
-- `resource`: string, live777 resource ID
+- `id`: string, live777 Stream ID
 - `autoplay`: boolean
 - `controls`: boolean
 - `mute`: boolean, whether to mute by default
