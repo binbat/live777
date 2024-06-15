@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use live777_http::response::StreamInfo;
+use api::response::StreamInfo;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, trace, warn};

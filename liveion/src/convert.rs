@@ -1,19 +1,19 @@
-use live777_http::event::NodeMetaData;
+use api::event::NodeMetaData;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 use crate::config::Config;
 
-impl From<crate::forward::message::Layer> for live777_http::response::Layer {
+impl From<crate::forward::message::Layer> for api::response::Layer {
     fn from(value: crate::forward::message::Layer) -> Self {
-        live777_http::response::Layer {
+        api::response::Layer {
             encoding_id: value.encoding_id,
         }
     }
 }
 
-impl From<crate::forward::message::ForwardInfo> for live777_http::response::StreamInfo {
+impl From<crate::forward::message::ForwardInfo> for api::response::StreamInfo {
     fn from(value: crate::forward::message::ForwardInfo) -> Self {
-        live777_http::response::StreamInfo {
+        api::response::StreamInfo {
             id: value.id,
             create_time: value.create_time,
             publish_leave_time: value.publish_leave_time,
@@ -28,9 +28,9 @@ impl From<crate::forward::message::ForwardInfo> for live777_http::response::Stre
     }
 }
 
-impl From<crate::forward::message::SessionInfo> for live777_http::response::SessionInfo {
+impl From<crate::forward::message::SessionInfo> for api::response::SessionInfo {
     fn from(value: crate::forward::message::SessionInfo) -> Self {
-        live777_http::response::SessionInfo {
+        api::response::SessionInfo {
             id: value.id,
             create_time: value.create_time,
             connect_state: convert_connect_state(value.connect_state),
@@ -39,9 +39,9 @@ impl From<crate::forward::message::SessionInfo> for live777_http::response::Sess
     }
 }
 
-impl From<crate::forward::message::ReforwardInfo> for live777_http::response::ReforwardInfo {
+impl From<crate::forward::message::ReforwardInfo> for api::response::ReforwardInfo {
     fn from(value: crate::forward::message::ReforwardInfo) -> Self {
-        live777_http::response::ReforwardInfo {
+        api::response::ReforwardInfo {
             target_url: value.target_url,
             resource_url: value.resource_url,
         }
@@ -59,27 +59,27 @@ impl From<Config> for NodeMetaData {
 
 fn convert_connect_state(
     connect_state: RTCPeerConnectionState,
-) -> live777_http::response::RTCPeerConnectionState {
+) -> api::response::RTCPeerConnectionState {
     match connect_state {
         RTCPeerConnectionState::Unspecified => {
-            live777_http::response::RTCPeerConnectionState::Unspecified
+            api::response::RTCPeerConnectionState::Unspecified
         }
 
-        RTCPeerConnectionState::New => live777_http::response::RTCPeerConnectionState::New,
+        RTCPeerConnectionState::New => api::response::RTCPeerConnectionState::New,
         RTCPeerConnectionState::Connecting => {
-            live777_http::response::RTCPeerConnectionState::Connecting
+            api::response::RTCPeerConnectionState::Connecting
         }
 
         RTCPeerConnectionState::Connected => {
-            live777_http::response::RTCPeerConnectionState::Connected
+            api::response::RTCPeerConnectionState::Connected
         }
 
         RTCPeerConnectionState::Disconnected => {
-            live777_http::response::RTCPeerConnectionState::Disconnected
+            api::response::RTCPeerConnectionState::Disconnected
         }
 
-        RTCPeerConnectionState::Failed => live777_http::response::RTCPeerConnectionState::Failed,
+        RTCPeerConnectionState::Failed => api::response::RTCPeerConnectionState::Failed,
 
-        RTCPeerConnectionState::Closed => live777_http::response::RTCPeerConnectionState::Closed,
+        RTCPeerConnectionState::Closed => api::response::RTCPeerConnectionState::Closed,
     }
 }

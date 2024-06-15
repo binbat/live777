@@ -8,7 +8,7 @@ use http::Uri;
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn, Span};
 
-use live777_http::response::StreamInfo;
+use api::response::StreamInfo;
 
 use crate::route::utils::{force_check_times, reforward, resource_delete};
 use crate::Server;
@@ -16,14 +16,14 @@ use crate::{error::AppError, result::Result, AppState};
 
 pub fn route() -> Router<AppState> {
     Router::new()
-        .route(&live777_http::path::whip(":stream"), post(whip))
-        .route(&live777_http::path::whep(":stream"), post(whep))
+        .route(&api::path::whip(":stream"), post(whip))
+        .route(&api::path::whep(":stream"), post(whep))
         .route(
-            &live777_http::path::resource(":stream", ":session"),
+            &api::path::resource(":stream", ":session"),
             post(resource).patch(resource).delete(resource),
         )
         .route(
-            &live777_http::path::resource_layer(":stream", ":session"),
+            &api::path::resource_layer(":stream", ":session"),
             get(resource).post(resource).delete(resource),
         )
         .route("/admin/infos", get(info))
@@ -32,7 +32,7 @@ pub fn route() -> Router<AppState> {
 async fn info(
     State(mut state): State<AppState>,
     _req: Request,
-) -> crate::result::Result<Json<Vec<live777_http::response::StreamInfo>>> {
+) -> crate::result::Result<Json<Vec<api::response::StreamInfo>>> {
     Ok(Json(state.storage.info_all().await.unwrap()))
 }
 

@@ -8,7 +8,7 @@ use http::{HeaderMap, StatusCode};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 pub fn route() -> Router<AppState> {
-    Router::new().route(&live777_http::path::whep(":stream"), post(whep))
+    Router::new().route(&api::path::whep(":stream"), post(whep))
 }
 async fn whep(
     State(state): State<AppState>,
@@ -31,7 +31,7 @@ async fn whep(
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", live777_http::path::resource(&stream, &session));
+        .header("Location", api::path::resource(&stream, &session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
@@ -40,7 +40,7 @@ async fn whep(
             "Link",
             format!(
                 "<{}>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                live777_http::path::resource_layer(&stream, &session)
+                api::path::resource_layer(&stream, &session)
             ),
         )
     }
