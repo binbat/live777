@@ -1,8 +1,11 @@
 use axum::extract::Request;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 
 use error::AppError;
+use http::{header, StatusCode, Uri};
+use rust_embed::RustEmbed;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -13,9 +16,12 @@ use tracing::{error, info_span};
 
 use crate::auth::ManyValidate;
 use crate::config::Config;
-use crate::route::r#static::static_server;
 use crate::route::{admin, resource, whep, whip, AppState};
 use stream::manager::Manager;
+
+#[derive(RustEmbed)]
+#[folder = "../assets/"]
+struct Assets;
 
 pub mod config;
 
@@ -44,7 +50,7 @@ where
     ]));
     let admin_auth_layer =
         ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.admin_auth]));
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(
             whip::route()
                 .merge(whep::route())
@@ -77,11 +83,27 @@ where
             }),
         );
 
-    axum::serve(listener, static_server(app))
+    app = app.fallback(static_handler);
+
+    axum::serve(listener, app)
         .with_graceful_shutdown(signal)
         .await
         .unwrap_or_else(|e| error!("Application error: {e}"));
     let _ = app_state.stream_manager.shotdown().await;
+}
+
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let mut path = uri.path().trim_start_matches('/');
+    if path.is_empty() {
+        path = "index.html";
+    }
+    match Assets::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
 pub fn metrics_register() {
