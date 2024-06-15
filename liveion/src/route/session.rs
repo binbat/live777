@@ -11,13 +11,13 @@ use std::collections::HashMap;
 pub fn route() -> Router<AppState> {
     Router::new()
         .route(
-            &api::path::resource(":stream", ":session"),
+            &api::path::session(":stream", ":session"),
             post(change_resource)
                 .patch(add_ice_candidate)
                 .delete(remove_stream_session),
         )
         .route(
-            &api::path::resource_layer(":stream", ":session"),
+            &api::path::session_layer(":stream", ":session"),
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
 }

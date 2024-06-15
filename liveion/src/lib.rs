@@ -14,7 +14,7 @@ use tracing::{error, info_span};
 use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::route::r#static::static_server;
-use crate::route::{admin, resource, whep, whip, AppState};
+use crate::route::{admin, session, whep, whip, AppState};
 use stream::manager::Manager;
 
 pub mod config;
@@ -48,7 +48,7 @@ where
         .merge(
             whip::route()
                 .merge(whep::route())
-                .merge(resource::route())
+                .merge(session::route())
                 .layer(auth_layer),
         )
         .merge(admin::route().layer(admin_auth_layer))

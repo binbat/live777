@@ -29,7 +29,7 @@ async fn whip(
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", api::path::resource(&stream, &session));
+        .header("Location", api::path::session(&stream, &session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }

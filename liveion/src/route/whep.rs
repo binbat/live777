@@ -31,7 +31,7 @@ async fn whep(
         .status(StatusCode::CREATED)
         .header("Content-Type", "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", api::path::resource(&stream, &session));
+        .header("Location", api::path::session(&stream, &session));
     for link in link_header(state.config.ice_servers.clone()) {
         builder = builder.header("Link", link);
     }
@@ -40,7 +40,7 @@ async fn whep(
             "Link",
             format!(
                 "<{}>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                api::path::resource_layer(&stream, &session)
+                api::path::session_layer(&stream, &session)
             ),
         )
     }

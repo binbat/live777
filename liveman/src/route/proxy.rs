@@ -19,11 +19,11 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::whip(":stream"), post(whip))
         .route(&api::path::whep(":stream"), post(whep))
         .route(
-            &api::path::resource(":stream", ":session"),
+            &api::path::session(":stream", ":session"),
             post(resource).patch(resource).delete(resource),
         )
         .route(
-            &api::path::resource_layer(":stream", ":session"),
+            &api::path::session_layer(":stream", ":session"),
             get(resource).post(resource).delete(resource),
         )
         .route("/admin/infos", get(info))

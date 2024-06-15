@@ -1,5 +1,5 @@
 export async function delStream(streamId: string, clientId: string) {
-    return fetch(`/resource/${streamId}/${clientId}`, {
+    return fetch(`/session/${streamId}/${clientId}`, {
         method: "DELETE",
     })
 }
