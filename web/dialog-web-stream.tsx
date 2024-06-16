@@ -3,6 +3,7 @@ import { TargetedEvent, forwardRef } from 'preact/compat'
 import { WHIPClient } from '@binbat/whip-whep/whip'
 
 import { formatVideoTrackResolution } from './utils'
+import { useLogger } from './use-logger'
 
 interface Props {
     onStop(): void
@@ -18,7 +19,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     const [whipClient, setWhipClient] = useState<WHIPClient | null>()
     const [connState, setConnState] = useState('')
     const [videoResolution, setVideoResolution] = useState('')
-    const refLogs = useRef<string[]>([])
+    const logger = useLogger()
     const refDialog = useRef<HTMLDialogElement>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
 
@@ -35,18 +36,14 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         refDialog.current?.close()
     }
 
-    const log = (str: string) => {
-        refLogs.current!!.push(str)
-    }
-
     const updateConnState = (state: string) => {
         setConnState(state)
-        log(state)
+        logger.log(state)
     }
 
     const handleStreamStart = async () => {
-        refLogs.current = []
-        log('started')
+        logger.clear()
+        logger.log('started')
         const stream = await navigator.mediaDevices.getDisplayMedia({
             audio: true,
             video: true
@@ -68,12 +65,12 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         const token = ''
         // @ts-ignore
         whipClient.onAnswer = (sdp: RTCSessionDescription) => {
-            log('http answer received')
+            logger.log('http answer received')
             return sdp
         }
         setWhipClient(whipClient)
         whipClient.publish(pc, url, token)
-        log('http offer sent')
+        logger.log('http offer sent')
     }
 
     const handleStreamStop = async () => {
@@ -110,7 +107,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
                     <b>Connection Status: </b>
                     <code>{connState}</code>
                 </summary>
-                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{refLogs.current!!.join('\n')}</pre>
+                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{logger.logs.join('\n')}</pre>
             </details>
             <div>
                 <button onClick={() => { handleCloseDialog() }}>Hide</button>

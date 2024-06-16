@@ -111,6 +111,7 @@ export function App() {
 
             {previewStreams.map(s =>
                 <PreviewDialog
+                    key={s}
                     ref={(instance: IPreviewDialog | null) => {
                         if (instance) {
                             refPreviewStreams.current.set(s, instance)
@@ -126,6 +127,7 @@ export function App() {
 
             {webStreams.map(s =>
                 <WebStreamDialog
+                    key={s}
                     ref={(instance: IWebStreamDialog | null) => {
                         if (instance) {
                             refWebStreams.current.set(s, instance)
