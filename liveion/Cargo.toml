@@ -35,7 +35,7 @@ local-ip-address = "0.6"
 md5 = "0.7.0"
 mime_guess = "2.0.4"
 prometheus = "0.13.3"
-rust-embed = { version = "8.3.0", features = ["axum-ex"] }
+rust-embed = { version = "8.4", features = ["axum-ex"] }
 serde_json = "1.0.114"
 toml = "0.8.10"
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
