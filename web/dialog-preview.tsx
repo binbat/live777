@@ -3,6 +3,7 @@ import { TargetedEvent, forwardRef } from 'preact/compat'
 import { WHEPClient } from '@binbat/whip-whep/whep.js'
 
 import { formatVideoTrackResolution } from './utils'
+import { useLogger } from './use-logger'
 
 interface Props {
     onStop(): void
@@ -18,7 +19,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>()
     const [connState, setConnState] = useState('')
     const [videoResolution, setVideoResolution] = useState('')
-    const refLogs = useRef<string[]>([])
+    const logger = useLogger()
     const refDialog = useRef<HTMLDialogElement>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
 
@@ -53,23 +54,19 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         handleCloseDialog()
     }
 
-    const log = (str: string) => {
-        refLogs.current!!.push(str)
-    }
-
     const updateConnState = (state: string) => {
         setConnState(state)
-        log(state)
+        logger.log(state)
     }
 
     const handlePreviewStart = (resourceId: string) => {
-        refLogs.current = []
-        log('started')
+        logger.clear()
+        logger.log('started')
         const pc = new RTCPeerConnection()
         pc.addTransceiver('video', { direction: 'recvonly' })
         pc.addTransceiver('audio', { direction: 'recvonly' })
         pc.addEventListener('track', ev => {
-            log(`track: ${ev.track.kind}`)
+            logger.log(`track: ${ev.track.kind}`)
             if (ev.track.kind === 'video' && ev.streams.length > 0) {
                 setVideoTrack(ev.track)
                 if (refVideo.current) {
@@ -85,12 +82,12 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         const token = ''
         // @ts-ignore
         whep.onAnswer = (sdp: RTCSessionDescription) => {
-            log('http answer received')
+            logger.log('http answer received')
             return sdp
         }
         setWhepClient(whep)
         whep.view(pc, url, token)
-        log('http offer sent')
+        logger.log('http offer sent')
     }
 
     const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
@@ -110,7 +107,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
                     <b>Connection Status: </b>
                     <code>{connState}</code>
                 </summary>
-                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{refLogs.current!!.join('\n')}</pre>
+                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{logger.logs.join('\n')}</pre>
             </details>
             <form method="dialog">
                 <button onClick={() => handleCloseDialog()}>Hide</button>
