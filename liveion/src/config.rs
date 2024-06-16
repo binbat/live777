@@ -78,7 +78,7 @@ pub struct Log {
     pub level: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamInfo {
     #[serde(default)]
     pub reforward_close_sub: bool,
@@ -94,6 +94,18 @@ pub struct StreamInfo {
 
 fn default_true() -> bool {
     true
+}
+
+impl Default for StreamInfo {
+    fn default() -> Self {
+        Self {
+            reforward_close_sub: false,
+            auto_create_whip: true,
+            auto_create_whep: false,
+            auto_delete_whip: AutoDestrayTime::default(),
+            auto_delete_whep: AutoDestrayTime::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
