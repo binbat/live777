@@ -4,11 +4,15 @@ import { WHEPClient } from '@binbat/whip-whep/whep.js'
 
 import { formatVideoTrackResolution } from './utils'
 
+interface Props {
+    onStop(): void
+}
+
 export interface IPreviewDialog {
     show(resourceId: string): void
 }
 
-export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
+export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [resourceId, setResourceId] = useState('')
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
     const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>()
@@ -20,16 +24,24 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
 
     useImperativeHandle(ref, () => {
         return {
-            show: (resourceId: string) => {
-                setResourceId(resourceId)
-                handlePreviewStart(resourceId)
+            show: async (newResourceId: string) => {
+                if (resourceId !== newResourceId) {
+                    if (resourceId !== '' && whepClient !== null) {
+                        await handlePreviewStop()
+                    }
+                    setResourceId(newResourceId)
+                    handlePreviewStart(newResourceId)
+                }
                 refDialog.current?.showModal()
             }
         }
     })
 
-    const handleDialogClose = async () => {
-        setResourceId('')
+    const handleCloseDialog = () => {
+        refDialog.current?.close()
+    }
+
+    const handlePreviewStop = async () => {
         if (refVideo.current) {
             refVideo.current.srcObject = null
         }
@@ -37,6 +49,8 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
             await whepClient.stop()
             setWhepClient(null)
         }
+        props.onStop()
+        handleCloseDialog()
     }
 
     const log = (str: string) => {
@@ -86,7 +100,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
     }
 
     return (
-        <dialog ref={refDialog} onClose={handleDialogClose}>
+        <dialog ref={refDialog}>
             <h3>Preview {resourceId} {videoResolution}</h3>
             <div>
                 <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
@@ -99,7 +113,8 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
                 <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{refLogs.current!!.join('\n')}</pre>
             </details>
             <form method="dialog">
-                <button>Close</button>
+                <button onClick={() => handleCloseDialog()}>Hide</button>
+                <button onClick={() => handlePreviewStop()} style={{ color: 'red' }}>Stop</button>
             </form>
         </dialog>
     )
