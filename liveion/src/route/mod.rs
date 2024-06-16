@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 pub mod admin;
 pub mod resource;
-pub mod r#static;
 pub mod stream;
 pub mod whep;
 pub mod whip;
