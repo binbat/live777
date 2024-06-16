@@ -1,12 +1,13 @@
-use anyhow::{anyhow, Error, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use api::response::Stream;
+use anyhow::{anyhow, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, trace, warn};
+
+use api::response::Stream;
 
 pub const SYNC_API: &str = "/admin/infos";
 

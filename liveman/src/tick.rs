@@ -1,5 +1,6 @@
-use chrono::Utc;
 use std::{collections::HashMap, time::Duration};
+
+use chrono::Utc;
 use tracing::{error, info};
 use url::Url;
 

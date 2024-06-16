@@ -1,9 +1,11 @@
-use crate::forward::message::ReforwardInfo;
-use crate::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::Query;
+
+use crate::forward::message::ReforwardInfo;
+use crate::AppState;
+
 pub fn route() -> Router<AppState> {
     Router::new()
         .route(api::path::ADMIN_INFOS, get(infos))

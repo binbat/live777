@@ -3,8 +3,6 @@ use std::{sync::Arc, time::Duration, vec};
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser};
 use cli::{create_child, Codec};
-
-use libwish::Client;
 use scopeguard::defer;
 use tokio::{
     net::UdpSocket,
@@ -26,6 +24,8 @@ use webrtc::{
     },
     util::Unmarshal,
 };
+
+use libwish::Client;
 
 mod payload;
 

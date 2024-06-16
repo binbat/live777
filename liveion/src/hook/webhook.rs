@@ -1,8 +1,7 @@
 use std::{net::SocketAddr, str::FromStr, time::Duration};
 
-use async_trait::async_trait;
-
 use api::event::{EventBody, NodeMetaData, NodeMetrics};
+use async_trait::async_trait;
 use reqwest::{header::HeaderMap, Client, Method};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};

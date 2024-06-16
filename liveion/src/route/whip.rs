@@ -1,11 +1,12 @@
-use crate::route::link_header;
-use crate::AppState;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::post;
 use axum::Router;
 use http::{HeaderMap, StatusCode};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+
+use crate::route::link_header;
+use crate::AppState;
 
 pub fn route() -> Router<AppState> {
     Router::new().route(&api::path::whip(":stream"), post(whip))

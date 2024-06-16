@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use crate::config::{Config, IceServer};
 use crate::stream::manager::Manager;
-use std::sync::Arc;
 
 pub mod admin;
 pub mod session;
