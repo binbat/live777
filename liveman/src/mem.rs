@@ -51,7 +51,7 @@ pub struct MemStorage {
     client: reqwest::Client,
     info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
-    resource: Arc<RwLock<HashMap<String, Server>>>,
+    session: Arc<RwLock<HashMap<String, Server>>>,
     servers: Vec<Server>,
 }
 
@@ -76,7 +76,7 @@ impl MemStorage {
             servers,
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
-            resource: Arc::new(RwLock::new(HashMap::new())),
+            session: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -134,14 +134,14 @@ impl MemStorage {
         }
     }
 
-    pub async fn resource_put(&self, resource: String, target: Server) -> Result<()> {
-        self.resource.write().unwrap().insert(resource, target);
+    pub async fn session_put(&self, session: String, target: Server) -> Result<()> {
+        self.session.write().unwrap().insert(session, target);
         Ok(())
     }
 
-    pub async fn resource_get(&mut self, resource: String) -> Result<Server, Error> {
+    pub async fn session_get(&mut self, session: String) -> Result<Server, Error> {
         self.update().await;
-        match self.resource.read().unwrap().get(&resource) {
+        match self.session.read().unwrap().get(&session) {
             Some(data) => Ok(data.clone()),
             None => Err(anyhow!("session not found")),
         }
@@ -187,8 +187,8 @@ impl MemStorage {
         self.info.write().unwrap().clear();
         self.stream.write().unwrap().clear();
 
-        // Maybe Don't need clear "resource"
-        //self.resource.write().unwrap().clear();
+        // Maybe Don't need clear "session"
+        //self.session.write().unwrap().clear();
 
         for handle in handles {
             let result = tokio::join!(handle);
@@ -205,7 +205,7 @@ impl MemStorage {
                                 self.stream_put(stream.id, target.clone()).await.unwrap();
 
                                 for subscriber in stream.subscribe.sessions {
-                                    match self.resource_put(subscriber.id, target.clone()).await {
+                                    match self.session_put(subscriber.id, target.clone()).await {
                                         Ok(_) => {}
                                         Err(e) => error!("Put Session Error: {:?}", e),
                                     }

@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn, Span};
 
 use api::response::Stream;
 
-use crate::route::utils::{force_check_times, reforward, resource_delete};
+use crate::route::utils::{force_check_times, reforward, session_delete};
 use crate::Server;
 use crate::{error::AppError, result::Result, AppState};
 
@@ -20,11 +20,11 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::whep(":stream"), post(whep))
         .route(
             &api::path::session(":stream", ":session"),
-            post(resource).patch(resource).delete(resource),
+            post(session).patch(session).delete(session),
         )
         .route(
             &api::path::session_layer(":stream", ":session"),
-            get(resource).post(resource).delete(resource),
+            get(session).post(session).delete(session),
         )
         .route("/admin/infos", get(info))
 }
@@ -71,7 +71,7 @@ async fn whip(
                             .unwrap();
                         state
                             .storage
-                            .resource_put(String::from(location.to_str().unwrap()), node.clone())
+                            .session_put(String::from(location.to_str().unwrap()), node.clone())
                             .await
                             .unwrap();
                     }
@@ -115,7 +115,7 @@ async fn whep(
                 Ok(res) => match res.headers().get("Location") {
                     Some(location) => state
                         .storage
-                        .resource_put(String::from(location.to_str().unwrap()), server)
+                        .session_put(String::from(location.to_str().unwrap()), server)
                         .await
                         .unwrap(),
                     None => error!("WHEP Error: Location not found {:?}", res),
@@ -182,7 +182,7 @@ async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: 
                         match sub_info.reforward {
                             Some(v) => info!("Skip. Is Reforward: {:?}", v),
                             None => {
-                                match resource_delete(server.clone(), stream.clone(), sub_info.id)
+                                match session_delete(server.clone(), stream.clone(), sub_info.id)
                                     .await
                                 {
                                     Ok(_) => {}
@@ -198,13 +198,13 @@ async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: 
     }
 }
 
-async fn resource(
+async fn session(
     State(mut state): State<AppState>,
     Path((stream, session)): Path<(String, String)>,
     req: Request,
 ) -> Result<Response> {
-    let resource = api::path::session(&stream, &session);
-    match state.storage.resource_get(resource).await {
+    let session = api::path::session(&stream, &session);
+    match state.storage.session_get(session).await {
         Ok(server) => request_proxy(state, req, &server).await,
         Err(_) => Err(AppError::ResourceNotFound),
     }

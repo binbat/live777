@@ -77,9 +77,9 @@ pub async fn reforward(
     }
 }
 
-pub async fn resource_delete(server: Server, stream: String, session: String) -> Result<(), Error> {
+pub async fn session_delete(server: Server, stream: String, session: String) -> Result<(), Error> {
     let client = reqwest::Client::new();
-    let url = format!("{}/resource/{}/{}", server.url, stream, session);
+    let url = format!("{}/session/{}/{}", server.url, stream, session);
 
     let response = client.delete(url).send().await?;
 

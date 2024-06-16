@@ -4,7 +4,7 @@ use chrono::Utc;
 use tracing::{error, info};
 use url::Url;
 
-use crate::{error::AppError, result::Result, route::utils::resource_delete, AppState};
+use crate::{error::AppError, result::Result, route::utils::session_delete, AppState};
 
 pub async fn reforward_check(state: AppState) {
     loop {
@@ -58,7 +58,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                         ?target_stream_info,
                                         "reforward idle for long periods of time"
                                     );
-                                    match resource_delete(
+                                    match session_delete(
                                         server.clone(),
                                         stream_info.id.clone(),
                                         session_info.id.clone(),
@@ -67,7 +67,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                     {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            error!("reforward resource delete error: {:?}", e)
+                                            error!("reforward session delete error: {:?}", e)
                                         }
                                     }
                                 }
