@@ -3,25 +3,33 @@ use http::StatusCode;
 
 #[derive(Debug)]
 pub enum AppError {
-    ResourceNotFound(String),
-    ResourceAlreadyExists(String),
+    StreamNotFound(String),
+    StreamAlreadyExists(String),
+    SessionNotFound(String),
     Throw(String),
     InternalServerError(anyhow::Error),
 }
 
 impl AppError {
-    pub fn resource_not_fount<T>(t: T) -> Self
+    pub fn stream_not_found<T>(t: T) -> Self
     where
         T: ToString,
     {
-        AppError::ResourceNotFound(t.to_string())
+        AppError::StreamNotFound(t.to_string())
     }
 
-    pub fn resource_already_exists<T>(t: T) -> Self
+    pub fn stream_already_exists<T>(t: T) -> Self
     where
         T: ToString,
     {
-        AppError::ResourceAlreadyExists(t.to_string())
+        AppError::StreamAlreadyExists(t.to_string())
+    }
+
+    pub fn session_not_found<T>(t: T) -> Self
+    where
+        T: ToString,
+    {
+        AppError::SessionNotFound(t.to_string())
     }
 
     pub fn throw<T>(t: T) -> Self
@@ -35,8 +43,9 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         match self {
-            AppError::ResourceNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
-            AppError::ResourceAlreadyExists(err) => (StatusCode::CONFLICT, err).into_response(),
+            AppError::StreamNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
+            AppError::StreamAlreadyExists(err) => (StatusCode::CONFLICT, err).into_response(),
+            AppError::SessionNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::InternalServerError(err) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
             }

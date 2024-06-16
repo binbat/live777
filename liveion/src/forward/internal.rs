@@ -262,7 +262,7 @@ impl PeerForwardInternal {
         {
             let mut publish = self.publish.write().await;
             if publish.is_some() {
-                return Err(AppError::resource_already_exists(
+                return Err(AppError::stream_already_exists(
                     "A connection has already been established",
                 ));
             }

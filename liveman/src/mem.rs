@@ -142,7 +142,7 @@ impl MemStorage {
         self.update().await;
         match self.resource.read().unwrap().get(&resource) {
             Some(data) => Ok(data.clone()),
-            None => Err(anyhow!("resource not found")),
+            None => Err(anyhow!("session not found")),
         }
     }
 
@@ -206,7 +206,7 @@ impl MemStorage {
                                 for subscriber in stream.subscribe.sessions {
                                     match self.resource_put(subscriber.id, target.clone()).await {
                                         Ok(_) => {}
-                                        Err(e) => error!("Put Resource Error: {:?}", e),
+                                        Err(e) => error!("Put Session Error: {:?}", e),
                                     }
                                 }
                             }

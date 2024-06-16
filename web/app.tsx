@@ -17,10 +17,10 @@ export function App() {
     const refClients = useRef<IClientsDialog>(null)
     const refNewStream = useRef<INewStreamDialog>(null)
     const [webStreams, setWebStreams] = useState<string[]>([])
-    const [newResourceId, setNewResourceId] = useState('')
+    const [newStreamId, setNewStreamId] = useState('')
     const refWebStreams = useRef<Map<string, IWebStreamDialog>>(new Map())
     const [previewStreams, setPreviewStreams] = useState<string[]>([])
-    const [previewResourceId, setPreviewResourceId] = useState('')
+    const [previewStreamId, setPreviewStreamId] = useState('')
     const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map())
 
     const updateAllStreams = async () => {
@@ -54,16 +54,16 @@ export function App() {
             refPreviewStreams.current.get(id)?.show(id)
         } else {
             setPreviewStreams([...previewStreams, id])
-            setPreviewResourceId(id)
+            setPreviewStreamId(id)
         }
     }
 
     useEffect(() => {
-        refPreviewStreams.current.get(previewResourceId)?.show(previewResourceId)
-    }, [previewResourceId])
+        refPreviewStreams.current.get(previewStreamId)?.show(previewStreamId)
+    }, [previewStreamId])
 
     const handlePreviewStop = (id: string) => {
-        setPreviewResourceId('')
+        setPreviewStreamId('')
         setPreviewStreams(previewStreams.filter(s => s !== id))
     }
 
@@ -71,29 +71,29 @@ export function App() {
         const prefix = 'web-'
         const existingIds = webStreams.concat(streams.filter(s => s.id.startsWith(prefix)).map(s => s.id))
         let i = 0
-        let newResourceId = `${prefix}${i}`
-        while (existingIds.includes(newResourceId)) {
+        let newStreamId = `${prefix}${i}`
+        while (existingIds.includes(newStreamId)) {
             i++
-            newResourceId = `${prefix}${i}`
+            newStreamId = `${prefix}${i}`
         }
-        refNewStream.current?.show(newResourceId)
+        refNewStream.current?.show(newStreamId)
     }
 
-    const handleNewResourceId = (id: string) => {
+    const handleNewStreamId = (id: string) => {
         setWebStreams([...webStreams, id])
-        setNewResourceId(id)
+        setNewStreamId(id)
     }
 
     useEffect(() => {
-        refWebStreams.current.get(newResourceId)?.show(newResourceId)
-    }, [newResourceId])
+        refWebStreams.current.get(newStreamId)?.show(newStreamId)
+    }, [newStreamId])
 
     const handleOpenWebStream = (id: string) => {
         refWebStreams.current.get(id)?.show(id)
     }
 
     const handleWebStreamStop = (id: string) => {
-        setNewResourceId('')
+        setNewStreamId('')
         setWebStreams(webStreams.filter(s => s !== id))
     }
 
@@ -123,7 +123,7 @@ export function App() {
                 />
             )}
 
-            <NewStreamDialog ref={refNewStream} onNewResourceId={handleNewResourceId} />
+            <NewStreamDialog ref={refNewStream} onNewStreamId={handleNewStreamId} />
 
             {webStreams.map(s =>
                 <WebStreamDialog
@@ -165,7 +165,7 @@ export function App() {
                         {streams.map(i =>
                             <tr>
                                 <td class="text-center">{i.id}</td>
-                                <td class="text-center">{i.publish.leaveAt === 0 ? "Ok" : "No"}</td>
+                                <td class="text-center">{i.publish.sessions.length}</td>
                                 <td class="text-center">{i.subscribe.sessions.length}</td>
                                 <td class="text-center">{i.subscribe.sessions.filter((t: any) => t.reforward).length}</td>
                                 <td class="text-center">{formatTime(i.createdAt)}</td>

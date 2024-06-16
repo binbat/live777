@@ -58,13 +58,13 @@ impl PeerForward {
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if self.internal.publish_is_some().await {
-            return Err(AppError::resource_already_exists(
+            return Err(AppError::stream_already_exists(
                 "A connection has already been established",
             ));
         }
         let _ = self.publish_lock.lock().await;
         if self.internal.publish_is_some().await {
-            return Err(AppError::resource_already_exists(
+            return Err(AppError::stream_already_exists(
                 "A connection has already been established",
             ));
         }

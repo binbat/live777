@@ -22,7 +22,7 @@ async fn create(
         Ok(_) => Ok(Response::builder()
             .status(StatusCode::NO_CONTENT)
             .body("".to_string())?),
-        Err(e) => Err(AppError::ResourceAlreadyExists(e.to_string())),
+        Err(e) => Err(AppError::StreamAlreadyExists(e.to_string())),
     }
 }
 
@@ -34,7 +34,7 @@ async fn destroy(
         Ok(_) => Ok(Response::builder()
             .status(StatusCode::NO_CONTENT)
             .body("".to_string())?),
-        Err(e) => Err(AppError::ResourceNotFound(e.to_string())),
+        Err(e) => Err(AppError::StreamNotFound(e.to_string())),
     }
 }
 

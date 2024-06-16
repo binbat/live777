@@ -203,7 +203,7 @@ async fn resource(
     Path((stream, session)): Path<(String, String)>,
     req: Request,
 ) -> Result<Response> {
-    let resource = format!("/resource/{}/{}", stream, session);
+    let resource = api::path::session(&stream, &session);
     match state.storage.resource_get(resource).await {
         Ok(server) => request_proxy(state, req, &server).await,
         Err(_) => Err(AppError::ResourceNotFound),
