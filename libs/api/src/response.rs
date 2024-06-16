@@ -8,21 +8,27 @@ pub struct Layer {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamInfo {
+pub struct Stream {
     pub id: String,
-    pub create_time: i64,
-    pub publish_leave_time: i64,
-    pub subscribe_leave_time: i64,
-    pub publish_session_info: Option<SessionInfo>,
-    pub subscribe_session_infos: Vec<SessionInfo>,
+    pub created_at: i64,
+    pub publish: PubSub,
+    pub subscribe: PubSub,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionInfo {
+pub struct PubSub {
+    pub leave_at: i64,
+    pub sessions: Vec<Session>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
     pub id: String,
-    pub create_time: i64,
-    pub connect_state: RTCPeerConnectionState,
+    pub created_at: i64,
+    pub state: RTCPeerConnectionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reforward: Option<ReforwardInfo>,
 }
 

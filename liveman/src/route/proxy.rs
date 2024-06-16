@@ -8,7 +8,7 @@ use http::Uri;
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn, Span};
 
-use api::response::StreamInfo;
+use api::response::Stream;
 
 use crate::route::utils::{force_check_times, reforward, resource_delete};
 use crate::Server;
@@ -32,7 +32,7 @@ pub fn route() -> Router<AppState> {
 async fn info(
     State(mut state): State<AppState>,
     _req: Request,
-) -> crate::result::Result<Json<Vec<api::response::StreamInfo>>> {
+) -> crate::result::Result<Json<Vec<api::response::Stream>>> {
     Ok(Json(state.storage.info_all().await.unwrap()))
 }
 
@@ -178,7 +178,7 @@ async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: 
         Ok(streams) => {
             for stream_info in streams.into_iter() {
                 if stream_info.id == stream {
-                    for sub_info in stream_info.subscribe_session_infos.into_iter() {
+                    for sub_info in stream_info.subscribe.sessions.into_iter() {
                         match sub_info.reforward {
                             Some(v) => info!("Skip. Is Reforward: {:?}", v),
                             None => {
@@ -244,7 +244,7 @@ async fn maximum_idle_node(
     let mut max = 0;
     let mut result = None;
     let info = state.storage.info_raw_all().await.unwrap();
-    let infos: Vec<(String, Option<StreamInfo>)> = servers
+    let infos: Vec<(String, Option<Stream>)> = servers
         .clone()
         .iter()
         .map(|i| {
@@ -259,7 +259,7 @@ async fn maximum_idle_node(
         for s in servers.clone() {
             if s.key == key {
                 let remain = match i.clone() {
-                    Some(x) => s.sub_max as i32 - x.subscribe_session_infos.len() as i32,
+                    Some(x) => s.sub_max as i32 - x.subscribe.sessions.len() as i32,
                     None => s.sub_max as i32,
                 };
 

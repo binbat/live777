@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'preact/hooks'
 import Logo from '/logo.svg'
 import './app.css'
-import { StreamInfo, allStream, delStream } from './api'
+import { Stream, allStream, delStream } from './api'
 import { formatTime } from './utils'
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
 import { IReforwardDialog, ReforwardDialog } from './dialog-reforward'
@@ -10,7 +10,7 @@ import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
 export function App() {
-    const [streams, setStreams] = useState<StreamInfo[]>([])
+    const [streams, setStreams] = useState<Stream[]>([])
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const [refreshTimer, setRefershTimer] = useState(-1)
     const refReforward = useRef<IReforwardDialog>(null)
@@ -88,7 +88,7 @@ export function App() {
                 </a>
             </div>
 
-            <ClientsDialog ref={refClients} id={selectedStreamId} clients={streams.find(s => s.id == selectedStreamId)?.subscribeSessionInfos ?? []} />
+            <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
 
             <ReforwardDialog ref={refReforward} />
 
@@ -135,15 +135,15 @@ export function App() {
                         {streams.map(i =>
                             <tr>
                                 <td class="text-center">{i.id}</td>
-                                <td class="text-center">{i.publishLeaveTime === 0 ? "Ok" : "No"}</td>
-                                <td class="text-center">{i.subscribeSessionInfos.length}</td>
-                                <td class="text-center">{i.subscribeSessionInfos.filter((t: any) => t.reforward).length}</td>
-                                <td class="text-center">{formatTime(i.createTime)}</td>
+                                <td class="text-center">{i.publish.leaveAt === 0 ? "Ok" : "No"}</td>
+                                <td class="text-center">{i.subscribe.sessions.length}</td>
+                                <td class="text-center">{i.subscribe.sessions.filter((t: any) => t.reforward).length}</td>
+                                <td class="text-center">{formatTime(i.createdAt)}</td>
                                 <td>
                                     <button onClick={() => handlePreview(i.id)}>Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
                                     <button onClick={() => handleReforwardStream(i.id)}>Reforward</button>
-                                    <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publishSessionInfo.id)}>Destroy</button>
+                                    <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publish.sessions[0].id)}>Destroy</button>
                                 </td>
                             </tr>
                         )}

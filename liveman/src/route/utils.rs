@@ -4,7 +4,7 @@ use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
-use api::response::StreamInfo;
+use api::response::Stream;
 
 use crate::Server;
 
@@ -31,15 +31,15 @@ async fn force_check(server: Server, stream: String) -> Result<(), Error> {
     let status = response.status();
     let body = &response.text().await?;
     if status.is_success() {
-        let streams = serde_json::from_str::<Vec<StreamInfo>>(body)?;
+        let streams = serde_json::from_str::<Vec<Stream>>(body)?;
         debug!("{:?}", streams);
         return match streams.into_iter().find(|f| f.id == stream) {
-            Some(stream) => match stream.publish_session_info {
+            Some(stream) => match stream.publish.sessions.first() {
                 Some(session) => {
-                    if session.connect_state == RTCPeerConnectionState::Connected {
+                    if session.state == RTCPeerConnectionState::Connected {
                         Ok(())
                     } else {
-                        Err(anyhow!("connect state is {:?}", session.connect_state))
+                        Err(anyhow!("connect state is {:?}", session.state))
                     }
                 }
                 None => Err(anyhow!("Not Found stream publisher")),

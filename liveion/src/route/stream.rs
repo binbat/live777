@@ -41,7 +41,7 @@ async fn destroy(
 async fn index(
     State(state): State<AppState>,
     Query(req): Query<api::request::QueryInfo>,
-) -> crate::result::Result<Json<Vec<api::response::StreamInfo>>> {
+) -> crate::result::Result<Json<Vec<api::response::Stream>>> {
     Ok(Json(
         state
             .stream_manager

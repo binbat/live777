@@ -11,29 +11,36 @@ impl From<crate::forward::message::Layer> for api::response::Layer {
     }
 }
 
-impl From<crate::forward::message::ForwardInfo> for api::response::StreamInfo {
+impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
     fn from(value: crate::forward::message::ForwardInfo) -> Self {
-        api::response::StreamInfo {
+        api::response::Stream {
             id: value.id,
-            create_time: value.create_time,
-            publish_leave_time: value.publish_leave_time,
-            subscribe_leave_time: value.subscribe_leave_time,
-            publish_session_info: value.publish_session_info.map(|session| session.into()),
-            subscribe_session_infos: value
-                .subscribe_session_infos
-                .into_iter()
-                .map(|session| session.into())
-                .collect(),
+            created_at: value.create_time,
+            publish: api::response::PubSub {
+                leave_at: value.publish_leave_time,
+                sessions: match value.publish_session_info.map(|session| session.into()) {
+                    Some(session) => vec![session],
+                    None => vec![],
+                },
+            },
+            subscribe: api::response::PubSub {
+                leave_at: value.subscribe_leave_time,
+                sessions: value
+                    .subscribe_session_infos
+                    .into_iter()
+                    .map(|session| session.into())
+                    .collect(),
+            },
         }
     }
 }
 
-impl From<crate::forward::message::SessionInfo> for api::response::SessionInfo {
+impl From<crate::forward::message::SessionInfo> for api::response::Session {
     fn from(value: crate::forward::message::SessionInfo) -> Self {
-        api::response::SessionInfo {
+        api::response::Session {
             id: value.id,
-            create_time: value.create_time,
-            connect_state: convert_connect_state(value.connect_state),
+            created_at: value.create_time,
+            state: convert_connect_state(value.connect_state),
             reforward: value.reforward.map(|reforward| reforward.into()),
         }
     }
@@ -57,21 +64,15 @@ impl From<Config> for NodeMetaData {
     }
 }
 
-fn convert_connect_state(
-    connect_state: RTCPeerConnectionState,
-) -> api::response::RTCPeerConnectionState {
-    match connect_state {
-        RTCPeerConnectionState::Unspecified => api::response::RTCPeerConnectionState::New,
-
-        RTCPeerConnectionState::New => api::response::RTCPeerConnectionState::New,
+fn convert_connect_state(state: RTCPeerConnectionState) -> api::response::RTCPeerConnectionState {
+    match state {
+        RTCPeerConnectionState::Unspecified | RTCPeerConnectionState::New => {
+            api::response::RTCPeerConnectionState::New
+        }
         RTCPeerConnectionState::Connecting => api::response::RTCPeerConnectionState::Connecting,
-
         RTCPeerConnectionState::Connected => api::response::RTCPeerConnectionState::Connected,
-
         RTCPeerConnectionState::Disconnected => api::response::RTCPeerConnectionState::Disconnected,
-
         RTCPeerConnectionState::Failed => api::response::RTCPeerConnectionState::Failed,
-
         RTCPeerConnectionState::Closed => api::response::RTCPeerConnectionState::Closed,
     }
 }

@@ -33,7 +33,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
     for (key, streams) in nodes.iter() {
         let server = map_server.get(key).unwrap();
         for stream_info in streams {
-            for session_info in &stream_info.subscribe_session_infos {
+            for session_info in &stream_info.subscribe.sessions {
                 if let Some(reforward_info) = &session_info.reforward {
                     if let Ok((target_node_addr, target_stream)) =
                         parse_node_and_stream(reforward_info.target_url.clone())
@@ -45,9 +45,9 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                 .iter()
                                 .find(|i| i.id == target_stream)
                             {
-                                if target_stream_info.subscribe_leave_time != 0
+                                if target_stream_info.subscribe.leave_at != 0
                                     && Utc::now().timestamp_millis()
-                                        >= target_stream_info.subscribe_leave_time
+                                        >= target_stream_info.subscribe.leave_at
                                             + state.config.reforward.maximum_idle_time as i64
                                 {
                                     info!(

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use api::response::StreamInfo;
+use api::response::Stream;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, trace, warn};
@@ -48,7 +48,7 @@ pub struct MemStorage {
     time: SystemTime,
     server: Arc<RwLock<HashMap<String, Server>>>,
     client: reqwest::Client,
-    info: Arc<RwLock<HashMap<String, Vec<StreamInfo>>>>,
+    info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
     resource: Arc<RwLock<HashMap<String, Server>>>,
     servers: Vec<Server>,
@@ -88,12 +88,12 @@ impl MemStorage {
         self.servers.clone()
     }
 
-    pub async fn info_put(&self, key: String, target: Vec<StreamInfo>) -> Result<()> {
+    pub async fn info_put(&self, key: String, target: Vec<Stream>) -> Result<()> {
         self.info.write().unwrap().insert(key, target);
         Ok(())
     }
 
-    pub async fn info_get(&mut self, key: String) -> Result<Vec<StreamInfo>, Error> {
+    pub async fn info_get(&mut self, key: String) -> Result<Vec<Stream>, Error> {
         self.update().await;
         match self.info.read().unwrap().get(&key) {
             Some(server) => Ok(server.clone()),
@@ -101,7 +101,7 @@ impl MemStorage {
         }
     }
 
-    pub async fn info_all(&mut self) -> Result<Vec<StreamInfo>, Error> {
+    pub async fn info_all(&mut self) -> Result<Vec<Stream>, Error> {
         self.update().await;
         let mut result = Vec::new();
         for mut v in self.info.read().unwrap().values().cloned() {
@@ -110,7 +110,7 @@ impl MemStorage {
         Ok(result)
     }
 
-    pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<StreamInfo>>, Error> {
+    pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<Stream>>, Error> {
         self.update().await;
         Ok(self.info.read().unwrap().clone())
     }
@@ -195,7 +195,7 @@ impl MemStorage {
                 (Ok((key, Ok(res))),) => {
                     debug!("{}: Response: {:?}", key, res);
 
-                    match serde_json::from_str::<Vec<StreamInfo>>(&res.text().await.unwrap()) {
+                    match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
                             trace!("{:?}", streams.clone());
                             self.info_put(key.clone(), streams.clone()).await.unwrap();
@@ -203,7 +203,7 @@ impl MemStorage {
                                 let target = self.server.read().unwrap().get(&key).unwrap().clone();
                                 self.stream_put(stream.id, target.clone()).await.unwrap();
 
-                                for subscriber in stream.subscribe_session_infos {
+                                for subscriber in stream.subscribe.sessions {
                                     match self.resource_put(subscriber.id, target.clone()).await {
                                         Ok(_) => {}
                                         Err(e) => error!("Put Resource Error: {:?}", e),
