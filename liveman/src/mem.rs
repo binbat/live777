@@ -202,10 +202,18 @@ impl MemStorage {
                             self.info_put(key.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
                                 let target = self.server.read().unwrap().get(&key).unwrap().clone();
-                                self.stream_put(stream.id, target.clone()).await.unwrap();
+                                self.stream_put(stream.id.clone(), target.clone())
+                                    .await
+                                    .unwrap();
 
-                                for subscriber in stream.subscribe.sessions {
-                                    match self.session_put(subscriber.id, target.clone()).await {
+                                for session in stream.subscribe.sessions {
+                                    match self
+                                        .session_put(
+                                            api::path::session(&stream.id, &session.id),
+                                            target.clone(),
+                                        )
+                                        .await
+                                    {
                                         Ok(_) => {}
                                         Err(e) => error!("Put Session Error: {:?}", e),
                                     }
