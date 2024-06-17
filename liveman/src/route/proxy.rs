@@ -59,29 +59,35 @@ async fn whip(
     };
 
     match target {
-        Some(node) => {
-            let resp = request_proxy(state.clone(), req, &node).await;
-            match resp.as_ref() {
-                Ok(res) => match res.headers().get("Location") {
-                    Some(location) => {
-                        state
-                            .storage
-                            .stream_put(stream, node.clone())
-                            .await
-                            .unwrap();
-                        state
-                            .storage
-                            .session_put(String::from(location.to_str().unwrap()), node.clone())
-                            .await
-                            .unwrap();
+        Some(server) => {
+            let resp = request_proxy(state.clone(), req, &server).await;
+            match resp {
+                Ok(res) => {
+                    if res.status().is_success() {
+                        match res.headers().get("Location") {
+                            Some(location) => {
+                                state
+                                    .storage
+                                    .stream_put(stream.clone(), server.clone())
+                                    .await
+                                    .unwrap();
+
+                                state
+                                    .storage
+                                    .session_put(String::from(location.to_str().unwrap()), server)
+                                    .await
+                                    .unwrap();
+                            }
+                            None => error!("WHIP Error: Location not found"),
+                        };
+                        Ok(res)
+                    } else {
+                        error!("WHIP Error: {:?}", res);
+                        Ok(res)
                     }
-                    None => error!("WHIP Error: Location not found"),
-                },
-                Err(e) => {
-                    error!("WHIP Error: {:?}", e);
                 }
+                Err(e) => Err(e),
             }
-            resp
         }
         None => Err(AppError::NoAvailableNode),
     }
@@ -111,23 +117,27 @@ async fn whep(
         Some(server) => {
             debug!("{:?}", server);
             let resp = request_proxy(state.clone(), req, &server).await;
-            match resp.as_ref() {
-                Ok(res) => match res.headers().get("Location") {
-                    Some(location) => state
-                        .storage
-                        .session_put(String::from(location.to_str().unwrap()), server)
-                        .await
-                        .unwrap(),
-                    None => error!("WHEP Error: Location not found {:?}", res),
-                },
-                Err(e) => error!("WHEP Error: {:?}", e),
+            match resp {
+                Ok(res) => {
+                    if res.status().is_success() {
+                        match res.headers().get("Location") {
+                            Some(location) => state
+                                .storage
+                                .session_put(String::from(location.to_str().unwrap()), server)
+                                .await
+                                .unwrap(),
+                            None => error!("WHEP Error: Location not found {:?}", res),
+                        };
+                        Ok(res)
+                    } else {
+                        error!("WHEP Error: {:?}", res);
+                        Ok(res)
+                    }
+                }
+                Err(e) => Err(e),
             }
-            resp
         }
-        None => {
-            error!("WHEP Error: No available node");
-            Err(AppError::NoAvailableNode)
-        }
+        None => Err(AppError::NoAvailableNode),
     }
 }
 
