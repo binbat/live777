@@ -1,10 +1,10 @@
-import convertSessionDescription from "../old/sdp.js"
+import convertSessionDescription from "./sdp.js"
 import {WHIPClient} from "@binbat/whip-whep/whip.js"
 import {WHEPClient} from "@binbat/whip-whep/whep.js"
 
-import VideoSizeSelectElement from "../old/components/video-size-select.js"
-import DebugPlayer from "../old/components/debug-player.js"
-import DataChannel from "../old/components/data-channel.js"
+import VideoSizeSelectElement from "./components/video-size-select.js"
+import DebugPlayer from "./components/debug-player.js"
+import DataChannel from "./components/data-channel.js"
 
 customElements.define("video-size-select", VideoSizeSelectElement)
 customElements.define("debug-player", DebugPlayer)

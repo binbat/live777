@@ -53,8 +53,6 @@ impl From<Config> for NodeMetaData {
         Self {
             authorization: value.auth.to_authorizations().first().cloned(),
             admin_authorization: value.admin_auth.to_authorizations().first().cloned(),
-            pub_max: value.stream_info.pub_max.0,
-            sub_max: value.stream_info.sub_max.0,
         }
     }
 }

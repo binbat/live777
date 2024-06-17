@@ -78,51 +78,30 @@ pub struct Log {
     pub level: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublishLeaveTimeout(pub u64);
-
-impl Default for PublishLeaveTimeout {
-    fn default() -> Self {
-        PublishLeaveTimeout(15000)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamInfo {
     #[serde(default)]
-    pub pub_max: MetaDataPubMax,
-    #[serde(default)]
-    pub sub_max: MetaDataSubMax,
-    #[serde(default)]
     pub reforward_close_sub: bool,
+    #[serde(default = "default_true")]
+    pub auto_create_whip: bool,
     #[serde(default)]
-    pub publish_leave_timeout: PublishLeaveTimeout,
+    pub auto_create_whep: bool,
+    #[serde(default)]
+    pub auto_delete_whip: AutoDestrayTime,
+    #[serde(default)]
+    pub auto_delete_whep: AutoDestrayTime,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetaDataPubMax(pub u64);
+pub struct AutoDestrayTime(pub i64);
 
-impl Default for MetaDataPubMax {
+impl Default for AutoDestrayTime {
     fn default() -> Self {
-        MetaDataPubMax(u64::MAX)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetaDataSubMax(pub u64);
-
-impl Default for MetaDataSubMax {
-    fn default() -> Self {
-        MetaDataSubMax(u64::MAX)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardMaximumIdleTime(pub u64);
-
-impl Default for ReforwardMaximumIdleTime {
-    fn default() -> Self {
-        ReforwardMaximumIdleTime(60000)
+        AutoDestrayTime(60)
     }
 }
 
@@ -259,17 +238,7 @@ impl Config {
         {
             return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
         }
-        if self.stream_info.pub_max.0 == 0 {
-            return Err(anyhow::anyhow!("stream_info.pub_max cannot be equal to 0"));
-        }
-        if self.stream_info.sub_max.0 == 0 {
-            return Err(anyhow::anyhow!("stream_info.sub_max cannot be equal to 0"));
-        }
-        if self.stream_info.pub_max.0 > self.stream_info.sub_max.0 {
-            return Err(anyhow::anyhow!(
-                "stream_info.pub_max cannot be greater than stream_info.sub_max"
-            ));
-        }
+
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()

@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::forward::message::Layer;
@@ -59,11 +59,23 @@ impl Manager {
         }
         let _ = send.send(Event::Node(NodeEvent::Up));
         tokio::spawn(Self::keep_alive_tick(send.clone()));
-        tokio::spawn(Self::publish_check_tick(
-            stream_map.clone(),
-            cfg.publish_leave_timeout,
-            send.clone(),
-        ));
+
+        if cfg.auto_delete_pub >= 0 {
+            tokio::spawn(Self::publish_check_tick(
+                stream_map.clone(),
+                cfg.auto_delete_pub,
+                send.clone(),
+            ));
+        }
+
+        if cfg.auto_delete_sub >= 0 {
+            tokio::spawn(Self::subscribe_check_tick(
+                stream_map.clone(),
+                cfg.auto_delete_sub,
+                send.clone(),
+            ));
+        }
+
         Manager {
             stream_map,
             config: cfg,
@@ -80,10 +92,9 @@ impl Manager {
 
     async fn publish_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        publish_leave_timeout: u64,
+        publish_leave_timeout: i64,
         event_sender: broadcast::Sender<Event>,
     ) {
-        let publish_leave_timeout_i64: i64 = publish_leave_timeout.try_into().unwrap();
         loop {
             tokio::time::sleep(Duration::from_millis(1000)).await;
             let stream_map_read = stream_map.read().await;
@@ -92,7 +103,7 @@ impl Manager {
                 let forward_info = forward.info().await;
                 if forward_info.publish_leave_time > 0
                     && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                        > publish_leave_timeout_i64
+                        > publish_leave_timeout
                 {
                     remove_streams.push(stream.clone());
                 }
@@ -107,7 +118,7 @@ impl Manager {
                     let forward_info = forward.info().await;
                     if forward_info.publish_leave_time > 0
                         && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                            > publish_leave_timeout_i64
+                            > publish_leave_timeout
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
@@ -121,6 +132,68 @@ impl Manager {
                             "stream : {}, publish leave timeout, publish leave time : {}",
                             stream, publish_leave_time
                         );
+
+                        metrics::STREAM.dec();
+                        let _ = event_sender.send(Event::Stream(StreamEvent {
+                            r#type: StreamEventType::Down,
+                            stream: Stream {
+                                stream: stream.clone(),
+                                session: None,
+                                publish: 0,
+                                subscribe: 0,
+                                reforward: 0,
+                            },
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    async fn subscribe_check_tick(
+        stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
+        subscribe_leave_timeout: i64,
+        event_sender: broadcast::Sender<Event>,
+    ) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            let stream_map_read = stream_map.read().await;
+            let mut remove_streams = vec![];
+            for (stream, forward) in stream_map_read.iter() {
+                let forward_info = forward.info().await;
+                if forward_info.subscribe_leave_time > 0
+                    && Utc::now().timestamp_millis() - forward_info.publish_leave_time
+                        > subscribe_leave_timeout
+                {
+                    remove_streams.push(stream.clone());
+                }
+            }
+            if remove_streams.is_empty() {
+                continue;
+            }
+            drop(stream_map_read);
+            let mut stream_map = stream_map.write().await;
+            for stream in remove_streams.iter() {
+                if let Some(forward) = stream_map.get(stream) {
+                    let forward_info = forward.info().await;
+                    if forward_info.subscribe_leave_time > 0
+                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_time
+                            > subscribe_leave_timeout
+                    {
+                        let _ = forward.close().await;
+                        stream_map.remove(stream);
+                        metrics::STREAM.dec();
+                        let subscribe_leave_time =
+                            DateTime::from_timestamp_millis(forward_info.subscribe_leave_time)
+                                .unwrap()
+                                .format("%Y-%m-%d %H:%M:%S")
+                                .to_string();
+                        info!(
+                            "stream : {}, subscribe leave timeout, publish leave time : {}",
+                            stream, subscribe_leave_time
+                        );
+
+                        metrics::STREAM.dec();
                         let _ = event_sender.send(Event::Stream(StreamEvent {
                             r#type: StreamEventType::Down,
                             stream: Stream {
@@ -146,47 +219,84 @@ impl Manager {
         }
     }
 
-    pub async fn publish(&self, stream: String, offer: RTCSessionDescription) -> Result<Response> {
-        let stream_map = self.stream_map.read().await;
+    pub async fn stream_create(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
+        let mut stream_map = self.stream_map.write().await;
         let forward = stream_map.get(&stream).cloned();
+        if forward.is_some() {
+            return Err(anyhow::anyhow!("resource already exists"));
+        }
+        debug!("create stream: {}", stream.clone());
+        let forward = self.do_stream_create(stream.clone()).await;
+        stream_map.insert(stream.clone(), forward);
         drop(stream_map);
-        if let Some(forward) = forward {
-            forward.set_publish(offer).await
-        } else {
-            if metrics::STREAM.get() >= self.config.pub_max as f64 {
-                return Err(AppError::LackOfResources);
-            }
-            let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
-            let subscribe_event = forward.subscribe_event();
-            tokio::spawn(Self::forward_event_handler(
-                subscribe_event,
-                self.event_sender.clone(),
-            ));
-            let (sdp, session) = forward.set_publish(offer).await?;
-            let mut stream_map = self.stream_map.write().await;
-            if stream_map.contains_key(&stream) {
-                let _ = forward.close().await;
-                return Err(AppError::resource_already_exists("resource already exists"));
-            }
-            if stream_map.len() >= self.config.pub_max as usize {
-                warn!("stream {} set publish ok,but exceeded the limit", stream);
-                let _ = forward.close().await;
-                return Err(AppError::LackOfResources);
-            }
-            info!("add stream : {}", stream);
-            stream_map.insert(stream.clone(), forward);
-            metrics::STREAM.inc();
-            let _ = self.event_sender.send(Event::Stream(StreamEvent {
-                stream: Stream {
-                    stream,
-                    session: None,
-                    publish: 1,
-                    subscribe: 0,
-                    reforward: 0,
-                },
-                r#type: StreamEventType::Up,
-            }));
-            Ok((sdp, session))
+        Ok(())
+    }
+
+    async fn do_stream_create(&self, stream: String) -> PeerForward {
+        let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
+        let subscribe_event = forward.subscribe_event();
+        tokio::spawn(Self::forward_event_handler(
+            subscribe_event,
+            self.event_sender.clone(),
+        ));
+
+        info!("add stream : {}", stream);
+        metrics::STREAM.inc();
+        let _ = self.event_sender.send(Event::Stream(StreamEvent {
+            stream: Stream {
+                stream,
+                session: None,
+                publish: 1,
+                subscribe: 0,
+                reforward: 0,
+            },
+            r#type: StreamEventType::Up,
+        }));
+        forward
+    }
+
+    pub async fn stream_delete(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
+        let mut stream_map = self.stream_map.write().await;
+        let forward = stream_map.get(&stream).cloned();
+        let _ = match forward {
+            Some(forward) => forward.close().await,
+            None => return Err(anyhow::anyhow!("resource not exists")),
+        };
+        stream_map.remove(&stream);
+        drop(stream_map);
+
+        self.do_stream_delete(stream.clone()).await;
+        info!("remove stream : {}", stream);
+        Ok(())
+    }
+
+    async fn do_stream_delete(&self, stream: String) {
+        metrics::STREAM.dec();
+        let _ = self.event_sender.send(Event::Stream(StreamEvent {
+            stream: Stream {
+                stream,
+                publish: 0,
+                subscribe: 0,
+                reforward: 0,
+                session: None,
+            },
+            r#type: StreamEventType::Down,
+        }));
+    }
+
+    pub async fn publish(&self, stream: String, offer: RTCSessionDescription) -> Result<Response> {
+        let mut stream_map = self.stream_map.write().await;
+        let mut forward = stream_map.get(&stream).cloned();
+        if forward.is_none() && self.config.auto_create_pub {
+            let raw_forward = self.do_stream_create(stream.clone()).await;
+            stream_map.insert(stream.clone(), raw_forward.clone());
+            forward = Some(raw_forward);
+        }
+        drop(stream_map);
+
+        match forward {
+            Some(forward) => forward.set_publish(offer).await,
+            None => Err(AppError::resource_not_fount("resource not exists")),
         }
     }
 
@@ -195,21 +305,17 @@ impl Manager {
         stream: String,
         offer: RTCSessionDescription,
     ) -> Result<Response> {
-        if metrics::SUBSCRIBE.get() >= self.config.sub_max as f64 {
-            return Err(AppError::LackOfResources);
+        let mut stream_map = self.stream_map.write().await;
+        let mut forward = stream_map.get(&stream).cloned();
+        if forward.is_none() && self.config.auto_create_sub {
+            let raw_forward = self.do_stream_create(stream.clone()).await;
+            stream_map.insert(stream.clone(), raw_forward.clone());
+            forward = Some(raw_forward);
         }
-        let stream_map = self.stream_map.read().await;
-        let forward = stream_map.get(&stream).cloned();
         drop(stream_map);
+
         if let Some(forward) = forward {
-            let (sdp, session) = forward.add_subscribe(offer).await?;
-            if metrics::SUBSCRIBE.get() > self.config.sub_max as f64 {
-                warn!("stream {} add subscribe ok,but exceeded the limit", stream);
-                let _ = forward.remove_peer(session).await;
-                Err(AppError::LackOfResources)
-            } else {
-                Ok((sdp, session))
-            }
+            Ok(forward.add_subscribe(offer).await?)
         } else {
             Err(AppError::resource_not_fount("resource not exists"))
         }
@@ -237,23 +343,7 @@ impl Manager {
         drop(streams);
         if let Some(forward) = forward {
             let is_publish = forward.remove_peer(session.clone()).await?;
-            if is_publish {
-                let _ = forward.close().await;
-                let mut stream_map = self.stream_map.write().await;
-                info!("remove stream : {}", stream);
-                stream_map.remove(&stream);
-                metrics::STREAM.dec();
-                let _ = self.event_sender.send(Event::Stream(StreamEvent {
-                    stream: Stream {
-                        stream,
-                        publish: 0,
-                        subscribe: 0,
-                        reforward: 0,
-                        session: None,
-                    },
-                    r#type: StreamEventType::Down,
-                }));
-            }
+            if is_publish {}
         }
         Ok(())
     }

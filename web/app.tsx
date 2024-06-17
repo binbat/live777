@@ -15,11 +15,13 @@ export function App() {
     const [refreshTimer, setRefershTimer] = useState(-1)
     const refReforward = useRef<IReforwardDialog>(null)
     const refClients = useRef<IClientsDialog>(null)
-    const refPreview = useRef<IPreviewDialog>(null)
     const refNewStream = useRef<INewStreamDialog>(null)
     const [webStreams, setWebStreams] = useState<string[]>([])
     const [newResourceId, setNewResourceId] = useState('')
     const refWebStreams = useRef<Map<string, IWebStreamDialog>>(new Map())
+    const [previewStreams, setPreviewStreams] = useState<string[]>([])
+    const [previewResourceId, setPreviewResourceId] = useState('')
+    const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map())
 
     const updateAllStreams = async () => {
         setStreams(await allStream())
@@ -48,7 +50,21 @@ export function App() {
     }
 
     const handlePreview = (id: string) => {
-        refPreview.current?.show(id)
+        if (previewStreams.includes(id)) {
+            refPreviewStreams.current.get(id)?.show(id)
+        } else {
+            setPreviewStreams([...previewStreams, id])
+            setPreviewResourceId(id)
+        }
+    }
+
+    useEffect(() => {
+        refPreviewStreams.current.get(previewResourceId)?.show(previewResourceId)
+    }, [previewResourceId])
+
+    const handlePreviewStop = (id: string) => {
+        setPreviewResourceId('')
+        setPreviewStreams(previewStreams.filter(s => s !== id))
     }
 
     const handleNewStream = () => {
@@ -77,6 +93,7 @@ export function App() {
     }
 
     const handleWebStreamStop = (id: string) => {
+        setNewResourceId('')
         setWebStreams(webStreams.filter(s => s !== id))
     }
 
@@ -92,12 +109,25 @@ export function App() {
 
             <ReforwardDialog ref={refReforward} />
 
-            <PreviewDialog ref={refPreview} />
+            {previewStreams.map(s =>
+                <PreviewDialog
+                    key={s}
+                    ref={(instance: IPreviewDialog | null) => {
+                        if (instance) {
+                            refPreviewStreams.current.set(s, instance)
+                        } else {
+                            refPreviewStreams.current.delete(s)
+                        }
+                    }}
+                    onStop={() => { handlePreviewStop(s) }}
+                />
+            )}
 
             <NewStreamDialog ref={refNewStream} onNewResourceId={handleNewResourceId} />
 
             {webStreams.map(s =>
                 <WebStreamDialog
+                    key={s}
                     ref={(instance: IWebStreamDialog | null) => {
                         if (instance) {
                             refWebStreams.current.set(s, instance)
@@ -140,7 +170,7 @@ export function App() {
                                 <td class="text-center">{i.subscribeSessionInfos.filter((t: any) => t.reforward).length}</td>
                                 <td class="text-center">{formatTime(i.createTime)}</td>
                                 <td>
-                                    <button onClick={() => handlePreview(i.id)}>Preview</button>
+                                    <button style={{ color: previewStreams.includes(i.id) ? 'blue' : 'inherit' }} onClick={() => handlePreview(i.id)}>Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
                                     <button onClick={() => handleReforwardStream(i.id)}>Reforward</button>
                                     <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publishSessionInfo.id)}>Destroy</button>

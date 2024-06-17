@@ -5,7 +5,6 @@ use http::StatusCode;
 pub enum AppError {
     ResourceNotFound(String),
     ResourceAlreadyExists(String),
-    LackOfResources,
     Throw(String),
     InternalServerError(anyhow::Error),
 }
@@ -42,9 +41,6 @@ impl IntoResponse for AppError {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
             }
             AppError::Throw(err) => (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
-            AppError::LackOfResources => {
-                (StatusCode::SERVICE_UNAVAILABLE, "lack of resources").into_response()
-            }
         }
     }
 }

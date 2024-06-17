@@ -85,9 +85,8 @@ Live777 has the following characteristics:
 ## For developer
 
 Depends:
-- [bun](https://bun.sh/) Or [nodejs](https://nodejs.org/)
 - [cargo](https://www.rust-lang.org/)
-- [go](https://go.dev/)
+- [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
 If you need configuration, you can use
 
@@ -99,8 +98,8 @@ cp conf/liveman.toml liveman.toml
 ### WebUI
 
 ```bash
-bun install
-bun run dev
+npm install
+npm run dev
 ```
 
 ### Live777
@@ -162,12 +161,13 @@ winget install live777
 
 ### Single Page Player
 
-example: http://localhost:7777/web/player.html?resource=web-0&autoplay&mute&reconnect=2000
+example: http://localhost:7777/web/player.html?resource=web-0&autoplay&controls&mute&reconnect=2000
 
 URL params:
 
 - `resource`: string, live777 resource ID
 - `autoplay`: boolean
+- `controls`: boolean
 - `mute`: boolean, whether to mute by default
 - `reconnect`: number, reconnect timeout in millisecond
 

@@ -1,31 +1,48 @@
 import { useRef, useImperativeHandle, useState } from 'preact/hooks'
-import { forwardRef } from 'preact/compat'
+import { TargetedEvent, forwardRef } from 'preact/compat'
 import { WHEPClient } from '@binbat/whip-whep/whep.js'
+
+import { formatVideoTrackResolution } from './utils'
+import { useLogger } from './use-logger'
+
+interface Props {
+    onStop(): void
+}
 
 export interface IPreviewDialog {
     show(resourceId: string): void
 }
 
-export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
+export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [resourceId, setResourceId] = useState('')
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
+    const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>()
     const [connState, setConnState] = useState('')
-    const refLogs = useRef<string[]>([])
+    const [videoResolution, setVideoResolution] = useState('')
+    const logger = useLogger()
     const refDialog = useRef<HTMLDialogElement>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
 
     useImperativeHandle(ref, () => {
         return {
-            show: (resourceId: string) => {
-                setResourceId(resourceId)
-                handlePreviewStart(resourceId)
+            show: async (newResourceId: string) => {
+                if (resourceId !== newResourceId) {
+                    if (resourceId !== '' && whepClient !== null) {
+                        await handlePreviewStop()
+                    }
+                    setResourceId(newResourceId)
+                    handlePreviewStart(newResourceId)
+                }
                 refDialog.current?.showModal()
             }
         }
     })
 
-    const handleDialogClose = async () => {
-        setResourceId('')
+    const handleCloseDialog = () => {
+        refDialog.current?.close()
+    }
+
+    const handlePreviewStop = async () => {
         if (refVideo.current) {
             refVideo.current.srcObject = null
         }
@@ -33,26 +50,25 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
             await whepClient.stop()
             setWhepClient(null)
         }
-    }
-
-    const log = (str: string) => {
-        refLogs.current!!.push(str)
+        props.onStop()
+        handleCloseDialog()
     }
 
     const updateConnState = (state: string) => {
         setConnState(state)
-        log(state)
+        logger.log(state)
     }
 
     const handlePreviewStart = (resourceId: string) => {
-        refLogs.current = []
-        log('started')
+        logger.clear()
+        logger.log('started')
         const pc = new RTCPeerConnection()
         pc.addTransceiver('video', { direction: 'recvonly' })
         pc.addTransceiver('audio', { direction: 'recvonly' })
         pc.addEventListener('track', ev => {
-            log(`track: ${ev.track.kind}`)
+            logger.log(`track: ${ev.track.kind}`)
             if (ev.track.kind === 'video' && ev.streams.length > 0) {
+                setVideoTrack(ev.track)
                 if (refVideo.current) {
                     refVideo.current.srcObject = ev.streams[0]
                 }
@@ -66,29 +82,36 @@ export const PreviewDialog = forwardRef<IPreviewDialog>((_props, ref) => {
         const token = ''
         // @ts-ignore
         whep.onAnswer = (sdp: RTCSessionDescription) => {
-            log('http answer received')
+            logger.log('http answer received')
             return sdp
         }
         setWhepClient(whep)
         whep.view(pc, url, token)
-        log('http offer sent')
+        logger.log('http offer sent')
+    }
+
+    const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
+        if (videoTrack) {
+            setVideoResolution(formatVideoTrackResolution(videoTrack))
+        }
     }
 
     return (
-        <dialog ref={refDialog} onClose={handleDialogClose}>
-            <h3>Preview {resourceId}</h3>
+        <dialog ref={refDialog}>
+            <h3>Preview {resourceId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay style={{ maxWidth: '90vw' }}></video>
+                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
             </div>
             <details>
                 <summary>
                     <b>Connection Status: </b>
                     <code>{connState}</code>
                 </summary>
-                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{refLogs.current!!.join('\n')}</pre>
+                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{logger.logs.join('\n')}</pre>
             </details>
             <form method="dialog">
-                <button>Close</button>
+                <button onClick={() => handleCloseDialog()}>Hide</button>
+                <button onClick={() => handlePreviewStop()} style={{ color: 'red' }}>Stop</button>
             </form>
         </dialog>
     )
