@@ -35,7 +35,7 @@ pub fn route() -> Router<AppState> {
 async fn api_info(
     State(mut state): State<AppState>,
     _req: Request,
-) -> crate::result::Result<Json<HashMap<String, Vec<live777_http::response::StreamInfo>>>> {
+) -> crate::result::Result<Json<HashMap<String, Vec<api::response::Stream>>>> {
     Ok(Json(state.storage.info_raw_all().await.unwrap()))
 }
 
