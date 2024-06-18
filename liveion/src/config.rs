@@ -84,7 +84,7 @@ pub struct StreamInfo {
     pub reforward_close_sub: bool,
     #[serde(default = "default_true")]
     pub auto_create_whip: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_create_whep: bool,
     #[serde(default)]
     pub auto_delete_whip: AutoDestrayTime,
@@ -101,7 +101,7 @@ impl Default for StreamInfo {
         Self {
             reforward_close_sub: false,
             auto_create_whip: true,
-            auto_create_whep: false,
+            auto_create_whep: true,
             auto_delete_whip: AutoDestrayTime::default(),
             auto_delete_whep: AutoDestrayTime::default(),
         }

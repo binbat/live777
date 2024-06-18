@@ -153,34 +153,38 @@ async fn whep_reforward_node(
     let arr = set_dst.into_iter().collect::<Vec<&Server>>();
 
     let server_src = nodes.first().unwrap().clone();
-    let server_dst = *arr.first().unwrap();
+    let server_ds0 = *arr.first().unwrap();
+    let server_dst = server_ds0.clone();
 
     info!("reforward from: {:?}, to: {:?}", server_src, server_dst);
 
-    match reforward(server_src.clone(), server_dst.clone(), stream.clone()).await {
-        Ok(()) => {
-            match force_check_times(
-                server_dst.clone(),
-                stream.clone(),
-                state.config.reforward.check_attempts.0,
-            )
-            .await
-            {
-                Ok(count) => {
-                    if state.config.reforward.close_other_sub {
-                        reforward_close_other_sub(state, server_src, stream).await
+    tokio::spawn(async move {
+        match reforward(server_src.clone(), server_dst.clone(), stream.clone()).await {
+            Ok(()) => {
+                match force_check_times(
+                    server_dst.clone(),
+                    stream.clone(),
+                    state.config.reforward.check_attempts.0,
+                )
+                .await
+                {
+                    Ok(count) => {
+                        if state.config.reforward.close_other_sub {
+                            reforward_close_other_sub(state, server_src, stream).await
+                        }
+                        info!("reforward success, checked attempts: {}", count)
                     }
-                    info!("reforward success, checked attempts: {}", count)
+                    Err(e) => error!("reforward check error: {:?}", e),
                 }
-                Err(e) => error!("reforward check error: {:?}", e),
+                Ok(server_dst.clone())
             }
-            Ok(server_dst.clone())
+            Err(e) => {
+                error!("reforward error: {:?}", e);
+                Err(AppError::InternalServerError(e))
+            }
         }
-        Err(e) => {
-            error!("reforward error: {:?}", e);
-            Err(AppError::InternalServerError(e))
-        }
-    }
+    });
+    Ok(server_ds0.clone())
 }
 
 async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: String) {

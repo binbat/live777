@@ -69,7 +69,7 @@ async fn main() {
             .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
                 key: format!("buildin-{}", i),
                 url: format!("http://{}", addr),
-                pub_max: 1,
+                sub_max: 1,
                 ..Default::default()
             }));
     }
