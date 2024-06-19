@@ -48,7 +48,7 @@ urls = [
 # WHIP auto a stream
 # auto_create_whip = true
 # WHEP auto a stream
-# auto_create_whep = false
+# auto_create_whep = true
 #
 # Default: (60000)s
 # -1: disable
