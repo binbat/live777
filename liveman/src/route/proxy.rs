@@ -32,6 +32,7 @@ pub fn route() -> Router<AppState> {
         .route("/api/whip/:alias/:stream", post(api_whip))
         .route("/api/whep/:alias/:stream", post(api_whep))
         .route("/api/nodes", get(api_node))
+        .route("/api/streams", get(stream_index))
 }
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +72,85 @@ async fn api_node(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> 
                 },
             })
             .collect(),
+    ))
+}
+
+async fn stream_index(
+    State(mut state): State<AppState>,
+) -> Result<Json<Vec<api::response::Stream>>> {
+    let map_info = state.storage.info_raw_all().await.unwrap();
+    let mut map_server_stream = HashMap::new();
+
+    for (key, streams) in map_info.iter() {
+        for stream in streams.iter() {
+            map_server_stream.insert(format!("{}:{}", key, stream.id), stream.clone());
+        }
+    }
+
+    let streams = state.storage.stream_all().await;
+    let mut result_streams: HashMap<String, Stream> = HashMap::new();
+    for (stream_id, servers) in streams.into_iter() {
+        for server in servers.iter() {
+            let key = format!("{}:{}", server.key, stream_id);
+            match map_server_stream.get(&key) {
+                Some(s) => {
+                    let new_stream = match result_streams.get(&stream_id) {
+                        Some(vv) => {
+                            let v = vv.clone();
+                            api::response::Stream {
+                                id: s.id.clone(),
+                                created_at: if s.created_at < v.created_at {
+                                    s.created_at
+                                } else {
+                                    v.created_at
+                                },
+                                publish: api::response::PubSub {
+                                    leave_at: {
+                                        if s.publish.leave_at == 0 || v.publish.leave_at == 0 {
+                                            0
+                                        } else if s.publish.leave_at > v.publish.leave_at {
+                                            s.publish.leave_at
+                                        } else {
+                                            v.publish.leave_at
+                                        }
+                                    },
+                                    sessions: {
+                                        let mut arr = s.publish.sessions.clone();
+                                        arr.extend(v.publish.sessions);
+                                        arr
+                                    },
+                                },
+                                subscribe: api::response::PubSub {
+                                    leave_at: {
+                                        if s.subscribe.leave_at == 0 || v.subscribe.leave_at == 0 {
+                                            0
+                                        } else if s.subscribe.leave_at > v.subscribe.leave_at {
+                                            s.subscribe.leave_at
+                                        } else {
+                                            v.subscribe.leave_at
+                                        }
+                                    },
+                                    sessions: {
+                                        let mut arr = s.subscribe.sessions.clone();
+                                        arr.extend(v.subscribe.sessions);
+                                        arr
+                                    },
+                                },
+                            }
+                        }
+                        None => s.clone(),
+                    };
+                    result_streams.insert(stream_id.clone(), new_stream);
+                }
+                None => continue,
+            }
+        }
+    }
+
+    Ok(Json(
+        result_streams
+            .into_values()
+            .collect::<Vec<api::response::Stream>>(),
     ))
 }
 

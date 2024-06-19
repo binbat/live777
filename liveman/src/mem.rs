@@ -138,6 +138,11 @@ impl MemStorage {
         }
     }
 
+    pub async fn stream_all(&mut self) -> HashMap<String, Vec<Server>> {
+        self.update().await;
+        self.stream.read().unwrap().clone()
+    }
+
     pub async fn session_put(&self, session: String, target: Server) -> Result<()> {
         self.session.write().unwrap().insert(session, target);
         Ok(())
