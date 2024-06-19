@@ -5,6 +5,7 @@ use axum::{
     Json, Router,
 };
 use http::Uri;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn, Span};
 
@@ -30,6 +31,47 @@ pub fn route() -> Router<AppState> {
         .route("/api/admin/-/infos", get(api_info))
         .route("/api/whip/:alias/:stream", post(api_whip))
         .route("/api/whep/:alias/:stream", post(api_whep))
+        .route("/api/nodes", get(api_node))
+}
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeState {
+    #[default]
+    #[serde(rename = "running")]
+    Running,
+    #[serde(rename = "stopped")]
+    Stopped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Node {
+    pub key: String,
+    pub url: String,
+    pub pub_max: u16,
+    pub sub_max: u16,
+    pub status: NodeState,
+}
+
+async fn api_node(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
+    let map_info = state.storage.info_raw_all().await.unwrap();
+
+    Ok(Json(
+        state
+            .storage
+            .get_cluster()
+            .into_iter()
+            .map(|x| Node {
+                key: x.key.clone(),
+                url: x.url,
+                pub_max: x.pub_max,
+                sub_max: x.sub_max,
+                status: match map_info.get(&x.key) {
+                    Some(_) => NodeState::Running,
+                    None => NodeState::Stopped,
+                },
+            })
+            .collect(),
+    ))
 }
 
 async fn api_info(

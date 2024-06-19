@@ -80,6 +80,10 @@ impl MemStorage {
         }
     }
 
+    pub fn get_cluster(&self) -> Vec<Server> {
+        self.servers.clone()
+    }
+
     pub fn get_map_server(&self) -> HashMap<String, Server> {
         self.server.read().unwrap().clone()
     }
