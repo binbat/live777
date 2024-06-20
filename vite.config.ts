@@ -9,6 +9,7 @@ export default defineConfig({
     server: {
         proxy: {
             '^.*/admin/.*': 'http://localhost:7777',
+            '^/api/.*': 'http://localhost:7777',
             '^/session/.*': 'http://localhost:7777',
             '^/whip/.*': 'http://localhost:7777',
             '^/whep/.*': 'http://localhost:7777',

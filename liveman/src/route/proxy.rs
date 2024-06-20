@@ -32,7 +32,7 @@ pub fn route() -> Router<AppState> {
         .route("/api/whip/:alias/:stream", post(api_whip))
         .route("/api/whep/:alias/:stream", post(api_whep))
         .route("/api/nodes", get(api_node))
-        .route("/api/streams", get(stream_index))
+        .route("/api/streams/", get(stream_index))
         .route("/api/streams/:stream", get(stream_info))
 }
 

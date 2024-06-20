@@ -9,8 +9,6 @@ use tracing::{debug, error, info, trace, warn};
 
 use api::response::Stream;
 
-pub const SYNC_API: &str = "/admin/infos";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
     #[serde(default)]
@@ -170,7 +168,7 @@ impl MemStorage {
             requests.push((
                 server.key,
                 self.client
-                    .get(format!("{}{}", server.url, SYNC_API))
+                    .get(format!("{}{}", server.url, &api::path::streams("")))
                     .send(),
             ));
         }

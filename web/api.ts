@@ -36,7 +36,7 @@ export interface Session {
 }
 
 export async function allStream(): Promise<Stream[]> {
-    return (await fetch("/admin/infos")).json()
+    return (await fetch("/api/streams/")).json()
 }
 
 export async function reforward(streamId: string, url: string): Promise<void> {
