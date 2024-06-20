@@ -143,7 +143,6 @@ async fn webrtc_start(
     let mut gather_complete = peer.gathering_complete_promise().await;
     peer.set_local_description(offer).await?;
     let _ = gather_complete.recv().await;
-    
 
     let (answer, _ice_servers) = client
         .wish(peer.local_description().await.unwrap().sdp)
@@ -151,16 +150,15 @@ async fn webrtc_start(
     //let current_config = peer.get_configuration();
     //peer.set_configuration(current_config.clone());
     let mut current_config = peer.get_configuration().await;
-    
+
     //println!("Original ICE Servers:");
     //for ice_server in &current_config.ice_servers {
     //    println!("ICE Server URLs: {:?}", ice_server.urls);
     //    println!("Username: {}", ice_server.username);
     //    println!("Credential: {}", ice_server.credential);
     //}
-
-    current_config.ice_servers = _ice_servers.clone();
-
+    current_config.ice_servers.clone_from(&_ice_servers);
+    //current_config.ice_servers = _ice_servers.clone();
 
     //println!("Updated ICE Servers:");
     //for ice_server in &current_config.ice_servers {
@@ -169,23 +167,17 @@ async fn webrtc_start(
     //    println!("Credential: {}", ice_server.credential);
     //}
 
-
-
     peer.set_configuration(current_config.clone()).await?;
-    
-
-    
 
     // 获取更新后的配置
     let updated_config = peer.get_configuration().await;
-
 
     for (i, ice_server) in updated_config.ice_servers.iter().enumerate() {
         assert_eq!(ice_server.urls, _ice_servers[i].urls);
         assert_eq!(ice_server.username, _ice_servers[i].username);
         assert_eq!(ice_server.credential, _ice_servers[i].credential);
     }
-// 打印更新后的 ICE 服务器信息
+    // 打印更新后的 ICE 服务器信息
     //println!("Updated ICE Servers:");
     //for ice_server in &updated_config.ice_servers {
     //    println!("ICE Server URLs: {:?}", ice_server.urls);

@@ -160,52 +160,26 @@ async fn webrtc_start(
     
     let mut current_config = peer.get_configuration().await;
 
-    //println!("Original ICE Servers:");
-    //for ice_server in &current_config.ice_servers {
-    //    println!("ICE Server URLs: {:?}", ice_server.urls);
-    //    println!("Username: {}", ice_server.username);
-    //    println!("Credential: {}", ice_server.credential);
-    //}
-
-    current_config.ice_servers = _ice_servers.clone();
-
-
-    //println!("Updated ICE Servers:");
-    //for ice_server in &current_config.ice_servers {
-    //    println!("ICE Server URLs: {:?}", ice_server.urls);
-    //    println!("Username: {}", ice_server.username);
-    //    println!("Credential: {}", ice_server.credential);
-    //}
-
-
-
-    peer.set_configuration(current_config.clone()).await?;
-
-
-
-
-    // 获取更新后的配置
-    let updated_config = peer.get_configuration().await;
+    current_config.ice_servers.clone_from(&_ice_servers);
     
+    //set new configuration into peer
+    peer.set_configuration(current_config.clone()).await?;
+    
+
+    //test 
+    let updated_config = peer.get_configuration().await;
+
     for (i, ice_server) in updated_config.ice_servers.iter().enumerate() {
         assert_eq!(ice_server.urls, _ice_servers[i].urls);
         assert_eq!(ice_server.username, _ice_servers[i].username);
         assert_eq!(ice_server.credential, _ice_servers[i].credential);
     }
-// 打印更新后的 ICE 服务器信息
-    //println!("Updated ICE Servers:");
-    //for ice_server in &updated_config.ice_servers {
-    //    println!("ICE Server URLs: {:?}", ice_server.urls);
-    //    println!("Username: {}", ice_server.username);
-    //    println!("Credential: {}", ice_server.credential);
-    //}
-
-
+    //test
 
     peer.set_remote_description(answer)
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
-    
+
     Ok(peer)
 }
 
