@@ -33,6 +33,7 @@ pub fn route() -> Router<AppState> {
         .route("/api/whep/:alias/:stream", post(api_whep))
         .route("/api/nodes", get(api_node))
         .route("/api/streams", get(stream_index))
+        .route("/api/streams/:stream", get(stream_info))
 }
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,7 +81,6 @@ async fn stream_index(
 ) -> Result<Json<Vec<api::response::Stream>>> {
     let map_info = state.storage.info_raw_all().await.unwrap();
     let mut map_server_stream = HashMap::new();
-
     for (key, streams) in map_info.iter() {
         for stream in streams.iter() {
             map_server_stream.insert(format!("{}:{}", key, stream.id), stream.clone());
@@ -152,6 +152,29 @@ async fn stream_index(
             .into_values()
             .collect::<Vec<api::response::Stream>>(),
     ))
+}
+
+async fn stream_info(
+    State(mut state): State<AppState>,
+    Path(stream_id): Path<String>,
+) -> Result<Json<HashMap<String, api::response::Stream>>> {
+    let mut result_streams: HashMap<String, Stream> = HashMap::new();
+    let map_info = state.storage.info_raw_all().await.unwrap();
+    let mut map_server_stream = HashMap::new();
+    for (key, streams) in map_info.iter() {
+        for stream in streams.iter() {
+            map_server_stream.insert(format!("{}:{}", key, stream.id), stream.clone());
+        }
+    }
+
+    let servers = state.storage.get_cluster();
+    for server in servers.into_iter() {
+        if let Some(stream) = map_server_stream.get(&format!("{}:{}", server.key, stream_id)) {
+            result_streams.insert(server.key, stream.clone());
+        }
+    }
+
+    Ok(Json(result_streams))
 }
 
 async fn api_info(
