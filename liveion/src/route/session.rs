@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use http::{HeaderMap, StatusCode, Uri};
+use http::{header, HeaderMap, StatusCode, Uri};
 
 use crate::error::AppError;
 use crate::route::AppState;
@@ -42,7 +42,7 @@ async fn add_ice_candidate(
     body: String,
 ) -> crate::result::Result<Response<String>> {
     let content_type = header
-        .get("Content-Type")
+        .get(header::CONTENT_TYPE)
         .ok_or(AppError::from(anyhow::anyhow!("Content-Type is required")))?;
     if content_type.to_str()? != "application/trickle-ice-sdpfrag" {
         return Err(anyhow::anyhow!("Content-Type must be application/trickle-ice-sdpfrag").into());
