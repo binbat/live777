@@ -154,13 +154,13 @@ async fn webrtc_start(
     peer.set_local_description(offer).await?;
     let _ = gather_complete.recv().await;
 
-    let (answer, _ice_servers) = client
+    let (answer, ice_servers) = client
         .wish(peer.local_description().await.unwrap().sdp.clone())
         .await?;
     
     let mut current_config = peer.get_configuration().await;
 
-    current_config.ice_servers.clone_from(&_ice_servers);
+    current_config.ice_servers.clone_from(&ice_servers);
     
     //set new configuration into peer
     peer.set_configuration(current_config.clone()).await?;
