@@ -165,7 +165,6 @@ async fn webrtc_start(
     //set new configuration into peer
     peer.set_configuration(current_config.clone()).await?;
     
-
     //test 
     let updated_config = peer.get_configuration().await;
 
