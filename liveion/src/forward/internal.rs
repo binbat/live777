@@ -1,11 +1,7 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
 
-use crate::forward::message::ForwardInfo;
-use crate::result::Result;
 use chrono::Utc;
-
-use libwish::Client;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -25,12 +21,15 @@ use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
-
 use webrtc::track::track_remote::TrackRemote;
 
+use libwish::Client;
+
 use crate::forward::get_peer_id;
+use crate::forward::message::ForwardInfo;
 use crate::forward::rtcp::RtcpMessage;
 use crate::metrics;
+use crate::result::Result;
 use crate::AppError;
 
 use super::media::MediaInfo;
@@ -262,7 +261,7 @@ impl PeerForwardInternal {
         {
             let mut publish = self.publish.write().await;
             if publish.is_some() {
-                return Err(AppError::resource_already_exists(
+                return Err(AppError::stream_already_exists(
                     "A connection has already been established",
                 ));
             }

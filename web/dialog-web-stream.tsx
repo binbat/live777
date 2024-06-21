@@ -10,11 +10,11 @@ interface Props {
 }
 
 export interface IWebStreamDialog {
-    show(resourceId: string): void
+    show(streamId: string): void
 }
 
 export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) => {
-    const [resourceId, setResourceId] = useState('')
+    const [streamId, setStreamId] = useState('')
     const [mediaStream, setMediaStream] = useState<MediaStream | null>()
     const [whipClient, setWhipClient] = useState<WHIPClient | null>()
     const [connState, setConnState] = useState('')
@@ -25,8 +25,8 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
 
     useImperativeHandle(ref, () => {
         return {
-            show: (resourceId: string) => {
-                setResourceId(resourceId)
+            show: (streamId: string) => {
+                setStreamId(streamId)
                 refDialog.current?.showModal()
             }
         }
@@ -61,7 +61,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         pc.addTransceiver(videoTrack, { direction: 'sendonly' })
         stream.getAudioTracks().forEach(track => pc.addTrack(track))
         const whipClient = new WHIPClient()
-        const url = `${location.origin}/whip/${resourceId}`
+        const url = `${location.origin}/whip/${streamId}`
         const token = ''
         // @ts-ignore
         whipClient.onAnswer = (sdp: RTCSessionDescription) => {
@@ -98,7 +98,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
 
     return (
         <dialog ref={refDialog}>
-            <h3>Web Stream {resourceId} {videoResolution}</h3>
+            <h3>Web Stream {streamId} {videoResolution}</h3>
             <div>
                 <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
             </div>

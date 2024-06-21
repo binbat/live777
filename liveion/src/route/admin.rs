@@ -1,18 +1,20 @@
-use crate::forward::message::ReforwardInfo;
-use crate::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::Query;
+
+use crate::forward::message::ReforwardInfo;
+use crate::AppState;
+
 pub fn route() -> Router<AppState> {
     Router::new()
-        .route(live777_http::path::ADMIN_INFOS, get(infos))
-        .route(&live777_http::path::reforward(":stream"), post(reforward))
+        .route(api::path::ADMIN_INFOS, get(infos))
+        .route(&api::path::reforward(":stream"), post(reforward))
 }
 async fn infos(
     State(state): State<AppState>,
-    Query(req): Query<live777_http::request::QueryInfo>,
-) -> crate::result::Result<Json<Vec<live777_http::response::StreamInfo>>> {
+    Query(req): Query<api::request::QueryInfo>,
+) -> crate::result::Result<Json<Vec<api::response::Stream>>> {
     Ok(Json(
         state
             .stream_manager
@@ -27,7 +29,7 @@ async fn infos(
 async fn reforward(
     State(state): State<AppState>,
     Path(stream): Path<String>,
-    Json(req): Json<live777_http::request::Reforward>,
+    Json(req): Json<api::request::Reforward>,
 ) -> crate::result::Result<String> {
     state
         .stream_manager

@@ -8,21 +8,27 @@ pub struct Layer {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamInfo {
+pub struct Stream {
     pub id: String,
-    pub create_time: i64,
-    pub publish_leave_time: i64,
-    pub subscribe_leave_time: i64,
-    pub publish_session_info: Option<SessionInfo>,
-    pub subscribe_session_infos: Vec<SessionInfo>,
+    pub created_at: i64,
+    pub publish: PubSub,
+    pub subscribe: PubSub,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionInfo {
+pub struct PubSub {
+    pub leave_at: i64,
+    pub sessions: Vec<Session>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
     pub id: String,
-    pub create_time: i64,
-    pub connect_state: RTCPeerConnectionState,
+    pub created_at: i64,
+    pub state: RTCPeerConnectionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reforward: Option<ReforwardInfo>,
 }
 
@@ -36,14 +42,11 @@ pub struct ReforwardInfo {
 /// PeerConnectionState indicates the state of the PeerConnection.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RTCPeerConnectionState {
-    #[default]
-    #[serde(rename = "Unspecified")]
-    Unspecified,
-
     /// PeerConnectionStateNew indicates that any of the ICETransports or
     /// DTLSTransports are in the "new" state and none of the transports are
     /// in the "connecting", "checking", "failed" or "disconnected" state, or
     /// all transports are in the "closed" state, or there are no transports.
+    #[default]
     #[serde(rename = "new")]
     New,
 

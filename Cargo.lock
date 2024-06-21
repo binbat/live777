@@ -135,6 +135,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_html_form",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1182,18 +1190,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "live777-http"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_html_form",
-]
-
-[[package]]
 name = "liveion"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "api",
  "async-trait",
  "axum",
  "axum-extra",
@@ -1206,7 +1207,6 @@ dependencies = [
  "hyper",
  "lazy_static",
  "libwish",
- "live777-http",
  "local-ip-address",
  "md5",
  "mime_guess",
@@ -1229,6 +1229,7 @@ name = "liveman"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "api",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -1237,7 +1238,6 @@ dependencies = [
  "http-body",
  "http-log",
  "hyper-util",
- "live777-http",
  "liveion",
  "mime_guess",
  "reqwest",

@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
-use tracing::debug;
+use tracing::{debug, info};
 
-//#[cfg(debug_assertions)]
 pub async fn cluster_up(count: u16, address: SocketAddr) -> Vec<String> {
     let mut results = Vec::new();
 
@@ -16,13 +15,17 @@ pub async fn cluster_up(count: u16, address: SocketAddr) -> Vec<String> {
         cfg.node_addr = Some(addr);
         debug!("Liveion listening on {addr}");
 
-        tokio::spawn(liveion::server_up(cfg, listener, shutdown_signal()));
+        tokio::spawn(liveion::server_up(
+            cfg,
+            listener,
+            shutdown_signal(addr.to_string()),
+        ));
         results.push(addr.to_string());
     }
     results
 }
 
-async fn shutdown_signal() {
-    let str = signal::wait_for_stop_signal().await;
-    debug!("Received signal: {}", str);
+async fn shutdown_signal(addr: String) {
+    let _ = signal::wait_for_stop_signal().await;
+    info!("Build In Cluster Down: {}", addr);
 }

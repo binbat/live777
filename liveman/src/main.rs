@@ -3,13 +3,11 @@ use axum::extract::Request;
 use axum::response::IntoResponse;
 use axum::Router;
 use clap::Parser;
-
 use http::{header, StatusCode, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use rust_embed::RustEmbed;
 use std::future::Future;
-
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -71,7 +69,7 @@ async fn main() {
             .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
                 key: format!("buildin-{}", i),
                 url: format!("http://{}", addr),
-                pub_max: 1,
+                sub_max: 1,
                 ..Default::default()
             }));
     }

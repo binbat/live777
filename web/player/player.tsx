@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'preact/hooks'
 import { WHEPClient } from '@binbat/whip-whep/whep.js'
 
 export function Player() {
-    const [resourceId, setResourceId] = useState('')
+    const [streamId, setStreamId] = useState('')
     const [autoPlay, setAutoPlay] = useState(false)
     const [muted, setMuted] = useState(false)
     const [controls, setControls] = useState(false)
@@ -13,7 +13,7 @@ export function Player() {
 
     useEffect(() => {
         const params = new URLSearchParams(location.search)
-        setResourceId(params.get('resource') ?? '')
+        setStreamId(params.get('id') ?? '')
         setAutoPlay(params.has('autoplay'))
         setControls(params.has('controls'))
         setMuted(params.has('mute'))
@@ -22,14 +22,14 @@ export function Player() {
     })
 
     useEffect(() => {
-        if (!resourceId || !autoPlay) return
+        if (!streamId || !autoPlay) return
         handlePlay()
         const v = refVideo.current
         if (v) {
             v.volume = 0
             v.play()
         }
-    }, [resourceId])
+    }, [streamId])
 
     useEffect(() => {
         const v = refVideo.current
@@ -60,7 +60,7 @@ export function Player() {
         }
         const whep = new WHEPClient()
         setWhepClient(whep)
-        const url = `${location.origin}/whep/${resourceId}`
+        const url = `${location.origin}/whep/${streamId}`
         const token = ''
         try {
             await whep.view(pc, url, token)

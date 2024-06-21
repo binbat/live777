@@ -23,7 +23,7 @@ pub struct Config {
     #[serde(default)]
     pub node_addr: Option<SocketAddr>,
     #[serde(default)]
-    pub stream_info: StreamInfo,
+    pub strategy: Strategy,
     #[serde(default)]
     pub webhooks: Vec<String>,
 }
@@ -78,13 +78,13 @@ pub struct Log {
     pub level: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct StreamInfo {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Strategy {
     #[serde(default)]
     pub reforward_close_sub: bool,
     #[serde(default = "default_true")]
     pub auto_create_whip: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_create_whep: bool,
     #[serde(default)]
     pub auto_delete_whip: AutoDestrayTime,
@@ -94,6 +94,18 @@ pub struct StreamInfo {
 
 fn default_true() -> bool {
     true
+}
+
+impl Default for Strategy {
+    fn default() -> Self {
+        Self {
+            reforward_close_sub: false,
+            auto_create_whip: true,
+            auto_create_whep: true,
+            auto_delete_whip: AutoDestrayTime::default(),
+            auto_delete_whep: AutoDestrayTime::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

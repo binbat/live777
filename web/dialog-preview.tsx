@@ -10,11 +10,11 @@ interface Props {
 }
 
 export interface IPreviewDialog {
-    show(resourceId: string): void
+    show(streamId: string): void
 }
 
 export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
-    const [resourceId, setResourceId] = useState('')
+    const [streamId, setStreamId] = useState('')
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
     const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>()
     const [connState, setConnState] = useState('')
@@ -25,13 +25,13 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
 
     useImperativeHandle(ref, () => {
         return {
-            show: async (newResourceId: string) => {
-                if (resourceId !== newResourceId) {
-                    if (resourceId !== '' && whepClient !== null) {
+            show: async (newStreamId: string) => {
+                if (streamId !== newStreamId) {
+                    if (streamId !== '' && whepClient !== null) {
                         await handlePreviewStop()
                     }
-                    setResourceId(newResourceId)
-                    handlePreviewStart(newResourceId)
+                    setStreamId(newStreamId)
+                    handlePreviewStart(newStreamId)
                 }
                 refDialog.current?.showModal()
             }
@@ -59,7 +59,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         logger.log(state)
     }
 
-    const handlePreviewStart = (resourceId: string) => {
+    const handlePreviewStart = (streamId: string) => {
         logger.clear()
         logger.log('started')
         const pc = new RTCPeerConnection()
@@ -78,7 +78,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
             updateConnState(pc.iceConnectionState)
         })
         const whep = new WHEPClient()
-        const url = `${location.origin}/whep/${resourceId}`
+        const url = `${location.origin}/whep/${streamId}`
         const token = ''
         // @ts-ignore
         whep.onAnswer = (sdp: RTCSessionDescription) => {
@@ -98,7 +98,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
 
     return (
         <dialog ref={refDialog}>
-            <h3>Preview {resourceId} {videoResolution}</h3>
+            <h3>Preview {streamId} {videoResolution}</h3>
             <div>
                 <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
             </div>

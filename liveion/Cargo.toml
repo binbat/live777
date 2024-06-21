@@ -9,10 +9,10 @@ description = "A very simple, high performance, edge WebRTC SFU"
 crate-type = ["lib"]
 
 [dependencies]
+api = { path = "../libs/api" }
 http-log = { path = "../libs/http-log" }
 libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
-live777-http = { path = "../libs/live777-http" }
 utils = { path = "../libs/utils" }
 
 anyhow = { workspace = true, features = ["backtrace"] }

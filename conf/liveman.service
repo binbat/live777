@@ -1,11 +1,11 @@
 [Unit]
-Description=Live777 Cluster Gateway service
+Description=Live777 Cluster Manager service
 Requires=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/live777-gateway
+ExecStart=/usr/bin/liveman
 Restart=on-failure
 RestartSec=5s
 

@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use std::time::Duration;
 
 #[cfg(feature = "webhook")]
-use live777_http::event::NodeMetaData;
+use api::event::NodeMetaData;
 
 use tokio::sync::broadcast;
 
@@ -296,7 +296,7 @@ impl Manager {
 
         match forward {
             Some(forward) => forward.set_publish(offer).await,
-            None => Err(AppError::resource_not_fount("resource not exists")),
+            None => Err(AppError::stream_not_found("stream not exists")),
         }
     }
 
@@ -317,7 +317,7 @@ impl Manager {
         if let Some(forward) = forward {
             Ok(forward.add_subscribe(offer).await?)
         } else {
-            Err(AppError::resource_not_fount("resource not exists"))
+            Err(AppError::stream_not_found("stream not exists"))
         }
     }
 
@@ -333,7 +333,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.add_ice_candidate(session, ice_candidates).await
         } else {
-            Err(AppError::resource_not_fount("resource not exists"))
+            Err(AppError::session_not_found("session not exists"))
         }
     }
 
@@ -343,9 +343,13 @@ impl Manager {
         drop(streams);
         if let Some(forward) = forward {
             let is_publish = forward.remove_peer(session.clone()).await?;
-            if is_publish {}
+            if is_publish {
+                self.stream_delete(stream).await?;
+            }
+            Ok(())
+        } else {
+            Err(AppError::session_not_found("session not exists"))
         }
-        Ok(())
     }
 
     pub async fn layers(&self, stream: String) -> Result<Vec<Layer>> {
@@ -355,7 +359,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.layers().await
         } else {
-            Err(AppError::resource_not_fount("resource not exists"))
+            Err(AppError::stream_not_found("stream not exists"))
         }
     }
 
@@ -371,7 +375,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.select_layer(session, layer).await
         } else {
-            Err(AppError::resource_not_fount("resource not exists"))
+            Err(AppError::stream_not_found("stream not exists"))
         }
     }
 
@@ -387,7 +391,7 @@ impl Manager {
         if let Some(forward) = forward {
             forward.change_resource(session, change).await
         } else {
-            Err(AppError::resource_not_fount("resource not exists"))
+            Err(AppError::stream_not_found("stream not exists"))
         }
     }
 
@@ -419,7 +423,7 @@ impl Manager {
             }
             Ok(())
         } else {
-            Err(AppError::resource_not_fount("resource not exists"))
+            Err(AppError::stream_not_found("stream not exists"))
         }
     }
 

@@ -1,11 +1,11 @@
 import { useRef, useImperativeHandle } from 'preact/hooks'
 import { forwardRef } from 'preact/compat'
-import { SubscribeSessionInfo, delStream } from './api'
+import { Session, delStream } from './api'
 import { formatTime } from './utils'
 
 interface Props {
     id: string
-    clients: SubscribeSessionInfo[]
+    sessions: Session[]
 }
 
 export interface IClientsDialog {
@@ -36,11 +36,11 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                     </tr>
                 </thead>
                 <tbody>
-                    {props.clients.map(c =>
+                    {props.sessions.map(c =>
                         <tr>
                             <td>{c.id} {c.reforward ? "(reforward)" : ""}</td>
-                            <td>{c.connectState}</td>
-                            <td>{formatTime(c.createTime)}</td>
+                            <td>{c.state}</td>
+                            <td>{formatTime(c.createdAt)}</td>
                             <td><button onClick={() => delStream(props.id, c.id)}>Kick</button></td>
                         </tr>
                     )}

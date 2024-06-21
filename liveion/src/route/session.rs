@@ -1,30 +1,32 @@
-use crate::error::AppError;
-use crate::route::AppState;
-use crate::{constant, forward};
+use std::collections::HashMap;
+
 use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use http::{HeaderMap, StatusCode, Uri};
-use std::collections::HashMap;
+use http::{header, HeaderMap, StatusCode, Uri};
+
+use crate::error::AppError;
+use crate::route::AppState;
+use crate::{constant, forward};
 
 pub fn route() -> Router<AppState> {
     Router::new()
         .route(
-            &live777_http::path::resource(":stream", ":session"),
+            &api::path::session(":stream", ":session"),
             post(change_resource)
                 .patch(add_ice_candidate)
                 .delete(remove_stream_session),
         )
         .route(
-            &live777_http::path::resource_layer(":stream", ":session"),
+            &api::path::session_layer(":stream", ":session"),
             get(get_layer).post(select_layer).delete(un_select_layer),
         )
 }
 async fn change_resource(
     State(state): State<AppState>,
     Path((stream, session)): Path<(String, String)>,
-    Json(req): Json<live777_http::request::ChangeResource>,
+    Json(req): Json<api::request::ChangeResource>,
 ) -> crate::result::Result<Json<HashMap<String, String>>> {
     state
         .stream_manager
@@ -40,7 +42,7 @@ async fn add_ice_candidate(
     body: String,
 ) -> crate::result::Result<Response<String>> {
     let content_type = header
-        .get("Content-Type")
+        .get(header::CONTENT_TYPE)
         .ok_or(AppError::from(anyhow::anyhow!("Content-Type is required")))?;
     if content_type.to_str()? != "application/trickle-ice-sdpfrag" {
         return Err(anyhow::anyhow!("Content-Type must be application/trickle-ice-sdpfrag").into());
@@ -71,7 +73,7 @@ async fn remove_stream_session(
 async fn get_layer(
     State(state): State<AppState>,
     Path((stream, _session)): Path<(String, String)>,
-) -> crate::result::Result<Json<Vec<live777_http::response::Layer>>> {
+) -> crate::result::Result<Json<Vec<api::response::Layer>>> {
     Ok(Json(
         state
             .stream_manager
@@ -86,7 +88,7 @@ async fn get_layer(
 async fn select_layer(
     State(state): State<AppState>,
     Path((stream, session)): Path<(String, String)>,
-    Json(req): Json<live777_http::request::SelectLayer>,
+    Json(req): Json<api::request::SelectLayer>,
 ) -> crate::result::Result<String> {
     state
         .stream_manager

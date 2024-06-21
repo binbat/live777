@@ -11,7 +11,7 @@ customElements.define("debug-player", DebugPlayer)
 customElements.define("data-channel", DataChannel)
 
 // Common
-const idResourceId = "resource"
+const idStreamId = "id"
 const idBearerToken = "token"
 
 function setURLSearchParams(k, v) {
@@ -33,7 +33,7 @@ function initCommonInput(elementId, paramId) {
     }
 }
 
-initCommonInput(idResourceId, idResourceId)
+initCommonInput(idStreamId, idStreamId)
 initCommonInput(idBearerToken, idBearerToken)
 
 function log(el, num, msg) {
@@ -112,9 +112,9 @@ window.refreshDevice = () => {
 }
 
 async function startWhip() {
-    const resource = getElementValue(idResourceId)
-    if (!resource) {
-        alert("input resource")
+    const streamId = getElementValue(idStreamId)
+    if (!streamId) {
+        alert("Please Input Stream Id")
         return
     }
     const num = whipNum++
@@ -175,7 +175,7 @@ async function startWhip() {
     const whip = new WHIPClient()
     whip.onAnswer = answer => convertSessionDescription(answer, audioCodec, videoCodec)
 
-    const url = location.origin + "/whip/" + resource
+    const url = location.origin + "/whip/" + streamId
     const token = getElementValue(idBearerToken)
     try {
         logWhip(num, "http begined")
@@ -217,9 +217,9 @@ initLayerSelect(idWhepLayerSelect, [
 ])
 
 async function startWhep() {
-    const resource = getElementValue(idResourceId)
-    if (!resource) {
-        alert("input resource")
+    const streamId = getElementValue(idStreamId)
+    if (!streamId) {
+        alert("Please Input Stream Id")
         return
     }
     const num = whepNum++
@@ -241,7 +241,7 @@ async function startWhep() {
         }
     }
     const whep = new WHEPClient()
-    const url = location.origin + "/whep/" + resource
+    const url = location.origin + "/whep/" + streamId
     const token = getElementValue(idBearerToken)
 
     try {

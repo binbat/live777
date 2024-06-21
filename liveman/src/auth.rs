@@ -1,9 +1,10 @@
 use std::{collections::HashSet, marker::PhantomData};
 
-use crate::config::Auth;
 use http::{header, Request, Response, StatusCode};
 use http_body::Body;
 use tower_http::validate_request::ValidateRequest;
+
+use crate::config::Auth;
 
 #[derive(Debug)]
 pub struct ManyValidate<ResBody> {

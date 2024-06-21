@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Error};
-use live777_http::{request::Reforward, response::RTCPeerConnectionState};
-use reqwest::header::HeaderMap;
 use std::time::Duration;
+
+use anyhow::{anyhow, Error};
+use reqwest::header::HeaderMap;
 use tracing::{debug, error, info, trace, warn};
 
-use live777_http::response::StreamInfo;
+use api::{request::Reforward, response::RTCPeerConnectionState, response::Stream};
 
 use crate::Server;
 
@@ -23,7 +23,7 @@ pub async fn force_check_times(server: Server, stream: String, count: u8) -> Res
 
 async fn force_check(server: Server, stream: String) -> Result<(), Error> {
     let client = reqwest::Client::new();
-    let url = format!("{}{}", server.url, crate::mem::SYNC_API);
+    let url = format!("{}{}", server.url, &api::path::streams(""));
 
     let response = client.get(url).send().await?;
 
@@ -31,15 +31,15 @@ async fn force_check(server: Server, stream: String) -> Result<(), Error> {
     let status = response.status();
     let body = &response.text().await?;
     if status.is_success() {
-        let streams = serde_json::from_str::<Vec<StreamInfo>>(body)?;
+        let streams = serde_json::from_str::<Vec<Stream>>(body)?;
         debug!("{:?}", streams);
         return match streams.into_iter().find(|f| f.id == stream) {
-            Some(stream) => match stream.publish_session_info {
+            Some(stream) => match stream.publish.sessions.first() {
                 Some(session) => {
-                    if session.connect_state == RTCPeerConnectionState::Connected {
+                    if session.state == RTCPeerConnectionState::Connected {
                         Ok(())
                     } else {
-                        Err(anyhow!("connect state is {:?}", session.connect_state))
+                        Err(anyhow!("connect state is {:?}", session.state))
                     }
                 }
                 None => Err(anyhow!("Not Found stream publisher")),
@@ -77,9 +77,9 @@ pub async fn reforward(
     }
 }
 
-pub async fn resource_delete(server: Server, stream: String, session: String) -> Result<(), Error> {
+pub async fn session_delete(server: Server, stream: String, session: String) -> Result<(), Error> {
     let client = reqwest::Client::new();
-    let url = format!("{}/resource/{}/{}", server.url, stream, session);
+    let url = format!("{}/session/{}/{}", server.url, stream, session);
 
     let response = client.delete(url).send().await?;
 

@@ -3,8 +3,6 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser};
 use cli::{create_child, get_codec_type, Codec};
-
-use libwish::Client;
 use scopeguard::defer;
 use tokio::{
     net::UdpSocket,
@@ -27,6 +25,8 @@ use webrtc::{
     },
     util::MarshalSize,
 };
+
+use libwish::Client;
 
 const PREFIX_LIB: &str = "WEBRTC";
 

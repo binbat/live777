@@ -1,11 +1,10 @@
 export async function delStream(streamId: string, clientId: string) {
-    return fetch(`/resource/${streamId}/${clientId}`, {
+    return fetch(`/session/${streamId}/${clientId}`, {
         method: "DELETE",
     })
 }
 
 type SessionConnectionState =
-    'Unspecified' |
     'new' |
     'connecting' |
     'connected' |
@@ -13,31 +12,31 @@ type SessionConnectionState =
     'failed' |
     'closed'
 
-export interface StreamInfo {
+export interface Stream {
     id: string;
-    createTime: number;
-    publishLeaveTime: number;
-    subscribeLeaveTime: number;
-    publishSessionInfo: {
-        id: string;
-        createTime: number;
-        connectState: SessionConnectionState;
+    createdAt: number;
+    publish: {
+        leaveAt: number;
+        sessions: Session[];
     };
-    subscribeSessionInfos: SubscribeSessionInfo[];
+    subscribe: {
+        leaveAt: number;
+        sessions: Session[];
+    };
 }
 
-export interface SubscribeSessionInfo {
+export interface Session {
     id: string;
-    createTime: number;
-    connectState: SessionConnectionState;
+    createdAt: number;
+    state: SessionConnectionState;
     reforward?: {
         targetUrl: string;
         resourceUrl: string;
     };
 }
 
-export async function allStream(): Promise<StreamInfo[]> {
-    return (await fetch("/admin/infos")).json()
+export async function allStream(): Promise<Stream[]> {
+    return (await fetch("/api/streams/")).json()
 }
 
 export async function reforward(streamId: string, url: string): Promise<void> {

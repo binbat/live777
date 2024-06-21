@@ -1,9 +1,10 @@
-use crate::config::{Config, IceServer};
-use crate::stream::manager::Manager;
 use std::sync::Arc;
 
+use crate::config::{Config, IceServer};
+use crate::stream::manager::Manager;
+
 pub mod admin;
-pub mod resource;
+pub mod session;
 pub mod stream;
 pub mod whep;
 pub mod whip;

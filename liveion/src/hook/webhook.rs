@@ -1,8 +1,7 @@
 use std::{net::SocketAddr, str::FromStr, time::Duration};
 
+use api::event::{EventBody, NodeMetaData, NodeMetrics};
 use async_trait::async_trait;
-
-use live777_http::event::{EventBody, NodeMetaData, NodeMetrics};
 use reqwest::{header::HeaderMap, Client, Method};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
@@ -33,7 +32,7 @@ impl WebHook {
     }
 
     async fn event_handler(&self, event: Event) -> Result<()> {
-        let event = event.convert_live777_http_event(self.metadata.clone());
+        let event = event.convert_api_event(self.metadata.clone());
         let event_body = EventBody {
             addr: self.addr,
             metrics: node_metrics(),

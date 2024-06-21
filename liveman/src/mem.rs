@@ -1,14 +1,13 @@
-use anyhow::{anyhow, Error, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use live777_http::response::StreamInfo;
+use anyhow::{anyhow, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, trace, warn};
 
-pub const SYNC_API: &str = "/admin/infos";
+use api::response::Stream;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
@@ -48,9 +47,9 @@ pub struct MemStorage {
     time: SystemTime,
     server: Arc<RwLock<HashMap<String, Server>>>,
     client: reqwest::Client,
-    info: Arc<RwLock<HashMap<String, Vec<StreamInfo>>>>,
+    info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
-    resource: Arc<RwLock<HashMap<String, Server>>>,
+    session: Arc<RwLock<HashMap<String, Server>>>,
     servers: Vec<Server>,
 }
 
@@ -75,8 +74,12 @@ impl MemStorage {
             servers,
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
-            resource: Arc::new(RwLock::new(HashMap::new())),
+            session: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub fn get_cluster(&self) -> Vec<Server> {
+        self.servers.clone()
     }
 
     pub fn get_map_server(&self) -> HashMap<String, Server> {
@@ -88,12 +91,12 @@ impl MemStorage {
         self.servers.clone()
     }
 
-    pub async fn info_put(&self, key: String, target: Vec<StreamInfo>) -> Result<()> {
+    pub async fn info_put(&self, key: String, target: Vec<Stream>) -> Result<()> {
         self.info.write().unwrap().insert(key, target);
         Ok(())
     }
 
-    pub async fn info_get(&mut self, key: String) -> Result<Vec<StreamInfo>, Error> {
+    pub async fn info_get(&mut self, key: String) -> Result<Vec<Stream>, Error> {
         self.update().await;
         match self.info.read().unwrap().get(&key) {
             Some(server) => Ok(server.clone()),
@@ -101,7 +104,7 @@ impl MemStorage {
         }
     }
 
-    pub async fn info_all(&mut self) -> Result<Vec<StreamInfo>, Error> {
+    pub async fn info_all(&mut self) -> Result<Vec<Stream>, Error> {
         self.update().await;
         let mut result = Vec::new();
         for mut v in self.info.read().unwrap().values().cloned() {
@@ -110,7 +113,7 @@ impl MemStorage {
         Ok(result)
     }
 
-    pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<StreamInfo>>, Error> {
+    pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<Stream>>, Error> {
         self.update().await;
         Ok(self.info.read().unwrap().clone())
     }
@@ -133,16 +136,21 @@ impl MemStorage {
         }
     }
 
-    pub async fn resource_put(&self, resource: String, target: Server) -> Result<()> {
-        self.resource.write().unwrap().insert(resource, target);
+    pub async fn stream_all(&mut self) -> HashMap<String, Vec<Server>> {
+        self.update().await;
+        self.stream.read().unwrap().clone()
+    }
+
+    pub async fn session_put(&self, session: String, target: Server) -> Result<()> {
+        self.session.write().unwrap().insert(session, target);
         Ok(())
     }
 
-    pub async fn resource_get(&mut self, resource: String) -> Result<Server, Error> {
+    pub async fn session_get(&mut self, session: String) -> Result<Server, Error> {
         self.update().await;
-        match self.resource.read().unwrap().get(&resource) {
+        match self.session.read().unwrap().get(&session) {
             Some(data) => Ok(data.clone()),
-            None => Err(anyhow!("resource not found")),
+            None => Err(anyhow!("session not found")),
         }
     }
 
@@ -160,7 +168,7 @@ impl MemStorage {
             requests.push((
                 server.key,
                 self.client
-                    .get(format!("{}{}", server.url, SYNC_API))
+                    .get(format!("{}{}", server.url, &api::path::streams("")))
                     .send(),
             ));
         }
@@ -186,8 +194,8 @@ impl MemStorage {
         self.info.write().unwrap().clear();
         self.stream.write().unwrap().clear();
 
-        // Maybe Don't need clear "resource"
-        //self.resource.write().unwrap().clear();
+        // Maybe Don't need clear "session"
+        //self.session.write().unwrap().clear();
 
         for handle in handles {
             let result = tokio::join!(handle);
@@ -195,18 +203,26 @@ impl MemStorage {
                 (Ok((key, Ok(res))),) => {
                     debug!("{}: Response: {:?}", key, res);
 
-                    match serde_json::from_str::<Vec<StreamInfo>>(&res.text().await.unwrap()) {
+                    match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
                             trace!("{:?}", streams.clone());
                             self.info_put(key.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
                                 let target = self.server.read().unwrap().get(&key).unwrap().clone();
-                                self.stream_put(stream.id, target.clone()).await.unwrap();
+                                self.stream_put(stream.id.clone(), target.clone())
+                                    .await
+                                    .unwrap();
 
-                                for subscriber in stream.subscribe_session_infos {
-                                    match self.resource_put(subscriber.id, target.clone()).await {
+                                for session in stream.subscribe.sessions {
+                                    match self
+                                        .session_put(
+                                            api::path::session(&stream.id, &session.id),
+                                            target.clone(),
+                                        )
+                                        .await
+                                    {
                                         Ok(_) => {}
-                                        Err(e) => error!("Put Resource Error: {:?}", e),
+                                        Err(e) => error!("Put Session Error: {:?}", e),
                                     }
                                 }
                             }

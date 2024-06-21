@@ -1,4 +1,4 @@
-use live777_http::event::{NodeEventType, NodeMetaData};
+use api::event::{NodeEventType, NodeMetaData};
 
 use crate::forward::message;
 
@@ -14,16 +14,16 @@ impl From<NodeEvent> for NodeEventType {
     }
 }
 
-impl From<StreamEventType> for live777_http::event::StreamEventType {
+impl From<StreamEventType> for api::event::StreamEventType {
     fn from(value: StreamEventType) -> Self {
         match value {
-            StreamEventType::Up => live777_http::event::StreamEventType::StreamUp,
-            StreamEventType::Down => live777_http::event::StreamEventType::StreamDown,
+            StreamEventType::Up => api::event::StreamEventType::StreamUp,
+            StreamEventType::Down => api::event::StreamEventType::StreamDown,
         }
     }
 }
 
-impl From<Stream> for live777_http::event::Stream {
+impl From<Stream> for api::event::Stream {
     fn from(value: Stream) -> Self {
         Self {
             stream: value.stream,
@@ -35,34 +35,24 @@ impl From<Stream> for live777_http::event::Stream {
     }
 }
 
-impl From<message::ForwardEventType> for live777_http::event::StreamEventType {
+impl From<message::ForwardEventType> for api::event::StreamEventType {
     fn from(value: message::ForwardEventType) -> Self {
         match value {
-            message::ForwardEventType::PublishUp => live777_http::event::StreamEventType::PublishUp,
-            message::ForwardEventType::PublishDown => {
-                live777_http::event::StreamEventType::PublishDown
-            }
-            message::ForwardEventType::SubscribeUp => {
-                live777_http::event::StreamEventType::SubscribeUp
-            }
-            message::ForwardEventType::SubscribeDown => {
-                live777_http::event::StreamEventType::SubscribeDown
-            }
-            message::ForwardEventType::ReforwardUp => {
-                live777_http::event::StreamEventType::ReforwardUp
-            }
-            message::ForwardEventType::ReforwardDown => {
-                live777_http::event::StreamEventType::ReforwardDown
-            }
+            message::ForwardEventType::PublishUp => api::event::StreamEventType::PublishUp,
+            message::ForwardEventType::PublishDown => api::event::StreamEventType::PublishDown,
+            message::ForwardEventType::SubscribeUp => api::event::StreamEventType::SubscribeUp,
+            message::ForwardEventType::SubscribeDown => api::event::StreamEventType::SubscribeDown,
+            message::ForwardEventType::ReforwardUp => api::event::StreamEventType::ReforwardUp,
+            message::ForwardEventType::ReforwardDown => api::event::StreamEventType::ReforwardDown,
         }
     }
 }
 
-impl From<message::ForwardEvent> for live777_http::event::Event {
+impl From<message::ForwardEvent> for api::event::Event {
     fn from(value: message::ForwardEvent) -> Self {
-        live777_http::event::Event::Stream {
+        api::event::Event::Stream {
             r#type: value.r#type.into(),
-            stream: live777_http::event::Stream {
+            stream: api::event::Stream {
                 stream: value.stream_info.id,
                 session: Some(value.session),
                 publish: if value.stream_info.publish_session_info.is_some() {
@@ -83,13 +73,13 @@ impl From<message::ForwardEvent> for live777_http::event::Event {
 }
 
 impl Event {
-    pub fn convert_live777_http_event(self, metadata: NodeMetaData) -> live777_http::event::Event {
+    pub fn convert_api_event(self, metadata: NodeMetaData) -> api::event::Event {
         match self {
-            Event::Node(event) => live777_http::event::Event::Node {
+            Event::Node(event) => api::event::Event::Node {
                 r#type: event.into(),
                 metadata,
             },
-            Event::Stream(stream_evnet) => live777_http::event::Event::Stream {
+            Event::Stream(stream_evnet) => api::event::Event::Stream {
                 r#type: stream_evnet.r#type.into(),
                 stream: stream_evnet.stream.into(),
             },
