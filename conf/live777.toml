@@ -41,7 +41,7 @@ urls = [
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
-[stream_info]
+[strategy]
 # If reforward is beginning, close all subscriber
 # reforward_close_sub = false
 

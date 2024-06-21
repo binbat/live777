@@ -26,13 +26,13 @@ impl ManagerConfig {
             .collect();
         Self {
             ice_servers,
-            reforward_close_sub: cfg.stream_info.reforward_close_sub,
+            reforward_close_sub: cfg.strategy.reforward_close_sub,
             addr: cfg.node_addr.unwrap(),
             webhooks: cfg.webhooks.clone(),
-            auto_create_pub: cfg.stream_info.auto_create_whip,
-            auto_create_sub: cfg.stream_info.auto_create_whep,
-            auto_delete_pub: cfg.stream_info.auto_delete_whip.0 * 1000,
-            auto_delete_sub: cfg.stream_info.auto_delete_whep.0 * 1000,
+            auto_create_pub: cfg.strategy.auto_create_whip,
+            auto_create_sub: cfg.strategy.auto_create_whep,
+            auto_delete_pub: cfg.strategy.auto_delete_whip.0 * 1000,
+            auto_delete_sub: cfg.strategy.auto_delete_whep.0 * 1000,
         }
     }
 }

@@ -23,7 +23,7 @@ pub struct Config {
     #[serde(default)]
     pub node_addr: Option<SocketAddr>,
     #[serde(default)]
-    pub stream_info: StreamInfo,
+    pub strategy: Strategy,
     #[serde(default)]
     pub webhooks: Vec<String>,
 }
@@ -79,7 +79,7 @@ pub struct Log {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamInfo {
+pub struct Strategy {
     #[serde(default)]
     pub reforward_close_sub: bool,
     #[serde(default = "default_true")]
@@ -96,7 +96,7 @@ fn default_true() -> bool {
     true
 }
 
-impl Default for StreamInfo {
+impl Default for Strategy {
     fn default() -> Self {
         Self {
             reforward_close_sub: false,
