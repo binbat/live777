@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration, vec};
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser};
 use cli::{create_child, Codec};
+
 use scopeguard::defer;
 use tokio::{
     net::UdpSocket,
@@ -28,7 +29,8 @@ use webrtc::{
 use libwish::Client;
 
 mod payload;
-
+#[cfg(test)]
+mod test;
 const PREFIX_LIB: &str = "WEBRTC";
 
 #[derive(Parser)]
@@ -144,9 +146,15 @@ async fn webrtc_start(
     peer.set_local_description(offer).await?;
     let _ = gather_complete.recv().await;
 
-    let (answer, _ice_servers) = client
+    let (answer, ice_servers) = client
         .wish(peer.local_description().await.unwrap().sdp)
         .await?;
+
+    let mut current_config = peer.get_configuration().await;
+
+    current_config.ice_servers.clone_from(&ice_servers);
+
+    peer.set_configuration(current_config.clone()).await?;
 
     peer.set_remote_description(answer)
         .await
