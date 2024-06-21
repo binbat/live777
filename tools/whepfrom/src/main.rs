@@ -157,23 +157,13 @@ async fn webrtc_start(
     let (answer, ice_servers) = client
         .wish(peer.local_description().await.unwrap().sdp.clone())
         .await?;
-    
+
     let mut current_config = peer.get_configuration().await;
 
     current_config.ice_servers.clone_from(&ice_servers);
-    
+
     //set new configuration into peer
     peer.set_configuration(current_config.clone()).await?;
-    
-    //test 
-    let updated_config = peer.get_configuration().await;
-
-    for (i, ice_server) in updated_config.ice_servers.iter().enumerate() {
-        assert_eq!(ice_server.urls, _ice_servers[i].urls);
-        assert_eq!(ice_server.username, _ice_servers[i].username);
-        assert_eq!(ice_server.credential, _ice_servers[i].credential);
-    }
-    //test
 
     peer.set_remote_description(answer)
         .await

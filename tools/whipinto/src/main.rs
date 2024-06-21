@@ -154,15 +154,6 @@ async fn webrtc_start(
 
     peer.set_configuration(current_config.clone()).await?;
 
-    // validate the updated config 
-    let updated_config = peer.get_configuration().await;
-
-    for (i, ice_server) in updated_config.ice_servers.iter().enumerate() {
-        assert_eq!(ice_server.urls, _ice_servers[i].urls);
-        assert_eq!(ice_server.username, _ice_servers[i].username);
-        assert_eq!(ice_server.credential, _ice_servers[i].credential);
-    }
-    
     peer.set_remote_description(answer)
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
