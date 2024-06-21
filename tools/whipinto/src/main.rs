@@ -1,5 +1,4 @@
 use std::{sync::Arc, time::Duration, vec};
-
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser};
 use cli::{create_child, Codec};
@@ -28,7 +27,8 @@ use webrtc::{
 };
 
 mod payload;
-
+#[cfg(test)]
+mod test;
 const PREFIX_LIB: &str = "WEBRTC";
 
 #[derive(Parser)]

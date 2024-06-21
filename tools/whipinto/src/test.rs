@@ -1,23 +1,10 @@
-// tests/test.rs
-use webrtc::api::API;
-//use webrtc::ice_transport::ice_server::RTCIceServer;
-//use webrtc::peer_connection::configuration::RTCConfiguration;
-//use webrtc::peer_connection::RTCPeerConnection;
-//use webrtc::webrtc::RTCIceCredentialType;
+#[cfg(test)]
+mod tests {
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
-    peer_connection::{
-        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        RTCPeerConnection,
-    },
-    rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters},
-        rtp_transceiver_direction::RTCRtpTransceiverDirection,
-        RTCRtpTransceiverInit,
-    },
-    util::MarshalSize,
+    peer_connection::configuration::RTCConfiguration,
 };
 
 use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
@@ -25,7 +12,6 @@ use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
 use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 
 
@@ -33,7 +19,7 @@ use tokio::sync::Mutex;
 async fn test_set_get_configuration() {
     
     let mut media_engine = MediaEngine::default();
-    let mut registry = Registry::new();
+    let registry = Registry::new();
 
     register_default_interceptors( registry, &mut media_engine).expect("Failed to register default interceptors");
 
@@ -61,9 +47,6 @@ async fn test_set_get_configuration() {
             .await
             .expect("Failed to create RTCPeerConnection"),
     );
-
-    // obtain config
-    let config_before = peer.get_configuration().await;
     
     let new_config = RTCConfiguration {
         ice_servers: vec![RTCIceServer {
@@ -95,4 +78,4 @@ async fn test_set_get_configuration() {
     assert_eq!(updated_config.ice_candidate_pool_size, 0);
     
 }
-
+}
