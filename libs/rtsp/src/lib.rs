@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Error, Result};
+use portpicker::pick_unused_port;
 use rtsp_types::ParseError;
 use rtsp_types::{headers, headers::transport, Message, Method, Request, Response, StatusCode};
 use sdp_types::Session;
@@ -7,10 +8,10 @@ use tokio::{
     net::TcpStream,
     sync::mpsc::UnboundedSender,
 };
-use portpicker::pick_unused_port;
+
 const SERVER_NAME: &str = "whipinto";
 
-#[derive( Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Handler {
     sdp: Option<Vec<u8>>,
     rtp: Option<u16>,
@@ -24,7 +25,7 @@ impl Handler {
         Self {
             sdp: None,
             rtp: None,
-            rtcp: None, 
+            rtcp: None,
             up_tx,
             dn_tx,
         }
@@ -93,7 +94,7 @@ impl Handler {
             }
         };
         let rtp_server_port = pick_unused_port().expect("Failed to find an unused port");
-        let rtcp_server_port = rtp_server_port+1;
+        let rtcp_server_port = rtp_server_port + 1;
         self.up_tx.send(rtp_server_port.to_string()).unwrap();
 
         Response::builder(req.version(), StatusCode::Ok)
@@ -226,6 +227,3 @@ pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Res
         }
     }
 }
-
-
-
