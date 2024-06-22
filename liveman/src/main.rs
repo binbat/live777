@@ -19,7 +19,7 @@ use crate::config::Config;
 use crate::mem::{MemStorage, Server};
 
 #[derive(RustEmbed)]
-#[folder = "../assets/"]
+#[folder = "../dashboard/"]
 struct Assets;
 
 mod auth;

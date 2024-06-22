@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "dev:dash": "vite --config web/vite.dashboard.ts",
+    "build:dash": "tsc && vite --config web/vite.dashboard.ts build",
+    "preview:dash": "vite --config web/vite.dashboard.ts preview",
     "e2e:cluster": "bun test"
   },
   "dependencies": {

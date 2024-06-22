@@ -2,6 +2,7 @@ config.toml
 stream.sdp
 target
 assets
+dashboard
 
 live777.toml
 gateway.toml
