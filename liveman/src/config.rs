@@ -10,13 +10,15 @@ pub struct Config {
     #[serde(default)]
     pub auth: Auth,
     #[serde(default)]
+    pub manager_auth: Auth,
+    #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub reforward: Reforward,
-    #[serde(default = "default_db_url")]
-    pub db_url: String,
+    pub liveion: Liveion,
     #[serde(default)]
-    pub node_sync_tick_time: NodeSyncTickTime,
+    pub reforward: Reforward,
+    #[serde(default)]
+    pub servers: Vec<crate::mem::Server>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,13 +92,9 @@ impl Default for NodeSyncTickTime {
 fn default_http_listen() -> SocketAddr {
     SocketAddr::from_str(&format!(
         "0.0.0.0:{}",
-        env::var("PORT").unwrap_or(String::from("8080"))
+        env::var("PORT").unwrap_or(String::from("8888"))
     ))
     .expect("invalid listen address")
-}
-
-fn default_db_url() -> String {
-    "mysql://root:password@localhost:3306/live777".to_string()
 }
 
 impl Default for Http {
@@ -126,24 +124,45 @@ fn default_log_level() -> String {
     })
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Liveion {
+    #[serde(default = "default_liveion_address")]
+    pub address: SocketAddr,
+    #[serde(default)]
+    pub count: u16,
+}
+
+impl Default for Liveion {
+    fn default() -> Self {
+        Self {
+            address: default_liveion_address(),
+            count: Default::default(),
+        }
+    }
+}
+
+fn default_liveion_address() -> SocketAddr {
+    SocketAddr::from_str("127.0.0.1:0").unwrap()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Reforward {
     #[serde(default)]
-    pub whep_check_frequency: WhepReforwardCheckFrequency,
+    pub check_attempts: ReforwardCheckAttempts,
     #[serde(default)]
     pub check_tick_time: CheckReforwardTickTime,
+    #[serde(default = "default_reforward_maximum_idle_time")]
+    pub maximum_idle_time: u64,
     #[serde(default)]
-    pub maximum_idle_time: ReforwardMaximumIdleTime,
-    #[serde(default)]
-    pub cascade: bool,
+    pub close_other_sub: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WhepReforwardCheckFrequency(pub u8);
+pub struct ReforwardCheckAttempts(pub u8);
 
-impl Default for WhepReforwardCheckFrequency {
+impl Default for ReforwardCheckAttempts {
     fn default() -> Self {
-        WhepReforwardCheckFrequency(5)
+        ReforwardCheckAttempts(5)
     }
 }
 
@@ -152,25 +171,33 @@ pub struct CheckReforwardTickTime(pub u64);
 
 impl Default for CheckReforwardTickTime {
     fn default() -> Self {
-        CheckReforwardTickTime(3000)
+        CheckReforwardTickTime(60 * 1000)
     }
 }
 
 impl Config {
     pub(crate) fn parse(path: Option<String>) -> Self {
-        let result = fs::read_to_string(path.unwrap_or(String::from("gateway.toml")))
-            .or(fs::read_to_string("/etc/live777/gateway.toml"))
+        let result = fs::read_to_string(path.unwrap_or(String::from("liveman.toml")))
+            .or(fs::read_to_string("/etc/live777/liveman.toml"))
             .unwrap_or("".to_string());
         let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
-        cfg
+        match cfg.validate() {
+            Ok(_) => cfg,
+            Err(err) => panic!("config validate [{}]", err),
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.liveion.count > 1 && self.liveion.address.port() != 0 {
+            return Err(anyhow::anyhow!(
+                "Multiple Liveion must use random port ':0'"
+            ));
+        }
+
+        Ok(())
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardMaximumIdleTime(pub u64);
-
-impl Default for ReforwardMaximumIdleTime {
-    fn default() -> Self {
-        ReforwardMaximumIdleTime(60000)
-    }
+fn default_reforward_maximum_idle_time() -> u64 {
+    60 * 1000
 }
