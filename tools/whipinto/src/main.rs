@@ -1,8 +1,7 @@
-use std::{sync::Arc, time::Duration, vec};
-
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use cli::{create_child, Codec};
+use std::{sync::Arc, time::Duration, vec};
 
 use libwish::Client;
 use scopeguard::defer;
@@ -19,8 +18,9 @@ use webrtc::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
         RTCPeerConnection,
     },
+    rtcp,
     rtp::packet::Packet,
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    rtp_transceiver::{rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender},
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
     },
@@ -82,6 +82,7 @@ async fn main() -> Result<()> {
     let host = args.host.clone();
     let codec = args.codec;
     let mut rtp_port = args.port;
+    let mut rtcp_send_port = 0;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
 
@@ -90,7 +91,7 @@ async fn main() -> Result<()> {
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
 
         tokio::spawn(async move {
-            let listener = TcpListener::bind(format!("{}:{}", host, args.port))
+            let listener = TcpListener::bind(format!("{}:{}", host, rtp_port))
                 .await
                 .unwrap();
             println!(
@@ -109,36 +110,54 @@ async fn main() -> Result<()> {
             }
         });
 
-        match rx.recv().await {
-            Some(_rtpmap) => {
-                //println!("=== Received RTPMAP: {} ===", rtpmap);
-                //match rtpmap.split_once(' ') {
-                //    Some((pt, code)) => {
-                //        println!("=== Received PT: {} CODEC: {} ===", pt, code);
-                //        codec = match code {
-                //            "AV1/90000" => Codec::AV1,
-                //            "VP8/90000" => Codec::Vp8,
-                //            "VP9/90000" => Codec::Vp9,
-                //            "H264/90000" => Codec::H264,
-                //            _ => Codec::H264,
-                //        };
-                //    }
-                //    None => {}
-                //};
-            }
-            None => {
-                println!("=== No RTPMAP received ===");
-            }
-        };
-        //rtp_port += 1;
+        // match rx.recv().await {
+        //     Some(_rtpmap) => {
+        //         //println!("=== Received RTPMAP: {} ===", rtpmap);
+        //         //match rtpmap.split_once(' ') {
+        //         //    Some((pt, code)) => {
+        //         //        println!("=== Received PT: {} CODEC: {} ===", pt, code);
+        //         //        codec = match code {
+        //         //            "AV1/90000" => Codec::AV1,
+        //         //            "VP8/90000" => Codec::Vp8,
+        //         //            "VP9/90000" => Codec::Vp9,
+        //         //            "H264/90000" => Codec::H264,
+        //         //            _ => Codec::H264,
+        //         //        };
+        //         //    }
+        //         //    None => {}
+        //         //};
+        //     }
+        //     None => {
+        //         println!("=== No RTPMAP received ===");
+        //     }
+        // };
+
+        let (_rtp_listen_port, rtcp_listen_port, rtp_server_port) =
+            match (rx.recv().await, rx.recv().await, rx.recv().await) {
+                (Some(rtp), Some(rtcp), Some(rtp_server)) => {
+                    let rtp_port = rtp.parse::<u16>().unwrap_or(8000);
+                    let rtcp_port = rtcp.parse::<u16>().unwrap_or(8001);
+                    let rtp_server_port = rtp_server.parse::<u16>().unwrap_or(8002);
+                    (rtp_port, rtcp_port, rtp_server_port)
+                }
+                _ => {
+                    println!("Error receiving ports, using default values.");
+                    (8000, 8001, 8002)
+                }
+            };
+        rtp_port = rtp_server_port;
+        rtcp_send_port = rtcp_listen_port;
+    } else {
         rtp_port = 8000;
     }
+
     let listener = UdpSocket::bind(format!("{}:{}", args.host, rtp_port)).await?;
     let port = listener.local_addr()?.port();
     info!(
         "=== RTP listener started : {} ===",
         listener.local_addr().unwrap()
     );
+
     let mut client = Client::new(
         args.url,
         Client::get_auth_header_map(args.auth_basic, args.auth_token),
@@ -159,7 +178,17 @@ async fn main() -> Result<()> {
     let (peer, sender) = webrtc_start(&mut client, codec.into(), complete_tx.clone())
         .await
         .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
+
     tokio::spawn(rtp_listener(listener, sender));
+    if args.mode == Mode::Rtsp {
+        let rtcp_port = rtp_port + 1;
+        tokio::spawn(rtcp_listener(args.host.clone(), rtcp_port, peer.clone()));
+        let senders = peer.get_senders().await;
+        for sender in senders {
+            tokio::spawn(read_rtcp(sender, args.host.clone(), rtcp_send_port));
+        }
+    }
+
     let wait_child = child.clone();
     tokio::spawn(async move {
         match wait_child.as_ref() {
@@ -195,6 +224,67 @@ async fn rtp_listener(socker: UdpSocket, sender: UnboundedSender<Vec<u8>>) {
     }
 }
 
+async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection>) {
+    let rtcp_listener = UdpSocket::bind(format!("{}:{}", host, rtcp_port))
+        .await
+        .unwrap();
+    info!(
+        "RTCP listener bound to: {}",
+        rtcp_listener.local_addr().unwrap()
+    );
+    let mut rtcp_buf = vec![0u8; 1500];
+
+    loop {
+        let (len, addr) = rtcp_listener.recv_from(&mut rtcp_buf).await.unwrap();
+        if len > 0 {
+            debug!("Received {} bytes of RTCP data from {}", len, addr);
+            let mut rtcp_data = &rtcp_buf[..len];
+
+            if let Ok(rtcp_packets) = rtcp::packet::unmarshal(&mut rtcp_data) {
+                for packet in rtcp_packets {
+                    info!("Received RTCP packet from {}: {:?}", addr, packet);
+                    if let Err(err) = peer.write_rtcp(&[packet]).await {
+                        warn!("Failed to send RTCP packet: {}", err);
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result<()> {
+    let udp_socket = UdpSocket::bind("[::]:0").await.unwrap();
+    udp_socket
+        .connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
+
+    loop {
+        match sender.read_rtcp().await {
+            Ok((packets, _attributes)) => {
+                for packet in packets {
+                    debug!("Received RTCP packet from remote peer: {:?}", packet);
+
+                    let mut buf = vec![];
+                    if let Ok(serialized_packet) = packet.marshal() {
+                        buf.extend_from_slice(&serialized_packet);
+                    }
+                    if !buf.is_empty() {
+                        if let Err(err) = udp_socket.send(&buf).await {
+                            warn!("Failed to forward RTCP packet: {}", err);
+                        } else {
+                            debug!("Forwarded RTCP packet to {}", port);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!("Error reading RTCP packet from remote peer: {}", err);
+            }
+        }
+    }
+}
+
 async fn webrtc_start(
     client: &mut Client,
     codec: RTCRtpCodecCapability,
@@ -210,7 +300,6 @@ async fn webrtc_start(
     let (answer, _ice_servers) = client
         .wish(peer.local_description().await.unwrap().sdp)
         .await?;
-
     peer.set_remote_description(answer)
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
@@ -247,6 +336,7 @@ async fn new_peer(
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
+
     let pc = peer.clone();
     peer.on_peer_connection_state_change(Box::new(move |s| {
         let pc = pc.clone();
