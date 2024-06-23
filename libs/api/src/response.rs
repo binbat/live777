@@ -29,14 +29,18 @@ pub struct Session {
     pub created_at: i64,
     pub state: RTCPeerConnectionState,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reforward: Option<ReforwardInfo>,
+    pub cascade: Option<CascadeInfo>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct ReforwardInfo {
-    pub target_url: String,
-    pub resource_url: Option<String>,
+pub struct CascadeInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dst: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
 }
 
 /// PeerConnectionState indicates the state of the PeerConnection.

@@ -4,7 +4,10 @@ use anyhow::{anyhow, Error};
 use reqwest::header::HeaderMap;
 use tracing::{debug, error, info, trace, warn};
 
-use api::{request::Reforward, response::RTCPeerConnectionState, response::Stream};
+use api::{
+    request::Cascade,
+    response::{RTCPeerConnectionState, Stream},
+};
 
 use crate::Server;
 
@@ -51,7 +54,7 @@ async fn force_check(server: Server, stream: String) -> Result<(), Error> {
     Err(anyhow!("http status not success"))
 }
 
-pub async fn reforward(
+pub async fn cascade_push(
     server_src: Server,
     server_dst: Server,
     stream: String,
@@ -59,10 +62,11 @@ pub async fn reforward(
     let mut headers = HeaderMap::new();
     headers.append("Content-Type", "application/json".parse().unwrap());
     let client = reqwest::Client::new();
-    let url = format!("{}/admin/reforward/{}", server_src.url, stream);
-    let body = serde_json::to_string(&Reforward {
-        target_url: format!("{}/whip/{}", server_dst.url, stream),
-        admin_authorization: None,
+    let url = format!("{}/{}", server_src.url, &api::path::cascade(&stream));
+    let body = serde_json::to_string(&Cascade {
+        dst: Some(server_dst.url),
+        token: None,
+        src: None,
     })
     .unwrap();
     trace!("{:?}", body);

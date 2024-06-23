@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
@@ -14,7 +14,6 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
@@ -33,7 +32,7 @@ use crate::result::Result;
 use crate::AppError;
 
 use super::media::MediaInfo;
-use super::message::{ForwardEvent, ForwardEventType, ReforwardInfo};
+use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::PublishTrackRemote;
@@ -241,6 +240,25 @@ impl PeerForwardInternal {
             };
         }
     }
+
+    pub async fn reset_cascade_info(&self, id: String, cascade_info: CascadeInfo) -> Result<()> {
+        let publish = self.publish.read().await;
+        if publish.is_some() && publish.as_ref().unwrap().id == id {
+            let mut cascade = publish.as_ref().unwrap().cascade.write().unwrap();
+            *cascade = Some(cascade_info);
+            return Ok(());
+        }
+
+        let reforward_group = self.subscribe_group.read().await;
+        for subscribe in reforward_group.iter() {
+            if id == subscribe.id {
+                let mut cascade = subscribe.cascade.write().unwrap();
+                *cascade = Some(cascade_info);
+                return Ok(());
+            }
+        }
+        Err(AppError::throw("not found re forward subscribe"))
+    }
 }
 
 // publish
@@ -250,14 +268,11 @@ impl PeerForwardInternal {
         publish.is_some()
     }
 
-    pub(crate) async fn publish_is_ok(&self) -> bool {
-        let publish = self.publish.read().await;
-        publish.is_some()
-            && publish.as_ref().unwrap().peer.connection_state()
-                == RTCPeerConnectionState::Connected
-    }
-
-    pub(crate) async fn set_publish(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
+    pub(crate) async fn set_publish(
+        &self,
+        peer: Arc<RTCPeerConnection>,
+        cascade: Option<CascadeInfo>,
+    ) -> Result<()> {
         {
             let mut publish = self.publish.write().await;
             if publish.is_some() {
@@ -269,6 +284,7 @@ impl PeerForwardInternal {
                 self.stream.clone(),
                 peer.clone(),
                 self.publish_rtcp_channel.0.subscribe(),
+                cascade,
             )
             .await?;
             info!("[{}] [publish] set {}", self.stream, publish_peer.id);
@@ -418,13 +434,9 @@ impl PeerForwardInternal {
     pub(crate) async fn new_subscription_peer(
         &self,
         media_info: MediaInfo,
-        reforward_info: Option<ReforwardInfo>,
     ) -> Result<Arc<RTCPeerConnection>> {
-        if !self.publish_is_some().await {
-            warn!("publish is none");
-        }
         if media_info.video_transceiver.1 > 1 && media_info.audio_transceiver.1 > 1 {
-            return Err(AppError::throw("sendonly is more than 1"));
+            return Err(AppError::throw("recvonly is more than 1"));
         }
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
@@ -442,36 +454,8 @@ impl PeerForwardInternal {
             ..Default::default()
         };
         let peer = Arc::new(api.new_peer_connection(config).await?);
-        {
-            let s = SubscribeRTCPeerConnection::new(
-                reforward_info.clone(),
-                self.stream.clone(),
-                peer.clone(),
-                self.publish_rtcp_channel.0.clone(),
-                (
-                    self.publish_tracks.clone(),
-                    self.publish_tracks_change.0.clone(),
-                ),
-                (
-                    Self::new_sender(&peer, RTPCodecType::Video, media_info.video_transceiver.1)
-                        .await?,
-                    Self::new_sender(&peer, RTPCodecType::Audio, media_info.audio_transceiver.1)
-                        .await?,
-                ),
-            )
-            .await;
-            self.subscribe_group.write().await.push(s);
-            *self.subscribe_leave_time.write().await = 0;
-        }
-        metrics::SUBSCRIBE.inc();
-        self.send_event(ForwardEventType::SubscribeUp, get_peer_id(&peer))
-            .await;
-        if reforward_info.is_some() {
-            metrics::REFORWARD.inc();
-            self.send_event(ForwardEventType::ReforwardUp, get_peer_id(&peer))
-                .await;
-        }
-
+        Self::new_sender(&peer, RTPCodecType::Video, media_info.video_transceiver.1).await?;
+        Self::new_sender(&peer, RTPCodecType::Audio, media_info.audio_transceiver.1).await?;
         Ok(peer)
     }
 
@@ -498,6 +482,49 @@ impl PeerForwardInternal {
         })
     }
 
+    pub async fn add_subscribe(
+        &self,
+        peer: Arc<RTCPeerConnection>,
+        cascade: Option<CascadeInfo>,
+    ) -> Result<()> {
+        let transceivers = peer.get_transceivers().await;
+        let mut video_sender = None;
+        let mut audio_sender = None;
+        for transceiver in transceivers {
+            let sender = transceiver.sender().await;
+            match transceiver.kind() {
+                RTPCodecType::Video => video_sender = Some(sender),
+                RTPCodecType::Audio => audio_sender = Some(sender),
+                RTPCodecType::Unspecified => {}
+            }
+        }
+        {
+            let s = SubscribeRTCPeerConnection::new(
+                cascade.clone(),
+                self.stream.clone(),
+                peer.clone(),
+                self.publish_rtcp_channel.0.clone(),
+                (
+                    self.publish_tracks.clone(),
+                    self.publish_tracks_change.0.clone(),
+                ),
+                (video_sender, audio_sender),
+            )
+            .await;
+            self.subscribe_group.write().await.push(s);
+            *self.subscribe_leave_time.write().await = 0;
+        }
+        metrics::SUBSCRIBE.inc();
+        self.send_event(ForwardEventType::SubscribeUp, get_peer_id(&peer))
+            .await;
+        if cascade.is_some() {
+            metrics::REFORWARD.inc();
+            self.send_event(ForwardEventType::ReforwardUp, get_peer_id(&peer))
+                .await;
+        }
+        Ok(())
+    }
+
     pub async fn remove_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
         let mut flag = false;
         let mut reforward_flat = false;
@@ -509,23 +536,19 @@ impl PeerForwardInternal {
                 if subscribe.id == session {
                     flag = true;
                     metrics::SUBSCRIBE.dec();
-                    let reforward_info = subscribe.reforward_info.read().await;
-                    if let Some(reforward_info) = reforward_info.as_ref() {
+                    if let Some(cascade) = subscribe.cascade.read().unwrap().as_ref() {
                         reforward_flat = true;
                         metrics::REFORWARD.dec();
 
                         let client = Client::build(
-                            reforward_info.target_url.clone(),
-                            reforward_info.resource_url.clone(),
-                            Client::get_authorization_header_map(
-                                reforward_info.admin_authorization.clone(),
-                            ),
+                            cascade.dst.clone().unwrap(),
+                            cascade.resource.clone(),
+                            Client::get_authorization_header_map(cascade.token.clone()),
                         );
                         tokio::spawn(async move {
                             let _ = client.remove_resource().await;
                         });
                     }
-                    drop(reforward_info);
                     subscribe_peers.remove(i);
                     break;
                 }
@@ -545,22 +568,6 @@ impl PeerForwardInternal {
         } else {
             Err(AppError::throw("not found session"))
         }
-    }
-
-    pub async fn set_reforward_info(
-        &self,
-        peer: Arc<RTCPeerConnection>,
-        reforward_info: ReforwardInfo,
-    ) -> Result<()> {
-        let reforward_group = self.subscribe_group.read().await;
-        for subscribe in reforward_group.iter() {
-            if get_peer_id(&peer) == subscribe.id {
-                let mut reforward_info_mut = subscribe.reforward_info.write().await;
-                *reforward_info_mut = Some(reforward_info);
-                return Ok(());
-            }
-        }
-        Err(AppError::throw("not found re forward subscribe"))
     }
 
     pub async fn select_kind_rid(&self, id: String, kind: RTPCodecType, rid: String) -> Result<()> {
@@ -583,11 +590,6 @@ impl PeerForwardInternal {
         let receiver = self.data_channel_forward.subscribe.0.subscribe();
         Self::data_channel_forward(dc, sender, receiver).await;
         Ok(())
-    }
-
-    pub(crate) async fn get_publish_peer(&self) -> Option<Arc<RTCPeerConnection>> {
-        let publish = self.publish.read().await;
-        publish.as_ref().map(|p| p.peer.clone())
     }
 
     async fn send_event(&self, r#type: ForwardEventType, session: String) {

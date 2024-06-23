@@ -40,13 +40,13 @@ export async function allStream(): Promise<Stream[]> {
 }
 
 export async function reforward(streamId: string, url: string): Promise<void> {
-    fetch(`/admin/reforward/${streamId}`, {
+    fetch(`/admin/cascade/${streamId}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            targetUrl: url,
+            dst: url,
         }),
     })
 }
