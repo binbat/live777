@@ -35,18 +35,22 @@ export interface Session {
     };
 }
 
+export interface Cascade{
+    token?: string;
+    src?: string;
+    dst?: string;
+}
+
 export async function allStream(): Promise<Stream[]> {
     return (await fetch("/api/streams/")).json()
 }
 
-export async function reforward(streamId: string, url: string): Promise<void> {
-    fetch(`/admin/cascade/${streamId}`, {
+export async function cascade(streamId: string, params: Cascade): Promise<void> {
+    fetch(`/api/cascade/${streamId}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-            dst: url,
-        }),
+        body: JSON.stringify(params),
     })
 }

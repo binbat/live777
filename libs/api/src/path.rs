@@ -28,5 +28,5 @@ pub fn infos(qry: QueryInfo) -> String {
 }
 
 pub fn cascade(stream: &str) -> String {
-    format!("/admin/cascade/{}", stream)
+    format!("/api/cascade/{}", stream)
 }
