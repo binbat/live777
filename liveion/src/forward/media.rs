@@ -6,6 +6,7 @@ use webrtc::{
     sdp::{Error, MediaDescription, SessionDescription},
 };
 
+#[derive(Debug, Clone)]
 pub(crate) struct MediaInfo {
     pub(crate) _codec: Vec<RTCRtpCodecParameters>,
     pub(crate) video_transceiver: (u8, u8, bool), // (send,recv,svc)

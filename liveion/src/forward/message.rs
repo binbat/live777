@@ -19,14 +19,15 @@ pub struct SessionInfo {
     pub id: String,
     pub create_time: i64,
     pub connect_state: RTCPeerConnectionState,
-    pub reforward: Option<ReforwardInfo>,
+    pub cascade: Option<CascadeInfo>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ReforwardInfo {
-    pub target_url: String,
-    pub admin_authorization: Option<String>,
-    pub resource_url: Option<String>,
+pub struct CascadeInfo {
+    pub src: Option<String>,
+    pub dst: Option<String>,
+    pub token: Option<String>,
+    pub resource: Option<String>,
 }
 
 #[derive(Clone, Debug)]

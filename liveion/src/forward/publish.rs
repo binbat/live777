@@ -1,4 +1,4 @@
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -11,12 +11,14 @@ use crate::forward::rtcp::RtcpMessage;
 
 use super::get_peer_id;
 use super::media::MediaInfo;
+use super::message::CascadeInfo;
 
 pub(crate) struct PublishRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) peer: Arc<RTCPeerConnection>,
     pub(crate) media_info: MediaInfo,
     pub(crate) create_time: i64,
+    pub(crate) cascade: RwLock<Option<CascadeInfo>>,
 }
 
 impl PublishRTCPeerConnection {
@@ -24,6 +26,7 @@ impl PublishRTCPeerConnection {
         path: String,
         peer: Arc<RTCPeerConnection>,
         rtcp_recv: broadcast::Receiver<(RtcpMessage, u32)>,
+        cascade: Option<CascadeInfo>,
     ) -> Result<Self> {
         let id = get_peer_id(&peer);
         let peer_weak = Arc::downgrade(&peer);
@@ -39,6 +42,7 @@ impl PublishRTCPeerConnection {
             peer,
             media_info,
             create_time: Utc::now().timestamp_millis(),
+            cascade: RwLock::new(cascade),
         })
     }
 
@@ -47,7 +51,7 @@ impl PublishRTCPeerConnection {
             id: self.id.clone(),
             create_time: self.create_time,
             connect_state: self.peer.connection_state(),
-            reforward: Option::None,
+            cascade: self.cascade.read().unwrap().clone(),
         }
     }
 

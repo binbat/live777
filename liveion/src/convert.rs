@@ -41,16 +41,17 @@ impl From<crate::forward::message::SessionInfo> for api::response::Session {
             id: value.id,
             created_at: value.create_time,
             state: convert_connect_state(value.connect_state),
-            reforward: value.reforward.map(|reforward| reforward.into()),
+            cascade: value.cascade.map(|reforward| reforward.into()),
         }
     }
 }
 
-impl From<crate::forward::message::ReforwardInfo> for api::response::ReforwardInfo {
-    fn from(value: crate::forward::message::ReforwardInfo) -> Self {
-        api::response::ReforwardInfo {
-            target_url: value.target_url,
-            resource_url: value.resource_url,
+impl From<crate::forward::message::CascadeInfo> for api::response::CascadeInfo {
+    fn from(value: crate::forward::message::CascadeInfo) -> Self {
+        api::response::CascadeInfo {
+            dst: value.dst,
+            resource: value.resource,
+            src: value.src,
         }
     }
 }

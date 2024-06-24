@@ -65,7 +65,7 @@ impl From<message::ForwardEvent> for api::event::Event {
                     .stream_info
                     .subscribe_session_infos
                     .iter()
-                    .filter(|session| session.reforward.is_some())
+                    .filter(|session| session.cascade.is_some())
                     .count() as u64,
             },
         }

@@ -4,7 +4,7 @@ import './app.css'
 import { Stream, allStream, delStream } from './api'
 import { formatTime } from './utils'
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
-import { IReforwardDialog, ReforwardDialog } from './dialog-reforward'
+import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade'
 import { IPreviewDialog, PreviewDialog } from './dialog-preview'
 import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
@@ -13,7 +13,8 @@ export function App() {
     const [streams, setStreams] = useState<Stream[]>([])
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const [refreshTimer, setRefershTimer] = useState(-1)
-    const refReforward = useRef<IReforwardDialog>(null)
+    const refCascadePull = useRef<ICascadeDialog>(null)
+    const refCascadePush = useRef<ICascadeDialog>(null)
     const refClients = useRef<IClientsDialog>(null)
     const refNewStream = useRef<INewStreamDialog>(null)
     const [webStreams, setWebStreams] = useState<string[]>([])
@@ -45,8 +46,11 @@ export function App() {
         refClients.current?.show()
     }
 
-    const handleReforwardStream = (id: string) => {
-        refReforward.current?.show(id)
+    const handleCascadePullStream = (id: string) => {
+        refCascadePull.current?.show(id)
+    }
+    const handleCascadePushStream = (id: string) => {
+        refCascadePush.current?.show(id)
     }
 
     const handlePreview = (id: string) => {
@@ -107,7 +111,8 @@ export function App() {
 
             <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
 
-            <ReforwardDialog ref={refReforward} />
+            <CascadePullDialog ref={refCascadePull} />
+            <CascadePushDialog ref={refCascadePush} />
 
             {previewStreams.map(s =>
                 <PreviewDialog
@@ -156,7 +161,7 @@ export function App() {
                             <th class="mw-50">ID</th>
                             <th>Publisher</th>
                             <th>Subscriber</th>
-                            <th>Reforward</th>
+                            <th>Cascade</th>
                             <th class="mw-300">Creation Time</th>
                             <th class="mw-300">Operation</th>
                         </tr>
@@ -172,7 +177,8 @@ export function App() {
                                 <td>
                                     <button style={{ color: previewStreams.includes(i.id) ? 'blue' : 'inherit' }} onClick={() => handlePreview(i.id)}>Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
-                                    <button onClick={() => handleReforwardStream(i.id)}>Reforward</button>
+                                    <button onClick={() => handleCascadePullStream(i.id)}>Cascade Pull</button>
+                                    <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
                                     <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publish.sessions[0].id)}>Destroy</button>
                                 </td>
                             </tr>

@@ -11,10 +11,6 @@ pub fn whep(stream: &str) -> String {
     format!("/whep/{}", stream)
 }
 
-pub fn reforward(stream: &str) -> String {
-    format!("/admin/reforward/{}", stream)
-}
-
 pub fn session(stream: &str, session: &str) -> String {
     format!("/session/{}/{}", stream, session)
 }
@@ -29,4 +25,8 @@ pub fn streams(stream: &str) -> String {
 pub fn infos(qry: QueryInfo) -> String {
     let query = serde_html_form::to_string(qry).unwrap();
     format!("/admin/infos?{}", query)
+}
+
+pub fn cascade(stream: &str) -> String {
+    format!("/api/cascade/{}", stream)
 }

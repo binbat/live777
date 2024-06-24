@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::forward::message::{ForwardInfo, ReforwardInfo};
+use crate::forward::message::ForwardInfo;
 
 #[cfg(feature = "webhook")]
 use crate::hook::webhook::WebHook;
@@ -408,15 +408,41 @@ impl Manager {
         resp
     }
 
-    pub async fn reforward(&self, stream: String, reforward_info: ReforwardInfo) -> Result<()> {
+    pub async fn cascade_pull(
+        &self,
+        stream: String,
+        src: String,
+        token: Option<String>,
+    ) -> Result<()> {
+        let mut stream_map = self.stream_map.write().await;
+        let mut forward = stream_map.get(&stream).cloned();
+        if forward.is_none() && self.config.auto_create_pub {
+            let raw_forward = self.do_stream_create(stream.clone()).await;
+            stream_map.insert(stream.clone(), raw_forward.clone());
+            forward = Some(raw_forward);
+        }
+        drop(stream_map);
+
+        match forward {
+            Some(forward) => forward.publish_pull(src, token).await,
+            None => Err(AppError::stream_not_found("stream not exists")),
+        }
+    }
+
+    pub async fn cascade_push(
+        &self,
+        stream: String,
+        dst: String,
+        token: Option<String>,
+    ) -> Result<()> {
         let streams = self.stream_map.read().await;
         let forward = streams.get(&stream).cloned();
         drop(streams);
         if let Some(forward) = forward {
-            forward.reforward(reforward_info).await?;
+            forward.subscribe_push(dst, token).await?;
             if self.config.reforward_close_sub {
                 for subscribe_session_info in forward.info().await.subscribe_session_infos {
-                    if subscribe_session_info.reforward.is_none() {
+                    if subscribe_session_info.cascade.is_none() {
                         let _ = forward.remove_peer(subscribe_session_info.id).await;
                     }
                 }

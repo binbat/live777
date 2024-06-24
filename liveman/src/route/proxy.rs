@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn, Span};
 
 use api::response::Stream;
 
-use crate::route::utils::{force_check_times, reforward, session_delete};
+use crate::route::utils::{cascade_push, force_check_times, session_delete};
 use crate::Server;
 use crate::{error::AppError, result::Result, AppState};
 
@@ -342,7 +342,7 @@ async fn whep_reforward_node(
     info!("reforward from: {:?}, to: {:?}", server_src, server_dst);
 
     tokio::spawn(async move {
-        match reforward(server_src.clone(), server_dst.clone(), stream.clone()).await {
+        match cascade_push(server_src.clone(), server_dst.clone(), stream.clone()).await {
             Ok(()) => {
                 match force_check_times(
                     server_dst.clone(),
@@ -376,7 +376,7 @@ async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: 
             for stream_info in streams.into_iter() {
                 if stream_info.id == stream {
                     for sub_info in stream_info.subscribe.sessions.into_iter() {
-                        match sub_info.reforward {
+                        match sub_info.cascade {
                             Some(v) => info!("Skip. Is Reforward: {:?}", v),
                             None => {
                                 match session_delete(server.clone(), stream.clone(), sub_info.id)
