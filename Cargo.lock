@@ -1207,7 +1207,6 @@ dependencies = [
  "hyper",
  "lazy_static",
  "libwish",
- "local-ip-address",
  "md5",
  "mime_guess",
  "prometheus",

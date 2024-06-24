@@ -27,8 +27,8 @@ impl ManagerConfig {
         Self {
             ice_servers,
             reforward_close_sub: cfg.strategy.reforward_close_sub,
-            addr: cfg.node_addr.unwrap(),
-            webhooks: cfg.webhooks.clone(),
+            addr: cfg.webhook.node_addr.unwrap(),
+            webhooks: cfg.webhook.webhooks.clone(),
             auto_create_pub: cfg.strategy.auto_create_whip,
             auto_create_sub: cfg.strategy.auto_create_whep,
             auto_delete_pub: cfg.strategy.auto_delete_whip.0 * 1000,

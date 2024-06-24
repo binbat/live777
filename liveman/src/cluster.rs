@@ -12,7 +12,7 @@ pub async fn cluster_up(count: u16, address: SocketAddr) -> Vec<String> {
             .await
             .unwrap();
         let addr = listener.local_addr().unwrap();
-        cfg.node_addr = Some(addr);
+        cfg.webhook.node_addr = Some(addr);
         debug!("Liveion listening on {addr}");
 
         tokio::spawn(liveion::server_up(

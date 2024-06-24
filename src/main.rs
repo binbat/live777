@@ -28,13 +28,13 @@ async fn main() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
     info!("Server listening on {}", addr);
-    if cfg.node_addr.is_none() {
+    if cfg.webhook.node_addr.is_none() {
         let port = addr.port();
-        cfg.node_addr =
+        cfg.webhook.node_addr =
             Some(SocketAddr::from_str(&format!("{}:{}", local_ip().unwrap(), port)).unwrap());
         warn!(
             "config node_addr not set, auto detect local_ip_port : {:?}",
-            cfg.node_addr.unwrap()
+            cfg.webhook.node_addr.unwrap()
         );
     }
 
