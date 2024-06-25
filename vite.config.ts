@@ -9,7 +9,8 @@ export default defineConfig({
     server: {
         proxy: {
             '^.*/admin/.*': 'http://localhost:7777',
-            '^/resource/.*': 'http://localhost:7777',
+            '^/api/.*': 'http://localhost:7777',
+            '^/session/.*': 'http://localhost:7777',
             '^/whip/.*': 'http://localhost:7777',
             '^/whep/.*': 'http://localhost:7777',
         },
@@ -19,7 +20,8 @@ export default defineConfig({
         rollupOptions: {
             input: {
                 index: resolve(__dirname, 'index.html'),
-                player: resolve(__dirname, 'web/player.html')
+                player: resolve(__dirname, 'web/player.html'),
+                debugger: resolve(__dirname, 'web/debugger.html')
             }
         }
     },

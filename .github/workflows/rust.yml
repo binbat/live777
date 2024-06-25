@@ -14,22 +14,46 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v1
+      - uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: 22
       - name: Install
-        run: bun install
+        run: npm install
       - name: Build Webui
-        run: bun run build
+        run: npm run build
       - name: Build
         run: cargo build --release --all-targets --verbose
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --all --verbose
+
+  check_format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show version information
+        run: |
+          cargo --version
+          cargo fmt --version
+
+      - name: Cargo format
+        run: cargo fmt --all -- --check
 
   check_clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        run: npm install
+      - name: Build Webui
+        run: npm run build
+      - name: Show version information
+        run: |
+          cargo --version
+          cargo clippy --version
+
       - name: Cargo clippy
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 

@@ -1,25 +1,28 @@
 import { useState, useRef, useEffect } from 'preact/hooks'
 import Logo from '/logo.svg'
 import './app.css'
-import { StreamInfo, allStream, delStream } from './api'
+import { Stream, allStream, delStream } from './api'
 import { formatTime } from './utils'
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
-import { IReforwardDialog, ReforwardDialog } from './dialog-reforward'
+import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade'
 import { IPreviewDialog, PreviewDialog } from './dialog-preview'
 import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
 export function App() {
-    const [streams, setStreams] = useState<StreamInfo[]>([])
+    const [streams, setStreams] = useState<Stream[]>([])
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const [refreshTimer, setRefershTimer] = useState(-1)
-    const refReforward = useRef<IReforwardDialog>(null)
+    const refCascadePull = useRef<ICascadeDialog>(null)
+    const refCascadePush = useRef<ICascadeDialog>(null)
     const refClients = useRef<IClientsDialog>(null)
-    const refPreview = useRef<IPreviewDialog>(null)
     const refNewStream = useRef<INewStreamDialog>(null)
     const [webStreams, setWebStreams] = useState<string[]>([])
-    const [newResourceId, setNewResourceId] = useState('')
+    const [newStreamId, setNewStreamId] = useState('')
     const refWebStreams = useRef<Map<string, IWebStreamDialog>>(new Map())
+    const [previewStreams, setPreviewStreams] = useState<string[]>([])
+    const [previewStreamId, setPreviewStreamId] = useState('')
+    const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map())
 
     const updateAllStreams = async () => {
         setStreams(await allStream())
@@ -43,40 +46,58 @@ export function App() {
         refClients.current?.show()
     }
 
-    const handleReforwardStream = (id: string) => {
-        refReforward.current?.show(id)
+    const handleCascadePullStream = (id: string) => {
+        refCascadePull.current?.show(id)
+    }
+    const handleCascadePushStream = (id: string) => {
+        refCascadePush.current?.show(id)
     }
 
     const handlePreview = (id: string) => {
-        refPreview.current?.show(id)
+        if (previewStreams.includes(id)) {
+            refPreviewStreams.current.get(id)?.show(id)
+        } else {
+            setPreviewStreams([...previewStreams, id])
+            setPreviewStreamId(id)
+        }
+    }
+
+    useEffect(() => {
+        refPreviewStreams.current.get(previewStreamId)?.show(previewStreamId)
+    }, [previewStreamId])
+
+    const handlePreviewStop = (id: string) => {
+        setPreviewStreamId('')
+        setPreviewStreams(previewStreams.filter(s => s !== id))
     }
 
     const handleNewStream = () => {
         const prefix = 'web-'
         const existingIds = webStreams.concat(streams.filter(s => s.id.startsWith(prefix)).map(s => s.id))
         let i = 0
-        let newResourceId = `${prefix}${i}`
-        while (existingIds.includes(newResourceId)) {
+        let newStreamId = `${prefix}${i}`
+        while (existingIds.includes(newStreamId)) {
             i++
-            newResourceId = `${prefix}${i}`
+            newStreamId = `${prefix}${i}`
         }
-        refNewStream.current?.show(newResourceId)
+        refNewStream.current?.show(newStreamId)
     }
 
-    const handleNewResourceId = (id: string) => {
+    const handleNewStreamId = (id: string) => {
         setWebStreams([...webStreams, id])
-        setNewResourceId(id)
+        setNewStreamId(id)
     }
 
     useEffect(() => {
-        refWebStreams.current.get(newResourceId)?.show(newResourceId)
-    }, [newResourceId])
+        refWebStreams.current.get(newStreamId)?.show(newStreamId)
+    }, [newStreamId])
 
     const handleOpenWebStream = (id: string) => {
         refWebStreams.current.get(id)?.show(id)
     }
 
     const handleWebStreamStop = (id: string) => {
+        setNewStreamId('')
         setWebStreams(webStreams.filter(s => s !== id))
     }
 
@@ -88,16 +109,30 @@ export function App() {
                 </a>
             </div>
 
-            <ClientsDialog ref={refClients} id={selectedStreamId} clients={streams.find(s => s.id == selectedStreamId)?.subscribeSessionInfos ?? []} />
+            <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
 
-            <ReforwardDialog ref={refReforward} />
+            <CascadePullDialog ref={refCascadePull} />
+            <CascadePushDialog ref={refCascadePush} />
 
-            <PreviewDialog ref={refPreview} />
+            {previewStreams.map(s =>
+                <PreviewDialog
+                    key={s}
+                    ref={(instance: IPreviewDialog | null) => {
+                        if (instance) {
+                            refPreviewStreams.current.set(s, instance)
+                        } else {
+                            refPreviewStreams.current.delete(s)
+                        }
+                    }}
+                    onStop={() => { handlePreviewStop(s) }}
+                />
+            )}
 
-            <NewStreamDialog ref={refNewStream} onNewResourceId={handleNewResourceId} />
+            <NewStreamDialog ref={refNewStream} onNewStreamId={handleNewStreamId} />
 
             {webStreams.map(s =>
                 <WebStreamDialog
+                    key={s}
                     ref={(instance: IWebStreamDialog | null) => {
                         if (instance) {
                             refWebStreams.current.set(s, instance)
@@ -126,7 +161,7 @@ export function App() {
                             <th class="mw-50">ID</th>
                             <th>Publisher</th>
                             <th>Subscriber</th>
-                            <th>Reforward</th>
+                            <th>Cascade</th>
                             <th class="mw-300">Creation Time</th>
                             <th class="mw-300">Operation</th>
                         </tr>
@@ -135,15 +170,16 @@ export function App() {
                         {streams.map(i =>
                             <tr>
                                 <td class="text-center">{i.id}</td>
-                                <td class="text-center">{i.publishLeaveTime === 0 ? "Ok" : "No"}</td>
-                                <td class="text-center">{i.subscribeSessionInfos.length}</td>
-                                <td class="text-center">{i.subscribeSessionInfos.filter((t: any) => t.reforward).length}</td>
-                                <td class="text-center">{formatTime(i.createTime)}</td>
+                                <td class="text-center">{i.publish.sessions.length}</td>
+                                <td class="text-center">{i.subscribe.sessions.length}</td>
+                                <td class="text-center">{i.subscribe.sessions.filter((t: any) => t.reforward).length}</td>
+                                <td class="text-center">{formatTime(i.createdAt)}</td>
                                 <td>
-                                    <button onClick={() => handlePreview(i.id)}>Preview</button>
+                                    <button style={{ color: previewStreams.includes(i.id) ? 'blue' : 'inherit' }} onClick={() => handlePreview(i.id)}>Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
-                                    <button onClick={() => handleReforwardStream(i.id)}>Reforward</button>
-                                    <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publishSessionInfo.id)}>Destroy</button>
+                                    <button onClick={() => handleCascadePullStream(i.id)}>Cascade Pull</button>
+                                    <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
+                                    <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publish.sessions[0].id)}>Destroy</button>
                                 </td>
                             </tr>
                         )}

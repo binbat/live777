@@ -16,9 +16,12 @@ jobs:
       fail-fast: false
       matrix:
         job:
+        # https://doc.rust-lang.org/nightly/rustc/platform-support.html
         - { target: aarch64-apple-darwin        , os: macos-13                      }
+        - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
         - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: true }
         - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
+        - { target: aarch64-unknown-linux-musl  , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
         - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
         - { target: i686-pc-windows-msvc        , os: windows-2022                  }
@@ -32,7 +35,6 @@ jobs:
     env:
       VERSION: $GITHUB_REF_NAME
       BUILD_CMD: cargo
-      BUILD_NDK: ""
       EXE_SUFFIX: ""
       PKG_LIVE777_NAME: ""
       PKG_WHEPFROM_NAME: ""
@@ -41,23 +43,19 @@ jobs:
     - name: Checkout source code
       uses: actions/checkout@v4
 
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Install
+      run: npm install
+
+    - name: Build Webui
+      run: npm run build
+
     - name: Get the release version from the tag
       run: |
         echo "version is: ${{ env.VERSION }}"
-
-    - name: Install cargo-ndk
-      if: contains(matrix.job.target, 'android')
-      run: |
-        cargo install cargo-ndk
-        echo "BUILD_NDK=ndk -t arm64-v8a" >> $GITHUB_ENV
-
-    - name: Install prerequisites
-      shell: bash
-      run: |
-        case ${{ matrix.job.target }} in
-          arm-unknown-linux-*) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
-          aarch64-unknown-linux-gnu) sudo apt-get -y update ; sudo apt-get -y install gcc-aarch64-linux-gnu ;;
-        esac
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -66,9 +64,7 @@ jobs:
 
     - name: Install cross
       if: matrix.job.use-cross
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cross
+      run: cargo install cross --git https://github.com/cross-rs/cross
 
     - name: Overwrite build command env variable
       if: matrix.job.use-cross
@@ -84,18 +80,18 @@ jobs:
       shell: bash
       run: |
         gcc --version || true
+        cross --version || true
         rustup -V
         rustup toolchain list
         rustup default
         cargo -V
         rustc -V
+        echo "BUILD_CMD: ${BUILD_CMD}"
 
     - name: Build
       shell: bash
       run: |
-        $BUILD_CMD $BUILD_NDK build --locked --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whipinto --release --target=${{ matrix.job.target }}
+        $BUILD_CMD $BUILD_NDK build --locked --all --release --target=${{ matrix.job.target }}
 
     - name: Archive
       shell: bash
@@ -116,7 +112,7 @@ jobs:
 
         mkdir -p "${ARCHIVE_DIR}"
         cp "${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
-        cp "README.md" "LICENSE" "config-dist.toml" "live777.service" "$ARCHIVE_DIR"
+        cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
 
         # base compressed package
         case ${{ matrix.job.target }} in

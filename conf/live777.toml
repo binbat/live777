@@ -1,8 +1,3 @@
-# For cluster, you must enable this
-# webhooks = ["http://127.0.0.1:8080/webhook?token="]
-# If not set, auto detect
-# node_addr = "127.0.0.1:7777"
-
 [http]
 # Http Server Listen Address
 # listen = "[::]:7777"
@@ -41,12 +36,27 @@ urls = [
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
-[stream_info]
-# Producer Max Count, Maybe You don't need change this
-# pub_max = 1
-# Consumer Max Count, only this node instance max
-# sub_max = 1
+[strategy]
 # If reforward is beginning, close all subscriber
 # reforward_close_sub = false
-# publish_leave_timeout = 10000
+
+# WHIP auto a stream
+# auto_create_whip = true
+# WHEP auto a stream
+# auto_create_whep = true
+#
+# Default: (60000)s
+# -1: disable
+# 0: immediately destroy
+# >= 1: delay millisecond
+# Auto a destroy a stream at no pub
+# auto_delete_whip = 60
+# Auto a destroy a stream at no sub
+# auto_delete_whep = 60
+
+# Need enable `--features=webhook`
+# [webhook]
+# webhooks = ["http://127.0.0.1:8080/webhook?token="]
+# If not set, auto detect
+# node_addr = "127.0.0.1:7777"
 

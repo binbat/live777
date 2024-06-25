@@ -2,9 +2,10 @@ import { useState, useRef, useEffect } from 'preact/hooks'
 import { WHEPClient } from '@binbat/whip-whep/whep.js'
 
 export function Player() {
-    const [resourceId, setResourceId] = useState('')
+    const [streamId, setStreamId] = useState('')
     const [autoPlay, setAutoPlay] = useState(false)
     const [muted, setMuted] = useState(false)
+    const [controls, setControls] = useState(false)
     const [reconnect, setReconnect] = useState(0)
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null)
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
@@ -12,22 +13,23 @@ export function Player() {
 
     useEffect(() => {
         const params = new URLSearchParams(location.search)
-        setResourceId(params.get('resource') ?? '')
+        setStreamId(params.get('id') ?? '')
         setAutoPlay(params.has('autoplay'))
+        setControls(params.has('controls'))
         setMuted(params.has('mute'))
         const n = Number.parseInt(params.get('reconnect') ?? '0', 10)
         setReconnect(Number.isNaN(n) ? 0 : n)
     })
 
     useEffect(() => {
-        if (!resourceId || !autoPlay) return
+        if (!streamId || !autoPlay) return
         handlePlay()
         const v = refVideo.current
         if (v) {
             v.volume = 0
             v.play()
         }
-    }, [resourceId])
+    }, [streamId])
 
     useEffect(() => {
         const v = refVideo.current
@@ -58,7 +60,7 @@ export function Player() {
         }
         const whep = new WHEPClient()
         setWhepClient(whep)
-        const url = `${location.origin}/whep/${resourceId}`
+        const url = `${location.origin}/whep/${streamId}`
         const token = ''
         try {
             await whep.view(pc, url, token)
@@ -96,7 +98,7 @@ export function Player() {
 
     return (
         <div id="player">
-            <video ref={refVideo} controls onClick={() => handleVideoClick()}></video>
+            <video ref={refVideo} controls={controls} onClick={() => handleVideoClick()}></video>
         </div>
     )
 }
