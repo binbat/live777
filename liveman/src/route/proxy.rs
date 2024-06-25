@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use http::Uri;
+use http::{header, HeaderValue, Uri};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn, Span};
@@ -47,7 +47,7 @@ pub enum NodeState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
-    pub key: String,
+    pub alias: String,
     pub url: String,
     pub pub_max: u16,
     pub sub_max: u16,
@@ -63,11 +63,11 @@ async fn api_node(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> 
             .get_cluster()
             .into_iter()
             .map(|x| Node {
-                key: x.key.clone(),
+                alias: x.alias.clone(),
                 url: x.url,
                 pub_max: x.pub_max,
                 sub_max: x.sub_max,
-                status: match map_info.get(&x.key) {
+                status: match map_info.get(&x.alias) {
                     Some(_) => NodeState::Running,
                     None => NodeState::Stopped,
                 },
@@ -81,9 +81,9 @@ async fn stream_index(
 ) -> Result<Json<Vec<api::response::Stream>>> {
     let map_info = state.storage.info_raw_all().await.unwrap();
     let mut map_server_stream = HashMap::new();
-    for (key, streams) in map_info.iter() {
+    for (alias, streams) in map_info.iter() {
         for stream in streams.iter() {
-            map_server_stream.insert(format!("{}:{}", key, stream.id), stream.clone());
+            map_server_stream.insert(format!("{}:{}", alias, stream.id), stream.clone());
         }
     }
 
@@ -91,8 +91,8 @@ async fn stream_index(
     let mut result_streams: HashMap<String, Stream> = HashMap::new();
     for (stream_id, servers) in streams.into_iter() {
         for server in servers.iter() {
-            let key = format!("{}:{}", server.key, stream_id);
-            match map_server_stream.get(&key) {
+            let alias = format!("{}:{}", server.alias, stream_id);
+            match map_server_stream.get(&alias) {
                 Some(s) => {
                     let new_stream = match result_streams.get(&stream_id) {
                         Some(vv) => {
@@ -161,16 +161,16 @@ async fn stream_info(
     let mut result_streams: HashMap<String, Stream> = HashMap::new();
     let map_info = state.storage.info_raw_all().await.unwrap();
     let mut map_server_stream = HashMap::new();
-    for (key, streams) in map_info.iter() {
+    for (alias, streams) in map_info.iter() {
         for stream in streams.iter() {
-            map_server_stream.insert(format!("{}:{}", key, stream.id), stream.clone());
+            map_server_stream.insert(format!("{}:{}", alias, stream.id), stream.clone());
         }
     }
 
     let servers = state.storage.get_cluster();
     for server in servers.into_iter() {
-        if let Some(stream) = map_server_stream.get(&format!("{}:{}", server.key, stream_id)) {
-            result_streams.insert(server.key, stream.clone());
+        if let Some(stream) = map_server_stream.get(&format!("{}:{}", server.alias, stream_id)) {
+            result_streams.insert(server.alias, stream.clone());
         }
     }
 
@@ -371,7 +371,7 @@ async fn whep_reforward_node(
 }
 
 async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: String) {
-    match state.storage.info_get(server.clone().key).await {
+    match state.storage.info_get(server.clone().alias).await {
         Ok(streams) => {
             for stream_info in streams.into_iter() {
                 if stream_info.id == stream {
@@ -418,10 +418,12 @@ async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Re
     let uri = format!("{}{}", target.url, path_query);
     *req.uri_mut() = Uri::try_from(uri).unwrap();
     req.headers_mut().remove("Authorization");
-    //if let Some(authorization) = &target_node.authorization {
-    //    req.headers_mut()
-    //        .insert("Authorization", authorization.clone().parse().unwrap());
-    //};
+    if !target.token.is_empty() {
+        req.headers_mut().insert(
+            &header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", target.token))?,
+        );
+    };
     Ok(state
         .client
         .request(req)
@@ -445,16 +447,16 @@ async fn maximum_idle_node(
         .clone()
         .iter()
         .map(|i| {
-            let streams = info.get(&i.key).unwrap().clone();
+            let streams = info.get(&i.alias).unwrap().clone();
             let stream = streams.into_iter().find(|x| x.id == stream);
-            (i.key.clone(), stream)
+            (i.alias.clone(), stream)
         })
         .collect();
     debug!("{:?}", infos);
 
-    for (key, i) in infos {
+    for (alias, i) in infos {
         for s in servers.clone() {
-            if s.key == key {
+            if s.alias == alias {
                 let remain = match i.clone() {
                     Some(x) => s.sub_max as i32 - x.subscribe.sessions.len() as i32,
                     None => s.sub_max as i32,

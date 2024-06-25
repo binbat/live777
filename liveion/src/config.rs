@@ -17,8 +17,6 @@ pub struct Config {
     #[serde(default)]
     pub auth: Auth,
     #[serde(default)]
-    pub admin_auth: Auth,
-    #[serde(default)]
     pub log: Log,
     #[serde(default)]
     pub strategy: Strategy,
@@ -251,12 +249,6 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        if (!self.auth.accounts.is_empty() || !self.auth.tokens.is_empty())
-            && (self.admin_auth.accounts.is_empty() && self.admin_auth.tokens.is_empty())
-        {
-            return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
-        }
-
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()

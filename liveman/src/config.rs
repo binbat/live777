@@ -10,15 +10,13 @@ pub struct Config {
     #[serde(default)]
     pub auth: Auth,
     #[serde(default)]
-    pub manager_auth: Auth,
-    #[serde(default)]
     pub log: Log,
     #[serde(default)]
     pub liveion: Liveion,
     #[serde(default)]
     pub reforward: Reforward,
     #[serde(default)]
-    pub servers: Vec<crate::mem::Server>,
+    pub nodes: Vec<crate::mem::Server>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -55,7 +55,6 @@ pub struct Stream {
 #[serde(rename_all = "camelCase")]
 pub struct NodeMetaData {
     pub authorization: Option<String>,
-    pub admin_authorization: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
