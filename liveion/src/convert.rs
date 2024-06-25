@@ -60,7 +60,6 @@ impl From<Config> for NodeMetaData {
     fn from(value: Config) -> Self {
         Self {
             authorization: value.auth.to_authorizations().first().cloned(),
-            admin_authorization: value.admin_auth.to_authorizations().first().cloned(),
         }
     }
 }

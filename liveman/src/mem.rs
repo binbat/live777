@@ -15,6 +15,8 @@ pub struct Server {
     #[serde(default)]
     pub alias: String,
     #[serde(default)]
+    pub token: String,
+    #[serde(default)]
     pub url: String,
     #[serde(default = "u16_max_value")]
     pub pub_max: u16,
@@ -26,6 +28,7 @@ impl Default for Server {
     fn default() -> Self {
         Server {
             alias: String::default(),
+            token: String::default(),
             url: String::default(),
             pub_max: u16::MAX,
             sub_max: u16::MAX,
@@ -170,6 +173,7 @@ impl MemStorage {
                 server.alias,
                 self.client
                     .get(format!("{}{}", server.url, &api::path::streams("")))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                     .send(),
             ));
         }
@@ -209,7 +213,8 @@ impl MemStorage {
                             trace!("{:?}", streams.clone());
                             self.info_put(alias.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
-                                let target = self.server.read().unwrap().get(&alias).unwrap().clone();
+                                let target =
+                                    self.server.read().unwrap().get(&alias).unwrap().clone();
                                 self.stream_put(stream.id.clone(), target.clone())
                                     .await
                                     .unwrap();

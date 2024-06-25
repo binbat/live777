@@ -10,8 +10,6 @@ pub struct Config {
     #[serde(default)]
     pub auth: Auth,
     #[serde(default)]
-    pub manager_auth: Auth,
-    #[serde(default)]
     pub log: Log,
     #[serde(default)]
     pub liveion: Liveion,

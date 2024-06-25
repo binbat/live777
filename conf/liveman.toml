@@ -48,6 +48,8 @@ count = 3
 # [[nodes]]
 # Globally unique id
 # alias = "static-0"
+# Auth token
+# token = "live777"
 # Live777 Address
 # url = "http://127.0.0.1:7777"
 # If not set, use default u16::MAX
@@ -57,5 +59,6 @@ count = 3
 
 # [[nodes]]
 # alias = "static-1"
+# token = "live777"
 # url = "http://127.0.0.1:7778"
 

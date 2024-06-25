@@ -45,21 +45,16 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![
-        cfg.auth,
-        cfg.admin_auth.clone(),
-    ]));
-    let admin_auth_layer =
-        ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.admin_auth]));
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
     let mut app = Router::new()
         .merge(
             whip::route()
                 .merge(whep::route())
                 .merge(session::route())
+                .merge(admin::route())
+                .merge(crate::route::stream::route())
                 .layer(auth_layer),
         )
-        .merge(admin::route().layer(admin_auth_layer))
-        .merge(crate::route::stream::route())
         .route(api::path::METRICS, get(metrics))
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {

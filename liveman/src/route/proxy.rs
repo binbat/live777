@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use http::Uri;
+use http::{header, HeaderValue, Uri};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn, Span};
@@ -418,10 +418,12 @@ async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Re
     let uri = format!("{}{}", target.url, path_query);
     *req.uri_mut() = Uri::try_from(uri).unwrap();
     req.headers_mut().remove("Authorization");
-    //if let Some(authorization) = &target_node.authorization {
-    //    req.headers_mut()
-    //        .insert("Authorization", authorization.clone().parse().unwrap());
-    //};
+    if !target.token.is_empty() {
+        req.headers_mut().insert(
+            &header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", target.token))?,
+        );
+    };
     Ok(state
         .client
         .request(req)
