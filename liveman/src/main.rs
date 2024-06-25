@@ -65,9 +65,9 @@ async fn main() {
         let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
         info!("{:?}", addrs);
 
-        cfg.servers
+        cfg.nodes
             .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                key: format!("buildin-{}", i),
+                alias: format!("buildin-{}", i),
                 url: format!("http://{}", addr),
                 sub_max: 1,
                 ..Default::default()
@@ -103,9 +103,9 @@ async fn main() {
         let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
         info!("{:?}", addrs);
 
-        cfg.servers
+        cfg.nodes
             .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                key: format!("buildin-{}", i),
+                alias: format!("buildin-{}", i),
                 url: format!("http://{}", addr),
                 ..Default::default()
             }));
@@ -132,7 +132,7 @@ where
     let app_state = AppState {
         config: cfg.clone(),
         client,
-        storage: MemStorage::new(cfg.servers),
+        storage: MemStorage::new(cfg.nodes),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
     let mut app = Router::new()

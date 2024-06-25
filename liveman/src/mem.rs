@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Error, Result};
+use http::header;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, trace, warn};
@@ -12,7 +13,7 @@ use api::response::Stream;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
     #[serde(default)]
-    pub key: String,
+    pub alias: String,
     #[serde(default)]
     pub url: String,
     #[serde(default = "u16_max_value")]
@@ -24,7 +25,7 @@ pub struct Server {
 impl Default for Server {
     fn default() -> Self {
         Server {
-            key: String::default(),
+            alias: String::default(),
             url: String::default(),
             pub_max: u16::MAX,
             sub_max: u16::MAX,
@@ -34,7 +35,7 @@ impl Default for Server {
 
 impl Hash for Server {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.key.hash(state);
+        self.alias.hash(state);
     }
 }
 
@@ -60,7 +61,7 @@ impl MemStorage {
         info!("MemStorage: {:?}", servers);
 
         for s in servers.clone() {
-            server.write().unwrap().insert(s.key.clone(), s.clone());
+            server.write().unwrap().insert(s.alias.clone(), s.clone());
         }
 
         Self {
@@ -91,14 +92,14 @@ impl MemStorage {
         self.servers.clone()
     }
 
-    pub async fn info_put(&self, key: String, target: Vec<Stream>) -> Result<()> {
-        self.info.write().unwrap().insert(key, target);
+    pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<()> {
+        self.info.write().unwrap().insert(alias, target);
         Ok(())
     }
 
-    pub async fn info_get(&mut self, key: String) -> Result<Vec<Stream>, Error> {
+    pub async fn info_get(&mut self, alias: String) -> Result<Vec<Stream>, Error> {
         self.update().await;
-        match self.info.read().unwrap().get(&key) {
+        match self.info.read().unwrap().get(&alias) {
             Some(server) => Ok(server.clone()),
             None => Err(anyhow!("stream not found")),
         }
@@ -166,7 +167,7 @@ impl MemStorage {
 
         for server in servers {
             requests.push((
-                server.key,
+                server.alias,
                 self.client
                     .get(format!("{}{}", server.url, &api::path::streams("")))
                     .send(),
@@ -175,7 +176,7 @@ impl MemStorage {
 
         let handles = requests
             .into_iter()
-            .map(|(key, value)| tokio::spawn(async move { (key, value.await) }))
+            .map(|(alias, value)| tokio::spawn(async move { (alias, value.await) }))
             .collect::<Vec<
                 tokio::task::JoinHandle<(
                     std::string::String,
@@ -200,15 +201,15 @@ impl MemStorage {
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
-                (Ok((key, Ok(res))),) => {
-                    debug!("{}: Response: {:?}", key, res);
+                (Ok((alias, Ok(res))),) => {
+                    debug!("{}: Response: {:?}", alias, res);
 
                     match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
                             trace!("{:?}", streams.clone());
-                            self.info_put(key.clone(), streams.clone()).await.unwrap();
+                            self.info_put(alias.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
-                                let target = self.server.read().unwrap().get(&key).unwrap().clone();
+                                let target = self.server.read().unwrap().get(&alias).unwrap().clone();
                                 self.stream_put(stream.id.clone(), target.clone())
                                     .await
                                     .unwrap();

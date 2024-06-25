@@ -31,8 +31,8 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
         return Ok(());
     }
 
-    for (key, streams) in nodes.iter() {
-        let server = map_server.get(key).unwrap();
+    for (alias, streams) in nodes.iter() {
+        let server = map_server.get(alias).unwrap();
         for stream_info in streams {
             for session_info in &stream_info.subscribe.sessions {
                 if let Some(reforward_info) = &session_info.cascade {
@@ -41,7 +41,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                     {
                         if let Some(target_node) = map_url_server.get(&target_node_addr) {
                             if let Some(target_stream_info) = nodes
-                                .get(&target_node.key)
+                                .get(&target_node.alias)
                                 .unwrap()
                                 .iter()
                                 .find(|i| i.id == target_stream)

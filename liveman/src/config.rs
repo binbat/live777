@@ -18,7 +18,7 @@ pub struct Config {
     #[serde(default)]
     pub reforward: Reforward,
     #[serde(default)]
-    pub servers: Vec<crate::mem::Server>,
+    pub nodes: Vec<crate::mem::Server>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
