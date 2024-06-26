@@ -21,7 +21,8 @@ export const en = defineConfig({
             {
                 text: 'API',
                 items: [
-                    { text: 'Live777 API', link: '/live777-api' }
+                    { text: 'Live777 API', link: '/live777-api' },
+                    { text: 'LiveMan API', link: '/liveman-api' },
                 ]
             }
         ],
