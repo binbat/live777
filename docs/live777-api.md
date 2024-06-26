@@ -3,13 +3,21 @@
 ## WHIP && WHEP
 
 `POST` `/whip/:streamId`
-Response: [201]
-`POST` `/whep/:streamId`
+
 Response: [201]
 
+`POST` `/whep/:streamId`
+
+Response: [201]
+
+* * *
+
 `PATCH` `/session/:streamId/:sessionId`
+
 Response: [204]
+
 `DELETE` `/session/:streamId/:sessionId`
+
 Response: [204]
 
 ## Stream

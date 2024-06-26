@@ -19,10 +19,9 @@ export const en = defineConfig({
                 ]
             },
             {
-                text: 'Examples',
+                text: 'API',
                 items: [
-                    { text: 'Markdown Examples', link: '/markdown-examples' },
-                    { text: 'Runtime API Examples', link: '/api-examples' }
+                    { text: 'Live777 API', link: '/live777-api' }
                 ]
             }
         ],
