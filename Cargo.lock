@@ -1692,6 +1692,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7170ef9988bc169ba16dd36a7fa041e5c4cbeb6a35b76d4c03daded371eae7c0"
 
 [[package]]
+name = "portpicker"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be97d76faf1bfab666e1375477b23fde79eccf0276e9b63b92a39d676a889ba9"
+dependencies = [
+ "rand",
+]
+
+[[package]]
 name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1990,6 +1999,7 @@ name = "rtsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "portpicker",
  "rtsp-types",
  "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "sdp-types",
