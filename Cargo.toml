@@ -8,18 +8,18 @@ description = "A very simple, high performance, edge WebRTC SFU"
 [workspace]
 members = [
     ".",
+    "libs/api",
     "libs/cli",
     "libs/http-log",
     "libs/libwish",
     "libs/signal",
-    "libs/live777-http",
     "tools/whepfrom",
     "tools/whipinto",
     "liveion",
     "liveman",
 ]
 [workspace.dependencies]
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "08189da87cb7baf085ab9e8d824859b623b85940" }
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "ae93e81" }
 
 anyhow = "1.0"
 clap = "4.5"
@@ -37,6 +37,9 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 
 local-ip-address = "0.6"
+
+[features]
+webhook = ["liveion/webhook"]
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb

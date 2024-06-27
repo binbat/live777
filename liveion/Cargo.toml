@@ -9,10 +9,10 @@ description = "A very simple, high performance, edge WebRTC SFU"
 crate-type = ["lib"]
 
 [dependencies]
+api = { path = "../libs/api" }
 http-log = { path = "../libs/http-log" }
 libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
-live777-http = { path = "../libs/live777-http" }
 utils = { path = "../libs/utils" }
 
 anyhow = { workspace = true, features = ["backtrace"] }
@@ -31,14 +31,16 @@ http = "1.0.0"
 http-body = "1.0.0"
 hyper = "1.2.0"
 lazy_static = "1.4.0"
-local-ip-address = "0.6"
 md5 = "0.7.0"
 mime_guess = "2.0.4"
 prometheus = "0.13.3"
-reqwest = { version = "0.12", features = [
-    "rustls-tls",
-], default-features = false }
-rust-embed = { version = "8.3.0", features = ["axum-ex"] }
+rust-embed = { version = "8.4", features = ["axum-ex"] }
 serde_json = "1.0.114"
 toml = "0.8.10"
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
+
+reqwest = { version = "0.12", optional = true, features = ["rustls-tls"], default-features = false }
+
+[features]
+webhook = ["dep:reqwest"]
+

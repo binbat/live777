@@ -28,8 +28,7 @@ Live777 media server is used with [Gstreamer](https://gstreamer.freedesktop.org/
 
 Live777 supports the conversion of audio and video protocols widely used in the Internet, such as RTP to WHIP or WHEP and other protocols.
 
-![live777-arch](./docs/live777-arch.excalidraw.svg#gh-light-mode-only)
-![live777-arch](./docs/live777-arch.dark.svg#gh-dark-mode-only)
+![live777-arch](./docs/live777-arch.excalidraw.svg)
 
 ## Introduction
 
@@ -86,9 +85,8 @@ Live777 has the following characteristics:
 ## For developer
 
 Depends:
-- [bun](https://bun.sh/) Or [nodejs](https://nodejs.org/)
 - [cargo](https://www.rust-lang.org/)
-- [go](https://go.dev/)
+- [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
 If you need configuration, you can use
 
@@ -100,8 +98,8 @@ cp conf/liveman.toml liveman.toml
 ### WebUI
 
 ```bash
-bun install
-bun run dev
+npm install
+npm run dev
 ```
 
 ### Live777
@@ -163,12 +161,13 @@ winget install live777
 
 ### Single Page Player
 
-example: http://localhost:7777/web/player.html?resource=web-0&autoplay&mute&reconnect=2000
+example: http://localhost:7777/web/player.html?id=web-0&autoplay&controls&mute&reconnect=2000
 
 URL params:
 
-- `resource`: string, live777 resource ID
+- `id`: string, live777 Stream ID
 - `autoplay`: boolean
+- `controls`: boolean
 - `mute`: boolean, whether to mute by default
 - `reconnect`: number, reconnect timeout in millisecond
 

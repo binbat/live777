@@ -7,3 +7,8 @@ export const formatTime = (timestamp: number) => new Date(timestamp).toLocaleStr
     second: '2-digit',
     hourCycle: 'h23'
 })
+
+export const formatVideoTrackResolution = (track: MediaStreamTrack): string => {
+    const { width, height, frameRate } = track.getSettings()
+    return `${width}x${height}@${frameRate}`
+}

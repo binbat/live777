@@ -20,8 +20,11 @@ pub struct QueryInfo {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct Reforward {
-    pub target_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub admin_authorization: Option<String>,
+pub struct Cascade {
+    // server auth
+    pub token: Option<String>,
+    // pull mode ,value : whep_url
+    pub src: Option<String>,
+    // push mode ,value : whip_url
+    pub dst: Option<String>,
 }

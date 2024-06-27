@@ -1,49 +1,57 @@
-use live777_http::event::NodeMetaData;
+use api::event::NodeMetaData;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 use crate::config::Config;
 
-impl From<crate::forward::message::Layer> for live777_http::response::Layer {
+impl From<crate::forward::message::Layer> for api::response::Layer {
     fn from(value: crate::forward::message::Layer) -> Self {
-        live777_http::response::Layer {
+        api::response::Layer {
             encoding_id: value.encoding_id,
         }
     }
 }
 
-impl From<crate::forward::message::ForwardInfo> for live777_http::response::StreamInfo {
+impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
     fn from(value: crate::forward::message::ForwardInfo) -> Self {
-        live777_http::response::StreamInfo {
+        api::response::Stream {
             id: value.id,
-            create_time: value.create_time,
-            publish_leave_time: value.publish_leave_time,
-            subscribe_leave_time: value.subscribe_leave_time,
-            publish_session_info: value.publish_session_info.map(|session| session.into()),
-            subscribe_session_infos: value
-                .subscribe_session_infos
-                .into_iter()
-                .map(|session| session.into())
-                .collect(),
+            created_at: value.create_time,
+            publish: api::response::PubSub {
+                leave_at: value.publish_leave_time,
+                sessions: match value.publish_session_info.map(|session| session.into()) {
+                    Some(session) => vec![session],
+                    None => vec![],
+                },
+            },
+            subscribe: api::response::PubSub {
+                leave_at: value.subscribe_leave_time,
+                sessions: value
+                    .subscribe_session_infos
+                    .into_iter()
+                    .map(|session| session.into())
+                    .collect(),
+            },
         }
     }
 }
 
-impl From<crate::forward::message::SessionInfo> for live777_http::response::SessionInfo {
+impl From<crate::forward::message::SessionInfo> for api::response::Session {
     fn from(value: crate::forward::message::SessionInfo) -> Self {
-        live777_http::response::SessionInfo {
+        api::response::Session {
             id: value.id,
-            create_time: value.create_time,
-            connect_state: convert_connect_state(value.connect_state),
-            reforward: value.reforward.map(|reforward| reforward.into()),
+            created_at: value.create_time,
+            state: convert_connect_state(value.connect_state),
+            cascade: value.cascade.map(|reforward| reforward.into()),
         }
     }
 }
 
-impl From<crate::forward::message::ReforwardInfo> for live777_http::response::ReforwardInfo {
-    fn from(value: crate::forward::message::ReforwardInfo) -> Self {
-        live777_http::response::ReforwardInfo {
-            target_url: value.target_url,
-            resource_url: value.resource_url,
+impl From<crate::forward::message::CascadeInfo> for api::response::CascadeInfo {
+    fn from(value: crate::forward::message::CascadeInfo) -> Self {
+        api::response::CascadeInfo {
+            dst: value.dst,
+            resource: value.resource,
+            src: value.src,
         }
     }
 }
@@ -52,36 +60,19 @@ impl From<Config> for NodeMetaData {
     fn from(value: Config) -> Self {
         Self {
             authorization: value.auth.to_authorizations().first().cloned(),
-            admin_authorization: value.admin_auth.to_authorizations().first().cloned(),
-            pub_max: value.stream_info.pub_max.0,
-            sub_max: value.stream_info.sub_max.0,
         }
     }
 }
 
-fn convert_connect_state(
-    connect_state: RTCPeerConnectionState,
-) -> live777_http::response::RTCPeerConnectionState {
-    match connect_state {
-        RTCPeerConnectionState::Unspecified => {
-            live777_http::response::RTCPeerConnectionState::Unspecified
+fn convert_connect_state(state: RTCPeerConnectionState) -> api::response::RTCPeerConnectionState {
+    match state {
+        RTCPeerConnectionState::Unspecified | RTCPeerConnectionState::New => {
+            api::response::RTCPeerConnectionState::New
         }
-
-        RTCPeerConnectionState::New => live777_http::response::RTCPeerConnectionState::New,
-        RTCPeerConnectionState::Connecting => {
-            live777_http::response::RTCPeerConnectionState::Connecting
-        }
-
-        RTCPeerConnectionState::Connected => {
-            live777_http::response::RTCPeerConnectionState::Connected
-        }
-
-        RTCPeerConnectionState::Disconnected => {
-            live777_http::response::RTCPeerConnectionState::Disconnected
-        }
-
-        RTCPeerConnectionState::Failed => live777_http::response::RTCPeerConnectionState::Failed,
-
-        RTCPeerConnectionState::Closed => live777_http::response::RTCPeerConnectionState::Closed,
+        RTCPeerConnectionState::Connecting => api::response::RTCPeerConnectionState::Connecting,
+        RTCPeerConnectionState::Connected => api::response::RTCPeerConnectionState::Connected,
+        RTCPeerConnectionState::Disconnected => api::response::RTCPeerConnectionState::Disconnected,
+        RTCPeerConnectionState::Failed => api::response::RTCPeerConnectionState::Failed,
+        RTCPeerConnectionState::Closed => api::response::RTCPeerConnectionState::Closed,
     }
 }

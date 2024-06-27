@@ -45,17 +45,20 @@ count = 3
 # If port == 0, use random port. If count > 1, port must use 0
 # address = "127.0.0.1:0"
 
-# [[servers]]
+# [[nodes]]
 # Globally unique id
-# key = "static-0"
+# alias = "static-0"
+# Auth token
+# token = "live777"
 # Live777 Address
 # url = "http://127.0.0.1:7777"
 # If not set, use default u16::MAX
 # Default: 65535
-# sub_max = 65535
 # pub_max = 65535
+# sub_max = 65535
 
-# [[servers]]
-# key = "static-1"
+# [[nodes]]
+# alias = "static-1"
+# token = "live777"
 # url = "http://127.0.0.1:7778"
 

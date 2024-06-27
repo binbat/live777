@@ -1,8 +1,6 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::forward::message::ForwardInfo;
-use crate::result::Result;
 use tokio::sync::{broadcast, Mutex};
 use tracing::info;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -11,16 +9,17 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-
-use libwish::Client;
 use webrtc::sdp::SessionDescription;
 
+use libwish::Client;
+
 use crate::forward::internal::PeerForwardInternal;
-use crate::forward::message::Layer;
+use crate::forward::message::{ForwardInfo, Layer};
+use crate::result::Result;
 use crate::{constant, AppError};
 
 use self::media::MediaInfo;
-use self::message::{ForwardEvent, ReforwardInfo};
+use self::message::{CascadeInfo, ForwardEvent};
 
 mod internal;
 mod media;
@@ -53,25 +52,112 @@ impl PeerForward {
         self.internal.subscribe_event()
     }
 
+    pub async fn add_ice_candidate(&self, session: String, ice_candidates: String) -> Result<()> {
+        let ice_candidates = parse_ice_candidate(ice_candidates)?;
+        if ice_candidates.is_empty() {
+            return Ok(());
+        }
+        self.internal
+            .add_ice_candidate(session, ice_candidates)
+            .await
+    }
+
+    pub async fn remove_peer(&self, session: String) -> Result<bool> {
+        self.internal.remove_peer(session).await
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        self.internal.close().await?;
+        Ok(())
+    }
+
+    pub async fn info(&self) -> ForwardInfo {
+        self.internal.info().await
+    }
+}
+
+// publish
+impl PeerForward {
     pub async fn set_publish(
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if self.internal.publish_is_some().await {
-            return Err(AppError::resource_already_exists(
+            return Err(AppError::stream_already_exists(
                 "A connection has already been established",
             ));
         }
         let _ = self.publish_lock.lock().await;
         if self.internal.publish_is_some().await {
-            return Err(AppError::resource_already_exists(
+            return Err(AppError::stream_already_exists(
                 "A connection has already been established",
             ));
         }
         let peer = self
-            .internal
             .new_publish_peer(MediaInfo::try_from(offer.unmarshal()?)?)
             .await?;
+        let description = peer_complete(offer, peer.clone()).await?;
+        self.internal.set_publish(peer.clone(), None).await?;
+        let session = get_peer_id(&peer);
+        Ok((description, session))
+    }
+
+    pub async fn publish_pull(&self, src: String, token: Option<String>) -> Result<()> {
+        if self.internal.publish_is_some().await {
+            return Err(AppError::stream_already_exists(
+                "A connection has already been established",
+            ));
+        }
+        let _ = self.publish_lock.lock().await;
+        if self.internal.publish_is_some().await {
+            return Err(AppError::stream_already_exists(
+                "A connection has already been established",
+            ));
+        }
+        let peer = self
+            .new_publish_peer(MediaInfo {
+                _codec: vec![],
+                video_transceiver: (1, 0, false),
+                audio_transceiver: (1, 0),
+            })
+            .await?;
+        let offer = peer.create_offer(None).await?;
+        let mut gather_complete = peer.gathering_complete_promise().await;
+        peer.set_local_description(offer).await?;
+        let _ = gather_complete.recv().await;
+        let description = peer
+            .pending_local_description()
+            .await
+            .ok_or(AppError::throw("pending_local_description error"))?;
+        let mut client = Client::new(
+            src.clone(),
+            Client::get_authorization_header_map(token.clone()),
+        );
+        match client.wish(description.sdp.clone()).await {
+            Ok((target_sdp, _)) => {
+                let _ = peer.set_remote_description(target_sdp).await;
+                self.internal
+                    .set_publish(
+                        peer.clone(),
+                        Some(CascadeInfo {
+                            src: Some(src),
+                            dst: None,
+                            token,
+                            resource: client.resource_url,
+                        }),
+                    )
+                    .await?;
+                Ok(())
+            }
+            Err(err) => {
+                peer.close().await?;
+                Err(AppError::InternalServerError(err))
+            }
+        }
+    }
+
+    async fn new_publish_peer(&self, media_info: MediaInfo) -> Result<Arc<RTCPeerConnection>> {
+        let peer = self.internal.new_publish_peer(media_info).await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -116,23 +202,89 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
-        let description = peer_complete(offer, peer.clone()).await?;
-        self.internal.set_publish(peer.clone()).await?;
-        let session = get_peer_id(&peer);
-        Ok((description, session))
+        Ok(peer)
     }
 
+    pub async fn layers(&self) -> Result<Vec<Layer>> {
+        if self.internal.publish_is_svc().await {
+            let mut layers = vec![];
+            for rid in self.internal.publish_svc_rids().await? {
+                layers.push(Layer {
+                    encoding_id: rid.to_owned(),
+                });
+            }
+            Ok(layers)
+        } else {
+            Err(AppError::throw("not layers"))
+        }
+    }
+}
+
+// subscribe
+impl PeerForward {
     pub async fn add_subscribe(
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        if !self.internal.publish_is_ok().await {
-            return Err(AppError::throw("publish is not ok"));
-        }
         let peer = self
-            .internal
-            .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?, None)
+            .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?)
             .await?;
+        let _ = self.internal.add_subscribe(peer.clone(), None).await;
+        let (sdp, session) = (
+            peer_complete(offer, peer.clone()).await?,
+            get_peer_id(&peer),
+        );
+        Ok((sdp, session))
+    }
+
+    pub async fn subscribe_push(&self, dst: String, token: Option<String>) -> Result<()> {
+        let peer = self
+            .new_subscription_peer(MediaInfo {
+                _codec: vec![],
+                video_transceiver: (0, 1, false),
+                audio_transceiver: (0, 1),
+            })
+            .await?;
+        let mut cascade_info: CascadeInfo = CascadeInfo {
+            src: None,
+            dst: Some(dst.clone()),
+            token: token.clone(),
+            resource: None,
+        };
+        self.internal
+            .add_subscribe(peer.clone(), Some(cascade_info.clone()))
+            .await?;
+        let offer: RTCSessionDescription = peer.create_offer(None).await?;
+        let mut gather_complete = peer.gathering_complete_promise().await;
+        peer.set_local_description(offer).await?;
+        let _ = gather_complete.recv().await;
+        let description = peer
+            .pending_local_description()
+            .await
+            .ok_or(AppError::throw("pending_local_description error"))?;
+        let mut client = Client::new(
+            dst.clone(),
+            Client::get_authorization_header_map(token.clone()),
+        );
+        match client.wish(description.sdp.clone()).await {
+            Ok((target_sdp, _)) => {
+                let _ = peer.set_remote_description(target_sdp).await;
+                cascade_info.resource = client.resource_url;
+                let _ = self
+                    .internal
+                    .reset_cascade_info(get_peer_id(&peer), cascade_info)
+                    .await;
+                Ok(())
+            }
+            Err(err) => {
+                peer.close().await?;
+                Err(AppError::InternalServerError(err))
+            }
+        }
+    }
+
+    async fn new_subscription_peer(&self, media_info: MediaInfo) -> Result<Arc<RTCPeerConnection>> {
+        let peer = self.internal.new_subscription_peer(media_info).await?;
         let internal = Arc::downgrade(&self.internal);
         let pc = Arc::downgrade(&peer);
         peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -168,123 +320,7 @@ impl PeerForward {
             }
             Box::pin(async {})
         }));
-        let (sdp, session) = (
-            peer_complete(offer, peer.clone()).await?,
-            get_peer_id(&peer),
-        );
-        Ok((sdp, session))
-    }
-
-    pub async fn reforward(&self, reforward_info: ReforwardInfo) -> Result<()> {
-        if !self.internal.publish_is_ok().await {
-            return Err(AppError::throw("publish is not ok"));
-        }
-        let publish_peer = self
-            .internal
-            .get_publish_peer()
-            .await
-            .ok_or(AppError::throw("not found publish peer"))?;
-        let mut media_info = MediaInfo::try_from(
-            publish_peer
-                .remote_description()
-                .await
-                .ok_or(AppError::throw("get publish peer sdp error"))?
-                .unmarshal()?,
-        )?;
-        if media_info.video_transceiver.2 {
-            return Err(AppError::throw("svc not support re forward"));
-        }
-        let video_publish = media_info.video_transceiver.0;
-        let audio_publish = media_info.audio_transceiver.0;
-        media_info.video_transceiver.0 = media_info.video_transceiver.1;
-        media_info.video_transceiver.1 = video_publish;
-        media_info.audio_transceiver.0 = media_info.audio_transceiver.1;
-        media_info.audio_transceiver.1 = audio_publish;
-        let mut reforward_info = reforward_info.clone();
-        reforward_info.resource_url = None;
-        let target_peer = self
-            .internal
-            .new_subscription_peer(media_info, Some(reforward_info.clone()))
-            .await?;
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&target_peer);
-        target_peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    info!(
-                        "[{}] [reforward] [{}] connection state changed: {}",
-                        internal.stream,
-                        get_peer_id(&pc),
-                        s
-                    );
-                    match s {
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            let _ = pc.close().await;
-                        }
-                        RTCPeerConnectionState::Closed => {
-                            let _ = internal.remove_subscribe(pc).await;
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            Box::pin(async {})
-        }));
-        let offer = target_peer.create_offer(None).await?;
-        let mut gather_complete = target_peer.gathering_complete_promise().await;
-        target_peer.set_local_description(offer).await?;
-        let _ = gather_complete.recv().await;
-        let description = target_peer
-            .pending_local_description()
-            .await
-            .ok_or(AppError::throw("pending_local_description error"))?;
-
-        let mut client = Client::new(
-            reforward_info.target_url.clone(),
-            Client::get_authorization_header_map(reforward_info.admin_authorization.clone()),
-        );
-        match client.wish(description.sdp.clone()).await {
-            Ok((target_sdp, _)) => {
-                let _ = target_peer.set_remote_description(target_sdp).await;
-                reforward_info.resource_url = client.resource_url;
-                self.internal
-                    .set_reforward_info(target_peer, reforward_info)
-                    .await?;
-                Ok(())
-            }
-            Err(err) => {
-                target_peer.close().await?;
-                Err(AppError::InternalServerError(err))
-            }
-        }
-    }
-
-    pub async fn add_ice_candidate(&self, session: String, ice_candidates: String) -> Result<()> {
-        let ice_candidates = parse_ice_candidate(ice_candidates)?;
-        if ice_candidates.is_empty() {
-            return Ok(());
-        }
-        self.internal
-            .add_ice_candidate(session, ice_candidates)
-            .await
-    }
-
-    pub async fn remove_peer(&self, session: String) -> Result<bool> {
-        self.internal.remove_peer(session).await
-    }
-
-    pub async fn layers(&self) -> Result<Vec<Layer>> {
-        if self.internal.publish_is_svc().await {
-            let mut layers = vec![];
-            for rid in self.internal.publish_svc_rids().await? {
-                layers.push(Layer {
-                    encoding_id: rid.to_owned(),
-                });
-            }
-            Ok(layers)
-        } else {
-            Err(AppError::throw("not layers"))
-        }
+        Ok(peer)
     }
 
     pub async fn select_layer(&self, session: String, layer: Option<Layer>) -> Result<()> {
@@ -316,15 +352,6 @@ impl PeerForward {
         self.internal
             .select_kind_rid(session, codec_type, rid)
             .await
-    }
-
-    pub async fn close(&self) -> Result<()> {
-        self.internal.close().await?;
-        Ok(())
-    }
-
-    pub async fn info(&self) -> ForwardInfo {
-        self.internal.info().await
     }
 }
 

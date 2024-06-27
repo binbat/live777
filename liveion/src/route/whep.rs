@@ -1,14 +1,15 @@
-use crate::route::link_header;
-use crate::AppState;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::post;
 use axum::Router;
-use http::{HeaderMap, StatusCode};
+use http::{header, HeaderMap, StatusCode};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+use crate::route::link_header;
+use crate::AppState;
+
 pub fn route() -> Router<AppState> {
-    Router::new().route(&live777_http::path::whep(":stream"), post(whep))
+    Router::new().route(&api::path::whep(":stream"), post(whep))
 }
 async fn whep(
     State(state): State<AppState>,
@@ -17,7 +18,7 @@ async fn whep(
     body: String,
 ) -> crate::result::Result<Response<String>> {
     let content_type = header
-        .get("Content-Type")
+        .get(header::CONTENT_TYPE)
         .ok_or(anyhow::anyhow!("Content-Type is required"))?;
     if content_type.to_str()? != "application/sdp" {
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
@@ -29,18 +30,18 @@ async fn whep(
         .await?;
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
-        .header("Content-Type", "application/sdp")
+        .header(header::CONTENT_TYPE, "application/sdp")
         .header("Accept-Patch", "application/trickle-ice-sdpfrag")
-        .header("Location", live777_http::path::resource(&stream, &session));
+        .header(header::LOCATION, api::path::session(&stream, &session));
     for link in link_header(state.config.ice_servers.clone()) {
-        builder = builder.header("Link", link);
+        builder = builder.header(header::LINK, link);
     }
     if state.stream_manager.layers(stream.clone()).await.is_ok() {
         builder = builder.header(
             "Link",
             format!(
                 "<{}>; rel=\"urn:ietf:params:whep:ext:core:layer\"",
-                live777_http::path::resource_layer(&stream, &session)
+                api::path::session_layer(&stream, &session)
             ),
         )
     }

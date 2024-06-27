@@ -17,15 +17,19 @@ pub struct Config {
     #[serde(default)]
     pub auth: Auth,
     #[serde(default)]
-    pub admin_auth: Auth,
-    #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub node_addr: Option<SocketAddr>,
+    pub strategy: Strategy,
     #[serde(default)]
-    pub stream_info: StreamInfo,
+    pub webhook: Webhook,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct Webhook {
     #[serde(default)]
     pub webhooks: Vec<String>,
+    #[serde(default)]
+    pub node_addr: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -79,50 +83,41 @@ pub struct Log {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublishLeaveTimeout(pub u64);
-
-impl Default for PublishLeaveTimeout {
-    fn default() -> Self {
-        PublishLeaveTimeout(15000)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct StreamInfo {
-    #[serde(default)]
-    pub pub_max: MetaDataPubMax,
-    #[serde(default)]
-    pub sub_max: MetaDataSubMax,
+pub struct Strategy {
     #[serde(default)]
     pub reforward_close_sub: bool,
+    #[serde(default = "default_true")]
+    pub auto_create_whip: bool,
+    #[serde(default = "default_true")]
+    pub auto_create_whep: bool,
     #[serde(default)]
-    pub publish_leave_timeout: PublishLeaveTimeout,
+    pub auto_delete_whip: AutoDestrayTime,
+    #[serde(default)]
+    pub auto_delete_whep: AutoDestrayTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetaDataPubMax(pub u64);
+fn default_true() -> bool {
+    true
+}
 
-impl Default for MetaDataPubMax {
+impl Default for Strategy {
     fn default() -> Self {
-        MetaDataPubMax(u64::MAX)
+        Self {
+            reforward_close_sub: false,
+            auto_create_whip: true,
+            auto_create_whep: true,
+            auto_delete_whip: AutoDestrayTime::default(),
+            auto_delete_whep: AutoDestrayTime::default(),
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetaDataSubMax(pub u64);
+pub struct AutoDestrayTime(pub i64);
 
-impl Default for MetaDataSubMax {
+impl Default for AutoDestrayTime {
     fn default() -> Self {
-        MetaDataSubMax(u64::MAX)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardMaximumIdleTime(pub u64);
-
-impl Default for ReforwardMaximumIdleTime {
-    fn default() -> Self {
-        ReforwardMaximumIdleTime(60000)
+        AutoDestrayTime(60)
     }
 }
 
@@ -254,22 +249,6 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        if (!self.auth.accounts.is_empty() || !self.auth.tokens.is_empty())
-            && (self.admin_auth.accounts.is_empty() && self.admin_auth.tokens.is_empty())
-        {
-            return Err(anyhow::anyhow!("auth not empty,but admin auth empty"));
-        }
-        if self.stream_info.pub_max.0 == 0 {
-            return Err(anyhow::anyhow!("stream_info.pub_max cannot be equal to 0"));
-        }
-        if self.stream_info.sub_max.0 == 0 {
-            return Err(anyhow::anyhow!("stream_info.sub_max cannot be equal to 0"));
-        }
-        if self.stream_info.pub_max.0 > self.stream_info.sub_max.0 {
-            return Err(anyhow::anyhow!(
-                "stream_info.pub_max cannot be greater than stream_info.sub_max"
-            ));
-        }
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()

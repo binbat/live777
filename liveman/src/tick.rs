@@ -1,9 +1,10 @@
-use chrono::Utc;
 use std::{collections::HashMap, time::Duration};
+
+use chrono::Utc;
 use tracing::{error, info};
 use url::Url;
 
-use crate::{error::AppError, result::Result, route::utils::resource_delete, AppState};
+use crate::{error::AppError, result::Result, route::utils::session_delete, AppState};
 
 pub async fn reforward_check(state: AppState) {
     loop {
@@ -30,24 +31,24 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
         return Ok(());
     }
 
-    for (key, streams) in nodes.iter() {
-        let server = map_server.get(key).unwrap();
+    for (alias, streams) in nodes.iter() {
+        let server = map_server.get(alias).unwrap();
         for stream_info in streams {
-            for session_info in &stream_info.subscribe_session_infos {
-                if let Some(reforward_info) = &session_info.reforward {
+            for session_info in &stream_info.subscribe.sessions {
+                if let Some(reforward_info) = &session_info.cascade {
                     if let Ok((target_node_addr, target_stream)) =
-                        parse_node_and_stream(reforward_info.target_url.clone())
+                        parse_node_and_stream(reforward_info.dst.clone().unwrap())
                     {
                         if let Some(target_node) = map_url_server.get(&target_node_addr) {
                             if let Some(target_stream_info) = nodes
-                                .get(&target_node.key)
+                                .get(&target_node.alias)
                                 .unwrap()
                                 .iter()
                                 .find(|i| i.id == target_stream)
                             {
-                                if target_stream_info.subscribe_leave_time != 0
+                                if target_stream_info.subscribe.leave_at != 0
                                     && Utc::now().timestamp_millis()
-                                        >= target_stream_info.subscribe_leave_time
+                                        >= target_stream_info.subscribe.leave_at
                                             + state.config.reforward.maximum_idle_time as i64
                                 {
                                     info!(
@@ -57,7 +58,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                         ?target_stream_info,
                                         "reforward idle for long periods of time"
                                     );
-                                    match resource_delete(
+                                    match session_delete(
                                         server.clone(),
                                         stream_info.id.clone(),
                                         session_info.id.clone(),
@@ -66,7 +67,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                     {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            error!("reforward resource delete error: {:?}", e)
+                                            error!("reforward session delete error: {:?}", e)
                                         }
                                     }
                                 }

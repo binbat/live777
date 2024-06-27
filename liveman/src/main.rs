@@ -1,13 +1,13 @@
-use crate::route::r#static::static_server;
 use axum::body::Body;
 use axum::extract::Request;
+use axum::response::IntoResponse;
 use axum::Router;
 use clap::Parser;
-
+use http::{header, StatusCode, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use rust_embed::RustEmbed;
 use std::future::Future;
-
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -17,6 +17,10 @@ use tracing::{debug, error, info, info_span, warn};
 use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::mem::{MemStorage, Server};
+
+#[derive(RustEmbed)]
+#[folder = "../assets/"]
+struct Assets;
 
 mod auth;
 mod config;
@@ -61,11 +65,11 @@ async fn main() {
         let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
         info!("{:?}", addrs);
 
-        cfg.servers
+        cfg.nodes
             .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                key: format!("buildin-{}", i),
+                alias: format!("buildin-{}", i),
                 url: format!("http://{}", addr),
-                pub_max: 1,
+                sub_max: 1,
                 ..Default::default()
             }));
     }
@@ -99,9 +103,9 @@ async fn main() {
         let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
         info!("{:?}", addrs);
 
-        cfg.servers
+        cfg.nodes
             .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                key: format!("buildin-{}", i),
+                alias: format!("buildin-{}", i),
                 url: format!("http://{}", addr),
                 ..Default::default()
             }));
@@ -128,10 +132,10 @@ where
     let app_state = AppState {
         config: cfg.clone(),
         client,
-        storage: MemStorage::new(cfg.servers),
+        storage: MemStorage::new(cfg.nodes),
     };
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(route::proxy::route().layer(auth_layer))
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {
@@ -153,11 +157,28 @@ where
                 span
             }),
         );
+
+    app = app.fallback(static_handler);
+
     tokio::spawn(tick::reforward_check(app_state.clone()));
-    axum::serve(listener, static_server(app))
+    axum::serve(listener, app)
         .with_graceful_shutdown(signal)
         .await
         .unwrap_or_else(|e| error!("Application error: {e}"));
+}
+
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let mut path = uri.path().trim_start_matches('/');
+    if path.is_empty() {
+        path = "index.html";
+    }
+    match Assets::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
 async fn shutdown_signal() {

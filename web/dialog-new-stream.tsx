@@ -2,7 +2,7 @@ import { useState, useRef, useImperativeHandle } from 'preact/hooks'
 import { forwardRef } from 'preact/compat';
 
 interface Props {
-    onNewResourceId(id: string): void
+    onNewStreamId(id: string): void
 }
 
 export interface INewStreamDialog {
@@ -10,24 +10,24 @@ export interface INewStreamDialog {
 }
 
 export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) => {
-    const [resoruceId, setResoruceId] = useState('')
+    const [streamId, setStreamId] = useState('')
     const refDialog = useRef<HTMLDialogElement>(null)
 
     useImperativeHandle(ref, () => {
         return {
             show: (initialId: string) => {
-                setResoruceId(initialId)
+                setStreamId(initialId)
                 refDialog.current?.showModal()
             }
         }
     })
 
-    const onResourceIdInput = (e: Event) => {
-        setResoruceId((e.target as HTMLInputElement).value)
+    const onStreamIdInput = (e: Event) => {
+        setStreamId((e.target as HTMLInputElement).value)
     }
 
-    const onConfirmNewResourceId = (_e: Event) => {
-        props.onNewResourceId(resoruceId)
+    const onConfirmNewStreamId = (_e: Event) => {
+        props.onNewStreamId(streamId)
         refDialog.current?.close()
     }
 
@@ -35,13 +35,13 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
         <dialog ref={refDialog}>
             <h3>New Stream</h3>
             <p>
-                <label>Resource ID:
-                    <input type="text" value={resoruceId} onChange={onResourceIdInput} />
+                <label>Stream ID:
+                    <input type="text" value={streamId} onChange={onStreamIdInput} />
                 </label>
             </p>
             <form method="dialog">
                 <button>Cancel</button>
-                <button onClick={onConfirmNewResourceId}>Confirm</button>
+                <button onClick={onConfirmNewStreamId}>Confirm</button>
             </form>
         </dialog>
     )

@@ -3,15 +3,13 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use cli::{create_child, get_codec_type, Codec};
-
-use libwish::Client;
 use scopeguard::defer;
 use tokio::net::TcpListener;
 use tokio::{
     net::UdpSocket,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
-use tracing::{info, trace, warn, Level};
+use tracing::{debug, info, trace, warn, Level};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::{
@@ -29,6 +27,8 @@ use webrtc::{
     },
     util::MarshalSize,
 };
+
+use libwish::Client;
 
 const PREFIX_LIB: &str = "WEBRTC";
 
@@ -215,9 +215,14 @@ async fn webrtc_start(
     peer.set_local_description(offer).await?;
     let _ = gather_complete.recv().await;
 
-    let (answer, _ice_servers) = client
+    let (answer, ice_servers) = client
         .wish(peer.local_description().await.unwrap().sdp.clone())
         .await?;
+
+    debug!("Get http header link ice servers: {:?}", ice_servers);
+    let mut current_config = peer.get_configuration().await;
+    current_config.ice_servers.clone_from(&ice_servers);
+    peer.set_configuration(current_config.clone()).await?;
 
     peer.set_remote_description(answer.clone())
         .await
