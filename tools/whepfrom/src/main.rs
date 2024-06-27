@@ -8,7 +8,7 @@ use tokio::{
     net::UdpSocket,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
-use tracing::{info, trace, warn, Level};
+use tracing::{debug, info, trace, warn, Level};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
@@ -158,11 +158,9 @@ async fn webrtc_start(
         .wish(peer.local_description().await.unwrap().sdp.clone())
         .await?;
 
+    debug!("Get http header link ice servers: {:?}", ice_servers);
     let mut current_config = peer.get_configuration().await;
-
     current_config.ice_servers.clone_from(&ice_servers);
-
-    //set new configuration into peer
     peer.set_configuration(current_config.clone()).await?;
 
     peer.set_remote_description(answer)
