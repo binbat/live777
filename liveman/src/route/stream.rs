@@ -9,9 +9,7 @@ use api::response::Stream;
 
 use crate::{result::Result, AppState};
 
-pub async fn index(
-    State(mut state): State<AppState>,
-) -> Result<Json<Vec<api::response::Stream>>> {
+pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<api::response::Stream>>> {
     let map_info = state.storage.info_raw_all().await.unwrap();
     let mut map_server_stream = HashMap::new();
     for (alias, streams) in map_info.iter() {
