@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use axum::{
     extract::{Path, Request, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use http::{header, HeaderValue, Uri};
@@ -36,6 +36,8 @@ pub fn route() -> Router<AppState> {
         .route("/api/nodes", get(api_node))
         .route("/api/streams/", get(stream::index))
         .route("/api/streams/:stream", get(stream::show))
+        .route("/api/streams/:stream", post(stream::create))
+        .route("/api/streams/:stream", delete(stream::destroy))
 }
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
