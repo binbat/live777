@@ -150,10 +150,9 @@ async fn webrtc_start(
         .wish(peer.local_description().await.unwrap().sdp)
         .await?;
 
+    debug!("Get http header link ice servers: {:?}", ice_servers);
     let mut current_config = peer.get_configuration().await;
-
     current_config.ice_servers.clone_from(&ice_servers);
-
     peer.set_configuration(current_config.clone()).await?;
 
     peer.set_remote_description(answer)
