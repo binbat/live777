@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, Mutex};
-use tracing::info;
+use tracing::{error, info};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -278,6 +278,7 @@ impl PeerForward {
             }
             Err(err) => {
                 peer.close().await?;
+                error!("cascade push dst: {}, err: {}", dst, err);
                 Err(AppError::InternalServerError(err))
             }
         }
