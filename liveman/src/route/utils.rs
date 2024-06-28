@@ -71,12 +71,22 @@ pub async fn cascade_push(
     .unwrap();
     trace!("{:?}", body);
 
-    let response = client.post(url.clone()).headers(headers).body(body).send().await?;
+    let response = client
+        .post(url.clone())
+        .headers(headers)
+        .body(body)
+        .send()
+        .await?;
 
     if response.status().is_success() {
         Ok(())
     } else {
-        error!("url: {:?}, [{:?}], response: {:?}", url, response.status(), response.text().await?);
+        error!(
+            "url: {:?}, [{:?}], response: {:?}",
+            url,
+            response.status(),
+            response.text().await?
+        );
         Err(anyhow!("http status not success"))
     }
 }
