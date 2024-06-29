@@ -29,8 +29,6 @@ pub fn route() -> Router<AppState> {
             &api::path::session_layer(":stream", ":session"),
             get(session).post(session).delete(session),
         )
-        .route("/admin/infos", get(info))
-        .route("/api/admin/-/infos", get(api_info))
         .route("/api/whip/:alias/:stream", post(api_whip))
         .route("/api/whep/:alias/:stream", post(api_whep))
         .route("/api/nodes", get(api_node))
@@ -80,13 +78,6 @@ async fn api_node(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> 
     ))
 }
 
-async fn api_info(
-    State(mut state): State<AppState>,
-    _req: Request,
-) -> crate::result::Result<Json<HashMap<String, Vec<api::response::Stream>>>> {
-    Ok(Json(state.storage.info_raw_all().await.unwrap()))
-}
-
 async fn api_whip(
     State(state): State<AppState>,
     Path((alias, stream)): Path<(String, String)>,
@@ -113,13 +104,6 @@ async fn api_whep(
         Some(server) => request_proxy(state, req, server).await,
         None => Err(AppError::NoAvailableNode),
     }
-}
-
-async fn info(
-    State(mut state): State<AppState>,
-    _req: Request,
-) -> crate::result::Result<Json<Vec<api::response::Stream>>> {
-    Ok(Json(state.storage.info_all().await.unwrap()))
 }
 
 async fn whip(

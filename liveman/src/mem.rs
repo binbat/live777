@@ -108,15 +108,6 @@ impl MemStorage {
         }
     }
 
-    pub async fn info_all(&mut self) -> Result<Vec<Stream>, Error> {
-        self.update().await;
-        let mut result = Vec::new();
-        for mut v in self.info.read().unwrap().values().cloned() {
-            result.append(&mut v);
-        }
-        Ok(result)
-    }
-
     pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<Stream>>, Error> {
         self.update().await;
         Ok(self.info.read().unwrap().clone())
