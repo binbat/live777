@@ -1,17 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use axum::{
     extract::{Path, Request, State},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
-    Json, Router,
+    Router,
 };
 use http::{header, HeaderValue, Uri};
-use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn, Span};
 
 use api::response::Stream;
 
+use crate::route::node;
 use crate::route::stream;
 use crate::route::utils::{cascade_push, force_check_times, session_delete};
 use crate::Server;
@@ -31,51 +31,11 @@ pub fn route() -> Router<AppState> {
         )
         .route("/api/whip/:alias/:stream", post(api_whip))
         .route("/api/whep/:alias/:stream", post(api_whep))
-        .route("/api/nodes", get(api_node))
+        .route("/api/nodes/", get(node::index))
         .route("/api/streams/", get(stream::index))
         .route("/api/streams/:stream", get(stream::show))
         .route("/api/streams/:stream", post(stream::create))
         .route("/api/streams/:stream", delete(stream::destroy))
-}
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NodeState {
-    #[default]
-    #[serde(rename = "running")]
-    Running,
-    #[serde(rename = "stopped")]
-    Stopped,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Node {
-    pub alias: String,
-    pub url: String,
-    pub pub_max: u16,
-    pub sub_max: u16,
-    pub status: NodeState,
-}
-
-async fn api_node(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
-    let map_info = state.storage.info_raw_all().await.unwrap();
-
-    Ok(Json(
-        state
-            .storage
-            .get_cluster()
-            .into_iter()
-            .map(|x| Node {
-                alias: x.alias.clone(),
-                url: x.url,
-                pub_max: x.pub_max,
-                sub_max: x.sub_max,
-                status: match map_info.get(&x.alias) {
-                    Some(_) => NodeState::Running,
-                    None => NodeState::Stopped,
-                },
-            })
-            .collect(),
-    ))
 }
 
 async fn api_whip(
