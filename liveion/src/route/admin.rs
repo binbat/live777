@@ -1,30 +1,13 @@
 use axum::extract::{Path, State};
-use axum::routing::{get, post};
+use axum::routing::post;
 use axum::{Json, Router};
-use axum_extra::extract::Query;
 
 use crate::error::AppError;
 use crate::result::Result;
 use crate::AppState;
 
 pub fn route() -> Router<AppState> {
-    Router::new()
-        .route(api::path::ADMIN_INFOS, get(infos))
-        .route(&api::path::cascade(":stream"), post(cascade))
-}
-async fn infos(
-    State(state): State<AppState>,
-    Query(req): Query<api::request::QueryInfo>,
-) -> Result<Json<Vec<api::response::Stream>>> {
-    Ok(Json(
-        state
-            .stream_manager
-            .info(req.streams)
-            .await
-            .into_iter()
-            .map(|forward_info| forward_info.into())
-            .collect(),
-    ))
+    Router::new().route(&api::path::cascade(":stream"), post(cascade))
 }
 
 async fn cascade(

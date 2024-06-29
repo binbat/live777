@@ -1,16 +1,18 @@
+use std::collections::HashSet;
+
 use axum::{
     extract::{Path, Request, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
-    Json, Router,
+    routing::{delete, get, post},
+    Router,
 };
 use http::{header, HeaderValue, Uri};
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn, Span};
 
 use api::response::Stream;
 
+use crate::route::node;
+use crate::route::stream;
 use crate::route::utils::{cascade_push, force_check_times, session_delete};
 use crate::Server;
 use crate::{error::AppError, result::Result, AppState};
@@ -27,161 +29,13 @@ pub fn route() -> Router<AppState> {
             &api::path::session_layer(":stream", ":session"),
             get(session).post(session).delete(session),
         )
-        .route("/admin/infos", get(info))
-        .route("/api/admin/-/infos", get(api_info))
         .route("/api/whip/:alias/:stream", post(api_whip))
         .route("/api/whep/:alias/:stream", post(api_whep))
-        .route("/api/nodes", get(api_node))
-        .route("/api/streams/", get(stream_index))
-        .route("/api/streams/:stream", get(stream_info))
-}
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NodeState {
-    #[default]
-    #[serde(rename = "running")]
-    Running,
-    #[serde(rename = "stopped")]
-    Stopped,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Node {
-    pub alias: String,
-    pub url: String,
-    pub pub_max: u16,
-    pub sub_max: u16,
-    pub status: NodeState,
-}
-
-async fn api_node(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
-    let map_info = state.storage.info_raw_all().await.unwrap();
-
-    Ok(Json(
-        state
-            .storage
-            .get_cluster()
-            .into_iter()
-            .map(|x| Node {
-                alias: x.alias.clone(),
-                url: x.url,
-                pub_max: x.pub_max,
-                sub_max: x.sub_max,
-                status: match map_info.get(&x.alias) {
-                    Some(_) => NodeState::Running,
-                    None => NodeState::Stopped,
-                },
-            })
-            .collect(),
-    ))
-}
-
-async fn stream_index(
-    State(mut state): State<AppState>,
-) -> Result<Json<Vec<api::response::Stream>>> {
-    let map_info = state.storage.info_raw_all().await.unwrap();
-    let mut map_server_stream = HashMap::new();
-    for (alias, streams) in map_info.iter() {
-        for stream in streams.iter() {
-            map_server_stream.insert(format!("{}:{}", alias, stream.id), stream.clone());
-        }
-    }
-
-    let streams = state.storage.stream_all().await;
-    let mut result_streams: HashMap<String, Stream> = HashMap::new();
-    for (stream_id, servers) in streams.into_iter() {
-        for server in servers.iter() {
-            let alias = format!("{}:{}", server.alias, stream_id);
-            match map_server_stream.get(&alias) {
-                Some(s) => {
-                    let new_stream = match result_streams.get(&stream_id) {
-                        Some(vv) => {
-                            let v = vv.clone();
-                            api::response::Stream {
-                                id: s.id.clone(),
-                                created_at: if s.created_at < v.created_at {
-                                    s.created_at
-                                } else {
-                                    v.created_at
-                                },
-                                publish: api::response::PubSub {
-                                    leave_at: {
-                                        if s.publish.leave_at == 0 || v.publish.leave_at == 0 {
-                                            0
-                                        } else if s.publish.leave_at > v.publish.leave_at {
-                                            s.publish.leave_at
-                                        } else {
-                                            v.publish.leave_at
-                                        }
-                                    },
-                                    sessions: {
-                                        let mut arr = s.publish.sessions.clone();
-                                        arr.extend(v.publish.sessions);
-                                        arr
-                                    },
-                                },
-                                subscribe: api::response::PubSub {
-                                    leave_at: {
-                                        if s.subscribe.leave_at == 0 || v.subscribe.leave_at == 0 {
-                                            0
-                                        } else if s.subscribe.leave_at > v.subscribe.leave_at {
-                                            s.subscribe.leave_at
-                                        } else {
-                                            v.subscribe.leave_at
-                                        }
-                                    },
-                                    sessions: {
-                                        let mut arr = s.subscribe.sessions.clone();
-                                        arr.extend(v.subscribe.sessions);
-                                        arr
-                                    },
-                                },
-                            }
-                        }
-                        None => s.clone(),
-                    };
-                    result_streams.insert(stream_id.clone(), new_stream);
-                }
-                None => continue,
-            }
-        }
-    }
-
-    Ok(Json(
-        result_streams
-            .into_values()
-            .collect::<Vec<api::response::Stream>>(),
-    ))
-}
-
-async fn stream_info(
-    State(mut state): State<AppState>,
-    Path(stream_id): Path<String>,
-) -> Result<Json<HashMap<String, api::response::Stream>>> {
-    let mut result_streams: HashMap<String, Stream> = HashMap::new();
-    let map_info = state.storage.info_raw_all().await.unwrap();
-    let mut map_server_stream = HashMap::new();
-    for (alias, streams) in map_info.iter() {
-        for stream in streams.iter() {
-            map_server_stream.insert(format!("{}:{}", alias, stream.id), stream.clone());
-        }
-    }
-
-    let servers = state.storage.get_cluster();
-    for server in servers.into_iter() {
-        if let Some(stream) = map_server_stream.get(&format!("{}:{}", server.alias, stream_id)) {
-            result_streams.insert(server.alias, stream.clone());
-        }
-    }
-
-    Ok(Json(result_streams))
-}
-
-async fn api_info(
-    State(mut state): State<AppState>,
-    _req: Request,
-) -> crate::result::Result<Json<HashMap<String, Vec<api::response::Stream>>>> {
-    Ok(Json(state.storage.info_raw_all().await.unwrap()))
+        .route("/api/nodes/", get(node::index))
+        .route("/api/streams/", get(stream::index))
+        .route("/api/streams/:stream", get(stream::show))
+        .route("/api/streams/:stream", post(stream::create))
+        .route("/api/streams/:stream", delete(stream::destroy))
 }
 
 async fn api_whip(
@@ -210,13 +64,6 @@ async fn api_whep(
         Some(server) => request_proxy(state, req, server).await,
         None => Err(AppError::NoAvailableNode),
     }
-}
-
-async fn info(
-    State(mut state): State<AppState>,
-    _req: Request,
-) -> crate::result::Result<Json<Vec<api::response::Stream>>> {
-    Ok(Json(state.storage.info_all().await.unwrap()))
 }
 
 async fn whip(
