@@ -10,7 +10,7 @@
     "preview": "npm run preview:liveion",
     "preview:liveion": "vite preview -c web/liveion/vite.config.ts",
     "preview:liveman": "vite preview -c web/liveman/vite.config.ts",
-    "build": "npm run build:liveion",
+    "build": "npm run build:liveion && npm run build:liveman",
     "build:liveion": "vite build -c web/liveion/vite.config.ts",
     "build:liveman": "vite build -c web/liveman/vite.config.ts",
     "e2e:cluster": "bun test"
