@@ -1,4 +1,5 @@
-import { useCallback } from 'preact/hooks'
+import { TargetedEvent } from 'preact/compat';
+import { useCallback, useEffect, useState } from 'preact/hooks'
 
 declare module 'preact' {
     namespace JSX {
@@ -19,7 +20,48 @@ declare global {
     }
 }
 
+function useUrlParamsInput(key: string) {
+    const [value, setValue] = useState('')
+    useEffect(() => {
+        const params = new URLSearchParams(location.search)
+        const v = params.get(key)
+        if (v !== null) {
+            setValue(v)
+        }
+    }, [])
+    const setUrlParams = (v: string | undefined) => {
+        const params = new URLSearchParams(location.search)
+        if (v === undefined) {
+            params.delete(key)
+        } else {
+            params.set(key, v)
+        }
+        history.replaceState(null, '', '?' + params.toString())
+    }
+    const onInput = (e: TargetedEvent<HTMLInputElement>) => {
+        const v = e.currentTarget.value
+        setValue(v)
+        setUrlParams(v)
+    }
+    return { value, onInput }
+}
+
+const WhipLayerSelect = [
+    { value: 'f', text: 'Base' },
+    { value: 'h', text: 'Base + 1/2' },
+    { value: 'q', text: 'Base + 1/2 + 1/4' },
+]
+const WhepLayerSelect = [
+    { value: '', text: 'AUTO' },
+    { value: 'q', text: 'LOW' },
+    { value: 'h', text: 'MEDIUM' },
+    { value: 'f', text: 'HIGH' },
+]
+
 export default function DebuggerCompat() {
+    const streamIdInput = useUrlParamsInput('id')
+    const idBearerTokenInput = useUrlParamsInput('token')
+
     const refreshDevice = useCallback(() => window.refreshDevice(), [])
     const startWhip = useCallback(() => window.startWhip(), [])
     const startWhep = useCallback(() => window.startWhep(), [])
@@ -29,8 +71,8 @@ export default function DebuggerCompat() {
             <fieldset>
                 <legend>Common</legend>
                 <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
-                    <div>Stream ID: <input id="id" type="text" /></div>
-                    <div>Bearer Token: <input id="token" type="text" /></div>
+                    <div>Stream ID: <input id="id" type="text" {...streamIdInput} /></div>
+                    <div>Bearer Token: <input id="token" type="text"  {...idBearerTokenInput} /></div>
                 </section>
             </fieldset>
 
@@ -61,7 +103,10 @@ export default function DebuggerCompat() {
                         <section>
                             <video-size-select id="whip-video-size"></video-size-select>
                         </section>
-                        <section>SVC Layer: <select id="whip-layer-select"></select></section>
+                        <section>SVC Layer: <select id="whip-layer-select">
+                            {WhipLayerSelect.map(l => <option value={l.value}>{l.text}</option>)}
+                        </select>
+                        </section>
                         <section>
                             <input type="checkbox" id="whip-pseudo-audio" />Pseudo Audio Track
                         </section>
@@ -85,7 +130,10 @@ export default function DebuggerCompat() {
                 <fieldset>
                     <legend>WHEP</legend>
                     <center>
-                        <section>SVC Layer: <select disabled id="whep-layer-select"></select></section>
+                        <section>SVC Layer: <select disabled id="whep-layer-select">
+                            {WhepLayerSelect.map(l => <option value={l.value}>{l.text}</option>)}
+                        </select>
+                        </section>
                         <section>
                             <button id="whep-button-disable-audio">Disable Audio</button>
                             <button id="whep-button-disable-video">Disable Video</button>

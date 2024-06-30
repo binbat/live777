@@ -84,6 +84,23 @@ export function StreamsTable() {
         setWebStreams(webStreams.filter(s => s !== id))
     }
 
+    const handleOpenPlayerPage = (id: string) => {
+        const params = new URLSearchParams()
+        params.set('id', id)
+        params.set('autoplay', '')
+        params.set('muted', '')
+        params.set('reconnect', '')
+        const url = new URL(`/tools/player.html?${params.toString()}`, location.origin)
+        window.open(url)
+    }
+
+    const handleOpenDebuggerPage = (id: string) => {
+        const params = new URLSearchParams()
+        params.set('id', id)
+        const url = new URL(`/tools/debugger.html?${params.toString()}`, location.origin)
+        window.open(url)
+    }
+
     return (
         <>
             <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
@@ -150,6 +167,8 @@ export function StreamsTable() {
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
                                     <button onClick={() => handleCascadePullStream(i.id)}>Cascade Pull</button>
                                     <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
+                                    <button onClick={() => handleOpenPlayerPage(i.id)}>Player</button>
+                                    <button onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</button>
                                     <button onClick={() => deleteStream(i.id)} class="text-red-500">Destroy</button>
                                 </td>
                             </tr>

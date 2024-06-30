@@ -14,27 +14,27 @@ customElements.define("data-channel", DataChannel)
 const idStreamId = "id"
 const idBearerToken = "token"
 
-function setURLSearchParams(k, v) {
-    const params = new URLSearchParams((new URL(location.href)).search)
-    !!v ? params.set(k, v) : params.delete(k)
-    history.replaceState({}, "", "?" + params.toString())
-}
+// function setURLSearchParams(k, v) {
+//     const params = new URLSearchParams((new URL(location.href)).search)
+//     !!v ? params.set(k, v) : params.delete(k)
+//     history.replaceState({}, "", "?" + params.toString())
+// }
 
-function getURLSearchParams(k) {
-    const params = new URLSearchParams((new URL(location.href)).search)
-    return params.get(k)
-}
+// function getURLSearchParams(k) {
+//     const params = new URLSearchParams((new URL(location.href)).search)
+//     return params.get(k)
+// }
 
-function initCommonInput(elementId, paramId) {
-    const element = document.getElementById(elementId)
-    if (element) {
-        element.addEventListener('input', ev => setURLSearchParams(paramId, ev.target.value))
-        element.value = getURLSearchParams(paramId)
-    }
-}
+// function initCommonInput(elementId, paramId) {
+//     const element = document.getElementById(elementId)
+//     if (element) {
+//         element.addEventListener('input', ev => setURLSearchParams(paramId, ev.target.value))
+//         element.value = getURLSearchParams(paramId)
+//     }
+// }
 
-initCommonInput(idStreamId, idStreamId)
-initCommonInput(idBearerToken, idBearerToken)
+// initCommonInput(idStreamId, idStreamId)
+// initCommonInput(idBearerToken, idBearerToken)
 
 function log(el, num, msg) {
     el.innerHTML += (!!num ? `[${num}]: ` : '') + msg + '<br>'
@@ -87,11 +87,11 @@ const idWhipButtonStop = "whip-button-stop"
 const idWhipPseudoAudio = "whip-pseudo-audio"
 const idWhipDataChannel = "whip-datachannel"
 
-initLayerSelect(idWhipLayerSelect, [
-    {value: "f", text: "Base"},
-    {value: "h", text: "Base + 1/2"},
-    {value: "q", text: "Base + 1/2 + 1/4"},
-])
+// initLayerSelect(idWhipLayerSelect, [
+//     {value: "f", text: "Base"},
+//     {value: "h", text: "Base + 1/2"},
+//     {value: "q", text: "Base + 1/2 + 1/4"},
+// ])
 
 async function refreshDevice() {
     const mediaStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true})
@@ -209,12 +209,12 @@ const idWhepButtonDisableAudio = "whep-button-disable-audio"
 const idWhepButtonDisableVideo = "whep-button-disable-video"
 const idWhepDataChannel = "whep-datachannel"
 
-initLayerSelect(idWhepLayerSelect, [
-    {value: "", text: "AUTO"},
-    {value: "q", text: "LOW"},
-    {value: "h", text: "MEDIUM"},
-    {value: "f", text: "HIGH"},
-])
+// initLayerSelect(idWhepLayerSelect, [
+//     {value: "", text: "AUTO"},
+//     {value: "q", text: "LOW"},
+//     {value: "h", text: "MEDIUM"},
+//     {value: "f", text: "HIGH"},
+// ])
 
 async function startWhep() {
     const streamId = getElementValue(idStreamId)
