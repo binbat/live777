@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="./public/logo.svg" alt="Live777" width="200">
+  <img src="./web/public/logo.svg" alt="Live777" width="200">
   <br>Live777<br>
 </h1>
 
@@ -125,8 +125,8 @@ cargo run --package=whepfrom
 
 ```bash
 # Build Web UI
-bun install
-bun run build
+npm install
+npm run build
 
 # Live777 Core
 cargo build --release

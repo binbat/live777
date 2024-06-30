@@ -11,7 +11,7 @@ export const ProjectRoot = resolve(import.meta.dirname, '..')
  * @see https://vitejs.dev/config/
  */
 export default defineConfig({
-    publicDir: resolve(ProjectRoot, 'public'),
+    publicDir: resolve(ProjectRoot, 'web/public'),
     build: {
         emptyOutDir: true,
     },
