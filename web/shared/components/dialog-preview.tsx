@@ -59,7 +59,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         logger.log(state)
     }
 
-    const handlePreviewStart = (streamId: string) => {
+    const handlePreviewStart = async (streamId: string) => {
         logger.clear()
         logger.log('started')
         const pc = new RTCPeerConnection()
@@ -80,14 +80,32 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         const whep = new WHEPClient()
         const url = `${location.origin}/whep/${streamId}`
         const token = ''
-        // @ts-ignore
-        whep.onAnswer = (sdp: RTCSessionDescription) => {
+        whep.onOffer = sdp => {
+            logger.log('http offer sent')
+            return sdp
+        }
+        whep.onAnswer = sdp => {
             logger.log('http answer received')
             return sdp
         }
         setWhepClient(whep)
+        try {
+            await whep.view(pc, url, token)
+        } catch (e: any) {
+            setConnState('Error')
+            if (e instanceof Error) {
+                logger.log(e.message)
+            }
+            const r = e.response as Response | undefined
+            if (r) {
+                logger.log(await r.text())
+            }
+        }
         whep.view(pc, url, token)
-        logger.log('http offer sent')
+    }
+
+    const handleVideoCanPlay = (_: TargetedEvent<HTMLVideoElement>) => {
+        logger.log('video canplay')
     }
 
     const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
@@ -100,7 +118,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         <dialog ref={refDialog}>
             <h3>Preview {streamId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay onResize={handleVideoResize} class="max-w-[90vw] max-h-[70vh]"></video>
+                <video ref={refVideo} controls autoplay onCanPlay={handleVideoCanPlay} onResize={handleVideoResize} class="max-w-[90vw] max-h-[70vh]"></video>
             </div>
             <details>
                 <summary>

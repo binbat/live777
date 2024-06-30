@@ -16,10 +16,10 @@
     "e2e:cluster": "bun test"
   },
   "dependencies": {
+    "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
     "preact": "^10.22.0"
   },
   "devDependencies": {
-    "@binbat/whip-whep": "1.1.1-sdp-trickle",
     "@preact/preset-vite": "^2.8.3",
     "@types/bun": "^1.1.6",
     "typescript": "^5.5.2",

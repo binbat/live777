@@ -60,17 +60,30 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         })
         pc.addTransceiver(videoTrack, { direction: 'sendonly' })
         stream.getAudioTracks().forEach(track => pc.addTrack(track))
-        const whipClient = new WHIPClient()
+        const whip = new WHIPClient()
         const url = `${location.origin}/whip/${streamId}`
         const token = ''
-        // @ts-ignore
-        whipClient.onAnswer = (sdp: RTCSessionDescription) => {
+        whip.onOffer = sdp => {
+            logger.log('http offer sent')
+            return sdp
+        }
+        whip.onAnswer = sdp => {
             logger.log('http answer received')
             return sdp
         }
-        setWhipClient(whipClient)
-        whipClient.publish(pc, url, token)
-        logger.log('http offer sent')
+        setWhipClient(whip)
+        try {
+            await whip.publish(pc, url, token)
+        } catch (e: any) {
+            setConnState('Error')
+            if (e instanceof Error) {
+                logger.log(e.message)
+            }
+            const r = e.response as Response | undefined
+            if (r) {
+                logger.log(await r.text())
+            }
+        }
     }
 
     const handleStreamStop = async () => {
