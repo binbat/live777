@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks'
 
-import { allStream, delStream } from '../api'
+import { getStreams, deleteStream } from '../api'
 import { formatTime } from '../utils'
 import { useRefreshTimer } from '../hooks/use-refresh-timer'
 import { StyledCheckbox } from './styled-checkbox'
@@ -11,7 +11,7 @@ import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
 export function StreamsTable() {
-    const [streams, isRefreshingStreams, toggleRefreshStreams] = useRefreshTimer([], allStream)
+    const [streams, isRefreshingStreams, toggleRefreshStreams] = useRefreshTimer([], getStreams)
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const refCascadePull = useRef<ICascadeDialog>(null)
     const refCascadePush = useRef<ICascadeDialog>(null)
@@ -150,7 +150,7 @@ export function StreamsTable() {
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
                                     <button onClick={() => handleCascadePullStream(i.id)}>Cascade Pull</button>
                                     <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
-                                    <button onClick={() => delStream(i.id, i.publish.sessions[0].id)} class="text-red-500">Destroy</button>
+                                    <button onClick={() => deleteStream(i.id)} class="text-red-500">Destroy</button>
                                 </td>
                             </tr>
                         )}

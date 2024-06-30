@@ -1,6 +1,6 @@
 import { useRef, useImperativeHandle } from 'preact/hooks'
 import { forwardRef } from 'preact/compat'
-import { Session, delStream } from '../api'
+import { Session, deleteSession } from '../api'
 import { formatTime } from '../utils'
 
 interface Props {
@@ -41,7 +41,7 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                             <td>{c.id} {c.reforward ? "(reforward)" : ""}</td>
                             <td>{c.state}</td>
                             <td>{formatTime(c.createdAt)}</td>
-                            <td><button onClick={() => delStream(props.id, c.id)}>Kick</button></td>
+                            <td><button onClick={() => deleteSession(props.id, c.id)}>Kick</button></td>
                         </tr>
                     )}
                 </tbody>

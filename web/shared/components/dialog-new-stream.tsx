@@ -1,6 +1,8 @@
 import { useState, useRef, useImperativeHandle } from 'preact/hooks'
 import { forwardRef } from 'preact/compat';
 
+import { createStream } from '../api';
+
 interface Props {
     onNewStreamId(id: string): void
 }
@@ -28,6 +30,7 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
 
     const onConfirmNewStreamId = (_e: Event) => {
         props.onNewStreamId(streamId)
+        createStream(streamId)
         refDialog.current?.close()
     }
 
