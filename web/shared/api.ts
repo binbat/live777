@@ -35,7 +35,7 @@ export interface Session {
     };
 }
 
-export interface Cascade{
+export interface Cascade {
     token?: string;
     src?: string;
     dst?: string;

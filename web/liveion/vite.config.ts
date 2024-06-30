@@ -10,6 +10,15 @@ const configDir = import.meta.dirname
 // https://vitejs.dev/config/
 export default mergeConfig(CommonConfig, defineConfig({
     root: configDir,
+    server: {
+        proxy: {
+            '^.*/admin/.*': 'http://localhost:7777',
+            '^/api/.*': 'http://localhost:7777',
+            '^/session/.*': 'http://localhost:7777',
+            '^/whip/.*': 'http://localhost:7777',
+            '^/whep/.*': 'http://localhost:7777',
+        },
+    },
     build: {
         outDir: resolve(ProjectRoot, 'assets/liveion'),
         rollupOptions: {

@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'preact/hooks'
 
-import { Stream, allStream, delStream } from '../api'
+import { allStream, delStream } from '../api'
 import { formatTime } from '../utils'
-
+import { useRefreshTimer } from '../hooks/use-refresh-timer'
+import { StyledCheckbox } from './styled-checkbox'
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
 import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade'
 import { IPreviewDialog, PreviewDialog } from './dialog-preview'
@@ -10,9 +11,8 @@ import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
 export function StreamsTable() {
-    const [streams, setStreams] = useState<Stream[]>([])
+    const [streams, isRefreshingStreams, toggleRefreshStreams] = useRefreshTimer([], allStream)
     const [selectedStreamId, setSelectedStreamId] = useState('')
-    const [refreshTimer, setRefershTimer] = useState(-1)
     const refCascadePull = useRef<ICascadeDialog>(null)
     const refCascadePush = useRef<ICascadeDialog>(null)
     const refClients = useRef<IClientsDialog>(null)
@@ -23,23 +23,6 @@ export function StreamsTable() {
     const [previewStreams, setPreviewStreams] = useState<string[]>([])
     const [previewStreamId, setPreviewStreamId] = useState('')
     const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map())
-
-    const updateAllStreams = async () => {
-        setStreams(await allStream())
-    }
-
-    // fetch all streams on component mount
-    useEffect(() => { updateAllStreams() }, [])
-
-    const toggleTimer = () => {
-        if (refreshTimer > 0) {
-            clearInterval(refreshTimer)
-            setRefershTimer(-1)
-        } else {
-            updateAllStreams()
-            setRefershTimer(window.setInterval(updateAllStreams, 3000))
-        }
-    }
 
     const handleViewClients = (id: string) => {
         setSelectedStreamId(id)
@@ -141,13 +124,7 @@ export function StreamsTable() {
             <fieldset>
                 <legend class="inline-flex items-center">
                     <span>Streams (total: {streams.length})</span>
-                    <label class="ml-10 inline-flex items-center cursor-pointer">
-                        <input type="checkbox" class="sr-only peer" checked={refreshTimer > 0} onClick={toggleTimer} />
-                        <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                        <span class="ml-2">Auto Refresh</span>
-                    </label>
-                </legend>
-                <legend>
+                    <StyledCheckbox label="Auto Refresh" checked={isRefreshingStreams} onClick={toggleRefreshStreams}></StyledCheckbox>
                 </legend>
                 <table>
                     <thead>
