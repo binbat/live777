@@ -21,7 +21,7 @@ use crate::route::{admin, session, whep, whip, AppState};
 use stream::manager::Manager;
 
 #[derive(RustEmbed)]
-#[folder = "../assets/"]
+#[folder = "../assets/liveion/"]
 struct Assets;
 
 pub mod config;

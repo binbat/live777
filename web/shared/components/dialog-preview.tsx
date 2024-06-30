@@ -2,8 +2,8 @@ import { useRef, useImperativeHandle, useState } from 'preact/hooks'
 import { TargetedEvent, forwardRef } from 'preact/compat'
 import { WHEPClient } from '@binbat/whip-whep/whep.js'
 
-import { formatVideoTrackResolution } from './utils'
-import { useLogger } from './use-logger'
+import { formatVideoTrackResolution } from '../utils'
+import { useLogger } from '../hooks/use-logger'
 
 interface Props {
     onStop(): void
@@ -100,18 +100,18 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         <dialog ref={refDialog}>
             <h3>Preview {streamId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
+                <video ref={refVideo} controls autoplay onResize={handleVideoResize} class="max-w-[90vw] max-h-[70vh]"></video>
             </div>
             <details>
                 <summary>
                     <b>Connection Status: </b>
                     <code>{connState}</code>
                 </summary>
-                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{logger.logs.join('\n')}</pre>
+                <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
             </details>
             <form method="dialog">
                 <button onClick={() => handleCloseDialog()}>Hide</button>
-                <button onClick={() => handlePreviewStop()} style={{ color: 'red' }}>Stop</button>
+                <button onClick={() => handlePreviewStop()} class="text-red-500">Stop</button>
             </form>
         </dialog>
     )

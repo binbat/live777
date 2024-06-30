@@ -67,3 +67,15 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+fieldset {
+    border-style: dotted;
+    border-width: 0.25rem;
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+    margin: 0.5rem;
+}
+
+section {
+    margin: 0.5rem;
+}

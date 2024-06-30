@@ -1,7 +1,7 @@
 import { useState, useRef, useImperativeHandle } from 'preact/hooks'
 import { forwardRef, TargetedEvent } from 'preact/compat';
 
-import { cascade } from './api'
+import { cascade } from '../api'
 
 export interface ICascadeDialog {
     show(streamId: string): void

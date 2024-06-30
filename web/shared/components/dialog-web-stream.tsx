@@ -2,8 +2,8 @@ import { useRef, useImperativeHandle, useState } from 'preact/hooks'
 import { TargetedEvent, forwardRef } from 'preact/compat'
 import { WHIPClient } from '@binbat/whip-whep/whip'
 
-import { formatVideoTrackResolution } from './utils'
-import { useLogger } from './use-logger'
+import { formatVideoTrackResolution } from '../utils'
+import { useLogger } from '../hooks/use-logger'
 
 interface Props {
     onStop(): void
@@ -100,19 +100,19 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         <dialog ref={refDialog}>
             <h3>Web Stream {streamId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay onResize={handleVideoResize} style={{ maxWidth: '90vw', maxHeight: '70vh' }}></video>
+                <video ref={refVideo} controls autoplay onResize={handleVideoResize} class="max-w-[90vw] max-h-[70vh]"></video>
             </div>
             <details>
                 <summary>
                     <b>Connection Status: </b>
                     <code>{connState}</code>
                 </summary>
-                <pre className={'overflow-auto'} style={{ maxHeight: '10lh' }}>{logger.logs.join('\n')}</pre>
+                <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
             </details>
             <div>
                 <button onClick={() => { handleCloseDialog() }}>Hide</button>
                 {whipClient
-                    ? <button onClick={() => { handleStreamStop() }} style={{ color: 'red' }}>Stop</button>
+                    ? <button onClick={() => { handleStreamStop() }} class="text-red-500">Stop</button>
                     : <button onClick={() => { handleStreamStart() }}>Start</button>
                 }
             </div>

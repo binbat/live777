@@ -1,7 +1,7 @@
 import { useRef, useImperativeHandle } from 'preact/hooks'
 import { forwardRef } from 'preact/compat'
-import { Session, delStream } from './api'
-import { formatTime } from './utils'
+import { Session, delStream } from '../api'
+import { formatTime } from '../utils'
 
 interface Props {
     id: string

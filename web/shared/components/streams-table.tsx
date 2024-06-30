@@ -1,15 +1,15 @@
 import { useState, useRef, useEffect } from 'preact/hooks'
-import Logo from '/logo.svg'
-import './app.css'
-import { Stream, allStream, delStream } from './api'
-import { formatTime } from './utils'
+
+import { Stream, allStream, delStream } from '../api'
+import { formatTime } from '../utils'
+
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
 import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade'
 import { IPreviewDialog, PreviewDialog } from './dialog-preview'
 import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
-export function App() {
+export function StreamsTable() {
     const [streams, setStreams] = useState<Stream[]>([])
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const [refreshTimer, setRefershTimer] = useState(-1)
@@ -103,12 +103,6 @@ export function App() {
 
     return (
         <>
-            <div class="flex flex-justify-center">
-                <a href="https://live777.binbat.com" target="_blank">
-                    <img src={Logo} class="logo" alt="Live777 logo" />
-                </a>
-            </div>
-
             <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
 
             <CascadePullDialog ref={refCascadePull} />
@@ -148,7 +142,7 @@ export function App() {
                 <legend class="inline-flex items-center">
                     <span>Streams (total: {streams.length})</span>
                     <label class="ml-10 inline-flex items-center cursor-pointer">
-                        <input type="checkbox" value="" class="sr-only peer" checked={refreshTimer > 0} onClick={toggleTimer} />
+                        <input type="checkbox" class="sr-only peer" checked={refreshTimer > 0} onClick={toggleTimer} />
                         <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
                         <span class="ml-2">Auto Refresh</span>
                     </label>
@@ -158,12 +152,12 @@ export function App() {
                 <table>
                     <thead>
                         <tr>
-                            <th class="mw-50">ID</th>
+                            <th class="min-w-12">ID</th>
                             <th>Publisher</th>
                             <th>Subscriber</th>
                             <th>Cascade</th>
-                            <th class="mw-300">Creation Time</th>
-                            <th class="mw-300">Operation</th>
+                            <th class="min-w-72">Creation Time</th>
+                            <th class="min-w-72">Operation</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -175,11 +169,11 @@ export function App() {
                                 <td class="text-center">{i.subscribe.sessions.filter((t: any) => t.reforward).length}</td>
                                 <td class="text-center">{formatTime(i.createdAt)}</td>
                                 <td>
-                                    <button style={{ color: previewStreams.includes(i.id) ? 'blue' : 'inherit' }} onClick={() => handlePreview(i.id)}>Preview</button>
+                                    <button onClick={() => handlePreview(i.id)} class={previewStreams.includes(i.id) ? 'text-blue-500' : undefined} >Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
                                     <button onClick={() => handleCascadePullStream(i.id)}>Cascade Pull</button>
                                     <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
-                                    <button style={{ color: 'red' }} onClick={() => delStream(i.id, i.publish.sessions[0].id)}>Destroy</button>
+                                    <button onClick={() => delStream(i.id, i.publish.sessions[0].id)} class="text-red-500">Destroy</button>
                                 </td>
                             </tr>
                         )}
