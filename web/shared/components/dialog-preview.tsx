@@ -19,6 +19,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>()
     const [connState, setConnState] = useState('')
     const [videoResolution, setVideoResolution] = useState('')
+    const [inboundStatsTimer, setInboundStatsTimer] = useState(-1)
     const logger = useLogger()
     const refDialog = useRef<HTMLDialogElement>(null)
     const refVideo = useRef<HTMLVideoElement>(null)
@@ -101,11 +102,31 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
                 logger.log(await r.text())
             }
         }
-        whep.view(pc, url, token)
+        const updateInboundStats = async () => {
+            const stats = await pc.getStats()
+            logInboundRtpStats(stats)
+        }
+        await updateInboundStats()
+        if (inboundStatsTimer < 0) {
+            setInboundStatsTimer(window.setInterval(updateInboundStats, 200))
+        }
+    }
+
+    const logInboundRtpStats = (stats: ReadonlyMap<string, RTCStats>) => {
+        for (const [_, stat] of stats) {
+            if (stat.type === 'inbound-rtp') {
+                const bytes = (stat as RTCInboundRtpStreamStats).bytesReceived
+                logger.log(`inbound-rtp(${stat.id}): ${bytes} bytes`)
+            }
+        }
     }
 
     const handleVideoCanPlay = (_: TargetedEvent<HTMLVideoElement>) => {
         logger.log('video canplay')
+        if (inboundStatsTimer > 0) {
+            setInboundStatsTimer(-1)
+            window.clearInterval(inboundStatsTimer)
+        }
     }
 
     const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
