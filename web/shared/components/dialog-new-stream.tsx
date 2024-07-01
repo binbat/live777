@@ -1,5 +1,5 @@
 import { useState, useRef, useImperativeHandle } from 'preact/hooks'
-import { forwardRef } from 'preact/compat';
+import { TargetedEvent, forwardRef } from 'preact/compat';
 
 import { createStream } from '../api';
 
@@ -24,8 +24,8 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
         }
     })
 
-    const onStreamIdInput = (e: Event) => {
-        setStreamId((e.target as HTMLInputElement).value)
+    const onStreamIdInput = (e: TargetedEvent<HTMLInputElement>) => {
+        setStreamId(e.currentTarget.value)
     }
 
     const onConfirmNewStreamId = (_e: Event) => {
