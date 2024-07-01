@@ -9,7 +9,6 @@ mod tests {
     };
 
     use std::sync::Arc;
-    use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
     use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
     use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
     use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
@@ -35,7 +34,6 @@ mod tests {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 username: "".to_string(),
                 credential: "".to_string(),
-                credential_type: RTCIceCredentialType::Unspecified,
             }],
             ..Default::default()
         };
@@ -55,7 +53,6 @@ mod tests {
                 ],
                 username: "live777".to_string(),
                 credential: "live777".to_string(),
-                credential_type: RTCIceCredentialType::Password,
             }],
             ..Default::default()
         };
@@ -77,10 +74,6 @@ mod tests {
         );
         assert_eq!(updated_config.ice_servers[0].username, "live777");
         assert_eq!(updated_config.ice_servers[0].credential, "live777");
-        assert_eq!(
-            updated_config.ice_servers[0].credential_type,
-            RTCIceCredentialType::Password
-        );
         assert_eq!(
             updated_config.ice_transport_policy,
             RTCIceTransportPolicy::Unspecified

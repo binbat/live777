@@ -118,12 +118,6 @@ impl Client {
                     urls: vec![link.raw_uri.to_string().replacen("://", ":", 1)],
                     username: link.params.remove("username").unwrap_or("".to_owned()),
                     credential: link.params.remove("credential").unwrap_or("".to_owned()),
-                    credential_type: link
-                        .params
-                        .remove("credential-type")
-                        .unwrap_or("".to_owned())
-                        .as_str()
-                        .into(),
                 })
             }
         }
@@ -174,7 +168,6 @@ mod tests {
     use http::header;
     use http::response::Builder;
     use reqwest::Response;
-    use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 
     use crate::Client;
 
@@ -183,7 +176,7 @@ mod tests {
         let response = Builder::new()
             .header(header::LINK, r#"<stun:stun.22333.fun>; rel="ice-server""#)
             .header(header::LINK, r#"<stun:stun.l.google.com:19302>; rel="ice-server""#)
-            .header(header::LINK, r#"<turn:turn.22333.fun>; rel="ice-server"; username="live777"; credential="live777"; credential-type="password""#)
+            .header(header::LINK, r#"<turn:turn.22333.fun>; rel="ice-server"; username="live777"; credential="live777""#)
             .body("")
             .unwrap();
         let response = Response::from(response);
@@ -205,10 +198,6 @@ mod tests {
         );
         assert_eq!(ice_servers.get(2).unwrap().username, "live777");
         assert_eq!(ice_servers.get(2).unwrap().credential, "live777");
-        assert_eq!(
-            ice_servers.get(2).unwrap().credential_type,
-            RTCIceCredentialType::Password
-        );
 
         println!("{:?}", ice_servers);
     }
