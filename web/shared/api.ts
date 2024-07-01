@@ -1,6 +1,18 @@
-export async function delStream(streamId: string, clientId: string) {
+export async function deleteSession(streamId: string, clientId: string) {
     return fetch(`/session/${streamId}/${clientId}`, {
-        method: "DELETE",
+        method: 'DELETE',
+    })
+}
+
+export async function createStream(streamId: string) {
+    return fetch(`/api/streams/${streamId}`, {
+        method: 'POST',
+    })
+}
+
+export async function deleteStream(streamId: string) {
+    return fetch(`/api/streams/${streamId}`, {
+        method: 'DELETE',
     })
 }
 
@@ -35,21 +47,21 @@ export interface Session {
     };
 }
 
-export interface Cascade{
+export interface Cascade {
     token?: string;
     src?: string;
     dst?: string;
 }
 
-export async function allStream(): Promise<Stream[]> {
-    return (await fetch("/api/streams/")).json()
+export async function getStreams(): Promise<Stream[]> {
+    return (await fetch('/api/streams/')).json()
 }
 
 export async function cascade(streamId: string, params: Cascade): Promise<void> {
     fetch(`/api/cascade/${streamId}`, {
-        method: "POST",
+        method: 'POST',
         headers: {
-            "Content-Type": "application/json",
+            'Content-Type': 'application/json',
         },
         body: JSON.stringify(params),
     })

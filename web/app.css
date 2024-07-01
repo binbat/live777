@@ -1,8 +1,0 @@
-.logo {
-  height: 6em;
-  margin: 2rem 0.5em;
-  transition: filter 0.2s ease-in-out;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 1em #1991e8aa);
-}
