@@ -73,13 +73,13 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
             if (s.type === 'inbound-rtp') {
                 const { id, bytesReceived } = s as RTCInboundRtpStreamStats
                 // log the first time bytesReceived is not 0
-                if (!bytesReceived) {
-                    window.queueMicrotask(logInboundRtpStats)
-                } else {
+                if (bytesReceived) {
                     logger.log(`inbound-rtp(${id}): ${bytesReceived} bytes`)
+                    return
                 }
             }
         }
+        window.queueMicrotask(logInboundRtpStats)
     }
 
     const handlePreviewStart = async (streamId: string) => {
