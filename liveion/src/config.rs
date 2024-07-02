@@ -2,11 +2,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::{env, fs, net::SocketAddr, str::FromStr};
-use webrtc::{
-    ice,
-    ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
-    Error,
-};
+use webrtc::{ice, ice_transport::ice_server::RTCIceServer, Error};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -200,24 +196,7 @@ impl IceServer {
                     return Err(Error::ErrNoTurnCredentials);
                 }
                 url.username.clone_from(&self.username);
-
-                match self.credential_type.as_str().into() {
-                    RTCIceCredentialType::Password => {
-                        // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.3)
-                        url.password.clone_from(&self.credential);
-                    }
-                    RTCIceCredentialType::Oauth => {
-                        // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.4)
-                        /*if _, ok: = s.Credential.(OAuthCredential); !ok {
-                                return nil,
-                                &rtcerr.InvalidAccessError{Err: ErrTurnCredentials
-                            }
-                        }*/
-                    }
-                    _ => return Err(Error::ErrTurnCredentials),
-                };
             }
-
             urls.push(url);
         }
 
@@ -231,7 +210,6 @@ impl From<IceServer> for RTCIceServer {
             urls: val.urls,
             username: val.username,
             credential: val.credential,
-            credential_type: val.credential_type.as_str().into(),
         }
     }
 }
