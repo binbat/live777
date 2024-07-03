@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     utils::set_log(format!(
-        "whipinto={},webrtc=error",
+        "whepfrom={},webrtc=error",
         match args.verbose {
             0 => Level::WARN,
             1 => Level::INFO,
