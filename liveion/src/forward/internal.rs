@@ -10,6 +10,7 @@ use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data::data_channel::DataChannel;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice::mdns::MulticastDnsMode;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -372,6 +373,13 @@ impl PeerForwardInternal {
         registry = register_default_interceptors(registry, &mut m)?;
         let mut s = SettingEngine::default();
         s.detach_data_channels();
+
+        // NOTE: Disabled mDNS send
+        // As a cloud server, we don't need this
+        // But, as a local server, maybe we need this
+        // https://github.com/binbat/live777/issues/155
+        s.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+
         let api = APIBuilder::new()
             .with_media_engine(m)
             .with_interceptor_registry(registry)
@@ -444,6 +452,13 @@ impl PeerForwardInternal {
         registry = register_default_interceptors(registry, &mut m)?;
         let mut s = SettingEngine::default();
         s.detach_data_channels();
+
+        // NOTE: Disabled mDNS send
+        // As a cloud server, we don't need this
+        // But, as a local server, maybe we need this
+        // https://github.com/binbat/live777/issues/155
+        s.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+
         let api = APIBuilder::new()
             .with_media_engine(m)
             .with_interceptor_registry(registry)
