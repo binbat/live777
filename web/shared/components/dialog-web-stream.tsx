@@ -43,7 +43,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
 
     const handleStreamStart = async () => {
         logger.clear()
-        logger.log('started')
+        setConnState('')
         const stream = await navigator.mediaDevices.getDisplayMedia({
             audio: true,
             video: true
@@ -54,6 +54,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         }
         const videoTrack = stream.getVideoTracks()[0]
         setVideoResolution(formatVideoTrackResolution(videoTrack))
+        updateConnState('Started')
         const pc = new RTCPeerConnection()
         pc.addEventListener('iceconnectionstatechange', () => {
             updateConnState(pc.iceConnectionState)
