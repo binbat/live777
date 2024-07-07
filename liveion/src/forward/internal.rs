@@ -5,7 +5,7 @@ use chrono::Utc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_VP8};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data::data_channel::DataChannel;
@@ -16,11 +16,14 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
+};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpTransceiverInit};
 use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
 use libwish::Client;
@@ -240,25 +243,6 @@ impl PeerForwardInternal {
                 return;
             };
         }
-    }
-
-    pub async fn reset_cascade_info(&self, id: String, cascade_info: CascadeInfo) -> Result<()> {
-        let publish = self.publish.read().await;
-        if publish.is_some() && publish.as_ref().unwrap().id == id {
-            let mut cascade = publish.as_ref().unwrap().cascade.write().unwrap();
-            *cascade = Some(cascade_info);
-            return Ok(());
-        }
-
-        let reforward_group = self.subscribe_group.read().await;
-        for subscribe in reforward_group.iter() {
-            if id == subscribe.id {
-                let mut cascade = subscribe.cascade.write().unwrap();
-                *cascade = Some(cascade_info);
-                return Ok(());
-            }
-        }
-        Err(AppError::throw("not found re forward subscribe"))
     }
 }
 
@@ -480,8 +464,8 @@ impl PeerForwardInternal {
         recv_sender: u8,
     ) -> Result<Option<Arc<RTCRtpSender>>> {
         Ok(if recv_sender > 0 {
-            Some(
-                peer.add_transceiver_from_kind(
+            let sender = peer
+                .add_transceiver_from_kind(
                     kind,
                     Some(RTCRtpTransceiverInit {
                         direction: RTCRtpTransceiverDirection::Sendonly,
@@ -490,8 +474,50 @@ impl PeerForwardInternal {
                 )
                 .await?
                 .sender()
-                .await,
-            )
+                .await;
+            let track = Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![
+                        RTCPFeedback {
+                            typ: "goog-remb".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "ccm".to_owned(),
+                            parameter: "fir".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "pli".to_owned(),
+                        },
+                    ],
+                },
+                "webrtc".to_string(),
+                format!("{}-{}", "webrtc", kind),
+            ));
+            // ssrc for sdp
+            let _ = sender.replace_track(Some(track)).await;
+            info!(
+                "[{}] new sender , kind : {}, ssrc : {}",
+                get_peer_id(peer),
+                kind,
+                sender
+                    .get_parameters()
+                    .await
+                    .encodings
+                    .first()
+                    .unwrap()
+                    .ssrc
+            );
+            Some(sender)
         } else {
             None
         })
@@ -551,7 +577,7 @@ impl PeerForwardInternal {
                 if subscribe.id == session {
                     flag = true;
                     metrics::SUBSCRIBE.dec();
-                    if let Some(cascade) = subscribe.cascade.read().unwrap().as_ref() {
+                    if let Some(cascade) = subscribe.cascade.clone() {
                         reforward_flat = true;
                         metrics::REFORWARD.dec();
 

@@ -30,7 +30,7 @@ struct SubscribeForwardChannel {
 
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
-    pub(crate) cascade: std::sync::RwLock<Option<CascadeInfo>>,
+    pub(crate) cascade: Option<CascadeInfo>,
     pub(crate) peer: Arc<RTCPeerConnection>,
     pub(crate) create_time: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
@@ -83,7 +83,7 @@ impl SubscribeRTCPeerConnection {
         let _ = publish_track_change.send(());
         Self {
             id,
-            cascade: std::sync::RwLock::new(cascade),
+            cascade,
             peer,
             create_time: Utc::now().timestamp_millis(),
             select_layer_sender,
@@ -95,7 +95,7 @@ impl SubscribeRTCPeerConnection {
             id: self.id.clone(),
             create_time: self.create_time,
             connect_state: self.peer.connection_state(),
-            cascade: self.cascade.read().unwrap().clone(),
+            cascade: self.cascade.clone(),
         }
     }
 
