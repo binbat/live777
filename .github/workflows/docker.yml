@@ -16,6 +16,7 @@ jobs:
       matrix:
         app:
           - live777
+          - liveman
           - gstreamer
     steps:
       -
