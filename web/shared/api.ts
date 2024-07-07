@@ -41,9 +41,10 @@ export interface Session {
     id: string;
     createdAt: number;
     state: SessionConnectionState;
-    reforward?: {
-        targetUrl: string;
-        resourceUrl: string;
+    cascade?: {
+        src?: string;
+        dst?: string;
+        resource: string;
     };
 }
 
