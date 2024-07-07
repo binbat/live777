@@ -16,7 +16,6 @@ urls = [
 # urls = [ "turn:turn.22333.fun", "turn:cn.22333.fun" ]
 # username = "live777"
 # credential = "live777"
-# credential_type = "password"
 
 # WHIP/WHEP auth token
 # Headers["Authorization"] = "Bearer {token}"

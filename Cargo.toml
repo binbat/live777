@@ -27,7 +27,7 @@ license = "MPL-2.0"
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "ae93e81" }
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "40642c8" }
 
 anyhow = "1.0"
 clap = "4.5"
