@@ -13,7 +13,7 @@ use webrtc::track::track_local::TrackLocalWriter;
 use crate::error::AppError;
 use crate::forward::message::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
-use crate::forward::track::ForwardData;
+use crate::new_broadcast_channel;
 use crate::{constant, result::Result};
 
 use super::get_peer_id;
@@ -48,7 +48,7 @@ impl SubscribeRTCPeerConnection {
         ),
         (video_sender, audio_sender): (Option<Arc<RTCRtpSender>>, Option<Arc<RTCRtpSender>>),
     ) -> Self {
-        let (select_layer_sender, _) = broadcast::channel(1);
+        let select_layer_sender = new_broadcast_channel!(1);
         let id = get_peer_id(&peer);
         let track_binding_publish_rid = Arc::new(RwLock::new(HashMap::new()));
         for (sender, kind) in [
@@ -111,7 +111,7 @@ impl SubscribeRTCPeerConnection {
         info!("[{}] [{}] {} up", stream, id, kind);
         let mut pre_rid: Option<String> = None;
         // empty broadcast channel
-        let (virtual_sender, _) = broadcast::channel::<ForwardData>(1);
+        let virtual_sender = new_broadcast_channel!(1);
         let mut recv = virtual_sender.subscribe();
         let mut track = None;
         let mut sequence_number: u16 = 0;
