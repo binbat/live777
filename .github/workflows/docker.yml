@@ -1,13 +1,22 @@
-name: Docker Server
+name: Docker Images
 
 on:
   push:
+    branches:
+      - docker
     tags:
       - 'v*'
 
 jobs:
   docker:
+    name: Docker Images ${{ matrix.app }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - live777
+          - gstreamer
     steps:
       -
         name: Checkout
@@ -17,7 +26,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/binbat/live777-server
+          images: ghcr.io/binbat/${{ matrix.app }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -43,8 +52,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: true
-          file: Dockerfile.server
+          push: github.ref_type == 'tag'
+          file: docker/Dockerfile.${{ matrix.app }}
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
