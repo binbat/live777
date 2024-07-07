@@ -9,7 +9,7 @@ on:
 
 jobs:
   docker:
-    name: Docker Images ${{ matrix.app }}
+    name: Docker Images (${{ matrix.app }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
