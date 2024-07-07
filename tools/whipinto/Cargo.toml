@@ -1,7 +1,10 @@
 [package]
 name = "whipinto"
-version = "0.1.0"
-edition = "2021"
+description = "RTP to WHIP tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 cli = { path = "../../libs/cli" }
