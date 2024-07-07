@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use axum::{
     extract::{Path, Request, State},
     response::{IntoResponse, Response},
@@ -7,13 +5,13 @@ use axum::{
     Router,
 };
 use http::{header, HeaderValue, Uri};
-use tracing::{debug, error, info, warn, Span};
+use tracing::{debug, error, warn, Span};
 
 use api::response::Stream;
 
+use crate::route::cascade;
 use crate::route::node;
 use crate::route::stream;
-use crate::route::utils::{cascade_push, force_check_times, session_delete};
 use crate::Server;
 use crate::{error::AppError, result::Result, AppState};
 
@@ -137,10 +135,12 @@ async fn whep(
 
     let target = match maximum_idle_node {
         Some(server) => Some(server),
-        None => match whep_reforward_node(state.clone(), servers.clone(), stream.clone()).await {
-            Ok(server) => Some(server),
-            Err(e) => return Err(e),
-        },
+        None => {
+            match cascade::cascade_new_node(state.clone(), servers.clone(), stream.clone()).await {
+                Ok(server) => Some(server),
+                Err(e) => return Err(e),
+            }
+        }
     };
 
     match target {
@@ -168,77 +168,6 @@ async fn whep(
             }
         }
         None => Err(AppError::NoAvailableNode),
-    }
-}
-
-async fn whep_reforward_node(
-    mut state: AppState,
-    nodes: Vec<Server>,
-    stream: String,
-) -> Result<Server> {
-    let set_all: HashSet<Server> = state.storage.nodes().await.into_iter().clone().collect();
-    let set_src: HashSet<Server> = nodes.clone().into_iter().collect();
-    let set_dst: HashSet<&Server> = set_all.difference(&set_src).collect();
-
-    let arr = set_dst.into_iter().collect::<Vec<&Server>>();
-
-    let server_src = nodes.first().unwrap().clone();
-    let server_ds0 = *arr.first().unwrap();
-    let server_dst = server_ds0.clone();
-
-    info!("reforward from: {:?}, to: {:?}", server_src, server_dst);
-
-    tokio::spawn(async move {
-        match cascade_push(server_src.clone(), server_dst.clone(), stream.clone()).await {
-            Ok(()) => {
-                match force_check_times(
-                    server_dst.clone(),
-                    stream.clone(),
-                    state.config.reforward.check_attempts.0,
-                )
-                .await
-                {
-                    Ok(count) => {
-                        if state.config.reforward.close_other_sub {
-                            reforward_close_other_sub(state, server_src, stream).await
-                        }
-                        info!("reforward success, checked attempts: {}", count)
-                    }
-                    Err(e) => error!("reforward check error: {:?}", e),
-                }
-                Ok(server_dst.clone())
-            }
-            Err(e) => {
-                error!("reforward error: {:?}", e);
-                Err(AppError::InternalServerError(e))
-            }
-        }
-    });
-    Ok(server_ds0.clone())
-}
-
-async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: String) {
-    match state.storage.info_get(server.clone().alias).await {
-        Ok(streams) => {
-            for stream_info in streams.into_iter() {
-                if stream_info.id == stream {
-                    for sub_info in stream_info.subscribe.sessions.into_iter() {
-                        match sub_info.cascade {
-                            Some(v) => info!("Skip. Is Reforward: {:?}", v),
-                            None => {
-                                match session_delete(server.clone(), stream.clone(), sub_info.id)
-                                    .await
-                                {
-                                    Ok(_) => {}
-                                    Err(e) => error!("reforward close other sub error: {:?}", e),
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => error!("reforward don't closed other sub: {:?}", e),
     }
 }
 

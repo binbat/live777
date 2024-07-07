@@ -345,9 +345,9 @@ OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
 - :shit: Don't support
 - :bulb: I don't know, No testing
 - :tv: Note have some problem
-  1. Working, But Browser can't player this video
+  1. Working, But Browser can't player this video, Gstreamer to Gstreamer is working
   2. I don't know why av1 and whep error
-  3. [AV1 is now available, But not released](https://github.com/obsproject/obs-studio/pull/9331)
+  3. [OBS av1 codec can't play](https://github.com/binbat/live777/issues/169)
 
 ### whipinto
 

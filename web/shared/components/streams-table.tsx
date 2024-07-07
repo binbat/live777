@@ -160,7 +160,10 @@ export function StreamsTable() {
                                 <td class="text-center">{i.id}</td>
                                 <td class="text-center">{i.publish.sessions.length}</td>
                                 <td class="text-center">{i.subscribe.sessions.length}</td>
-                                <td class="text-center">{i.subscribe.sessions.filter((t: any) => t.reforward).length}</td>
+                                <td class="text-center">{
+                                    i.publish.sessions.filter((t: any) => t.cascade).length +
+                                    i.subscribe.sessions.filter((t: any) => t.cascade).length
+                                }</td>
                                 <td class="text-center">{formatTime(i.createdAt)}</td>
                                 <td>
                                     <button onClick={() => handlePreview(i.id)} class={previewStreams.includes(i.id) ? 'text-blue-500' : undefined} >Preview</button>

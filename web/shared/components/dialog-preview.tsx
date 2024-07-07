@@ -15,8 +15,9 @@ export interface IPreviewDialog {
 
 export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [streamId, setStreamId] = useState('')
-    const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
-    const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>()
+    const refPeerConnection = useRef<RTCPeerConnection | null>(null)
+    const refWhepClient = useRef<WHEPClient | null>(null)
+    const refVideoTrack = useRef<MediaStreamTrack | null>(null)
     const [connState, setConnState] = useState('')
     const [videoResolution, setVideoResolution] = useState('')
     const logger = useLogger()
@@ -27,7 +28,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         return {
             show: async (newStreamId: string) => {
                 if (streamId !== newStreamId) {
-                    if (streamId !== '' && whepClient !== null) {
+                    if (streamId !== '' && refWhepClient.current !== null) {
                         await handlePreviewStop()
                     }
                     setStreamId(newStreamId)
@@ -46,9 +47,15 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         if (refVideo.current) {
             refVideo.current.srcObject = null
         }
-        if (whepClient) {
-            await whepClient.stop()
-            setWhepClient(null)
+        if (refVideoTrack.current) {
+            refVideoTrack.current = null
+        }
+        if (refPeerConnection.current) {
+            refPeerConnection.current = null
+        }
+        if (refWhepClient.current) {
+            await refWhepClient.current.stop()
+            refWhepClient.current = null
         }
         props.onStop()
         handleCloseDialog()
@@ -59,24 +66,45 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         logger.log(state)
     }
 
+    const logInboundRtpStats = async () => {
+        const stats = await refPeerConnection.current?.getStats() ?? null
+        if (!stats) return
+        for (const [_, s] of stats) {
+            if (s.type === 'inbound-rtp') {
+                const { id, bytesReceived } = s as RTCInboundRtpStreamStats
+                // log the first time bytesReceived is not 0
+                if (bytesReceived) {
+                    logger.log(`inbound-rtp(${id}): ${bytesReceived} bytes`)
+                    return
+                }
+            }
+        }
+        window.queueMicrotask(logInboundRtpStats)
+    }
+
     const handlePreviewStart = async (streamId: string) => {
         logger.clear()
-        logger.log('started')
+        updateConnState('Started')
         const pc = new RTCPeerConnection()
         pc.addTransceiver('video', { direction: 'recvonly' })
         pc.addTransceiver('audio', { direction: 'recvonly' })
         pc.addEventListener('track', ev => {
             logger.log(`track: ${ev.track.kind}`)
             if (ev.track.kind === 'video' && ev.streams.length > 0) {
-                setVideoTrack(ev.track)
+                refVideoTrack.current = ev.track
                 if (refVideo.current) {
                     refVideo.current.srcObject = ev.streams[0]
                 }
             }
         })
         pc.addEventListener('iceconnectionstatechange', () => {
-            updateConnState(pc.iceConnectionState)
+            const state = pc.iceConnectionState
+            updateConnState(state)
+            if (state === 'connected') {
+                window.queueMicrotask(logInboundRtpStats)
+            }
         })
+        refPeerConnection.current = pc
         const whep = new WHEPClient()
         const url = `${location.origin}/whep/${streamId}`
         const token = ''
@@ -88,7 +116,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
             logger.log('http answer received')
             return sdp
         }
-        setWhepClient(whep)
+        refWhepClient.current = whep
         try {
             await whep.view(pc, url, token)
         } catch (e: any) {
@@ -101,7 +129,6 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
                 logger.log(await r.text())
             }
         }
-        whep.view(pc, url, token)
     }
 
     const handleVideoCanPlay = (_: TargetedEvent<HTMLVideoElement>) => {
@@ -109,8 +136,8 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     }
 
     const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
-        if (videoTrack) {
-            setVideoResolution(formatVideoTrackResolution(videoTrack))
+        if (refVideoTrack.current) {
+            setVideoResolution(formatVideoTrackResolution(refVideoTrack.current))
         }
     }
 

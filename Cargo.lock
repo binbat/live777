@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "api"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "serde",
  "serde_html_form",
@@ -485,7 +485,7 @@ checksum = "98cc8fbded0c607b7ba9dd60cd98df59af97e84d24e49c8557331cfc26d301ce"
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -971,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "http-log"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "axum",
  "http-body-util",
@@ -1166,7 +1166,7 @@ checksum = "ae743338b92ff9146ce83992f766a31066a91a8c84a45e0e9f21e7cf6de6d346"
 
 [[package]]
 name = "libwish"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "liveman"
-version = "0.1.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "api",
@@ -2212,7 +2212,7 @@ dependencies = [
 
 [[package]]
 name = "signal"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "tokio",
 ]
@@ -2747,7 +2747,7 @@ checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
 
 [[package]]
 name = "utils"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "tracing-subscriber",
 ]
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "whepfrom"
-version = "0.1.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3110,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "whipinto"
-version = "0.1.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "bytes",
