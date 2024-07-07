@@ -6,7 +6,7 @@ use libwish::Client;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_VP8};
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data::data_channel::DataChannel;
@@ -452,29 +452,39 @@ impl PeerForwardInternal {
                 .sender()
                 .await;
             let track = Arc::new(TrackLocalStaticRTP::new(
-                RTCRtpCodecCapability {
-                    mime_type: MIME_TYPE_VP8.to_owned(),
-                    clock_rate: 90000,
-                    channels: 0,
-                    sdp_fmtp_line: "".to_owned(),
-                    rtcp_feedback: vec![
-                        RTCPFeedback {
-                            typ: "goog-remb".to_owned(),
-                            parameter: "".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "ccm".to_owned(),
-                            parameter: "fir".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".to_owned(),
-                            parameter: "".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".to_owned(),
-                            parameter: "pli".to_owned(),
-                        },
-                    ],
+                if kind == RTPCodecType::Video {
+                    RTCRtpCodecCapability {
+                        mime_type: MIME_TYPE_VP8.to_owned(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line: "".to_owned(),
+                        rtcp_feedback: vec![
+                            RTCPFeedback {
+                                typ: "goog-remb".to_owned(),
+                                parameter: "".to_owned(),
+                            },
+                            RTCPFeedback {
+                                typ: "ccm".to_owned(),
+                                parameter: "fir".to_owned(),
+                            },
+                            RTCPFeedback {
+                                typ: "nack".to_owned(),
+                                parameter: "".to_owned(),
+                            },
+                            RTCPFeedback {
+                                typ: "nack".to_owned(),
+                                parameter: "pli".to_owned(),
+                            },
+                        ],
+                    }
+                } else {
+                    RTCRtpCodecCapability {
+                        mime_type: MIME_TYPE_OPUS.to_owned(),
+                        clock_rate: 48000,
+                        channels: 2,
+                        sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                        rtcp_feedback: vec![],
+                    }
                 },
                 "webrtc".to_string(),
                 format!("{}-{}", "webrtc", kind),
