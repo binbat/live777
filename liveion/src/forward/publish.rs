@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Weak};
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -18,7 +18,7 @@ pub(crate) struct PublishRTCPeerConnection {
     pub(crate) peer: Arc<RTCPeerConnection>,
     pub(crate) media_info: MediaInfo,
     pub(crate) create_time: i64,
-    pub(crate) cascade: RwLock<Option<CascadeInfo>>,
+    pub(crate) cascade: Option<CascadeInfo>,
 }
 
 impl PublishRTCPeerConnection {
@@ -42,7 +42,7 @@ impl PublishRTCPeerConnection {
             peer,
             media_info,
             create_time: Utc::now().timestamp_millis(),
-            cascade: RwLock::new(cascade),
+            cascade,
         })
     }
 
@@ -51,7 +51,7 @@ impl PublishRTCPeerConnection {
             id: self.id.clone(),
             create_time: self.create_time,
             connect_state: self.peer.connection_state(),
-            cascade: self.cascade.read().unwrap().clone(),
+            cascade: self.cascade.clone(),
         }
     }
 

@@ -2,10 +2,11 @@ use std::borrow::ToOwned;
 use std::sync::Arc;
 
 use chrono::Utc;
+use libwish::Client;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_VP8};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data::data_channel::DataChannel;
@@ -16,21 +17,22 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
+};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpTransceiverInit};
 use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
-
-use libwish::Client;
 
 use crate::forward::get_peer_id;
 use crate::forward::message::ForwardInfo;
 use crate::forward::rtcp::RtcpMessage;
-use crate::metrics;
 use crate::result::Result;
 use crate::AppError;
+use crate::{metrics, new_broadcast_channel};
 
 use super::media::MediaInfo;
 use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
@@ -42,20 +44,9 @@ const MESSAGE_SIZE: usize = 1024 * 16;
 
 #[derive(Clone)]
 struct DataChannelForward {
-    publish: (
-        broadcast::Sender<Vec<u8>>,
-        Arc<broadcast::Receiver<Vec<u8>>>,
-    ),
-    subscribe: (
-        broadcast::Sender<Vec<u8>>,
-        Arc<broadcast::Receiver<Vec<u8>>>,
-    ),
+    publish: broadcast::Sender<Vec<u8>>,
+    subscribe: broadcast::Sender<Vec<u8>>,
 }
-
-type PublishRtcpChannel = (
-    broadcast::Sender<(RtcpMessage, u32)>,
-    broadcast::Receiver<(RtcpMessage, u32)>,
-);
 
 pub(crate) struct PeerForwardInternal {
     pub(crate) stream: String,
@@ -64,8 +55,8 @@ pub(crate) struct PeerForwardInternal {
     subscribe_leave_time: RwLock<i64>,
     publish: RwLock<Option<PublishRTCPeerConnection>>,
     publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
-    publish_tracks_change: (broadcast::Sender<()>, broadcast::Receiver<()>),
-    publish_rtcp_channel: PublishRtcpChannel,
+    publish_tracks_change: broadcast::Sender<()>,
+    publish_rtcp_channel: broadcast::Sender<(RtcpMessage, u32)>,
     subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
@@ -74,21 +65,6 @@ pub(crate) struct PeerForwardInternal {
 
 impl PeerForwardInternal {
     pub(crate) fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
-        let publish_tracks_change = broadcast::channel(1024);
-        let data_channel_forward_publish = broadcast::channel(1024);
-        let data_channel_forward_subscribe = broadcast::channel(1024);
-        let data_channel_forward = DataChannelForward {
-            publish: (
-                data_channel_forward_publish.0,
-                Arc::new(data_channel_forward_publish.1),
-            ),
-            subscribe: (
-                data_channel_forward_subscribe.0,
-                Arc::new(data_channel_forward_subscribe.1),
-            ),
-        };
-        let (event_sender, mut recv) = broadcast::channel(16);
-        tokio::spawn(async move { while recv.recv().await.is_ok() {} });
         PeerForwardInternal {
             stream: stream.to_string(),
             create_time: Utc::now().timestamp_millis(),
@@ -96,12 +72,15 @@ impl PeerForwardInternal {
             subscribe_leave_time: RwLock::new(Utc::now().timestamp_millis()),
             publish: RwLock::new(None),
             publish_tracks: Arc::new(RwLock::new(Vec::new())),
-            publish_tracks_change,
-            publish_rtcp_channel: broadcast::channel(48),
+            publish_tracks_change: new_broadcast_channel!(16),
+            publish_rtcp_channel: new_broadcast_channel!(48),
             subscribe_group: RwLock::new(Vec::new()),
-            data_channel_forward,
+            data_channel_forward: DataChannelForward {
+                publish: new_broadcast_channel!(1024),
+                subscribe: new_broadcast_channel!(1024),
+            },
             ice_server,
-            event_sender,
+            event_sender: new_broadcast_channel!(16),
         }
     }
 
@@ -241,25 +220,6 @@ impl PeerForwardInternal {
             };
         }
     }
-
-    pub async fn reset_cascade_info(&self, id: String, cascade_info: CascadeInfo) -> Result<()> {
-        let publish = self.publish.read().await;
-        if publish.is_some() && publish.as_ref().unwrap().id == id {
-            let mut cascade = publish.as_ref().unwrap().cascade.write().unwrap();
-            *cascade = Some(cascade_info);
-            return Ok(());
-        }
-
-        let reforward_group = self.subscribe_group.read().await;
-        for subscribe in reforward_group.iter() {
-            if id == subscribe.id {
-                let mut cascade = subscribe.cascade.write().unwrap();
-                *cascade = Some(cascade_info);
-                return Ok(());
-            }
-        }
-        Err(AppError::throw("not found re forward subscribe"))
-    }
 }
 
 // publish
@@ -284,7 +244,7 @@ impl PeerForwardInternal {
             let publish_peer = PublishRTCPeerConnection::new(
                 self.stream.clone(),
                 peer.clone(),
-                self.publish_rtcp_channel.0.subscribe(),
+                self.publish_rtcp_channel.subscribe(),
                 cascade,
             )
             .await?;
@@ -315,7 +275,7 @@ impl PeerForwardInternal {
         {
             let mut publish_tracks = self.publish_tracks.write().await;
             publish_tracks.clear();
-            let _ = self.publish_tracks_change.0.send(());
+            let _ = self.publish_tracks_change.send(());
         }
         {
             let mut publish_leave_time = self.publish_leave_time.write().await;
@@ -421,7 +381,7 @@ impl PeerForwardInternal {
         let mut publish_tracks = self.publish_tracks.write().await;
         publish_tracks.push(publish_track_remote);
         publish_tracks.sort_by(|a, b| a.rid.cmp(&b.rid));
-        let _ = self.publish_tracks_change.0.send(());
+        let _ = self.publish_tracks_change.send(());
         Ok(())
     }
 
@@ -430,8 +390,8 @@ impl PeerForwardInternal {
         _peer: Arc<RTCPeerConnection>,
         dc: Arc<RTCDataChannel>,
     ) -> Result<()> {
-        let sender = self.data_channel_forward.subscribe.0.clone();
-        let receiver = self.data_channel_forward.publish.0.subscribe();
+        let sender = self.data_channel_forward.subscribe.clone();
+        let receiver = self.data_channel_forward.publish.subscribe();
         Self::data_channel_forward(dc, sender, receiver).await;
         Ok(())
     }
@@ -480,8 +440,8 @@ impl PeerForwardInternal {
         recv_sender: u8,
     ) -> Result<Option<Arc<RTCRtpSender>>> {
         Ok(if recv_sender > 0 {
-            Some(
-                peer.add_transceiver_from_kind(
+            let sender = peer
+                .add_transceiver_from_kind(
                     kind,
                     Some(RTCRtpTransceiverInit {
                         direction: RTCRtpTransceiverDirection::Sendonly,
@@ -490,8 +450,50 @@ impl PeerForwardInternal {
                 )
                 .await?
                 .sender()
-                .await,
-            )
+                .await;
+            let track = Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![
+                        RTCPFeedback {
+                            typ: "goog-remb".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "ccm".to_owned(),
+                            parameter: "fir".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "pli".to_owned(),
+                        },
+                    ],
+                },
+                "webrtc".to_string(),
+                format!("{}-{}", "webrtc", kind),
+            ));
+            // ssrc for sdp
+            let _ = sender.replace_track(Some(track)).await;
+            info!(
+                "[{}] new sender , kind : {}, ssrc : {}",
+                get_peer_id(peer),
+                kind,
+                sender
+                    .get_parameters()
+                    .await
+                    .encodings
+                    .first()
+                    .unwrap()
+                    .ssrc
+            );
+            Some(sender)
         } else {
             None
         })
@@ -518,10 +520,10 @@ impl PeerForwardInternal {
                 cascade.clone(),
                 self.stream.clone(),
                 peer.clone(),
-                self.publish_rtcp_channel.0.clone(),
+                self.publish_rtcp_channel.clone(),
                 (
                     self.publish_tracks.clone(),
-                    self.publish_tracks_change.0.clone(),
+                    self.publish_tracks_change.clone(),
                 ),
                 (video_sender, audio_sender),
             )
@@ -551,7 +553,7 @@ impl PeerForwardInternal {
                 if subscribe.id == session {
                     flag = true;
                     metrics::SUBSCRIBE.dec();
-                    if let Some(cascade) = subscribe.cascade.read().unwrap().as_ref() {
+                    if let Some(cascade) = subscribe.cascade.clone() {
                         reforward_flat = true;
                         metrics::REFORWARD.dec();
 
@@ -601,8 +603,8 @@ impl PeerForwardInternal {
         _peer: Arc<RTCPeerConnection>,
         dc: Arc<RTCDataChannel>,
     ) -> Result<()> {
-        let sender = self.data_channel_forward.publish.0.clone();
-        let receiver = self.data_channel_forward.subscribe.0.subscribe();
+        let sender = self.data_channel_forward.publish.clone();
+        let receiver = self.data_channel_forward.subscribe.subscribe();
         Self::data_channel_forward(dc, sender, receiver).await;
         Ok(())
     }

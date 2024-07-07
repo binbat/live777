@@ -28,7 +28,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use crate::forward::message::Layer;
 use crate::forward::PeerForward;
 use crate::stream::config::ManagerConfig;
-use crate::{metrics, AppError};
+use crate::{metrics, new_broadcast_channel, AppError};
 
 #[derive(Clone)]
 pub struct Manager {
@@ -43,9 +43,7 @@ impl Manager {
     pub async fn new(config: Config) -> Self {
         let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
-        let (send, mut recv) = broadcast::channel(4);
-        tokio::spawn(async move { while recv.recv().await.is_ok() {} });
-
+        let send = new_broadcast_channel!(4);
         #[cfg(feature = "webhook")]
         {
             let metadata: NodeMetaData = config.into();

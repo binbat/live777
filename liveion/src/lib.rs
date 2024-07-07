@@ -32,6 +32,7 @@ mod convert;
 mod error;
 mod forward;
 mod hook;
+mod r#macro;
 mod metrics;
 mod result;
 mod route;

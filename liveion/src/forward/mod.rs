@@ -229,11 +229,11 @@ impl PeerForward {
         let peer = self
             .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?)
             .await?;
-        let _ = self.internal.add_subscribe(peer.clone(), None).await;
         let (sdp, session) = (
             peer_complete(offer, peer.clone()).await?,
             get_peer_id(&peer),
         );
+        let _ = self.internal.add_subscribe(peer.clone(), None).await;
         Ok((sdp, session))
     }
 
@@ -245,15 +245,7 @@ impl PeerForward {
                 audio_transceiver: (0, 1),
             })
             .await?;
-        let mut cascade_info: CascadeInfo = CascadeInfo {
-            src: None,
-            dst: Some(dst.clone()),
-            token: token.clone(),
-            resource: None,
-        };
-        self.internal
-            .add_subscribe(peer.clone(), Some(cascade_info.clone()))
-            .await?;
+
         let offer: RTCSessionDescription = peer.create_offer(None).await?;
         let mut gather_complete = peer.gathering_complete_promise().await;
         peer.set_local_description(offer).await?;
@@ -268,12 +260,18 @@ impl PeerForward {
         );
         match client.wish(description.sdp.clone()).await {
             Ok((target_sdp, _)) => {
+                self.internal
+                    .add_subscribe(
+                        peer.clone(),
+                        Some(CascadeInfo {
+                            src: None,
+                            dst: Some(dst.clone()),
+                            token: token.clone(),
+                            resource: client.resource_url,
+                        }),
+                    )
+                    .await?;
                 let _ = peer.set_remote_description(target_sdp).await;
-                cascade_info.resource = client.resource_url;
-                let _ = self
-                    .internal
-                    .reset_cascade_info(get_peer_id(&peer), cascade_info)
-                    .await;
                 Ok(())
             }
             Err(err) => {
