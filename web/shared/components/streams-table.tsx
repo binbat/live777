@@ -11,7 +11,7 @@ import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
 export function StreamsTable() {
-    const [streams, isRefreshingStreams, toggleRefreshStreams] = useRefreshTimer([], getStreams)
+    const streams = useRefreshTimer([], getStreams)
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const refCascadePull = useRef<ICascadeDialog>(null)
     const refCascadePush = useRef<ICascadeDialog>(null)
@@ -56,7 +56,7 @@ export function StreamsTable() {
 
     const handleNewStream = () => {
         const prefix = 'web-'
-        const existingIds = webStreams.concat(streams.filter(s => s.id.startsWith(prefix)).map(s => s.id))
+        const existingIds = webStreams.concat(streams.data.filter(s => s.id.startsWith(prefix)).map(s => s.id))
         let i = 0
         let newStreamId = `${prefix}${i}`
         while (existingIds.includes(newStreamId)) {
@@ -103,7 +103,7 @@ export function StreamsTable() {
 
     return (
         <>
-            <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
+            <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.data.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
 
             <CascadePullDialog ref={refCascadePull} />
             <CascadePushDialog ref={refCascadePush} />
@@ -139,9 +139,10 @@ export function StreamsTable() {
             )}
 
             <fieldset>
-                <legend class="inline-flex items-center">
-                    <span>Streams (total: {streams.length})</span>
-                    <StyledCheckbox label="Auto Refresh" checked={isRefreshingStreams} onClick={toggleRefreshStreams}></StyledCheckbox>
+                <legend class="inline-flex items-center gap-x-4">
+                    <span>Streams (total: {streams.data.length})</span>
+                    <button onClick={() => streams.updateData()}>Refresh</button>
+                    <StyledCheckbox label="Auto Refresh" checked={streams.isRefreshing} onClick={streams.toggleTimer}></StyledCheckbox>
                 </legend>
                 <table>
                     <thead>
@@ -155,7 +156,7 @@ export function StreamsTable() {
                         </tr>
                     </thead>
                     <tbody>
-                        {streams.map(i =>
+                        {streams.data.map(i =>
                             <tr>
                                 <td class="text-center">{i.id}</td>
                                 <td class="text-center">{i.publish.sessions.length}</td>
