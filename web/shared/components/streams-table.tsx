@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'preact/hooks'
 
 import { getStreams, deleteStream } from '../api'
-import { formatTime } from '../utils'
+import { formatTime, nextSeqId } from '../utils'
 import { useRefreshTimer } from '../hooks/use-refresh-timer'
 import { StyledCheckbox } from './styled-checkbox'
 import { IClientsDialog, ClientsDialog } from './dialog-clients'
@@ -29,9 +29,11 @@ export function StreamsTable() {
         refClients.current?.show()
     }
 
-    const handleCascadePullStream = (id: string) => {
-        refCascadePull.current?.show(id)
+    const handleCascadePullStream = () => {
+        const newStreamId = nextSeqId('pull-', streams.data.map(s => s.id))
+        refCascadePull.current?.show(newStreamId)
     }
+
     const handleCascadePushStream = (id: string) => {
         refCascadePush.current?.show(id)
     }
@@ -55,14 +57,7 @@ export function StreamsTable() {
     }
 
     const handleNewStream = () => {
-        const prefix = 'web-'
-        const existingIds = webStreams.concat(streams.data.filter(s => s.id.startsWith(prefix)).map(s => s.id))
-        let i = 0
-        let newStreamId = `${prefix}${i}`
-        while (existingIds.includes(newStreamId)) {
-            i++
-            newStreamId = `${prefix}${i}`
-        }
+        const newStreamId = nextSeqId('web-', webStreams.concat(streams.data.map(s => s.id)))
         refNewStream.current?.show(newStreamId)
     }
 
@@ -169,7 +164,6 @@ export function StreamsTable() {
                                 <td>
                                     <button onClick={() => handlePreview(i.id)} class={previewStreams.includes(i.id) ? 'text-blue-500' : undefined} >Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
-                                    <button onClick={() => handleCascadePullStream(i.id)}>Cascade Pull</button>
                                     <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
                                     <button onClick={() => handleOpenPlayerPage(i.id)}>Player</button>
                                     <button onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</button>
@@ -180,6 +174,7 @@ export function StreamsTable() {
                     </tbody>
                 </table>
                 <div>
+                    <button onClick={handleCascadePullStream}>Cascade Pull</button>
                     <button onClick={handleNewStream}>New Stream</button>
                     {webStreams.map(s =>
                         <button onClick={() => { handleOpenWebStream(s) }}>{s}</button>
