@@ -8,75 +8,70 @@ export interface ICascadeDialog {
 }
 
 export const CascadePullDialog = forwardRef<ICascadeDialog>((_props, ref) => {
+    const [streamId, setStreamId] = useState('')
     const [cascadeURL, setCascadeURL] = useState('')
     const refDialog = useRef<HTMLDialogElement>(null)
 
     useImperativeHandle(ref, () => {
         return {
             show: (streamId: string) => {
-                setCascadeURL("pull")
-                if (refDialog.current) {
-                    refDialog.current.onclose = () => {
-                        const target = refDialog.current?.returnValue ?? ''
-                        if (target !== '') {
-                            cascade(target, {
-                                src: location.href + "whep/" + streamId,
-                            })
-                        }
-                    }
-                    refDialog.current.showModal()
-                }
+                setStreamId(streamId)
+                setCascadeURL(`${location.origin}/whep/`)
+                refDialog.current?.showModal()
             }
         }
     })
+
+    const handleStreamIdInputChange = (e: TargetedEvent<HTMLInputElement>) => {
+        setStreamId(e.currentTarget.value)
+    }
 
     const handleURLInputChange = (e: TargetedEvent<HTMLInputElement>) => {
         setCascadeURL(e.currentTarget.value)
     }
 
+    const onConfirmCascadeURL = (_e: Event) => {
+        if (cascadeURL !== '') {
+            cascade(streamId, {
+                src: cascadeURL,
+            })
+        }
+    }
+
     return (
         <dialog ref={refDialog}>
-            <form method="dialog">
-                <h3>Cascade</h3>
-                <p>
-                    <label htmlFor="cascade-url">Stream Id:</label>
+            <h3>Cascade Pull</h3>
+            <p>
+                <label>Stream ID:
                     <br />
-                    <input
-                        type="text"
-                        value={cascadeURL}
-                        id="cascade-url"
-                        className="min-w-sm"
-                        onChange={handleURLInputChange}
-                    />
-                </p>
-                <div>
-                    <button value="">Cancel</button>
-                    <button value={cascadeURL}>Confirm</button>
-                </div>
+                    <input className="min-w-sm" value={streamId} onChange={handleStreamIdInputChange} />
+                </label>
+            </p>
+            <p>
+                <label>Source URL:
+                    <br />
+                    <input className="min-w-sm" value={cascadeURL} onChange={handleURLInputChange} />
+                </label>
+            </p>
+            <form method="dialog">
+                <button>Cancel</button>
+                <button onClick={onConfirmCascadeURL}>Confirm</button>
             </form>
         </dialog>
     )
 })
 
 export const CascadePushDialog = forwardRef<ICascadeDialog>((_props, ref) => {
+    const [streamId, setStreamId] = useState('')
     const [cascadeURL, setCascadeURL] = useState('')
     const refDialog = useRef<HTMLDialogElement>(null)
 
     useImperativeHandle(ref, () => {
         return {
             show: (streamId: string) => {
-                setCascadeURL(location.href + "whip/push")
-                if (refDialog.current) {
-                    refDialog.current.onclose = () => {
-                        const target = refDialog.current?.returnValue ?? ''
-                        if (target !== '') {
-                            cascade(streamId, {
-                                dst: target,
-                            })
-                        }
-                    }
-                    refDialog.current.showModal()
-                }
+                setStreamId(streamId)
+                setCascadeURL(`${location.origin}/whip/push`)
+                refDialog.current?.showModal()
             }
         }
     })
@@ -85,25 +80,26 @@ export const CascadePushDialog = forwardRef<ICascadeDialog>((_props, ref) => {
         setCascadeURL(e.currentTarget.value)
     }
 
+    const onConfirmCascadeURL = (_e: Event) => {
+        if (cascadeURL !== '') {
+            cascade(streamId, {
+                dst: cascadeURL,
+            })
+        }
+    }
+
     return (
         <dialog ref={refDialog}>
-            <form method="dialog">
-                <h3>Cascade</h3>
-                <p>
-                    <label htmlFor="cascade-url">Target URL:</label>
+            <h3>Cascade Push ({streamId})</h3>
+            <p>
+                <label>Target URL:
                     <br />
-                    <input
-                        type="text"
-                        value={cascadeURL}
-                        id="cascade-url"
-                        className="min-w-sm"
-                        onChange={handleURLInputChange}
-                    />
-                </p>
-                <div>
-                    <button value="">Cancel</button>
-                    <button value={cascadeURL}>Confirm</button>
-                </div>
+                    <input className="min-w-sm" value={cascadeURL} onChange={handleURLInputChange} />
+                </label>
+            </p>
+            <form method="dialog">
+                <button>Cancel</button>
+                <button onClick={onConfirmCascadeURL}>Confirm</button>
             </form>
         </dialog>
     )

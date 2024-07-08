@@ -15,3 +15,13 @@ export const formatVideoTrackResolution = (track: MediaStreamTrack): string => {
     if (!frameRate) return `${width}x${height}`
     return `${width}x${height}@${frameRate}`
 }
+
+export const nextSeqId = (prefix: string, existingIds: string[]) => {
+    let i = 0
+    let newId = `${prefix}${i}`
+    while (existingIds.includes(newId)) {
+        i++
+        newId = `${prefix}${i}`
+    }
+    return newId
+}

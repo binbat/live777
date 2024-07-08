@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'preact/hooks';
 
-export function useRefreshTimer<T>(initial: T, fetchContent: () => Promise<T>, timeout = 3000, immediate = true): [T, boolean, () => void] {
-    const [content, setContent] = useState<T>(initial)
+export function useRefreshTimer<T>(initial: T, fetchData: () => Promise<T>, timeout = 3000, immediate = true) {
+    const [data, setData] = useState<T>(initial)
     const [isImmediate, _setIsImmediate] = useState(immediate)
     const [refreshTimer, setRefreshTimer] = useState(-1)
     const isRefreshing = refreshTimer > 0
-    const updateContent = async () => {
-        setContent(await fetchContent())
+    const updateData = async () => {
+        setData(await fetchData())
     }
     useEffect(() => {
         if (isImmediate) {
-            updateContent()
+            updateData()
         }
         return () => {
             if (isRefreshing) {
@@ -21,7 +21,7 @@ export function useRefreshTimer<T>(initial: T, fetchContent: () => Promise<T>, t
     useEffect(() => {
         if (isRefreshing) {
             clearInterval(refreshTimer)
-            setRefreshTimer(window.setInterval(updateContent, timeout))
+            setRefreshTimer(window.setInterval(updateData, timeout))
         }
     }, [timeout])
     const toggleTimer = () => {
@@ -29,9 +29,14 @@ export function useRefreshTimer<T>(initial: T, fetchContent: () => Promise<T>, t
             clearInterval(refreshTimer)
             setRefreshTimer(-1)
         } else {
-            updateContent()
-            setRefreshTimer(window.setInterval(updateContent, timeout))
+            updateData()
+            setRefreshTimer(window.setInterval(updateData, timeout))
         }
     }
-    return [content, isRefreshing, toggleTimer]
+    return {
+        data,
+        isRefreshing,
+        updateData,
+        toggleTimer
+    }
 }
