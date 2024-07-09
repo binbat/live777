@@ -14,7 +14,7 @@ use webrtc::{
 #[derive(Clone)]
 pub struct Client {
     pub url: String,
-    pub resource_url: Option<String>,
+    pub session_url: Option<String>,
     pub default_headers: HeaderMap,
 }
 
@@ -50,19 +50,19 @@ impl Client {
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
         Client {
             url,
-            resource_url: None,
+            session_url: None,
             default_headers: defulat_headers.unwrap_or_default(),
         }
     }
 
     pub fn build(
         url: String,
-        resource_url: Option<String>,
+        session_url: Option<String>,
         defulat_headers: Option<HeaderMap>,
     ) -> Self {
         Client {
             url,
-            resource_url,
+            session_url,
             default_headers: defulat_headers.unwrap_or_default(),
         }
     }
@@ -80,20 +80,20 @@ impl Client {
         if response.status() != StatusCode::CREATED {
             return Err(anyhow::anyhow!(get_response_error(response).await));
         }
-        let resource_url = response
+        let session_url = response
             .headers()
             .get(header::LOCATION)
             .ok_or_else(|| anyhow::anyhow!("Response missing location header"))?
             .to_str()?
             .to_owned();
         let mut url = Url::parse(self.url.as_str())?;
-        match Url::parse(resource_url.as_str()) {
+        match Url::parse(session_url.as_str()) {
             Ok(url) => {
-                self.resource_url = Some(url.into());
+                self.session_url = Some(url.into());
             }
             Err(_) => {
-                url.set_path(resource_url.as_str());
-                self.resource_url = Some(url.into());
+                url.set_path(session_url.as_str());
+                self.session_url = Some(url.into());
             }
         }
         let ice_servers = Self::parse_ide_servers(&response)?;
@@ -131,12 +131,12 @@ impl Client {
     }
 
     pub async fn remove_resource(&self) -> Result<()> {
-        let resource_url = self
-            .resource_url
+        let session_url = self
+            .session_url
             .clone()
             .ok_or(anyhow::anyhow!("there is no resource url"))?;
         let header_map = self.default_headers.clone();
-        let response = request(resource_url, "DELETE", header_map, "").await?;
+        let response = request(session_url, "DELETE", header_map, "").await?;
         if response.status() != StatusCode::NO_CONTENT {
             Err(anyhow::anyhow!(get_response_error(response).await))
         } else {

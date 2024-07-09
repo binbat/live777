@@ -8,26 +8,26 @@ pub struct Layer {
 #[derive(Clone, Debug)]
 pub struct ForwardInfo {
     pub id: String,
-    pub create_time: i64,
-    pub publish_leave_time: i64,
-    pub subscribe_leave_time: i64,
+    pub create_at: i64,
+    pub publish_leave_at: i64,
+    pub subscribe_leave_at: i64,
     pub publish_session_info: Option<SessionInfo>,
     pub subscribe_session_infos: Vec<SessionInfo>,
 }
 #[derive(Clone, Debug)]
 pub struct SessionInfo {
     pub id: String,
-    pub create_time: i64,
-    pub connect_state: RTCPeerConnectionState,
+    pub create_at: i64,
+    pub state: RTCPeerConnectionState,
     pub cascade: Option<CascadeInfo>,
 }
 
 #[derive(Clone, Debug)]
 pub struct CascadeInfo {
-    pub src: Option<String>,
-    pub dst: Option<String>,
+    pub source_url: Option<String>,
+    pub target_url: Option<String>,
     pub token: Option<String>,
-    pub resource: Option<String>,
+    pub session_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]

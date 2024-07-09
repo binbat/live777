@@ -140,10 +140,10 @@ impl PeerForward {
                     .set_publish(
                         peer.clone(),
                         Some(CascadeInfo {
-                            src: Some(src),
-                            dst: None,
+                            source_url: Some(src),
+                            target_url: None,
                             token,
-                            resource: client.resource_url,
+                            session_url: client.session_url,
                         }),
                     )
                     .await?;
@@ -264,10 +264,10 @@ impl PeerForward {
                     .add_subscribe(
                         peer.clone(),
                         Some(CascadeInfo {
-                            src: None,
-                            dst: Some(dst.clone()),
+                            source_url: None,
+                            target_url: Some(dst.clone()),
                             token: token.clone(),
-                            resource: client.resource_url,
+                            session_url: client.session_url,
                         }),
                     )
                     .await?;

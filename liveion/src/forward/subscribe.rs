@@ -32,7 +32,7 @@ pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
     pub(crate) cascade: Option<CascadeInfo>,
     pub(crate) peer: Arc<RTCPeerConnection>,
-    pub(crate) create_time: i64,
+    pub(crate) create_at: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
 }
 
@@ -85,7 +85,7 @@ impl SubscribeRTCPeerConnection {
             id,
             cascade,
             peer,
-            create_time: Utc::now().timestamp_millis(),
+            create_at: Utc::now().timestamp_millis(),
             select_layer_sender,
         }
     }
@@ -93,8 +93,8 @@ impl SubscribeRTCPeerConnection {
     pub(crate) async fn info(&self) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
-            create_time: self.create_time,
-            connect_state: self.peer.connection_state(),
+            create_at: self.create_at,
+            state: self.peer.connection_state(),
             cascade: self.cascade.clone(),
         }
     }

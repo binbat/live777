@@ -24,7 +24,7 @@ pub struct Cascade {
     // server auth
     pub token: Option<String>,
     // pull mode ,value : whep_url
-    pub src: Option<String>,
+    pub source_url: Option<String>,
     // push mode ,value : whip_url
-    pub dst: Option<String>,
+    pub target_url: Option<String>,
 }
