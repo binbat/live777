@@ -7,7 +7,7 @@ export function Liveman() {
         <>
             <Live777Logo />
             <NodesTable />
-            <StreamsTable />
+            <StreamsTable cascade={false} />
         </>
     )
 }

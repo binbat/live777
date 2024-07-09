@@ -5,7 +5,7 @@ export function Liveion() {
     return (
         <>
             <Live777Logo />
-            <StreamsTable />
+            <StreamsTable cascade={true} />
         </>
     )
 }
