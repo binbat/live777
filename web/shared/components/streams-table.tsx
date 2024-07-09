@@ -84,7 +84,7 @@ export function StreamsTable() {
         params.set('id', id)
         params.set('autoplay', '')
         params.set('muted', '')
-        params.set('reconnect', '')
+        params.set('reconnect', '3000')
         const url = new URL(`/tools/player.html?${params.toString()}`, location.origin)
         window.open(url)
     }

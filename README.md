@@ -167,7 +167,7 @@ You can use this test WebRTC-SVC
 
 ### Single Page Player
 
-example: http://localhost:7777/tools/player.html?id=web-0&autoplay&controls&mute&reconnect=2000
+example: http://localhost:7777/tools/player.html?id=web-0&autoplay&controls&mute&reconnect=3000
 
 URL params:
 
