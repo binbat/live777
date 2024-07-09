@@ -49,9 +49,9 @@ impl From<crate::forward::message::SessionInfo> for api::response::Session {
 impl From<crate::forward::message::CascadeInfo> for api::response::CascadeInfo {
     fn from(value: crate::forward::message::CascadeInfo) -> Self {
         api::response::CascadeInfo {
-            dst: value.dst,
-            resource: value.resource,
-            src: value.src,
+            target_url: value.dst,
+            session_url: value.resource,
+            source_url: value.src,
         }
     }
 }

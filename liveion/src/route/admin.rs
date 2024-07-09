@@ -15,25 +15,25 @@ async fn cascade(
     Path(stream): Path<String>,
     Json(body): Json<api::request::Cascade>,
 ) -> Result<String> {
-    if body.src.is_none() && body.dst.is_none() {
+    if body.source_url.is_none() && body.target_url.is_none() {
         return Err(AppError::throw(
             "src and dst cannot be empty at the same time",
         ));
     }
-    if body.src.is_some() && body.dst.is_some() {
+    if body.source_url.is_some() && body.target_url.is_some() {
         return Err(AppError::throw(
             "src and dst cannot be non-empty at the same time",
         ));
     }
-    if body.src.is_some() {
+    if body.source_url.is_some() {
         state
             .stream_manager
-            .cascade_pull(stream, body.src.unwrap(), body.token)
+            .cascade_pull(stream, body.source_url.unwrap(), body.token)
             .await?;
     } else {
         state
             .stream_manager
-            .cascade_push(stream, body.dst.unwrap(), body.token)
+            .cascade_push(stream, body.target_url.unwrap(), body.token)
             .await?;
     }
     Ok("".to_string())

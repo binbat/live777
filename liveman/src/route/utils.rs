@@ -64,9 +64,9 @@ pub async fn cascade_push(
     let client = reqwest::Client::new();
     let url = format!("{}{}", server_src.url, &api::path::cascade(&stream));
     let body = serde_json::to_string(&Cascade {
-        dst: Some(format!("{}{}", server_dst.url, api::path::whip(&stream))),
+        target_url: Some(format!("{}{}", server_dst.url, api::path::whip(&stream))),
         token: None,
-        src: None,
+        source_url: None,
     })
     .unwrap();
     trace!("{:?}", body);

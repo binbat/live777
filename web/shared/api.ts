@@ -42,16 +42,16 @@ export interface Session {
     createdAt: number;
     state: SessionConnectionState;
     cascade?: {
-        src?: string;
-        dst?: string;
-        resource: string;
+        sourceUrl?: string;
+        targetUrl?: string;
+        sessionUrl: string;
     };
 }
 
 export interface Cascade {
     token?: string;
-    src?: string;
-    dst?: string;
+    sourceUrl?: string;
+    targetUrl?: string;
 }
 
 export async function getStreams(): Promise<Stream[]> {

@@ -33,7 +33,7 @@ export const CascadePullDialog = forwardRef<ICascadeDialog>((_props, ref) => {
     const onConfirmCascadeURL = (_e: Event) => {
         if (cascadeURL !== '') {
             cascade(streamId, {
-                src: cascadeURL,
+                sourceUrl: cascadeURL,
             })
         }
     }
@@ -83,7 +83,7 @@ export const CascadePushDialog = forwardRef<ICascadeDialog>((_props, ref) => {
     const onConfirmCascadeURL = (_e: Event) => {
         if (cascadeURL !== '') {
             cascade(streamId, {
-                dst: cascadeURL,
+                targetUrl: cascadeURL,
             })
         }
     }

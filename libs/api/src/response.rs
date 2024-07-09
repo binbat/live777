@@ -36,11 +36,11 @@ pub struct Session {
 #[serde(rename_all = "camelCase")]
 pub struct CascadeInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub src: Option<String>,
+    pub source_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dst: Option<String>,
+    pub target_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource: Option<String>,
+    pub session_url: Option<String>,
 }
 
 /// PeerConnectionState indicates the state of the PeerConnection.
