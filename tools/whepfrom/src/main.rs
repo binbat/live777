@@ -9,6 +9,7 @@ use tokio::{
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use tracing::{debug, info, trace, warn, Level};
+use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::ice_server::RTCIceServer,
@@ -189,6 +190,7 @@ async fn new_peer(
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 username: "".to_string(),
                 credential: "".to_string(),
+                credential_type: RTCIceCredentialType::Unspecified,
             }
         }],
         ..Default::default()
