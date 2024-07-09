@@ -90,7 +90,7 @@ impl Manager {
 
     async fn publish_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        publish_leave_timeout: i64,
+        publish_leave_atout: i64,
         event_sender: broadcast::Sender<Event>,
     ) {
         loop {
@@ -99,9 +99,9 @@ impl Manager {
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
                 let forward_info = forward.info().await;
-                if forward_info.publish_leave_time > 0
-                    && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                        > publish_leave_timeout
+                if forward_info.publish_leave_at > 0
+                    && Utc::now().timestamp_millis() - forward_info.publish_leave_at
+                        > publish_leave_atout
                 {
                     remove_streams.push(stream.clone());
                 }
@@ -114,21 +114,21 @@ impl Manager {
             for stream in remove_streams.iter() {
                 if let Some(forward) = stream_map.get(stream) {
                     let forward_info = forward.info().await;
-                    if forward_info.publish_leave_time > 0
-                        && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                            > publish_leave_timeout
+                    if forward_info.publish_leave_at > 0
+                        && Utc::now().timestamp_millis() - forward_info.publish_leave_at
+                            > publish_leave_atout
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
                         metrics::STREAM.dec();
-                        let publish_leave_time =
-                            DateTime::from_timestamp_millis(forward_info.publish_leave_time)
+                        let publish_leave_at =
+                            DateTime::from_timestamp_millis(forward_info.publish_leave_at)
                                 .unwrap()
                                 .format("%Y-%m-%d %H:%M:%S")
                                 .to_string();
                         info!(
                             "stream : {}, publish leave timeout, publish leave time : {}",
-                            stream, publish_leave_time
+                            stream, publish_leave_at
                         );
 
                         metrics::STREAM.dec();
@@ -150,7 +150,7 @@ impl Manager {
 
     async fn subscribe_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        subscribe_leave_timeout: i64,
+        subscribe_leave_atout: i64,
         event_sender: broadcast::Sender<Event>,
     ) {
         loop {
@@ -159,9 +159,9 @@ impl Manager {
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
                 let forward_info = forward.info().await;
-                if forward_info.subscribe_leave_time > 0
-                    && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                        > subscribe_leave_timeout
+                if forward_info.subscribe_leave_at > 0
+                    && Utc::now().timestamp_millis() - forward_info.publish_leave_at
+                        > subscribe_leave_atout
                 {
                     remove_streams.push(stream.clone());
                 }
@@ -174,21 +174,21 @@ impl Manager {
             for stream in remove_streams.iter() {
                 if let Some(forward) = stream_map.get(stream) {
                     let forward_info = forward.info().await;
-                    if forward_info.subscribe_leave_time > 0
-                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_time
-                            > subscribe_leave_timeout
+                    if forward_info.subscribe_leave_at > 0
+                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at
+                            > subscribe_leave_atout
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
                         metrics::STREAM.dec();
-                        let subscribe_leave_time =
-                            DateTime::from_timestamp_millis(forward_info.subscribe_leave_time)
+                        let subscribe_leave_at =
+                            DateTime::from_timestamp_millis(forward_info.subscribe_leave_at)
                                 .unwrap()
                                 .format("%Y-%m-%d %H:%M:%S")
                                 .to_string();
                         info!(
                             "stream : {}, subscribe leave timeout, publish leave time : {}",
-                            stream, subscribe_leave_time
+                            stream, subscribe_leave_at
                         );
 
                         metrics::STREAM.dec();
