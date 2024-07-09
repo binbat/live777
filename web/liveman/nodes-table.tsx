@@ -4,14 +4,14 @@ import { StyledCheckbox } from '../shared/components/styled-checkbox';
 import { getNodes } from './api';
 
 export function NodesTable() {
-    const[nodes, isRefreshingNodes, toggleRefreshNodes] = useRefreshTimer([], getNodes)
+    const nodes = useRefreshTimer([], getNodes)
 
     return (
         <>
             <fieldset>
                 <legend class="inline-flex items-center">
-                    <span>Nodes (total: {nodes.length})</span>
-                    <StyledCheckbox label="Auto Refresh" checked={isRefreshingNodes} onClick={toggleRefreshNodes}></StyledCheckbox>
+                    <span>Nodes (total: {nodes.data.length})</span>
+                    <StyledCheckbox label="Auto Refresh" checked={nodes.isRefreshing} onClick={nodes.toggleTimer}></StyledCheckbox>
                 </legend>
                 <table>
                     <thead>
@@ -24,7 +24,7 @@ export function NodesTable() {
                         </tr>
                     </thead>
                     <tbody>
-                        {nodes.map(n => (
+                        {nodes.data.map(n => (
                             <tr>
                                 <td class="text-center">{n.alias}</td>
                                 <td class="text-center">{n.status}</td>
