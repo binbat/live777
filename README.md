@@ -174,7 +174,7 @@ URL params:
 - `id`: string, live777 Stream ID
 - `autoplay`: boolean
 - `controls`: boolean
-- `mute`: boolean, whether to mute by default
+- `muted`: boolean, whether to mute by default
 - `reconnect`: number, reconnect timeout in millisecond
 
 ### Gstreamer `WHIP`/`WHEP` client

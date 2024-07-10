@@ -9,6 +9,7 @@ export function Player() {
     const [reconnect, setReconnect] = useState(0)
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null)
     const [whepClient, setWhepClient] = useState<WHEPClient | null>(null)
+    const refAudio = useRef<HTMLAudioElement>(document.createElement("audio"))
     const refVideo = useRef<HTMLVideoElement>(null)
 
     useEffect(() => {
@@ -16,7 +17,7 @@ export function Player() {
         setStreamId(params.get('id') ?? '')
         setAutoPlay(params.has('autoplay'))
         setControls(params.has('controls'))
-        setMuted(params.has('mute'))
+        setMuted(params.has('muted'))
         const n = Number.parseInt(params.get('reconnect') ?? '0', 10)
         setReconnect(Number.isNaN(n) ? 0 : n)
     })
@@ -36,6 +37,13 @@ export function Player() {
         if (v) {
             v.muted = muted
         }
+
+        if (muted) {
+            refAudio.current.pause()
+        } else {
+            refAudio.current.autoplay
+            refAudio.current.play()
+        }
     }, [muted])
 
     const handlePlay = async () => {
@@ -48,6 +56,10 @@ export function Player() {
                 if (refVideo.current) {
                     refVideo.current.srcObject = ev.streams[0]
                 }
+            }
+
+            if (ev.track.kind === 'audio') {
+                refAudio.current.srcObject = new MediaStream([ev.track])
             }
         }
         pc.onconnectionstatechange = () => {
