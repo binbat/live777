@@ -10,7 +10,7 @@ import { IPreviewDialog, PreviewDialog } from './dialog-preview'
 import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
 
-export function StreamsTable() {
+export function StreamsTable(props: { cascade: boolean }) {
     const streams = useRefreshTimer([], getStreams)
     const [selectedStreamId, setSelectedStreamId] = useState('')
     const refCascadePull = useRef<ICascadeDialog>(null)
@@ -84,7 +84,7 @@ export function StreamsTable() {
         params.set('id', id)
         params.set('autoplay', '')
         params.set('muted', '')
-        params.set('reconnect', '')
+        params.set('reconnect', '3000')
         const url = new URL(`/tools/player.html?${params.toString()}`, location.origin)
         window.open(url)
     }
@@ -164,7 +164,10 @@ export function StreamsTable() {
                                 <td>
                                     <button onClick={() => handlePreview(i.id)} class={previewStreams.includes(i.id) ? 'text-blue-500' : undefined} >Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
-                                    <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
+                                    { props.cascade
+                                        ? <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
+                                        : null
+                                    }
                                     <button onClick={() => handleOpenPlayerPage(i.id)}>Player</button>
                                     <button onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</button>
                                     <button onClick={() => deleteStream(i.id)} class="text-red-500">Destroy</button>
@@ -174,7 +177,10 @@ export function StreamsTable() {
                     </tbody>
                 </table>
                 <div>
-                    <button onClick={handleCascadePullStream}>Cascade Pull</button>
+                    { props.cascade
+                        ? <button onClick={handleCascadePullStream}>Cascade Pull</button>
+                        : null
+                    }
                     <button onClick={handleNewStream}>New Stream</button>
                     {webStreams.map(s =>
                         <button onClick={() => { handleOpenWebStream(s) }}>{s}</button>
