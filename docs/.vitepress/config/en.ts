@@ -16,6 +16,7 @@ export const en = defineConfig({
                 items: [
                     { text: 'What is live777', link: '/guide/what-is-live777' },
                     { text: 'Getting Started', link: '/guide/getting-started' },
+                    { text: 'Gstreamer', link: '/guide/gstreamer' },
                     { text: 'For developer', link: '/guide/developer' }
                 ]
             },
