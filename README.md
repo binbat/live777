@@ -28,7 +28,7 @@ Live777 media server is used with [Gstreamer](https://gstreamer.freedesktop.org/
 
 Live777 supports the conversion of audio and video protocols widely used in the Internet, such as RTP to WHIP or WHEP and other protocols.
 
-![live777-arch](./docs/live777-arch.excalidraw.svg)
+![live777-arch](./docs/public/live777-arch.excalidraw.svg)
 
 ## Features
 
@@ -70,14 +70,6 @@ Live777 has the following characteristics:
 winget install live777
 ```
 
-### OBS Studio WHIP client
-
-> Note:
-> 1. OBS Studio version [**30 or higher**](https://obsproject.com/forum/threads/obs-studio-30-beta.168984/)
-> 2. OBS WHIP Current only support **H264** video codecs and **Opus** audio codecs
-
-![obs whip](./obs-whip.avif)
-
 #### Play stream
 
 - open your browser, enter the URL: [`http://localhost:7777/`](http://localhost:7777/)
@@ -93,28 +85,6 @@ For Example:
 ```bash
 ffmpeg -> whipinto -> live777 -> whepfrom -> ffplay
 ```
-
-Application        | `AV1`  | `VP9`  | `VP8`  | `H264` | `OPUS` | `G722` |
------------------- | ------ | ------ | ------ | ------ | ------ | ------ |
-Browser whip       | :star: | :star: | :star: | :star: | :star: | :star: |
-Browser whep       | :star: | :star: | :star: | :star: | :star: | :star: |
-Gstreamer whip     | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
-Gstreamer whep     | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
-Gstreamer rtp-into | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
-Gstreamer rtp-from | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
-FFmpeg rtp-into    | :shit: | :star: | :star: | :star: | :star: | :star: |
-FFmpeg rtp-from    | :shit: | :star: | :star: | :star: | :star: | :star: |
-VLC rtp-into       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
-VLC rtp-from       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
-OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
-
-- :star: It's working
-- :shit: Don't support
-- :bulb: I don't know, No testing
-- :tv: Note have some problem
-  1. Working, But Browser can't player this video, Gstreamer to Gstreamer is working
-  2. I don't know why av1 and whep error
-  3. [OBS av1 codec can't play](https://github.com/binbat/live777/issues/169)
 
 ### whipinto
 

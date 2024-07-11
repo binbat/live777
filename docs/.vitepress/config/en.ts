@@ -7,15 +7,18 @@ export const en = defineConfig({
     themeConfig: {
         nav: [
             { text: 'Home', link: '/' },
-            { text: 'Examples', link: '/markdown-examples' }
+            { text: 'Guide', link: '/guide/what-is-live777' }
         ],
 
         sidebar: [
             {
                 text: 'Guide',
+                collapsed: true,
                 items: [
                     { text: 'What is live777', link: '/guide/what-is-live777' },
+                    { text: 'Introduction', link: '/guide/introduction' },
                     { text: 'Getting Started', link: '/guide/getting-started' },
+                    { text: 'OBS Studio', link: '/guide/obs-studio' },
                     { text: 'Gstreamer', link: '/guide/gstreamer' },
                     { text: 'For developer', link: '/guide/developer' }
                 ]
