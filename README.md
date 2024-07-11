@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="./public/logo.svg" alt="Live777" width="200">
+  <img src="./web/public/logo.svg" alt="Live777" width="200">
   <br>Live777<br>
 </h1>
 
@@ -15,7 +15,7 @@
     &nbsp;
     <a href="https://t.me/binbatlib"><img src="https://img.shields.io/badge/-Telegram-red?style=social&logo=telegram" height=25></a>
     &nbsp;
-    <a href="https://twitter.com/binbatlab"><img src="https://img.shields.io/badge/-Twitter-red?style=social&logo=twitter" height=25></a>
+    <a href="https://twitter.com/binbatlab"><img src="https://img.shields.io/badge/-Twitter-red?style=social&logo=x" height=25></a>
 </div>
 
 ---
@@ -30,20 +30,6 @@ Live777 supports the conversion of audio and video protocols widely used in the 
 
 ![live777-arch](./docs/live777-arch.excalidraw.svg)
 
-## Introduction
-
-### Live777 Core (liveion)
-
-A Pure Single SFU Server for WebRTC.
-
-### Live777 Manager (liveman)
-
-Live777 Cluster manager.
-
-### whipinto and whepfrom
-
-Stream convert tool.
-
 ## Features
 
 Live777 has the following characteristics:
@@ -52,7 +38,7 @@ Live777 has the following characteristics:
 
   The WHIP/WHEP protocol is implemented to improve interoperability with other WebRTC application modules without the need for custom adaptations.
 
-- 🗃️ **SFU architecture**
+- 🗃️ **P2P/SFU Mix architecture**
 
   Only responsible for forwarding, do not do confluence, transcoding and other resource overhead of the media processing work, the encoding and decoding work are respectively placed on the sender and the receiver.
 
@@ -86,6 +72,73 @@ Live777 has the following characteristics:
 | `WHIP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
 | `WHEP`   | `AV1`, `VP9`, `VP8`, `H264` | `Opus`, `G722` |
 
+## Quickstart
+
+### Run Live777 using docker:
+
+```sh
+docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
+```
+
+**Open your browser, enter the URL: http://localhost:7777/**
+
+### Windows install
+
+**Winget**
+
+```bash
+winget install live777
+```
+
+## Introduction
+
+### Live777 Core (liveion)
+
+A Pure Single SFU Server for WebRTC.
+
+Only `WHIP` / `WHEP` protocol supported.
+
+### Live777 Manager (liveman)
+
+Live777 Cluster manager.
+
+If I have so many servers (live777 core cluster), I need this manage them all.
+
+### whipinto and whepfrom
+
+Stream protocol convert tool.
+
+- RTP to WHIP
+- WHEP to RTP
+
+### Web WHIP/WHEP client
+
+**Open your browser, enter the URL: http://localhost:7777/**
+
+### Debugger
+
+example: http://localhost:7777/tools/debugger.html
+
+You can use this test WebRTC-SVC
+
+### Single Page Player
+
+example: http://localhost:7777/tools/player.html?id=web-0&autoplay&controls&muted&reconnect=3000
+
+URL params:
+
+- `id`: string, live777 Stream ID
+- `autoplay`: boolean
+- `controls`: boolean
+- `muted`: boolean, whether to mute by default
+- `reconnect`: number, reconnect timeout in millisecond
+
+### Gstreamer `WHIP`/`WHEP` client
+
+This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
+
+You can use this docker [images](https://github.com/binbat/live777/pkgs/container/live777-client) of Gstreamer
+
 ## For developer
 
 Depends:
@@ -109,7 +162,7 @@ npm run dev
 ### Live777
 
 ```bash
-cargo run -- -c config-dist.toml
+cargo run -- -c conf/live777.toml
 ```
 
 ### LiveMan
@@ -129,8 +182,8 @@ cargo run --package=whepfrom
 
 ```bash
 # Build Web UI
-bun install
-bun run build
+npm install
+npm run build
 
 # Live777 Core
 cargo build --release
@@ -141,70 +194,6 @@ cargo build --release --package=liveman
 # whipinto / whepfrom
 cargo build --release --package=whipinto
 cargo build --release --package=whepfrom
-```
-
-## Quickstart
-
-### Run Live777 using docker:
-
-```sh
-docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
-```
-
-### Windows install
-
-**Winget**
-
-```bash
-winget install live777
-```
-
-### Web WHIP/WHEP client
-
-**Open your browser, enter the URL: http://localhost:7777/**
-
-### Single Page Player
-
-example: http://localhost:7777/web/player.html?id=web-0&autoplay&controls&mute&reconnect=2000
-
-URL params:
-
-- `id`: string, live777 Stream ID
-- `autoplay`: boolean
-- `controls`: boolean
-- `mute`: boolean, whether to mute by default
-- `reconnect`: number, reconnect timeout in millisecond
-
-### Gstreamer `WHIP`/`WHEP` client
-
-This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
-
-You can use this docker [images](https://github.com/binbat/live777/pkgs/container/live777-client) of Gstreamer
-
-#### Video: AV1
-
-`WHIP`:
-
-```bash
-docker run --name live777-client-whip --rm --network host \
-ghcr.io/binbat/live777-client:latest \
-gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1pay ! whipsink whip-endpoint="http://localhost:7777/whip/777"
-```
-
-`WHEP`:
-
-I don't know why av1 and whep error
-
-But, you can:
-
-```bash
-cargo run --package=whepfrom -- -c av1 -u http://localhost:7777/whep/777 -t 127.0.0.1:5004
-```
-
-```bash
-docker run --name live777-client-whep --rm --network host \
-ghcr.io/binbat/live777-client:latest \
-gst-launch-1.0 udpsrc port=5004 caps="application/x-rtp, media=(string)video, encoding-name=(string)AV1" ! rtpjitterbuffer ! rtpav1depay ! av1parse ! av1dec ! videoconvert ! aasink
 ```
 
 #### Video: VP8
@@ -267,6 +256,32 @@ Use `libav`
 docker run --name live777-client-whep --rm --network host \
 ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:7777/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264 media=video,clock-rate=90000" ! rtph264depay ! avdec_h264 ! videoconvert ! aasink
+```
+
+#### Video: AV1
+
+`WHIP`:
+
+```bash
+docker run --name live777-client-whip --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1pay ! whipsink whip-endpoint="http://localhost:7777/whip/777"
+```
+
+`WHEP`:
+
+I don't know why av1 and whep error
+
+But, you can:
+
+```bash
+cargo run --package=whepfrom -- -c av1 -u http://localhost:7777/whep/777 -t 127.0.0.1:5004
+```
+
+```bash
+docker run --name live777-client-whep --rm --network host \
+ghcr.io/binbat/live777-client:latest \
+gst-launch-1.0 udpsrc port=5004 caps="application/x-rtp, media=(string)video, encoding-name=(string)AV1" ! rtpjitterbuffer ! rtpav1depay ! av1parse ! av1dec ! videoconvert ! aasink
 ```
 
 #### Audio: Opus
@@ -343,9 +358,9 @@ OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
 - :shit: Don't support
 - :bulb: I don't know, No testing
 - :tv: Note have some problem
-  1. Working, But Browser can't player this video
+  1. Working, But Browser can't player this video, Gstreamer to Gstreamer is working
   2. I don't know why av1 and whep error
-  3. [AV1 is now available, But not released](https://github.com/obsproject/obs-studio/pull/9331)
+  3. [OBS av1 codec can't play](https://github.com/binbat/live777/issues/169)
 
 ### whipinto
 

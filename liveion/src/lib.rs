@@ -21,7 +21,7 @@ use crate::route::{admin, session, whep, whip, AppState};
 use stream::manager::Manager;
 
 #[derive(RustEmbed)]
-#[folder = "../assets/"]
+#[folder = "../assets/liveion/"]
 struct Assets;
 
 pub mod config;
@@ -32,6 +32,7 @@ mod convert;
 mod error;
 mod forward;
 mod hook;
+mod r#macro;
 mod metrics;
 mod result;
 mod route;

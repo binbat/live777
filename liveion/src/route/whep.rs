@@ -3,6 +3,7 @@ use axum::response::Response;
 use axum::routing::post;
 use axum::Router;
 use http::{header, HeaderMap, StatusCode};
+use tracing::debug;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::route::link_header;
@@ -24,10 +25,12 @@ async fn whep(
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let offer = RTCSessionDescription::offer(body)?;
+    debug!("offer: {}", offer.sdp);
     let (answer, session) = state
         .stream_manager
         .subscribe(stream.clone(), offer)
         .await?;
+    debug!("answer: {}", answer.sdp);
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header(header::CONTENT_TYPE, "application/sdp")

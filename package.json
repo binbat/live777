@@ -4,24 +4,27 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "e2e:cluster": "bun test",
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "dev": "npm run dev:liveion",
+    "dev:liveion": "vite -c web/liveion/vite.config.ts",
+    "dev:liveman": "vite -c web/liveman/vite.config.ts",
+    "preview": "npm run preview:liveion",
+    "preview:liveion": "vite preview -c web/liveion/vite.config.ts",
+    "preview:liveman": "vite preview -c web/liveman/vite.config.ts",
+    "build": "npm run build:liveion && npm run build:liveman",
+    "build:liveion": "vite build -c web/liveion/vite.config.ts",
+    "build:liveman": "vite build -c web/liveman/vite.config.ts",
+    "e2e:cluster": "bun test"
   },
   "dependencies": {
-    "preact": "^10.22.0",
-    "vitepress": "^1.1.4"
+    "vitepress": "^1.1.4",
+    "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
+    "preact": "^10.22.0"
   },
   "devDependencies": {
-    "@binbat/whip-whep": "1.1.1-sdp-trickle",
-    "@preact/preset-vite": "^2.8.2",
-    "@types/bun": "^1.1.3",
-    "typescript": "^5.4.5",
-    "unocss": "^0.58.9",
-    "vite": "^5.2.13"
+    "@preact/preset-vite": "^2.8.3",
+    "@types/bun": "^1.1.6",
+    "typescript": "^5.5.2",
+    "unocss": "^0.61.0",
+    "vite": "^5.3.2"
   }
 }

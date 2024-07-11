@@ -1,9 +1,10 @@
 [package]
 name = "liveion"
-version = "0.4.1"
-edition = "2021"
-license = "MPL-2.0"
 description = "A very simple, high performance, edge WebRTC SFU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 crate-type = ["lib"]

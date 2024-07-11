@@ -28,7 +28,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use crate::forward::message::Layer;
 use crate::forward::PeerForward;
 use crate::stream::config::ManagerConfig;
-use crate::{metrics, AppError};
+use crate::{metrics, new_broadcast_channel, AppError};
 
 #[derive(Clone)]
 pub struct Manager {
@@ -43,9 +43,7 @@ impl Manager {
     pub async fn new(config: Config) -> Self {
         let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
-        let (send, mut recv) = broadcast::channel(4);
-        tokio::spawn(async move { while recv.recv().await.is_ok() {} });
-
+        let send = new_broadcast_channel!(4);
         #[cfg(feature = "webhook")]
         {
             let metadata: NodeMetaData = config.into();
@@ -92,7 +90,7 @@ impl Manager {
 
     async fn publish_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        publish_leave_timeout: i64,
+        publish_leave_atout: i64,
         event_sender: broadcast::Sender<Event>,
     ) {
         loop {
@@ -101,9 +99,9 @@ impl Manager {
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
                 let forward_info = forward.info().await;
-                if forward_info.publish_leave_time > 0
-                    && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                        > publish_leave_timeout
+                if forward_info.publish_leave_at > 0
+                    && Utc::now().timestamp_millis() - forward_info.publish_leave_at
+                        > publish_leave_atout
                 {
                     remove_streams.push(stream.clone());
                 }
@@ -116,21 +114,21 @@ impl Manager {
             for stream in remove_streams.iter() {
                 if let Some(forward) = stream_map.get(stream) {
                     let forward_info = forward.info().await;
-                    if forward_info.publish_leave_time > 0
-                        && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                            > publish_leave_timeout
+                    if forward_info.publish_leave_at > 0
+                        && Utc::now().timestamp_millis() - forward_info.publish_leave_at
+                            > publish_leave_atout
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
                         metrics::STREAM.dec();
-                        let publish_leave_time =
-                            DateTime::from_timestamp_millis(forward_info.publish_leave_time)
+                        let publish_leave_at =
+                            DateTime::from_timestamp_millis(forward_info.publish_leave_at)
                                 .unwrap()
                                 .format("%Y-%m-%d %H:%M:%S")
                                 .to_string();
                         info!(
                             "stream : {}, publish leave timeout, publish leave time : {}",
-                            stream, publish_leave_time
+                            stream, publish_leave_at
                         );
 
                         metrics::STREAM.dec();
@@ -152,7 +150,7 @@ impl Manager {
 
     async fn subscribe_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        subscribe_leave_timeout: i64,
+        subscribe_leave_atout: i64,
         event_sender: broadcast::Sender<Event>,
     ) {
         loop {
@@ -161,9 +159,9 @@ impl Manager {
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
                 let forward_info = forward.info().await;
-                if forward_info.subscribe_leave_time > 0
-                    && Utc::now().timestamp_millis() - forward_info.publish_leave_time
-                        > subscribe_leave_timeout
+                if forward_info.subscribe_leave_at > 0
+                    && Utc::now().timestamp_millis() - forward_info.publish_leave_at
+                        > subscribe_leave_atout
                 {
                     remove_streams.push(stream.clone());
                 }
@@ -176,21 +174,21 @@ impl Manager {
             for stream in remove_streams.iter() {
                 if let Some(forward) = stream_map.get(stream) {
                     let forward_info = forward.info().await;
-                    if forward_info.subscribe_leave_time > 0
-                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_time
-                            > subscribe_leave_timeout
+                    if forward_info.subscribe_leave_at > 0
+                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at
+                            > subscribe_leave_atout
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
                         metrics::STREAM.dec();
-                        let subscribe_leave_time =
-                            DateTime::from_timestamp_millis(forward_info.subscribe_leave_time)
+                        let subscribe_leave_at =
+                            DateTime::from_timestamp_millis(forward_info.subscribe_leave_at)
                                 .unwrap()
                                 .format("%Y-%m-%d %H:%M:%S")
                                 .to_string();
                         info!(
                             "stream : {}, subscribe leave timeout, publish leave time : {}",
-                            stream, subscribe_leave_time
+                            stream, subscribe_leave_at
                         );
 
                         metrics::STREAM.dec();
