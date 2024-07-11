@@ -162,5 +162,3 @@ ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 audiotestsrc ! audioconvert ! avenc_g722 ! rtpg722pay ! whipsink whip-endpoint="http://localhost:7777/whip/777
 ```
 
-
-

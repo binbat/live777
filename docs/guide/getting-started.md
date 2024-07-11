@@ -12,6 +12,8 @@
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
+**Open your browser, enter the URL: http://localhost:7777/**
+
 ### Install Live777
 
 Download Binary from GitHub
