@@ -55,7 +55,10 @@ Response: [200]
 - `(publish | subscribe).sessions.[].id`: String, `sessionId`
 - `(publish | subscribe).sessions.[].createdAt`: Int, `timestamp`
 - `(publish | subscribe).sessions.[].state`: String, [RTCPeerConnection/connectionState](https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/connectionState#value)
-- `(publish | subscribe).sessions.[].cascade`: Optional(Object(Cascade)
+- `(publish | subscribe).sessions.[].cascade`: Optional(Object(Cascade))
+- `(publish | subscribe).sessions.[].cascade.sourceUrl`: Optional(String(URL))
+- `(publish | subscribe).sessions.[].cascade.targetUrl`: Optional(String(URL))
+- `(publish | subscribe).sessions.[].cascade.sessionUrl`: String(URL)
 
 For Example:
 
@@ -90,8 +93,8 @@ For Example:
           "createdAt": 1719326205079,
           "state": "connected",
           "cascade": {
-            "src": "http://localhost:7777/whep/web-0",
-            "resource": "http://localhost:7777/session/web-0/aabc02240abfc7f4800e8d9a6f087808"
+            "sourceUrl": "http://localhost:7777/whep/web-0",
+            "sessionUrl": "http://localhost:7777/session/web-0/aabc02240abfc7f4800e8d9a6f087808"
           }
         }
       ]
@@ -127,8 +130,8 @@ For Example:
           "createdAt": 1719326206798,
           "state": "connected",
           "cascade": {
-            "dst": "http://localhost:7777/whip/push",
-            "resource": "http://localhost:7777/session/push/08c1f2a0a60b0deeb66ee572bd369f80"
+            "targetUrl": "http://localhost:7777/whip/push",
+            "sessionUrl": "http://localhost:7777/session/push/08c1f2a0a60b0deeb66ee572bd369f80"
           }
         },
         {
@@ -157,13 +160,13 @@ Request:
 ```json
 {
   "token": "",
-  "src": "",
-  "dst": "",
+  "sourceUrl": "",
+  "targetUrl": "",
 }
 ```
 
 - `token`: Option, auth header
-- `src`: Option. if has, use pull mode
-- `dst`: Option. if has, use pull mode
-- `src` and `dst` at the same time can only one
+- `sourceUrl`: Option. if has, use pull mode
+- `targetUrl`: Option. if has, use pull mode
+- `sourceUrl` and `targetUrl` at the same time can only one
 

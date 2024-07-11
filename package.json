@@ -13,7 +13,10 @@
     "build": "npm run build:liveion && npm run build:liveman",
     "build:liveion": "vite build -c web/liveion/vite.config.ts",
     "build:liveman": "vite build -c web/liveman/vite.config.ts",
-    "e2e:cluster": "bun test"
+    "e2e:cluster": "bun test",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
     "vitepress": "^1.1.4",
