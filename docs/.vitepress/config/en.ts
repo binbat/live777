@@ -12,22 +12,29 @@ export const en = defineConfig({
 
         sidebar: [
             {
-                text: 'Guide',
-                collapsed: true,
+                text: 'Introduction',
+                collapsed: false,
                 items: [
-                    { text: 'What is live777', link: '/guide/what-is-live777' },
+                    { text: 'What is live777 ?', link: '/guide/what-is-live777' },
                     { text: 'Introduction', link: '/guide/introduction' },
                     { text: 'Getting Started', link: '/guide/getting-started' },
-                    { text: 'OBS Studio', link: '/guide/obs-studio' },
-                    { text: 'Gstreamer', link: '/guide/gstreamer' },
                     { text: 'For developer', link: '/guide/developer' }
                 ]
             },
             {
-                text: 'API',
+                text: 'Example',
+                collapsed: false,
                 items: [
-                    { text: 'Live777 API', link: '/live777-api' },
-                    { text: 'LiveMan API', link: '/liveman-api' },
+                    { text: 'OBS Studio', link: '/guide/obs-studio' },
+                    { text: 'Gstreamer', link: '/guide/gstreamer' },
+                ]
+            },
+            {
+                text: 'Reference',
+                collapsed: false,
+                items: [
+                    { text: 'Live777 API', link: '/reference/live777-api' },
+                    { text: 'LiveMan API', link: '/reference/liveman-api' },
                 ]
             }
         ],
