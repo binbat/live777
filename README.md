@@ -139,63 +139,6 @@ This `WHIP`/ `WHEP` plugins from [gst-plugins-rs](https://gitlab.freedesktop.org
 
 You can use this docker [images](https://github.com/binbat/live777/pkgs/container/live777-client) of Gstreamer
 
-## For developer
-
-Depends:
-- [cargo](https://www.rust-lang.org/)
-- [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
-
-If you need configuration, you can use
-
-```bash
-cp conf/live777.toml live777.toml
-cp conf/liveman.toml liveman.toml
-```
-
-### WebUI
-
-```bash
-npm install
-npm run dev
-```
-
-### Live777
-
-```bash
-cargo run -- -c conf/live777.toml
-```
-
-### LiveMan
-
-```bash
-cargo run --package=liveman --features=liveion -- -c conf/liveman.toml
-```
-
-### whipinto && whepfrom
-
-```bash
-cargo run --package=whipinto
-cargo run --package=whepfrom
-```
-
-## How to build
-
-```bash
-# Build Web UI
-npm install
-npm run build
-
-# Live777 Core
-cargo build --release
-
-# Live777 Manager
-cargo build --release --package=liveman
-
-# whipinto / whepfrom
-cargo build --release --package=whipinto
-cargo build --release --package=whepfrom
-```
-
 #### Video: VP8
 
 `WHIP`:
