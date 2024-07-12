@@ -62,14 +62,6 @@ Live777 has the following characteristics:
 
 ![live777-datachannel](./docs/live777-datachannel.excalidraw.svg)
 
-### Windows install
-
-**Winget**
-
-```bash
-winget install live777
-```
-
 #### Play stream
 
 - open your browser, enter the URL: [`http://localhost:7777/`](http://localhost:7777/)
@@ -114,12 +106,6 @@ cargo build --package=whipinto --release
 whipinto -c vp8 -u http://localhost:7777/whip/777 --port 5003
 ```
 
-Windows install
-**Winget**
-```bash
-winget install whipinto
-```
-
 Video Test Src
 
 ```bash
@@ -149,12 +135,6 @@ Build
 
 ```bash
 cargo build --package=whepfrom --release
-```
-
-Windows install
-**Winget**
-```bash
-winget install whepfrom
 ```
 
 Use WHEP protocol pull stream convert rtp sender
