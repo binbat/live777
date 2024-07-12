@@ -29,6 +29,8 @@ export const en = defineConfig({
                     items: [
                         { text: 'OBS Studio', link: 'obs-studio' },
                         { text: 'Gstreamer', link: 'gstreamer' },
+                        { text: 'FFmpeg', link: 'ffmpeg' },
+                        { text: 'VLC', link: 'vlc' },
                     ]
                 },
                 {
