@@ -5,7 +5,7 @@ layout: home
 hero:
   name: "Live777"
   text: "一个实时流媒体服务器"
-  tagline: 简单，高性能，WebRTC SFU
+  tagline: 简单，高性能，WebRTC SFU Server
   image:
     src: ../logo.svg
     alt: Live777
@@ -18,12 +18,12 @@ hero:
       link: /zh/guide/getting-started
 
 features:
-  - title: 📚 支持 WHIP / WHEP
-    details: 标准 WebRTC 协议，省去适配烦恼
+  - title: 📚 WHIP / WHEP 优先
+    details: 标准 WebRTC HTTP 信令协议，省去适配烦恼
   - title: 🚀 P2P-SFU 融合架构
-    details: 同时具有 P2P 的优点和 SFU 的优点
+    details: 同时具有 P2P 和 SFU 的优点，可以在只有一个人是使用 P2P 模式，多人使用 SFU 模式
   - title: 🌐 多平台的支持
-    details: Linux, MacOS, Windows, Android 等多种架构的支持
+    details: Linux, MacOS, Windows, Android 多种操作系统和多种架构的支持
 ---
 
 <style>

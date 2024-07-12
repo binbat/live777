@@ -8,7 +8,7 @@ export const zh = defineConfig({
     themeConfig: {
         nav: [
             { text: 'Home', link: '/' },
-            { text: 'Examples', link: '/markdown-examples' }
+            { text: '指引', link: '/guide/what-is-live777' }
         ],
 
 
@@ -18,12 +18,30 @@ export const zh = defineConfig({
                     text: '简介',
                     collapsed: false,
                     items: [
-                        { text: '什么是 Live777？', link: 'what-is-live777' },
+                        { text: '什么是 Live777 ？', link: 'what-is-live777' },
+                        { text: '简介', link: 'introduction' },
+                        { text: '安装', link: 'install' },
                         { text: '快速开始', link: 'getting-started' },
+                        { text: '开发者', link: 'developer' }
                     ]
                 },
-            ]
-            },
+                {
+                    text: '例子',
+                    collapsed: false,
+                    items: [
+                        { text: 'OBS Studio', link: 'obs-studio' },
+                        { text: 'Gstreamer', link: 'gstreamer' },
+                    ]
+                },
+                {
+                    text: '参考',
+                    collapsed: false,
+                    items: [
+                        { text: 'Live777 API', link: 'live777-api' },
+                        { text: 'LiveMan API', link: 'liveman-api' },
+                    ]
+                }
+            ]},
         },
     }
 })

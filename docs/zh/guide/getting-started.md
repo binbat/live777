@@ -28,4 +28,3 @@ cp conf/live777.toml live777.toml
 live777 --config live777.toml
 ```
 
-
