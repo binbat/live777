@@ -23,7 +23,7 @@ features:
   - title: 🚀 P2P-SFU integration architecture
     details: Only responsible for forwarding, do not do confluence, transcoding and other resource overhead of the media processing work, the encoding and decoding work are respectively placed on the sender and the receiver.
   - title: 🌐 Multiple platform support
-    details: Linux, MacOS, Windows, Android with rich multi-platform native support.
+    details: Linux, MacOS, Windows, Android and arm, x86 with multi-platform native support.
 ---
 
 <style>
