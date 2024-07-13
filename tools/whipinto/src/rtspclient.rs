@@ -102,8 +102,8 @@ impl RtspSession {
                 .find(|line| line.starts_with("WWW-Authenticate"))
                 .ok_or_else(|| anyhow!("WWW-Authenticate header not found"))?;
             let (realm, nonce) = parse_auth(auth_line)?;
-            self.realm = realm.clone();
-            self.nonce = nonce.clone();
+            self.realm.clone_from(&realm);
+            self.nonce.clone_from(&nonce);
             let cseq = self.cseq;
             let response = self
                 .handle_auth_response(request, uri, method, cseq, realm, nonce)
