@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use cli::{create_child, Codec};
+use rtspclient::setup_rtsp_session;
 use std::{sync::Arc, time::Duration, vec};
 
 use scopeguard::defer;
@@ -29,6 +30,7 @@ use webrtc::{
 use libwish::Client;
 
 mod payload;
+mod rtspclient;
 #[cfg(test)]
 mod test;
 const PREFIX_LIB: &str = "WEBRTC";
@@ -37,6 +39,7 @@ const PREFIX_LIB: &str = "WEBRTC";
 enum Mode {
     Rtsp,
     Rtp,
+    Pull,
 }
 
 #[derive(Parser)]
@@ -65,6 +68,9 @@ struct Args {
     /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
     #[arg(long)]
     auth_token: Option<String>,
+    ///pull stream url, e.g.: rtsp://[username]:[password]@[ip]:[port]/[codectype]/[channel]/[subtype]/av_stream
+    #[arg(long)]
+    target: String,
 }
 
 #[tokio::main]
@@ -82,7 +88,7 @@ async fn main() -> Result<()> {
     ));
 
     let host = args.host.clone();
-    let codec = args.codec;
+    let mut codec = args.codec;
     let mut rtp_port = args.port;
     let mut rtcp_send_port = 0;
 
@@ -149,6 +155,8 @@ async fn main() -> Result<()> {
             };
         rtp_port = rtp_server_port;
         rtcp_send_port = rtcp_listen_port;
+    } else if args.mode == Mode::Pull {
+        (rtp_port, codec) = setup_rtsp_session(&args.target).await?;
     } else {
         rtp_port = 8000;
     }
@@ -255,11 +263,7 @@ async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection
 }
 
 async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result<()> {
-    let udp_socket = UdpSocket::bind("[::]:0").await.unwrap();
-    udp_socket
-        .connect(format!("{}:{}", host, port))
-        .await
-        .unwrap();
+    let udp_socket = UdpSocket::bind(format!("{}:{}", host, port)).await.unwrap();
 
     loop {
         match sender.read_rtcp().await {

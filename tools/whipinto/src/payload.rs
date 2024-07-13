@@ -48,7 +48,7 @@ impl RePayloadBase {
     }
 
     fn verify_sequence_number(&mut self, packet: &Packet) {
-        if self.src_sequence_number + 1 != packet.header.sequence_number
+        if self.src_sequence_number.wrapping_add(1) != packet.header.sequence_number
             && self.src_sequence_number != 0
         {
             error!(
