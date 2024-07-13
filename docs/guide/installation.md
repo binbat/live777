@@ -1,6 +1,20 @@
-# Install
+# Installation
 
-可以在这里下载我们编译好的二进制包 [here](https://github.com/binbat/live777/releases)
+## Download Binary from GitHub
+
+you can donwload binary from [here](https://github.com/binbat/live777/releases)
+
+```bash
+./live777
+```
+
+### Configuration
+
+```bash
+cp conf/live777.toml live777.toml
+
+live777 --config live777.toml
+```
 
 ## Docker
 

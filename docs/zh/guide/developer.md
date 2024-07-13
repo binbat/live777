@@ -62,3 +62,25 @@ cargo run --package=whipinto
 cargo run --package=whepfrom
 ```
 
+So. We support parameter `command`, You can use this:
+
+```bash
+cargo run --package=whipinto -- -c vp8 -u http://localhost:7777/whip/777 --command \
+"ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -f rtp 'rtp://127.0.0.1:{port}?pkt_size=1200'"
+```
+
+So. You can use this
+
+```bash
+cat > stream.sdp << EOF
+v=0
+m=video 5004 RTP/AVP 96
+c=IN IP4 127.0.0.1
+a=rtpmap:96 VP8/90000
+EOF
+```
+
+```bash
+cargo run --package=whepfrom -- -c vp8 -u http://localhost:7777/whep/777 -t 127.0.0.1:5004 --command 'ffplay -protocol_whitelist rtp,file,udp -i stream.sdp'
+```
+
