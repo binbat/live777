@@ -28,11 +28,11 @@ jobs:
         with:
           repository: wish-wg/resources
           path: wish-tools
-      - name: Run tests
+      - name: Run WHIP Endpoint Conformance Tests
         run: |
           pushd wish-tools/conformance-tools/whip/server/
           wget https://gist.github.com/a-wing/f7b074770b558e114911e339bb6a3e84/raw/9529d71fb8abe16fe4900a0232c77b2621c8d318/multirun.sh
           chmod +x multirun.sh
           npm install
-          export WHIP_ENDPOINT=http://localhost:7777/whip/777
+          export WHIP_ENDPOINT=http://127.0.0.1:7777/whip/777
           ./multirun.sh '../../../../target/release/live777' 'npm run test' 'sleep 10'
