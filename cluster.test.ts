@@ -1,9 +1,55 @@
-import { describe, beforeAll, afterAll, test, expect } from "bun:test"
-import { spawn, spawnSync, sleep } from "bun"
-import { writeFile, rm } from 'node:fs/promises'
+/* eslint  @stylistic/js/semi: ["error", "never"] */
+/* eslint  @stylistic/js/quotes: ["error", "double"] */
+/* eslint-disable @typescript-eslint/no-unused-expressions */
 
-async function info(server: string): Promise<any> {
-    return await (await fetch(`${server}/admin/infos`)).json()
+import { writeFile, rm } from "node:fs/promises"
+import cp, { ChildProcess } from "node:child_process"
+
+import { describe, beforeAll, afterAll, test, expect } from "vitest"
+
+import { Stream } from "./web/shared/api"
+
+async function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => {
+        setTimeout(resolve, ms)
+    })
+}
+
+interface SpawnOptions {
+    env?: Record<string, string>;
+    stdin?: null;
+    stdout?: null;
+    stderr?: null;
+    onExit?: (e: ChildProcess) => void;
+}
+
+function toNodeSpawnOptions(o: SpawnOptions = {}): cp.SpawnOptions {
+    return {
+        env: o.env,
+        stdio: [o.stdin ?? "pipe", o.stdout ?? "pipe", o.stderr ?? "pipe"]
+    }
+}
+
+function spawn(command: string | string[], options?: SpawnOptions) {
+    const cmd = Array.isArray(command) ? command[0] : command
+    const arg = Array.isArray(command) ? command.slice(1) : []
+    const process = cp.spawn(cmd, arg, toNodeSpawnOptions(options))
+    if (options?.onExit) {
+        process.on("exit", () => {
+            options?.onExit?.(process)
+        })
+    }
+    return process
+}
+
+function spawnSync(command: string | string[]) {
+    const cmd = Array.isArray(command) ? command[0] : command
+    const arg = Array.isArray(command) ? command.slice(1) : []
+    return cp.spawnSync(cmd, arg)
+}
+
+async function getStreams(server: string): Promise<Stream[]> {
+    return (await fetch(`${server}/api/streams/`)).json()
 }
 
 async function reforward(server: string, streamId: string, url: string) {
@@ -25,7 +71,7 @@ interface ServerOptions {
 }
 
 class UpCluster {
-    srvs: any[]
+    srvs: ChildProcess[]
     constructor(servers: ServerOptions[]) {
         this.srvs = servers.map(s => spawn(s.cmd, {
             env: s.env,
@@ -46,15 +92,15 @@ describe("test cluster", () => {
 
     const appRust = "target/release/"
 
-    const appGateway  = appRust + "live777-gateway"
-    const appLive777  = appRust + "live777"
+    const appGateway = appRust + "live777-gateway"
+    const appLive777 = appRust + "live777"
     const appWhipinto = appRust + "whipinto"
     const appWhepfrom = appRust + "whepfrom"
 
-    const tmpFileConfigVerge  = "test_config-edge.toml"
+    const tmpFileConfigVerge = "test_config-edge.toml"
     const tmpFileConfigCloud = "test_config-cloud.toml"
-    const tmpFileConfigGate  = "test_config-gate.toml"
-    const tmpFileFFplaySdp   = "test_stream.sdp"
+    const tmpFileConfigGate = "test_config-gate.toml"
+    const tmpFileFFplaySdp = "test_stream.sdp"
 
     const live777VergePort = "7778"
     const live777VergeHost = `http://${localhost}:${live777VergePort}`
@@ -100,7 +146,7 @@ sub_max = 100
 reforward_cascade = false
 reforward_close_sub = true
 `
-     const fileContentGate = `
+        const fileContentGate = `
 [node_info.storage]
 model = "RedisStandalone"
 addr = "redis://127.0.0.1:6379"
@@ -114,7 +160,7 @@ addr = "redis://127.0.0.1:6379"
             console.error(err)
         }
 
-        console.log(spawnSync(["docker", "run", "-d", "--name", "redis", "--rm", "-p", "6379:6379", "redis"]).stderr.toString())
+        console.log(spawnSync(["docker", "run", "-d", "--name", "redis", "--rm", "-p", "6379:6379", "redis"]).stderr?.toString())
 
         serv = new UpCluster([
             {
@@ -150,9 +196,9 @@ addr = "redis://127.0.0.1:6379"
             "-g", "10", "-error-resilient", "1",
             "-auto-alt-ref", "1", "-f", "rtp", `rtp://127.0.0.1:${whipintoPort}?pkt_size=1200`
         ], {
-                stderr: null,
-                onExit: e => { e.exitCode && console.log(e.stderr) },
-            })
+            stderr: null,
+            onExit: e => { e.exitCode && console.log(e.stderr) },
+        })
 
         await sleep(1000)
 
@@ -179,10 +225,10 @@ a=rtpmap:96 VP8/90000
             "--target", `127.0.0.1:${whepfromPort}`,
             "--command", `ffplay -protocol_whitelist rtp,file,udp -i ${tmpFileFFplaySdp}`
         ], {
-                stdout: null,
-                stderr: null,
-                onExit: e => { e.exitCode && console.log(e.stderr) },
-            })
+            stdout: null,
+            stderr: null,
+            onExit: e => { e.exitCode && console.log(e.stderr) },
+        })
 
         await sleep(2000)
         await rm(tmpFileFFplaySdp)
@@ -209,9 +255,9 @@ a=rtpmap:96 VP8/90000
             "-g", "10", "-error-resilient", "1",
             "-auto-alt-ref", "1", "-f", "rtp", `rtp://127.0.0.1:${whipintoPort}?pkt_size=1200`
         ], {
-                stderr: null,
-                onExit: e => { e.exitCode && console.log(e.stderr) },
-            })
+            stderr: null,
+            onExit: e => { e.exitCode && console.log(e.stderr) },
+        })
 
         await sleep(1000)
 
@@ -234,12 +280,12 @@ a=rtpmap:96 VP8/90000
 
         await sleep(1000)
 
-        const res1 = (await info(live777VergeHost)).find(r => r.id === live777GatewayStream)
+        const res1 = (await getStreams(live777VergeHost)).find(r => r.id === live777GatewayStream)
         expect(res1).toBeTruthy()
-        expect(res1.subscribeSessionInfos.length).toEqual(1)
-        const res2 = (await info(live777CloudHost)).find(r => r.id === live777GatewayStream)
+        expect(res1?.subscribe.sessions.length).toEqual(1)
+        const res2 = (await getStreams(live777CloudHost)).find(r => r.id === live777GatewayStream)
         expect(res2).toBeTruthy()
-        expect(res2.subscribeSessionInfos.length).toEqual(1)
+        expect(res2?.subscribe.sessions.length).toEqual(1)
 
         ffmpeg.kill(9)
         whepfrom1.kill()
@@ -251,9 +297,9 @@ a=rtpmap:96 VP8/90000
         await rm(tmpFileConfigVerge)
         await rm(tmpFileConfigCloud)
         await rm(tmpFileConfigGate)
-        serv.down()
+        serv?.down()
 
-        console.log(spawnSync(["docker", "stop", "redis"]).stderr.toString())
+        console.log(spawnSync(["docker", "stop", "redis"]).stderr?.toString())
         console.log("=== All Done! ===")
     })
 })
