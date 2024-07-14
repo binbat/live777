@@ -30,8 +30,6 @@ cargo cinstall -p gst-plugin-rtp --libdir=pkg/usr/lib/$(gcc -dumpmachine)
 
 也可以使用我们编译好的 Docker [images](https://github.com/binbat/live777/pkgs/container/live777-client)
 
-## Video: VP8
-
 `WHIP`:
 
 ```bash
@@ -46,6 +44,23 @@ gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-
 docker run --name live777-client-whep --rm --network host \
 ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:7777/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=96,encoding-name=VP8,media=video,clock-rate=90000" ! rtpvp8depay ! vp8dec ! videoconvert ! aasink
+```
+
+## Video: VP8
+
+`WHIP`:
+
+```bash
+gst-launch-1.0 videotestsrc ! videoconvert ! vp8enc ! rtpvp8pay ! whipsink whip-endpoint="http://localhost:7777/whip/777"
+```
+
+`WHEP`:
+
+```bash
+gst-launch-1.0 whepsrc whep-endpoint="http://localhost:7777/whep/777" \
+audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" \
+video-caps="application/x-rtp,payload=96,encoding-name=VP8,media=video,clock-rate=90000" \
+! rtpvp8depay ! vp8dec ! videoconvert ! aasink
 ```
 
 ## Video: VP9

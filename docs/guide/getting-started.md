@@ -23,8 +23,8 @@ Gstreamer rtp-into | :tv: 1 | :star: | :star: | :star: | :star: | :star: |
 Gstreamer rtp-from | :tv: 2 | :star: | :star: | :star: | :star: | :star: |
 FFmpeg rtp-into    | :shit: | :star: | :star: | :star: | :star: | :star: |
 FFmpeg rtp-from    | :shit: | :star: | :star: | :star: | :star: | :star: |
-VLC rtp-into       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
-VLC rtp-from       | :bulb: | :bulb: | :star: | :star: | :star: | :bulb: |
+VLC rtp-into       | :shit: | :shit: | :star: | :star: | :star: | :shit: |
+VLC rtp-from       | :shit: | :shit: | :star: | :star: | :star: | :shit: |
 OBS Studio whip    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
 
 - :star: It's working
