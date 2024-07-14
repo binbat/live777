@@ -13,13 +13,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v1
+      - name: Setup node
+        uses: actions/setup-node@v4
         with:
-          bun-version: latest
-      - name: Install
-        run: bun install
+          node-version: "18"
+      - name: Install npm dependencies
+        run: npm ci
       - name: Build WebUI
-        run: bun run build
+        run: npm run build
       - name: Build
         run: cargo build --release --verbose
       - name: Checkout tools repo
@@ -27,10 +28,6 @@ jobs:
         with:
           repository: wish-wg/resources
           path: wish-tools
-      - name: Setup node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18"
       - name: Run tests
         run: |
           pushd wish-tools/conformance-tools/whip/server/

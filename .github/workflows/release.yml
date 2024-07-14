@@ -48,10 +48,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install
-        run: npm install
+      - name: Install npm dependencies
+        run: npm ci
 
-      - name: Build Webui
+      - name: Build WebUI
         run: npm run build
 
       - name: Get the release version from the tag
