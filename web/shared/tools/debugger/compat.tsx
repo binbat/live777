@@ -1,7 +1,9 @@
 import { TargetedEvent } from 'preact/compat';
-import { useCallback, useEffect, useState } from 'preact/hooks'
+import { useCallback, useEffect, useState } from 'preact/hooks';
 
 declare module 'preact' {
+    // preact uses namespace JSXInternal and exports it as JSX
+    // eslint-disable-next-line @typescript-eslint/no-namespace
     namespace JSX {
         interface IntrinsicElements {
             'center': JSX.HTMLAttributes<HTMLElement>
@@ -21,50 +23,50 @@ declare global {
 }
 
 function useUrlParamsInput(key: string) {
-    const [value, setValue] = useState('')
+    const [value, setValue] = useState('');
     useEffect(() => {
-        const params = new URLSearchParams(location.search)
-        const v = params.get(key)
+        const params = new URLSearchParams(location.search);
+        const v = params.get(key);
         if (v !== null) {
-            setValue(v)
+            setValue(v);
         }
-    }, [])
+    }, []);
     const setUrlParams = (v: string | undefined) => {
-        const params = new URLSearchParams(location.search)
+        const params = new URLSearchParams(location.search);
         if (v === undefined) {
-            params.delete(key)
+            params.delete(key);
         } else {
-            params.set(key, v)
+            params.set(key, v);
         }
-        history.replaceState(null, '', '?' + params.toString())
-    }
+        history.replaceState(null, '', '?' + params.toString());
+    };
     const onInput = (e: TargetedEvent<HTMLInputElement>) => {
-        const v = e.currentTarget.value
-        setValue(v)
-        setUrlParams(v)
-    }
-    return { value, onInput }
+        const v = e.currentTarget.value;
+        setValue(v);
+        setUrlParams(v);
+    };
+    return { value, onInput };
 }
 
 const WhipLayerSelect = [
     { value: 'f', text: 'Base' },
     { value: 'h', text: 'Base + 1/2' },
     { value: 'q', text: 'Base + 1/2 + 1/4' },
-]
+];
 const WhepLayerSelect = [
     { value: '', text: 'AUTO' },
     { value: 'q', text: 'LOW' },
     { value: 'h', text: 'MEDIUM' },
     { value: 'f', text: 'HIGH' },
-]
+];
 
 export default function DebuggerCompat() {
-    const streamIdInput = useUrlParamsInput('id')
-    const idBearerTokenInput = useUrlParamsInput('token')
+    const streamIdInput = useUrlParamsInput('id');
+    const idBearerTokenInput = useUrlParamsInput('token');
 
-    const refreshDevice = useCallback(() => window.refreshDevice(), [])
-    const startWhip = useCallback(() => window.startWhip(), [])
-    const startWhep = useCallback(() => window.startWhep(), [])
+    const refreshDevice = useCallback(() => window.refreshDevice(), []);
+    const startWhip = useCallback(() => window.startWhip(), []);
+    const startWhep = useCallback(() => window.startWhep(), []);
 
     return (
         <>
@@ -156,5 +158,5 @@ export default function DebuggerCompat() {
                 </fieldset>
             </div>
         </>
-    )
+    );
 }

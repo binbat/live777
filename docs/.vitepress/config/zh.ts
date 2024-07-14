@@ -1,5 +1,5 @@
 
-import { defineConfig } from 'vitepress'
+import { defineConfig } from 'vitepress';
 
 export const zh = defineConfig({
     lang: 'zh-Hans',
@@ -45,4 +45,4 @@ export const zh = defineConfig({
             ]},
         },
     }
-})
+});

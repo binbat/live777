@@ -6,22 +6,22 @@ export const formatTime = (timestamp: number) => new Date(timestamp).toLocaleStr
     minute: '2-digit',
     second: '2-digit',
     hourCycle: 'h23'
-})
+});
 
 export const formatVideoTrackResolution = (track: MediaStreamTrack): string => {
     // firefox@127 returns empty object for this
-    const { width, height, frameRate } = track.getSettings()
-    if (!width || !height) return ''
-    if (!frameRate) return `${width}x${height}`
-    return `${width}x${height}@${frameRate}`
-}
+    const { width, height, frameRate } = track.getSettings();
+    if (!width || !height) return '';
+    if (!frameRate) return `${width}x${height}`;
+    return `${width}x${height}@${frameRate}`;
+};
 
 export const nextSeqId = (prefix: string, existingIds: string[]) => {
-    let i = 0
-    let newId = `${prefix}${i}`
+    let i = 0;
+    let newId = `${prefix}${i}`;
     while (existingIds.includes(newId)) {
-        i++
-        newId = `${prefix}${i}`
+        i++;
+        newId = `${prefix}${i}`;
     }
-    return newId
-}
+    return newId;
+};

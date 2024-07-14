@@ -4,7 +4,7 @@ import { StyledCheckbox } from '../shared/components/styled-checkbox';
 import { getNodes } from './api';
 
 export function NodesTable() {
-    const nodes = useRefreshTimer([], getNodes)
+    const nodes = useRefreshTimer([], getNodes);
 
     return (
         <>
@@ -37,5 +37,5 @@ export function NodesTable() {
                 </table>
             </fieldset>
         </>
-    )
+    );
 }

@@ -1,100 +1,100 @@
-import { useState, useRef, useEffect } from 'preact/hooks'
+import { useState, useRef, useEffect } from 'preact/hooks';
 
-import { getStreams, deleteStream } from '../api'
-import { formatTime, nextSeqId } from '../utils'
-import { useRefreshTimer } from '../hooks/use-refresh-timer'
-import { StyledCheckbox } from './styled-checkbox'
-import { IClientsDialog, ClientsDialog } from './dialog-clients'
-import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade'
-import { IPreviewDialog, PreviewDialog } from './dialog-preview'
-import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream'
-import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream'
+import { getStreams, deleteStream } from '../api';
+import { formatTime, nextSeqId } from '../utils';
+import { useRefreshTimer } from '../hooks/use-refresh-timer';
+import { StyledCheckbox } from './styled-checkbox';
+import { IClientsDialog, ClientsDialog } from './dialog-clients';
+import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade';
+import { IPreviewDialog, PreviewDialog } from './dialog-preview';
+import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream';
+import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream';
 
 export function StreamsTable(props: { cascade: boolean }) {
-    const streams = useRefreshTimer([], getStreams)
-    const [selectedStreamId, setSelectedStreamId] = useState('')
-    const refCascadePull = useRef<ICascadeDialog>(null)
-    const refCascadePush = useRef<ICascadeDialog>(null)
-    const refClients = useRef<IClientsDialog>(null)
-    const refNewStream = useRef<INewStreamDialog>(null)
-    const [webStreams, setWebStreams] = useState<string[]>([])
-    const [newStreamId, setNewStreamId] = useState('')
-    const refWebStreams = useRef<Map<string, IWebStreamDialog>>(new Map())
-    const [previewStreams, setPreviewStreams] = useState<string[]>([])
-    const [previewStreamId, setPreviewStreamId] = useState('')
-    const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map())
+    const streams = useRefreshTimer([], getStreams);
+    const [selectedStreamId, setSelectedStreamId] = useState('');
+    const refCascadePull = useRef<ICascadeDialog>(null);
+    const refCascadePush = useRef<ICascadeDialog>(null);
+    const refClients = useRef<IClientsDialog>(null);
+    const refNewStream = useRef<INewStreamDialog>(null);
+    const [webStreams, setWebStreams] = useState<string[]>([]);
+    const [newStreamId, setNewStreamId] = useState('');
+    const refWebStreams = useRef<Map<string, IWebStreamDialog>>(new Map());
+    const [previewStreams, setPreviewStreams] = useState<string[]>([]);
+    const [previewStreamId, setPreviewStreamId] = useState('');
+    const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map());
 
     const handleViewClients = (id: string) => {
-        setSelectedStreamId(id)
-        refClients.current?.show()
-    }
+        setSelectedStreamId(id);
+        refClients.current?.show();
+    };
 
     const handleCascadePullStream = () => {
-        const newStreamId = nextSeqId('pull-', streams.data.map(s => s.id))
-        refCascadePull.current?.show(newStreamId)
-    }
+        const newStreamId = nextSeqId('pull-', streams.data.map(s => s.id));
+        refCascadePull.current?.show(newStreamId);
+    };
 
     const handleCascadePushStream = (id: string) => {
-        refCascadePush.current?.show(id)
-    }
+        refCascadePush.current?.show(id);
+    };
 
     const handlePreview = (id: string) => {
         if (previewStreams.includes(id)) {
-            refPreviewStreams.current.get(id)?.show(id)
+            refPreviewStreams.current.get(id)?.show(id);
         } else {
-            setPreviewStreams([...previewStreams, id])
-            setPreviewStreamId(id)
+            setPreviewStreams([...previewStreams, id]);
+            setPreviewStreamId(id);
         }
-    }
+    };
 
     useEffect(() => {
-        refPreviewStreams.current.get(previewStreamId)?.show(previewStreamId)
-    }, [previewStreamId])
+        refPreviewStreams.current.get(previewStreamId)?.show(previewStreamId);
+    }, [previewStreamId]);
 
     const handlePreviewStop = (id: string) => {
-        setPreviewStreamId('')
-        setPreviewStreams(previewStreams.filter(s => s !== id))
-    }
+        setPreviewStreamId('');
+        setPreviewStreams(previewStreams.filter(s => s !== id));
+    };
 
     const handleNewStream = () => {
-        const newStreamId = nextSeqId('web-', webStreams.concat(streams.data.map(s => s.id)))
-        refNewStream.current?.show(newStreamId)
-    }
+        const newStreamId = nextSeqId('web-', webStreams.concat(streams.data.map(s => s.id)));
+        refNewStream.current?.show(newStreamId);
+    };
 
     const handleNewStreamId = (id: string) => {
-        setWebStreams([...webStreams, id])
-        setNewStreamId(id)
-    }
+        setWebStreams([...webStreams, id]);
+        setNewStreamId(id);
+    };
 
     useEffect(() => {
-        refWebStreams.current.get(newStreamId)?.show(newStreamId)
-    }, [newStreamId])
+        refWebStreams.current.get(newStreamId)?.show(newStreamId);
+    }, [newStreamId]);
 
     const handleOpenWebStream = (id: string) => {
-        refWebStreams.current.get(id)?.show(id)
-    }
+        refWebStreams.current.get(id)?.show(id);
+    };
 
     const handleWebStreamStop = (id: string) => {
-        setNewStreamId('')
-        setWebStreams(webStreams.filter(s => s !== id))
-    }
+        setNewStreamId('');
+        setWebStreams(webStreams.filter(s => s !== id));
+    };
 
     const handleOpenPlayerPage = (id: string) => {
-        const params = new URLSearchParams()
-        params.set('id', id)
-        params.set('autoplay', '')
-        params.set('muted', '')
-        params.set('reconnect', '3000')
-        const url = new URL(`/tools/player.html?${params.toString()}`, location.origin)
-        window.open(url)
-    }
+        const params = new URLSearchParams();
+        params.set('id', id);
+        params.set('autoplay', '');
+        params.set('muted', '');
+        params.set('reconnect', '3000');
+        const url = new URL(`/tools/player.html?${params.toString()}`, location.origin);
+        window.open(url);
+    };
 
     const handleOpenDebuggerPage = (id: string) => {
-        const params = new URLSearchParams()
-        params.set('id', id)
-        const url = new URL(`/tools/debugger.html?${params.toString()}`, location.origin)
-        window.open(url)
-    }
+        const params = new URLSearchParams();
+        params.set('id', id);
+        const url = new URL(`/tools/debugger.html?${params.toString()}`, location.origin);
+        window.open(url);
+    };
 
     return (
         <>
@@ -108,12 +108,12 @@ export function StreamsTable(props: { cascade: boolean }) {
                     key={s}
                     ref={(instance: IPreviewDialog | null) => {
                         if (instance) {
-                            refPreviewStreams.current.set(s, instance)
+                            refPreviewStreams.current.set(s, instance);
                         } else {
-                            refPreviewStreams.current.delete(s)
+                            refPreviewStreams.current.delete(s);
                         }
                     }}
-                    onStop={() => { handlePreviewStop(s) }}
+                    onStop={() => { handlePreviewStop(s); }}
                 />
             )}
 
@@ -124,12 +124,12 @@ export function StreamsTable(props: { cascade: boolean }) {
                     key={s}
                     ref={(instance: IWebStreamDialog | null) => {
                         if (instance) {
-                            refWebStreams.current.set(s, instance)
+                            refWebStreams.current.set(s, instance);
                         } else {
-                            refWebStreams.current.delete(s)
+                            refWebStreams.current.delete(s);
                         }
                     }}
-                    onStop={() => { handleWebStreamStop(s) }}
+                    onStop={() => { handleWebStreamStop(s); }}
                 />
             )}
 
@@ -157,14 +157,13 @@ export function StreamsTable(props: { cascade: boolean }) {
                                 <td class="text-center">{i.publish.sessions.length}</td>
                                 <td class="text-center">{i.subscribe.sessions.length}</td>
                                 <td class="text-center">{
-                                    i.publish.sessions.filter((t: any) => t.cascade).length +
-                                    i.subscribe.sessions.filter((t: any) => t.cascade).length
+                                    i.publish.sessions.filter(t => t.cascade).length + i.subscribe.sessions.filter(t => t.cascade).length
                                 }</td>
                                 <td class="text-center">{formatTime(i.createdAt)}</td>
                                 <td>
                                     <button onClick={() => handlePreview(i.id)} class={previewStreams.includes(i.id) ? 'text-blue-500' : undefined} >Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
-                                    { props.cascade
+                                    {props.cascade
                                         ? <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
                                         : null
                                     }
@@ -177,16 +176,16 @@ export function StreamsTable(props: { cascade: boolean }) {
                     </tbody>
                 </table>
                 <div>
-                    { props.cascade
+                    {props.cascade
                         ? <button onClick={handleCascadePullStream}>Cascade Pull</button>
                         : null
                     }
                     <button onClick={handleNewStream}>New Stream</button>
                     {webStreams.map(s =>
-                        <button onClick={() => { handleOpenWebStream(s) }}>{s}</button>
+                        <button onClick={() => { handleOpenWebStream(s); }}>{s}</button>
                     )}
                 </div>
             </fieldset>
         </>
-    )
+    );
 }

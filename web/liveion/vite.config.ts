@@ -1,11 +1,11 @@
-import { resolve } from 'node:path'
+import { resolve } from 'node:path';
 
-import { defineConfig, mergeConfig } from 'vite'
+import { defineConfig, mergeConfig } from 'vite';
 
-import CommonConfig, { ProjectRoot } from '../vite.config'
+import CommonConfig, { ProjectRoot } from '../vite.config';
 
 // directory name of the current module (web/liveion)
-const configDir = import.meta.dirname
+const configDir = import.meta.dirname;
 
 // https://vitejs.dev/config/
 export default mergeConfig(CommonConfig, defineConfig({
@@ -29,4 +29,4 @@ export default mergeConfig(CommonConfig, defineConfig({
             }
         }
     }
-}), /* isRoot = */ false)
+}), /* isRoot = */ false);

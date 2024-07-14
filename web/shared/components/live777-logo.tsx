@@ -1,4 +1,4 @@
-import Logo from '/logo.svg'
+import Logo from '/logo.svg';
 
 export const Live777Logo = () => {
     return (
@@ -11,5 +11,5 @@ export const Live777Logo = () => {
                 />
             </a>
         </div>
-    )
-}
+    );
+};

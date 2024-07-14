@@ -1,8 +1,8 @@
-import { defineConfig } from 'vitepress'
+import { defineConfig } from 'vitepress';
 
 export const en = defineConfig({
     lang: 'en-US',
-    description: "A very simple, high performance, edge WebRTC SFU",
+    description: 'A very simple, high performance, edge WebRTC SFU',
 
     themeConfig: {
         nav: [
@@ -43,4 +43,4 @@ export const en = defineConfig({
             ]},
         },
     }
-})
+});

@@ -1,8 +1,8 @@
-import { render } from 'preact'
+import { render } from 'preact';
 
-import './debugger.js'
-import DebuggerCompat from './compat.tsx'
+import './debugger.js';
+import DebuggerCompat from './compat.tsx';
 
-import './debugger.css'
+import './debugger.css';
 
-render(<DebuggerCompat />, document.getElementById('app')!)
+render(<DebuggerCompat />, document.getElementById('app')!);

@@ -1,7 +1,7 @@
-import { useRef, useImperativeHandle } from 'preact/hooks'
-import { forwardRef } from 'preact/compat'
-import { Session, deleteSession } from '../api'
-import { formatTime } from '../utils'
+import { useRef, useImperativeHandle } from 'preact/hooks';
+import { forwardRef } from 'preact/compat';
+import { Session, deleteSession } from '../api';
+import { formatTime } from '../utils';
 
 interface Props {
     id: string
@@ -13,15 +13,15 @@ export interface IClientsDialog {
 }
 
 export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, ref) => {
-    const refDialog = useRef<HTMLDialogElement>(null)
+    const refDialog = useRef<HTMLDialogElement>(null);
 
     useImperativeHandle(ref, () => {
         return {
             show: () => {
-                refDialog.current?.showModal()
+                refDialog.current?.showModal();
             }
-        }
-    })
+        };
+    });
 
     return (
         <dialog ref={refDialog}>
@@ -38,7 +38,7 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                 <tbody>
                     {props.sessions.map(c =>
                         <tr>
-                            <td>{c.id} {c.reforward ? "(reforward)" : ""}</td>
+                            <td>{c.id} {c.reforward ? '(reforward)' : ''}</td>
                             <td>{c.state}</td>
                             <td>{formatTime(c.createdAt)}</td>
                             <td><button onClick={() => deleteSession(props.id, c.id)}>Kick</button></td>
@@ -50,5 +50,5 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                 <button>Close</button>
             </form>
         </dialog>
-    )
-})
+    );
+});

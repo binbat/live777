@@ -1,1 +1,1 @@
-import '../../shared/tools/player/main.tsx'
+import '../../shared/tools/player/main.tsx';

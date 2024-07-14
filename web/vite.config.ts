@@ -1,10 +1,10 @@
-import { resolve } from 'node:path'
+import { resolve } from 'node:path';
 
-import { defineConfig } from 'vite'
-import preact from '@preact/preset-vite'
-import unocss from 'unocss/vite'
+import { defineConfig } from 'vite';
+import preact from '@preact/preset-vite';
+import unocss from 'unocss/vite';
 
-export const ProjectRoot = resolve(import.meta.dirname, '..')
+export const ProjectRoot = resolve(import.meta.dirname, '..');
 
 /**
  * shared vite config
@@ -21,4 +21,4 @@ export default defineConfig({
             configFile: resolve(ProjectRoot, 'web/uno.config.ts')
         }),
     ],
-})
+});
