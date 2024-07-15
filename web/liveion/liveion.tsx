@@ -1,5 +1,5 @@
-import { Live777Logo } from '../shared/components/live777-logo'
-import { StreamsTable } from '../shared/components/streams-table'
+import { Live777Logo } from '../shared/components/live777-logo';
+import { StreamsTable } from '../shared/components/streams-table';
 
 export function Liveion() {
     return (
@@ -7,5 +7,5 @@ export function Liveion() {
             <Live777Logo />
             <StreamsTable cascade={true} />
         </>
-    )
+    );
 }

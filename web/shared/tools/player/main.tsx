@@ -1,8 +1,8 @@
-import { render } from 'preact'
+import { render } from 'preact';
 
-import { Player } from './player.tsx'
+import { Player } from './player.tsx';
 
-import 'virtual:uno.css'
-import './style.css'
+import 'virtual:uno.css';
+import './style.css';
 
-render(<Player />, document.getElementById('app')!)
+render(<Player />, document.getElementById('app')!);

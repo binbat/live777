@@ -9,7 +9,7 @@ export interface Node {
 }
 
 export async function getNodes(): Promise<Node[]> {
-    return (await fetch('/api/nodes/')).json()
+    return (await fetch('/api/nodes/')).json();
 }
 
 
@@ -18,5 +18,5 @@ export interface StreamDetail {
 }
 
 export async function getStreamDetail(streamId: string): Promise<StreamDetail> {
-    return (await fetch(`/api/streams/${streamId}`)).json()
+    return (await fetch(`/api/streams/${streamId}`)).json();
 }

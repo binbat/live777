@@ -1,4 +1,4 @@
-import { useState, useRef, useImperativeHandle } from 'preact/hooks'
+import { useState, useRef, useImperativeHandle } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
 
 import { createStream } from '../api';
@@ -12,27 +12,27 @@ export interface INewStreamDialog {
 }
 
 export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) => {
-    const [streamId, setStreamId] = useState('')
-    const refDialog = useRef<HTMLDialogElement>(null)
+    const [streamId, setStreamId] = useState('');
+    const refDialog = useRef<HTMLDialogElement>(null);
 
     useImperativeHandle(ref, () => {
         return {
             show: (initialId: string) => {
-                setStreamId(initialId)
-                refDialog.current?.showModal()
+                setStreamId(initialId);
+                refDialog.current?.showModal();
             }
-        }
-    })
+        };
+    });
 
     const onStreamIdInput = (e: TargetedEvent<HTMLInputElement>) => {
-        setStreamId(e.currentTarget.value)
-    }
+        setStreamId(e.currentTarget.value);
+    };
 
     const onConfirmNewStreamId = (_e: Event) => {
-        props.onNewStreamId(streamId)
-        createStream(streamId)
-        refDialog.current?.close()
-    }
+        props.onNewStreamId(streamId);
+        createStream(streamId);
+        refDialog.current?.close();
+    };
 
     return (
         <dialog ref={refDialog}>
@@ -47,5 +47,5 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
                 <button onClick={onConfirmNewStreamId}>Confirm</button>
             </form>
         </dialog>
-    )
-})
+    );
+});

@@ -1,1 +1,1 @@
-import '../../shared/tools/debugger/main.tsx'
+import '../../shared/tools/debugger/main.tsx';

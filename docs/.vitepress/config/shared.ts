@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitepress'
+import { defineConfig } from 'vitepress';
 
 export const shared = defineConfig({
     title: 'Live777',
@@ -31,4 +31,4 @@ export const shared = defineConfig({
             copyright: 'Copyright © 2023-present BinBat LTD'
         }
     }
-})
+});
