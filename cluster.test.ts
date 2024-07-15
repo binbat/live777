@@ -1,11 +1,12 @@
-/* eslint  @stylistic/js/semi: ["error", "never"] */
-/* eslint  @stylistic/js/quotes: ["error", "double"] */
+/* eslint @stylistic/js/semi: ["error", "never"] */
+/* eslint @stylistic/js/quotes: ["error", "double"] */
 /* eslint-disable @typescript-eslint/no-unused-expressions */
 
 import { writeFile, rm } from "node:fs/promises"
+import { text } from "node:stream/consumers"
 import cp, { ChildProcess } from "node:child_process"
 
-import { describe, beforeAll, afterAll, test, expect, assert } from "vitest"
+import { describe, beforeAll, afterAll, test, expect, assert, beforeEach, afterEach } from "vitest"
 
 import { Stream } from "./web/shared/api"
 
@@ -15,12 +16,17 @@ async function sleep(ms: number): Promise<void> {
     })
 }
 
+interface ExitedProcess {
+    exitCode: number;
+    stderr: string;
+}
+
 interface SpawnOptions {
     env?: Record<string, string>;
     stdin?: null;
     stdout?: null;
     stderr?: null;
-    onExit?: (e: ChildProcess) => void;
+    onExit?: (e: ExitedProcess) => void;
 }
 
 function toNodeSpawnOptions(o: SpawnOptions = {}): cp.SpawnOptions {
@@ -34,18 +40,22 @@ function spawn(command: string | string[], options?: SpawnOptions) {
     const cmd = Array.isArray(command) ? command[0] : command
     const arg = Array.isArray(command) ? command.slice(1) : []
     const process = cp.spawn(cmd, arg, toNodeSpawnOptions(options))
-    if (options?.onExit) {
-        process.on("exit", () => {
-            options?.onExit?.(process)
-        })
-    }
+    process.on("exit", async () => {
+        const exitCode = process.exitCode ?? 0
+        const stderr = (process.stderr && await text(process.stderr)) ?? ""
+        options?.onExit?.({ exitCode, stderr })
+    })
     return process
 }
 
-function spawnSync(command: string | string[]) {
-    const cmd = Array.isArray(command) ? command[0] : command
-    const arg = Array.isArray(command) ? command.slice(1) : []
-    return cp.spawnSync(cmd, arg)
+async function until<T>(fn: () => Promise<T>, predicate: (t: T) => boolean, interval = 100): Promise<void> {
+    do {
+        await sleep(interval)
+    } while (!predicate(await fn()))
+}
+
+async function untilHttpOk(host: string): Promise<void> {
+    await until(() => fetch(host).then(r => r.ok).catch(() => false), ok => ok)
 }
 
 async function getStreams(server: string): Promise<Stream[]> {
@@ -75,6 +85,7 @@ class UpCluster {
     constructor(servers: ServerOptions[]) {
         this.srvs = servers.map(s => spawn(s.cmd, {
             env: s.env,
+            stderr: null,
             onExit: e => {
                 e.exitCode && console.log(`${s.name}: ${e.stderr}`)
                 this.down()
@@ -92,72 +103,55 @@ describe("test single live777", () => {
 
     const appRust = "target/release/"
     const appLive777 = appRust + "live777"
+    const live777Port = "7777"
+    const live777Host = `http://${localhost}:${live777Port}`
 
-    test("minimum", async () => {
-        const live777Port = "7778"
-        const live777Host = `http://${localhost}:${live777Port}`
-        const live777 = spawn([
+    let live777: ChildProcess | null = null
+
+    beforeEach(async () => {
+        live777 = spawn([
             appLive777,
         ], { env: { PORT: live777Port }, onExit: e => { e.exitCode && console.log(e.stderr) } })
-        await sleep(100)
+        await untilHttpOk(live777Host)
+    })
 
-        let res: any
+    afterEach(async () => {
+        live777?.kill()
+    })
+
+    test("minimum", async () => {
         try {
-            res = await getStreams(live777Host)
-        } catch (e) {
-            assert.fail(e)
-        } finally {
-            live777.kill()
+            const res = await getStreams(live777Host)
+            expect(res).toHaveLength(0)
+        } catch {
+            assert.fail()
         }
-
-        expect(res.length).toBe(0)
     })
 
     test("create stream", async () => {
-        const live777Port = "7779"
-        const live777Host = `http://${localhost}:${live777Port}`
         const live777Stream = "888"
-
-        const live777 = spawn([
-            appLive777,
-        ], { env: { PORT: live777Port }, onExit: e => { e.exitCode && console.log(e.stderr) } })
-        await sleep(100)
-
-        let resCreate: any
-        let resIndex: any
         try {
-            resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
+            const resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
                 method: "POST",
             })
-            resIndex = await getStreams(live777Host)
+            expect(resCreate.status).toBe(204)
+            const streams = await getStreams(live777Host)
+            expect(streams).toHaveLength(1)
         } catch (e) {
             assert.fail(e)
-        } finally {
-            live777.kill()
         }
-
-        expect(resCreate.status).toBe(204)
-        expect(resIndex.length).toBe(1)
     })
 
     test("create stream connect", async () => {
-        const live777Port = "7779"
-        const live777Host = `http://${localhost}:${live777Port}`
         const live777Stream = "888"
         const appWhipinto = appRust + "whipinto"
 
-        const live777 = spawn([
-            appLive777,
-        ], { env: { PORT: live777Port }, onExit: e => { e.exitCode && console.log(e.stderr) } })
-        await sleep(100)
-
-        let resCreate: any
-        let resIndex: any
-
         try {
-            resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
+            const resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
                 method: "POST",
             })
+
+            expect(resCreate.status).toBe(204)
 
             const whipinto = spawn([
                 appWhipinto,
@@ -165,10 +159,13 @@ describe("test single live777", () => {
                 "--url", `${live777Host}/whip/${live777Stream}`,
                 "--port", "5003",
             ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
-            await sleep(1000)
+
+            await until(() => getStreams(live777Host), s => s[0]?.publish.sessions.length > 0)
 
             try {
-                resIndex = (await getStreams(live777Host)).find(r => r.id === live777Stream)
+                const resIndex = (await getStreams(live777Host)).find(r => r.id === live777Stream)
+                expect(resIndex?.publish.sessions).toHaveLength(1)
+                expect(resIndex?.publish.sessions[0].state).toBe("connected")
             } catch (e) {
                 assert.fail(e)
             } finally {
@@ -177,13 +174,7 @@ describe("test single live777", () => {
 
         } catch (e) {
             assert.fail(e)
-        } finally {
-            live777.kill()
         }
-
-        expect(resCreate.status).toBe(204)
-        expect(resIndex?.publish.sessions.length).toBe(1)
-        expect(resIndex?.publish.sessions[0].state).toBe("connected")
     })
 })
 
@@ -214,7 +205,7 @@ describe("test cluster", () => {
     const live777LivemanHost = `http://${localhost}:${live777LivemanPort}`
     const live777LivemanStream = "888"
 
-    let serv: UpCluster
+    let serv: UpCluster | null
 
     beforeAll(async () => {
         const fileContentVerge = `
@@ -260,9 +251,15 @@ url = "http://${localhost}:${live777CloudPort}"
                 env: { PORT: live777LivemanPort },
             }
         ])
+
+        await Promise.all([live777VergeHost, live777CloudHost, live777LivemanHost].map(untilHttpOk))
     })
 
-    test("reforward", async () => {
+    beforeEach(async () => {
+        await until(() => getStreams(live777LivemanHost), s => s.length === 0)
+    })
+
+    test("reforward", { timeout: 60 * 1000 }, async () => {
         const whipintoPort = "5003"
         const whipinto = spawn([
             appWhipinto,
@@ -281,14 +278,16 @@ url = "http://${localhost}:${live777CloudPort}"
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
 
-        await sleep(1000)
+        await until(() => getStreams(live777VergeHost), s => s[0]?.publish.sessions.length > 0)
 
         try {
             const res = await reforward(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
             console.log(res.status === 200 ? "reforward success" : res.status)
         } catch (e) {
-            console.log(e)
+            assert.fail(e)
         }
+
+        await until(() => getStreams(live777CloudHost), s => s[0]?.publish.sessions.length > 0)
 
         const whepfromPort = "5004"
         await writeFile(tmpFileFFplaySdp, `
@@ -298,7 +297,6 @@ c=IN IP4 127.0.0.1
 a=rtpmap:96 VP8/90000
 `)
 
-        await sleep(1000)
         const whepfrom = spawn([
             appWhepfrom,
             "--codec", "vp8",
@@ -311,16 +309,20 @@ a=rtpmap:96 VP8/90000
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
 
-        await sleep(2000)
-        await rm(tmpFileFFplaySdp)
+        await until(() => getStreams(live777CloudHost), s => s[0]?.subscribe.sessions.length > 0)
 
-        ffmpeg.kill(9)
+        const streams = await getStreams(live777CloudHost)
+
         whepfrom.kill()
+        await rm(tmpFileFFplaySdp)
         whipinto.kill()
+        ffmpeg.kill()
+
+        expect(streams).toHaveLength(1)
+        expect(streams[0].subscribe.sessions).toHaveLength(1)
     })
 
-    test("p2p to sfu", async () => {
-        await sleep(1000)
+    test("p2p to sfu", { timeout: 60 * 1000 }, async () => {
         const whipintoPort = "5005"
         const whipinto = spawn([
             appWhipinto,
@@ -339,6 +341,8 @@ a=rtpmap:96 VP8/90000
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
 
+        await until(() => getStreams(live777VergeHost), s => s[0]?.publish.sessions.length > 0)
+
         const whepfromPort = "5006"
         const whepfrom1 = spawn([
             appWhepfrom,
@@ -354,15 +358,18 @@ a=rtpmap:96 VP8/90000
             "--target", `127.0.0.1:${whepfromPort}`,
         ], { onExit: e => { e.exitCode && console.log("whepfrom 2", e.stderr) } })
 
-        await sleep(3000)
+        await Promise.all([
+            until(() => getStreams(live777VergeHost), s => s[0]?.subscribe.sessions.length > 0),
+            until(() => getStreams(live777CloudHost), s => s[0]?.subscribe.sessions.length > 0),
+        ])
 
         const res1 = (await getStreams(live777VergeHost)).find(r => r.id === live777LivemanStream)
         const res2 = (await getStreams(live777CloudHost)).find(r => r.id === live777LivemanStream)
 
-        ffmpeg.kill(9)
-        whepfrom1.kill()
         whepfrom2.kill()
+        whepfrom1.kill()
         whipinto.kill()
+        ffmpeg.kill()
 
         expect(res1).toBeTruthy()
         expect(res1?.subscribe.sessions.length).toEqual(1)
@@ -376,7 +383,5 @@ a=rtpmap:96 VP8/90000
         await rm(tmpFileConfigCloud)
         await rm(tmpFileConfigMan)
         serv?.down()
-
-        console.log("=== All Done! ===")
     })
 })
