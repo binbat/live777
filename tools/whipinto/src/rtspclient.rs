@@ -1,19 +1,19 @@
 use anyhow::{anyhow, Result};
 use cli::Codec;
 use md5::{Digest, Md5};
+use portpicker::pick_unused_port;
 use rtsp_types::{
-    headers::{HeaderName, HeaderValue, WWW_AUTHENTICATE},
-    Message, Method, Request, Response, Version,
+    headers,
+    headers::{transport, HeaderValue, WWW_AUTHENTICATE},
+    Message, Method, Request, Response, StatusCode, Url, Version,
 };
 use sdp_types::Session;
-use tokio::net::TcpListener;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     time::{self, Duration},
 };
 use tracing::info;
-use url::Url;
 
 const USER_AGENT: &str = "whipinto";
 const DEFAULT_RTSP_PORT: u16 = 554;
@@ -110,14 +110,8 @@ async fn keep_rtsp_alive(mut stream: TcpStream, mut cseq: u32) -> Result<()> {
     loop {
         interval.tick().await;
         let options_request = Request::builder(Method::Options, Version::V1_0)
-            .header(
-                HeaderName::from_static_str("CSeq").unwrap(),
-                cseq.to_string(),
-            )
-            .header(
-                HeaderName::from_static_str("User-Agent").unwrap(),
-                USER_AGENT,
-            )
+            .header(headers::CSEQ, cseq.to_string())
+            .header(headers::USER_AGENT, USER_AGENT)
             .empty();
 
         if let Err(e) = send_request(&mut stream, &options_request.map_body(|_| vec![])).await {
@@ -144,16 +138,66 @@ fn codec_from_str(s: &str) -> Result<Codec> {
         "AV1" => Ok(Codec::AV1),
         "OPUS" => Ok(Codec::Opus),
         "G722" => Ok(Codec::G722),
-        "PCMU" => Ok(Codec::PCMU),
-        "PCMA" => Ok(Codec::PCMA),
+        // "PCMU" => Ok(Codec::Pcmu),
+        // "PCMA" => Ok(Codec::Pcma),
         _ => Err(anyhow!("Unknown codec: {}", s)),
     }
+}
+
+async fn send_setup_request(
+    stream: &mut TcpStream,
+    uri: &str,
+    cseq: &mut u32,
+    rtp_server_port: u16,
+    rtcp_server_port: u16,
+    session_id: Option<&str>,
+) -> Result<String> {
+    let mut setup_request_builder = Request::builder(Method::Setup, Version::V1_0)
+        .request_uri(uri.parse::<Url>().map_err(|_| anyhow!("Invalid URI"))?)
+        .header(headers::CSEQ, cseq.to_string())
+        .header(headers::USER_AGENT, USER_AGENT)
+        .typed_header(&transport::Transports::from(vec![
+            transport::Transport::Rtp(transport::RtpTransport {
+                profile: transport::RtpProfile::Avp,
+                lower_transport: None,
+                params: transport::RtpTransportParameters {
+                    unicast: true,
+                    client_port: Some((rtp_server_port, Some(rtcp_server_port))),
+                    ..Default::default()
+                },
+            }),
+        ]));
+
+    if let Some(session) = session_id {
+        setup_request_builder = setup_request_builder.header(headers::SESSION, session);
+    }
+
+    let setup_request = setup_request_builder.empty();
+
+    send_request(stream, &setup_request.map_body(|_| vec![])).await?;
+    let setup_response = read_response(stream).await?;
+    *cseq += 1;
+
+    if setup_response.status() != StatusCode::Ok {
+        return Err(anyhow!("SETUP request failed"));
+    }
+
+    let session_id = setup_response
+        .header(&headers::SESSION)
+        .ok_or_else(|| anyhow!("Session header not found"))?
+        .as_str()
+        .split(';')
+        .next()
+        .ok_or_else(|| anyhow!("Failed to parse session ID"))?
+        .to_string();
+
+    Ok(session_id)
 }
 
 pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
     let url = Url::parse(rtsp_url)?;
     let host = url
-        .host_str()
+        .host()
         .ok_or_else(|| anyhow!("Host not found"))?
         .to_string();
     let port = url.port().unwrap_or(DEFAULT_RTSP_PORT);
@@ -169,14 +213,8 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
 
     // Send OPTIONS request
     let options_request = Request::builder(Method::Options, Version::V1_0)
-        .header(
-            HeaderName::from_static_str("CSeq").unwrap(),
-            cseq.to_string(),
-        )
-        .header(
-            HeaderName::from_static_str("User-Agent").unwrap(),
-            USER_AGENT,
-        )
+        .header(headers::CSEQ, cseq.to_string())
+        .header(headers::USER_AGENT, USER_AGENT)
         .empty();
 
     send_request(&mut stream, &options_request.map_body(|_| vec![])).await?;
@@ -184,7 +222,7 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
     cseq += 1;
 
     // Handle authentication if required
-    if options_response.status() == rtsp_types::StatusCode::Unauthorized {
+    if options_response.status() == StatusCode::Unauthorized {
         let auth_header = options_response
             .header(&WWW_AUTHENTICATE)
             .ok_or_else(|| anyhow!("WWW-Authenticate header not found"))?;
@@ -194,25 +232,16 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         let auth_header_value =
             generate_authorization_header(&username, &password, &realm, &nonce, &uri, "OPTIONS");
         let options_request = Request::builder(Method::Options, Version::V1_0)
-            .header(
-                HeaderName::from_static_str("CSeq").unwrap(),
-                cseq.to_string(),
-            )
-            .header(
-                HeaderName::from_static_str("User-Agent").unwrap(),
-                USER_AGENT,
-            )
-            .header(
-                HeaderName::from_static_str("Authorization").unwrap(),
-                auth_header_value,
-            )
+            .header(headers::CSEQ, cseq.to_string())
+            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::AUTHORIZATION, auth_header_value)
             .empty();
 
         send_request(&mut stream, &options_request.map_body(|_| vec![])).await?;
         let options_response = read_response(&mut stream).await?;
         cseq += 1;
 
-        if options_response.status() != rtsp_types::StatusCode::Ok {
+        if options_response.status() != StatusCode::Ok {
             return Err(anyhow!("OPTIONS request failed"));
         }
     }
@@ -224,25 +253,16 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
                 .parse::<Url>()
                 .map_err(|_| anyhow!("Invalid URI"))?,
         )
-        .header(
-            HeaderName::from_static_str("CSeq").unwrap(),
-            cseq.to_string(),
-        )
-        .header(
-            HeaderName::from_static_str("Accept").unwrap(),
-            "application/sdp",
-        )
-        .header(
-            HeaderName::from_static_str("User-Agent").unwrap(),
-            USER_AGENT,
-        )
+        .header(headers::CSEQ, cseq.to_string())
+        .header(headers::ACCEPT, "application/sdp")
+        .header(headers::USER_AGENT, USER_AGENT)
         .empty();
 
     send_request(&mut stream, &describe_request.map_body(|_| vec![])).await?;
     let mut describe_response = read_response(&mut stream).await?;
     cseq += 1;
 
-    if describe_response.status() == rtsp_types::StatusCode::Unauthorized {
+    if describe_response.status() == StatusCode::Unauthorized {
         let auth_header = describe_response
             .header(&WWW_AUTHENTICATE)
             .ok_or_else(|| anyhow!("WWW-Authenticate header not found"))?;
@@ -257,29 +277,17 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
                     .parse::<Url>()
                     .map_err(|_| anyhow!("Invalid URI"))?,
             )
-            .header(
-                HeaderName::from_static_str("CSeq").unwrap(),
-                cseq.to_string(),
-            )
-            .header(
-                HeaderName::from_static_str("Accept").unwrap(),
-                "application/sdp",
-            )
-            .header(
-                HeaderName::from_static_str("User-Agent").unwrap(),
-                USER_AGENT,
-            )
-            .header(
-                HeaderName::from_static_str("Authorization").unwrap(),
-                auth_header_value,
-            )
+            .header(headers::CSEQ, cseq.to_string())
+            .header(headers::ACCEPT, "application/sdp")
+            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::AUTHORIZATION, auth_header_value)
             .empty();
 
         send_request(&mut stream, &describe_request.map_body(|_| vec![])).await?;
         describe_response = read_response(&mut stream).await?;
         cseq += 1;
 
-        if describe_response.status() != rtsp_types::StatusCode::Ok {
+        if describe_response.status() != StatusCode::Ok {
             return Err(anyhow!("DESCRIBE request failed"));
         }
     }
@@ -294,65 +302,13 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
 
     let video_track = sdp.medias.iter().find(|md| md.media == "video");
     let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
-    println!("wwww:{:?}", video_track);
 
     if video_track.is_none() && audio_track.is_none() {
         return Err(anyhow!("No tracks found in SDP"));
     }
 
-    let listener = TcpListener::bind("0.0.0.0:0").await?;
-    let rtp_port = listener.local_addr()?.port();
+    let rtp_port = pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
     let rtcp_port = rtp_port + 1;
-
-    async fn send_setup_request(
-        stream: &mut TcpStream,
-        uri: &str,
-        cseq: &mut u32,
-        rtp_port: u16,
-        rtcp_port: u16,
-        session_id: Option<&str>,
-    ) -> Result<String> {
-        let mut setup_request_builder = Request::builder(Method::Setup, Version::V1_0)
-            .request_uri(uri.parse::<Url>().map_err(|_| anyhow!("Invalid URI"))?)
-            .header(
-                HeaderName::from_static_str("CSeq").unwrap(),
-                cseq.to_string(),
-            )
-            .header(
-                HeaderName::from_static_str("User-Agent").unwrap(),
-                USER_AGENT,
-            )
-            .header(
-                HeaderName::from_static_str("Transport").unwrap(),
-                format!("RTP/AVP;unicast;client_port={}-{}", rtp_port, rtcp_port),
-            );
-
-        if let Some(session) = session_id {
-            setup_request_builder = setup_request_builder
-                .header(HeaderName::from_static_str("Session").unwrap(), session);
-        }
-
-        let setup_request = setup_request_builder.empty();
-
-        send_request(stream, &setup_request.map_body(|_| vec![])).await?;
-        let setup_response = read_response(stream).await?;
-        *cseq += 1;
-
-        if setup_response.status() != rtsp_types::StatusCode::Ok {
-            return Err(anyhow!("SETUP request failed"));
-        }
-
-        let session_id = setup_response
-            .header(&HeaderName::from_static_str("Session").unwrap())
-            .ok_or_else(|| anyhow!("Session header not found"))?
-            .as_str()
-            .split(';')
-            .next()
-            .ok_or_else(|| anyhow!("Failed to parse session ID"))?
-            .to_string();
-
-        Ok(session_id)
-    }
 
     let video_uri = video_track
         .and_then(|md| {
@@ -366,19 +322,6 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         })
         .unwrap_or_else(|| format!("{}/trackID=1", uri));
 
-    //audio
-    // let audio_url = video_track
-    //     .and_then(|md| {
-    //         md.attributes.iter().find_map(|attr| {
-    //             if attr.attribute == "control" {
-    //                 Some(attr.value.clone().unwrap_or_default())
-    //             } else {
-    //                 None
-    //             }
-    //         })
-    //     })
-    //     .unwrap_or_else(|| format!("{}/trackID=1", uri));
-
     let session_id = send_setup_request(
         &mut stream,
         &video_uri,
@@ -389,30 +332,40 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
     )
     .await?;
 
-    //audio
-    // send_setup_request(&mut stream, &audio_uri, &mut cseq, rtp_port, rtcp_port, Some(&session_id)).await?;
+    // Uncomment the following lines if you want to set up the audio track as well
+    // let audio_uri = audio_track
+    //     .and_then(|md| {
+    //         md.attributes.iter().find_map(|attr| {
+    //             if attr.attribute == "control" {
+    //                 Some(attr.value.clone().unwrap_or_default())
+    //             } else {
+    //                 None
+    //             }
+    //         })
+    //     })
+    //     .unwrap_or_else(|| format!("{}/trackID=2", uri));
+    //
+    // send_setup_request(
+    //     &mut stream,
+    //     &audio_uri,
+    //     &mut cseq,
+    //     rtp_port,
+    //     rtcp_port,
+    //     Some(&session_id),
+    // ).await?;
 
     // Send PLAY request
     let play_request = Request::builder(Method::Play, Version::V1_0)
         .request_uri(uri.parse::<Url>().map_err(|_| anyhow!("Invalid URI"))?)
-        .header(
-            HeaderName::from_static_str("CSeq").unwrap(),
-            cseq.to_string(),
-        )
-        .header(
-            HeaderName::from_static_str("User-Agent").unwrap(),
-            USER_AGENT,
-        )
-        .header(
-            HeaderName::from_static_str("Session").unwrap(),
-            &*session_id,
-        )
+        .header(headers::CSEQ, cseq.to_string())
+        .header(headers::USER_AGENT, USER_AGENT)
+        .header(headers::SESSION, &*session_id)
         .empty();
 
     send_request(&mut stream, &play_request.map_body(|_| vec![])).await?;
     let play_response = read_response(&mut stream).await?;
 
-    if play_response.status() != rtsp_types::StatusCode::Ok {
+    if play_response.status() != StatusCode::Ok {
         return Err(anyhow!("PLAY request failed"));
     }
 
@@ -438,24 +391,6 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
             })
         })
         .unwrap_or_else(|| "unknown".to_string());
-
-    //audio_codec
-    // let audio_codec = video_track
-    // .and_then(|md| {
-    //     md.attributes.iter().find_map(|attr| {
-    //         if attr.attribute == "rtpmap" {
-    //             let parts: Vec<&str> = attr.value.as_ref()?.split_whitespace().collect();
-    //             if parts.len() > 1 {
-    //                 Some(parts[1].split('/').next().unwrap_or("").to_string())
-    //             } else {
-    //                 None
-    //             }
-    //         } else {
-    //             None
-    //         }
-    //     })
-    // })
-    // .unwrap_or_else(|| "unknown".to_string());
 
     let video_codec = codec_from_str(&video_codec)?;
 
