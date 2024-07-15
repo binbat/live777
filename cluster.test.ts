@@ -53,7 +53,7 @@ async function getStreams(server: string): Promise<Stream[]> {
 }
 
 async function reforward(server: string, streamId: string, url: string) {
-    return fetch(`${server}/admin/reforward/${streamId}`, {
+    return fetch(`${server}/api/cascade/${streamId}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -92,14 +92,14 @@ describe("test cluster", () => {
 
     const appRust = "target/release/"
 
-    const appGateway = appRust + "live777-gateway"
+    const appLiveman = appRust + "liveman"
     const appLive777 = appRust + "live777"
     const appWhipinto = appRust + "whipinto"
     const appWhepfrom = appRust + "whepfrom"
 
-    const tmpFileConfigVerge = "test_config-edge.toml"
+    const tmpFileConfigVerge = "test_config-verge.toml"
     const tmpFileConfigCloud = "test_config-cloud.toml"
-    const tmpFileConfigGate = "test_config-gate.toml"
+    const tmpFileConfigMan = "test_config-man.toml"
     const tmpFileFFplaySdp = "test_stream.sdp"
 
     const live777VergePort = "7778"
@@ -110,57 +110,40 @@ describe("test cluster", () => {
     const live777CloudHost = `http://${localhost}:${live777CloudPort}`
     const live777CloudStream = "999"
 
-    const live777GatewayPort = "8080"
-    const live777GatewayHost = `http://${localhost}:${live777GatewayPort}`
-    const live777GatewayStream = "888"
+    const live777LivemanPort = "8080"
+    const live777LivemanHost = `http://${localhost}:${live777LivemanPort}`
+    const live777LivemanStream = "888"
 
     let serv: UpCluster
 
     beforeAll(async () => {
         const fileContentVerge = `
-[node_info]
-ip_port = "${localhost}:${live777VergePort}"
-
-[node_info.storage]
-model = "RedisStandalone"
-addr = "redis://127.0.0.1:6379"
-
-[node_info.meta_data]
-pub_max = 1
-sub_max = 1
-reforward_cascade = false
+[strategy]
 reforward_close_sub = true
 `
 
         const fileContentCloud = `
-[node_info]
-ip_port = "${localhost}:${live777CloudPort}"
-
-[node_info.storage]
-model = "RedisStandalone"
-addr = "redis://127.0.0.1:6379"
-
-[node_info.meta_data]
-pub_max = 1
-sub_max = 100
-reforward_cascade = false
+[strategy]
 reforward_close_sub = true
 `
-        const fileContentGate = `
-[node_info.storage]
-model = "RedisStandalone"
-addr = "redis://127.0.0.1:6379"
+        const fileContentMan = `
+[[nodes]]
+alias = "test-verge"
+url = "http://${localhost}:${live777VergePort}"
+sub_max = 1
+
+[[nodes]]
+alias = "test-cloud"
+url = "http://${localhost}:${live777CloudPort}"
 `
 
         try {
             await writeFile(tmpFileConfigVerge, fileContentVerge)
             await writeFile(tmpFileConfigCloud, fileContentCloud)
-            await writeFile(tmpFileConfigGate, fileContentGate)
+            await writeFile(tmpFileConfigMan, fileContentMan)
         } catch (err) {
             console.error(err)
         }
-
-        console.log(spawnSync(["docker", "run", "-d", "--name", "redis", "--rm", "-p", "6379:6379", "redis"]).stderr?.toString())
 
         serv = new UpCluster([
             {
@@ -172,9 +155,9 @@ addr = "redis://127.0.0.1:6379"
                 cmd: [appLive777, "--config", tmpFileConfigCloud],
                 env: { PORT: live777CloudPort },
             }, {
-                name: "live777Gateway",
-                cmd: [appGateway, "--config", tmpFileConfigGate],
-                env: { PORT: live777GatewayPort },
+                name: "live777Liveman",
+                cmd: [appLiveman, "--config", tmpFileConfigMan],
+                env: { PORT: live777LivemanPort },
             }
         ])
     })
@@ -265,7 +248,7 @@ a=rtpmap:96 VP8/90000
         const whepfrom1 = spawn([
             appWhepfrom,
             "--codec", "vp8",
-            "--url", `${live777GatewayHost}/whep/${live777GatewayStream}`,
+            "--url", `${live777LivemanHost}/whep/${live777LivemanStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
         ], { onExit: e => { e.exitCode && console.log("whepfrom 1", e.stderr) } })
 
@@ -274,16 +257,16 @@ a=rtpmap:96 VP8/90000
         const whepfrom2 = spawn([
             appWhepfrom,
             "--codec", "vp8",
-            "--url", `${live777GatewayHost}/whep/${live777GatewayStream}`,
+            "--url", `${live777LivemanHost}/whep/${live777LivemanStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
         ], { onExit: e => { e.exitCode && console.log("whepfrom 2", e.stderr) } })
 
         await sleep(1000)
 
-        const res1 = (await getStreams(live777VergeHost)).find(r => r.id === live777GatewayStream)
+        const res1 = (await getStreams(live777VergeHost)).find(r => r.id === live777LivemanStream)
         expect(res1).toBeTruthy()
         expect(res1?.subscribe.sessions.length).toEqual(1)
-        const res2 = (await getStreams(live777CloudHost)).find(r => r.id === live777GatewayStream)
+        const res2 = (await getStreams(live777CloudHost)).find(r => r.id === live777LivemanStream)
         expect(res2).toBeTruthy()
         expect(res2?.subscribe.sessions.length).toEqual(1)
 
@@ -296,10 +279,9 @@ a=rtpmap:96 VP8/90000
     afterAll(async () => {
         await rm(tmpFileConfigVerge)
         await rm(tmpFileConfigCloud)
-        await rm(tmpFileConfigGate)
+        await rm(tmpFileConfigMan)
         serv?.down()
 
-        console.log(spawnSync(["docker", "stop", "redis"]).stderr?.toString())
         console.log("=== All Done! ===")
     })
 })
