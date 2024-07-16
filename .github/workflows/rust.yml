@@ -26,13 +26,9 @@ jobs:
       - name: Build WebUI
         run: npm run build
       - name: Build
-        run: cargo build --release --all-targets --verbose
+        run: cargo build --all --release --verbose
       - name: Run tests
         run: cargo test --all --verbose
-      - name: Build tools
-        run: |
-            cargo build --release --verbose --manifest-path ./tools/whipinto/Cargo.toml
-            cargo build --release --verbose --manifest-path ./tools/whepfrom/Cargo.toml
       - name: Setup ffmpeg
         uses: AnimMouse/setup-ffmpeg@v1
       - name: Run e2e tests
