@@ -13,7 +13,7 @@ use webrtc::track::track_local::TrackLocalWriter;
 use crate::error::AppError;
 use crate::forward::message::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
-use crate::forward::track::ForwardData;
+use crate::new_broadcast_channel;
 use crate::{constant, result::Result};
 
 use super::get_peer_id;
@@ -30,9 +30,9 @@ struct SubscribeForwardChannel {
 
 pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) id: String,
-    pub(crate) cascade: std::sync::RwLock<Option<CascadeInfo>>,
+    pub(crate) cascade: Option<CascadeInfo>,
     pub(crate) peer: Arc<RTCPeerConnection>,
-    pub(crate) create_time: i64,
+    pub(crate) create_at: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
 }
 
@@ -48,7 +48,7 @@ impl SubscribeRTCPeerConnection {
         ),
         (video_sender, audio_sender): (Option<Arc<RTCRtpSender>>, Option<Arc<RTCRtpSender>>),
     ) -> Self {
-        let (select_layer_sender, _) = broadcast::channel(1);
+        let select_layer_sender = new_broadcast_channel!(1);
         let id = get_peer_id(&peer);
         let track_binding_publish_rid = Arc::new(RwLock::new(HashMap::new()));
         for (sender, kind) in [
@@ -83,9 +83,9 @@ impl SubscribeRTCPeerConnection {
         let _ = publish_track_change.send(());
         Self {
             id,
-            cascade: std::sync::RwLock::new(cascade),
+            cascade,
             peer,
-            create_time: Utc::now().timestamp_millis(),
+            create_at: Utc::now().timestamp_millis(),
             select_layer_sender,
         }
     }
@@ -93,9 +93,9 @@ impl SubscribeRTCPeerConnection {
     pub(crate) async fn info(&self) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
-            create_time: self.create_time,
-            connect_state: self.peer.connection_state(),
-            cascade: self.cascade.read().unwrap().clone(),
+            create_at: self.create_at,
+            state: self.peer.connection_state(),
+            cascade: self.cascade.clone(),
         }
     }
 
@@ -111,7 +111,7 @@ impl SubscribeRTCPeerConnection {
         info!("[{}] [{}] {} up", stream, id, kind);
         let mut pre_rid: Option<String> = None;
         // empty broadcast channel
-        let (virtual_sender, _) = broadcast::channel::<ForwardData>(1);
+        let virtual_sender = new_broadcast_channel!(1);
         let mut recv = virtual_sender.subscribe();
         let mut track = None;
         let mut sequence_number: u16 = 0;

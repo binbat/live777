@@ -37,7 +37,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
             for session_info in &stream_info.subscribe.sessions {
                 if let Some(reforward_info) = &session_info.cascade {
                     if let Ok((target_node_addr, target_stream)) =
-                        parse_node_and_stream(reforward_info.dst.clone().unwrap())
+                        parse_node_and_stream(reforward_info.target_url.clone().unwrap())
                     {
                         if let Some(target_node) = map_url_server.get(&target_node_addr) {
                             if let Some(target_stream_info) = nodes

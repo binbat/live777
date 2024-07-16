@@ -62,21 +62,31 @@ pub async fn cascade_push(
     let mut headers = HeaderMap::new();
     headers.append("Content-Type", "application/json".parse().unwrap());
     let client = reqwest::Client::new();
-    let url = format!("{}/{}", server_src.url, &api::path::cascade(&stream));
+    let url = format!("{}{}", server_src.url, &api::path::cascade(&stream));
     let body = serde_json::to_string(&Cascade {
-        dst: Some(server_dst.url),
+        target_url: Some(format!("{}{}", server_dst.url, api::path::whip(&stream))),
         token: None,
-        src: None,
+        source_url: None,
     })
     .unwrap();
     trace!("{:?}", body);
 
-    let response = client.post(url).headers(headers).body(body).send().await?;
+    let response = client
+        .post(url.clone())
+        .headers(headers)
+        .body(body)
+        .send()
+        .await?;
 
     if response.status().is_success() {
         Ok(())
     } else {
-        error!("{:?} {:?}", response.status(), response.text().await?);
+        error!(
+            "url: {:?}, [{:?}], response: {:?}",
+            url,
+            response.status(),
+            response.text().await?
+        );
         Err(anyhow!("http status not success"))
     }
 }

@@ -1,19 +1,17 @@
-use std::collections::{HashMap, HashSet};
-
 use axum::{
     extract::{Path, Request, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
-    Json, Router,
+    routing::{delete, get, post},
+    Router,
 };
 use http::{header, HeaderValue, Uri};
-use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, warn, Span};
+use tracing::{debug, error, warn, Span};
 
 use api::response::Stream;
 
+use crate::route::cascade;
+use crate::route::node;
 use crate::route::stream;
-use crate::route::utils::{cascade_push, force_check_times, session_delete};
 use crate::Server;
 use crate::{error::AppError, result::Result, AppState};
 
@@ -29,60 +27,13 @@ pub fn route() -> Router<AppState> {
             &api::path::session_layer(":stream", ":session"),
             get(session).post(session).delete(session),
         )
-        .route("/admin/infos", get(info))
-        .route("/api/admin/-/infos", get(api_info))
         .route("/api/whip/:alias/:stream", post(api_whip))
         .route("/api/whep/:alias/:stream", post(api_whep))
-        .route("/api/nodes", get(api_node))
+        .route("/api/nodes/", get(node::index))
         .route("/api/streams/", get(stream::index))
         .route("/api/streams/:stream", get(stream::show))
-}
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NodeState {
-    #[default]
-    #[serde(rename = "running")]
-    Running,
-    #[serde(rename = "stopped")]
-    Stopped,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Node {
-    pub alias: String,
-    pub url: String,
-    pub pub_max: u16,
-    pub sub_max: u16,
-    pub status: NodeState,
-}
-
-async fn api_node(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
-    let map_info = state.storage.info_raw_all().await.unwrap();
-
-    Ok(Json(
-        state
-            .storage
-            .get_cluster()
-            .into_iter()
-            .map(|x| Node {
-                alias: x.alias.clone(),
-                url: x.url,
-                pub_max: x.pub_max,
-                sub_max: x.sub_max,
-                status: match map_info.get(&x.alias) {
-                    Some(_) => NodeState::Running,
-                    None => NodeState::Stopped,
-                },
-            })
-            .collect(),
-    ))
-}
-
-async fn api_info(
-    State(mut state): State<AppState>,
-    _req: Request,
-) -> crate::result::Result<Json<HashMap<String, Vec<api::response::Stream>>>> {
-    Ok(Json(state.storage.info_raw_all().await.unwrap()))
+        .route("/api/streams/:stream", post(stream::create))
+        .route("/api/streams/:stream", delete(stream::destroy))
 }
 
 async fn api_whip(
@@ -111,13 +62,6 @@ async fn api_whep(
         Some(server) => request_proxy(state, req, server).await,
         None => Err(AppError::NoAvailableNode),
     }
-}
-
-async fn info(
-    State(mut state): State<AppState>,
-    _req: Request,
-) -> crate::result::Result<Json<Vec<api::response::Stream>>> {
-    Ok(Json(state.storage.info_all().await.unwrap()))
 }
 
 async fn whip(
@@ -191,10 +135,12 @@ async fn whep(
 
     let target = match maximum_idle_node {
         Some(server) => Some(server),
-        None => match whep_reforward_node(state.clone(), servers.clone(), stream.clone()).await {
-            Ok(server) => Some(server),
-            Err(e) => return Err(e),
-        },
+        None => {
+            match cascade::cascade_new_node(state.clone(), servers.clone(), stream.clone()).await {
+                Ok(server) => Some(server),
+                Err(e) => return Err(e),
+            }
+        }
     };
 
     match target {
@@ -222,77 +168,6 @@ async fn whep(
             }
         }
         None => Err(AppError::NoAvailableNode),
-    }
-}
-
-async fn whep_reforward_node(
-    mut state: AppState,
-    nodes: Vec<Server>,
-    stream: String,
-) -> Result<Server> {
-    let set_all: HashSet<Server> = state.storage.nodes().await.into_iter().clone().collect();
-    let set_src: HashSet<Server> = nodes.clone().into_iter().collect();
-    let set_dst: HashSet<&Server> = set_all.difference(&set_src).collect();
-
-    let arr = set_dst.into_iter().collect::<Vec<&Server>>();
-
-    let server_src = nodes.first().unwrap().clone();
-    let server_ds0 = *arr.first().unwrap();
-    let server_dst = server_ds0.clone();
-
-    info!("reforward from: {:?}, to: {:?}", server_src, server_dst);
-
-    tokio::spawn(async move {
-        match cascade_push(server_src.clone(), server_dst.clone(), stream.clone()).await {
-            Ok(()) => {
-                match force_check_times(
-                    server_dst.clone(),
-                    stream.clone(),
-                    state.config.reforward.check_attempts.0,
-                )
-                .await
-                {
-                    Ok(count) => {
-                        if state.config.reforward.close_other_sub {
-                            reforward_close_other_sub(state, server_src, stream).await
-                        }
-                        info!("reforward success, checked attempts: {}", count)
-                    }
-                    Err(e) => error!("reforward check error: {:?}", e),
-                }
-                Ok(server_dst.clone())
-            }
-            Err(e) => {
-                error!("reforward error: {:?}", e);
-                Err(AppError::InternalServerError(e))
-            }
-        }
-    });
-    Ok(server_ds0.clone())
-}
-
-async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: String) {
-    match state.storage.info_get(server.clone().alias).await {
-        Ok(streams) => {
-            for stream_info in streams.into_iter() {
-                if stream_info.id == stream {
-                    for sub_info in stream_info.subscribe.sessions.into_iter() {
-                        match sub_info.cascade {
-                            Some(v) => info!("Skip. Is Reforward: {:?}", v),
-                            None => {
-                                match session_delete(server.clone(), stream.clone(), sub_info.id)
-                                    .await
-                                {
-                                    Ok(_) => {}
-                                    Err(e) => error!("reforward close other sub error: {:?}", e),
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => error!("reforward don't closed other sub: {:?}", e),
     }
 }
 

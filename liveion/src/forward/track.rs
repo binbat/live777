@@ -6,6 +6,8 @@ use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_remote::TrackRemote;
 
+use crate::new_broadcast_channel;
+
 fn codec_string(params: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters) -> String {
     format!(
         "{}[{}],{}",
@@ -25,8 +27,7 @@ pub(crate) struct PublishTrackRemote {
 
 impl PublishTrackRemote {
     pub async fn new(stream: String, id: String, track: Arc<TrackRemote>) -> Self {
-        let (rtp_sender, mut rtp_recv) = broadcast::channel(128);
-        tokio::spawn(async move { while rtp_recv.recv().await.is_ok() {} });
+        let rtp_sender = new_broadcast_channel!(128);
         let rid = track.rid().to_owned();
         let kind = track.kind();
         tokio::spawn(Self::track_forward(
