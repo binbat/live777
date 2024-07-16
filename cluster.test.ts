@@ -218,6 +218,9 @@ reforward_close_sub = true
 reforward_close_sub = true
 `
         const fileContentMan = `
+[reforward]
+close_other_sub = true
+
 [[nodes]]
 alias = "test-verge"
 url = "http://${localhost}:${live777VergePort}"
@@ -227,13 +230,12 @@ sub_max = 1
 alias = "test-cloud"
 url = "http://${localhost}:${live777CloudPort}"
 `
-
         try {
             await writeFile(tmpFileConfigVerge, fileContentVerge)
             await writeFile(tmpFileConfigCloud, fileContentCloud)
             await writeFile(tmpFileConfigMan, fileContentMan)
-        } catch (err) {
-            console.error(err)
+        } catch (e) {
+            assert.fail(e)
         }
 
         serv = new UpCluster([
@@ -342,6 +344,7 @@ a=rtpmap:96 VP8/90000
         })
 
         await until(() => getStreams(live777VergeHost), s => s[0]?.publish.sessions.length > 0)
+        await until(() => getStreams(live777LivemanHost), s => s[0]?.publish.sessions.length > 0)
 
         const whepfromPort = "5006"
         const whepfrom1 = spawn([
@@ -350,6 +353,8 @@ a=rtpmap:96 VP8/90000
             "--url", `${live777LivemanHost}/whep/${live777LivemanStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
         ], { onExit: e => { e.exitCode && console.log("whepfrom 1", e.stderr) } })
+
+        await until(() => getStreams(live777VergeHost), s => s[0]?.subscribe.sessions.length > 0)
 
         const whepfrom2 = spawn([
             appWhepfrom,
