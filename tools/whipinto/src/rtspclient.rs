@@ -130,7 +130,7 @@ async fn keep_rtsp_alive(mut stream: TcpStream, mut cseq: u32) -> Result<()> {
     Ok(())
 }
 
-fn codec_from_str(s: &str) -> Result<Codec> {
+pub fn codec_from_str(s: &str) -> Result<Codec> {
     match s {
         "VP8" => Ok(Codec::Vp8),
         "VP9" => Ok(Codec::Vp9),
