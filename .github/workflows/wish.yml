@@ -16,7 +16,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/Iron
+          node-version: 18
       - name: Install npm dependencies
         run: npm ci
       - name: Build WebUI
