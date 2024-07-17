@@ -18,6 +18,7 @@ async function sleep(ms: number): Promise<void> {
 
 interface ExitedProcess {
     exitCode: number;
+    stdout: string;
     stderr: string;
 }
 
@@ -42,8 +43,9 @@ function spawn(command: string | string[], options?: SpawnOptions) {
     const process = cp.spawn(cmd, arg, toNodeSpawnOptions(options))
     process.on("exit", async () => {
         const exitCode = process.exitCode ?? 0
+        const stdout = (process.stdout && await text(process.stdout)) ?? ""
         const stderr = (process.stderr && await text(process.stderr)) ?? ""
-        options?.onExit?.({ exitCode, stderr })
+        options?.onExit?.({ exitCode, stdout, stderr })
     })
     return process
 }
@@ -291,7 +293,7 @@ url = "http://${localhost}:${live777CloudPort}"
 
         try {
             const res = await reforward(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
-            console.log(res.status === 200 ? "reforward success" : res.status)
+            assert(res.ok)
         } catch (e) {
             assert.fail(e)
         }
@@ -312,8 +314,6 @@ a=rtpmap:96 VP8/90000
             "--url", `${live777CloudHost}/whep/${live777CloudStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
         ], {
-            stdout: null,
-            stderr: null,
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
 
@@ -355,7 +355,6 @@ a=rtpmap:96 VP8/90000
             "-vcodec", "libvpx",
             "-f", "rtp", `rtp://127.0.0.1:${whipintoPort}?pkt_size=1200`
         ], {
-            stderr: null,
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
 
