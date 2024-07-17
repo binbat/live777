@@ -48,6 +48,12 @@ function spawn(command: string | string[], options?: SpawnOptions) {
     return process
 }
 
+function spawnSync(command: string | string[]) {
+    const cmd = Array.isArray(command) ? command[0] : command
+    const arg = Array.isArray(command) ? command.slice(1) : []
+    return cp.spawnSync(cmd, arg)
+}
+
 async function until<T>(fn: () => Promise<T>, predicate: (t: T) => boolean, interval = 100): Promise<void> {
     do {
         await sleep(interval)
@@ -262,6 +268,7 @@ url = "http://${localhost}:${live777CloudPort}"
     })
 
     test("reforward", { timeout: 60 * 1000 }, async () => {
+        const width = 320, height = 240
         const whipintoPort = "5003"
         const whipinto = spawn([
             appWhipinto,
@@ -271,8 +278,8 @@ url = "http://${localhost}:${live777CloudPort}"
         ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
 
         const ffmpeg = spawn([
-            "ffmpeg", "-re", "-f", "lavfi",
-            "-i", "testsrc=size=320x240:rate=30",
+            "ffmpeg", "-hide_banner", "-re", "-f", "lavfi",
+            "-i", `testsrc=size=${width}x${height}:rate=30`,
             "-vcodec", "libvpx",
             "-f", "rtp", `rtp://127.0.0.1:${whipintoPort}?pkt_size=1200`
         ], {
@@ -304,12 +311,21 @@ a=rtpmap:96 VP8/90000
             "--codec", "vp8",
             "--url", `${live777CloudHost}/whep/${live777CloudStream}`,
             "--target", `127.0.0.1:${whepfromPort}`,
-            "--command", `ffplay -protocol_whitelist rtp,file,udp -i ${tmpFileFFplaySdp}`
         ], {
             stdout: null,
             stderr: null,
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
+
+        const res = spawnSync(["ffprobe", "-v", "error", "-hide_banner",
+            "-protocol_whitelist", "file,rtp,udp", "-i", tmpFileFFplaySdp,
+            "-show_format", "-show_streams", "-of", "json"])
+
+        expect(res.status).toEqual(0)
+        const ffprobe = JSON.parse(res.stdout.toString())
+        expect(ffprobe.streams.length).toEqual(1)
+        expect(ffprobe.streams[0].width).toEqual(width)
+        expect(ffprobe.streams[0].height).toEqual(height)
 
         await until(() => getStreams(live777CloudHost), s => s[0]?.subscribe.sessions.length > 0)
 
@@ -334,7 +350,7 @@ a=rtpmap:96 VP8/90000
         ], { onExit: e => { e.exitCode && console.log("whipinto", e.stderr) } })
 
         const ffmpeg = spawn([
-            "ffmpeg", "-re", "-f", "lavfi",
+            "ffmpeg", "-hide_banner", "-re", "-f", "lavfi",
             "-i", "testsrc=size=320x240:rate=30",
             "-vcodec", "libvpx",
             "-f", "rtp", `rtp://127.0.0.1:${whipintoPort}?pkt_size=1200`
