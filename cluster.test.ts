@@ -403,5 +403,5 @@ a=rtpmap:96 VP8/90000
         await rm(tmpFileConfigCloud)
         await rm(tmpFileConfigMan)
         serv?.down()
-    })
+    }, 60 * 1000)
 })
