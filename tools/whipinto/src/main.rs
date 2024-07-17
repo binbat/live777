@@ -70,7 +70,7 @@ struct Args {
     auth_token: Option<String>,
     ///pull stream url, e.g.: rtsp://[username]:[password]@[ip]:[port]/[codectype]/[channel]/[subtype]/av_stream
     #[arg(long)]
-    target: String,
+    target: Option<String>,
 }
 
 #[tokio::main]
@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
         rtp_port = rtp_server_port;
         rtcp_send_port = rtcp_listen_port;
     } else if args.mode == Mode::Pull {
-        (rtp_port, codec) = setup_rtsp_session(&args.target).await?;
+        (rtp_port, codec) = setup_rtsp_session(&args.target.unwrap()).await?;
     } else {
         rtp_port = 8000;
     }
