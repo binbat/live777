@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
 
     let host = input.host().unwrap().to_string().clone();
     let host2 = host.clone();
+    let localhost = "0.0.0.0".to_string();
     let mut codec = Codec::Vp8;
     let mut rtp_port = input.port().unwrap_or(0);
     let mut rtcp_send_port = 0;
@@ -175,7 +176,8 @@ async fn main() -> Result<()> {
         rtp_port = video_track.unwrap().port;
     }
 
-    let listener = UdpSocket::bind(format!("{}:{}", host.clone(), rtp_port)).await?;
+    debug!("use rtp port {}", rtp_port);
+    let listener = UdpSocket::bind(format!("{}:{}", localhost, rtp_port)).await?;
     let port = listener.local_addr()?.port();
     info!(
         "=== RTP listener started : {} ===",
