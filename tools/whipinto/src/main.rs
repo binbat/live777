@@ -1,3 +1,4 @@
+use core::net::{Ipv4Addr, Ipv6Addr};
 use std::fs;
 use std::{sync::Arc, time::Duration, vec};
 
@@ -9,7 +10,7 @@ use tokio::{
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use tracing::{debug, info, trace, warn, Level};
-use url::Url;
+use url::{Host, Url};
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
@@ -50,6 +51,9 @@ struct Args {
     /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
     #[arg(short, long)]
     whip: String,
+    /// Set Listener address
+    #[arg(long)]
+    host: Option<String>,
     /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
@@ -75,13 +79,21 @@ async fn main() -> Result<()> {
         }
     ));
 
-    let input = Url::parse(&args.input)
-        .unwrap_or(Url::parse(&format!("local://0.0.0.0:0/{}", args.input)).unwrap());
-    warn!("=== Received Input: {} ===", args.input);
+    let input = Url::parse(&args.input).unwrap_or(
+        Url::parse(&format!("sdp://{}:0/{}", Ipv4Addr::UNSPECIFIED, args.input)).unwrap(),
+    );
+    info!("=== Received Input: {} ===", args.input);
 
-    let host = input.host().unwrap().to_string().clone();
-    let host2 = host.clone();
-    let localhost = "0.0.0.0".to_string();
+    let mut host = match input.host().unwrap() {
+        Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
+        Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
+    };
+
+    if let Some(h) = args.host {
+        debug!("=== Specified set host, using {} ===", h);
+        host = h;
+    }
+
     let mut codec = Codec::Vp8;
     let mut rtp_port = input.port().unwrap_or(0);
     let mut rtcp_send_port = 0;
@@ -92,6 +104,7 @@ async fn main() -> Result<()> {
         let (tx, mut rx) = unbounded_channel::<String>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
 
+        let host2 = host.to_string();
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host2.clone(), rtp_port))
                 .await
@@ -177,7 +190,7 @@ async fn main() -> Result<()> {
     }
 
     debug!("use rtp port {}", rtp_port);
-    let listener = UdpSocket::bind(format!("{}:{}", localhost, rtp_port)).await?;
+    let listener = UdpSocket::bind(format!("{}:{}", host, rtp_port)).await?;
     let port = listener.local_addr()?.port();
     info!(
         "=== RTP listener started : {} ===",
