@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: latest
+          node-version: lts/Iron
       - name: Install npm dependencies
         run: npm ci
       - name: Build WebUI
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: latest
+          node-version: lts/Iron
       - name: Install npm dependencies
         run: npm ci
       - name: Build WebUI
