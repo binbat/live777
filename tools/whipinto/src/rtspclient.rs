@@ -208,7 +208,7 @@ async fn send_setup_request(
 }
 
 pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
-    let url = Url::parse(rtsp_url)?;
+    let mut url = Url::parse(rtsp_url)?;
     let host = url
         .host()
         .ok_or_else(|| anyhow!("Host not found"))?
@@ -222,7 +222,9 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
     let mut cseq = 1;
     let username = url.username().to_string();
     let password = url.password().unwrap_or("").to_string();
-    let uri = rtsp_url.to_string();
+    url.set_username("").unwrap();
+    url.set_password(None).unwrap();
+    let uri = url.as_str().to_string();
 
     let mut auth_header: Option<HeaderValue> = None;
 
@@ -347,12 +349,11 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         .unwrap_or_else(|| format!("{}/trackID=1", uri));
 
     trace!("video uri: {:?}", video_uri);
-    let video_uri2 = format!("{}/{}", uri, video_uri);
-    trace!("video uri 2: {:?}", video_uri2);
+    
     let session_id = send_setup_request(
         auth_header.clone(),
         &mut stream,
-        &video_uri2,
+        &video_uri,
         &mut cseq,
         rtp_port,
         rtcp_port,
