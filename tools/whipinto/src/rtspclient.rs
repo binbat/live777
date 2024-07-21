@@ -349,7 +349,7 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         .unwrap_or_else(|| format!("{}/trackID=1", uri));
 
     trace!("video uri: {:?}", video_uri);
-    
+
     let session_id = send_setup_request(
         auth_header.clone(),
         &mut stream,
