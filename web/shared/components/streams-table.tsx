@@ -10,8 +10,13 @@ import { IPreviewDialog, PreviewDialog } from './dialog-preview';
 import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream';
 import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream';
 
+async function getStreamsSorted() {
+    const streams = await getStreams();
+    return streams.sort((a, b) => a.createdAt - b.createdAt);
+}
+
 export function StreamsTable(props: { cascade: boolean }) {
-    const streams = useRefreshTimer([], getStreams);
+    const streams = useRefreshTimer([], getStreamsSorted);
     const [selectedStreamId, setSelectedStreamId] = useState('');
     const refCascadePull = useRef<ICascadeDialog>(null);
     const refCascadePush = useRef<ICascadeDialog>(null);
