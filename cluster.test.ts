@@ -128,60 +128,45 @@ describe("test single live777", () => {
     })
 
     test("minimum", async () => {
-        try {
-            const res = await getStreams(live777Host)
-            expect(res).toHaveLength(0)
-        } catch {
-            assert.fail()
-        }
+        const res = await getStreams(live777Host)
+        expect(res).toHaveLength(0)
     })
 
     test("create stream", async () => {
         const live777Stream = "888"
-        try {
-            const resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
-                method: "POST",
-            })
-            expect(resCreate.status).toBe(204)
-            const streams = await getStreams(live777Host)
-            expect(streams).toHaveLength(1)
-        } catch (e) {
-            assert.fail(e)
-        }
+        const resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
+            method: "POST",
+        })
+        expect(resCreate.status).toBe(204)
+        const streams = await getStreams(live777Host)
+        expect(streams).toHaveLength(1)
     })
 
     test("create stream connect", async () => {
         const live777Stream = "888"
         const appWhipinto = appRust + "whipinto"
 
+        const resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
+            method: "POST",
+        })
+
+        expect(resCreate.status).toBe(204)
+
+        const whipinto = spawn([
+            appWhipinto,
+            "--codec", "vp8",
+            "--url", `${live777Host}/whip/${live777Stream}`,
+            "--port", "5003",
+        ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
+
+        await until(() => getStreams(live777Host), s => s[0]?.publish.sessions.length > 0)
+
         try {
-            const resCreate = await fetch(`${live777Host}/api/streams/${live777Stream}`, {
-                method: "POST",
-            })
-
-            expect(resCreate.status).toBe(204)
-
-            const whipinto = spawn([
-                appWhipinto,
-                "--codec", "vp8",
-                "--url", `${live777Host}/whip/${live777Stream}`,
-                "--port", "5003",
-            ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
-
-            await until(() => getStreams(live777Host), s => s[0]?.publish.sessions.length > 0)
-
-            try {
-                const resIndex = (await getStreams(live777Host)).find(r => r.id === live777Stream)
-                expect(resIndex?.publish.sessions).toHaveLength(1)
-                expect(resIndex?.publish.sessions[0].state).toBe("connected")
-            } catch (e) {
-                assert.fail(e)
-            } finally {
-                whipinto.kill()
-            }
-
-        } catch (e) {
-            assert.fail(e)
+            const resIndex = (await getStreams(live777Host)).find(r => r.id === live777Stream)
+            expect(resIndex?.publish.sessions).toHaveLength(1)
+            expect(resIndex?.publish.sessions[0].state).toBe("connected")
+        } finally {
+            whipinto.kill()
         }
     })
 })
@@ -238,13 +223,9 @@ sub_max = 1
 alias = "test-cloud"
 url = "http://${localhost}:${live777CloudPort}"
 `
-        try {
-            await writeFile(tmpFileConfigVerge, fileContentVerge)
-            await writeFile(tmpFileConfigCloud, fileContentCloud)
-            await writeFile(tmpFileConfigMan, fileContentMan)
-        } catch (e) {
-            assert.fail(e)
-        }
+        await writeFile(tmpFileConfigVerge, fileContentVerge)
+        await writeFile(tmpFileConfigCloud, fileContentCloud)
+        await writeFile(tmpFileConfigMan, fileContentMan)
 
         serv = new UpCluster([
             {
@@ -291,12 +272,8 @@ url = "http://${localhost}:${live777CloudPort}"
 
         await until(() => getStreams(live777VergeHost), s => s[0]?.publish.sessions.length > 0)
 
-        try {
-            const res = await reforward(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
-            assert(res.ok)
-        } catch (e) {
-            assert.fail(e)
-        }
+        const resReforward = await reforward(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
+        assert(resReforward.ok)
 
         await until(() => getStreams(live777CloudHost), s => s[0]?.publish.sessions.length > 0)
 
