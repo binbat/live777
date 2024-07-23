@@ -370,7 +370,7 @@ But now, We support re-size `pkt_size` in `VP8` and `VP9`, You can use any `pkt_
 
 Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `OPUS` | `G722` |
 ----------------- | ------ | ------ | ------ | ------ | ------ | ------ |
-`pkt_size > 1200` | :shit: | :star: | :star: | :shit: | :shit: | :shit: |
+`pkt_size > 1200` | :shit: | :star: | :star: | :star: | :shit: | :shit: |
 
 * * *
 
