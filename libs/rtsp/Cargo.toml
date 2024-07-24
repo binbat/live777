@@ -1,0 +1,16 @@
+[package]
+name = "rtsp"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+anyhow = "1.0"
+rtsp-types = "0.1.1"
+sdp = "0.6"
+tokio = "1.37"
+sdp-types = "0.1.6"
+portpicker = "0.1.1"

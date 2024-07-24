@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 cli = { path = "../../libs/cli" }
+rtsp = { path = "../../libs/rtsp" }
 libwish = { path = "../../libs/libwish" }
 signal = { path = "../../libs/signal" }
 utils = { path = "../../libs/utils" }
@@ -20,3 +21,9 @@ webrtc = { workspace = true }
 
 bytes = "1.6.0"
 scopeguard = "1.2.0"
+md-5 = "0.10"
+url = "2.5.2"
+portpicker = "0.1.1"
+rtsp-types = "0.1.2"
+sdp-types = "0.1"
+sdp = "0.6.2"

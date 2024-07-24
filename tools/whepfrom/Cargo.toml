@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 cli = { path = "../../libs/cli" }
+rtsp = { path = "../../libs/rtsp" }
 libwish = { path = "../../libs/libwish" }
 signal = { path = "../../libs/signal" }
 utils = { path = "../../libs/utils" }
