@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "live777"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "clap",
  "liveion",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "liveion"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "api",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "liveman"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "api",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "whepfrom"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3223,7 +3223,7 @@ dependencies = [
 
 [[package]]
 name = "whipinto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bytes",

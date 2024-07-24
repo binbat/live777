@@ -7,7 +7,6 @@ export default ts.config(
     {
         ignores: [
             'assets/',
-            'cluster.test.ts',
             'web/shared/tools/debugger/**/*.js'
         ]
     },

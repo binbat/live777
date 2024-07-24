@@ -15,9 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         app:
+          - live777-server
           - live777
           - liveman
-          - gstreamer
+          - whipinto
+          - whepfrom
     steps:
       -
         name: Checkout
