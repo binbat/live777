@@ -18,6 +18,21 @@ use tracing::{debug, info, trace};
 const USER_AGENT: &str = "whipinto";
 const DEFAULT_RTSP_PORT: u16 = 554;
 
+pub struct Username(String);
+pub struct Password(String);
+
+impl Username {
+    pub fn new(username: &str) -> Self {
+        Username(username.to_string())
+    }
+}
+
+impl Password {
+    pub fn new(password: &str) -> Self {
+        Password(password.to_string())
+    }
+}
+
 pub async fn send_request(stream: &mut TcpStream, request: &Request<Vec<u8>>) -> Result<()> {
     let mut buffer = Vec::new();
     request.write(&mut buffer)?;
@@ -105,6 +120,46 @@ fn parse_auth(header_value: &HeaderValue) -> Result<(String, String)> {
     Ok((realm, nonce))
 }
 
+fn method_to_string(method: &Method) -> &str {
+    match method {
+        Method::Options => "OPTIONS",
+        Method::Describe => "DESCRIBE",
+        Method::Setup => "SETUP",
+        Method::Play => "PLAY",
+        _ => "UNKNOWN",
+    }
+}
+
+async fn handle_unauthorized(
+    stream: &mut TcpStream,
+    uri: &str,
+    cseq: &mut u32,
+    username: &str,
+    password: &str,
+    method: Method,
+    auth_header: &HeaderValue,
+) -> Result<Response<Vec<u8>>> {
+    let (realm, nonce) = parse_auth(auth_header)?;
+    let auth_header_value = generate_authorization_header(
+        username,
+        password,
+        &realm,
+        &nonce,
+        uri,
+        method_to_string(&method),
+    );
+    let auth_request = Request::builder(method, Version::V1_0)
+        .request_uri(uri.parse::<Url>().map_err(|_| anyhow!("Invalid URI"))?)
+        .header(headers::CSEQ, cseq.to_string())
+        .header(headers::USER_AGENT, USER_AGENT)
+        .header(headers::AUTHORIZATION, auth_header_value)
+        .empty();
+    send_request(stream, &auth_request.map_body(|_| vec![])).await?;
+    let response = read_response(stream).await?;
+    *cseq += 1;
+    Ok(response)
+}
+
 async fn keep_rtsp_alive(mut stream: TcpStream, mut cseq: u32) -> Result<()> {
     let mut interval = time::interval(Duration::from_secs(30));
     loop {
@@ -138,10 +193,62 @@ pub fn codec_from_str(s: &str) -> Result<Codec> {
         "AV1" => Ok(Codec::AV1),
         "OPUS" => Ok(Codec::Opus),
         "G722" => Ok(Codec::G722),
-        // "PCMU" => Ok(Codec::Pcmu),
-        // "PCMA" => Ok(Codec::Pcma),
         _ => Err(anyhow!("Unknown codec: {}", s)),
     }
+}
+
+async fn send_options_request(stream: &mut TcpStream, cseq: &mut u32) -> Result<()> {
+    let options_request = Request::builder(Method::Options, Version::V1_0)
+        .header(headers::CSEQ, cseq.to_string())
+        .header(headers::USER_AGENT, USER_AGENT)
+        .empty();
+
+    send_request(stream, &options_request.map_body(|_| vec![])).await?;
+    let _options_response = read_response(stream).await?;
+    *cseq += 1;
+    Ok(())
+}
+
+async fn send_describe_request(
+    stream: &mut TcpStream,
+    uri: &str,
+    cseq: &mut u32,
+    username: &str,
+    password: &str,
+) -> Result<String> {
+    let describe_request = Request::builder(Method::Describe, Version::V1_0)
+        .request_uri(uri.parse::<Url>().map_err(|_| anyhow!("Invalid URI"))?)
+        .header(headers::CSEQ, cseq.to_string())
+        .header(headers::ACCEPT, "application/sdp")
+        .header(headers::USER_AGENT, USER_AGENT)
+        .empty();
+
+    send_request(stream, &describe_request.map_body(|_| vec![])).await?;
+    let mut describe_response = read_response(stream).await?;
+    *cseq += 1;
+
+    if describe_response.status() == StatusCode::Unauthorized {
+        let auth_header = describe_response.header(&WWW_AUTHENTICATE).cloned();
+        if let Some(auth_header) = auth_header {
+            describe_response = handle_unauthorized(
+                stream,
+                uri,
+                cseq,
+                username,
+                password,
+                Method::Describe,
+                &auth_header,
+            )
+            .await?;
+        }
+    }
+
+    let sdp_content = String::from_utf8_lossy(describe_response.body()).to_string();
+    if sdp_content.is_empty() {
+        return Err(anyhow!("Received empty SDP content"));
+    }
+
+    Ok(sdp_content)
 }
 
 async fn send_setup_request(
@@ -152,6 +259,8 @@ async fn send_setup_request(
     rtp_server_port: u16,
     rtcp_server_port: u16,
     session_id: Option<&str>,
+    username: &str,
+    password: &str,
 ) -> Result<String> {
     let mut setup_request_builder = Request::builder(Method::Setup, Version::V1_0)
         .request_uri(uri.parse::<Url>().map_err(|_| anyhow!("Invalid URI"))?)
@@ -169,16 +278,12 @@ async fn send_setup_request(
             }),
         ]));
 
-    if auth_header.is_some() {
-        if let Some(password) = uri.parse::<Url>().unwrap().password() {
-            let username = uri.parse::<Url>().unwrap().username().to_string();
-            let (realm, nonce) = parse_auth(&auth_header.unwrap())?;
-
-            let auth_header_value =
-                generate_authorization_header(&username, password, &realm, &nonce, uri, "SETUP");
-            setup_request_builder =
-                setup_request_builder.header(headers::AUTHORIZATION, auth_header_value)
-        }
+    if let Some(auth_header) = &auth_header {
+        let (realm, nonce) = parse_auth(auth_header)?;
+        let auth_header_value =
+            generate_authorization_header(username, password, &realm, &nonce, uri, "SETUP");
+        setup_request_builder =
+            setup_request_builder.header(headers::AUTHORIZATION, auth_header_value)
     }
 
     if let Some(session) = session_id {
@@ -191,7 +296,27 @@ async fn send_setup_request(
     let setup_response = read_response(stream).await?;
     *cseq += 1;
 
-    if setup_response.status() != StatusCode::Ok {
+    if setup_response.status() == StatusCode::Unauthorized {
+        if let Some(auth_header) = setup_response.header(&WWW_AUTHENTICATE).cloned() {
+            let setup_response = handle_unauthorized(
+                stream,
+                uri,
+                cseq,
+                username,
+                password,
+                Method::Setup,
+                &auth_header,
+            )
+            .await?;
+            if setup_response.status() != StatusCode::Ok {
+                return Err(anyhow!("SETUP request failed after authentication"));
+            }
+        } else {
+            return Err(anyhow!(
+                "SETUP request failed with 401 Unauthorized and no WWW-Authenticate header"
+            ));
+        }
+    } else if setup_response.status() != StatusCode::Ok {
         return Err(anyhow!("SETUP request failed"));
     }
 
@@ -220,107 +345,18 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
     let mut stream = TcpStream::connect(addr).await?;
 
     let mut cseq = 1;
-    let username = url.username().to_string();
-    let password = url.password().unwrap_or("").to_string();
+    let username = Username::new(url.username());
+    let password = Password::new(url.password().unwrap_or(""));
     url.set_username("").unwrap();
     url.set_password(None).unwrap();
     let uri = url.as_str().to_string();
 
-    let mut auth_header: Option<HeaderValue> = None;
+    let auth_header: Option<HeaderValue> = None;
 
-    // Send OPTIONS request
-    let options_request = Request::builder(Method::Options, Version::V1_0)
-        .header(headers::CSEQ, cseq.to_string())
-        .header(headers::USER_AGENT, USER_AGENT)
-        .empty();
+    send_options_request(&mut stream, &mut cseq).await?;
 
-    send_request(&mut stream, &options_request.map_body(|_| vec![])).await?;
-    let options_response = read_response(&mut stream).await?;
-    cseq += 1;
-
-    // Handle authentication if required
-    if options_response.status() == StatusCode::Unauthorized {
-        auth_header = options_response.header(&WWW_AUTHENTICATE).cloned();
-        if auth_header.is_some() {
-            let (realm, nonce) = parse_auth(&auth_header.clone().unwrap())?;
-
-            // Send authenticated OPTIONS request
-            let auth_header_value = generate_authorization_header(
-                &username, &password, &realm, &nonce, &uri, "OPTIONS",
-            );
-            let options_request = Request::builder(Method::Options, Version::V1_0)
-                .header(headers::CSEQ, cseq.to_string())
-                .header(headers::USER_AGENT, USER_AGENT)
-                .header(headers::AUTHORIZATION, auth_header_value)
-                .empty();
-
-            send_request(&mut stream, &options_request.map_body(|_| vec![])).await?;
-            let options_response = read_response(&mut stream).await?;
-            cseq += 1;
-
-            if options_response.status() != StatusCode::Ok {
-                return Err(anyhow!("OPTIONS request failed"));
-            }
-        }
-    }
-
-    trace!("rtsp url: {:?}", uri);
-    // Send DESCRIBE request
-    let describe_request = Request::builder(Method::Describe, Version::V1_0)
-        .request_uri(
-            uri.clone()
-                .parse::<Url>()
-                .map_err(|_| anyhow!("Invalid URI"))?,
-        )
-        .header(headers::CSEQ, cseq.to_string())
-        .header(headers::ACCEPT, "application/sdp")
-        .header(headers::USER_AGENT, USER_AGENT)
-        .empty();
-
-    send_request(&mut stream, &describe_request.map_body(|_| vec![])).await?;
-    let mut describe_response = read_response(&mut stream).await?;
-    trace!("describe_response: {:?}", describe_response);
-    cseq += 1;
-
-    if describe_response.status() == StatusCode::Unauthorized {
-        debug!("use authentication");
-        auth_header = describe_response.header(&WWW_AUTHENTICATE).cloned();
-
-        if auth_header.is_some() {
-            let (realm, nonce) = parse_auth(&auth_header.clone().unwrap())?;
-
-            // Send authenticated DESCRIBE request
-            let auth_header_value = generate_authorization_header(
-                &username, &password, &realm, &nonce, &uri, "DESCRIBE",
-            );
-            let describe_request = Request::builder(Method::Describe, Version::V1_0)
-                .request_uri(
-                    uri.clone()
-                        .parse::<Url>()
-                        .map_err(|_| anyhow!("Invalid URI"))?,
-                )
-                .header(headers::CSEQ, cseq.to_string())
-                .header(headers::ACCEPT, "application/sdp")
-                .header(headers::USER_AGENT, USER_AGENT)
-                .header(headers::AUTHORIZATION, auth_header_value)
-                .empty();
-
-            send_request(&mut stream, &describe_request.map_body(|_| vec![])).await?;
-            describe_response = read_response(&mut stream).await?;
-            cseq += 1;
-
-            if describe_response.status() != StatusCode::Ok {
-                return Err(anyhow!("DESCRIBE request failed"));
-            }
-        }
-    }
-    trace!("describe_response: {:?}", describe_response);
-    let sdp_content = String::from_utf8_lossy(describe_response.body()).to_string();
-    info!("received SDP: {:?}", sdp_content);
-
-    if sdp_content.is_empty() {
-        return Err(anyhow!("Received empty SDP content"));
-    }
+    let sdp_content =
+        send_describe_request(&mut stream, &uri, &mut cseq, &username.0, &password.0).await?;
 
     let sdp: Session = Session::parse(sdp_content.as_bytes())
         .map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
@@ -340,7 +376,12 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         .and_then(|md| {
             md.attributes.iter().find_map(|attr| {
                 if attr.attribute == "control" {
-                    Some(attr.value.clone().unwrap_or_default())
+                    let value = attr.value.clone().unwrap_or_default();
+                    if value.starts_with("rtsp://") {
+                        Some(value)
+                    } else {
+                        Some(format!("{}/{}", uri, value))
+                    }
                 } else {
                     None
                 }
@@ -358,34 +399,13 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         rtp_port,
         rtcp_port,
         None,
+        &username.0,
+        &password.0,
     )
     .await?;
     trace!("session id: {:?}", session_id);
 
-    // Uncomment the following lines if you want to set up the audio track as well
-    // let audio_uri = audio_track
-    //     .and_then(|md| {
-    //         md.attributes.iter().find_map(|attr| {
-    //             if attr.attribute == "control" {
-    //                 Some(attr.value.clone().unwrap_or_default())
-    //             } else {
-    //                 None
-    //             }
-    //         })
-    //     })
-    //     .unwrap_or_else(|| format!("{}/trackID=2", uri));
-    //
-    // send_setup_request(
-    //     &mut stream,
-    //     &audio_uri,
-    //     &mut cseq,
-    //     rtp_port,
-    //     rtcp_port,
-    //     Some(&session_id),
-    // ).await?;
-
     trace!("play_url: {:?}", uri);
-    // Send PLAY request
     let play_request = Request::builder(Method::Play, Version::V1_0)
         .request_uri(uri.parse::<Url>().map_err(|_| anyhow!("Invalid URI"))?)
         .header(headers::CSEQ, cseq.to_string())
@@ -394,8 +414,24 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         .empty();
 
     send_request(&mut stream, &play_request.map_body(|_| vec![])).await?;
-    let play_response = read_response(&mut stream).await?;
+    let mut play_response = read_response(&mut stream).await?;
     trace!("play_response: {:?}", play_response);
+
+    if play_response.status() == StatusCode::Unauthorized {
+        let auth_header = play_response.header(&WWW_AUTHENTICATE).cloned();
+        if let Some(auth_header) = auth_header {
+            play_response = handle_unauthorized(
+                &mut stream,
+                &uri,
+                &mut cseq,
+                &username.0,
+                &password.0,
+                Method::Play,
+                &auth_header,
+            )
+            .await?;
+        }
+    }
 
     if play_response.status() != StatusCode::Ok {
         return Err(anyhow!("PLAY request failed"));
