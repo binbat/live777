@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
     let mut _codec = args.codec;
     let mut rtp_port = args.port;
 
-    let udp_socket = UdpSocket::bind("[::]:8000").await?;
+    let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
 
@@ -158,8 +158,10 @@ async fn main() -> Result<()> {
         println!("=== Received RTPMAP: {} ===", rtp_port);
         rtcp_port = rtp_server_port + 1;
     }
+    udp_socket
+        .connect(format!("127.0.0.1:{}", rtp_port))
+        .await?;
 
-    udp_socket.connect(format!("[::1]:{}", rtp_port)).await?;
     let child = Arc::new(create_child(args.command)?);
     defer!({
         if let Some(child) = child.as_ref() {
