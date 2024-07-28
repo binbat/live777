@@ -1,15 +1,15 @@
-use core::net::{Ipv4Addr, Ipv6Addr};
 use std::fs;
 use std::{sync::Arc, time::Duration, vec};
 
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser};
+use core::net::{Ipv4Addr, Ipv6Addr};
 use scopeguard::defer;
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
-use tracing::{debug, info, trace, warn, Level};
+use tracing::{debug, error, info, trace, warn, Level};
 use url::{Host, Url};
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
@@ -37,7 +37,11 @@ mod payload;
 mod rtspclient;
 #[cfg(test)]
 mod test;
+
 const PREFIX_LIB: &str = "WEBRTC";
+const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
+const SCHEME_RTSP_CLIENT: &str = "rtsp";
+const SCHEME_RTP_SDP: &str = "sdp";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -46,7 +50,7 @@ struct Args {
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
     /// rtsp://[username]:[password]@[ip]:[port]/[stream] Or <stream.sdp>
-    #[arg(short, long, default_value_t = String::from("rtsp-listen://0.0.0.0:8554"))]
+    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8554", SCHEME_RTSP_SERVER))]
     input: String,
     /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
     #[arg(short, long)]
@@ -80,7 +84,13 @@ async fn main() -> Result<()> {
     ));
 
     let input = Url::parse(&args.input).unwrap_or(
-        Url::parse(&format!("sdp://{}:0/{}", Ipv4Addr::UNSPECIFIED, args.input)).unwrap(),
+        Url::parse(&format!(
+            "{}://{}:0/{}",
+            SCHEME_RTP_SDP,
+            Ipv4Addr::UNSPECIFIED,
+            args.input
+        ))
+        .unwrap(),
     );
     info!("=== Received Input: {} ===", args.input);
 
@@ -100,7 +110,7 @@ async fn main() -> Result<()> {
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
 
-    if input.scheme() == "rtsp-listen" {
+    if input.scheme() == SCHEME_RTSP_SERVER {
         let (tx, mut rx) = unbounded_channel::<String>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
 
@@ -109,7 +119,7 @@ async fn main() -> Result<()> {
             let listener = TcpListener::bind(format!("{}:{}", host2.clone(), rtp_port))
                 .await
                 .unwrap();
-            println!(
+            warn!(
                 "=== RTSP listener started : {} ===",
                 listener.local_addr().unwrap()
             );
@@ -117,11 +127,9 @@ async fn main() -> Result<()> {
                 let (socket, _) = listener.accept().await.unwrap();
                 match rtsp::process_socket(socket, &mut handler).await {
                     Ok(_) => {}
-                    Err(e) => {
-                        println!("=== RTSP listener error: {} ===", e);
-                    }
+                    Err(e) => error!("=== RTSP listener error: {} ===", e),
                 };
-                println!("=== RTSP client socket closed ===");
+                warn!("=== RTSP client socket closed ===");
             }
         });
 
@@ -162,7 +170,7 @@ async fn main() -> Result<()> {
             };
         rtp_port = rtp_server_port;
         rtcp_send_port = rtcp_listen_port;
-    } else if input.scheme() == "rtsp" {
+    } else if input.scheme() == SCHEME_RTSP_CLIENT {
         (rtp_port, codec) = setup_rtsp_session(&args.input).await?;
     } else {
         let sdp = sdp_types::Session::parse(&fs::read(args.input).unwrap()).unwrap();
@@ -219,7 +227,7 @@ async fn main() -> Result<()> {
         .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
 
     tokio::spawn(rtp_listener(listener, sender));
-    if input.scheme() == "rtsp-listen" {
+    if input.scheme() == SCHEME_RTSP_SERVER {
         let rtcp_port = rtp_port + 1;
         tokio::spawn(rtcp_listener(host.clone(), rtcp_port, peer.clone()));
         let senders = peer.get_senders().await;

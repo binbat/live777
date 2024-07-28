@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use clap::{ArgAction, Parser, ValueEnum};
+use core::net::Ipv4Addr;
 use scopeguard::defer;
 use tokio::net::TcpListener;
 use tokio::{
@@ -47,7 +48,8 @@ struct Args {
     verbose: u8,
     #[arg(short, long, value_enum, default_value_t = Mode::Rtsp)]
     mode: Mode,
-    #[arg(long, default_value_t = String::from("[::1]"))]
+    /// Set Listener address
+    #[arg(long, default_value_t = Ipv4Addr::UNSPECIFIED.to_string())]
     host: String,
     #[arg(long, default_value_t = 0)]
     port: u16,
@@ -90,7 +92,7 @@ async fn main() -> Result<()> {
     let mut _codec = args.codec;
     let mut rtp_port = args.port;
 
-    let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let udp_socket = UdpSocket::bind(format!("{}:0", host)).await?;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
 
@@ -124,7 +126,7 @@ async fn main() -> Result<()> {
             let listener = TcpListener::bind(format!("{}:{}", host, args.port))
                 .await
                 .unwrap();
-            println!(
+            warn!(
                 "=== RTSP listener started : {} ===",
                 listener.local_addr().unwrap()
             );
@@ -132,11 +134,9 @@ async fn main() -> Result<()> {
                 let (socket, _) = listener.accept().await.unwrap();
                 match rtsp::process_socket(socket, &mut handler).await {
                     Ok(_) => {}
-                    Err(e) => {
-                        println!("=== RTSP listener error: {} ===", e);
-                    }
+                    Err(e) => error!("=== RTSP listener error: {} ===", e),
                 };
-                println!("=== RTSP client socket closed ===");
+                warn!("=== RTSP client socket closed ===");
             }
         });
 
