@@ -12,7 +12,7 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub liveion: Liveion,
+    pub liveion: Vec<crate::mem::Server>,
     #[serde(default)]
     pub reforward: Reforward,
     #[serde(default)]
@@ -122,27 +122,6 @@ fn default_log_level() -> String {
     })
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Liveion {
-    #[serde(default = "default_liveion_address")]
-    pub address: SocketAddr,
-    #[serde(default)]
-    pub count: u16,
-}
-
-impl Default for Liveion {
-    fn default() -> Self {
-        Self {
-            address: default_liveion_address(),
-            count: Default::default(),
-        }
-    }
-}
-
-fn default_liveion_address() -> SocketAddr {
-    SocketAddr::from_str("127.0.0.1:0").unwrap()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Reforward {
     #[serde(default)]
@@ -186,12 +165,6 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        if self.liveion.count > 1 && self.liveion.address.port() != 0 {
-            return Err(anyhow::anyhow!(
-                "Multiple Liveion must use random port ':0'"
-            ));
-        }
-
         Ok(())
     }
 }

@@ -62,16 +62,9 @@ async fn main() {
 
     #[cfg(feature = "liveion")]
     {
-        let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
-        info!("{:?}", addrs);
-
-        cfg.nodes
-            .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                alias: format!("buildin-{}", i),
-                url: format!("http://{}", addr),
-                sub_max: 1,
-                ..Default::default()
-            }));
+        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
+        info!("liveion buildin servers: {:?}", servers);
+        cfg.nodes.extend(servers)
     }
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
@@ -100,15 +93,9 @@ async fn main() {
 
     #[cfg(feature = "liveion")]
     {
-        let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
-        info!("{:?}", addrs);
-
-        cfg.nodes
-            .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                alias: format!("buildin-{}", i),
-                url: format!("http://{}", addr),
-                ..Default::default()
-            }));
+        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
+        info!("liveion buildin servers: {:?}", servers);
+        cfg.nodes.extend(servers)
     }
 
     warn!("set log level : {}", cfg.log.level);

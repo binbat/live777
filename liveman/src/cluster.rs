@@ -1,12 +1,14 @@
-use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use tracing::{debug, info};
 
-pub async fn cluster_up(count: u16, address: SocketAddr) -> Vec<String> {
+use crate::mem::Server;
+
+pub async fn cluster_up(liveions: Vec<Server>) -> Vec<Server> {
     let mut results = Vec::new();
 
-    for _ in 1..=count {
+    for liveion in liveions.iter() {
         let mut cfg = liveion::config::Config::default();
-        cfg.http.listen = address;
+        cfg.http.listen = liveion.url.to_socket_addrs().unwrap().next().unwrap();
 
         let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
             .await
@@ -20,7 +22,18 @@ pub async fn cluster_up(count: u16, address: SocketAddr) -> Vec<String> {
             listener,
             shutdown_signal(addr.to_string()),
         ));
-        results.push(addr.to_string());
+
+        results.push(Server {
+            alias: if liveion.alias.is_empty() {
+                format!("buildin-{}", addr.port())
+            } else {
+                liveion.alias.clone()
+            },
+            url: format!("http://{}", addr),
+            pub_max: liveion.pub_max,
+            sub_max: liveion.sub_max,
+            ..Default::default()
+        })
     }
     results
 }

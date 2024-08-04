@@ -39,11 +39,19 @@
 
 # Build-in Live777 SFU Server
 # Need enable `--features=liveion`
-[liveion]
-# Number of instances, if == 0, Disable
-count = 3
+[[liveion]]
+alias = "buildin-0"
 # If port == 0, use random port. If count > 1, port must use 0
-# address = "127.0.0.1:0"
+url = "127.0.0.1:0"
+sub_max = 1
+
+[[liveion]]
+alias = "buildin-1"
+url = "127.0.0.1:0"
+
+[[liveion]]
+alias = "buildin-2"
+url = "127.0.0.1:0"
 
 # [[nodes]]
 # Globally unique id
