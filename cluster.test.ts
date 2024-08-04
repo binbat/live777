@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-unused-expressions */
 
 import { writeFile, rm } from "node:fs/promises"
-import { existsSync } from 'node:fs'
+import { existsSync } from "node:fs"
 import { text } from "node:stream/consumers"
 import cp, { ChildProcess } from "node:child_process"
 
@@ -42,6 +42,9 @@ function spawn(command: string | string[], options?: SpawnOptions) {
     const cmd = Array.isArray(command) ? command[0] : command
     const arg = Array.isArray(command) ? command.slice(1) : []
     const process = cp.spawn(cmd, arg, toNodeSpawnOptions(options))
+    process[Symbol.dispose] = () => {
+        process.kill()
+    }
     process.on("exit", async () => {
         const exitCode = process.exitCode ?? 0
         const stdout = (process.stdout && await text(process.stdout)) ?? ""
@@ -57,7 +60,28 @@ function spawnSync(command: string | string[]) {
     return cp.spawnSync(cmd, arg)
 }
 
-async function until<T>(fn: () => Promise<T>, predicate: (t: T) => boolean, interval = 100): Promise<void> {
+async function tempFile(path: string, content: string) {
+    await writeFile(path, content)
+    return {
+        async [Symbol.asyncDispose]() {
+            await rm(path)
+        }
+    }
+}
+
+function rmTempFile(path: string) {
+    return {
+        async [Symbol.dispose]() {
+            await rm(path)
+        }
+    }
+}
+
+async function until<T>(
+    fn: () => Promise<T> | T,
+    predicate: (t: T) => boolean = t => t as boolean,
+    interval = 100
+): Promise<void> {
     do {
         await sleep(interval)
     } while (!predicate(await fn()))
@@ -69,6 +93,14 @@ async function untilHttpOk(host: string): Promise<void> {
 
 async function getStreams(server: string): Promise<Stream[]> {
     return (await fetch(`${server}/api/streams/`)).json()
+}
+
+async function hasPublishStreams(server: string): Promise<boolean> {
+    return (await getStreams(server))[0]?.publish.sessions.length > 0
+}
+
+async function hasSubscribeStreams(server: string): Promise<boolean> {
+    return (await getStreams(server))[0]?.subscribe.sessions.length > 0
 }
 
 async function reforward(server: string, streamId: string, url: string) {
@@ -105,6 +137,10 @@ class UpCluster {
     down() {
         this.srvs.forEach(s => s.kill())
     }
+
+    [Symbol.dispose]() {
+        this.down()
+    }
 }
 
 describe("test single live777", () => {
@@ -118,9 +154,10 @@ describe("test single live777", () => {
     let live777: ChildProcess | null = null
 
     beforeEach(async () => {
-        live777 = spawn([
-            appLive777,
-        ], { env: { PORT: live777Port }, onExit: e => { e.exitCode && console.log(e.stderr) } })
+        live777 = spawn([appLive777], {
+            env: { PORT: live777Port },
+            onExit: e => { e.exitCode && console.log(e.stderr) }
+        })
         await untilHttpOk(live777Host)
     })
 
@@ -154,28 +191,23 @@ describe("test single live777", () => {
 
         expect(resCreate.status).toBe(204)
 
-        await writeFile(tmpFileSdpWhipinto, `
+        await using _ = await tempFile(tmpFileSdpWhipinto, `
 v=0
 m=video 5002 RTP/AVP 96
 c=IN IP4 127.0.0.1
 a=rtpmap:96 VP8/90000
 `)
-
-        const whipinto = spawn([
+        using _whipinto = spawn([
             appWhipinto,
             "-i", tmpFileSdpWhipinto,
             "-w", `${live777Host}/whip/${live777Stream}`,
         ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
 
-        await until(() => getStreams(live777Host), s => s[0]?.publish.sessions.length > 0)
+        await until(() => hasPublishStreams(live777Host))
 
-        try {
-            const resIndex = (await getStreams(live777Host)).find(r => r.id === live777Stream)
-            expect(resIndex?.publish.sessions).toHaveLength(1)
-            expect(resIndex?.publish.sessions[0].state).toBe("connected")
-        } finally {
-            whipinto.kill()
-        }
+        const resIndex = (await getStreams(live777Host)).find(r => r.id === live777Stream)
+        expect(resIndex?.publish.sessions).toHaveLength(1)
+        expect(resIndex?.publish.sessions[0].state).toBe("connected")
     })
 })
 
@@ -262,7 +294,7 @@ url = "http://${localhost}:${live777CloudPort}"
     test("reforward", { timeout: 60 * 1000 }, async () => {
         const width = 320, height = 240
         const whipintoPort = "5002"
-        const ffmpeg = spawn([
+        using _ffmpeg = spawn([
             "ffmpeg", "-hide_banner", "-re", "-f", "lavfi",
             "-i", `testsrc=size=${width}x${height}:rate=30`,
             "-vcodec", "libvpx",
@@ -272,31 +304,32 @@ url = "http://${localhost}:${live777CloudPort}"
             stderr: null,
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
+        using _ = rmTempFile(tmpFileSdpWhipinto)
 
-        await until(async () => existsSync(tmpFileSdpWhipinto), r => r == true)
+        await until(() => existsSync(tmpFileSdpWhipinto))
 
-        const whipinto = spawn([
+        using _whipinto = spawn([
             appWhipinto,
             "-i", tmpFileSdpWhipinto,
             "-w", `${live777VergeHost}/whip/${live777VergeStream}`,
         ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
 
-        await until(() => getStreams(live777VergeHost), s => s[0]?.publish.sessions.length > 0)
+        await until(() => hasPublishStreams(live777VergeHost))
 
         const resReforward = await reforward(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
         assert(resReforward.ok)
 
-        await until(() => getStreams(live777CloudHost), s => s[0]?.publish.sessions.length > 0)
+        await until(() => hasPublishStreams(live777CloudHost))
 
         const whepfromPort = "5004"
-        await writeFile(tmpFileSdpWhepfrom, `
+        await using _1 = await tempFile(tmpFileSdpWhepfrom, `
 v=0
 m=video ${whepfromPort} RTP/AVP 96
 c=IN IP4 127.0.0.1
 a=rtpmap:96 VP8/90000
 `)
 
-        const whepfrom = spawn([
+        using _whepfrom = spawn([
             appWhepfrom,
             "--mode", "rtp",
             "--codec", "vp8",
@@ -317,15 +350,9 @@ a=rtpmap:96 VP8/90000
         expect(ffprobe.streams[0].width).toEqual(width)
         expect(ffprobe.streams[0].height).toEqual(height)
 
-        await until(() => getStreams(live777CloudHost), s => s[0]?.subscribe.sessions.length > 0)
+        await until(() => hasSubscribeStreams(live777CloudHost))
 
         const streams = await getStreams(live777CloudHost)
-
-        whepfrom.kill()
-        await rm(tmpFileSdpWhipinto)
-        await rm(tmpFileSdpWhepfrom)
-        whipinto.kill()
-        ffmpeg.kill()
 
         expect(streams).toHaveLength(1)
         expect(streams[0].subscribe.sessions).toHaveLength(1)
@@ -333,27 +360,28 @@ a=rtpmap:96 VP8/90000
 
     test("p2p to sfu", { timeout: 60 * 1000 }, async () => {
         const whipintoPort = "5006"
-        const ffmpeg = spawn([
+        using _ffmpeg = spawn([
             "ffmpeg", "-hide_banner", "-re", "-f", "lavfi",
             "-i", "testsrc=size=320x240:rate=30",
             "-vcodec", "libvpx",
             "-f", "rtp", `rtp://127.0.0.1:${whipintoPort}`,
             "-sdp_file", tmpFileSdpWhipinto
         ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
+        using _ = rmTempFile(tmpFileSdpWhipinto)
 
-        await until(async () => existsSync(tmpFileSdpWhipinto), r => r == true)
+        await until(() => existsSync(tmpFileSdpWhipinto))
 
-        const whipinto = spawn([
+        using _whipinto = spawn([
             appWhipinto,
             "-i", tmpFileSdpWhipinto,
             "-w", `${live777VergeHost}/whip/${live777VergeStream}`,
         ], { onExit: e => { e.exitCode && console.log("whipinto", e.stderr) } })
 
-        await until(() => getStreams(live777VergeHost), s => s[0]?.publish.sessions.length > 0)
-        await until(() => getStreams(live777LivemanHost), s => s[0]?.publish.sessions.length > 0)
+        await until(() => hasPublishStreams(live777VergeHost))
+        await until(() => hasPublishStreams(live777LivemanHost))
 
         const whepfromPort = "5008"
-        const whepfrom1 = spawn([
+        using _whepfrom1 = spawn([
             appWhepfrom,
             "--mode", "rtp",
             "--codec", "vp8",
@@ -362,10 +390,10 @@ a=rtpmap:96 VP8/90000
             "--port", whepfromPort,
         ], { onExit: e => { e.exitCode && console.log("whepfrom 1", e.stderr) } })
 
-        await until(() => getStreams(live777VergeHost), s => s[0]?.subscribe.sessions.length > 0)
+        await until(() => hasSubscribeStreams(live777VergeHost))
 
         const whepfrom2Port = "5010"
-        const whepfrom2 = spawn([
+        using _whepfrom2 = spawn([
             appWhepfrom,
             "--mode", "rtp",
             "--codec", "vp8",
@@ -375,19 +403,13 @@ a=rtpmap:96 VP8/90000
         ], { onExit: e => { e.exitCode && console.log("whepfrom 2", e.stderr) } })
 
         await Promise.all([
-            until(() => getStreams(live777VergeHost), s => s[0]?.subscribe.sessions.length > 0),
-            until(() => getStreams(live777CloudHost), s => s[0]?.subscribe.sessions.length > 0),
+            until(() => hasSubscribeStreams(live777VergeHost)),
+            until(() => hasSubscribeStreams(live777CloudHost)),
         ])
 
         const res1 = (await getStreams(live777VergeHost)).find(r => r.id === live777LivemanStream)
         const res2 = (await getStreams(live777CloudHost)).find(r => r.id === live777LivemanStream)
 
-        whepfrom2.kill()
-        whepfrom1.kill()
-        whipinto.kill()
-        ffmpeg.kill()
-
-        await rm(tmpFileSdpWhipinto)
         expect(res1).toBeTruthy()
         expect(res1?.subscribe.sessions.length).toEqual(1)
 
