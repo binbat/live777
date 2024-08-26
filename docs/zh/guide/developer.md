@@ -65,8 +65,8 @@ cargo run --package=whepfrom
 So. We support parameter `command`, You can use this:
 
 ```bash
-cargo run --package=whipinto -- -c vp8 -u http://localhost:7777/whip/777 --command \
-"ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -f rtp 'rtp://127.0.0.1:{port}?pkt_size=1200'"
+cargo run --package=whipinto -- -i stream.sdp -w http://localhost:7777/whip/777 --command \
+"ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libvpx -f rtp 'rtp://127.0.0.1:5002' -sdp_file stream.sdp"
 ```
 
 So. You can use this
