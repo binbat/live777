@@ -1,7 +1,9 @@
 use axum::body::Body;
 use axum::extract::Request;
 use axum::response::IntoResponse;
+use axum::routing::post;
 use axum::Router;
+
 use clap::Parser;
 use http::{header, StatusCode, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -14,6 +16,7 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{debug, error, info, info_span, warn};
 
+use crate::admin::{authorize, JWTValidate};
 use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::mem::{MemStorage, Server};
@@ -22,6 +25,7 @@ use crate::mem::{MemStorage, Server};
 #[folder = "../assets/liveman/"]
 struct Assets;
 
+mod admin;
 mod auth;
 mod config;
 mod error;
@@ -134,15 +138,23 @@ where
         client,
         storage: MemStorage::new(cfg.nodes),
     };
+
+    let secret = cfg.auth.secret.clone();
+    let jwt_layer = ValidateRequestHeaderLayer::custom(JWTValidate::new(
+        secret.clone(),
+        cfg.auth.admin.is_empty(),
+    ));
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
     let mut app = Router::new()
         .merge(route::proxy::route().layer(auth_layer))
-        .with_state(app_state.clone())
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
         } else {
             CorsLayer::new()
         })
+        .layer(jwt_layer)
+        .route("/login", post(authorize))
+        .with_state(app_state.clone())
         .layer(axum::middleware::from_fn(http_log::print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {

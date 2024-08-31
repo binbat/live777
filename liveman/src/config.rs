@@ -30,6 +30,10 @@ pub struct Http {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
     #[serde(default)]
+    pub admin: Vec<Account>,
+    #[serde(default)]
+    pub secret: String,
+    #[serde(default)]
     pub accounts: Vec<Account>,
     #[serde(default)]
     pub tokens: Vec<String>,

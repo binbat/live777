@@ -17,6 +17,12 @@
 # username = "live777"
 # password = "live777"
 
+# secret = "<jwt_secret>"
+
+# [[auth.admin]]
+# username = "live777"
+# password = "live777"
+
 [log]
 # Env: `LOG_LEVEL`
 # Default: info

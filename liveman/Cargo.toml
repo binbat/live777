@@ -21,6 +21,8 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 
 axum = { version = "0.7", features = ["multipart", "tracing"] }
+axum-extra = { version = "0.9.3", features = ["typed-header"] }
+jsonwebtoken = "9.3"
 base64 = "0.22.1"
 chrono = { version = "0.4", features = ["serde"] }
 http = "1.0.0"
