@@ -19,6 +19,8 @@ utils = { path = "../libs/utils" }
 
 anyhow = { workspace = true, features = ["backtrace"] }
 clap = { workspace = true, features = ["derive"] }
+http = { workspace = true }
+http-body = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
@@ -28,8 +30,6 @@ async-trait = "0.1"
 axum = { version = "0.7", features = ["multipart", "tracing"] }
 axum-extra = { version = "0.9.3", features = ["query"] }
 chrono = "0.4"
-http = "1.0.0"
-http-body = "1.0.0"
 hyper = "1.2.0"
 lazy_static = "1.4.0"
 md5 = "0.7.0"
