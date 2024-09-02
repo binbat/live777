@@ -16,7 +16,6 @@ declare module 'preact' {
 
 declare global {
     interface Window {
-        refreshDevice(): Promise<void>;
         startWhip(): Promise<void>;
         startWhep(): Promise<void>;
     }
@@ -60,11 +59,34 @@ const WhepLayerSelect = [
     { value: 'f', text: 'HIGH' },
 ];
 
+const NoneDevice = { value: '', text: 'none' };
+
 export default function DebuggerCompat() {
     const streamIdInput = useUrlParamsInput('id');
     const idBearerTokenInput = useUrlParamsInput('token');
 
-    const refreshDevice = useCallback(() => window.refreshDevice(), []);
+    const [refreshDisabled, setRefreshDisabled] = useState(false);
+    const [audioDevices, setAudioDevices] = useState([NoneDevice]);
+    const [videoDevices, setVideoDevices] = useState([NoneDevice]);
+
+    const refreshDevice = useCallback(async () => {
+        try {
+            const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            mediaStream.getTracks().map(track => track.stop());
+        } catch (e) {
+            console.error('Failed to getUserMedia:', e);
+        }
+        const devices = (await navigator.mediaDevices.enumerateDevices()).filter(i => !!i.deviceId);
+        const audio = devices.filter(i => i.kind === 'audioinput').map(i => ({ value: i.deviceId, text: i.label }));
+        if (audio.length > 0) {
+            setAudioDevices(audio);
+        }
+        const video = devices.filter(i => i.kind === 'videoinput').map(i => ({ value: i.deviceId, text: i.label }));
+        if (video.length > 0) {
+            setVideoDevices(video);
+        }
+        setRefreshDisabled(true);
+    }, []);
     const startWhip = useCallback(() => window.startWhip(), []);
     const startWhep = useCallback(() => window.startWhep(), []);
 
@@ -83,9 +105,17 @@ export default function DebuggerCompat() {
                     <legend>WHIP</legend>
                     <center>
                         <section>
-                            <button id="whip-device-button" onClick={refreshDevice}>Use Device</button>
-                            <div style="margin: 0.2rem">Audio Device: <select id="whip-audio-device"><option value="">none</option></select></div>
-                            <div style="margin: 0.2rem">Video Device: <select id="whip-video-device"><option value="">none</option></select></div>
+                            <button id="whip-device-button" disabled={refreshDisabled} onClick={refreshDevice}>Use Device</button>
+                            <div style="margin: 0.2rem">Audio Device:
+                                <select id="whip-audio-device">
+                                    {audioDevices.map(d => <option value={d.value}>{d.text}</option>)}
+                                </select>
+                            </div>
+                            <div style="margin: 0.2rem">Video Device:
+                                <select id="whip-video-device">
+                                    {videoDevices.map(d => <option value={d.value}>{d.text}</option>)}
+                                </select>
+                            </div>
                         </section>
 
                         <section>

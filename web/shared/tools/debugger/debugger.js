@@ -64,16 +64,6 @@ const layers = [
     {rid: 'f', scalabilityMode: 'L1T3'}
 ]
 
-function initLayerSelect(elementId, opts) {
-    const selectLayer = document.getElementById(elementId)
-    if (selectLayer) opts.map(i => {
-        const opt = document.createElement("option")
-        opt.value = i.value
-        opt.text = i.text
-        selectLayer.appendChild(opt)
-    })
-}
-
 // WHIP
 let whipNum = 0
 
@@ -86,30 +76,6 @@ const idWhipVideoSize = "whip-video-size"
 const idWhipButtonStop = "whip-button-stop"
 const idWhipPseudoAudio = "whip-pseudo-audio"
 const idWhipDataChannel = "whip-datachannel"
-
-// initLayerSelect(idWhipLayerSelect, [
-//     {value: "f", text: "Base"},
-//     {value: "h", text: "Base + 1/2"},
-//     {value: "q", text: "Base + 1/2 + 1/4"},
-// ])
-
-async function refreshDevice() {
-    const mediaStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true})
-    mediaStream.getTracks().map(track => track.stop())
-
-    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(i => !!i.deviceId)
-    initLayerSelect(idWhipAudioDevice, devices.filter(i => i.kind === 'audioinput').map(i => {
-        return {value: i.deviceId, text: i.label}
-    }))
-    initLayerSelect(idWhipVideoDevice, devices.filter(i => i.kind === 'videoinput').map(i => {
-        return {value: i.deviceId, text: i.label}
-    }))
-}
-
-window.refreshDevice = () => {
-    refreshDevice()
-    document.getElementById("whip-device-button").disabled = true
-}
 
 async function startWhip() {
     const streamId = getElementValue(idStreamId)
@@ -130,7 +96,10 @@ async function startWhip() {
 
     let stream
     if (!audioDevice && !videoDevice) {
-        stream = await navigator.mediaDevices.getDisplayMedia({audio: false, video: videoSize})
+        stream = await navigator.mediaDevices.getDisplayMedia({
+            audio: true,
+            video: videoSize
+        })
     } else {
         stream = await navigator.mediaDevices.getUserMedia({
             audio: {deviceId: audioDevice},
@@ -161,7 +130,9 @@ async function startWhip() {
     if (document.getElementById(idWhipPseudoAudio).checked) {
         pc.addTransceiver('audio', { 'direction': 'sendonly' })
     } else {
-        stream.getAudioTracks().map(track => pc.addTrack(track))
+        stream.getAudioTracks().forEach(track => pc.addTransceiver(track, {
+            direction: 'sendonly'
+        }))
     }
 
     const audioCodec = getElementValue(idWhipAudioCodec)
