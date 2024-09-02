@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    uid: usize,
-    exp: usize,
-    mode: Mode,
+    pub uid: usize,
+    pub exp: usize,
+    pub mode: Mode,
 }
 
 impl Display for Claims {

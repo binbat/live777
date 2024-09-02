@@ -46,7 +46,8 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.tokens));
+    let auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
     let mut app = Router::new()
         .merge(
             whip::route()

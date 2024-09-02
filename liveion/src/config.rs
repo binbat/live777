@@ -42,6 +42,8 @@ pub struct Http {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
     #[serde(default)]
+    pub secret: String,
+    #[serde(default)]
     pub tokens: Vec<String>,
 }
 

@@ -208,9 +208,11 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "auth"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "headers",
  "http 1.1.0",
  "http-body",
+ "jsonwebtoken",
  "serde",
  "tower-http",
 ]
@@ -1317,7 +1319,6 @@ dependencies = [
  "http-body",
  "http-log",
  "hyper-util",
- "jsonwebtoken",
  "liveion",
  "mime_guess",
  "reqwest",

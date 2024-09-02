@@ -6,8 +6,10 @@ edition.workspace = true
 crate-type = ["lib"]
 
 [dependencies]
+anyhow = { workspace = true, features = ["backtrace"] }
 http = { workspace = true }
 http-body = { workspace = true }
+jsonwebtoken = "9.3"
 serde = { workspace = true, features = ["serde_derive"] }
 
 headers = "0.4.0"

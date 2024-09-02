@@ -18,7 +18,7 @@ use tracing::{debug, error, info, info_span, warn};
 
 use auth::ManyValidate;
 
-use crate::admin::{authorize, JWTValidate};
+use crate::admin::authorize;
 use crate::config::Config;
 use crate::mem::{MemStorage, Server};
 
@@ -139,12 +139,8 @@ where
         storage: MemStorage::new(cfg.nodes),
     };
 
-    let secret = cfg.auth.secret.clone();
-    let jwt_layer = ValidateRequestHeaderLayer::custom(JWTValidate::new(
-        secret.clone(),
-        cfg.auth.admin.is_empty(),
-    ));
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.tokens));
+    let auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
     let mut app = Router::new()
         .merge(route::proxy::route().layer(auth_layer))
         .layer(if cfg.http.cors {
@@ -152,7 +148,6 @@ where
         } else {
             CorsLayer::new()
         })
-        .layer(jwt_layer)
         .route("/login", post(authorize))
         .with_state(app_state.clone())
         .layer(axum::middleware::from_fn(http_log::print_request_response))

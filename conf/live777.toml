@@ -21,6 +21,9 @@ urls = [
 # WHIP/WHEP auth token
 # Headers["Authorization"] = "Bearer {token}"
 # [auth]
+# JSON WEB TOKEN secret
+# secret = "<jwt_secret>"
+# static JWT token, superadmin, debuggger can use this token
 # tokens = ["live777"]
 
 [log]
