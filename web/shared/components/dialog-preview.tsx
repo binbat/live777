@@ -17,7 +17,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [streamId, setStreamId] = useState('');
     const refPeerConnection = useRef<RTCPeerConnection | null>(null);
     const refWhepClient = useRef<WHEPClient | null>(null);
-    const refVideoTrack = useRef<MediaStreamTrack | null>(null);
+    const refMediaStream = useRef<MediaStream | null>();
     const [connState, setConnState] = useState('');
     const [videoResolution, setVideoResolution] = useState('');
     const logger = useLogger();
@@ -47,8 +47,8 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         if (refVideo.current) {
             refVideo.current.srcObject = null;
         }
-        if (refVideoTrack.current) {
-            refVideoTrack.current = null;
+        if (refMediaStream.current) {
+            refMediaStream.current = null;
         }
         if (refPeerConnection.current) {
             refPeerConnection.current = null;
@@ -88,14 +88,14 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         const pc = new RTCPeerConnection();
         pc.addTransceiver('video', { direction: 'recvonly' });
         pc.addTransceiver('audio', { direction: 'recvonly' });
+        const ms = new MediaStream();
+        refMediaStream.current = ms;
+        if (refVideo.current) {
+            refVideo.current.srcObject = ms;
+        }
         pc.addEventListener('track', ev => {
             logger.log(`track: ${ev.track.kind}`);
-            if (ev.track.kind === 'video' && ev.streams.length > 0) {
-                refVideoTrack.current = ev.track;
-                if (refVideo.current) {
-                    refVideo.current.srcObject = ev.streams[0];
-                }
-            }
+            ms.addTrack(ev.track);
         });
         pc.addEventListener('iceconnectionstatechange', () => {
             const state = pc.iceConnectionState;
@@ -136,8 +136,11 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     };
 
     const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
-        if (refVideoTrack.current) {
-            setVideoResolution(formatVideoTrackResolution(refVideoTrack.current));
+        if (refMediaStream.current) {
+            const videoTrack = refMediaStream.current.getVideoTracks()[0];
+            if (videoTrack) {
+                setVideoResolution(formatVideoTrackResolution(videoTrack));
+            }
         }
     };
 
