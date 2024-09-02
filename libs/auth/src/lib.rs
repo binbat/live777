@@ -1,30 +1,23 @@
 use std::{collections::HashSet, marker::PhantomData};
 
+use headers::authorization::{Bearer, Credentials};
 use http::{header, Request, Response, StatusCode};
 use http_body::Body;
 use tower_http::validate_request::ValidateRequest;
 
-use crate::config::Auth;
-
 #[derive(Debug)]
 pub struct ManyValidate<ResBody> {
-    header_values: HashSet<String>,
+    tokens: HashSet<String>,
     _ty: PhantomData<fn() -> ResBody>,
 }
 
 impl<ResBody> ManyValidate<ResBody> {
-    pub fn new(auths: Vec<Auth>) -> Self
+    pub fn new(tokens: Vec<String>) -> Self
     where
         ResBody: Body + Default,
     {
-        let mut header_values = HashSet::new();
-        for auth in auths {
-            for authorization in auth.to_authorizations().into_iter() {
-                header_values.insert(authorization.parse().unwrap());
-            }
-        }
         Self {
-            header_values,
+            tokens: tokens.into_iter().collect(),
             _ty: PhantomData,
         }
     }
@@ -33,7 +26,7 @@ impl<ResBody> ManyValidate<ResBody> {
 impl<ResBody> Clone for ManyValidate<ResBody> {
     fn clone(&self) -> Self {
         Self {
-            header_values: self.header_values.clone(),
+            tokens: self.tokens.clone(),
             _ty: PhantomData,
         }
     }
@@ -46,16 +39,21 @@ where
     type ResponseBody = ResBody;
 
     fn validate(&mut self, request: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>> {
-        if self.header_values.is_empty() {
+        if self.tokens.is_empty() {
             return Ok(());
         }
-        match request.headers().get(header::AUTHORIZATION) {
-            Some(actual) if self.header_values.contains(actual.to_str().unwrap()) => Ok(()),
-            _ => {
-                let mut res = Response::new(ResBody::default());
-                *res.status_mut() = StatusCode::UNAUTHORIZED;
-                Err(res)
-            }
-        }
+        (match request.headers().get(header::AUTHORIZATION) {
+            Some(auth_header) => match Bearer::decode(auth_header) {
+                Some(bearer) if self.tokens.contains(bearer.token()) => Ok(()),
+                _ => Err(()),
+            },
+            _ => Err(()),
+        })
+        .map_err(|_| {
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(ResBody::default())
+                .unwrap()
+        })
     }
 }

@@ -16,8 +16,9 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{debug, error, info, info_span, warn};
 
+use auth::ManyValidate;
+
 use crate::admin::{authorize, JWTValidate};
-use crate::auth::ManyValidate;
 use crate::config::Config;
 use crate::mem::{MemStorage, Server};
 
@@ -26,7 +27,6 @@ use crate::mem::{MemStorage, Server};
 struct Assets;
 
 mod admin;
-mod auth;
 mod config;
 mod error;
 mod mem;
@@ -144,7 +144,7 @@ where
         secret.clone(),
         cfg.auth.admin.is_empty(),
     ));
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.tokens));
     let mut app = Router::new()
         .merge(route::proxy::route().layer(auth_layer))
         .layer(if cfg.http.cors {

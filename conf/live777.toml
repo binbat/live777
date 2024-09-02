@@ -23,13 +23,6 @@ urls = [
 # [auth]
 # tokens = ["live777"]
 
-# Not WHIP/WHEP standard
-# https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication#basic
-# Headers["Authorization"] = "Basic {Base64.encode({username}:{password})}"
-# [[auth.accounts]]
-# username = "live777"
-# password = "live777"
-
 [log]
 # Env: `LOG_LEVEL`
 # Default: info

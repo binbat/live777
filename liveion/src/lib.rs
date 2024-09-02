@@ -14,7 +14,8 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{error, info_span};
 
-use crate::auth::ManyValidate;
+use auth::ManyValidate;
+
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
 
@@ -26,7 +27,6 @@ struct Assets;
 
 pub mod config;
 
-mod auth;
 mod constant;
 mod convert;
 mod error;
@@ -46,7 +46,7 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.tokens));
     let mut app = Router::new()
         .merge(
             whip::route()

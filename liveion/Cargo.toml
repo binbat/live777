@@ -11,6 +11,7 @@ crate-type = ["lib"]
 
 [dependencies]
 api = { path = "../libs/api" }
+auth = { path = "../libs/auth" }
 http-log = { path = "../libs/http-log" }
 libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
@@ -26,7 +27,6 @@ webrtc = { workspace = true }
 async-trait = "0.1"
 axum = { version = "0.7", features = ["multipart", "tracing"] }
 axum-extra = { version = "0.9.3", features = ["query"] }
-base64 = "0.22.1"
 chrono = "0.4"
 http = "1.0.0"
 http-body = "1.0.0"

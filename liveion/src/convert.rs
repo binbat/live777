@@ -59,7 +59,7 @@ impl From<crate::forward::message::CascadeInfo> for api::response::CascadeInfo {
 impl From<Config> for NodeMetaData {
     fn from(value: Config) -> Self {
         Self {
-            authorization: value.auth.to_authorizations().first().cloned(),
+            authorization: value.auth.tokens.first().cloned(),
         }
     }
 }
