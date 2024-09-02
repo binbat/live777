@@ -232,13 +232,16 @@ async function startWhep() {
     document.getElementById(idWhepDataChannel).dataChannel = pc.createDataChannel("")
 
     pc.oniceconnectionstatechange = e => logWhep(num, pc.iceConnectionState)
-    pc.addTransceiver('video', {'direction': 'recvonly'})
-    pc.addTransceiver('audio', {'direction': 'recvonly'})
+    pc.addTransceiver("video", { "direction": "recvonly" })
+    pc.addTransceiver("audio", { "direction": "recvonly" })
+
+    const ms = new MediaStream();
     pc.ontrack = ev => {
         logWhep(num, `track: ${ev.track.kind}`)
-        if (ev.track.kind === "video") {
-            if (ev.streams.length !== 0) document.getElementById("whep-video-player").srcObject = ev.streams[0]
-        }
+        ms.addTrack(ev.track);
+        // addtrack removetrack events won't fire when calling addTrack/removeTrack in javascript
+        // https://github.com/w3c/mediacapture-main/issues/517
+        document.getElementById("whep-video-player").srcObject = ms;
     }
     const whep = new WHEPClient()
     const url = location.origin + "/whep/" + streamId

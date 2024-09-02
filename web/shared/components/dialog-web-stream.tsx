@@ -52,15 +52,18 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         if (refVideo.current) {
             refVideo.current.srcObject = stream;
         }
-        const videoTrack = stream.getVideoTracks()[0];
-        setVideoResolution(formatVideoTrackResolution(videoTrack));
         updateConnState('Started');
         const pc = new RTCPeerConnection();
         pc.addEventListener('iceconnectionstatechange', () => {
             updateConnState(pc.iceConnectionState);
         });
-        pc.addTransceiver(videoTrack, { direction: 'sendonly' });
-        stream.getAudioTracks().forEach(track => pc.addTrack(track));
+        stream.getVideoTracks().forEach(vt => {
+            pc.addTransceiver(vt, { direction: 'sendonly' });
+            setVideoResolution(formatVideoTrackResolution(vt));
+        });
+        stream.getAudioTracks().forEach(at => {
+            pc.addTransceiver(at, { direction: 'sendonly' });
+        });
         const whip = new WHIPClient();
         const url = `${location.origin}/whip/${streamId}`;
         const token = '';
