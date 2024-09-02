@@ -211,6 +211,7 @@ dependencies = [
  "headers",
  "http 1.1.0",
  "http-body",
+ "serde",
  "tower-http",
 ]
 

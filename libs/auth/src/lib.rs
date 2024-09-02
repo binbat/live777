@@ -5,6 +5,8 @@ use http::{header, Request, Response, StatusCode};
 use http_body::Body;
 use tower_http::validate_request::ValidateRequest;
 
+mod claim;
+
 #[derive(Debug)]
 pub struct ManyValidate<ResBody> {
     tokens: HashSet<String>,
