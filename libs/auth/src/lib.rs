@@ -11,6 +11,8 @@ use crate::claim::Claims;
 
 mod claim;
 
+pub const ANY_ID: &str = "*";
+
 pub struct Keys {
     encoding: EncodingKey,
 }
@@ -22,10 +24,10 @@ impl Keys {
         }
     }
 
-    pub fn token(self, uid: usize, exp: usize, mode: u8) -> Result<String, Error> {
+    pub fn token(self, id: String, exp: usize, mode: u8) -> Result<String, Error> {
         encode(
             &Header::default(),
-            &Claims { uid, exp, mode },
+            &Claims { id, exp, mode },
             &self.encoding,
         )
         .map_err(|e| anyhow!(e))
@@ -73,7 +75,15 @@ where
         }
         (match request.headers().get(header::AUTHORIZATION) {
             Some(auth_header) => match Bearer::decode(auth_header) {
-                Some(bearer) if self.tokens.contains(bearer.token()) => Ok(()),
+                Some(bearer) if self.tokens.contains(bearer.token()) => {
+                    // Static token is max permissions
+                    request.extensions_mut().insert(Claims {
+                        id: ANY_ID.to_string(),
+                        exp: 0,
+                        mode: 7,
+                    });
+                    Ok(())
+                }
                 Some(bearer) => {
                     match decode::<Claims>(bearer.token(), &self.decoding, &Validation::default()) {
                         Ok(token_data) => {

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    pub uid: usize,
+    pub id: String,
     pub exp: usize,
     pub mode: Mode,
 }
@@ -13,8 +13,8 @@ impl Display for Claims {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "uid: {}\nexpire: {}, mode: {}",
-            self.uid,
+            "id: {}\nexpire: {}, mode: {}",
+            self.id,
             self.exp,
             Access::from(self.mode)
         )

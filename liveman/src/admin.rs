@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, error};
 
-use auth::Keys;
+use auth::{Keys, ANY_ID};
 
-use crate::AppState;
+use crate::{config::Account, AppState};
 
 const JWT_TOKEN_EXPIRES: Duration = Duration::from_secs(60 * 60 * 24);
 
@@ -25,10 +25,10 @@ pub async fn authorize(
         return Err(AuthError::MissingCredentials);
     }
     // Here you can check the user credentials from a database
-    let mut user: Option<usize> = None;
-    for (i, account) in state.config.auth.accounts.iter().enumerate() {
+    let mut user: Option<&Account> = None;
+    for account in state.config.auth.accounts.iter() {
         if payload.username == account.username && payload.password == account.password {
-            user = Some(i);
+            user = Some(account);
         }
     }
 
@@ -41,7 +41,7 @@ pub async fn authorize(
     let keys = Keys::new(state.config.auth.secret.as_bytes());
     let token = keys
         .token(
-            user.unwrap_or(0),
+            ANY_ID.to_string(),
             (SystemTime::now() + JWT_TOKEN_EXPIRES)
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
