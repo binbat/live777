@@ -61,6 +61,25 @@ const WhepLayerSelect = [
 
 const NoneDevice = { value: '', text: 'none' };
 
+function deviceInfoToOption(info: MediaDeviceInfo) {
+    const value = info.deviceId;
+    let text = info.label;
+    if (text.length <= 0) {
+        text = `${info.kind} (${info.deviceId})`;
+    }
+    return { value, text };
+}
+
+function uniqByValue<T extends { value: unknown }>(items: T[]) {
+    const map = new Map<unknown, T>();
+    for (const item of items) {
+        if (!map.has(item.value)) {
+            map.set(item.value, item);
+        }
+    }
+    return Array.from(map.values());
+}
+
 export default function DebuggerCompat() {
     const streamIdInput = useUrlParamsInput('id');
     const idBearerTokenInput = useUrlParamsInput('token');
@@ -71,19 +90,21 @@ export default function DebuggerCompat() {
 
     const refreshDevice = useCallback(async () => {
         try {
+            // to obtain non-empty device label, there needs to be an active media stream or persistent permission
+            // https://developer.mozilla.org/en-US/docs/Web/API/MediaDeviceInfo/label#value
             const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            const devices = (await navigator.mediaDevices.enumerateDevices()).filter(i => !!i.deviceId);
             mediaStream.getTracks().map(track => track.stop());
+            const audio = devices.filter(i => i.kind === 'audioinput').map(deviceInfoToOption);
+            if (audio.length > 0) {
+                setAudioDevices(uniqByValue(audio));
+            }
+            const video = devices.filter(i => i.kind === 'videoinput').map(deviceInfoToOption);
+            if (video.length > 0) {
+                setVideoDevices(uniqByValue(video));
+            }
         } catch (e) {
-            console.error('Failed to getUserMedia:', e);
-        }
-        const devices = (await navigator.mediaDevices.enumerateDevices()).filter(i => !!i.deviceId);
-        const audio = devices.filter(i => i.kind === 'audioinput').map(i => ({ value: i.deviceId, text: i.label }));
-        if (audio.length > 0) {
-            setAudioDevices(audio);
-        }
-        const video = devices.filter(i => i.kind === 'videoinput').map(i => ({ value: i.deviceId, text: i.label }));
-        if (video.length > 0) {
-            setVideoDevices(video);
+            console.error('refreshDevice failed:', e);
         }
         setRefreshDisabled(true);
     }, []);
