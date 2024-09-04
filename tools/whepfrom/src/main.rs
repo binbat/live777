@@ -57,6 +57,8 @@ struct Args {
     target: String,
     #[arg(short, long, value_enum)]
     codec: Codec,
+    #[arg(short, long, value_enum)]
+    audio_codec: Codec,
     /// value: [96, 127]
     #[arg(short, long, default_value_t = 96)]
     payload_type: u8,
@@ -90,6 +92,7 @@ async fn main() -> Result<()> {
 
     let host = args.host.clone();
     let mut _codec = args.codec;
+    let audio_codec = args.audio_codec;
     let mut rtp_port = args.port;
 
     let udp_socket = UdpSocket::bind(format!("{}:0", host)).await?;
@@ -107,6 +110,7 @@ async fn main() -> Result<()> {
     let (peer, answer) = webrtc_start(
         &mut client,
         args.codec.into(),
+        audio_codec.into(),
         send,
         payload_type,
         complete_tx.clone(),
@@ -253,20 +257,28 @@ async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection
 async fn webrtc_start(
     client: &mut Client,
     codec: RTCRtpCodecCapability,
+    audio_codec: RTCRtpCodecCapability,
     send: UnboundedSender<Vec<u8>>,
     payload_type: u8,
     complete_tx: UnboundedSender<()>,
 ) -> Result<(Arc<RTCPeerConnection>, RTCSessionDescription)> {
+    let audio_payload_type = payload_type + 1;
     let peer = new_peer(
         RTCRtpCodecParameters {
             capability: codec,
             payload_type,
             stats_id: Default::default(),
         },
+        RTCRtpCodecParameters {
+            capability: audio_codec,
+            payload_type: audio_payload_type,
+            stats_id: Default::default(),
+        },
         complete_tx.clone(),
         send,
     )
-    .await?;
+    .await
+    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
     let offer = peer.create_offer(None).await?;
 
     let mut gather_complete = peer.gathering_complete_promise().await;
@@ -290,38 +302,45 @@ async fn webrtc_start(
 }
 
 async fn new_peer(
-    codec: RTCRtpCodecParameters,
+    video_codec: RTCRtpCodecParameters,
+    audio_codec: RTCRtpCodecParameters,
     complete_tx: UnboundedSender<()>,
     sender: UnboundedSender<Vec<u8>>,
 ) -> Result<Arc<RTCPeerConnection>> {
-    let ct = get_codec_type(&codec.capability);
+    let video_ct = get_codec_type(&video_codec.capability);
+    let audio_ct = get_codec_type(&audio_codec.capability);
     let mut m = MediaEngine::default();
-    m.register_codec(codec, ct)?;
+
+    m.register_codec(video_codec, video_ct)?;
+
+    m.register_codec(audio_codec, audio_ct)?;
+
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
     let api = APIBuilder::new()
         .with_media_engine(m)
         .with_interceptor_registry(registry)
         .build();
+
     let config = RTCConfiguration {
-        ice_servers: vec![{
-            RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                username: "".to_string(),
-                credential: "".to_string(),
-                credential_type: RTCIceCredentialType::Unspecified,
-            }
+        ice_servers: vec![RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            username: "".to_string(),
+            credential: "".to_string(),
+            credential_type: RTCIceCredentialType::Unspecified,
         }],
         ..Default::default()
     };
+
     let peer = Arc::new(
         api.new_peer_connection(config)
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
+
     let _ = peer
         .add_transceiver_from_kind(
-            ct,
+            video_ct,
             Some(RTCRtpTransceiverInit {
                 direction: RTCRtpTransceiverDirection::Recvonly,
                 send_encodings: vec![],
@@ -329,6 +348,18 @@ async fn new_peer(
         )
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+
+    let _ = peer
+        .add_transceiver_from_kind(
+            audio_ct,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                send_encodings: vec![],
+            }),
+        )
+        .await
+        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+
     let pc = peer.clone();
     peer.on_peer_connection_state_change(Box::new(move |s| {
         let pc = pc.clone();
@@ -347,6 +378,7 @@ async fn new_peer(
         });
         Box::pin(async {})
     }));
+
     peer.on_track(Box::new(move |track, _, _| {
         let sender = sender.clone();
         tokio::spawn(async move {
@@ -360,5 +392,6 @@ async fn new_peer(
         });
         Box::pin(async {})
     }));
+
     Ok(peer)
 }

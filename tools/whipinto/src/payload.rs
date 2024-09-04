@@ -79,12 +79,14 @@ impl RePayloadCodec {
                 MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Packet>,
                 MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Packet>,
                 MIME_TYPE_H264 => Box::default() as Box<h264::H264Packet>,
+                MIME_TYPE_OPUS => Box::default() as Box<opus::OpusPacket>,
                 _ => Box::default() as Box<vp8::Vp8Packet>,
             },
             encoder: match mime_type.as_str() {
                 MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Payloader>,
                 MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Payloader>,
                 MIME_TYPE_H264 => Box::default() as Box<h264::H264Payloader>,
+                MIME_TYPE_OPUS => Box::default() as Box<opus::OpusPayloader>,
                 _ => Box::default() as Box<vp8::Vp8Payloader>,
             },
         }

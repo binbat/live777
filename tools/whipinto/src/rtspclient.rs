@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Ok, Result};
 use cli::Codec;
 use md5::{Digest, Md5};
 use portpicker::pick_unused_port;
@@ -41,7 +41,8 @@ pub fn codec_from_str(s: &str) -> Result<Codec> {
         "AV1" => Ok(Codec::AV1),
         "OPUS" => Ok(Codec::Opus),
         "G722" => Ok(Codec::G722),
-        _ => Err(anyhow!("Unknown codec: {}", s)),
+        // _ => Err(anyhow!("Unknown codec: {}", s)),
+        _ => Ok(Codec::G722),
     }
 }
 
@@ -295,7 +296,7 @@ impl RtspSession {
     }
 }
 
-pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
+pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, u16, Codec, Codec)> {
     let mut url = Url::parse(rtsp_url)?;
     let host = url
         .host()
@@ -339,6 +340,7 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
     }
 
     let rtp_port = pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
+    let rtp_audio_port = pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
 
     let video_uri = video_track
         .and_then(|md| {
@@ -357,7 +359,25 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         })
         .unwrap_or_else(|| format!("{}/trackID=1", rtsp_session.uri));
 
+    let audio_uri = audio_track
+        .and_then(|md| {
+            md.attributes.iter().find_map(|attr| {
+                if attr.attribute == "control" {
+                    let value = attr.value.clone().unwrap_or_default();
+                    if value.starts_with("rtsp://") {
+                        Some(value)
+                    } else {
+                        Some(format!("{}/{}", rtsp_session.uri, value))
+                    }
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| format!("{}/trackID=2", rtsp_session.uri));
+
     trace!("video uri: {:?}", video_uri);
+    trace!("audio uri: {:?}", audio_uri);
 
     rtsp_session.uri.clone_from(&video_uri);
     rtsp_session.rtp_client_port = Some(rtp_port);
@@ -366,6 +386,10 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
     trace!("session id: {:?}", session_id);
 
     rtsp_session.session_id = Some(session_id);
+
+    rtsp_session.uri.clone_from(&audio_uri);
+    rtsp_session.rtp_client_port = Some(rtp_audio_port);
+    rtsp_session.send_setup_request().await?;
 
     let play_request = Request::builder(Method::Play, Version::V1_0)
         .request_uri(
@@ -419,7 +443,25 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, Codec)> {
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    let video_codec = codec_from_str(&video_codec)?;
+    let audio_codec = audio_track
+        .and_then(|md| {
+            md.attributes.iter().find_map(|attr| {
+                if attr.attribute == "rtpmap" {
+                    let parts: Vec<&str> = attr.value.as_ref()?.split_whitespace().collect();
+                    if parts.len() > 1 {
+                        Some(parts[1].split('/').next().unwrap_or("").to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "unknown".to_string());
 
-    Ok((rtp_port, video_codec))
+    let video_codec = codec_from_str(&video_codec)?;
+    let audio_codec = codec_from_str(&audio_codec)?;
+
+    Ok((rtp_port, rtp_audio_port, video_codec, audio_codec))
 }
