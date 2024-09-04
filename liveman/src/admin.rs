@@ -26,7 +26,7 @@ pub async fn authorize(
     }
     // Here you can check the user credentials from a database
     let mut user: Option<usize> = None;
-    for (i, account) in state.config.auth.admin.iter().enumerate() {
+    for (i, account) in state.config.auth.accounts.iter().enumerate() {
         if payload.username == account.username && payload.password == account.password {
             user = Some(i);
         }

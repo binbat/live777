@@ -1,5 +1,3 @@
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::{env, fs, net::SocketAddr, str::FromStr};
 
@@ -30,26 +28,11 @@ pub struct Http {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
     #[serde(default)]
-    pub admin: Vec<Account>,
-    #[serde(default)]
     pub secret: String,
     #[serde(default)]
-    pub accounts: Vec<Account>,
-    #[serde(default)]
     pub tokens: Vec<String>,
-}
-
-impl Auth {
-    pub fn to_authorizations(&self) -> Vec<String> {
-        let mut authorizations = vec![];
-        for account in self.accounts.iter() {
-            authorizations.push(account.to_authorization());
-        }
-        for token in self.tokens.iter() {
-            authorizations.push(format!("Bearer {}", token));
-        }
-        authorizations
-    }
+    #[serde(default)]
+    pub accounts: Vec<Account>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,13 +41,6 @@ pub struct Account {
     pub username: String,
     #[serde(default)]
     pub password: String,
-}
-
-impl Account {
-    pub fn to_authorization(&self) -> String {
-        let encoded = STANDARD.encode(format!("{}:{}", self.username, self.password));
-        format!("Basic {}", encoded)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

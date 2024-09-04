@@ -1312,7 +1312,6 @@ dependencies = [
  "auth",
  "axum",
  "axum-extra",
- "base64 0.22.1",
  "chrono",
  "clap",
  "http 1.1.0",
