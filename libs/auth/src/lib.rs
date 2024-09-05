@@ -7,9 +7,10 @@ use http_body::Body;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use tower_http::validate_request::ValidateRequest;
 
-use crate::claim::Claims;
+use crate::claims::Claims;
 
-mod claim;
+pub mod access;
+pub mod claims;
 
 pub const ANY_ID: &str = "*";
 
@@ -71,6 +72,11 @@ where
 
     fn validate(&mut self, request: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>> {
         if self.tokens.is_empty() {
+            request.extensions_mut().insert(Claims {
+                id: ANY_ID.to_string(),
+                exp: 0,
+                mode: 7,
+            });
             return Ok(());
         }
         (match request.headers().get(header::AUTHORIZATION) {

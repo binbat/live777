@@ -209,6 +209,8 @@ name = "auth"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "api",
+ "axum",
  "headers",
  "http 1.1.0",
  "http-body",

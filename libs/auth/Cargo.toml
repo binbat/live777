@@ -6,9 +6,11 @@ edition.workspace = true
 crate-type = ["lib"]
 
 [dependencies]
+api = { path = "../api" }
 anyhow = { workspace = true, features = ["backtrace"] }
 http = { workspace = true }
 http-body = { workspace = true }
+axum = { version = "0.7" }
 jsonwebtoken = "9.3"
 serde = { workspace = true, features = ["serde_derive"] }
 

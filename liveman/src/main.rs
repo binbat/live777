@@ -1,5 +1,6 @@
 use axum::body::Body;
 use axum::extract::Request;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Router;
@@ -16,7 +17,7 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{debug, error, info, info_span, warn};
 
-use auth::ManyValidate;
+use auth::{access::access_middleware, ManyValidate};
 
 use crate::admin::authorize;
 use crate::config::Config;
@@ -142,7 +143,11 @@ where
     let auth_layer =
         ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
     let mut app = Router::new()
-        .merge(route::proxy::route().layer(auth_layer))
+        .merge(
+            route::proxy::route()
+                .layer(middleware::from_fn(access_middleware))
+                .layer(auth_layer),
+        )
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
         } else {

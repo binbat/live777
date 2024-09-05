@@ -1,4 +1,5 @@
 use axum::extract::Request;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
@@ -14,7 +15,7 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{error, info_span};
 
-use auth::ManyValidate;
+use auth::{access::access_middleware, ManyValidate};
 
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
@@ -55,6 +56,7 @@ where
                 .merge(session::route())
                 .merge(admin::route())
                 .merge(crate::route::stream::route())
+                .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
         .route(api::path::METRICS, get(metrics))

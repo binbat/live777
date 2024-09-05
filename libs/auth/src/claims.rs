@@ -37,10 +37,10 @@ impl From<Mode> for Access {
     }
 }
 
-struct Access {
-    r: bool,
-    w: bool,
-    x: bool,
+pub struct Access {
+    pub r: bool,
+    pub w: bool,
+    pub x: bool,
 }
 
 impl Display for Access {
