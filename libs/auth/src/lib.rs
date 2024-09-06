@@ -25,13 +25,8 @@ impl Keys {
         }
     }
 
-    pub fn token(self, id: String, exp: usize, mode: u8) -> Result<String, Error> {
-        encode(
-            &Header::default(),
-            &Claims { id, exp, mode },
-            &self.encoding,
-        )
-        .map_err(|e| anyhow!(e))
+    pub fn token(self, claims: Claims) -> Result<String, Error> {
+        encode(&Header::default(), &claims, &self.encoding).map_err(|e| anyhow!(e))
     }
 }
 

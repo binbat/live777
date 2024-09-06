@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, error};
 
-use auth::{Keys, ANY_ID};
+use auth::{
+    claims::{Access, Claims},
+    Keys, ANY_ID,
+};
 
 use crate::{config::Account, AppState};
 
@@ -40,18 +43,32 @@ pub async fn authorize(
 
     let keys = Keys::new(state.config.auth.secret.as_bytes());
     let token = keys
-        .token(
-            ANY_ID.to_string(),
-            (SystemTime::now() + JWT_TOKEN_EXPIRES)
+        .token(Claims {
+            id: ANY_ID.to_string(),
+            exp: (SystemTime::now() + JWT_TOKEN_EXPIRES)
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_secs() as usize,
-            7,
-        )
+                .as_secs(),
+            mode: 7,
+        })
         .map_err(|err| {
             error!("Error while encoding: {err}");
             AuthError::TokenCreation
         })?;
+
+    // Send the authorized token
+    Ok(Json(AuthBody::new(token)))
+}
+
+pub async fn token(
+    State(state): State<AppState>,
+    Json(payload): Json<TokenPayload>,
+) -> Result<Json<AuthBody>, AuthError> {
+    let keys = Keys::new(state.config.auth.secret.as_bytes());
+    let token = keys.token(payload.into()).map_err(|err| {
+        error!("Error while encoding: {err}");
+        AuthError::TokenCreation
+    })?;
 
     // Send the authorized token
     Ok(Json(AuthBody::new(token)))
@@ -68,6 +85,33 @@ impl IntoResponse for AuthError {
             "error": error_message,
         }));
         (status, body).into_response()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TokenPayload {
+    id: String,
+    duration: u64,
+    subscribe: bool,
+    publish: bool,
+    admin: bool,
+}
+
+impl From<TokenPayload> for Claims {
+    fn from(v: TokenPayload) -> Self {
+        Self {
+            id: v.id,
+            exp: (SystemTime::now() + Duration::from_secs(v.duration))
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            mode: (Access {
+                r: v.subscribe,
+                w: v.publish,
+                x: v.admin,
+            })
+            .into(),
+        }
     }
 }
 

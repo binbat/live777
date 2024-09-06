@@ -23,6 +23,11 @@ pub async fn access_middleware(request: Request, next: Next) -> Response {
                 Access::from(claims.mode).x
             }
             (id, _, _) if id == ANY_ID => true,
+            (id, &Method::POST, path) if path == "/token" && id == ANY_ID => {
+                Access::from(claims.mode).r
+                    && Access::from(claims.mode).w
+                    && Access::from(claims.mode).x
+            }
             _ => false,
         },
         None => false,

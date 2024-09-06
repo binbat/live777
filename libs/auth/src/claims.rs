@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub id: String,
-    pub exp: usize,
+    pub exp: u64,
     pub mode: Mode,
 }
 
@@ -41,6 +41,15 @@ pub struct Access {
     pub r: bool,
     pub w: bool,
     pub x: bool,
+}
+
+impl From<Access> for Mode {
+    fn from(v: Access) -> Mode {
+        let r = if v.r { 4 } else { 0 };
+        let w = if v.w { 2 } else { 0 };
+        let x = if v.x { 1 } else { 0 };
+        r + w + x
+    }
 }
 
 impl Display for Access {

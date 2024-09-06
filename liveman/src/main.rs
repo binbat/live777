@@ -19,7 +19,7 @@ use tracing::{debug, error, info, info_span, warn};
 
 use auth::{access::access_middleware, ManyValidate};
 
-use crate::admin::authorize;
+use crate::admin::{authorize, token};
 use crate::config::Config;
 use crate::mem::{MemStorage, Server};
 
@@ -145,6 +145,7 @@ where
     let mut app = Router::new()
         .merge(
             route::proxy::route()
+                .route("/token", post(token))
                 .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
