@@ -1,4 +1,5 @@
 use axum::extract::Request;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
@@ -14,7 +15,8 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{error, info_span};
 
-use crate::auth::ManyValidate;
+use auth::{access::access_middleware, ManyValidate};
+
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
 
@@ -26,7 +28,6 @@ struct Assets;
 
 pub mod config;
 
-mod auth;
 mod constant;
 mod convert;
 mod error;
@@ -46,7 +47,8 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
+    let auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
     let mut app = Router::new()
         .merge(
             whip::route()
@@ -54,6 +56,7 @@ where
                 .merge(session::route())
                 .merge(admin::route())
                 .merge(crate::route::stream::route())
+                .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
         .route(api::path::METRICS, get(metrics))
