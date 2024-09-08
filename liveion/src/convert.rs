@@ -42,6 +42,7 @@ impl From<crate::forward::message::SessionInfo> for api::response::Session {
             created_at: value.create_at,
             state: convert_connect_state(value.state),
             cascade: value.cascade.map(|reforward| reforward.into()),
+            has_data_channel: value.has_data_channel,
         }
     }
 }

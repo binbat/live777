@@ -30,6 +30,7 @@ pub struct Session {
     pub state: RTCPeerConnectionState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeInfo>,
+    pub has_data_channel: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
