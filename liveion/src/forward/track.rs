@@ -8,6 +8,8 @@ use webrtc::track::track_remote::TrackRemote;
 
 use crate::new_broadcast_channel;
 
+use super::message::Codec;
+
 fn codec_string(params: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters) -> String {
     format!(
         "{}[{}],{}",
@@ -101,5 +103,22 @@ impl PublishTrackRemote {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<ForwardData> {
         self.rtp_broadcast.subscribe()
+    }
+
+    pub(crate) fn codec(&self) -> Codec {
+        let codec = self.track.codec();
+        let media: Vec<String> = codec
+            .capability
+            .mime_type
+            .clone()
+            .to_lowercase()
+            .split('/')
+            .map(|s| s.to_string())
+            .collect();
+        Codec {
+            kind: media.first().cloned().unwrap(),
+            codec: media.get(1).cloned().unwrap(),
+            fmtp: codec.capability.sdp_fmtp_line,
+        }
     }
 }

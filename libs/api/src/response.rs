@@ -13,6 +13,7 @@ pub struct Stream {
     pub created_at: i64,
     pub publish: PubSub,
     pub subscribe: PubSub,
+    pub codecs: Vec<Codec>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -30,6 +31,14 @@ pub struct Session {
     pub state: RTCPeerConnectionState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Codec {
+    pub kind: String,
+    pub codec: String,
+    pub fmtp: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

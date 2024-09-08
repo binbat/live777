@@ -106,6 +106,13 @@ impl PeerForwardInternal {
                 .as_ref()
                 .map(|publish| publish.info()),
             subscribe_session_infos,
+            codecs: self
+                .publish_tracks
+                .read()
+                .await
+                .iter()
+                .map(|track| track.codec())
+                .collect(),
         }
     }
 
