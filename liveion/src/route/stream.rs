@@ -1,5 +1,7 @@
 use std::convert::Infallible;
 
+use crate::error::AppError;
+use crate::AppState;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive};
 use axum::response::{Response, Sse};
@@ -9,10 +11,6 @@ use axum_extra::extract::Query;
 use http::StatusCode;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
-use tracing::info;
-
-use crate::error::AppError;
-use crate::AppState;
 
 pub fn route() -> Router<AppState> {
     Router::new()
