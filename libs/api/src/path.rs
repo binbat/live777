@@ -22,3 +22,7 @@ pub fn streams(stream: &str) -> String {
 pub fn cascade(stream: &str) -> String {
     format!("/api/cascade/{}", stream)
 }
+
+pub fn streams_sse() -> String {
+    "/api/sse/streams".to_string()
+}

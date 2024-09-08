@@ -36,6 +36,7 @@ pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
 
 #[derive(Clone)]
 pub struct PeerForward {
+    pub(crate) stream: String,
     publish_lock: Arc<Mutex<()>>,
     internal: Arc<PeerForwardInternal>,
 }
@@ -43,6 +44,7 @@ pub struct PeerForward {
 impl PeerForward {
     pub fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         PeerForward {
+            stream: stream.to_string(),
             publish_lock: Arc::new(Mutex::new(())),
             internal: Arc::new(PeerForwardInternal::new(stream, ice_server)),
         }

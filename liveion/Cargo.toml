@@ -20,6 +20,8 @@ anyhow = { workspace = true, features = ["backtrace"] }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["serde_derive"] }
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = "0.1.15"
+async-stream = "0.3.5"
 tracing = { workspace = true }
 webrtc = { workspace = true }
 
@@ -40,8 +42,9 @@ serde_json = "1.0.114"
 toml = "0.8.10"
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 
-reqwest = { version = "0.12", optional = true, features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", optional = true, features = [
+    "rustls-tls",
+], default-features = false }
 
 [features]
 webhook = ["dep:reqwest"]
-
