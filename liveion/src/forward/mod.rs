@@ -119,6 +119,7 @@ impl PeerForward {
                 _codec: vec![],
                 video_transceiver: (1, 0, false),
                 audio_transceiver: (1, 0),
+                has_data_channel: false,
             })
             .await?;
         let offer = peer.create_offer(None).await?;
@@ -226,26 +227,28 @@ impl PeerForward {
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        let peer = self
-            .new_subscription_peer(MediaInfo::try_from(offer.unmarshal()?)?)
-            .await?;
+        let media_info = MediaInfo::try_from(offer.unmarshal()?)?;
+        let peer = self.new_subscription_peer(media_info.clone()).await?;
         let (sdp, session) = (
             peer_complete(offer, peer.clone()).await?,
             get_peer_id(&peer),
         );
-        let _ = self.internal.add_subscribe(peer.clone(), None).await;
+        let _ = self
+            .internal
+            .add_subscribe(peer.clone(), None, media_info)
+            .await;
         Ok((sdp, session))
     }
 
     pub async fn subscribe_push(&self, dst: String, token: Option<String>) -> Result<()> {
-        let peer = self
-            .new_subscription_peer(MediaInfo {
-                _codec: vec![],
-                video_transceiver: (0, 1, false),
-                audio_transceiver: (0, 1),
-            })
-            .await?;
+        let media_info = MediaInfo {
+            _codec: vec![],
+            video_transceiver: (0, 1, false),
+            audio_transceiver: (0, 1),
+            has_data_channel: false,
+        };
 
+        let peer = self.new_subscription_peer(media_info.clone()).await?;
         let offer: RTCSessionDescription = peer.create_offer(None).await?;
         let mut gather_complete = peer.gathering_complete_promise().await;
         peer.set_local_description(offer).await?;
@@ -269,6 +272,7 @@ impl PeerForward {
                             token: token.clone(),
                             session_url: client.session_url,
                         }),
+                        media_info,
                     )
                     .await?;
                 let _ = peer.set_remote_description(target_sdp).await;

@@ -52,6 +52,7 @@ impl PublishRTCPeerConnection {
             create_at: self.create_at,
             state: self.peer.connection_state(),
             cascade: self.cascade.clone(),
+            has_data_channel: self.media_info.has_data_channel,
         }
     }
 

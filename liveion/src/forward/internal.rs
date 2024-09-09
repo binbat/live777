@@ -513,6 +513,7 @@ impl PeerForwardInternal {
         &self,
         peer: Arc<RTCPeerConnection>,
         cascade: Option<CascadeInfo>,
+        media_info: MediaInfo,
     ) -> Result<()> {
         let transceivers = peer.get_transceivers().await;
         let mut video_sender = None;
@@ -529,7 +530,7 @@ impl PeerForwardInternal {
             let s = SubscribeRTCPeerConnection::new(
                 cascade.clone(),
                 self.stream.clone(),
-                peer.clone(),
+                (peer.clone(), media_info),
                 self.publish_rtcp_channel.clone(),
                 (
                     self.publish_tracks.clone(),

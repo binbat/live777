@@ -20,6 +20,7 @@ pub struct SessionInfo {
     pub create_at: i64,
     pub state: RTCPeerConnectionState,
     pub cascade: Option<CascadeInfo>,
+    pub has_data_channel: bool,
 }
 
 #[derive(Clone, Debug)]
