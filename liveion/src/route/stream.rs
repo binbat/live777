@@ -1,12 +1,16 @@
+use std::convert::Infallible;
+
+use crate::error::AppError;
+use crate::AppState;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{Response, Sse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_extra::extract::Query;
 use http::StatusCode;
-
-use crate::error::AppError;
-use crate::AppState;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 
 pub fn route() -> Router<AppState> {
     Router::new()
@@ -14,6 +18,7 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::streams(":stream"), get(show))
         .route(&api::path::streams(":stream"), post(create))
         .route(&api::path::streams(":stream"), delete(destroy))
+        .route(&api::path::streams_sse(), get(sse))
 }
 
 async fn index(
@@ -71,4 +76,28 @@ async fn destroy(
             .body("".to_string())?),
         Err(e) => Err(AppError::StreamNotFound(e.to_string())),
     }
+}
+
+async fn sse(
+    State(state): State<AppState>,
+    Query(req): Query<api::request::StreamSSE>,
+) -> crate::result::Result<
+    Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>>,
+> {
+    let recv = state
+        .stream_manager
+        .sse_handler(req.streams.clone())
+        .await?;
+    let stream = ReceiverStream::new(recv).map(|forward_infos| {
+        Ok(Event::default()
+            .json_data(
+                forward_infos
+                    .into_iter()
+                    .map(api::response::Stream::from)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap())
+    });
+    let resp = Sse::new(stream).keep_alive(KeepAlive::default());
+    Ok(resp)
 }
