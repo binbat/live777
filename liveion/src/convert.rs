@@ -1,4 +1,4 @@
-use api::event::NodeMetaData;
+use api::{event::NodeMetaData, response::Codec};
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 use crate::config::Config;
@@ -31,6 +31,15 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
                     .map(|session| session.into())
                     .collect(),
             },
+            codecs: value
+                .codecs
+                .into_iter()
+                .map(|media_code| Codec {
+                    kind: media_code.kind,
+                    codec: media_code.codec,
+                    fmtp: media_code.fmtp,
+                })
+                .collect(),
         }
     }
 }
