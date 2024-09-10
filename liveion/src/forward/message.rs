@@ -13,6 +13,7 @@ pub struct ForwardInfo {
     pub subscribe_leave_at: i64,
     pub publish_session_info: Option<SessionInfo>,
     pub subscribe_session_infos: Vec<SessionInfo>,
+    pub codecs: Vec<Codec>,
 }
 #[derive(Clone, Debug)]
 pub struct SessionInfo {
@@ -20,6 +21,14 @@ pub struct SessionInfo {
     pub create_at: i64,
     pub state: RTCPeerConnectionState,
     pub cascade: Option<CascadeInfo>,
+    pub has_data_channel: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Codec {
+    pub kind: String,
+    pub codec: String,
+    pub fmtp: String,
 }
 
 #[derive(Clone, Debug)]

@@ -460,4 +460,34 @@ impl Manager {
 
         Ok(())
     }
+
+    pub async fn sse_handler(
+        &self,
+        streams: Vec<String>,
+    ) -> Result<tokio::sync::mpsc::Receiver<Vec<ForwardInfo>>> {
+        let (send, recv) = tokio::sync::mpsc::channel(64);
+        let mut evnet_recv = self.event_sender.subscribe();
+        let stream_map = self.stream_map.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = evnet_recv.recv().await {
+                let stream = match event {
+                    Event::Node(_) => continue,
+                    Event::Stream(val) => val.stream.stream,
+                    Event::Forward(val) => val.stream_info.id,
+                };
+                if streams.is_empty() || streams.contains(&stream) {
+                    let stream_map = stream_map.read().await;
+                    let mut infos = vec![];
+                    for (_, forward) in stream_map.iter() {
+                        if !streams.is_empty() && !streams.contains(&forward.stream) {
+                            continue;
+                        }
+                        infos.push(forward.info().await);
+                    }
+                    let _ = send.send(infos).await;
+                }
+            }
+        });
+        Ok(recv)
+    }
 }

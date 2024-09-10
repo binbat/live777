@@ -31,6 +31,8 @@ webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "ae93e81" }
 
 anyhow = "1.0"
 clap = "4.5"
+http = "1.1"
+http-body = "1.0"
 serde = "1"
 tokio = "1.36"
 tracing = "0.1"

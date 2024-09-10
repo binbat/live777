@@ -21,14 +21,10 @@ urls = [
 # WHIP/WHEP auth token
 # Headers["Authorization"] = "Bearer {token}"
 # [auth]
+# JSON WEB TOKEN secret
+# secret = "<jwt_secret>"
+# static JWT token, superadmin, debuggger can use this token
 # tokens = ["live777"]
-
-# Not WHIP/WHEP standard
-# https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication#basic
-# Headers["Authorization"] = "Basic {Base64.encode({username}:{password})}"
-# [[auth.accounts]]
-# username = "live777"
-# password = "live777"
 
 [log]
 # Env: `LOG_LEVEL`
