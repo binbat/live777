@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
+import { ReactNode } from 'preact/compat';
 
-import { getStreams, deleteStream } from '../api';
+import { type Stream, getStreams, deleteStream } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
+
 import { StyledCheckbox } from './styled-checkbox';
 import { IClientsDialog, ClientsDialog } from './dialog-clients';
 import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade';
@@ -15,7 +17,12 @@ async function getStreamsSorted() {
     return streams.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export function StreamsTable(props: { cascade: boolean }) {
+export interface StreamTableProps {
+    cascade?: boolean;
+    renderExtraActions?: (s: Stream) => ReactNode;
+}
+
+export function StreamsTable(props: StreamTableProps) {
     const streams = useRefreshTimer([], getStreamsSorted);
     const [selectedStreamId, setSelectedStreamId] = useState('');
     const refCascadePull = useRef<ICascadeDialog>(null);
@@ -174,6 +181,7 @@ export function StreamsTable(props: { cascade: boolean }) {
                                     }
                                     <button onClick={() => handleOpenPlayerPage(i.id)}>Player</button>
                                     <button onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</button>
+                                    {props.renderExtraActions?.(i)}
                                     <button onClick={() => deleteStream(i.id)} class="text-red-500">Destroy</button>
                                 </td>
                             </tr>

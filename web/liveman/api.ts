@@ -27,7 +27,7 @@ const base = wretch().middlewares([
 
 let w = base;
 
-function setAuthToken(token: string) {
+export function setAuthToken(token: string) {
     w = base.auth(token);
 }
 
@@ -36,9 +36,8 @@ export interface LoginResponse {
     access_token: string;
 }
 
-export async function login(username: string, password: string) {
-    const res = await w.url('/login').post({ username, password }).json<LoginResponse>();
-    setAuthToken(`${res.token_type} ${res.access_token}`);
+export function login(username: string, password: string) {
+    return w.url('/login').post({ username, password }).json<LoginResponse>();
 }
 
 export interface Node {
@@ -49,15 +48,46 @@ export interface Node {
     status: 'running' | 'stopped';
 }
 
-export function getNodes(): Promise<Node[]> {
-    return w.url('/api/nodes/').get().json();
+export function getNodes() {
+    return w.url('/api/nodes/').get().json<Node[]>();
 }
-
 
 export interface StreamDetail {
     [key: string]: Stream;
 }
 
-export function getStreamDetail(streamId: string): Promise<StreamDetail> {
-    return w.url(`/api/streams/${streamId}`).get().json();
+export function getStreamDetail(streamId: string) {
+    return w.url(`/api/streams/${streamId}`).get().json<StreamDetail>();
+}
+
+export interface CreateStreamTokenRequest {
+    /**
+     * stream id, use `*` match any stream id
+     */
+    id: string;
+    /**
+     * Validity duration (second)
+     */
+    duration: number;
+    /**
+     * can use whep
+     */
+    subscribe: boolean;
+    /**
+     * can use whip
+     */
+    publish: boolean;
+    /**
+     * can use cascade and delete stream
+     */
+    admin: boolean;
+}
+
+export interface StreamTokenResponse {
+    token_type: string;
+    access_token: string;
+}
+
+export function createStreamToken(req: CreateStreamTokenRequest) {
+    return w.url('/token').post(req).json<StreamTokenResponse>();
 }
