@@ -16,8 +16,6 @@ export default mergeConfig(CommonConfig, defineConfig({
             '^/whep/.*': 'http://localhost:8888',
             '^/session/.*': 'http://localhost:8888',
             '^/api/.*': 'http://localhost:8888',
-            '^/login$': 'http://localhost:8888',
-            '^/token$': 'http://localhost:8888',
         },
     },
     build: {

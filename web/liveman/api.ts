@@ -37,7 +37,7 @@ export interface LoginResponse {
 }
 
 export function login(username: string, password: string) {
-    return w.url('/login').post({ username, password }).json<LoginResponse>();
+    return w.url('/api/login').post({ username, password }).json<LoginResponse>();
 }
 
 export interface Node {
@@ -89,5 +89,5 @@ export interface StreamTokenResponse {
 }
 
 export function createStreamToken(req: CreateStreamTokenRequest) {
-    return w.url('/token').post(req).json<StreamTokenResponse>();
+    return w.url('/api/token').post(req).json<StreamTokenResponse>();
 }

@@ -132,7 +132,7 @@ where
     let mut app = Router::new()
         .merge(
             route::proxy::route()
-                .route("/token", post(token))
+                .route("/api/token", post(token))
                 .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
@@ -141,7 +141,7 @@ where
         } else {
             CorsLayer::new()
         })
-        .route("/login", post(authorize))
+        .route("/api/login", post(authorize))
         .with_state(app_state.clone())
         .layer(axum::middleware::from_fn(http_log::print_request_response))
         .layer(
