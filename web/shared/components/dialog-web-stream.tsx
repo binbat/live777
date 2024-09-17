@@ -1,7 +1,8 @@
-import { useRef, useImperativeHandle, useState } from 'preact/hooks';
+import { useRef, useImperativeHandle, useState, useContext } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
 import { WHIPClient } from '@binbat/whip-whep/whip';
 
+import { TokenContext } from '../context';
 import { formatVideoTrackResolution } from '../utils';
 import { useLogger } from '../hooks/use-logger';
 
@@ -15,6 +16,7 @@ export interface IWebStreamDialog {
 
 export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) => {
     const [streamId, setStreamId] = useState('');
+    const tokenContext = useContext(TokenContext);
     const refMediaStream = useRef<MediaStream | null>(null);
     const refWhipClient = useRef<WHIPClient | null>(null);
     const [connState, setConnState] = useState('');
@@ -67,7 +69,6 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         const whip = new WHIPClient();
         refWhipClient.current = whip;
         const url = `${location.origin}/whip/${streamId}`;
-        const token = '';
         whip.onOffer = sdp => {
             logger.log('http offer sent');
             return sdp;
@@ -77,7 +78,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             return sdp;
         };
         try {
-            await whip.publish(pc, url, token);
+            await whip.publish(pc, url, tokenContext?.token ?? '');
         } catch (e: any) {  // eslint-disable-line @typescript-eslint/no-explicit-any
             setConnState('Error');
             if (e instanceof Error) {

@@ -7,6 +7,7 @@ export function Player() {
     const [muted, setMuted] = useState(false);
     const [controls, setControls] = useState(false);
     const [reconnect, setReconnect] = useState(0);
+    const [token, setToken] = useState('');
     const refPeerConnection = useRef<RTCPeerConnection | null>(null);
     const refWhepClient = useRef<WHEPClient | null>(null);
     const refMediaStream = useRef<MediaStream | null>(null);
@@ -20,6 +21,7 @@ export function Player() {
         setMuted(params.has('muted'));
         const n = Number.parseInt(params.get('reconnect') ?? '0', 10);
         setReconnect(Number.isNaN(n) ? 0 : n);
+        setToken(params.get('token') ?? '');
     }, []);
 
     useEffect(() => {
@@ -63,7 +65,6 @@ export function Player() {
         const whep = new WHEPClient();
         refWhepClient.current = whep;
         const url = `${location.origin}/whep/${streamId}`;
-        const token = '';
         try {
             await whep.view(pc, url, token);
         } catch {

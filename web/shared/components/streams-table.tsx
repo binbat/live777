@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect } from 'preact/hooks';
+import { useState, useRef, useEffect, useContext } from 'preact/hooks';
 import { ReactNode } from 'preact/compat';
 
 import { type Stream, getStreams, deleteStream } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 
+import { TokenContext } from '../context';
 import { StyledCheckbox } from './styled-checkbox';
 import { IClientsDialog, ClientsDialog } from './dialog-clients';
 import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade';
@@ -35,6 +36,7 @@ export function StreamsTable(props: StreamTableProps) {
     const [previewStreams, setPreviewStreams] = useState<string[]>([]);
     const [previewStreamId, setPreviewStreamId] = useState('');
     const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map());
+    const tokenContext = useContext(TokenContext);
 
     const handleViewClients = (id: string) => {
         setSelectedStreamId(id);
@@ -97,6 +99,7 @@ export function StreamsTable(props: StreamTableProps) {
         params.set('autoplay', '');
         params.set('muted', '');
         params.set('reconnect', '3000');
+        params.set('token', tokenContext?.token ?? '');
         const url = new URL(`/tools/player.html?${params.toString()}`, location.origin);
         window.open(url);
     };

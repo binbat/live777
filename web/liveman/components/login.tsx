@@ -35,7 +35,7 @@ function alertError(e: unknown) {
 }
 
 export interface LoginProps {
-    onSuccess?: () => void;
+    onSuccess?: (token: string) => void;
 }
 
 export function Login({ onSuccess }: LoginProps) {
@@ -56,7 +56,7 @@ export function Login({ onSuccess }: LoginProps) {
             const tk = `${res.token_type} ${res.access_token}`;
             livemanApi.setAuthToken(tk);
             sharedApi.setAuthToken(tk);
-            onSuccess?.();
+            onSuccess?.(res.access_token);
         } catch (e) {
             alertError(e);
         }
@@ -69,7 +69,7 @@ export function Login({ onSuccess }: LoginProps) {
         sharedApi.setAuthToken(tk);
         try {
             await livemanApi.getNodes();
-            onSuccess?.();
+            onSuccess?.(token);
         } catch (e) {
             alertError(e);
         }
