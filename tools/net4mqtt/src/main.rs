@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::thread;
 
 use kcp::Kcp;
@@ -157,12 +157,17 @@ async fn up_udp_vnet(
     }
 }
 
-async fn up_server_proxy(mqtt_url: String, address: String, prefix: &str, server_id: &str) {
+async fn up_agent_proxy(
+    mqtt_config: &MqttConfig,
+    address: SocketAddr,
+    prefix: &str,
+    server_id: &str,
+) {
     let mut senders: HashMap<String, UnboundedSender<(String, Vec<u8>)>> = HashMap::new();
     let (sender, mut receiver) = mpsc::unbounded_channel::<(String, Vec<u8>)>();
 
     let (client, mut eventloop) = AsyncClient::new(
-        MqttOptions::parse_url(&mqtt_url).unwrap(),
+        MqttOptions::new(&mqtt_config.id, &mqtt_config.host, mqtt_config.port),
         MQTT_BUFFER_CAPACITY,
     );
     client
@@ -175,7 +180,6 @@ async fn up_server_proxy(mqtt_url: String, address: String, prefix: &str, server
 
     loop {
         let sender_clone = sender.clone();
-        let address = address.clone();
         select! {
             Some((key, data)) = receiver.recv() => {
                 let (prefix, server_id, client_id, _label, protocol, address) = topic::parse(&key);
@@ -212,7 +216,15 @@ async fn up_server_proxy(mqtt_url: String, address: String, prefix: &str, server
                                             },
                                             topic::protocol::UDP => {
                                                 task::spawn(async move {
-                                                    let socket = UdpSocket::bind(format!("{}:{}", "0.0.0.0", 0)).await.unwrap();
+                                                    let socket = UdpSocket::bind(
+                                                            SocketAddr::new(
+                                                            // "0.0.0.0:0"
+                                                            // "[::]:0"
+                                                            match address {
+                                                                SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                                                SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                                                            }, 0)
+                                                        ).await.unwrap();
                                                     socket.connect(address).await.unwrap();
                                                     up_udp_vnet(socket, topic, sender_clone, vnet_rx).await;
                                                 });
@@ -238,9 +250,9 @@ async fn up_server_proxy(mqtt_url: String, address: String, prefix: &str, server
     }
 }
 
-async fn up_client_proxy(
-    mqtt_url: String,
-    address: String,
+async fn up_local_proxy(
+    mqtt_config: &MqttConfig,
+    address: SocketAddr,
     prefix: &str,
     server_id: &str,
     client_id: &str,
@@ -250,7 +262,7 @@ async fn up_client_proxy(
     let (sender, mut receiver) = mpsc::unbounded_channel::<(String, Vec<u8>)>();
 
     let (client, mut eventloop) = AsyncClient::new(
-        MqttOptions::parse_url(&mqtt_url).unwrap(),
+        MqttOptions::new(&mqtt_config.id, &mqtt_config.host, mqtt_config.port),
         MQTT_BUFFER_CAPACITY,
     );
     client
@@ -262,7 +274,7 @@ async fn up_client_proxy(
         .unwrap();
 
     let mut buf = [0; MAX_BUFFER_SIZE];
-    let listener = TcpListener::bind(address.clone()).await.unwrap();
+    let listener = TcpListener::bind(address).await.unwrap();
     let sock = UdpSocket::bind(address).await.unwrap();
     loop {
         let sender_clone = sender.clone();
@@ -335,7 +347,7 @@ async fn up_client_proxy(
     }
 }
 
-async fn up_echo_udp_server(listen: &str) {
+async fn up_echo_udp_server(listen: SocketAddr) {
     let sock = UdpSocket::bind(listen).await.unwrap();
     let mut buf = [0; MAX_BUFFER_SIZE];
     loop {
@@ -344,7 +356,7 @@ async fn up_echo_udp_server(listen: &str) {
     }
 }
 
-async fn up_echo_tcp_server(listen: &str) {
+async fn up_echo_tcp_server(listen: SocketAddr) {
     let listener = TcpListener::bind(listen).await.unwrap();
     loop {
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -368,61 +380,63 @@ async fn up_echo_tcp_server(listen: &str) {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    const MQTT_TOPIC_PREFIX: &str = "test";
+    let mqtt_topic_prefix: &str = "test";
+    let mqtt_broker_port: u16 = 1883;
+    let agent_port: u16 = 4433;
+    let local_port: u16 = 4444;
+    let tcp_over_kcp: bool = true;
 
-    const MQTT_BROKER_HOST: &str = "127.0.0.1";
-    const MQTT_BROKER_PORT: u16 = 1883;
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    //let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    let mqtt_broker_host = ip;
 
-    const TCP_OVER_KCP: bool = true;
+    let agent_id = "0";
+    let local_id = "0";
+    let mqtt_id_proxy_agent = format!("test-proxy-agent-{}", agent_id);
+    let mqtt_id_proxy_local = format!("test-proxy-local-{}", local_id);
 
-    const ADDRESS: &str = "127.0.0.1";
-    const SERVER_PORT: u16 = 4433;
-    const CLIENT_PORT: u16 = 4444;
-
-    let server_id = "0";
-    let client_id = "0";
-    let mqtt_id_proxy_server = format!("test-proxy-server-{}", server_id);
-    let mqtt_id_proxy_client = format!("test-proxy-client-{}", client_id);
-    let server_mqtt_url = format!(
-        "mqtt://{}:{}?client_id={}",
-        MQTT_BROKER_HOST, MQTT_BROKER_PORT, mqtt_id_proxy_server
-    );
-    let client_mqtt_url = format!(
-        "mqtt://{}:{}?client_id={}",
-        MQTT_BROKER_HOST, MQTT_BROKER_PORT, mqtt_id_proxy_client
-    );
-
-    let server_addr = format!("{}:{}", ADDRESS, SERVER_PORT);
-    let client_addr = format!("{}:{}", ADDRESS, CLIENT_PORT);
+    let agent_addr = SocketAddr::new(ip, agent_port);
+    let local_addr = SocketAddr::new(ip, local_port);
 
     up_simulate_server(
         if args.len() == 2 {
-            Some(format!("{}:{}", ADDRESS, SERVER_PORT))
+            Some(SocketAddr::new(ip, agent_port))
         } else {
             None
         },
-        match format!("{}:{}", MQTT_BROKER_HOST, MQTT_BROKER_PORT).parse() {
-            Ok(addr) => Some(addr),
-            Err(_) => None,
-        },
+        Some(SocketAddr::new(ip, mqtt_broker_port)),
     )
     .await;
 
     thread::spawn(move || {
         Runtime::new().unwrap().block_on(async move {
-            up_server_proxy(server_mqtt_url, server_addr, MQTT_TOPIC_PREFIX, server_id).await
+            up_agent_proxy(
+                &MqttConfig {
+                    id: mqtt_id_proxy_agent,
+                    host: mqtt_broker_host.to_string(),
+                    port: mqtt_broker_port,
+                },
+                agent_addr,
+                mqtt_topic_prefix,
+                agent_id,
+            )
+            .await
         })
     });
 
     thread::spawn(move || {
         Runtime::new().unwrap().block_on(async move {
-            up_client_proxy(
-                client_mqtt_url,
-                client_addr,
-                MQTT_TOPIC_PREFIX,
-                server_id,
-                client_id,
-                TCP_OVER_KCP,
+            up_local_proxy(
+                &MqttConfig {
+                    id: mqtt_id_proxy_local,
+                    host: mqtt_broker_host.to_string(),
+                    port: mqtt_broker_port,
+                },
+                local_addr,
+                mqtt_topic_prefix,
+                agent_id,
+                local_id,
+                tcp_over_kcp,
             )
             .await
         })
@@ -433,19 +447,18 @@ async fn main() {
     }
 }
 
-async fn up_simulate_server(echo: Option<String>, broker: Option<SocketAddr>) {
+async fn up_simulate_server(echo: Option<SocketAddr>, broker: Option<SocketAddr>) {
     if let Some(addr) = echo {
-        let addr2 = addr.clone();
         thread::spawn(move || {
             Runtime::new()
                 .unwrap()
-                .block_on(async move { up_echo_tcp_server(&addr).await })
+                .block_on(async move { up_echo_tcp_server(addr).await })
         });
 
         thread::spawn(move || {
             Runtime::new()
                 .unwrap()
-                .block_on(async move { up_echo_udp_server(&addr2).await })
+                .block_on(async move { up_echo_udp_server(addr).await })
         });
     }
 
@@ -453,6 +466,12 @@ async fn up_simulate_server(echo: Option<String>, broker: Option<SocketAddr>) {
         thread::spawn(move || broker::up_mqtt_broker(addr));
         wait_for_port_availabilty(addr).await;
     }
+}
+
+pub struct MqttConfig {
+    pub id: String,
+    pub host: String,
+    pub port: u16,
 }
 
 #[cfg(test)]
@@ -463,70 +482,91 @@ mod tests {
 
     const MQTT_TOPIC_PREFIX: &str = "test";
     const TCP_OVER_KCP: bool = true;
-    const MQTT_BROKER_HOST: &str = "127.0.0.1";
-    const ADDRESS: &str = "127.0.0.1";
 
-    async fn helper_up_proxy() -> u16 {
+    async fn helper_up_proxy(ip: IpAddr) -> u16 {
+        let mqtt_broker_host = ip;
         let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
-        let server_port: u16 = pick_unused_port().expect("No ports free");
-        let client_port: u16 = pick_unused_port().expect("No ports free");
+        let agent_port: u16 = pick_unused_port().expect("No ports free");
+        let local_port: u16 = pick_unused_port().expect("No ports free");
 
-        let server_id = "0";
-        let client_id = "0";
-        let mqtt_id_proxy_server = format!("test-proxy-server-{}", server_id);
-        let mqtt_id_proxy_client = format!("test-proxy-client-{}", client_id);
-        let server_mqtt_url = format!(
-            "mqtt://{}:{}?client_id={}",
-            MQTT_BROKER_HOST, mqtt_broker_port, mqtt_id_proxy_server
-        );
-        let client_mqtt_url = format!(
-            "mqtt://{}:{}?client_id={}",
-            MQTT_BROKER_HOST, mqtt_broker_port, mqtt_id_proxy_client
-        );
+        let agent_id = "0";
+        let local_id = "0";
+        let mqtt_id_proxy_agent = format!("test-proxy-agent-{}", agent_id);
+        let mqtt_id_proxy_local = format!("test-proxy-local-{}", local_id);
 
-        let server_addr = format!("{}:{}", ADDRESS, server_port);
-        let client_addr = format!("{}:{}", ADDRESS, client_port);
+        let agent_addr = SocketAddr::new(ip, agent_port);
+        let local_addr = SocketAddr::new(ip, local_port);
 
         up_simulate_server(
-            Some(format!("{}:{}", ADDRESS, server_port)),
-            match format!("{}:{}", MQTT_BROKER_HOST, mqtt_broker_port).parse() {
-                Ok(addr) => Some(addr),
-                Err(_) => None,
-            },
+            Some(SocketAddr::new(ip, agent_port)),
+            Some(SocketAddr::new(ip, mqtt_broker_port)),
         )
         .await;
 
         thread::spawn(move || {
             Runtime::new().unwrap().block_on(async move {
-                up_server_proxy(server_mqtt_url, server_addr, MQTT_TOPIC_PREFIX, server_id).await
+                up_agent_proxy(
+                    &MqttConfig {
+                        id: mqtt_id_proxy_agent,
+                        host: mqtt_broker_host.to_string(),
+                        port: mqtt_broker_port,
+                    },
+                    agent_addr,
+                    MQTT_TOPIC_PREFIX,
+                    agent_id,
+                )
+                .await
             })
         });
 
         thread::spawn(move || {
             Runtime::new().unwrap().block_on(async move {
-                up_client_proxy(
-                    client_mqtt_url,
-                    client_addr,
+                up_local_proxy(
+                    &MqttConfig {
+                        id: mqtt_id_proxy_local,
+                        host: mqtt_broker_host.to_string(),
+                        port: mqtt_broker_port,
+                    },
+                    local_addr,
                     MQTT_TOPIC_PREFIX,
-                    server_id,
-                    client_id,
+                    agent_id,
+                    local_id,
                     TCP_OVER_KCP,
                 )
                 .await
             })
         });
-        client_port
+        local_port
     }
 
     #[tokio::test]
-    async fn test_udp() {
-        let client_port = helper_up_proxy().await;
+    async fn test_udp_simple() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let local_port = helper_up_proxy(ip).await;
         time::sleep(time::Duration::from_millis(10)).await;
 
-        let sock = UdpSocket::bind(format!("{}:{}", ADDRESS, 0)).await.unwrap();
-        sock.connect(format!("{}:{}", ADDRESS, client_port))
-            .await
-            .unwrap();
+        let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
+        sock.connect(SocketAddr::new(ip, local_port)).await.unwrap();
+        let mut buf = [0; MAX_BUFFER_SIZE];
+        let test_msg = b"hello, world";
+        sock.send(test_msg).await.unwrap();
+        let len = sock.recv(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], test_msg);
+
+        let test_msg2 = b"hello, world2";
+        sock.send(test_msg2).await.unwrap();
+        let len = sock.recv(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], test_msg2);
+    }
+
+    #[tokio::test]
+    async fn test_udp_ipv6() {
+        let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        let local_port = helper_up_proxy(ip).await;
+        time::sleep(time::Duration::from_millis(10)).await;
+
+        let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
+        sock.connect(SocketAddr::new(ip, local_port)).await.unwrap();
         let mut buf = [0; MAX_BUFFER_SIZE];
         let test_msg = b"hello, world";
         sock.send(test_msg).await.unwrap();
@@ -541,18 +581,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_udp_two_connect() {
-        let client_port = helper_up_proxy().await;
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let local_port = helper_up_proxy(ip).await;
         time::sleep(time::Duration::from_millis(10)).await;
 
-        let sock = UdpSocket::bind(format!("{}:{}", ADDRESS, 0)).await.unwrap();
-        let sock2 = UdpSocket::bind(format!("{}:{}", ADDRESS, 0)).await.unwrap();
-        sock.connect(format!("{}:{}", ADDRESS, client_port))
-            .await
-            .unwrap();
+        let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
+        let sock2 = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
+        sock.connect(SocketAddr::new(ip, local_port)).await.unwrap();
         sock2
-            .connect(format!("{}:{}", ADDRESS, client_port))
+            .connect(SocketAddr::new(ip, local_port))
             .await
             .unwrap();
+
         let mut buf = [0; MAX_BUFFER_SIZE];
         let test_msg = b"hello, world";
         let test_2_msg = b"hello, world 22222222222222222222";
@@ -581,10 +621,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_tcp() {
-        let client_port = helper_up_proxy().await;
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let local_port = helper_up_proxy(ip).await;
         time::sleep(time::Duration::from_millis(10)).await;
 
-        let mut socket = TcpStream::connect(format!("{}:{}", ADDRESS, client_port))
+        let mut socket = TcpStream::connect(SocketAddr::new(ip, local_port))
             .await
             .unwrap();
 
