@@ -7,9 +7,9 @@ export function Player() {
     const [muted, setMuted] = useState(false);
     const [controls, setControls] = useState(false);
     const [reconnect, setReconnect] = useState(0);
-    const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
-    const [whepClient, setWhepClient] = useState<WHEPClient | null>(null);
-    const refAudio = useRef<HTMLAudioElement>(document.createElement('audio'));
+    const refPeerConnection = useRef<RTCPeerConnection | null>(null);
+    const refWhepClient = useRef<WHEPClient | null>(null);
+    const refMediaStream = useRef<MediaStream | null>(null);
     const refVideo = useRef<HTMLVideoElement>(null);
 
     useEffect(() => {
@@ -20,7 +20,7 @@ export function Player() {
         setMuted(params.has('muted'));
         const n = Number.parseInt(params.get('reconnect') ?? '0', 10);
         setReconnect(Number.isNaN(n) ? 0 : n);
-    });
+    }, []);
 
     useEffect(() => {
         if (!streamId || !autoPlay) return;
@@ -37,40 +37,31 @@ export function Player() {
         if (v) {
             v.muted = muted;
         }
-
-        if (muted) {
-            refAudio.current.pause();
-        } else {
-            refAudio.current.play();
-        }
     }, [muted]);
 
     const handlePlay = async () => {
         const pc = new RTCPeerConnection();
-        setPeerConnection(pc);
+        refPeerConnection.current = pc;
         pc.addTransceiver('video', { direction: 'recvonly' });
         pc.addTransceiver('audio', { direction: 'recvonly' });
-        pc.ontrack = ev => {
-            if (ev.track.kind === 'video' && ev.streams.length > 0) {
-                if (refVideo.current) {
-                    refVideo.current.srcObject = ev.streams[0];
-                }
-            }
-
-            if (ev.track.kind === 'audio') {
-                refAudio.current.srcObject = new MediaStream([ev.track]);
-            }
-        };
-        pc.onconnectionstatechange = () => {
+        const ms = new MediaStream();
+        refMediaStream.current = ms;
+        if (refVideo.current) {
+            refVideo.current.srcObject = ms;
+        }
+        pc.addEventListener('track', ev => {
+            ms.addTrack(ev.track);
+        });
+        pc.addEventListener('connectionstatechange', () => {
             switch (pc.connectionState) {
                 case 'disconnected': {
                     handleStop();
                     break;
                 }
             }
-        };
+        });
         const whep = new WHEPClient();
-        setWhepClient(whep);
+        refWhepClient.current = whep;
         const url = `${location.origin}/whep/${streamId}`;
         const token = '';
         try {
@@ -84,12 +75,12 @@ export function Player() {
         if (refVideo.current) {
             refVideo.current.srcObject = null;
         }
-        if (whepClient) {
-            await whepClient.stop();
-            setWhepClient(null);
+        if (refWhepClient.current) {
+            await refWhepClient.current.stop();
+            refWhepClient.current = null;
         }
-        if (peerConnection) {
-            setPeerConnection(null);
+        if (refPeerConnection.current) {
+            refPeerConnection.current = null;
         }
         if (reconnect > 0) {
             setTimeout(() => { handleReconnect(); }, reconnect);
@@ -102,7 +93,7 @@ export function Player() {
     };
 
     const handleVideoClick = () => {
-        if (!whepClient) {
+        if (!refWhepClient.current) {
             handlePlay();
         }
     };

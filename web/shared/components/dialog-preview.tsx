@@ -17,7 +17,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [streamId, setStreamId] = useState('');
     const refPeerConnection = useRef<RTCPeerConnection | null>(null);
     const refWhepClient = useRef<WHEPClient | null>(null);
-    const refMediaStream = useRef<MediaStream | null>();
+    const refMediaStream = useRef<MediaStream | null>(null);
     const [connState, setConnState] = useState('');
     const [videoResolution, setVideoResolution] = useState('');
     const logger = useLogger();

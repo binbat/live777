@@ -18,7 +18,7 @@ async function getStreamsSorted() {
 }
 
 export interface StreamTableProps {
-    cascade?: boolean;
+    showCascade?: boolean;
     renderExtraActions?: (s: Stream) => ReactNode;
 }
 
@@ -175,7 +175,7 @@ export function StreamsTable(props: StreamTableProps) {
                                 <td>
                                     <button onClick={() => handlePreview(i.id)} class={previewStreams.includes(i.id) ? 'text-blue-500' : undefined} >Preview</button>
                                     <button onClick={() => handleViewClients(i.id)}>Clients</button>
-                                    {props.cascade
+                                    {props.showCascade
                                         ? <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
                                         : null
                                     }
@@ -189,7 +189,7 @@ export function StreamsTable(props: StreamTableProps) {
                     </tbody>
                 </table>
                 <div>
-                    {props.cascade
+                    {props.showCascade
                         ? <button onClick={handleCascadePullStream}>Cascade Pull</button>
                         : null
                     }

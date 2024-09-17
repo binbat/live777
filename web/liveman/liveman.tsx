@@ -38,7 +38,7 @@ export function Liveman() {
             ) : (
                 <>
                     <NodesTable />
-                    <StreamsTable cascade={false} renderExtraActions={renderCreateToken} />
+                    <StreamsTable renderExtraActions={renderCreateToken} />
                 </>
             )}
             <StreamTokenDialog ref={refStreamTokenDialog} />
