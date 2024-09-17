@@ -1,50 +1,81 @@
-# UDP over MQTT
+# NET Over MQTT
 
-```bash
-pushd tools/net4mqtt
-```
-
-## TCP/UDP simulate server test
+## TCP/UDP simulation server test
 
 ```bash
 cargo test --package=net4mqtt -- --nocapture
 ```
 
-## TCP/UDP simulate server netcat echo
+## How to use cli tools?
 
-```bash
-cargo run --package=net4mqtt -- echo
+```
+live777 <---> net4mqtt agent <---> mqtt broker <---> net4mqtt local <---> liveman
 ```
 
+### Up a MQTT broker server
+
 ```bash
-nc 127.0.0.1 4444
+mosquitto
 ```
 
+### Monitor MQTT topic messages
+
 ```bash
-nc -u 127.0.0.1 4444
+mosquitto_sub -L 'mqtt://localhost:1883/net4mqtt/#' -v
 ```
 
-## HTTP3 over MQTT
+### TCP Proxy
 
-```bash
-cargo run --package=net4mqtt
+
+```
+./net4mqtt -h
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target/debug/net4mqtt -h`
+Usage: net4mqtt [OPTIONS] <COMMAND>
+
+Commands:
+  local  use local proxy
+  agent  use agent proxy
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -v...                        Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
+  -b, --broker <BROKER>        Mqtt Broker Address [default: mqtt://localhost:1883]
+  -p, --prefix <PREFIX>        Mqtt Topic Prefix [default: net4mqtt]
+  -c, --client-id <CLIENT_ID>  Mqtt Client Id [default: -]
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
-HTTP3 test application
+
+1. up a TCP Server
 
 ```bash
-git clone git@github.com:quinn-rs/quinn.git
+nc -l 7777
 ```
 
-HTTP3 Server
+2. up a net4mqtt agent
 
 ```bash
-cargo run --example server -- --listen="127.0.0.1:4433" ./
+net4mqtt -vvv --client-id agent-0 agent --agent-id 0
 ```
 
-HTTP3 Client
+3. up a net4mqtt local
 
 ```bash
-cargo run --example client https://127.0.0.1:4444/Cargo.toml --host localhost
+net4mqtt -vvv --client-id local-0 local --agent-id 0 --local-id 0
+```
+
+4. up a TCP Client
+
+```bash
+nc 127.0.0.1 6666
+```
+
+5. For UDP
+
+```bash
+nc -l -u 7777
+nc -u 127.0.0.1 6666
 ```
 
