@@ -3,7 +3,6 @@ use std::thread;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::runtime::Runtime;
 use tokio::time;
 
 use crate::broker;
@@ -26,17 +25,9 @@ async fn wait_for_port_availabilty(addr: SocketAddr) -> bool {
 
 pub async fn up_simulate_server(echo: Option<SocketAddr>, broker: Option<SocketAddr>) {
     if let Some(addr) = echo {
-        thread::spawn(move || {
-            Runtime::new()
-                .unwrap()
-                .block_on(async move { up_echo_tcp_server(addr).await })
-        });
+        thread::spawn(move || tokio_test::block_on(up_echo_tcp_server(addr)));
 
-        thread::spawn(move || {
-            Runtime::new()
-                .unwrap()
-                .block_on(async move { up_echo_udp_server(addr).await })
-        });
+        thread::spawn(move || tokio_test::block_on(up_echo_udp_server(addr)));
     }
 
     if let Some(addr) = broker {
@@ -74,12 +65,29 @@ async fn up_echo_tcp_server(listen: SocketAddr) {
     }
 }
 
+async fn handle_request(body: &str, mut socket: tokio::net::TcpStream) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    socket.write_all(response.as_bytes()).await.unwrap();
+}
+
+async fn up_http_server(listen: SocketAddr, body: &str) {
+    let listener = TcpListener::bind(listen).await.unwrap();
+    loop {
+        let (socket, _) = listener.accept().await.unwrap();
+        handle_request(body, socket).await;
+    }
+}
+
 use portpicker::pick_unused_port;
 
 use crate::proxy;
 
 const MQTT_TOPIC_PREFIX: &str = "test";
-const TCP_OVER_KCP: bool = true;
+const TCP_OVER_KCP: bool = false;
 
 async fn helper_up_proxy(ip: IpAddr) -> u16 {
     let mqtt_broker_host = ip;
@@ -102,37 +110,31 @@ async fn helper_up_proxy(ip: IpAddr) -> u16 {
     .await;
 
     thread::spawn(move || {
-        Runtime::new().unwrap().block_on(async move {
-            proxy::agent(
-                &proxy::MqttConfig {
-                    id: mqtt_id_proxy_agent,
-                    host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
-                },
-                agent_addr,
-                MQTT_TOPIC_PREFIX,
-                agent_id,
-            )
-            .await
-        })
+        tokio_test::block_on(proxy::agent(
+            &proxy::MqttConfig {
+                id: mqtt_id_proxy_agent,
+                host: mqtt_broker_host.to_string(),
+                port: mqtt_broker_port,
+            },
+            agent_addr,
+            MQTT_TOPIC_PREFIX,
+            agent_id,
+        ))
     });
 
     thread::spawn(move || {
-        Runtime::new().unwrap().block_on(async move {
-            proxy::local(
-                &proxy::MqttConfig {
-                    id: mqtt_id_proxy_local,
-                    host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
-                },
-                local_addr,
-                MQTT_TOPIC_PREFIX,
-                agent_id,
-                local_id,
-                TCP_OVER_KCP,
-            )
-            .await
-        })
+        tokio_test::block_on(proxy::local(
+            &proxy::MqttConfig {
+                id: mqtt_id_proxy_local,
+                host: mqtt_broker_host.to_string(),
+                port: mqtt_broker_port,
+            },
+            local_addr,
+            MQTT_TOPIC_PREFIX,
+            agent_id,
+            local_id,
+            TCP_OVER_KCP,
+        ))
     });
     local_port
 }
@@ -237,4 +239,74 @@ async fn test_tcp() {
     socket.write_all(test_msg2).await.unwrap();
     let len = socket.read(&mut buf).await.unwrap();
     assert_eq!(&buf[..len], test_msg2);
+}
+
+#[tokio::test]
+async fn test_socks() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let tcp_over_kcp = false;
+    let mqtt_broker_host = ip;
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+
+    let agent_id = "0";
+    let local_id = "0";
+    let mqtt_id_proxy_agent = format!("test-proxy-agent-{}", agent_id);
+    let mqtt_id_proxy_local = format!("test-proxy-local-{}", local_id);
+
+    let agent_addr = SocketAddr::new(ip, agent_port);
+    let local_addr = SocketAddr::new(ip, local_port);
+
+    let message = "Hello World!";
+    thread::spawn(move || {
+        tokio_test::block_on(up_http_server(agent_addr, message));
+    });
+
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    up_simulate_server(None, Some(SocketAddr::new(ip, mqtt_broker_port))).await;
+
+    thread::spawn(move || {
+        tokio_test::block_on(proxy::agent(
+            &proxy::MqttConfig {
+                id: mqtt_id_proxy_agent,
+                host: mqtt_broker_host.to_string(),
+                port: mqtt_broker_port,
+            },
+            agent_addr,
+            MQTT_TOPIC_PREFIX,
+            agent_id,
+        ))
+    });
+
+    thread::spawn(move || {
+        tokio_test::block_on(proxy::local_socks(
+            &proxy::MqttConfig {
+                id: mqtt_id_proxy_local,
+                host: mqtt_broker_host.to_string(),
+                port: mqtt_broker_port,
+            },
+            local_addr,
+            MQTT_TOPIC_PREFIX,
+            agent_id,
+            local_id,
+            tcp_over_kcp,
+        ))
+    });
+
+    time::sleep(time::Duration::from_millis(10)).await;
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+        .build()
+        .unwrap();
+
+    let res = client
+        .get(format!("http://{}/", local_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+    let body = res.text().await.unwrap();
+    assert_eq!(body, message);
 }

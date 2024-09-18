@@ -6,13 +6,17 @@ edition = "2021"
 [dev-dependencies]
 portpicker = "0.1.1"
 rumqttd = "0.19.0"
+tokio-test = "0.4.4"
+reqwest = { version = "0.12.7", features = ["socks"] }
 
 [dependencies]
 utils = { path = "../../libs/utils" }
+anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 
 url = "2.5.2"
 kcp = "0.5.3"
 rumqttc = "0.24.0"
+socks5-server = "0.10.1"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync"] }

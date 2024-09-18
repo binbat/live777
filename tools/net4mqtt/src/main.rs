@@ -5,6 +5,7 @@ use tracing::{debug, info, trace, Level};
 use url::Url;
 
 mod proxy;
+mod socks;
 mod topic;
 
 #[cfg(test)]
@@ -40,6 +41,9 @@ struct Cli {
 enum Commands {
     /// use local proxy
     Local {
+        /// socks5 proxy
+        #[arg(short, long, default_value_t = false)]
+        socks: bool,
         /// lists test values
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
         target: SocketAddr,
@@ -90,6 +94,7 @@ async fn main() {
 
     match args.command {
         Commands::Local {
+            socks,
             target,
             agent_id,
             local_id,
@@ -97,19 +102,35 @@ async fn main() {
         } => {
             info!("Running as local, {:?}", target);
 
-            proxy::local(
-                &proxy::MqttConfig {
-                    id: mqtt_client_id,
-                    host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
-                },
-                target,
-                &mqtt_topic_prefix,
-                &agent_id,
-                &local_id,
-                !no_kcp,
-            )
-            .await;
+            if socks {
+                proxy::local_socks(
+                    &proxy::MqttConfig {
+                        id: mqtt_client_id,
+                        host: mqtt_broker_host.to_string(),
+                        port: mqtt_broker_port,
+                    },
+                    target,
+                    &mqtt_topic_prefix,
+                    &agent_id,
+                    &local_id,
+                    !no_kcp,
+                )
+                .await;
+            } else {
+                proxy::local(
+                    &proxy::MqttConfig {
+                        id: mqtt_client_id,
+                        host: mqtt_broker_host.to_string(),
+                        port: mqtt_broker_port,
+                    },
+                    target,
+                    &mqtt_topic_prefix,
+                    &agent_id,
+                    &local_id,
+                    !no_kcp,
+                )
+                .await;
+            }
         }
         Commands::Agent { target, agent_id } => {
             info!("Running as agent, {:?}", target);
