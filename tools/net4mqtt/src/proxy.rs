@@ -174,57 +174,49 @@ pub async fn agent(mqtt_config: &MqttConfig, address: SocketAddr, prefix: &str, 
                 ).await.unwrap();
             }
             Ok(notification) = eventloop.poll() => {
-                match notification {
-                    rumqttc::Event::Incoming(event) => {
-                        match event {
-                            rumqttc::Incoming::Publish(p) => {
-                                let topic = p.topic.clone();
-                                let (_prefix, _server_id, _client_id, _label, protocol, _address) = topic::parse(&topic);
-                                let sender = match senders.get(&p.topic) {
-                                    Some(sender) => sender,
-                                    None => {
-                                        let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
-                                        let topic = p.topic.clone();
-                                        match protocol {
-                                            topic::protocol::KCP => {
-                                                task::spawn(async move {
-                                                    let socket = TcpStream::connect(address).await.unwrap();
-                                                    up_kcp_vnet(socket, topic, sender_clone, vnet_rx).await;
-                                                });
-                                            },
-                                            topic::protocol::TCP => {
-                                                task::spawn(async move {
-                                                    let socket = TcpStream::connect(address).await.unwrap();
-                                                    up_tcp_vnet(socket, topic, sender_clone, vnet_rx).await;
-                                                });
-                                            },
-                                            topic::protocol::UDP => {
-                                                task::spawn(async move {
-                                                    let socket = UdpSocket::bind(
-                                                            SocketAddr::new(
-                                                            // "0.0.0.0:0"
-                                                            // "[::]:0"
-                                                            match address {
-                                                                SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                                                                SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-                                                            }, 0)
-                                                        ).await.unwrap();
-                                                    socket.connect(address).await.unwrap();
-                                                    up_udp_vnet(socket, topic, sender_clone, vnet_rx).await;
-                                                });
-                                            },
-                                            e => panic!("unknown protocol {}", e)
-                                        };
-                                        senders.insert(p.topic.clone(), vnet_tx);
-                                        senders.get(&p.topic).unwrap()
-                                    },
-                                };
-                                sender.send((p.topic, p.payload.to_vec())).unwrap();
-                            },
-                            ev => info!("{:?}", ev)
-                        }
-                    }
-                    rumqttc::Event::Outgoing(_) => {},
+                if let Some(p) = mqtt_receive(notification) {
+                    let topic = p.topic.clone();
+                    let (_prefix, _server_id, _client_id, _label, protocol, _address) = topic::parse(&topic);
+                    let sender = match senders.get(&p.topic) {
+                        Some(sender) => sender,
+                        None => {
+                            let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
+                            let topic = p.topic.clone();
+                            match protocol {
+                                topic::protocol::KCP => {
+                                    task::spawn(async move {
+                                        let socket = TcpStream::connect(address).await.unwrap();
+                                        up_kcp_vnet(socket, topic, sender_clone, vnet_rx).await;
+                                    });
+                                },
+                                topic::protocol::TCP => {
+                                    task::spawn(async move {
+                                        let socket = TcpStream::connect(address).await.unwrap();
+                                        up_tcp_vnet(socket, topic, sender_clone, vnet_rx).await;
+                                    });
+                                },
+                                topic::protocol::UDP => {
+                                    task::spawn(async move {
+                                        let socket = UdpSocket::bind(
+                                                SocketAddr::new(
+                                                // "0.0.0.0:0"
+                                                // "[::]:0"
+                                                match address {
+                                                    SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                                    SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                                                }, 0)
+                                            ).await.unwrap();
+                                        socket.connect(address).await.unwrap();
+                                        up_udp_vnet(socket, topic, sender_clone, vnet_rx).await;
+                                    });
+                                },
+                                e => info!("unknown protocol {}", e)
+                            };
+                            senders.insert(p.topic.clone(), vnet_tx);
+                            senders.get(&p.topic).unwrap()
+                        },
+                    };
+                    sender.send((p.topic, p.payload.to_vec())).unwrap();
                 }
             }
             else => {
@@ -299,34 +291,36 @@ pub async fn local(
                 ).await.unwrap();
             }
             Ok(notification) = eventloop.poll() => {
-                match notification {
-                    rumqttc::Event::Incoming(event) => {
-                        match event {
-                            rumqttc::Incoming::Publish(p) => {
-                                let topic = p.topic.clone();
-                                let (_prefix, _server_id, _client_id, _label, protocol, address) = topic::parse(&topic);
-                                match protocol {
-                                    topic::protocol::KCP => {
-                                        senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
-                                    },
-                                    topic::protocol::TCP => {
-                                        senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
-                                    },
-                                    topic::protocol::UDP => {
-                                        let _ = sock.send_to(&p.payload, address).await.unwrap();
-                                    },
-                                    _ => {},
-                                }
-                            },
-                            ev => println!("{:?}", ev)
-                        }
-                    },
-                    rumqttc::Event::Outgoing(_) => {},
+                if let Some(p) = mqtt_receive(notification) {
+                    let topic = p.topic.clone();
+                    let (_prefix, _server_id, _client_id, _label, protocol, address) = topic::parse(&topic);
+                    match protocol {
+                        topic::protocol::KCP => {
+                            senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
+                        },
+                        topic::protocol::TCP => {
+                            senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
+                        },
+                        topic::protocol::UDP => {
+                            let _ = sock.send_to(&p.payload, address).await.unwrap();
+                        },
+                        e => info!("unknown protocol {}", e)
+                    }
                 }
             }
             else => {
                 error!("vclient proxy error");
             }
         }
+    }
+}
+
+fn mqtt_receive(raw: rumqttc::Event) -> Option<rumqttc::mqttbytes::v4::Publish> {
+    match raw {
+        rumqttc::Event::Incoming(event) => match event {
+            rumqttc::Incoming::Publish(p) => Some(p),
+            _ => None,
+        },
+        rumqttc::Event::Outgoing(_) => None,
     }
 }
