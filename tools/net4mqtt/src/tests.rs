@@ -333,7 +333,7 @@ async fn test_kcp() {
 }
 
 #[tokio::test]
-async fn test_socks() {
+async fn test_socks_simple() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
     let agent_port: u16 = pick_unused_port().expect("No ports free");
@@ -391,4 +391,91 @@ async fn test_socks() {
 
     let body = res.text().await.unwrap();
     assert_eq!(body, message);
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+        .build()
+        .unwrap();
+
+    let res = client
+        .get(format!("http://{}/", local_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+    let body = res.text().await.unwrap();
+    assert_eq!(body, message);
+}
+
+#[tokio::test]
+async fn test_socks_multiple_server() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+
+    let agent_ports: Vec<u16> = (0..10)
+        .map(|_| pick_unused_port().expect("No ports free"))
+        .collect();
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+
+    for (id, port) in agent_ports.iter().enumerate() {
+        let agent_addr = SocketAddr::new(ip, *port);
+        let message = id.to_string();
+        thread::spawn(move || {
+            tokio_test::block_on(up_http_server(agent_addr, &message));
+        });
+    }
+    time::sleep(time::Duration::from_millis(100)).await;
+
+    helper_cluster_up(Config {
+        agent: agent_ports.clone(),
+
+        ip,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+    let tcp_over_kcp = false;
+    let mqtt_broker_host = ip;
+
+    let agent_id = "0";
+    let local_id = "0";
+
+    let local_addr = SocketAddr::new(ip, local_port);
+    thread::spawn(move || {
+        tokio_test::block_on(proxy::local_socks(
+            &proxy::MqttConfig {
+                id: format!("test-proxy-local-{}", local_id),
+                host: mqtt_broker_host.to_string(),
+                port: mqtt_broker_port,
+            },
+            local_addr,
+            MQTT_TOPIC_PREFIX,
+            agent_id,
+            local_id,
+            tcp_over_kcp,
+        ))
+    });
+
+    time::sleep(time::Duration::from_millis(10)).await;
+
+    for (id, _port) in agent_ports.iter().enumerate() {
+        let client = reqwest::Client::builder()
+            .proxy(
+                // References: https://github.com/seanmonstar/reqwest/issues/899
+                reqwest::Proxy::all(format!("socks5h://{}", local_addr)).unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        let res = client
+            .get(format!("http://{}.test.local/", id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+        let body = res.text().await.unwrap();
+        assert_eq!(body, id.to_string());
+    }
 }
