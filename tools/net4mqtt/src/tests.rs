@@ -76,93 +76,91 @@ use crate::proxy;
 const MQTT_TOPIC_PREFIX: &str = "test";
 
 struct Config {
-    agent: bool,
-    local: bool,
+    agent: Vec<u16>,
+    local: Vec<u16>,
 
     ip: IpAddr,
     kcp: bool,
     echo: bool,
-    broker: bool,
+    broker: u16,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            agent: true,
-            local: true,
+            agent: Vec::new(),
+            local: Vec::new(),
 
             ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             kcp: false,
             echo: false,
-            broker: false,
+            broker: pick_unused_port().expect("No ports free"),
         }
     }
 }
 
-async fn helper_cluster_up(cfg: Config) -> (u16, u16, u16) {
+async fn helper_cluster_up(cfg: Config) {
     let mqtt_broker_host = cfg.ip;
-    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
-    let agent_port: u16 = pick_unused_port().expect("No ports free");
-    let local_port: u16 = pick_unused_port().expect("No ports free");
-
-    let agent_id = "0";
-    let local_id = "0";
-
-    let agent_addr = SocketAddr::new(cfg.ip, agent_port);
-    let local_addr = SocketAddr::new(cfg.ip, local_port);
-    let broker_addr = SocketAddr::new(mqtt_broker_host, mqtt_broker_port);
-
     if cfg.echo {
-        thread::spawn(move || tokio_test::block_on(up_echo_tcp_server(agent_addr)));
-        thread::spawn(move || tokio_test::block_on(up_echo_udp_server(agent_addr)));
+        for port in cfg.agent.iter() {
+            let addr = SocketAddr::new(cfg.ip, *port);
+            thread::spawn(move || tokio_test::block_on(up_echo_tcp_server(addr)));
+            thread::spawn(move || tokio_test::block_on(up_echo_udp_server(addr)));
+        }
     }
 
-    if cfg.broker {
-        thread::spawn(move || broker::up_mqtt_broker(broker_addr));
-        wait_for_port_availabilty(broker_addr).await;
-    }
+    let broker_addr = SocketAddr::new(mqtt_broker_host, cfg.broker);
+    thread::spawn(move || broker::up_mqtt_broker(broker_addr));
+    wait_for_port_availabilty(broker_addr).await;
 
-    if cfg.agent {
+    for (id, port) in cfg.agent.into_iter().enumerate() {
         thread::spawn(move || {
+            let addr = SocketAddr::new(cfg.ip, port);
             tokio_test::block_on(proxy::agent(
                 &proxy::MqttConfig {
-                    id: format!("test-proxy-agent-{}", agent_id),
+                    id: format!("test-proxy-agent-{}", id),
                     host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
+                    port: cfg.broker,
                 },
-                agent_addr,
+                addr,
                 MQTT_TOPIC_PREFIX,
-                agent_id,
+                &id.to_string(),
             ))
         });
     }
 
-    if cfg.local {
+    for (id, port) in cfg.local.into_iter().enumerate() {
         thread::spawn(move || {
+            let addr = SocketAddr::new(cfg.ip, port);
             tokio_test::block_on(proxy::local(
                 &proxy::MqttConfig {
-                    id: format!("test-proxy-local-{}", local_id),
+                    id: format!("test-proxy-local-{}", id),
                     host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
+                    port: cfg.broker,
                 },
-                local_addr,
+                addr,
                 MQTT_TOPIC_PREFIX,
-                agent_id,
-                local_id,
+                &id.to_string(),
+                &id.to_string(),
                 cfg.kcp,
             ))
         });
     }
-    (agent_port, local_port, mqtt_broker_port)
 }
 
 #[tokio::test]
 async fn test_udp_simple() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let (_agent_port, local_port, _broker_port) = helper_cluster_up(Config {
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
         ip,
         echo: true,
-        broker: true,
+        broker: mqtt_broker_port,
         ..Default::default()
     })
     .await;
@@ -185,10 +183,16 @@ async fn test_udp_simple() {
 #[tokio::test]
 async fn test_udp_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-    let (_agent_port, local_port, _broker_port) = helper_cluster_up(Config {
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
         ip,
         echo: true,
-        broker: true,
+        broker: mqtt_broker_port,
         ..Default::default()
     })
     .await;
@@ -211,10 +215,16 @@ async fn test_udp_ipv6() {
 #[tokio::test]
 async fn test_udp_two_connect() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let (_agent_port, local_port, _broker_port) = helper_cluster_up(Config {
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
         ip,
         echo: true,
-        broker: true,
+        broker: mqtt_broker_port,
         ..Default::default()
     })
     .await;
@@ -257,10 +267,16 @@ async fn test_udp_two_connect() {
 #[tokio::test]
 async fn test_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let (_agent_port, local_port, _broker_port) = helper_cluster_up(Config {
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
         ip,
         echo: true,
-        broker: true,
+        broker: mqtt_broker_port,
         ..Default::default()
     })
     .await;
@@ -285,12 +301,17 @@ async fn test_tcp() {
 #[tokio::test]
 async fn test_kcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let (_agent_port, local_port, _broker_port) = helper_cluster_up(Config {
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
         ip,
         kcp: true,
         echo: true,
-        broker: true,
-        ..Default::default()
+        broker: mqtt_broker_port,
     })
     .await;
     time::sleep(time::Duration::from_millis(10)).await;
@@ -314,11 +335,14 @@ async fn test_kcp() {
 #[tokio::test]
 async fn test_socks() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let (agent_port, local_port, mqtt_broker_port) = helper_cluster_up(Config {
-        local: false,
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
 
         ip,
-        broker: true,
+        broker: mqtt_broker_port,
         ..Default::default()
     })
     .await;
