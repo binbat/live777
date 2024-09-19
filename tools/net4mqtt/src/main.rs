@@ -4,6 +4,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use tracing::{debug, info, trace, Level};
 use url::Url;
 
+pub mod kxdns;
 mod proxy;
 mod socks;
 mod topic;

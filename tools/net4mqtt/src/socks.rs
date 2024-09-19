@@ -52,7 +52,10 @@ pub(crate) async fn handle(
         }
         Ok(Command::Connect(connect, addr)) => {
             let target = match addr {
-                Address::DomainAddress(domain, _port) => String::from_utf8(domain).ok(),
+                Address::DomainAddress(domain, _port) => match std::str::from_utf8(&domain) {
+                    Ok(raw) => Some(crate::kxdns::Kxdns::resolver(raw).to_string()),
+                    Err(_) => None,
+                },
                 Address::SocketAddress(_) => None,
             };
 
