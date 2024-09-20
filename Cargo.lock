@@ -1991,6 +1991,7 @@ dependencies = [
  "clap",
  "kcp",
  "portpicker",
+ "rand",
  "reqwest",
  "rumqttc",
  "rumqttd",

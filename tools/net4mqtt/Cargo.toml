@@ -17,6 +17,7 @@ tracing = { workspace = true }
 
 url = "2.5.2"
 kcp = "0.5.3"
+rand = "0.8.5"
 rumqttc = "0.24.0"
 socks5-server = "0.10.1"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync"] }

@@ -57,13 +57,13 @@ nc -l 7777
 2. up a net4mqtt agent
 
 ```bash
-net4mqtt -vvv --client-id agent-0 agent --agent-id 0
+net4mqtt -vvv agent --id 0
 ```
 
 3. up a net4mqtt local
 
 ```bash
-net4mqtt -vvv --client-id local-0 local --agent-id 0 --local-id 0
+net4mqtt -vvv local --agent-id 0 --id 0
 ```
 
 4. up a TCP Client
