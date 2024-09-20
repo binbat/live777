@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use anyhow::{anyhow, Error, Result};
 use kcp::Kcp;
-
 use rumqttc::{AsyncClient, MqttOptions, QoS};
-
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::select;
@@ -62,33 +61,31 @@ async fn up_kcp_vnet<T>(
     key: String,
     sender: UnboundedSender<(String, Vec<u8>)>,
     mut receiver: UnboundedReceiver<(String, Vec<u8>)>,
-) where
+) -> Result<(), Error>
+where
     T: AsyncReadExt + AsyncWriteExt + Unpin,
 {
     let mut buf = [0; MAX_BUFFER_SIZE];
 
-    let mut kcp = Kcp::new(0, ChannelOutput::new(key.clone(), sender.clone()));
-    let mut interval = tokio::time::interval(time::Duration::from_millis(10));
+    let mut kcp = Kcp::new(0, ChannelOutput::new(key.clone(), sender));
+    let mut interval = time::interval(time::Duration::from_millis(10));
     loop {
         select! {
             _ = interval.tick() => {
-                kcp.update(now_millis()).unwrap();
+                kcp.update(now_millis())?;
             }
             Some((_key, mut raw)) = receiver.recv() => {
-                kcp.input(raw.as_mut_slice()).unwrap();
-                let n = match kcp.recv(buf.as_mut_slice()) {
-                    Ok(n) => n,
+                kcp.input(raw.as_mut_slice())?;
+                match kcp.recv(buf.as_mut_slice()) {
+                    Ok(n) => socket.write_all(&buf[..n]).await?,
                     Err(kcp::Error::RecvQueueEmpty) => continue,
-                    Err(err) => panic!("kcp.recv error: {:?}", err),
+                    Err(err) => return Err(anyhow!("kcp.recv error: {:?}", err)),
                 };
-                socket.write_all(&buf[..n]).await
-                .unwrap_or_else(|e| panic!("tcp vnet: {} write failed, error: {}", key, e));
             }
             Ok(n) = socket.read(&mut buf) => {
                 if n == 0 { break };
                 trace!("read {} bytes: {:?}", n, buf[..n].to_vec());
-                kcp.send(&buf[..n])
-                .unwrap_or_else(|e| panic!("tcp vnet: {} read failed, error: {}", key, e));
+                kcp.send(&buf[..n])?;
             }
             else => {
                 error!("Receiver channel closed or other case");
@@ -96,7 +93,8 @@ async fn up_kcp_vnet<T>(
             }
         }
     }
-    warn!("kcp vnet {} exit", key);
+    warn!("kcp vnet {} exit", &key);
+    Ok(())
 }
 
 async fn up_tcp_vnet<T>(
@@ -104,22 +102,21 @@ async fn up_tcp_vnet<T>(
     key: String,
     sender: UnboundedSender<(String, Vec<u8>)>,
     mut receiver: UnboundedReceiver<(String, Vec<u8>)>,
-) where
+) -> Result<(), Error>
+where
     T: AsyncReadExt + AsyncWriteExt + Unpin,
 {
     let mut buf = [0; MAX_BUFFER_SIZE];
     loop {
         select! {
             Some((_key, data)) = receiver.recv() => {
-                socket.write_all(data.as_slice()).await
-                .unwrap_or_else(|e| panic!("tcp vnet: {} write failed, error: {}", key, e));
+                socket.write_all(data.as_slice()).await?
             }
             Ok(n) = socket.read(&mut buf) => {
                 if n == 0 { break };
                 sender.send((key.clone(),
                         buf[..n].to_vec()
-                    ))
-                .unwrap_or_else(|e| panic!("tcp vnet: {} read failed, error: {}", key, e));
+                    ))?
             }
             else => {
                 debug!("Receiver channel closed or other case");
@@ -128,6 +125,7 @@ async fn up_tcp_vnet<T>(
         }
     }
     warn!("tcp vnet {} exit", key);
+    Ok(())
 }
 
 async fn up_udp_vnet(
@@ -135,17 +133,17 @@ async fn up_udp_vnet(
     key: String,
     sender: UnboundedSender<(String, Vec<u8>)>,
     mut receiver: UnboundedReceiver<(String, Vec<u8>)>,
-) {
+) -> Result<(), Error> {
     let mut buf = [0; MAX_BUFFER_SIZE];
     loop {
         select! {
             Some((_key, data)) = receiver.recv() => {
-                socket.send(data.as_slice()).await.unwrap();
+                socket.send(data.as_slice()).await?;
             }
             Ok(n) = socket.recv(&mut buf) => {
                 sender.send((key.clone(),
                         buf[..n].to_vec()
-                    )).unwrap();
+                    ))?;
             }
         }
     }
@@ -191,13 +189,17 @@ pub async fn agent(mqtt_config: &MqttConfig, address: SocketAddr, prefix: &str, 
                                 topic::protocol::KCP => {
                                     task::spawn(async move {
                                         let socket = TcpStream::connect(address).await.unwrap();
-                                        up_kcp_vnet(socket, topic, sender_clone, vnet_rx).await;
+                                        if let Err(e) = up_kcp_vnet(socket, topic, sender_clone, vnet_rx).await {
+                                            error!("agent kcp vnet error: {:?}", e)
+                                        }
                                     });
                                 },
                                 topic::protocol::TCP => {
                                     task::spawn(async move {
                                         let socket = TcpStream::connect(address).await.unwrap();
-                                        up_tcp_vnet(socket, topic, sender_clone, vnet_rx).await;
+                                        if let Err(e) = up_tcp_vnet(socket, topic, sender_clone, vnet_rx).await {
+                                            error!("agent tcp vnet error: {:?}", e)
+                                        };
                                     });
                                 },
                                 topic::protocol::UDP => {
@@ -212,7 +214,9 @@ pub async fn agent(mqtt_config: &MqttConfig, address: SocketAddr, prefix: &str, 
                                                 }, 0)
                                             ).await.unwrap();
                                         socket.connect(address).await.unwrap();
-                                        up_udp_vnet(socket, topic, sender_clone, vnet_rx).await;
+                                        if let Err(e) = up_udp_vnet(socket, topic, sender_clone, vnet_rx).await {
+                                            error!("agent udp vnet error: {:?}", e)
+                                        };
                                     });
                                 },
                                 e => info!("unknown protocol {}", e)
@@ -221,7 +225,11 @@ pub async fn agent(mqtt_config: &MqttConfig, address: SocketAddr, prefix: &str, 
                             senders.get(&p.topic).unwrap()
                         },
                     };
-                    sender.send((p.topic, p.payload.to_vec())).unwrap();
+                    if sender.is_closed() {
+                        senders.remove(&p.topic);
+                    } else {
+                        sender.send((p.topic, p.payload.to_vec())).unwrap();
+                    }
                 }
             }
             else => {
@@ -272,11 +280,11 @@ pub async fn local(
 
                 senders.insert(key_recv, vnet_tx);
                 task::spawn(async move {
-                    if tcp_over_kcp {
-                        up_kcp_vnet(socket, key_send, sender_clone, vnet_rx).await;
+                    if let Err(e) = if tcp_over_kcp {
+                        up_kcp_vnet(socket, key_send, sender_clone, vnet_rx).await
                     } else {
-                        up_tcp_vnet(socket, key_send, sender_clone, vnet_rx).await;
-                    };
+                        up_tcp_vnet(socket, key_send, sender_clone, vnet_rx).await
+                    } { error!("local vnet error: {}", e) };
                 });
             }
 
@@ -300,11 +308,14 @@ pub async fn local(
                     let topic = p.topic.clone();
                     let (_prefix, _server_id, _client_id, _label, protocol, address) = topic::parse(&topic);
                     match protocol {
-                        topic::protocol::KCP => {
-                            senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
-                        },
-                        topic::protocol::TCP => {
-                            senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
+                        topic::protocol::KCP | topic::protocol::TCP => {
+                            if let Some(sender) = senders.get(&p.topic) {
+                                if sender.is_closed() {
+                                    senders.remove(&p.topic);
+                                } else {
+                                    sender.send((p.topic, p.payload.to_vec())).unwrap();
+                                }
+                            }
                         },
                         topic::protocol::UDP => {
                             let _ = sock.send_to(&p.payload, address).await.unwrap();
@@ -381,11 +392,11 @@ pub async fn local_socks(
 
                         senders.insert(key_recv, vnet_tx);
                         task::spawn(async move {
-                            if tcp_over_kcp {
-                                up_kcp_vnet(socket, key_send, sender_clone, vnet_rx).await;
+                            if let Err(e) = if tcp_over_kcp {
+                                up_kcp_vnet(socket, key_send, sender_clone, vnet_rx).await
                             } else {
-                                up_tcp_vnet(socket, key_send, sender_clone, vnet_rx).await;
-                            };
+                                up_tcp_vnet(socket, key_send, sender_clone, vnet_rx).await
+                            } { error!("local vnet error: {}", e) };
                         });
 
                     }
@@ -406,11 +417,14 @@ pub async fn local_socks(
                     let topic = p.topic.clone();
                     let (_prefix, _server_id, _client_id, _label, protocol, _address) = topic::parse(&topic);
                     match protocol {
-                        topic::protocol::KCP => {
-                            senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
-                        },
-                        topic::protocol::TCP => {
-                            senders.get(&p.topic).unwrap().send((p.topic, p.payload.to_vec())).unwrap();
+                        topic::protocol::KCP | topic::protocol::TCP => {
+                            if let Some(sender) = senders.get(&p.topic) {
+                                if sender.is_closed() {
+                                    senders.remove(&p.topic);
+                                } else {
+                                    sender.send((p.topic, p.payload.to_vec())).unwrap();
+                                }
+                            }
                         },
                         //topic::protocol::UDP => {
                         //    // TODO:

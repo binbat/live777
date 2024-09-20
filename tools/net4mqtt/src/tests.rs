@@ -14,7 +14,7 @@ async fn check_port_availability(addr: SocketAddr) -> bool {
 }
 
 async fn wait_for_port_availabilty(addr: SocketAddr) -> bool {
-    let mut interval = tokio::time::interval(time::Duration::from_secs(1));
+    let mut interval = time::interval(time::Duration::from_millis(1));
     loop {
         if check_port_availability(addr).await {
             return true;
@@ -47,6 +47,46 @@ async fn up_echo_tcp_server(listen: SocketAddr) {
                 if socket.write_all(&buf[0..n]).await.is_err() {
                     return;
                 }
+            }
+        });
+    }
+}
+
+async fn up_add_udp_server(listen: SocketAddr) {
+    let sock = UdpSocket::bind(listen).await.unwrap();
+    let mut buf = [0; MAX_BUFFER_SIZE];
+    loop {
+        let (n, addr) = sock.recv_from(&mut buf).await.unwrap();
+        let raw = String::from_utf8_lossy(&buf[..n]);
+        let v: Vec<&str> = raw.split('+').collect();
+        let num0 = v[0].parse::<u64>().unwrap_or(0);
+        let num1 = v[1].parse::<u64>().unwrap_or(0);
+        let r = num0 + num1;
+        let _ = sock.send_to(r.to_string().as_bytes(), addr).await.unwrap();
+    }
+}
+
+async fn up_add_tcp_server(listen: SocketAddr) {
+    let listener = TcpListener::bind(listen).await.unwrap();
+    loop {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0; MAX_BUFFER_SIZE];
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) => return,
+                    Ok(n) => {
+                        let raw = String::from_utf8_lossy(&buf[..n]);
+                        let v: Vec<&str> = raw.split('+').collect();
+                        let num0 = v[0].parse::<u64>().unwrap_or(0);
+                        let num1 = v[1].parse::<u64>().unwrap_or(0);
+                        let r = num0 + num1;
+                        if socket.write_all(r.to_string().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
+                };
             }
         });
     }
@@ -181,6 +221,40 @@ async fn test_udp_simple() {
 }
 
 #[tokio::test]
+async fn test_udp_add() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+
+    thread::spawn(move || tokio_test::block_on(up_add_udp_server(SocketAddr::new(ip, agent_port))));
+
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
+        ip,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+    time::sleep(time::Duration::from_millis(10)).await;
+
+    let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    sock.connect(SocketAddr::new(ip, local_port)).await.unwrap();
+    let mut buf = [0; MAX_BUFFER_SIZE];
+    let test_msg = b"1+2";
+    sock.send(test_msg).await.unwrap();
+    let len = sock.recv(&mut buf).await.unwrap();
+    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("3"));
+
+    let test_msg2 = b"123456+543210";
+    sock.send(test_msg2).await.unwrap();
+    let len = sock.recv(&mut buf).await.unwrap();
+    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("666666"));
+}
+
+#[tokio::test]
 async fn test_udp_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
@@ -265,7 +339,7 @@ async fn test_udp_two_connect() {
 }
 
 #[tokio::test]
-async fn test_tcp() {
+async fn test_tcp_echo() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
     let agent_port: u16 = pick_unused_port().expect("No ports free");
@@ -296,6 +370,124 @@ async fn test_tcp() {
     socket.write_all(test_msg2).await.unwrap();
     let len = socket.read(&mut buf).await.unwrap();
     assert_eq!(&buf[..len], test_msg2);
+}
+
+#[tokio::test]
+async fn test_tcp_add() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+
+    thread::spawn(move || tokio_test::block_on(up_add_tcp_server(SocketAddr::new(ip, agent_port))));
+
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
+        ip,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+    time::sleep(time::Duration::from_millis(10)).await;
+
+    let mut socket = TcpStream::connect(SocketAddr::new(ip, local_port))
+        .await
+        .unwrap();
+
+    let mut buf = [0; MAX_BUFFER_SIZE];
+
+    let test_msg = b"1+2";
+    socket.write_all(test_msg).await.unwrap();
+    let len = socket.read(&mut buf).await.unwrap();
+    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("3"));
+
+    let test_msg2 = b"123456+543210";
+    socket.write_all(test_msg2).await.unwrap();
+    let len = socket.read(&mut buf).await.unwrap();
+    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("666666"));
+}
+
+#[tokio::test]
+async fn test_kcp_add() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+
+    thread::spawn(move || tokio_test::block_on(up_add_tcp_server(SocketAddr::new(ip, agent_port))));
+
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
+        ip,
+        kcp: true,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+    time::sleep(time::Duration::from_millis(10)).await;
+
+    let mut socket = TcpStream::connect(SocketAddr::new(ip, local_port))
+        .await
+        .unwrap();
+
+    let mut buf = [0; MAX_BUFFER_SIZE];
+
+    let test_msg = b"1+2";
+    socket.write_all(test_msg).await.unwrap();
+    let len = socket.read(&mut buf).await.unwrap();
+    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("3"));
+
+    let test_msg2 = b"123456+543210";
+    socket.write_all(test_msg2).await.unwrap();
+    let len = socket.read(&mut buf).await.unwrap();
+    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("666666"));
+}
+
+#[tokio::test]
+async fn test_tcp_echo_restart() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
+        ip,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+
+    let agent_addr = SocketAddr::new(ip, agent_port);
+
+    time::sleep(time::Duration::from_millis(10)).await;
+
+    for i in 0..10 {
+        let handle = tokio::spawn(up_echo_tcp_server(agent_addr));
+        wait_for_port_availabilty(agent_addr).await;
+
+        let mut socket = TcpStream::connect(SocketAddr::new(ip, local_port))
+            .await
+            .unwrap();
+
+        let mut buf = [0; MAX_BUFFER_SIZE];
+        let test_msg = format!("hello, world: {}", i);
+        socket.write_all(test_msg.as_bytes()).await.unwrap();
+        let len = socket.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], test_msg.as_bytes());
+
+        let test_msg2 = format!("the end: {}", i);
+        socket.write_all(test_msg2.as_bytes()).await.unwrap();
+        let len = socket.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], test_msg2.as_bytes());
+
+        handle.abort();
+    }
 }
 
 #[tokio::test]
@@ -330,6 +522,50 @@ async fn test_kcp() {
     socket.write_all(test_msg2).await.unwrap();
     let len = socket.read(&mut buf).await.unwrap();
     assert_eq!(&buf[..len], test_msg2);
+}
+
+#[tokio::test]
+async fn test_kcp_echo_restart() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+        local: vec![local_port],
+
+        ip,
+        kcp: true,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+
+    let agent_addr = SocketAddr::new(ip, agent_port);
+
+    time::sleep(time::Duration::from_millis(10)).await;
+
+    for i in 0..10 {
+        let handle = tokio::spawn(up_echo_tcp_server(agent_addr));
+        wait_for_port_availabilty(agent_addr).await;
+
+        let mut socket = TcpStream::connect(SocketAddr::new(ip, local_port))
+            .await
+            .unwrap();
+
+        let mut buf = [0; MAX_BUFFER_SIZE];
+        let test_msg = format!("hello, world: {}", i);
+        socket.write_all(test_msg.as_bytes()).await.unwrap();
+        let len = socket.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], test_msg.as_bytes());
+
+        let test_msg2 = format!("the end: {}", i);
+        socket.write_all(test_msg2.as_bytes()).await.unwrap();
+        let len = socket.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], test_msg2.as_bytes());
+
+        handle.abort();
+    }
 }
 
 #[tokio::test]
@@ -406,6 +642,83 @@ async fn test_socks_simple() {
 
     let body = res.text().await.unwrap();
     assert_eq!(body, message);
+}
+
+#[tokio::test]
+async fn test_socks_restart() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let local_port: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        agent: vec![agent_port],
+
+        ip,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+
+    let mqtt_broker_host = ip;
+
+    let agent_id = "0";
+    let local_id = "0";
+
+    let agent_addr = SocketAddr::new(ip, agent_port);
+    let local_addr = SocketAddr::new(ip, local_port);
+
+    thread::spawn(move || {
+        tokio_test::block_on(proxy::local_socks(
+            &proxy::MqttConfig {
+                id: format!("test-proxy-local-{}", local_id),
+                host: mqtt_broker_host.to_string(),
+                port: mqtt_broker_port,
+            },
+            local_addr,
+            MQTT_TOPIC_PREFIX,
+            agent_id,
+            local_id,
+            false,
+        ))
+    });
+
+    for _ in 0..10 {
+        let message = "Hello World!";
+        let handle = tokio::spawn(up_http_server(agent_addr, message));
+        wait_for_port_availabilty(agent_addr).await;
+
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+            .build()
+            .unwrap();
+
+        let res = client
+            .get(format!("http://{}/", local_addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+        let body = res.text().await.unwrap();
+        assert_eq!(body, message);
+
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+            .build()
+            .unwrap();
+
+        let res = client
+            .get(format!("http://{}/", local_addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+        let body = res.text().await.unwrap();
+        assert_eq!(body, message);
+
+        handle.abort();
+    }
 }
 
 #[tokio::test]
