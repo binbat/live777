@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::{anyhow, Error, Result};
 use kcp::Kcp;
+use lru_time_cache::LruCache;
 use rumqttc::{AsyncClient, MqttOptions, QoS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -15,6 +15,8 @@ use crate::topic;
 
 const MAX_BUFFER_SIZE: usize = 4096;
 const MQTT_BUFFER_CAPACITY: usize = 10;
+const LRU_MAX_CAPACITY: usize = 128;
+const LRU_TIME_TO_LIVE: time::Duration = time::Duration::from_secs(300);
 
 pub struct MqttConfig {
     pub id: String,
@@ -150,7 +152,11 @@ async fn up_udp_vnet(
 }
 
 pub async fn agent(mqtt_config: &MqttConfig, address: SocketAddr, prefix: &str, server_id: &str) {
-    let mut senders: HashMap<String, UnboundedSender<(String, Vec<u8>)>> = HashMap::new();
+    let mut senders =
+        LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
+            LRU_TIME_TO_LIVE,
+            LRU_MAX_CAPACITY,
+        );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
     let (client, mut eventloop) = AsyncClient::new(
@@ -247,7 +253,11 @@ pub async fn local(
     client_id: &str,
     tcp_over_kcp: bool,
 ) {
-    let mut senders: HashMap<String, UnboundedSender<(String, Vec<u8>)>> = HashMap::new();
+    let mut senders =
+        LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
+            LRU_TIME_TO_LIVE,
+            LRU_MAX_CAPACITY,
+        );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
     let (client, mut eventloop) = AsyncClient::new(
@@ -353,7 +363,11 @@ pub async fn local_socks(
     client_id: &str,
     tcp_over_kcp: bool,
 ) {
-    let mut senders: HashMap<String, UnboundedSender<(String, Vec<u8>)>> = HashMap::new();
+    let mut senders =
+        LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
+            LRU_TIME_TO_LIVE,
+            LRU_MAX_CAPACITY,
+        );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
     let (client, mut eventloop) = AsyncClient::new(
