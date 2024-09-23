@@ -4,16 +4,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use tracing::{debug, info, trace, Level};
 use url::Url;
 
-pub mod kxdns;
-mod proxy;
-mod socks;
-mod topic;
-
-#[cfg(test)]
-mod broker;
-
-#[cfg(test)]
-mod tests;
+use netmqtt::proxy;
 
 /// Reference: https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html
 /// The Server MUST allow ClientID’s which are between 1 and 23 UTF-8 encoded bytes in length, and that contain only the characters
