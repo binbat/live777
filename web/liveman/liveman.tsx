@@ -9,7 +9,7 @@ import { TokenContext } from '../shared/context';
 
 import { Login } from './components/login';
 import { NodesTable } from './components/nodes-table';
-import { type INewStreamDialog, StreamTokenDialog } from './components/dialog-token';
+import { type IStreamTokenDialog, StreamTokenDialog } from './components/dialog-token';
 
 export function Liveman() {
     const [token, setToken] = useState('');
@@ -23,7 +23,7 @@ export function Liveman() {
         return () => removeUnauthorizedCallback(unauthorizedCallback);
     }, []);
 
-    const refStreamTokenDialog = useRef<INewStreamDialog>(null);
+    const refStreamTokenDialog = useRef<IStreamTokenDialog>(null);
     const renderCreateToken = useCallback((stream: Stream) => {
         return (
             <button onClick={() => refStreamTokenDialog?.current?.show(stream.id)}>Create token</button>

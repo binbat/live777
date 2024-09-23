@@ -4,17 +4,29 @@ import { forwardRef } from 'preact/compat';
 import { createStreamToken } from '../api';
 
 enum StreamTokenPermission {
-    Sub = 'subscribe', Pub = 'publish', Admin = 'admin'
+    Sub = 'subscribe',
+    Pub = 'publish',
+    Admin = 'admin'
 }
 
-export interface INewStreamDialog {
+const AllPermissions = [
+    StreamTokenPermission.Sub,
+    StreamTokenPermission.Pub,
+    StreamTokenPermission.Admin
+];
+
+export interface IStreamTokenDialog {
     show(id: string): void
 }
 
-export const StreamTokenDialog = forwardRef<INewStreamDialog>((_, ref) => {
+export const StreamTokenDialog = forwardRef<IStreamTokenDialog>((_, ref) => {
     const [streamId, setStreamId] = useState('');
     const [duration, setDuration] = useState(3600);
-    const [permissions, setPermissions] = useState({ subscribe: true, publish: false, admin: false });
+    const [permissions, setPermissions] = useState<Record<StreamTokenPermission, boolean>>({
+        subscribe: true,
+        publish: false,
+        admin: false
+    });
     const [token, setToken] = useState('');
     const refDialog = useRef<HTMLDialogElement>(null);
     const refTokenResult = useRef<HTMLInputElement>(null);
@@ -63,7 +75,7 @@ export const StreamTokenDialog = forwardRef<INewStreamDialog>((_, ref) => {
             <p>
                 <span>Permissions:</span>
                 <br />
-                {[StreamTokenPermission.Sub, StreamTokenPermission.Pub, StreamTokenPermission.Admin].map(p => (
+                {AllPermissions.map(p => (
                     <label>
                         <input
                             type="checkbox" name={p} checked={permissions[p]}

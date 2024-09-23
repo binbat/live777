@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
+import { TargetedEvent } from 'preact/compat';
+
 import { WHEPClient } from '@binbat/whip-whep/whep.js';
 
 export function Player() {
@@ -27,19 +29,7 @@ export function Player() {
     useEffect(() => {
         if (!streamId || !autoPlay) return;
         handlePlay();
-        const v = refVideo.current;
-        if (v) {
-            v.volume = 0;
-            v.play();
-        }
-    }, [streamId]);
-
-    useEffect(() => {
-        const v = refVideo.current;
-        if (v) {
-            v.muted = muted;
-        }
-    }, [muted]);
+    }, [streamId, autoPlay]);
 
     const handlePlay = async () => {
         const pc = new RTCPeerConnection();
@@ -54,8 +44,8 @@ export function Player() {
         pc.addEventListener('track', ev => {
             ms.addTrack(ev.track);
         });
-        pc.addEventListener('connectionstatechange', () => {
-            switch (pc.connectionState) {
+        pc.addEventListener('iceconnectionstatechange', () => {
+            switch (pc.iceConnectionState) {
                 case 'disconnected': {
                     handleStop();
                     break;
@@ -93,15 +83,23 @@ export function Player() {
         refVideo.current?.play();
     };
 
-    const handleVideoClick = () => {
+    const handleVideoClick = async (e: TargetedEvent<HTMLVideoElement>) => {
         if (!refWhepClient.current) {
-            handlePlay();
+            e.preventDefault();
+            await handlePlay();
+            refVideo.current?.play();
         }
     };
 
     return (
         <div id="player">
-            <video ref={refVideo} controls={controls} onClick={() => handleVideoClick()}></video>
+            <video
+                ref={refVideo}
+                autoplay={autoPlay}
+                muted={muted}
+                controls={controls}
+                onClick={e => handleVideoClick(e)}
+            />
         </div>
     );
 }
