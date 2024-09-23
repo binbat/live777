@@ -4,4 +4,4 @@ export interface ITokenContext {
     token: string
 }
 
-export const TokenContext = createContext<ITokenContext | null>(null);
+export const TokenContext = createContext<ITokenContext>({ token: '' });

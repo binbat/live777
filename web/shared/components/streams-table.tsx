@@ -99,7 +99,7 @@ export function StreamsTable(props: StreamTableProps) {
         params.set('autoplay', '');
         params.set('muted', '');
         params.set('reconnect', '3000');
-        params.set('token', tokenContext?.token ?? '');
+        params.set('token', tokenContext.token);
         const url = new URL(`/tools/player.html?${params.toString()}`, location.origin);
         window.open(url);
     };
@@ -107,6 +107,7 @@ export function StreamsTable(props: StreamTableProps) {
     const handleOpenDebuggerPage = (id: string) => {
         const params = new URLSearchParams();
         params.set('id', id);
+        params.set('token', tokenContext.token);
         const url = new URL(`/tools/debugger.html?${params.toString()}`, location.origin);
         window.open(url);
     };

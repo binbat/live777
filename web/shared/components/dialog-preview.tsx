@@ -119,7 +119,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         };
         refWhepClient.current = whep;
         try {
-            await whep.view(pc, url, tokenContext?.token ?? '');
+            await whep.view(pc, url, tokenContext.token);
         } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
             setConnState('Error');
             if (e instanceof Error) {
