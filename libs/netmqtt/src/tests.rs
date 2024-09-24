@@ -157,7 +157,7 @@ async fn helper_cluster_up(cfg: Config) {
         thread::spawn(move || {
             let addr = SocketAddr::new(cfg.ip, port);
             tokio_test::block_on(proxy::agent(
-                &proxy::MqttConfig {
+                proxy::MqttConfig {
                     id: format!("test-proxy-agent-{}", id),
                     host: mqtt_broker_host.to_string(),
                     port: cfg.broker,

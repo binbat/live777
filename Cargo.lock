@@ -1698,6 +1698,7 @@ dependencies = [
  "libwish",
  "md5",
  "mime_guess",
+ "netmqtt",
  "prometheus",
  "reqwest",
  "rust-embed",
@@ -1709,6 +1710,7 @@ dependencies = [
  "toml 0.8.14",
  "tower-http",
  "tracing",
+ "url",
  "utils",
  "webrtc",
 ]

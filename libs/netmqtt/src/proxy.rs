@@ -151,7 +151,7 @@ async fn up_udp_vnet(
     }
 }
 
-pub async fn agent(mqtt_config: &MqttConfig, address: SocketAddr, prefix: &str, server_id: &str) {
+pub async fn agent(mqtt_config: MqttConfig, address: SocketAddr, prefix: &str, server_id: &str) {
     let mut senders =
         LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
             LRU_TIME_TO_LIVE,

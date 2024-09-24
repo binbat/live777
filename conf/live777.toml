@@ -56,3 +56,6 @@ urls = [
 # If not set, auto detect
 # node_addr = "127.0.0.1:7777"
 
+# [net4mqtt]
+# mqtt_url = "mqtt://localhost:1883/net4mqtt"
+# alias = "liveion-0"
