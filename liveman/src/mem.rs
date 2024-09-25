@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -58,7 +59,7 @@ pub struct MemStorage {
 }
 
 impl MemStorage {
-    pub fn new(servers: Vec<Server>) -> Self {
+    pub fn new(servers: Vec<Server>, proxy: Option<SocketAddr>) -> Self {
         let server = Arc::new(RwLock::new(HashMap::new()));
 
         info!("MemStorage: {:?}", servers);
@@ -66,15 +67,31 @@ impl MemStorage {
         for s in servers.clone() {
             server.write().unwrap().insert(s.alias.clone(), s.clone());
         }
+        let mut client_builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(500))
+            .timeout(Duration::from_millis(1000));
+
+        client_builder = if let Some(addr) = proxy {
+            let target = reqwest::Url::parse(format!("socks5h://{}", addr).as_str()).unwrap();
+            let suffix = "net4mqtt.local";
+            client_builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
+                Some(host) => {
+                    if host.ends_with(suffix) {
+                        Some(target.clone())
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }))
+        } else {
+            client_builder
+        };
 
         Self {
             server,
             time: SystemTime::now(),
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_millis(500))
-                .timeout(Duration::from_millis(1000))
-                .build()
-                .unwrap(),
+            client: client_builder.build().unwrap(),
             servers,
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),

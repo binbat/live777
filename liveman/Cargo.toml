@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 liveion = { path = "../liveion", optional = true }
+netmqtt = { path = "../libs/netmqtt", optional = true }
 
 api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
@@ -30,6 +31,7 @@ hyper-util = { version = "0.1", features = ["client-legacy"] }
 mime_guess = "2.0.4"
 reqwest = { version = "0.12", features = [
     "rustls-tls",
+    "socks",
 ], default-features = false }
 rust-embed = { version = "8.4", features = ["axum-ex"] }
 serde_json = "1.0.114"
@@ -38,5 +40,7 @@ tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 url = "2.5"
 
 [features]
+default = ["net4mqtt"]
 liveion = ["dep:liveion"]
+net4mqtt = ["dep:netmqtt"]
 

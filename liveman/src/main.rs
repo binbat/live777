@@ -121,10 +121,19 @@ where
     let client: Client =
         hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
             .build(HttpConnector::new());
+
+    #[cfg(feature = "net4mqtt")]
+    let proxy_addr = match cfg.net4mqtt.clone() {
+        Some(c) => Some(c.listen),
+        None => None,
+    };
+    #[cfg(not(feature = "net4mqtt"))]
+    let proxy_addr = None;
+
     let app_state = AppState {
         config: cfg.clone(),
         client,
-        storage: MemStorage::new(cfg.nodes),
+        storage: MemStorage::new(cfg.nodes, proxy_addr),
     };
 
     let auth_layer =
@@ -160,6 +169,36 @@ where
 
     app = app.fallback(static_handler);
 
+    #[cfg(feature = "net4mqtt")]
+    {
+        if let Some(c) = cfg.net4mqtt {
+            let mqtt_broker_url = c.mqtt_url.parse::<url::Url>().unwrap();
+            let mqtt_broker_host = mqtt_broker_url.host().unwrap().to_owned().to_string();
+            let mqtt_broker_port = mqtt_broker_url.port().unwrap_or(1883);
+            let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path()).to_owned();
+
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move {
+                        netmqtt::proxy::local_socks(
+                            netmqtt::proxy::MqttConfig {
+                                id: c.alias.clone(),
+                                host: mqtt_broker_host,
+                                port: mqtt_broker_port,
+                            },
+                            c.listen,
+                            &mqtt_topic_prefix,
+                            "-",
+                            &c.alias.clone(),
+                            false,
+                        )
+                        .await
+                    });
+            });
+        }
+    }
+
     tokio::spawn(tick::reforward_check(app_state.clone()));
     axum::serve(listener, app)
         .with_graceful_shutdown(signal)
@@ -193,4 +232,20 @@ struct AppState {
     config: Config,
     client: Client,
     storage: MemStorage,
+}
+
+#[cfg(feature = "net4mqtt")]
+fn strip_slashes(path: &str) -> &str {
+    let mut start = 0;
+    let mut end = path.len();
+
+    if path.starts_with("/") {
+        start = 1;
+    }
+
+    if path.ends_with("/") {
+        end -= 1;
+    }
+
+    &path[start..end]
 }

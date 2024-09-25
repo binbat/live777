@@ -121,7 +121,7 @@ async fn main() {
             let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path());
 
             proxy::local_socks(
-                &proxy::MqttConfig {
+                proxy::MqttConfig {
                     id: client_id,
                     host: mqtt_broker_host.to_string(),
                     port: mqtt_broker_port,
@@ -150,7 +150,7 @@ async fn main() {
             let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path());
 
             proxy::local(
-                &proxy::MqttConfig {
+                proxy::MqttConfig {
                     id: client_id,
                     host: mqtt_broker_host.to_string(),
                     port: mqtt_broker_port,

@@ -246,7 +246,7 @@ pub async fn agent(mqtt_config: MqttConfig, address: SocketAddr, prefix: &str, s
 }
 
 pub async fn local(
-    mqtt_config: &MqttConfig,
+    mqtt_config: MqttConfig,
     address: SocketAddr,
     prefix: &str,
     server_id: &str,
@@ -356,7 +356,7 @@ use socks5_server::{auth::NoAuth, Server};
 use std::sync::Arc;
 
 pub async fn local_socks(
-    mqtt_config: &MqttConfig,
+    mqtt_config: MqttConfig,
     address: SocketAddr,
     prefix: &str,
     server_id: &str,

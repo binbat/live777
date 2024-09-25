@@ -1732,6 +1732,7 @@ dependencies = [
  "hyper-util",
  "liveion",
  "mime_guess",
+ "netmqtt",
  "reqwest",
  "rust-embed",
  "serde",

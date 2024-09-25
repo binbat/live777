@@ -173,7 +173,7 @@ async fn helper_cluster_up(cfg: Config) {
         thread::spawn(move || {
             let addr = SocketAddr::new(cfg.ip, port);
             tokio_test::block_on(proxy::local(
-                &proxy::MqttConfig {
+                proxy::MqttConfig {
                     id: format!("test-proxy-local-{}", id),
                     host: mqtt_broker_host.to_string(),
                     port: cfg.broker,
@@ -598,7 +598,7 @@ async fn test_socks_simple() {
 
     thread::spawn(move || {
         tokio_test::block_on(proxy::local_socks(
-            &proxy::MqttConfig {
+            proxy::MqttConfig {
                 id: format!("test-proxy-local-{}", local_id),
                 host: mqtt_broker_host.to_string(),
                 port: mqtt_broker_port,
@@ -669,7 +669,7 @@ async fn test_socks_restart() {
 
     thread::spawn(move || {
         tokio_test::block_on(proxy::local_socks(
-            &proxy::MqttConfig {
+            proxy::MqttConfig {
                 id: format!("test-proxy-local-{}", local_id),
                 host: mqtt_broker_host.to_string(),
                 port: mqtt_broker_port,
@@ -757,7 +757,7 @@ async fn test_socks_multiple_server() {
     let local_addr = SocketAddr::new(ip, local_port);
     thread::spawn(move || {
         tokio_test::block_on(proxy::local_socks(
-            &proxy::MqttConfig {
+            proxy::MqttConfig {
                 id: format!("test-proxy-local-{}", local_id),
                 host: mqtt_broker_host.to_string(),
                 port: mqtt_broker_port,

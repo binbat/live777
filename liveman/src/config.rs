@@ -13,8 +13,34 @@ pub struct Config {
     pub liveion: Vec<crate::mem::Server>,
     #[serde(default)]
     pub reforward: Reforward,
+
+    #[cfg(feature = "net4mqtt")]
+    #[serde(default)]
+    pub net4mqtt: Option<Net4mqtt>,
+
     #[serde(default)]
     pub nodes: Vec<crate::mem::Server>,
+}
+
+#[cfg(feature = "net4mqtt")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Net4mqtt {
+    #[serde(default)]
+    pub mqtt_url: String,
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default = "default_http_listen")]
+    pub listen: SocketAddr,
+}
+
+impl Default for Net4mqtt {
+    fn default() -> Self {
+        Self {
+            mqtt_url: String::new(),
+            alias: String::new(),
+            listen: SocketAddr::from_str("0.0.0.0:8080").unwrap(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
