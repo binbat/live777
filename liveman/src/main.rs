@@ -130,10 +130,77 @@ where
     #[cfg(not(feature = "net4mqtt"))]
     let proxy_addr = None;
 
+    let mut store = MemStorage::new(cfg.nodes.clone(), proxy_addr);
+
+    #[cfg(feature = "net4mqtt")]
+    let nodes = store.get_map_nodes();
+
+    #[cfg(feature = "net4mqtt")]
+    {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
+
+        if let Some(c) = cfg.net4mqtt.clone() {
+            let mqtt_broker_url = c.mqtt_url.parse::<url::Url>().unwrap();
+            let mqtt_broker_host = mqtt_broker_url.host().unwrap().to_owned().to_string();
+            let mqtt_broker_port = mqtt_broker_url.port().unwrap_or(1883);
+            let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path()).to_owned();
+
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move {
+                        netmqtt::proxy::local_socks(
+                            netmqtt::proxy::MqttConfig {
+                                id: c.alias.clone(),
+                                host: mqtt_broker_host,
+                                port: mqtt_broker_port,
+                                prefix: mqtt_topic_prefix,
+                            },
+                            c.listen,
+                            "-",
+                            &c.alias.clone(),
+                            None,
+                            Some(sender),
+                            false,
+                        )
+                        .await
+                    });
+            });
+        }
+
+        std::thread::spawn(move || {
+            let suffix = "net4mqtt.local";
+            let dns = netmqtt::kxdns::Kxdns::new(suffix);
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async move {
+                    loop {
+                        match receiver.recv().await {
+                            Some((agent_id, _local_id, data)) => {
+                                if data.len() > 5 {
+                                    nodes.write().unwrap().insert(
+                                        agent_id.clone(),
+                                        Server {
+                                            alias: agent_id.clone(),
+                                            url: format!("http://{}", dns.registry(&agent_id)),
+                                            ..Default::default()
+                                        },
+                                    );
+                                } else {
+                                    nodes.write().unwrap().remove(&agent_id);
+                                }
+                            }
+                            None => error!("net4mqtt discovery receiver channel closed"),
+                        }
+                    }
+                })
+        });
+    }
+
     let app_state = AppState {
         config: cfg.clone(),
         client,
-        storage: MemStorage::new(cfg.nodes, proxy_addr),
+        storage: store,
     };
 
     let auth_layer =
@@ -168,38 +235,6 @@ where
         );
 
     app = app.fallback(static_handler);
-
-    #[cfg(feature = "net4mqtt")]
-    {
-        if let Some(c) = cfg.net4mqtt {
-            let mqtt_broker_url = c.mqtt_url.parse::<url::Url>().unwrap();
-            let mqtt_broker_host = mqtt_broker_url.host().unwrap().to_owned().to_string();
-            let mqtt_broker_port = mqtt_broker_url.port().unwrap_or(1883);
-            let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path()).to_owned();
-
-            std::thread::spawn(move || {
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(async move {
-                        netmqtt::proxy::local_socks(
-                            netmqtt::proxy::MqttConfig {
-                                id: c.alias.clone(),
-                                host: mqtt_broker_host,
-                                port: mqtt_broker_port,
-                                prefix: mqtt_topic_prefix,
-                            },
-                            c.listen,
-                            "-",
-                            &c.alias.clone(),
-                            None,
-                            None,
-                            false,
-                        )
-                        .await
-                    });
-            });
-        }
-    }
 
     tokio::spawn(tick::reforward_check(app_state.clone()));
     axum::serve(listener, app)

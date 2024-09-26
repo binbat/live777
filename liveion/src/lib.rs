@@ -7,6 +7,7 @@ use axum::Router;
 use error::AppError;
 use http::{header, StatusCode, Uri};
 use rust_embed::RustEmbed;
+use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -111,7 +112,15 @@ where
                             },
                             cfg.http.listen,
                             &c.alias.clone(),
-                            None,
+                            Some((
+                                json!({
+                                    "alias": c.alias,
+                                })
+                                .to_string()
+                                .bytes()
+                                .collect(),
+                                Some("{}".bytes().collect()),
+                            )),
                             None,
                         )
                         .await
