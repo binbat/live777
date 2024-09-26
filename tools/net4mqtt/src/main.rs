@@ -125,11 +125,13 @@ async fn main() {
                     id: client_id,
                     host: mqtt_broker_host.to_string(),
                     port: mqtt_broker_port,
+                    prefix: mqtt_topic_prefix.to_string(),
                 },
                 listen,
-                mqtt_topic_prefix,
                 &agent_id,
                 &id,
+                None,
+                None,
                 !no_kcp,
             )
             .await;
@@ -154,11 +156,13 @@ async fn main() {
                     id: client_id,
                     host: mqtt_broker_host.to_string(),
                     port: mqtt_broker_port,
+                    prefix: mqtt_topic_prefix.to_string(),
                 },
                 listen,
-                mqtt_topic_prefix,
                 &agent_id,
                 &id,
+                None,
+                None,
                 !no_kcp,
             )
             .await;
@@ -181,10 +185,12 @@ async fn main() {
                     id: client_id,
                     host: mqtt_broker_host.to_string(),
                     port: mqtt_broker_port,
+                    prefix: mqtt_topic_prefix.to_string(),
                 },
                 target,
-                mqtt_topic_prefix,
                 &id,
+                None,
+                None,
             )
             .await;
         }

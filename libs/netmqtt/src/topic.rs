@@ -12,12 +12,13 @@
 pub const ANY: &str = "+";
 pub const ALL: &str = "#";
 
-//const NOSET: char = '-';
+pub const NOSET: &str = "-";
 const SPLIT: char = '/';
 
 pub mod label {
     pub const I: &str = "i";
     pub const O: &str = "o";
+    pub const X: &str = "x";
 }
 
 pub mod protocol {
@@ -42,6 +43,13 @@ pub fn build(
 
 pub fn build_sub(prefix: &str, server_id: &str, client_id: &str, label: &str) -> String {
     format!("{}/{}/{}/{}/{}", prefix, server_id, client_id, label, ALL)
+}
+
+pub fn build_pub_x(prefix: &str, server_id: &str, client_id: &str, label: &str) -> String {
+    format!(
+        "{}/{}/{}/{}/{}/{}",
+        prefix, server_id, client_id, label, NOSET, NOSET
+    )
 }
 
 pub fn parse(topic: &str) -> (&str, &str, &str, &str, &str, &str) {
@@ -82,4 +90,9 @@ fn test_build_parse() {
     assert_eq!(label2, label::I);
     assert_eq!(protocol2, protocol::KCP);
     assert_eq!(address2, address);
+
+    assert_eq!(
+        build_pub_x(prefix, server_id, client_id, label::X),
+        "test_build_parse/3/7/x/-/-",
+    );
 }

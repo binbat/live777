@@ -3,11 +3,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use anyhow::{anyhow, Error, Result};
 use kcp::Kcp;
 use lru_time_cache::LruCache;
-use rumqttc::{AsyncClient, MqttOptions, QoS};
+use rumqttc::{AsyncClient, EventLoop, MqttOptions, QoS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::select;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::{task, time};
 use tracing::{debug, error, info, trace, warn};
 
@@ -18,10 +18,12 @@ const MQTT_BUFFER_CAPACITY: usize = 10;
 const LRU_MAX_CAPACITY: usize = 128;
 const LRU_TIME_TO_LIVE: time::Duration = time::Duration::from_secs(300);
 
+#[derive(Clone)]
 pub struct MqttConfig {
     pub id: String,
     pub host: String,
     pub port: u16,
+    pub prefix: String,
 }
 
 struct ChannelOutput {
@@ -151,7 +153,61 @@ async fn up_udp_vnet(
     }
 }
 
-pub async fn agent(mqtt_config: MqttConfig, address: SocketAddr, prefix: &str, server_id: &str) {
+async fn mqtt_client_init(
+    mqtt_config: MqttConfig,
+    topic_io_sub: String,
+    topic_x_sub: String,
+    topic_x_pub: String,
+    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
+    is_on_xdata: bool,
+) -> (AsyncClient, EventLoop) {
+    let mut mqtt_options = MqttOptions::new(&mqtt_config.id, &mqtt_config.host, mqtt_config.port);
+
+    // MQTT LastWill
+    // MQTT Client OnDisconnected publish at label::X
+    // NOTE:
+    // MQTT Payload data is null, retain will loss
+    if let Some((_, Some(x))) = xdata.clone() {
+        mqtt_options.set_last_will(rumqttc::mqttbytes::v4::LastWill {
+            topic: topic_x_pub.clone(),
+            qos: QoS::AtMostOnce,
+            retain: true,
+            message: x.into(),
+        });
+    }
+
+    let (client, eventloop) = AsyncClient::new(mqtt_options, MQTT_BUFFER_CAPACITY);
+    client
+        .subscribe(topic_io_sub, QoS::AtMostOnce)
+        .await
+        .unwrap();
+
+    // MQTT Client OnConnected publish at label::X
+    if let Some((x, _xx)) = xdata {
+        client
+            .publish(topic_x_pub, QoS::AtMostOnce, true, x)
+            .await
+            .unwrap();
+    }
+
+    // MQTT subscribe at label::X
+    if is_on_xdata {
+        client
+            .subscribe(topic_x_sub, QoS::AtMostOnce)
+            .await
+            .unwrap();
+    }
+
+    (client, eventloop)
+}
+
+pub async fn agent(
+    mqtt_config: MqttConfig,
+    address: SocketAddr,
+    server_id: &str,
+    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
+    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
+) {
     let mut senders =
         LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
             LRU_TIME_TO_LIVE,
@@ -159,20 +215,22 @@ pub async fn agent(mqtt_config: MqttConfig, address: SocketAddr, prefix: &str, s
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
-    let (client, mut eventloop) = AsyncClient::new(
-        MqttOptions::new(&mqtt_config.id, &mqtt_config.host, mqtt_config.port),
-        MQTT_BUFFER_CAPACITY,
-    );
-    client
-        .subscribe(
-            topic::build_sub(prefix, server_id, topic::ANY, topic::label::I),
-            QoS::AtMostOnce,
-        )
-        .await
-        .unwrap();
+    let mqtt_config2 = mqtt_config.clone();
+    let prefix = mqtt_config2.prefix.as_str();
+
+    let (client, mut eventloop) = mqtt_client_init(
+        mqtt_config,
+        topic::build_sub(prefix, server_id, topic::ANY, topic::label::I),
+        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
+        topic::build_pub_x(prefix, server_id, topic::NOSET, topic::label::X),
+        xdata,
+        on_xdata.is_some(),
+    )
+    .await;
 
     loop {
         let sender_clone = sender.clone();
+        let on_xdata = on_xdata.clone();
         select! {
             Some((key, data)) = receiver.recv() => {
                 let (prefix, server_id, client_id, _label, protocol, address) = topic::parse(&key);
@@ -185,7 +243,16 @@ pub async fn agent(mqtt_config: MqttConfig, address: SocketAddr, prefix: &str, s
             Ok(notification) = eventloop.poll() => {
                 if let Some(p) = mqtt_receive(notification) {
                     let topic = p.topic.clone();
-                    let (_prefix, _server_id, _client_id, _label, protocol, _address) = topic::parse(&topic);
+                    let (_prefix, server_id, client_id, label, protocol, _address) = topic::parse(&topic);
+
+                    match label {
+                        topic::label::X => {
+                            if let Some(s) = on_xdata {
+                                s.send((server_id.to_string(), client_id.to_string(), p.payload.to_vec())).await.unwrap();
+                            }
+                        },
+                        _ => {
+
                     let sender = match senders.get(&p.topic) {
                         Some(sender) => sender,
                         None => {
@@ -236,6 +303,10 @@ pub async fn agent(mqtt_config: MqttConfig, address: SocketAddr, prefix: &str, s
                     } else {
                         sender.send((p.topic, p.payload.to_vec())).unwrap();
                     }
+
+
+                        },
+                    }
                 }
             }
             else => {
@@ -248,9 +319,10 @@ pub async fn agent(mqtt_config: MqttConfig, address: SocketAddr, prefix: &str, s
 pub async fn local(
     mqtt_config: MqttConfig,
     address: SocketAddr,
-    prefix: &str,
     server_id: &str,
     client_id: &str,
+    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
+    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
     tcp_over_kcp: bool,
 ) {
     let mut senders =
@@ -260,23 +332,25 @@ pub async fn local(
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
-    let (client, mut eventloop) = AsyncClient::new(
-        MqttOptions::new(&mqtt_config.id, &mqtt_config.host, mqtt_config.port),
-        MQTT_BUFFER_CAPACITY,
-    );
-    client
-        .subscribe(
-            topic::build_sub(prefix, topic::ANY, client_id, topic::label::O),
-            QoS::AtMostOnce,
-        )
-        .await
-        .unwrap();
+    let mqtt_config2 = mqtt_config.clone();
+    let prefix = mqtt_config2.prefix.as_str();
+
+    let (client, mut eventloop) = mqtt_client_init(
+        mqtt_config,
+        topic::build_sub(prefix, topic::ANY, client_id, topic::label::O),
+        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
+        topic::build_pub_x(prefix, topic::NOSET, client_id, topic::label::X),
+        xdata,
+        on_xdata.is_some(),
+    )
+    .await;
 
     let mut buf = [0; MAX_BUFFER_SIZE];
     let listener = TcpListener::bind(address).await.unwrap();
     let sock = UdpSocket::bind(address).await.unwrap();
     loop {
         let sender_clone = sender.clone();
+        let on_xdata = on_xdata.clone();
         select! {
             // TCP Server
             Ok((socket, _)) = listener.accept() => {
@@ -316,7 +390,16 @@ pub async fn local(
             Ok(notification) = eventloop.poll() => {
                 if let Some(p) = mqtt_receive(notification) {
                     let topic = p.topic.clone();
-                    let (_prefix, _server_id, _client_id, _label, protocol, address) = topic::parse(&topic);
+                    let (_prefix, server_id, client_id, label, protocol, address) = topic::parse(&topic);
+
+                    match label {
+                        topic::label::X => {
+                            if let Some(s) = on_xdata {
+                                s.send((server_id.to_string(), client_id.to_string(), p.payload.to_vec())).await.unwrap();
+                            }
+                        },
+                        _ => {
+
                     match protocol {
                         topic::protocol::KCP | topic::protocol::TCP => {
                             if let Some(sender) = senders.get(&p.topic) {
@@ -331,6 +414,10 @@ pub async fn local(
                             let _ = sock.send_to(&p.payload, address).await.unwrap();
                         },
                         e => info!("unknown protocol {}", e)
+                    }
+
+
+                        },
                     }
                 }
             }
@@ -358,9 +445,10 @@ use std::sync::Arc;
 pub async fn local_socks(
     mqtt_config: MqttConfig,
     address: SocketAddr,
-    prefix: &str,
     server_id: &str,
     client_id: &str,
+    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
+    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
     tcp_over_kcp: bool,
 ) {
     let mut senders =
@@ -370,23 +458,25 @@ pub async fn local_socks(
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
-    let (client, mut eventloop) = AsyncClient::new(
-        MqttOptions::new(&mqtt_config.id, &mqtt_config.host, mqtt_config.port),
-        MQTT_BUFFER_CAPACITY,
-    );
-    client
-        .subscribe(
-            topic::build_sub(prefix, topic::ANY, client_id, topic::label::O),
-            QoS::AtMostOnce,
-        )
-        .await
-        .unwrap();
+    let mqtt_config2 = mqtt_config.clone();
+    let prefix = mqtt_config2.prefix.as_str();
+
+    let (client, mut eventloop) = mqtt_client_init(
+        mqtt_config,
+        topic::build_sub(prefix, topic::ANY, client_id, topic::label::O),
+        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
+        topic::build_pub_x(prefix, topic::NOSET, client_id, topic::label::X),
+        xdata,
+        on_xdata.is_some(),
+    )
+    .await;
 
     let listener = TcpListener::bind(address).await.unwrap();
     let server = Server::new(listener, Arc::new(NoAuth));
 
     loop {
         let sender_clone = sender.clone();
+        let on_xdata = on_xdata.clone();
         select! {
             Ok((conn, _)) = server.accept() => {
                 match crate::socks::handle(conn).await {
@@ -429,7 +519,16 @@ pub async fn local_socks(
             Ok(notification) = eventloop.poll() => {
                 if let Some(p) = mqtt_receive(notification) {
                     let topic = p.topic.clone();
-                    let (_prefix, _server_id, _client_id, _label, protocol, _address) = topic::parse(&topic);
+                    let (_prefix, server_id, client_id, label, protocol, _address) = topic::parse(&topic);
+
+                    match label {
+                        topic::label::X => {
+                            if let Some(s) = on_xdata {
+                                s.send((server_id.to_string(), client_id.to_string(), p.payload.to_vec())).await.unwrap();
+                            }
+                        },
+                        _ => {
+
                     match protocol {
                         topic::protocol::KCP | topic::protocol::TCP => {
                             if let Some(sender) = senders.get(&p.topic) {
@@ -445,6 +544,10 @@ pub async fn local_socks(
                         //    let _ = sock.send_to(&p.payload, address).await.unwrap();
                         //},
                         e => info!("unknown protocol {}", e)
+                    }
+
+
+                        },
                     }
                 }
             }

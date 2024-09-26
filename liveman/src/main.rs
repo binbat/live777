@@ -186,11 +186,13 @@ where
                                 id: c.alias.clone(),
                                 host: mqtt_broker_host,
                                 port: mqtt_broker_port,
+                                prefix: mqtt_topic_prefix,
                             },
                             c.listen,
-                            &mqtt_topic_prefix,
                             "-",
                             &c.alias.clone(),
+                            None,
+                            None,
                             false,
                         )
                         .await
