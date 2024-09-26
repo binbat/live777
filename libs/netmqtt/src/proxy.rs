@@ -153,6 +153,41 @@ async fn up_udp_vnet(
     }
 }
 
+async fn up_agent_vclient(
+    address: SocketAddr,
+    protocol: &str,
+    topic: String,
+    sender: UnboundedSender<(String, Vec<u8>)>,
+    receiver: UnboundedReceiver<(String, Vec<u8>)>,
+) -> Result<(), Error> {
+    match protocol {
+        topic::protocol::KCP => {
+            let socket = TcpStream::connect(address).await.unwrap();
+            up_kcp_vnet(socket, topic, sender, receiver).await
+        }
+        topic::protocol::TCP => {
+            let socket = TcpStream::connect(address).await.unwrap();
+            up_tcp_vnet(socket, topic, sender, receiver).await
+        }
+        topic::protocol::UDP => {
+            let socket = UdpSocket::bind(SocketAddr::new(
+                // "0.0.0.0:0"
+                // "[::]:0"
+                match address {
+                    SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                },
+                0,
+            ))
+            .await
+            .unwrap();
+            socket.connect(address).await.unwrap();
+            up_udp_vnet(socket, topic, sender, receiver).await
+        }
+        e => Err(anyhow!("unknown protocol {}", e)),
+    }
+}
+
 async fn mqtt_client_init(
     mqtt_config: MqttConfig,
     topic_io_sub: String,
@@ -229,7 +264,7 @@ pub async fn agent(
     .await;
 
     loop {
-        let sender_clone = sender.clone();
+        let sender = sender.clone();
         let on_xdata = on_xdata.clone();
         select! {
             Some((key, data)) = receiver.recv() => {
@@ -252,59 +287,26 @@ pub async fn agent(
                             }
                         },
                         _ => {
-
-                    let sender = match senders.get(&p.topic) {
-                        Some(sender) => sender,
-                        None => {
-                            let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
-                            let topic = p.topic.clone();
-                            match protocol {
-                                topic::protocol::KCP => {
+                            let sender = match senders.get(&p.topic) {
+                                Some(sender) => sender,
+                                None => {
+                                    let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
+                                    let topic = p.topic.clone();
+                                    let protocol = protocol.to_string();
                                     task::spawn(async move {
-                                        let socket = TcpStream::connect(address).await.unwrap();
-                                        if let Err(e) = up_kcp_vnet(socket, topic, sender_clone, vnet_rx).await {
-                                            error!("agent kcp vnet error: {:?}", e)
+                                        if let Err(e) = up_agent_vclient(address, &protocol, topic, sender, vnet_rx).await {
+                                            error!("agent vnet error: {:?}", e)
                                         }
                                     });
+                                    senders.insert(p.topic.clone(), vnet_tx);
+                                    senders.get(&p.topic).unwrap()
                                 },
-                                topic::protocol::TCP => {
-                                    task::spawn(async move {
-                                        let socket = TcpStream::connect(address).await.unwrap();
-                                        if let Err(e) = up_tcp_vnet(socket, topic, sender_clone, vnet_rx).await {
-                                            error!("agent tcp vnet error: {:?}", e)
-                                        };
-                                    });
-                                },
-                                topic::protocol::UDP => {
-                                    task::spawn(async move {
-                                        let socket = UdpSocket::bind(
-                                                SocketAddr::new(
-                                                // "0.0.0.0:0"
-                                                // "[::]:0"
-                                                match address {
-                                                    SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                                                    SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-                                                }, 0)
-                                            ).await.unwrap();
-                                        socket.connect(address).await.unwrap();
-                                        if let Err(e) = up_udp_vnet(socket, topic, sender_clone, vnet_rx).await {
-                                            error!("agent udp vnet error: {:?}", e)
-                                        };
-                                    });
-                                },
-                                e => info!("unknown protocol {}", e)
                             };
-                            senders.insert(p.topic.clone(), vnet_tx);
-                            senders.get(&p.topic).unwrap()
-                        },
-                    };
-                    if sender.is_closed() {
-                        senders.remove(&p.topic);
-                    } else {
-                        sender.send((p.topic, p.payload.to_vec())).unwrap();
-                    }
-
-
+                            if sender.is_closed() {
+                                senders.remove(&p.topic);
+                            } else {
+                                sender.send((p.topic, p.payload.to_vec())).unwrap();
+                            }
                         },
                     }
                 }
@@ -392,16 +394,13 @@ pub async fn local(
                     let topic = p.topic.clone();
                     let (_prefix, agent_id, local_id, label, protocol, address) = topic::parse(&topic);
 
-                    match label {
-                        topic::label::X => {
+                    match (label, protocol) {
+                        (topic::label::X, _) => {
                             if let Some(s) = on_xdata {
                                 s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await.unwrap();
                             }
                         },
-                        _ => {
-
-                    match protocol {
-                        topic::protocol::KCP | topic::protocol::TCP => {
+                        (_, topic::protocol::KCP | topic::protocol::TCP) => {
                             if let Some(sender) = senders.get(&p.topic) {
                                 if sender.is_closed() {
                                     senders.remove(&p.topic);
@@ -410,14 +409,8 @@ pub async fn local(
                                 }
                             }
                         },
-                        topic::protocol::UDP => {
-                            let _ = sock.send_to(&p.payload, address).await.unwrap();
-                        },
-                        e => info!("unknown protocol {}", e)
-                    }
-
-
-                        },
+                        (_, topic::protocol::UDP) => { let _ = sock.send_to(&p.payload, address).await.unwrap(); },
+                        (label, protocol) => info!("unknown label: {} and protocol: {}", label, protocol)
                     }
                 }
             }
@@ -521,16 +514,13 @@ pub async fn local_socks(
                     let topic = p.topic.clone();
                     let (_prefix, agent_id, local_id, label, protocol, _address) = topic::parse(&topic);
 
-                    match label {
-                        topic::label::X => {
+                    match (label, protocol) {
+                        (topic::label::X, _) => {
                             if let Some(s) = on_xdata {
                                 s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await.unwrap();
                             }
                         },
-                        _ => {
-
-                    match protocol {
-                        topic::protocol::KCP | topic::protocol::TCP => {
+                        (_, topic::protocol::KCP | topic::protocol::TCP) => {
                             if let Some(sender) = senders.get(&p.topic) {
                                 if sender.is_closed() {
                                     senders.remove(&p.topic);
@@ -543,11 +533,7 @@ pub async fn local_socks(
                         //    // TODO:
                         //    let _ = sock.send_to(&p.payload, address).await.unwrap();
                         //},
-                        e => info!("unknown protocol {}", e)
-                    }
-
-
-                        },
+                        (label, protocol) => info!("unknown label: {} and protocol: {}", label, protocol)
                     }
                 }
             }
