@@ -1992,21 +1992,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "net4mqtt"
+name = "netmqtt"
 version = "0.5.1"
 dependencies = [
- "clap",
- "netmqtt",
- "tokio",
- "tracing",
- "utils",
-]
-
-[[package]]
-name = "netmqtt"
-version = "0.1.0"
-dependencies = [
  "anyhow",
+ "clap",
  "kcp",
  "lru_time_cache",
  "portpicker",
@@ -2019,6 +2009,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "url",
+ "utils",
 ]
 
 [[package]]

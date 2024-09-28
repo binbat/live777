@@ -41,8 +41,6 @@ Commands:
 Options:
   -v...                        Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
   -b, --broker <BROKER>        Mqtt Broker Address [default: mqtt://localhost:1883]
-  -p, --prefix <PREFIX>        Mqtt Topic Prefix [default: net4mqtt]
-  -c, --client-id <CLIENT_ID>  Mqtt Client Id [default: -]
   -h, --help                   Print help
   -V, --version                Print version
 ```

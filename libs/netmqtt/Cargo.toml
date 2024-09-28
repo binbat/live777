@@ -1,7 +1,15 @@
 [package]
 name = "netmqtt"
-version = "0.1.0"
-edition = "2021"
+description = "net (TCP/UDP) over mqtt tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "net4mqtt"
+path = "bin/main.rs"
+required-features = ["cli"]
 
 [dev-dependencies]
 portpicker = "0.1.1"
@@ -20,3 +28,9 @@ rumqttc = { version = "0.24.0", features = ["url"] }
 socks5-server = "0.10.1"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync"] }
 url = "2.5.2"
+
+utils = { path = "../../libs/utils", optional = true}
+clap = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+cli = ["dep:utils", "dep:clap"]

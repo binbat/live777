@@ -14,7 +14,6 @@ members = [
     "libs/http-log",
     "libs/libwish",
     "libs/signal",
-    "tools/net4mqtt",
     "tools/whepfrom",
     "tools/whipinto",
     "liveion",
