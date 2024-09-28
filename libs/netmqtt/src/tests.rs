@@ -157,12 +157,12 @@ async fn helper_cluster_up(cfg: Config) {
         thread::spawn(move || {
             let addr = SocketAddr::new(cfg.ip, port);
             tokio_test::block_on(proxy::agent(
-                proxy::MqttConfig {
-                    id: format!("test-proxy-agent-{}", id),
-                    host: mqtt_broker_host.to_string(),
-                    port: cfg.broker,
-                    prefix: MQTT_TOPIC_PREFIX.to_string(),
-                },
+                &format!(
+                    "mqtt://{}/{}?client_id=test-proxy-agent-{}",
+                    SocketAddr::new(mqtt_broker_host, cfg.broker),
+                    MQTT_TOPIC_PREFIX,
+                    id
+                ),
                 addr,
                 &id.to_string(),
                 None,
@@ -175,12 +175,12 @@ async fn helper_cluster_up(cfg: Config) {
         thread::spawn(move || {
             let addr = SocketAddr::new(cfg.ip, port);
             tokio_test::block_on(proxy::local(
-                proxy::MqttConfig {
-                    id: format!("test-proxy-local-{}", id),
-                    host: mqtt_broker_host.to_string(),
-                    port: cfg.broker,
-                    prefix: MQTT_TOPIC_PREFIX.to_string(),
-                },
+                &format!(
+                    "mqtt://{}/{}?client_id=test-proxy-local-{}",
+                    SocketAddr::new(mqtt_broker_host, cfg.broker),
+                    MQTT_TOPIC_PREFIX,
+                    id
+                ),
                 addr,
                 &id.to_string(),
                 &id.to_string(),
@@ -602,12 +602,12 @@ async fn test_socks_simple() {
 
     thread::spawn(move || {
         tokio_test::block_on(proxy::local_socks(
-            proxy::MqttConfig {
-                id: format!("test-proxy-local-{}", local_id),
-                host: mqtt_broker_host.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-socks-{}",
+                SocketAddr::new(mqtt_broker_host, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                local_id
+            ),
             local_addr,
             agent_id,
             local_id,
@@ -675,12 +675,12 @@ async fn test_socks_restart() {
 
     thread::spawn(move || {
         tokio_test::block_on(proxy::local_socks(
-            proxy::MqttConfig {
-                id: format!("test-proxy-local-{}", local_id),
-                host: mqtt_broker_host.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-socks-{}",
+                SocketAddr::new(mqtt_broker_host, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                local_id
+            ),
             local_addr,
             agent_id,
             local_id,
@@ -765,12 +765,12 @@ async fn test_socks_multiple_server() {
     let local_addr = SocketAddr::new(ip, local_port);
     thread::spawn(move || {
         tokio_test::block_on(proxy::local_socks(
-            proxy::MqttConfig {
-                id: format!("test-proxy-local-{}", local_id),
-                host: mqtt_broker_host.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-socks-{}",
+                SocketAddr::new(mqtt_broker_host, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                local_id
+            ),
             local_addr,
             agent_id,
             local_id,
@@ -836,12 +836,12 @@ async fn test_xdata() {
         let id = 0;
         let addr = SocketAddr::new(ip, agent_port);
         tokio_test::block_on(proxy::agent(
-            proxy::MqttConfig {
-                id: format!("test-proxy-agent-{}", id),
-                host: ip.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-agent-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
             addr,
             &id.to_string(),
             None,
@@ -855,12 +855,12 @@ async fn test_xdata() {
         let id = 1;
         let addr = SocketAddr::new(ip, agent_port_1);
         tokio_test::block_on(proxy::agent(
-            proxy::MqttConfig {
-                id: format!("test-proxy-agent-{}", id),
-                host: ip.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-agent-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
             addr,
             &id.to_string(),
             Some((msg_1_clone, None)),
@@ -873,12 +873,12 @@ async fn test_xdata() {
         let id = 2;
         let addr = SocketAddr::new(ip, agent_port_2);
         tokio_test::block_on(proxy::agent(
-            proxy::MqttConfig {
-                id: format!("test-proxy-agent-{}", id),
-                host: ip.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-agent-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
             addr,
             &id.to_string(),
             Some((msg_2_clone, None)),
@@ -892,12 +892,12 @@ async fn test_xdata() {
         let id = "local-x";
         let addr = SocketAddr::new(ip, local_port_1);
         tokio_test::block_on(proxy::local(
-            proxy::MqttConfig {
-                id: format!("test-proxy-local-{}", id),
-                host: ip.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-local-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
             addr,
             id,
             id,
@@ -913,12 +913,12 @@ async fn test_xdata() {
         let id = "socks-x";
         let addr = SocketAddr::new(ip, local_port_2);
         tokio_test::block_on(proxy::local(
-            proxy::MqttConfig {
-                id: format!("test-proxy-socks-{}", id),
-                host: ip.to_string(),
-                port: mqtt_broker_port,
-                prefix: MQTT_TOPIC_PREFIX.to_string(),
-            },
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-local-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
             addr,
             id,
             id,

@@ -2,14 +2,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::{ArgAction, Parser, Subcommand};
 use tracing::{debug, info, trace, Level};
-use url::Url;
 
 use netmqtt::proxy;
-
-/// Reference: https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html
-/// The Server MUST allow ClientID’s which are between 1 and 23 UTF-8 encoded bytes in length, and that contain only the characters
-/// "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-const MQTT_CLIENT_ID_RANDOM_LENGTH: usize = 7;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -28,9 +22,6 @@ enum Commands {
         /// Mqtt Broker Address
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         broker: String,
-        /// Mqtt Client Id
-        #[arg(short, long, default_value_t = generate_random_string(MQTT_CLIENT_ID_RANDOM_LENGTH))]
-        client_id: String,
         /// Listen socks5 server address
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
         listen: SocketAddr,
@@ -53,9 +44,6 @@ enum Commands {
         /// Mqtt Broker Address
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         broker: String,
-        /// Mqtt Client Id
-        #[arg(short, long, default_value_t = generate_random_string(MQTT_CLIENT_ID_RANDOM_LENGTH))]
-        client_id: String,
         /// Listen local port mapping as agent's target address
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
         listen: SocketAddr,
@@ -75,9 +63,6 @@ enum Commands {
         /// Mqtt Broker Address
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         broker: String,
-        /// Mqtt Client Id
-        #[arg(short, long, default_value_t = generate_random_string(MQTT_CLIENT_ID_RANDOM_LENGTH))]
-        client_id: String,
         /// Agent's target address
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7777))]
         target: SocketAddr,
@@ -92,7 +77,7 @@ async fn main() {
     let args = Cli::parse();
 
     utils::set_log(format!(
-        "net4mqtt={}",
+        "net4mqtt={},netmqtt=trace",
         match args.verbose {
             0 => Level::WARN,
             1 => Level::INFO,
@@ -105,7 +90,6 @@ async fn main() {
     match args.command {
         Commands::Socks {
             broker,
-            client_id,
             listen,
             domain,
             agent_id,
@@ -115,30 +99,12 @@ async fn main() {
             info!("Running as socks, {:?}", listen);
             debug!("use domain: {:?}", domain);
 
-            let mqtt_broker_url = broker.parse::<Url>().unwrap();
-            let mqtt_broker_host = mqtt_broker_url.host().unwrap();
-            let mqtt_broker_port = mqtt_broker_url.port().unwrap_or(1883);
-            let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path());
-
-            proxy::local_socks(
-                proxy::MqttConfig {
-                    id: client_id,
-                    host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
-                    prefix: mqtt_topic_prefix.to_string(),
-                },
-                listen,
-                &agent_id,
-                &id,
-                None,
-                None,
-                !no_kcp,
-            )
-            .await;
+            proxy::local_socks(&broker, listen, &agent_id, &id, None, None, !no_kcp)
+                .await
+                .unwrap();
         }
         Commands::Local {
             broker,
-            client_id,
             listen,
             agent_id,
             id,
@@ -146,84 +112,16 @@ async fn main() {
         } => {
             info!("Running as local, {:?}", listen);
 
-            let mqtt_broker_url = broker.parse::<Url>().unwrap();
-            let mqtt_broker_host = mqtt_broker_url.host().unwrap();
-            let mqtt_broker_port = mqtt_broker_url.port().unwrap_or(1883);
-            let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path());
-
-            proxy::local(
-                proxy::MqttConfig {
-                    id: client_id,
-                    host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
-                    prefix: mqtt_topic_prefix.to_string(),
-                },
-                listen,
-                &agent_id,
-                &id,
-                None,
-                None,
-                !no_kcp,
-            )
-            .await;
+            proxy::local(&broker, listen, &agent_id, &id, None, None, !no_kcp)
+                .await
+                .unwrap();
         }
-        Commands::Agent {
-            broker,
-            client_id,
-            target,
-            id,
-        } => {
+        Commands::Agent { broker, target, id } => {
             info!("Running as agent, {:?}", target);
 
-            let mqtt_broker_url = broker.parse::<Url>().unwrap();
-            let mqtt_broker_host = mqtt_broker_url.host().unwrap();
-            let mqtt_broker_port = mqtt_broker_url.port().unwrap_or(1883);
-            let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path());
-
-            proxy::agent(
-                proxy::MqttConfig {
-                    id: client_id,
-                    host: mqtt_broker_host.to_string(),
-                    port: mqtt_broker_port,
-                    prefix: mqtt_topic_prefix.to_string(),
-                },
-                target,
-                &id,
-                None,
-                None,
-            )
-            .await;
+            proxy::agent(&broker, target, &id, None, None)
+                .await
+                .unwrap();
         }
     }
-}
-
-use rand::Rng;
-
-fn generate_random_string(length: usize) -> String {
-    let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
-
-    let random_string: String = (0..length)
-        .map(|_| {
-            let idx = rng.gen_range(0..charset.len());
-            charset[idx] as char
-        })
-        .collect();
-
-    random_string
-}
-
-fn strip_slashes(path: &str) -> &str {
-    let mut start = 0;
-    let mut end = path.len();
-
-    if path.starts_with("/") {
-        start = 1;
-    }
-
-    if path.ends_with("/") {
-        end -= 1;
-    }
-
-    &path[start..end]
 }

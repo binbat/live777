@@ -16,9 +16,6 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{error, info_span, Level};
 
-#[cfg(feature = "net4mqtt")]
-use url::Url;
-
 use auth::{access::access_middleware, ManyValidate};
 
 use crate::config::Config;
@@ -94,22 +91,12 @@ where
     #[cfg(feature = "net4mqtt")]
     {
         if let Some(c) = cfg.net4mqtt {
-            let mqtt_broker_url = c.mqtt_url.parse::<Url>().unwrap();
-            let mqtt_broker_host = mqtt_broker_url.host().unwrap().to_owned().to_string();
-            let mqtt_broker_port = mqtt_broker_url.port().unwrap_or(1883);
-            let mqtt_topic_prefix = strip_slashes(mqtt_broker_url.path()).to_owned();
-
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
                         netmqtt::proxy::agent(
-                            netmqtt::proxy::MqttConfig {
-                                id: c.alias.clone(),
-                                host: mqtt_broker_host,
-                                port: mqtt_broker_port,
-                                prefix: mqtt_topic_prefix,
-                            },
+                            &c.mqtt_url,
                             cfg.http.listen,
                             &c.alias.clone(),
                             Some((
@@ -124,6 +111,7 @@ where
                             None,
                         )
                         .await
+                        .unwrap()
                     });
             });
         }
@@ -169,20 +157,4 @@ async fn metrics() -> String {
     metrics::ENCODER
         .encode_to_string(&metrics::REGISTRY.gather())
         .unwrap()
-}
-
-#[cfg(feature = "net4mqtt")]
-fn strip_slashes(path: &str) -> &str {
-    let mut start = 0;
-    let mut end = path.len();
-
-    if path.starts_with("/") {
-        start = 1;
-    }
-
-    if path.ends_with("/") {
-        end -= 1;
-    }
-
-    &path[start..end]
 }

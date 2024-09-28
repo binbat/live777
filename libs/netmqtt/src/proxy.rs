@@ -3,13 +3,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use anyhow::{anyhow, Error, Result};
 use kcp::Kcp;
 use lru_time_cache::LruCache;
-use rumqttc::{AsyncClient, EventLoop, MqttOptions, QoS};
+use rumqttc::{AsyncClient, EventLoop, QoS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::select;
 use tokio::sync::mpsc::{unbounded_channel, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::{task, time};
 use tracing::{debug, error, info, trace, warn};
+use url::Url;
 
 use crate::topic;
 
@@ -17,14 +18,6 @@ const MAX_BUFFER_SIZE: usize = 4096;
 const MQTT_BUFFER_CAPACITY: usize = 10;
 const LRU_MAX_CAPACITY: usize = 128;
 const LRU_TIME_TO_LIVE: time::Duration = time::Duration::from_secs(300);
-
-#[derive(Clone, Debug)]
-pub struct MqttConfig {
-    pub id: String,
-    pub host: String,
-    pub port: u16,
-    pub prefix: String,
-}
 
 struct ChannelOutput {
     key: String,
@@ -213,15 +206,15 @@ async fn up_agent_vclient(
 }
 
 async fn mqtt_client_init(
-    mqtt_config: MqttConfig,
+    mqtt_url: Url,
     topic_io_sub: String,
     topic_x_sub: String,
     topic_x_pub: String,
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
     is_on_xdata: bool,
 ) -> (AsyncClient, EventLoop) {
-    let mut mqtt_options = MqttOptions::new(&mqtt_config.id, &mqtt_config.host, mqtt_config.port);
-    debug!("mqtt_config: {:?}", mqtt_config);
+    let mut mqtt_options = rumqttc::MqttOptions::parse_url(mqtt_url.as_str()).unwrap();
+    debug!("mqtt_options: {:?}", mqtt_options);
 
     // MQTT LastWill
     // MQTT Client OnDisconnected publish at label::X
@@ -262,7 +255,7 @@ async fn mqtt_client_init(
 }
 
 pub async fn agent(
-    mqtt_config: MqttConfig,
+    mqtt_url: &str,
     address: SocketAddr,
     agent_id: &str,
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
@@ -275,11 +268,11 @@ pub async fn agent(
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
-    let mqtt_config2 = mqtt_config.clone();
-    let prefix = mqtt_config2.prefix.as_str();
+    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
+    let prefix = prefix.as_str();
 
     let (client, mut eventloop) = mqtt_client_init(
-        mqtt_config,
+        url,
         topic::build_sub(prefix, agent_id, topic::ANY, topic::label::I),
         topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
         topic::build_pub_x(prefix, agent_id, topic::NIL, topic::label::X),
@@ -355,7 +348,7 @@ pub async fn agent(
 }
 
 pub async fn local(
-    mqtt_config: MqttConfig,
+    mqtt_url: &str,
     address: SocketAddr,
     agent_id: &str,
     local_id: &str,
@@ -370,11 +363,11 @@ pub async fn local(
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
-    let mqtt_config2 = mqtt_config.clone();
-    let prefix = mqtt_config2.prefix.as_str();
+    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
+    let prefix = prefix.as_str();
 
     let (client, mut eventloop) = mqtt_client_init(
-        mqtt_config,
+        url,
         topic::build_sub(prefix, topic::ANY, local_id, topic::label::O),
         topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
         topic::build_pub_x(prefix, topic::NIL, local_id, topic::label::X),
@@ -483,7 +476,7 @@ use socks5_server::{auth::NoAuth, Server};
 use std::sync::Arc;
 
 pub async fn local_socks(
-    mqtt_config: MqttConfig,
+    mqtt_url: &str,
     address: SocketAddr,
     agent_id: &str,
     local_id: &str,
@@ -498,11 +491,11 @@ pub async fn local_socks(
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
-    let mqtt_config2 = mqtt_config.clone();
-    let prefix = mqtt_config2.prefix.as_str();
+    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
+    let prefix = prefix.as_str();
 
     let (client, mut eventloop) = mqtt_client_init(
-        mqtt_config,
+        url,
         topic::build_sub(prefix, topic::ANY, local_id, topic::label::O),
         topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
         topic::build_pub_x(prefix, topic::NIL, local_id, topic::label::X),

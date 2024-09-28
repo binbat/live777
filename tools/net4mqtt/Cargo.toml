@@ -12,6 +12,4 @@ utils = { path = "../../libs/utils" }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 
-url = "2.5.2"
-rand = "0.8.5"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync"] }

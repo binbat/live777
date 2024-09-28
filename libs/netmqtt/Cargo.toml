@@ -15,6 +15,8 @@ tracing = { workspace = true }
 
 lru_time_cache = "0.11.11"
 kcp = "0.5.3"
-rumqttc = "0.24.0"
+rand = "0.8.5"
+rumqttc = { version = "0.24.0", features = ["url"] }
 socks5-server = "0.10.1"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync"] }
+url = "2.5.2"

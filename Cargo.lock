@@ -1710,7 +1710,6 @@ dependencies = [
  "toml 0.8.14",
  "tower-http",
  "tracing",
- "url",
  "utils",
  "webrtc",
 ]
@@ -1998,10 +1997,8 @@ version = "0.5.1"
 dependencies = [
  "clap",
  "netmqtt",
- "rand",
  "tokio",
  "tracing",
- "url",
  "utils",
 ]
 
@@ -2013,6 +2010,7 @@ dependencies = [
  "kcp",
  "lru_time_cache",
  "portpicker",
+ "rand",
  "reqwest",
  "rumqttc",
  "rumqttd",
@@ -2020,6 +2018,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2794,6 +2793,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-rustls 0.25.0",
+ "url",
 ]
 
 [[package]]
