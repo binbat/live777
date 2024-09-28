@@ -144,7 +144,7 @@ where
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
-                        netmqtt::proxy::local_socks(
+                        net4mqtt::proxy::local_socks(
                             &c.mqtt_url,
                             c.listen,
                             "-",
@@ -161,7 +161,7 @@ where
 
         std::thread::spawn(move || {
             let suffix = "net4mqtt.local";
-            let dns = netmqtt::kxdns::Kxdns::new(suffix);
+            let dns = net4mqtt::kxdns::Kxdns::new(suffix);
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(async move {

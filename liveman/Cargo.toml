@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 liveion = { path = "../liveion", optional = true }
-netmqtt = { path = "../libs/netmqtt", optional = true }
+net4mqtt = { path = "../libs/net4mqtt", optional = true }
 
 api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
@@ -42,5 +42,5 @@ url = "2.5"
 [features]
 default = ["net4mqtt"]
 liveion = ["dep:liveion"]
-net4mqtt = ["dep:netmqtt"]
+net4mqtt = ["dep:net4mqtt"]
 

@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use clap::{ArgAction, Parser, Subcommand};
 use tracing::{debug, info, trace, Level};
 
-use netmqtt::proxy;
+use net4mqtt::proxy;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

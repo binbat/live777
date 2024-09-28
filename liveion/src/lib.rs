@@ -95,7 +95,7 @@ where
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
-                        netmqtt::proxy::agent(
+                        net4mqtt::proxy::agent(
                             &c.mqtt_url,
                             cfg.http.listen,
                             &c.alias.clone(),

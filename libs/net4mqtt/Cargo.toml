@@ -1,5 +1,5 @@
 [package]
-name = "netmqtt"
+name = "net4mqtt"
 description = "net (TCP/UDP) over mqtt tool"
 version.workspace = true
 edition.workspace = true
