@@ -1,7 +1,10 @@
 use axum::body::Body;
 use axum::extract::Request;
+use axum::middleware;
 use axum::response::IntoResponse;
+use axum::routing::post;
 use axum::Router;
+
 use clap::Parser;
 use http::{header, StatusCode, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -14,7 +17,9 @@ use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{debug, error, info, info_span, warn};
 
-use crate::auth::ManyValidate;
+use auth::{access::access_middleware, ManyValidate};
+
+use crate::admin::{authorize, token};
 use crate::config::Config;
 use crate::mem::{MemStorage, Server};
 
@@ -22,7 +27,7 @@ use crate::mem::{MemStorage, Server};
 #[folder = "../assets/liveman/"]
 struct Assets;
 
-mod auth;
+mod admin;
 mod config;
 mod error;
 mod mem;
@@ -62,16 +67,9 @@ async fn main() {
 
     #[cfg(feature = "liveion")]
     {
-        let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
-        info!("{:?}", addrs);
-
-        cfg.nodes
-            .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                alias: format!("buildin-{}", i),
-                url: format!("http://{}", addr),
-                sub_max: 1,
-                ..Default::default()
-            }));
+        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
+        info!("liveion buildin servers: {:?}", servers);
+        cfg.nodes.extend(servers)
     }
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
@@ -100,15 +98,9 @@ async fn main() {
 
     #[cfg(feature = "liveion")]
     {
-        let addrs = cluster::cluster_up(cfg.liveion.count, cfg.liveion.address).await;
-        info!("{:?}", addrs);
-
-        cfg.nodes
-            .extend(addrs.iter().enumerate().map(|(i, addr)| Server {
-                alias: format!("buildin-{}", i),
-                url: format!("http://{}", addr),
-                ..Default::default()
-            }));
+        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
+        info!("liveion buildin servers: {:?}", servers);
+        cfg.nodes.extend(servers)
     }
 
     warn!("set log level : {}", cfg.log.level);
@@ -134,15 +126,23 @@ where
         client,
         storage: MemStorage::new(cfg.nodes),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
+
+    let auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
     let mut app = Router::new()
-        .merge(route::proxy::route().layer(auth_layer))
-        .with_state(app_state.clone())
+        .merge(
+            route::proxy::route()
+                .route("/token", post(token))
+                .layer(middleware::from_fn(access_middleware))
+                .layer(auth_layer),
+        )
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
         } else {
             CorsLayer::new()
         })
+        .route("/login", post(authorize))
+        .with_state(app_state.clone())
         .layer(axum::middleware::from_fn(http_log::print_request_response))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {

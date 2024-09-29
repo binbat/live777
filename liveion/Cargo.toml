@@ -11,6 +11,7 @@ crate-type = ["lib"]
 
 [dependencies]
 api = { path = "../libs/api" }
+auth = { path = "../libs/auth" }
 http-log = { path = "../libs/http-log" }
 libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
@@ -18,18 +19,19 @@ utils = { path = "../libs/utils" }
 
 anyhow = { workspace = true, features = ["backtrace"] }
 clap = { workspace = true, features = ["derive"] }
+http = { workspace = true }
+http-body = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = "0.1.15"
+async-stream = "0.3.5"
 tracing = { workspace = true }
 webrtc = { workspace = true }
 
 async-trait = "0.1"
 axum = { version = "0.7", features = ["multipart", "tracing"] }
 axum-extra = { version = "0.9.3", features = ["query"] }
-base64 = "0.22.1"
 chrono = "0.4"
-http = "1.0.0"
-http-body = "1.0.0"
 hyper = "1.2.0"
 lazy_static = "1.4.0"
 md5 = "0.7.0"
@@ -40,8 +42,9 @@ serde_json = "1.0.114"
 toml = "0.8.10"
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 
-reqwest = { version = "0.12", optional = true, features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", optional = true, features = [
+    "rustls-tls",
+], default-features = false }
 
 [features]
 webhook = ["dep:reqwest"]
-

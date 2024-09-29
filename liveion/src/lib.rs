@@ -1,4 +1,5 @@
 use axum::extract::Request;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
@@ -12,9 +13,10 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::{error, info_span};
+use tracing::{error, info_span, Level};
 
-use crate::auth::ManyValidate;
+use auth::{access::access_middleware, ManyValidate};
+
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
 
@@ -26,7 +28,6 @@ struct Assets;
 
 pub mod config;
 
-mod auth;
 mod constant;
 mod convert;
 mod error;
@@ -46,7 +47,8 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::new(vec![cfg.auth]));
+    let auth_layer =
+        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
     let mut app = Router::new()
         .merge(
             whip::route()
@@ -54,6 +56,7 @@ where
                 .merge(session::route())
                 .merge(admin::route())
                 .merge(crate::route::stream::route())
+                .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
         .route(api::path::METRICS, get(metrics))
@@ -63,21 +66,23 @@ where
         } else {
             CorsLayer::new()
         })
-        .layer(axum::middleware::from_fn(http_log::print_request_response))
         .layer(
-            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
-                let span = info_span!(
-                    "http_request",
-                    uri = ?request.uri(),
-                    method = ?request.method(),
-                    span_id = tracing::field::Empty,
-                );
-                span.record(
-                    "span_id",
-                    span.id().unwrap_or(tracing::Id::from_u64(42)).into_u64(),
-                );
-                span
-            }),
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    let span = info_span!(
+                        "http_request",
+                        uri = ?request.uri(),
+                        method = ?request.method(),
+                        span_id = tracing::field::Empty,
+                    );
+                    span.record(
+                        "span_id",
+                        span.id().unwrap_or(tracing::Id::from_u64(42)).into_u64(),
+                    );
+                    span
+                })
+                .on_response(tower_http::trace::DefaultOnResponse::new().level(Level::INFO))
+                .on_failure(tower_http::trace::DefaultOnFailure::new().level(Level::INFO)),
         );
 
     app = app.fallback(static_handler);

@@ -1,4 +1,4 @@
-use api::event::NodeMetaData;
+use api::{event::NodeMetaData, response::Codec};
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 use crate::config::Config;
@@ -31,6 +31,15 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
                     .map(|session| session.into())
                     .collect(),
             },
+            codecs: value
+                .codecs
+                .into_iter()
+                .map(|media_code| Codec {
+                    kind: media_code.kind,
+                    codec: media_code.codec,
+                    fmtp: media_code.fmtp,
+                })
+                .collect(),
         }
     }
 }
@@ -42,6 +51,7 @@ impl From<crate::forward::message::SessionInfo> for api::response::Session {
             created_at: value.create_at,
             state: convert_connect_state(value.state),
             cascade: value.cascade.map(|reforward| reforward.into()),
+            has_data_channel: value.has_data_channel,
         }
     }
 }
@@ -59,7 +69,7 @@ impl From<crate::forward::message::CascadeInfo> for api::response::CascadeInfo {
 impl From<Config> for NodeMetaData {
     fn from(value: Config) -> Self {
         Self {
-            authorization: value.auth.to_authorizations().first().cloned(),
+            authorization: value.auth.tokens.first().cloned(),
         }
     }
 }

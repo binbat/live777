@@ -11,6 +11,7 @@ pub(crate) struct MediaInfo {
     pub(crate) _codec: Vec<RTCRtpCodecParameters>,
     pub(crate) video_transceiver: (u8, u8, bool), // (send,recv,svc)
     pub(crate) audio_transceiver: (u8, u8),       // (send,recv)
+    pub(crate) has_data_channel: bool,
 }
 
 impl TryFrom<SessionDescription> for MediaInfo {
@@ -21,7 +22,17 @@ impl TryFrom<SessionDescription> for MediaInfo {
         let mut codec = Vec::new();
         let mut video_transceiver = (0, 0, false);
         let mut audio_transceiver = (0, 0, false);
+        let mut has_data_channel = false;
         for md in &media_descriptions {
+            if md.media_name.media == "application"
+                && md
+                    .media_name
+                    .formats
+                    .iter()
+                    .any(|f| f == "webrtc-datachannel")
+            {
+                has_data_channel = true;
+            }
             let media = md.media_name.media.clone();
             let update = match RTPCodecType::from(media.as_str()) {
                 RTPCodecType::Video => &mut video_transceiver,
@@ -54,6 +65,7 @@ impl TryFrom<SessionDescription> for MediaInfo {
             _codec: codec,
             video_transceiver,
             audio_transceiver: (audio_transceiver.0, audio_transceiver.1),
+            has_data_channel,
         })
     }
 }

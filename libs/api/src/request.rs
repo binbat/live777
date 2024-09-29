@@ -28,3 +28,9 @@ pub struct Cascade {
     // push mode ,value : whip_url
     pub target_url: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct StreamSSE {
+    #[serde(default)]
+    pub streams: Vec<String>,
+}

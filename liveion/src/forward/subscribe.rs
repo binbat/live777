@@ -17,6 +17,7 @@ use crate::new_broadcast_channel;
 use crate::{constant, result::Result};
 
 use super::get_peer_id;
+use super::media::MediaInfo;
 use super::message::CascadeInfo;
 use super::track::PublishTrackRemote;
 
@@ -34,13 +35,14 @@ pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) peer: Arc<RTCPeerConnection>,
     pub(crate) create_at: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
+    pub(crate) media_info: MediaInfo,
 }
 
 impl SubscribeRTCPeerConnection {
     pub(crate) async fn new(
         cascade: Option<CascadeInfo>,
         stream: String,
-        peer: Arc<RTCPeerConnection>,
+        (peer, media_info): (Arc<RTCPeerConnection>, MediaInfo),
         publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
         (publish_tracks, publish_track_change): (
             Arc<RwLock<Vec<PublishTrackRemote>>>,
@@ -87,6 +89,7 @@ impl SubscribeRTCPeerConnection {
             peer,
             create_at: Utc::now().timestamp_millis(),
             select_layer_sender,
+            media_info,
         }
     }
 
@@ -96,6 +99,7 @@ impl SubscribeRTCPeerConnection {
             create_at: self.create_at,
             state: self.peer.connection_state(),
             cascade: self.cascade.clone(),
+            has_data_channel: self.media_info.has_data_channel,
         }
     }
 

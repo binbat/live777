@@ -74,6 +74,7 @@ pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<api::re
                                         arr
                                     },
                                 },
+                                codecs: vec![],
                             }
                         }
                         None => s.clone(),
