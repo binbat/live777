@@ -29,18 +29,24 @@ pub struct Net4mqtt {
     pub mqtt_url: String,
     #[serde(default)]
     pub alias: String,
-    #[serde(default = "default_http_listen")]
+    #[serde(default = "default_socks_listen")]
     pub listen: SocketAddr,
 }
 
+#[cfg(feature = "net4mqtt")]
 impl Default for Net4mqtt {
     fn default() -> Self {
         Self {
             mqtt_url: String::new(),
             alias: String::new(),
-            listen: SocketAddr::from_str("0.0.0.0:8080").unwrap(),
+            listen: default_socks_listen(),
         }
     }
+}
+
+#[cfg(feature = "net4mqtt")]
+fn default_socks_listen() -> SocketAddr {
+    SocketAddr::from_str("0.0.0.0:1077").expect("invalid listen socks address")
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
