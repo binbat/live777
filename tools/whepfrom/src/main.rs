@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
 
     if let Some(ref h) = args.host {
         debug!("=== Specified set host, using {} ===", h);
-        host = h.clone();
+        host.clone_from(h);
     }
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
@@ -278,7 +278,6 @@ async fn rtp_send(
                 Err(e) => error!("Failed to send data to {}: {}", client_addr, e),
             }
         }
-    } else {
     }
 }
 

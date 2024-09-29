@@ -28,7 +28,7 @@ use webrtc::{
     util::Unmarshal,
 };
 
-use cli::{codec_from_str, create_child, Codec};
+use cli::{codec_from_str, create_child};
 use libwish::Client;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
 
     if let Some(ref h) = args.host {
         debug!("=== Specified set host, using {} ===", h);
-        host = h.clone();
+        host.clone_from(h)
     }
 
     let video_port = input.port().unwrap_or(0);
@@ -135,31 +135,27 @@ async fn main() -> Result<()> {
         while let Some(media_info) = rx.recv().await {
             let _ = setup_webrtc_session(
                 &args,
-                media_info.video_codec,
-                media_info.audio_codec,
                 &complete_tx,
                 &mut complete_rx,
-                media_info.video_rtp_server,
-                media_info.audio_rtp_server,
-                media_info.video_rtcp_client,
+                &media_info,
                 host.clone(),
             )
             .await;
         }
     } else if input.scheme() == SCHEME_RTSP_CLIENT {
-        let media_info = setup_rtsp_session(&args.input).await?;
-        let _ = setup_webrtc_session(
-            &args,
-            media_info.video_codec,
-            media_info.audio_codec,
-            &complete_tx,
-            &mut complete_rx,
-            media_info.video_rtp_client,
-            media_info.audio_rtp_client,
-            media_info.video_rtp_server,
-            host,
-        )
-        .await;
+        let (rtp_port, audio_port, video_codec, audio_codec) =
+            setup_rtsp_session(&args.input).await?;
+        let media_info = rtsp::MediaInfo {
+            video_rtp_client: None,
+            audio_rtp_client: None,
+            video_codec: Some(video_codec),
+            audio_codec: Some(audio_codec),
+            video_rtp_server: Some(rtp_port),
+            audio_rtp_server: Some(audio_port),
+            video_rtcp_client: Some(rtp_port + 1),
+        };
+        let _ =
+            setup_webrtc_session(&args, &complete_tx, &mut complete_rx, &media_info, host).await;
     } else {
         let sdp = sdp_types::Session::parse(&fs::read(&args.input).unwrap()).unwrap();
         let video_track = sdp.medias.iter().find(|md| md.media == "video");
@@ -197,24 +193,18 @@ async fn main() -> Result<()> {
                 })
             })
             .unwrap_or_else(|| "unknown".to_string());
+        let media_info = rtsp::MediaInfo {
+            video_rtp_client: None,
+            audio_rtp_client: None,
+            video_codec: Some(codec_from_str(&codec_vid)?),
+            audio_codec: Some(codec_from_str(&codec_aud)?),
+            video_rtp_server: video_track.map(|track| track.port),
+            audio_rtp_server: audio_track.map(|track| track.port),
+            video_rtcp_client: None,
+        };
 
-        let video_codec = Some(codec_from_str(&codec_vid)?);
-        let audio_codec = Some(codec_from_str(&codec_aud)?);
-        let video_port = video_track.map(|track| track.port);
-        let audio_port = audio_track.map(|track| track.port);
-        let rtcp_send_port = None;
-        let _ = setup_webrtc_session(
-            &args,
-            video_codec,
-            audio_codec,
-            &complete_tx,
-            &mut complete_rx,
-            video_port,
-            audio_port,
-            rtcp_send_port,
-            host,
-        )
-        .await;
+        let _ =
+            setup_webrtc_session(&args, &complete_tx, &mut complete_rx, &media_info, host).await;
     }
     Ok(())
 }
@@ -290,13 +280,9 @@ async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result
 
 async fn setup_webrtc_session(
     args: &Args,
-    video_codec: Option<Codec>,
-    audio_codec: Option<Codec>,
     complete_tx: &UnboundedSender<()>,
     complete_rx: &mut UnboundedReceiver<()>,
-    video_port: Option<u16>,
-    audio_port: Option<u16>,
-    rtcp_sender_port: Option<u16>,
+    media_info: &rtsp::MediaInfo,
     host: String,
 ) -> Result<()> {
     let mut client = Client::new(
@@ -321,15 +307,15 @@ async fn setup_webrtc_session(
 
     let (peer, video_sender, audio_sender) = webrtc_start(
         &mut client,
-        video_codec.map(|c| c.into()),
-        audio_codec.map(|c| c.into()),
+        media_info.video_codec.map(|c| c.into()),
+        media_info.audio_codec.map(|c| c.into()),
         complete_tx.clone(),
         args,
     )
     .await
     .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
 
-    if let Some(video_port) = video_port {
+    if let Some(video_port) = media_info.video_rtp_server {
         let video_listener = UdpSocket::bind(format!("{}:{}", host, video_port)).await?;
         info!(
             "=== video listener started : {} ===",
@@ -337,10 +323,10 @@ async fn setup_webrtc_session(
         );
         tokio::spawn(rtp_listener(video_listener, video_sender));
     } else {
-        info!("Video codec is None, skipping video transmission.");
+        info!("Video stream is None");
     }
 
-    if let Some(audio_port) = audio_port {
+    if let Some(audio_port) = media_info.audio_rtp_server {
         let audio_listener = UdpSocket::bind(format!("{}:{}", host, audio_port)).await?;
         info!(
             "=== audio listener started : {} ===",
@@ -348,17 +334,17 @@ async fn setup_webrtc_session(
         );
         tokio::spawn(rtp_listener(audio_listener, audio_sender));
     } else {
-        info!("Audio codec is None, skipping audio transmission.");
+        info!("Audio stream is None.");
     }
 
-    let rtcp_listener_port = video_port.unwrap_or(0) + 1;
+    let rtcp_listener_port = media_info.video_rtp_server.unwrap_or(0) + 1;
     tokio::spawn(rtcp_listener(
         host.clone(),
         rtcp_listener_port,
         peer.clone(),
     ));
     let senders = peer.get_senders().await;
-    if let Some(rtcp_sender_port) = rtcp_sender_port {
+    if let Some(rtcp_sender_port) = media_info.video_rtcp_client {
         for sender in senders {
             tokio::spawn(read_rtcp(sender, host.clone(), rtcp_sender_port));
         }

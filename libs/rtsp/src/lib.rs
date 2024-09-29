@@ -3,10 +3,7 @@ use cli::{codec_from_str, Codec};
 use portpicker::pick_unused_port;
 use rtsp_types::ParseError;
 use rtsp_types::{headers, headers::transport, Message, Method, Request, Response, StatusCode};
-use sdp::{
-    description::common::Attribute,
-    SessionDescription,
-};
+use sdp::{description::common::Attribute, SessionDescription};
 use sdp_types::Session;
 use std::io::Cursor;
 use tokio::{
@@ -25,7 +22,7 @@ pub struct Handler {
     up_tx: UnboundedSender<MediaInfo>,
     dn_tx: UnboundedSender<()>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MediaInfo {
     pub video_rtp_client: Option<u16>,
     pub video_rtcp_client: Option<u16>,
@@ -51,17 +48,9 @@ impl CodecInfo {
     }
 }
 
-impl Default for MediaInfo {
+impl Default for CodecInfo {
     fn default() -> Self {
-        Self {
-            video_rtp_client: None,
-            video_rtcp_client: None,
-            video_rtp_server: None,
-            audio_rtp_client: None,
-            audio_rtp_server: None,
-            video_codec: None,
-            audio_codec: None,
-        }
+        Self::new()
     }
 }
 
@@ -91,8 +80,8 @@ impl Handler {
                 video_rtp_server: self.media_info.video_rtp_server,
                 audio_rtp_client: self.media_info.audio_rtp_client,
                 audio_rtp_server: self.media_info.audio_rtp_server,
-                video_codec: self.media_info.video_codec.clone(),
-                audio_codec: self.media_info.audio_codec.clone(),
+                video_codec: self.media_info.video_codec,
+                audio_codec: self.media_info.audio_codec,
             })
             .unwrap();
 
@@ -110,8 +99,8 @@ impl Handler {
                 video_rtp_server: self.media_info.video_rtp_server,
                 audio_rtp_client: self.media_info.audio_rtp_client,
                 audio_rtp_server: self.media_info.audio_rtp_server,
-                video_codec: self.media_info.video_codec.clone(),
-                audio_codec: self.media_info.audio_codec.clone(),
+                video_codec: self.media_info.video_codec,
+                audio_codec: self.media_info.audio_codec,
             })
             .unwrap();
 
@@ -141,129 +130,126 @@ impl Handler {
             .unwrap();
         let tr = trs.first().unwrap();
 
-        match tr {
-            transport::Transport::Rtp(rtp_transport) => {
-                let (rtp, rtcp) = rtp_transport.params.client_port.unwrap();
-                let uri = req.request_uri().unwrap().as_str();
+        if let transport::Transport::Rtp(rtp_transport) = tr {
+            let (rtp, rtcp) = rtp_transport.params.client_port.unwrap();
+            let uri = req.request_uri().unwrap().as_str();
 
-                let url_id = uri
-                    .split("streamid=")
-                    .nth(1)
-                    .and_then(|id_str| id_str.split('&').next())
-                    .map(|id| id.to_string());
+            let url_id = uri
+                .split("streamid=")
+                .nth(1)
+                .and_then(|id_str| id_str.split('&').next())
+                .map(|id| id.to_string());
 
-                if let Some(sdp_data) = &self.sdp {
-                    let sdp = sdp_types::Session::parse(sdp_data).unwrap();
+            if let Some(sdp_data) = &self.sdp {
+                let sdp = sdp_types::Session::parse(sdp_data).unwrap();
 
-                    for media in sdp.medias.iter() {
-                        let media_control = media
+                for media in sdp.medias.iter() {
+                    let media_control = media
+                        .attributes
+                        .iter()
+                        .find(|attr| attr.attribute == "control")
+                        .and_then(|attr| attr.value.as_deref())
+                        .and_then(|control| {
+                            if control.contains("streamid=") {
+                                control.split("streamid=").nth(1).map(|id| id.to_string())
+                            } else {
+                                None
+                            }
+                        });
+
+                    if media.media == "audio" && media_control.as_deref() == url_id.as_deref() {
+                        let audio_server_port =
+                            pick_unused_port().expect("Failed to find an unused audio port");
+                        let audio_rtcp_server_port = audio_server_port + 1;
+
+                        self.media_info.audio_rtp_client = Some(rtp);
+                        self.media_info.audio_rtp_server = Some(audio_server_port);
+                        self.media_info.audio_codec = media
                             .attributes
                             .iter()
-                            .find(|attr| attr.attribute == "control")
-                            .and_then(|attr| attr.value.as_deref())
-                            .and_then(|control| {
-                                if control.contains("streamid=") {
-                                    control.split("streamid=").nth(1).map(|id| id.to_string())
-                                } else {
-                                    None
-                                }
-                            });
+                            .find(|attr| attr.attribute == "rtpmap")
+                            .and_then(|attr| attr.value.as_ref())
+                            .and_then(|value| {
+                                value
+                                    .split_whitespace()
+                                    .nth(1)
+                                    .unwrap_or("")
+                                    .split('/')
+                                    .next()
+                                    .map(|codec_str| codec_from_str(codec_str).ok())
+                            })
+                            .unwrap_or(None);
 
-                        if media.media == "audio" && media_control.as_deref() == url_id.as_deref() {
-                            let audio_server_port =
-                                pick_unused_port().expect("Failed to find an unused audio port");
-                            let audio_rtcp_server_port = audio_server_port + 1;
+                        return Response::builder(req.version(), StatusCode::Ok)
+                            .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+                            .header(headers::SERVER, SERVER_NAME)
+                            .header(headers::SESSION, "1111-2222-3333-4444")
+                            .typed_header(&transport::Transports::from(vec![
+                                transport::Transport::Rtp(transport::RtpTransport {
+                                    profile: transport::RtpProfile::Avp,
+                                    lower_transport: None,
+                                    params: transport::RtpTransportParameters {
+                                        unicast: true,
+                                        server_port: Some((
+                                            audio_server_port,
+                                            Some(audio_rtcp_server_port),
+                                        )),
+                                        ..Default::default()
+                                    },
+                                }),
+                            ]))
+                            .build(Vec::new());
+                    } else if media.media == "video"
+                        && media_control.as_deref() == url_id.as_deref()
+                    {
+                        let video_server_port =
+                            pick_unused_port().expect("Failed to find an unused video port");
+                        let video_rtcp_server_port = video_server_port + 1;
 
-                            self.media_info.audio_rtp_client = Some(rtp);
-                            self.media_info.audio_rtp_server = Some(audio_server_port);
-                            self.media_info.audio_codec = media
-                                .attributes
-                                .iter()
-                                .find(|attr| attr.attribute == "rtpmap")
-                                .and_then(|attr| attr.value.as_ref())
-                                .and_then(|value| {
-                                    value
-                                        .split_whitespace()
-                                        .nth(1)
-                                        .unwrap_or("")
-                                        .split('/')
-                                        .next()
-                                        .map(|codec_str| codec_from_str(codec_str).ok())
-                                })
-                                .unwrap_or(None);
+                        self.media_info.video_rtp_client = Some(rtp);
+                        self.media_info.video_rtcp_client = rtcp;
+                        self.media_info.video_rtp_server = Some(video_server_port);
+                        self.media_info.video_codec = media
+                            .attributes
+                            .iter()
+                            .find(|attr| attr.attribute == "rtpmap")
+                            .and_then(|attr| attr.value.as_ref())
+                            .and_then(|value| {
+                                value
+                                    .split_whitespace()
+                                    .nth(1)
+                                    .unwrap_or("")
+                                    .split('/')
+                                    .next()
+                                    .map(|codec_str| codec_from_str(codec_str).ok())
+                            })
+                            .unwrap_or(None);
 
-                            return Response::builder(req.version(), StatusCode::Ok)
-                                .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
-                                .header(headers::SERVER, SERVER_NAME)
-                                .header(headers::SESSION, "1111-2222-3333-4444")
-                                .typed_header(&transport::Transports::from(vec![
-                                    transport::Transport::Rtp(transport::RtpTransport {
-                                        profile: transport::RtpProfile::Avp,
-                                        lower_transport: None,
-                                        params: transport::RtpTransportParameters {
-                                            unicast: true,
-                                            server_port: Some((
-                                                audio_server_port,
-                                                Some(audio_rtcp_server_port),
-                                            )),
-                                            ..Default::default()
-                                        },
-                                    }),
-                                ]))
-                                .build(Vec::new());
-                        } else if media.media == "video"
-                            && media_control.as_deref() == url_id.as_deref()
-                        {
-                            let video_server_port =
-                                pick_unused_port().expect("Failed to find an unused video port");
-                            let video_rtcp_server_port = video_server_port + 1;
-
-                            self.media_info.video_rtp_client = Some(rtp);
-                            self.media_info.video_rtcp_client = rtcp;
-                            self.media_info.video_rtp_server = Some(video_server_port);
-                            self.media_info.video_codec = media
-                                .attributes
-                                .iter()
-                                .find(|attr| attr.attribute == "rtpmap")
-                                .and_then(|attr| attr.value.as_ref())
-                                .and_then(|value| {
-                                    value
-                                        .split_whitespace()
-                                        .nth(1)
-                                        .unwrap_or("")
-                                        .split('/')
-                                        .next()
-                                        .map(|codec_str| codec_from_str(codec_str).ok())
-                                })
-                                .unwrap_or(None);
-
-                            return Response::builder(req.version(), StatusCode::Ok)
-                                .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
-                                .header(headers::SERVER, SERVER_NAME)
-                                .header(headers::SESSION, "1111-2222-3333-4444")
-                                .typed_header(&transport::Transports::from(vec![
-                                    transport::Transport::Rtp(transport::RtpTransport {
-                                        profile: transport::RtpProfile::Avp,
-                                        lower_transport: None,
-                                        params: transport::RtpTransportParameters {
-                                            unicast: true,
-                                            server_port: Some((
-                                                video_server_port,
-                                                Some(video_rtcp_server_port),
-                                            )),
-                                            ..Default::default()
-                                        },
-                                    }),
-                                ]))
-                                .build(Vec::new());
-                        }
+                        return Response::builder(req.version(), StatusCode::Ok)
+                            .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+                            .header(headers::SERVER, SERVER_NAME)
+                            .header(headers::SESSION, "1111-2222-3333-4444")
+                            .typed_header(&transport::Transports::from(vec![
+                                transport::Transport::Rtp(transport::RtpTransport {
+                                    profile: transport::RtpProfile::Avp,
+                                    lower_transport: None,
+                                    params: transport::RtpTransportParameters {
+                                        unicast: true,
+                                        server_port: Some((
+                                            video_server_port,
+                                            Some(video_rtcp_server_port),
+                                        )),
+                                        ..Default::default()
+                                    },
+                                }),
+                            ]))
+                            .build(Vec::new());
                     }
-                    println!("Updated self.media_info: {:?}", self.media_info);
-                } else {
-                    println!("SDP data is not available");
                 }
+                println!("Updated self.media_info: {:?}", self.media_info);
+            } else {
+                println!("SDP data is not available");
             }
-            _ => {}
         }
 
         Response::builder(req.version(), StatusCode::Ok)
