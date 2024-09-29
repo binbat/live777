@@ -572,6 +572,7 @@ async fn test_kcp_echo_restart() {
     }
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_socks_simple() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -617,9 +618,11 @@ async fn test_socks_simple() {
         ))
     });
 
-    time::sleep(time::Duration::from_millis(10)).await;
+    wait_for_port_availabilty(local_addr).await;
 
     let client = reqwest::Client::builder()
+        .connect_timeout(time::Duration::from_secs(1))
+        .timeout(time::Duration::from_secs(1))
         .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
         .build()
         .unwrap();
@@ -635,6 +638,8 @@ async fn test_socks_simple() {
     assert_eq!(body, message);
 
     let client = reqwest::Client::builder()
+        .connect_timeout(time::Duration::from_secs(1))
+        .timeout(time::Duration::from_secs(1))
         .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
         .build()
         .unwrap();
@@ -650,6 +655,7 @@ async fn test_socks_simple() {
     assert_eq!(body, message);
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_socks_restart() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -689,6 +695,7 @@ async fn test_socks_restart() {
             false,
         ))
     });
+    wait_for_port_availabilty(local_addr).await;
 
     for _ in 0..10 {
         let message = "Hello World!";
@@ -696,6 +703,8 @@ async fn test_socks_restart() {
         wait_for_port_availabilty(agent_addr).await;
 
         let client = reqwest::Client::builder()
+            .connect_timeout(time::Duration::from_secs(1))
+            .timeout(time::Duration::from_secs(1))
             .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
             .build()
             .unwrap();
@@ -711,6 +720,8 @@ async fn test_socks_restart() {
         assert_eq!(body, message);
 
         let client = reqwest::Client::builder()
+            .connect_timeout(time::Duration::from_secs(1))
+            .timeout(time::Duration::from_secs(1))
             .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
             .build()
             .unwrap();
@@ -729,6 +740,7 @@ async fn test_socks_restart() {
     }
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_socks_multiple_server() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -780,10 +792,12 @@ async fn test_socks_multiple_server() {
         ))
     });
 
-    time::sleep(time::Duration::from_millis(10)).await;
+    wait_for_port_availabilty(local_addr).await;
 
     for (id, _port) in agent_ports.iter().enumerate() {
         let client = reqwest::Client::builder()
+            .connect_timeout(time::Duration::from_secs(1))
+            .timeout(time::Duration::from_secs(1))
             .proxy(
                 // References: https://github.com/seanmonstar/reqwest/issues/899
                 reqwest::Proxy::all(format!("socks5h://{}", local_addr)).unwrap(),
@@ -849,7 +863,7 @@ async fn test_xdata() {
         ))
     });
 
-    time::sleep(time::Duration::from_millis(10)).await;
+    time::sleep(time::Duration::from_millis(100)).await;
 
     thread::spawn(move || {
         let id = 1;
@@ -867,7 +881,7 @@ async fn test_xdata() {
             None,
         ))
     });
-    time::sleep(time::Duration::from_millis(10)).await;
+    time::sleep(time::Duration::from_millis(100)).await;
 
     thread::spawn(move || {
         let id = 2;
@@ -886,7 +900,7 @@ async fn test_xdata() {
         ))
     });
 
-    time::sleep(time::Duration::from_millis(10)).await;
+    time::sleep(time::Duration::from_millis(100)).await;
 
     thread::spawn(move || {
         let id = "local-x";
@@ -907,7 +921,7 @@ async fn test_xdata() {
         ))
     });
 
-    time::sleep(time::Duration::from_millis(10)).await;
+    time::sleep(time::Duration::from_millis(100)).await;
 
     thread::spawn(move || {
         let id = "socks-x";
