@@ -28,8 +28,9 @@ use webrtc::{
     util::Unmarshal,
 };
 
-use cli::{create_child, Codec};
+use cli::{codec_from_str, create_child, Codec};
 use libwish::Client;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use rtspclient::setup_rtsp_session;
 
@@ -99,26 +100,22 @@ async fn main() -> Result<()> {
         Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
     };
 
-    if let Some(h) = args.host {
+    if let Some(ref h) = args.host {
         debug!("=== Specified set host, using {} ===", h);
-        host = h;
+        host = h.clone();
     }
 
-    let mut video_codec = Codec::Vp8;
-    let mut audio_codec = Codec::Opus;
-    let mut rtp_port = input.port().unwrap_or(0);
-    let mut audio_port = 0;
-    let mut rtcp_send_port = 0;
+    let video_port = input.port().unwrap_or(0);
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
 
     if input.scheme() == SCHEME_RTSP_SERVER {
-        let (tx, mut rx) = unbounded_channel::<String>();
+        let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
 
         let host2 = host.to_string();
         tokio::spawn(async move {
-            let listener = TcpListener::bind(format!("{}:{}", host2.clone(), rtp_port))
+            let listener = TcpListener::bind(format!("{}:{}", host2.clone(), video_port))
                 .await
                 .unwrap();
             warn!(
@@ -135,47 +132,36 @@ async fn main() -> Result<()> {
             }
         });
 
-        // match rx.recv().await {
-        //     Some(_rtpmap) => {
-        //         //println!("=== Received RTPMAP: {} ===", rtpmap);
-        //         //match rtpmap.split_once(' ') {
-        //         //    Some((pt, code)) => {
-        //         //        println!("=== Received PT: {} CODEC: {} ===", pt, code);
-        //         //        codec = match code {
-        //         //            "AV1/90000" => Codec::AV1,
-        //         //            "VP8/90000" => Codec::Vp8,
-        //         //            "VP9/90000" => Codec::Vp9,
-        //         //            "H264/90000" => Codec::H264,
-        //         //            _ => Codec::H264,
-        //         //        };
-        //         //    }
-        //         //    None => {}
-        //         //};
-        //     }
-        //     None => {
-        //         println!("=== No RTPMAP received ===");
-        //     }
-        // };
-
-        let (_rtp_listen_port, rtcp_listen_port, rtp_server_port) =
-            match (rx.recv().await, rx.recv().await, rx.recv().await) {
-                (Some(rtp), Some(rtcp), Some(rtp_server)) => {
-                    let rtp_port = rtp.parse::<u16>().unwrap_or(8000);
-                    let rtcp_port = rtcp.parse::<u16>().unwrap_or(8001);
-                    let rtp_server_port = rtp_server.parse::<u16>().unwrap_or(8002);
-                    (rtp_port, rtcp_port, rtp_server_port)
-                }
-                _ => {
-                    println!("Error receiving ports, using default values.");
-                    (8000, 8001, 8002)
-                }
-            };
-        rtp_port = rtp_server_port;
-        rtcp_send_port = rtcp_listen_port;
+        while let Some(media_info) = rx.recv().await {
+            let _ = setup_webrtc_session(
+                &args,
+                media_info.video_codec,
+                media_info.audio_codec,
+                &complete_tx,
+                &mut complete_rx,
+                media_info.video_rtp_server,
+                media_info.audio_rtp_server,
+                media_info.video_rtcp_client,
+                host.clone(),
+            )
+            .await;
+        }
     } else if input.scheme() == SCHEME_RTSP_CLIENT {
-        (rtp_port, audio_port, video_codec, audio_codec) = setup_rtsp_session(&args.input).await?;
+        let media_info = setup_rtsp_session(&args.input).await?;
+        let _ = setup_webrtc_session(
+            &args,
+            media_info.video_codec,
+            media_info.audio_codec,
+            &complete_tx,
+            &mut complete_rx,
+            media_info.video_rtp_client,
+            media_info.audio_rtp_client,
+            media_info.video_rtp_server,
+            host,
+        )
+        .await;
     } else {
-        let sdp = sdp_types::Session::parse(&fs::read(args.input).unwrap()).unwrap();
+        let sdp = sdp_types::Session::parse(&fs::read(&args.input).unwrap()).unwrap();
         let video_track = sdp.medias.iter().find(|md| md.media == "video");
         let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
 
@@ -212,96 +198,34 @@ async fn main() -> Result<()> {
             })
             .unwrap_or_else(|| "unknown".to_string());
 
-        video_codec = rtspclient::codec_from_str(&codec_vid)?;
-        audio_codec = rtspclient::codec_from_str(&codec_aud)?;
-        rtp_port = video_track.unwrap().port;
-        audio_port = audio_track.unwrap().port;
+        let video_codec = Some(codec_from_str(&codec_vid)?);
+        let audio_codec = Some(codec_from_str(&codec_aud)?);
+        let video_port = video_track.map(|track| track.port);
+        let audio_port = audio_track.map(|track| track.port);
+        let rtcp_send_port = None;
+        let _ = setup_webrtc_session(
+            &args,
+            video_codec,
+            audio_codec,
+            &complete_tx,
+            &mut complete_rx,
+            video_port,
+            audio_port,
+            rtcp_send_port,
+            host,
+        )
+        .await;
     }
-
-    debug!("use rtp port {}", rtp_port);
-    let listener = UdpSocket::bind(format!("{}:{}", host, rtp_port)).await?;
-    let port = listener.local_addr()?.port();
-    info!(
-        "=== RTP listener started : {} ===",
-        listener.local_addr().unwrap()
-    );
-
-    debug!("use audio_rtp port {}", audio_port);
-    let audio_listener = UdpSocket::bind(format!("{}:{}", host, audio_port)).await?;
-    let _audio_port = listener.local_addr()?.port();
-    info!(
-        "=== audio_RTP listener started : {} ===",
-        audio_listener.local_addr().unwrap()
-    );
-    let mut client = Client::new(
-        args.whip,
-        Client::get_auth_header_map(args.auth_basic, args.auth_token),
-    );
-    let child = if let Some(command) = args.command {
-        let command = command.replace("{port}", &port.to_string());
-        Arc::new(create_child(Some(command))?)
-    } else {
-        Default::default()
-    };
-    defer!({
-        if let Some(child) = child.as_ref() {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
-            }
-        }
-    });
-    let (peer, video_sender, audio_sender) = webrtc_start(
-        &mut client,
-        video_codec.into(),
-        audio_codec.into(),
-        complete_tx.clone(),
-    )
-    .await
-    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
-
-    tokio::spawn(rtp_listener(listener, video_sender));
-    tokio::spawn(rtp_listener(audio_listener, audio_sender));
-    if input.scheme() == SCHEME_RTSP_SERVER {
-        let rtcp_port = rtp_port + 1;
-        tokio::spawn(rtcp_listener(host.clone(), rtcp_port, peer.clone()));
-        let senders = peer.get_senders().await;
-        for sender in senders {
-            tokio::spawn(read_rtcp(sender, host.clone(), rtcp_send_port));
-        }
-    }
-
-    let wait_child = child.clone();
-    tokio::spawn(async move {
-        match wait_child.as_ref() {
-            Some(child) => loop {
-                if let Ok(mut child) = child.lock() {
-                    if let Ok(wait) = child.try_wait() {
-                        if wait.is_some() {
-                            let _ = complete_tx.send(());
-                            return;
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            },
-            None => info!("No child process"),
-        }
-    });
-    tokio::select! {
-        _= complete_rx.recv() => { }
-        msg = signal::wait_for_stop_signal() => warn!("Received signal: {}", msg)
-    }
-    warn!("RTP listener closed");
-    let _ = client.remove_resource().await;
-    let _ = peer.close().await;
     Ok(())
 }
 
-async fn rtp_listener(socker: UdpSocket, sender: UnboundedSender<Vec<u8>>) {
-    let mut inbound_rtp_packet = vec![0u8; 1600];
-    while let Ok((n, _)) = socker.recv_from(&mut inbound_rtp_packet).await {
-        let data = inbound_rtp_packet[..n].to_vec();
-        let _ = sender.send(data);
+async fn rtp_listener(socker: UdpSocket, sender: Option<UnboundedSender<Vec<u8>>>) {
+    if let Some(sender) = sender {
+        let mut inbound_rtp_packet = vec![0u8; 1600];
+        while let Ok((n, _)) = socker.recv_from(&mut inbound_rtp_packet).await {
+            let data = inbound_rtp_packet[..n].to_vec();
+            let _ = sender.send(data);
+        }
     }
 }
 
@@ -334,7 +258,7 @@ async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection
 }
 
 async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result<()> {
-    let udp_socket = UdpSocket::bind(format!("{}:{}", host, port)).await.unwrap();
+    let udp_socket = UdpSocket::bind(format!("{}:0", host)).await?;
 
     loop {
         match sender.read_rtcp().await {
@@ -347,10 +271,12 @@ async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result
                         buf.extend_from_slice(&serialized_packet);
                     }
                     if !buf.is_empty() {
-                        if let Err(err) = udp_socket.send(&buf).await {
+                        if let Err(err) =
+                            udp_socket.send_to(&buf, format!("{}:{}", host, port)).await
+                        {
                             warn!("Failed to forward RTCP packet: {}", err);
                         } else {
-                            debug!("Forwarded RTCP packet to {}", port);
+                            debug!("Forwarded RTCP packet to {}:{}", host, port);
                         }
                     }
                 }
@@ -362,18 +288,127 @@ async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result
     }
 }
 
+async fn setup_webrtc_session(
+    args: &Args,
+    video_codec: Option<Codec>,
+    audio_codec: Option<Codec>,
+    complete_tx: &UnboundedSender<()>,
+    complete_rx: &mut UnboundedReceiver<()>,
+    video_port: Option<u16>,
+    audio_port: Option<u16>,
+    rtcp_sender_port: Option<u16>,
+    host: String,
+) -> Result<()> {
+    let mut client = Client::new(
+        args.whip.clone(),
+        Client::get_auth_header_map(args.auth_basic.clone(), args.auth_token.clone()),
+    );
+
+    let child = if let Some(command) = &args.command {
+        let command = command.replace("{port}", "0");
+        Arc::new(create_child(Some(command))?)
+    } else {
+        Default::default()
+    };
+
+    defer!({
+        if let Some(child) = child.as_ref() {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+            }
+        }
+    });
+
+    let (peer, video_sender, audio_sender) = webrtc_start(
+        &mut client,
+        video_codec.map(|c| c.into()),
+        audio_codec.map(|c| c.into()),
+        complete_tx.clone(),
+        args,
+    )
+    .await
+    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
+
+    if let Some(video_port) = video_port {
+        let video_listener = UdpSocket::bind(format!("{}:{}", host, video_port)).await?;
+        info!(
+            "=== video listener started : {} ===",
+            video_listener.local_addr().unwrap()
+        );
+        tokio::spawn(rtp_listener(video_listener, video_sender));
+    } else {
+        info!("Video codec is None, skipping video transmission.");
+    }
+
+    if let Some(audio_port) = audio_port {
+        let audio_listener = UdpSocket::bind(format!("{}:{}", host, audio_port)).await?;
+        info!(
+            "=== audio listener started : {} ===",
+            audio_listener.local_addr().unwrap()
+        );
+        tokio::spawn(rtp_listener(audio_listener, audio_sender));
+    } else {
+        info!("Audio codec is None, skipping audio transmission.");
+    }
+
+    let rtcp_listener_port = video_port.unwrap_or(0) + 1;
+    tokio::spawn(rtcp_listener(
+        host.clone(),
+        rtcp_listener_port,
+        peer.clone(),
+    ));
+    let senders = peer.get_senders().await;
+    if let Some(rtcp_sender_port) = rtcp_sender_port {
+        for sender in senders {
+            tokio::spawn(read_rtcp(sender, host.clone(), rtcp_sender_port));
+        }
+    }
+
+    let wait_child = child.clone();
+    match wait_child.as_ref() {
+        Some(child) => loop {
+            if let Ok(mut child) = child.lock() {
+                if let Ok(wait) = child.try_wait() {
+                    if wait.is_some() {
+                        let _ = complete_tx.send(());
+                        return Ok(());
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        },
+        None => info!("No child process"),
+    }
+
+    tokio::select! {
+        _ = complete_rx.recv() => {}
+        msg = signal::wait_for_stop_signal() => {warn!("Received signal: {}", msg)}
+    }
+    warn!("RTP listener closed");
+    let _ = client.remove_resource().await;
+    let _ = peer.close().await;
+
+    Ok(())
+}
+
 async fn webrtc_start(
     client: &mut Client,
-    video_codec: RTCRtpCodecCapability,
-    audio_codec: RTCRtpCodecCapability,
+    video_codec: Option<RTCRtpCodecCapability>,
+    audio_codec: Option<RTCRtpCodecCapability>,
     complete_tx: UnboundedSender<()>,
+    args: &Args,
 ) -> Result<(
     Arc<RTCPeerConnection>,
-    UnboundedSender<Vec<u8>>,
-    UnboundedSender<Vec<u8>>,
+    Option<UnboundedSender<Vec<u8>>>,
+    Option<UnboundedSender<Vec<u8>>>,
 )> {
-    let (peer, video_sender, audio_sender) =
-        new_peer(video_codec, audio_codec, complete_tx.clone()).await?;
+    let (peer, video_sender, audio_sender) = new_peer(
+        video_codec,
+        audio_codec,
+        complete_tx.clone(),
+        args.input.clone(),
+    )
+    .await?;
     let offer = peer.create_offer(None).await?;
 
     let mut gather_complete = peer.gathering_complete_promise().await;
@@ -397,13 +432,14 @@ async fn webrtc_start(
 }
 
 async fn new_peer(
-    video_codec: RTCRtpCodecCapability,
-    audio_codec: RTCRtpCodecCapability,
+    video_codec: Option<RTCRtpCodecCapability>,
+    audio_codec: Option<RTCRtpCodecCapability>,
     complete_tx: UnboundedSender<()>,
+    input: String,
 ) -> Result<(
     Arc<RTCPeerConnection>,
-    UnboundedSender<Vec<u8>>,
-    UnboundedSender<Vec<u8>>,
+    Option<UnboundedSender<Vec<u8>>>,
+    Option<UnboundedSender<Vec<u8>>>,
 )> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -436,7 +472,7 @@ async fn new_peer(
         let pc = pc.clone();
         let complete_tx = complete_tx.clone();
         tokio::spawn(async move {
-            warn!("connection state changed: {}", s);
+            warn!("Connection state changed: {}", s);
             match s {
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                     let _ = pc.close().await;
@@ -449,68 +485,84 @@ async fn new_peer(
         });
         Box::pin(async {})
     }));
-    let video_mime_type = video_codec.mime_type.clone();
-    let video_track = Arc::new(TrackLocalStaticRTP::new(
-        video_codec,
-        "webrtc-video".to_owned(),
-        "webrtc-video-rs".to_owned(),
-    ));
-    let _ = peer
-        .add_track(video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-        .await
-        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
-    let (video_tx, mut video_rx) = unbounded_channel::<Vec<u8>>();
 
-    let audio_mime_type = audio_codec.mime_type.clone();
-    let audio_track = Arc::new(TrackLocalStaticRTP::new(
-        audio_codec,
-        "webrtc-audio".to_owned(),
-        "webrtc-audio-rs".to_owned(),
-    ));
-    let _ = peer
-        .add_track(audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-        .await
-        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
-    let (audio_tx, mut audio_rx) = unbounded_channel::<Vec<u8>>();
+    let video_tx = if let Some(video_codec) = video_codec {
+        let video_track_id = format!("{}-video", input);
+        let video_track = Arc::new(TrackLocalStaticRTP::new(
+            video_codec.clone(),
+            video_track_id.to_owned(),
+            input.to_owned(),
+        ));
+        let _ = peer
+            .add_track(video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 
-    tokio::spawn(async move {
-        debug!("Codec is: {}", video_mime_type);
-        let mut handler: Box<dyn payload::RePayload + Send> = match video_mime_type.as_str() {
-            MIME_TYPE_VP8 => Box::new(payload::RePayloadCodec::new(video_mime_type)),
-            MIME_TYPE_VP9 => Box::new(payload::RePayloadCodec::new(video_mime_type)),
-            MIME_TYPE_H264 => Box::new(payload::RePayloadCodec::new(video_mime_type)),
-            _ => Box::new(payload::Forward::new()),
-        };
+        let (video_tx, mut video_rx) = unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            debug!("Video codec: {}", video_codec.mime_type);
+            let mut handler: Box<dyn payload::RePayload + Send> =
+                match video_codec.mime_type.as_str() {
+                    MIME_TYPE_VP8 => Box::new(payload::RePayloadCodec::new(video_codec.mime_type)),
+                    MIME_TYPE_VP9 => Box::new(payload::RePayloadCodec::new(video_codec.mime_type)),
+                    MIME_TYPE_H264 => Box::new(payload::RePayloadCodec::new(video_codec.mime_type)),
+                    _ => Box::new(payload::Forward::new()),
+                };
 
-        while let Some(data) = video_rx.recv().await {
-            if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
-                trace!("received packet: {}", packet);
-                for packet in handler.payload(packet) {
-                    trace!("send packet: {}", packet);
-                    let _ = video_track.write_rtp(&packet).await;
+            while let Some(data) = video_rx.recv().await {
+                if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
+                    trace!("Received video packet: {}", packet);
+                    for packet in handler.payload(packet) {
+                        trace!("Sending video packet: {}", packet);
+                        let _ = video_track.write_rtp(&packet).await;
+                    }
                 }
             }
-        }
-    });
+        });
+        Some(video_tx)
+    } else {
+        None
+    };
 
-    tokio::spawn(async move {
-        debug!("Codec is: {}", audio_mime_type);
-        let mut handler: Box<dyn payload::RePayload + Send> = match audio_mime_type.as_str() {
-            MIME_TYPE_OPUS => Box::new(payload::RePayloadCodec::new(audio_mime_type.clone())),
-            _ => Box::new(payload::Forward::new()),
-        };
+    let audio_tx = if let Some(audio_codec) = audio_codec {
+        let audio_track_id = format!("{}-audio", input);
+        let audio_track = Arc::new(TrackLocalStaticRTP::new(
+            audio_codec.clone(),
+            audio_track_id.to_owned(),
+            input.to_owned(),
+        ));
+        let _ = peer
+            .add_track(audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 
-        while let Some(data) = audio_rx.recv().await {
-            if audio_mime_type == MIME_TYPE_G722 {
-                let _ = audio_track.write(&data).await;
-            } else if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
-                trace!("received packet: {}", packet);
-                for packet in handler.payload(packet) {
-                    trace!("send packet: {}", packet);
-                    let _ = audio_track.write_rtp(&packet).await;
+        let (audio_tx, mut audio_rx) = unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            debug!("Audio codec: {}", audio_codec.mime_type);
+            let mut handler: Box<dyn payload::RePayload + Send> =
+                match audio_codec.mime_type.as_str() {
+                    MIME_TYPE_OPUS => {
+                        Box::new(payload::RePayloadCodec::new(audio_codec.mime_type.clone()))
+                    }
+                    _ => Box::new(payload::Forward::new()),
+                };
+
+            while let Some(data) = audio_rx.recv().await {
+                if audio_codec.mime_type == MIME_TYPE_G722 {
+                    let _ = audio_track.write(&data).await;
+                } else if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
+                    trace!("Received audio packet: {}", packet);
+                    for packet in handler.payload(packet) {
+                        trace!("Sending audio packet: {}", packet);
+                        let _ = audio_track.write_rtp(&packet).await;
+                    }
                 }
             }
-        }
-    });
+        });
+        Some(audio_tx)
+    } else {
+        None
+    };
+
     Ok((peer, video_tx, audio_tx))
 }

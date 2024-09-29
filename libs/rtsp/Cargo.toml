@@ -14,3 +14,5 @@ sdp = "0.6"
 tokio = "1.37"
 sdp-types = "0.1.6"
 portpicker = "0.1.1"
+cli = { path = "../cli" }
+webrtc = { workspace = true }

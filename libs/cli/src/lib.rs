@@ -3,7 +3,7 @@ use std::{
     sync::Mutex,
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::ValueEnum;
 use webrtc::{
     api::media_engine::*,
@@ -13,7 +13,7 @@ use webrtc::{
     },
 };
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[derive(Copy, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Codec {
     Vp8,
     Vp9,
@@ -105,6 +105,18 @@ impl From<Codec> for RTCRtpCodecCapability {
                 rtcp_feedback: vec![],
             },
         }
+    }
+}
+
+pub fn codec_from_str(s: &str) -> Result<Codec> {
+    match s.to_uppercase().as_str() {
+        "VP8" => Ok(Codec::Vp8),
+        "VP9" => Ok(Codec::Vp9),
+        "H264" => Ok(Codec::H264),
+        "AV1" => Ok(Codec::AV1),
+        "OPUS" => Ok(Codec::Opus),
+        "G722" => Ok(Codec::G722),
+        _ => Err(anyhow!("Unknown codec: {}", s)),
     }
 }
 
