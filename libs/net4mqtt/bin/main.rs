@@ -19,14 +19,14 @@ struct Cli {
 enum Commands {
     /// use local socks5 mode as client
     Socks {
-        /// Mqtt Broker Address
+        /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
-        broker: String,
+        mqtt_url: String,
         /// Listen socks5 server address
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
         listen: SocketAddr,
-        /// Built-in DNS: <agent_id>.mqtt.local
-        #[arg(short, long, default_value_t = format!("mqtt.local"))]
+        /// Built-in DNS: (<agent_id>.<domain>)
+        #[arg(short, long, default_value_t = format!("net4mqtt.local"))]
         domain: String,
         /// If DNS cannot get agent id use a default agent_id
         #[arg(short, long, default_value_t = format!("-"))]
@@ -36,14 +36,14 @@ enum Commands {
         id: String,
         /// enable kcp in mqtt
         #[arg(short, long, default_value_t = false)]
-        no_kcp: bool,
+        kcp: bool,
     },
 
     /// use local proxy mode as client
     Local {
-        /// Mqtt Broker Address
+        /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
-        broker: String,
+        mqtt_url: String,
         /// Listen local port mapping as agent's target address
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
         listen: SocketAddr,
@@ -55,14 +55,14 @@ enum Commands {
         id: String,
         /// enable kcp in mqtt
         #[arg(short, long, default_value_t = false)]
-        no_kcp: bool,
+        kcp: bool,
     },
 
     /// use agent mode as server
     Agent {
-        /// Mqtt Broker Address
+        /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
-        broker: String,
+        mqtt_url: String,
         /// Agent's target address
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7777))]
         target: SocketAddr,
@@ -77,7 +77,7 @@ async fn main() {
     let args = Cli::parse();
 
     utils::set_log(format!(
-        "net4mqtt={},netmqtt=trace",
+        "net4mqtt={}",
         match args.verbose {
             0 => Level::WARN,
             1 => Level::INFO,
@@ -89,37 +89,41 @@ async fn main() {
     trace!("{:?}", args);
     match args.command {
         Commands::Socks {
-            broker,
+            mqtt_url,
             listen,
             domain,
             agent_id,
             id,
-            no_kcp,
+            kcp,
         } => {
             info!("Running as socks, {:?}", listen);
             debug!("use domain: {:?}", domain);
 
-            proxy::local_socks(&broker, listen, &agent_id, &id, None, None, !no_kcp)
+            proxy::local_socks(&mqtt_url, listen, &agent_id, &id, None, None, kcp)
                 .await
                 .unwrap();
         }
         Commands::Local {
-            broker,
+            mqtt_url,
             listen,
             agent_id,
             id,
-            no_kcp,
+            kcp,
         } => {
             info!("Running as local, {:?}", listen);
 
-            proxy::local(&broker, listen, &agent_id, &id, None, None, !no_kcp)
+            proxy::local(&mqtt_url, listen, &agent_id, &id, None, None, kcp)
                 .await
                 .unwrap();
         }
-        Commands::Agent { broker, target, id } => {
+        Commands::Agent {
+            mqtt_url,
+            target,
+            id,
+        } => {
             info!("Running as agent, {:?}", target);
 
-            proxy::agent(&broker, target, &id, None, None)
+            proxy::agent(&mqtt_url, target, &id, None, None)
                 .await
                 .unwrap();
         }

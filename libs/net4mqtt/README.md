@@ -29,20 +29,20 @@ mosquitto_sub -L 'mqtt://localhost:1883/net4mqtt/#' -v
 
 ```
 ./net4mqtt -h
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
-     Running `target/debug/net4mqtt -h`
+net (TCP/UDP) over mqtt tool
+
 Usage: net4mqtt [OPTIONS] <COMMAND>
 
 Commands:
-  local  use local proxy
-  agent  use agent proxy
+  socks  use local socks5 mode as client
+  local  use local proxy mode as client
+  agent  use agent mode as server
   help   Print this message or the help of the given subcommand(s)
 
 Options:
-  -v...                        Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
-  -b, --broker <BROKER>        Mqtt Broker Address [default: mqtt://localhost:1883]
-  -h, --help                   Print help
-  -V, --version                Print version
+  -v...          Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 
