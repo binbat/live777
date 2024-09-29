@@ -58,7 +58,7 @@ pub struct MemStorage {
 }
 
 impl MemStorage {
-    pub fn new(servers: Vec<Server>, proxy: Option<SocketAddr>) -> Self {
+    pub fn new(servers: Vec<Server>, proxy: Option<(SocketAddr, String)>) -> Self {
         let server = Arc::new(RwLock::new(HashMap::new()));
 
         info!("MemStorage: {:?}", servers);
@@ -70,12 +70,12 @@ impl MemStorage {
             .connect_timeout(Duration::from_millis(500))
             .timeout(Duration::from_millis(1000));
 
-        client_builder = if let Some(addr) = proxy {
+        client_builder = if let Some((addr, domain)) = proxy {
+            // References: https://github.com/seanmonstar/reqwest/issues/899
             let target = reqwest::Url::parse(format!("socks5h://{}", addr).as_str()).unwrap();
-            let suffix = "net4mqtt.local";
             client_builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
                 Some(host) => {
-                    if host.ends_with(suffix) {
+                    if host.ends_with(domain.as_str()) {
                         Some(target.clone())
                     } else {
                         None

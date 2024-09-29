@@ -123,8 +123,11 @@ where
             .build(HttpConnector::new());
 
     #[cfg(feature = "net4mqtt")]
+    let net4mqtt_domain = "net4mqtt.local";
+
+    #[cfg(feature = "net4mqtt")]
     let proxy_addr = match cfg.net4mqtt.clone() {
-        Some(c) => Some(c.listen),
+        Some(c) => Some((c.listen, net4mqtt_domain.to_string())),
         None => None,
     };
     #[cfg(not(feature = "net4mqtt"))]
@@ -160,8 +163,7 @@ where
         }
 
         std::thread::spawn(move || {
-            let suffix = "net4mqtt.local";
-            let dns = net4mqtt::kxdns::Kxdns::new(suffix);
+            let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(async move {
