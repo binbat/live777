@@ -1,0 +1,36 @@
+[package]
+name = "net4mqtt"
+description = "net (TCP/UDP) over mqtt tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "net4mqtt"
+path = "bin/main.rs"
+required-features = ["cli"]
+
+[dev-dependencies]
+portpicker = "0.1.1"
+rumqttd = "0.19.0"
+tokio-test = "0.4.4"
+reqwest = { version = "0.12.7", features = ["socks"] }
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+lru_time_cache = "0.11.11"
+kcp = "0.5.3"
+rand = "0.8.5"
+rumqttc = { version = "0.24.0", features = ["url"] }
+socks5-server = "0.10.1"
+tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync"] }
+url = "2.5.2"
+
+utils = { path = "../../libs/utils", optional = true}
+clap = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+cli = ["dep:utils", "dep:clap"]

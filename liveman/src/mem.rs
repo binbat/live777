@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -54,11 +55,10 @@ pub struct MemStorage {
     info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
     session: Arc<RwLock<HashMap<String, Server>>>,
-    servers: Vec<Server>,
 }
 
 impl MemStorage {
-    pub fn new(servers: Vec<Server>) -> Self {
+    pub fn new(servers: Vec<Server>, proxy: Option<(SocketAddr, String)>) -> Self {
         let server = Arc::new(RwLock::new(HashMap::new()));
 
         info!("MemStorage: {:?}", servers);
@@ -66,24 +66,43 @@ impl MemStorage {
         for s in servers.clone() {
             server.write().unwrap().insert(s.alias.clone(), s.clone());
         }
+        let mut client_builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(500))
+            .timeout(Duration::from_millis(1000));
+
+        client_builder = if let Some((addr, domain)) = proxy {
+            // References: https://github.com/seanmonstar/reqwest/issues/899
+            let target = reqwest::Url::parse(format!("socks5h://{}", addr).as_str()).unwrap();
+            client_builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
+                Some(host) => {
+                    if host.ends_with(domain.as_str()) {
+                        Some(target.clone())
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }))
+        } else {
+            client_builder
+        };
 
         Self {
             server,
             time: SystemTime::now(),
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_millis(500))
-                .timeout(Duration::from_millis(1000))
-                .build()
-                .unwrap(),
-            servers,
+            client: client_builder.build().unwrap(),
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    pub fn get_map_nodes(&mut self) -> Arc<RwLock<HashMap<String, Server>>> {
+        self.server.clone()
+    }
+
     pub fn get_cluster(&self) -> Vec<Server> {
-        self.servers.clone()
+        self.server.read().unwrap().values().cloned().collect()
     }
 
     pub fn get_map_server(&self) -> HashMap<String, Server> {
@@ -92,7 +111,7 @@ impl MemStorage {
 
     pub async fn nodes(&mut self) -> Vec<Server> {
         self.update().await;
-        self.servers.clone()
+        self.get_cluster()
     }
 
     pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<()> {
@@ -156,7 +175,7 @@ impl MemStorage {
         self.time = SystemTime::now();
 
         let start = Instant::now();
-        let servers = self.servers.clone();
+        let servers = self.get_cluster();
         let mut requests = Vec::new();
 
         for server in servers {

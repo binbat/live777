@@ -121,10 +121,79 @@ where
     let client: Client =
         hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
             .build(HttpConnector::new());
+
+    #[cfg(feature = "net4mqtt")]
+    let net4mqtt_domain = "net4mqtt.local";
+
+    #[cfg(feature = "net4mqtt")]
+    let proxy_addr = match cfg.net4mqtt.clone() {
+        Some(c) => Some((c.listen, net4mqtt_domain.to_string())),
+        None => None,
+    };
+    #[cfg(not(feature = "net4mqtt"))]
+    let proxy_addr = None;
+
+    let mut store = MemStorage::new(cfg.nodes.clone(), proxy_addr);
+
+    #[cfg(feature = "net4mqtt")]
+    let nodes = store.get_map_nodes();
+
+    #[cfg(feature = "net4mqtt")]
+    {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
+
+        if let Some(c) = cfg.net4mqtt.clone() {
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move {
+                        net4mqtt::proxy::local_socks(
+                            &c.mqtt_url,
+                            c.listen,
+                            "-",
+                            &c.alias.clone(),
+                            None,
+                            Some(sender),
+                            false,
+                        )
+                        .await
+                        .unwrap()
+                    });
+            });
+        }
+
+        std::thread::spawn(move || {
+            let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async move {
+                    loop {
+                        match receiver.recv().await {
+                            Some((agent_id, _local_id, data)) => {
+                                if data.len() > 5 {
+                                    nodes.write().unwrap().insert(
+                                        agent_id.clone(),
+                                        Server {
+                                            alias: agent_id.clone(),
+                                            url: format!("http://{}", dns.registry(&agent_id)),
+                                            ..Default::default()
+                                        },
+                                    );
+                                } else {
+                                    nodes.write().unwrap().remove(&agent_id);
+                                }
+                            }
+                            None => error!("net4mqtt discovery receiver channel closed"),
+                        }
+                    }
+                })
+        });
+    }
+
     let app_state = AppState {
         config: cfg.clone(),
         client,
-        storage: MemStorage::new(cfg.nodes),
+        storage: store,
     };
 
     let auth_layer =

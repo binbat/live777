@@ -7,6 +7,7 @@ use axum::Router;
 use error::AppError;
 use http::{header, StatusCode, Uri};
 use rust_embed::RustEmbed;
+use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -86,6 +87,35 @@ where
         );
 
     app = app.fallback(static_handler);
+
+    #[cfg(feature = "net4mqtt")]
+    {
+        if let Some(c) = cfg.net4mqtt {
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move {
+                        net4mqtt::proxy::agent(
+                            &c.mqtt_url,
+                            cfg.http.listen,
+                            &c.alias.clone(),
+                            Some((
+                                json!({
+                                    "alias": c.alias,
+                                })
+                                .to_string()
+                                .bytes()
+                                .collect(),
+                                Some("{}".bytes().collect()),
+                            )),
+                            None,
+                        )
+                        .await
+                        .unwrap()
+                    });
+            });
+        }
+    }
 
     axum::serve(listener, app)
         .with_graceful_shutdown(signal)

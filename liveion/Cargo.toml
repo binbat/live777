@@ -17,6 +17,8 @@ libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
 utils = { path = "../libs/utils" }
 
+net4mqtt = { path = "../libs/net4mqtt", optional = true }
+
 anyhow = { workspace = true, features = ["backtrace"] }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
@@ -47,4 +49,6 @@ reqwest = { version = "0.12", optional = true, features = [
 ], default-features = false }
 
 [features]
+default = ["net4mqtt"]
 webhook = ["dep:reqwest"]
+net4mqtt = ["dep:net4mqtt"]

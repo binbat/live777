@@ -38,6 +38,11 @@
 # When reforward is working, close src server not reforward subscription
 # close_other_sub = false
 
+# [net4mqtt]
+# mqtt_url = "mqtt://localhost:1883/net4mqtt"
+# alias = "liveman-0"
+# listen = "127.0.0.1:1077"
+
 # Build-in Live777 SFU Server
 # Need enable `--features=liveion`
 [[liveion]]
@@ -70,4 +75,16 @@ url = "127.0.0.1:0"
 # alias = "static-1"
 # token = "live777"
 # url = "http://127.0.0.1:7778"
+
+# [[nodes]]
+# Globally unique id
+# alias = "static-0"
+# Auth token
+# token = "live777"
+# Live777 Address
+# url = "http://liveion-0.net4mqtt.local:7777"
+# If not set, use default u16::MAX
+# Default: 65535
+# pub_max = 65535
+# sub_max = 65535
 

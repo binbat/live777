@@ -19,8 +19,22 @@ pub struct Config {
     pub log: Log,
     #[serde(default)]
     pub strategy: Strategy,
+
+    #[cfg(feature = "net4mqtt")]
+    #[serde(default)]
+    pub net4mqtt: Option<Net4mqtt>,
+
     #[serde(default)]
     pub webhook: Webhook,
+}
+
+#[cfg(feature = "net4mqtt")]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct Net4mqtt {
+    #[serde(default)]
+    pub mqtt_url: String,
+    #[serde(default)]
+    pub alias: String,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
