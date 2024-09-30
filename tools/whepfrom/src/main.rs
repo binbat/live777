@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
         ))
         .unwrap(),
     );
-    info!("=== Received Input: {} ===", args.output);
+    info!("=== Received Output: {} ===", args.output);
 
     let mut host = match input.host().unwrap() {
         Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
@@ -118,11 +118,10 @@ async fn main() -> Result<()> {
         codec_info.clone(),
     )
     .await?;
-    info!("answer sdp: {:?}", answer.sdp);
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     let codec_info = codec_info.lock().await;
-    debug!("code info {:?}", codec_info);
+    debug!("Codec Info {:?}", codec_info);
 
     let filtered_sdp = match rtsp::filter_sdp(
         &answer.sdp,
@@ -132,7 +131,7 @@ async fn main() -> Result<()> {
         Ok(sdp) => sdp,
         Err(e) => e,
     };
-    info!("Filtered SDP: {:?}", filtered_sdp);
+    info!("SDP: {:?}", filtered_sdp);
 
     if input.scheme() == SCHEME_RTSP_SERVER {
         let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
@@ -160,8 +159,6 @@ async fn main() -> Result<()> {
         });
 
         media_info = rx.recv().await.unwrap();
-
-        println!("Media info: {:?}", media_info);
     } else {
         media_info.video_rtp_client = pick_unused_port();
         media_info.audio_rtp_client = pick_unused_port();
@@ -188,16 +185,9 @@ async fn main() -> Result<()> {
         let sdp = session.marshal();
         let mut file = File::create("output.sdp")?;
         file.write_all(sdp.as_bytes())?;
+        info!("SDP written to output.sdp");
     }
-
-    let child = Arc::new(create_child(args.command)?);
-    defer!({
-        if let Some(child) = child.as_ref() {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
-            }
-        }
-    });
+    debug!("media info : {:?}", media_info);
     tokio::spawn(rtp_send(
         video_recv,
         host.clone(),
@@ -210,6 +200,15 @@ async fn main() -> Result<()> {
         media_info.audio_rtp_client,
         media_info.audio_rtp_server,
     ));
+
+    let child = Arc::new(create_child(args.command)?);
+    defer!({
+        if let Some(child) = child.as_ref() {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+            }
+        }
+    });
 
     let wait_child = child.clone();
     tokio::spawn(async move {

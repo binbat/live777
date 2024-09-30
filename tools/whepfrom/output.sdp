@@ -1,0 +1,8 @@
+v=0
+o=- 8421014732604292639 566074500 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=video 21767 RTP/AVP 96
+c=IN IP4 0.0.0.0
+a=rtpmap:96 VP8/90000
+a=control:streamid=0
