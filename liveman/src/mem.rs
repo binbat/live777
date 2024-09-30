@@ -32,6 +32,11 @@ pub struct Node {
     pub url: String,
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct Status {
+    pub strategy: api::strategy::Strategy,
+}
+
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     #[default]
@@ -98,6 +103,8 @@ pub struct MemStorage {
     time: SystemTime,
     client: reqwest::Client,
 
+    status: Arc<RwLock<HashMap<String, Status>>>,
+
     info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
     session: Arc<RwLock<HashMap<String, Server>>>,
@@ -132,6 +139,8 @@ impl MemStorage {
             time: SystemTime::now(),
             client: client_builder.build().unwrap(),
 
+            status: Arc::new(RwLock::new(HashMap::new())),
+
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
@@ -164,6 +173,8 @@ impl MemStorage {
 
     pub async fn nodes(&mut self) -> Vec<Server> {
         self.update().await;
+        self.update_status().await;
+        println!("status {:?}", self.status.read().unwrap());
         self.get_cluster()
     }
 
@@ -218,6 +229,76 @@ impl MemStorage {
         match self.session.read().unwrap().get(&session) {
             Some(data) => Ok(data.clone()),
             None => Err(anyhow!("session not found")),
+        }
+    }
+
+    async fn update_status(&mut self) {
+        //if self.time.elapsed().unwrap() < Duration::from_secs(3) {
+        //    return;
+        //}
+        //self.time = SystemTime::now();
+
+        let start = Instant::now();
+        let servers = self.get_cluster();
+        let mut requests = Vec::new();
+
+        for server in servers {
+            requests.push((
+                server.alias,
+                self.client
+                    .get(format!("{}{}", server.url, &api::path::strategy()))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                    .send(),
+            ));
+        }
+
+        let handles = requests
+            .into_iter()
+            .map(|(alias, value)| tokio::spawn(async move { (alias, value.await) }))
+            .collect::<Vec<
+                tokio::task::JoinHandle<(
+                    std::string::String,
+                    std::result::Result<reqwest::Response, reqwest::Error>,
+                )>,
+            >>();
+
+        let duration = start.elapsed();
+
+        if duration > Duration::from_secs(1) {
+            warn!("update duration: {:?}", duration);
+        } else {
+            debug!("update duration: {:?}", duration);
+        }
+
+        self.info.write().unwrap().clear();
+        self.stream.write().unwrap().clear();
+
+        // Maybe Don't need clear "session"
+        //self.session.write().unwrap().clear();
+
+        for handle in handles {
+            let result = tokio::join!(handle);
+            match result {
+                (Ok((alias, Ok(res))),) => {
+                    debug!("{}: Response: {:?}", alias, res);
+
+                    match serde_json::from_str::<api::strategy::Strategy>(
+                        &res.text().await.unwrap(),
+                    ) {
+                        Ok(strategy) => {
+                            self.status
+                                .write()
+                                .unwrap()
+                                .insert(alias, Status { strategy });
+                        }
+                        Err(e) => error!("Error: {:?}", e),
+                    };
+                }
+                (Ok((name, Err(e))),) => {
+                    error!("{}: Error: {:?}", name, e);
+                }
+                _ => {}
+            }
         }
     }
 

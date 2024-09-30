@@ -5,6 +5,7 @@ use crate::stream::manager::Manager;
 
 pub mod admin;
 pub mod session;
+pub mod strategy;
 pub mod stream;
 pub mod whep;
 pub mod whip;

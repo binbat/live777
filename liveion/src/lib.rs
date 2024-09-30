@@ -57,6 +57,7 @@ where
                 .merge(session::route())
                 .merge(admin::route())
                 .merge(crate::route::stream::route())
+                .merge(crate::route::strategy::route())
                 .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
