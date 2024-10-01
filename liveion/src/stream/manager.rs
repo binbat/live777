@@ -48,7 +48,7 @@ impl Manager {
         {
             let metadata: NodeMetaData = config.into();
             for web_hook_url in cfg.webhooks.iter() {
-                let webhook = WebHook::new(web_hook_url.clone(), cfg.addr, metadata.clone());
+                let webhook = WebHook::new(web_hook_url.clone(), metadata.clone());
                 let recv = send.subscribe();
                 tokio::spawn(async move {
                     webhook.hook(recv).await;

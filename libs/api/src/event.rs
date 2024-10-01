@@ -1,9 +1,7 @@
-use std::net::SocketAddr;
-
 use serde::{Deserialize, Serialize};
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EventBody {
-    pub addr: SocketAddr,
     pub metrics: NodeMetrics,
     pub event: Event,
 }

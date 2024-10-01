@@ -47,8 +47,6 @@ clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 
-local-ip-address = "0.6"
-
 [features]
 webhook = ["liveion/webhook"]
 

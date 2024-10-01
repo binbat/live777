@@ -41,8 +41,6 @@ pub struct Net4mqtt {
 pub struct Webhook {
     #[serde(default)]
     pub webhooks: Vec<String>,
-    #[serde(default)]
-    pub node_addr: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

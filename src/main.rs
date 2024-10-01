@@ -1,7 +1,4 @@
 use clap::Parser;
-use local_ip_address::local_ip;
-use std::net::SocketAddr;
-use std::str::FromStr;
 use tracing::{debug, info, warn};
 
 #[derive(Parser)]
@@ -16,7 +13,7 @@ struct Args {
 async fn main() {
     liveion::metrics_register();
     let args = Args::parse();
-    let mut cfg = liveion::config::Config::parse(args.config);
+    let cfg = liveion::config::Config::parse(args.config);
     utils::set_log(format!(
         "live777={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
@@ -28,15 +25,6 @@ async fn main() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
     info!("Server listening on {}", addr);
-    if cfg.webhook.node_addr.is_none() {
-        let port = addr.port();
-        cfg.webhook.node_addr =
-            Some(SocketAddr::from_str(&format!("{}:{}", local_ip().unwrap(), port)).unwrap());
-        warn!(
-            "config node_addr not set, auto detect local_ip_port : {:?}",
-            cfg.webhook.node_addr.unwrap()
-        );
-    }
 
     liveion::server_up(cfg, listener, shutdown_signal()).await;
     info!("Server shutdown");

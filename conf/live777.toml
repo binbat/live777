@@ -56,8 +56,6 @@ urls = [
 # Need enable `--features=webhook`
 # [webhook]
 # webhooks = ["http://127.0.0.1:8080/webhook?token="]
-# If not set, auto detect
-# node_addr = "127.0.0.1:7777"
 
 # [net4mqtt]
 # mqtt_url = "mqtt://localhost:1883/net4mqtt"

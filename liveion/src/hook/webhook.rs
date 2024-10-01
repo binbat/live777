@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, str::FromStr, time::Duration};
+use std::{str::FromStr, time::Duration};
 
 use api::event::{EventBody, NodeMetaData, NodeMetrics};
 use async_trait::async_trait;
@@ -12,16 +12,14 @@ use crate::{error::AppError, metrics, result::Result};
 #[derive(Clone, Debug)]
 pub struct WebHook {
     url: String,
-    addr: SocketAddr,
     metadata: NodeMetaData,
     client: Client,
 }
 
 impl WebHook {
-    pub fn new(url: String, addr: SocketAddr, metadata: NodeMetaData) -> Self {
+    pub fn new(url: String, metadata: NodeMetaData) -> Self {
         WebHook {
             url,
-            addr,
             metadata,
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_millis(300))
@@ -34,7 +32,6 @@ impl WebHook {
     async fn event_handler(&self, event: Event) -> Result<()> {
         let event = event.convert_api_event(self.metadata.clone());
         let event_body = EventBody {
-            addr: self.addr,
             metrics: node_metrics(),
             event,
         };
