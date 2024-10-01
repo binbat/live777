@@ -46,20 +46,23 @@ const SCHEME_RTP_SDP: &str = "sdp";
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
     #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", SCHEME_RTSP_SERVER))]
     output: String,
     #[arg(long)]
     host: Option<String>,
-    /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
+    /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
     #[arg(short, long)]
     whep: String,
     /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
+    /// Authentication basic to use, will be sent in the HTTP Header as 'Basic ' e.g.: admin:public
     #[arg(long)]
     auth_basic: Option<String>,
+    /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
     #[arg(long)]
     auth_token: Option<String>,
 }
@@ -233,6 +236,11 @@ async fn main() -> Result<()> {
             media_info.video_rtp_server,
             peer.clone(),
         ));
+        tokio::spawn(rtcp_listener(
+            host.clone(),
+            media_info.audio_rtp_server,
+            peer.clone(),
+        ));
     }
 
     tokio::select! {
@@ -273,7 +281,7 @@ async fn rtp_send(
 
         while let Some(data) = receiver.recv().await {
             match socket.send_to(&data, &client_addr).await {
-                Ok(_) => debug!("Data sent to {}", client_addr),
+                Ok(_) => {}
                 Err(e) => error!("Failed to send data to {}: {}", client_addr, e),
             }
         }

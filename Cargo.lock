@@ -2087,6 +2087,7 @@ dependencies = [
  "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "sdp-types",
  "tokio",
+ "tracing",
  "webrtc",
 ]
 

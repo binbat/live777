@@ -11,6 +11,7 @@ use tokio::{
     net::TcpStream,
     sync::mpsc::UnboundedSender,
 };
+use tracing::{debug, error, warn};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
 
 const SERVER_NAME: &str = "whipinto";
@@ -28,6 +29,7 @@ pub struct MediaInfo {
     pub video_rtcp_client: Option<u16>,
     pub video_rtp_server: Option<u16>,
     pub audio_rtp_client: Option<u16>,
+    pub audio_rtcp_client: Option<u16>,
     pub audio_rtp_server: Option<u16>,
     pub video_codec: Option<Codec>,
     pub audio_codec: Option<Codec>,
@@ -79,6 +81,7 @@ impl Handler {
                 video_rtcp_client: self.media_info.video_rtcp_client,
                 video_rtp_server: self.media_info.video_rtp_server,
                 audio_rtp_client: self.media_info.audio_rtp_client,
+                audio_rtcp_client: self.media_info.audio_rtcp_client,
                 audio_rtp_server: self.media_info.audio_rtp_server,
                 video_codec: self.media_info.video_codec,
                 audio_codec: self.media_info.audio_codec,
@@ -98,13 +101,12 @@ impl Handler {
                 video_rtcp_client: self.media_info.video_rtcp_client,
                 video_rtp_server: self.media_info.video_rtp_server,
                 audio_rtp_client: self.media_info.audio_rtp_client,
+                audio_rtcp_client: self.media_info.audio_rtcp_client,
                 audio_rtp_server: self.media_info.audio_rtp_server,
                 video_codec: self.media_info.video_codec,
                 audio_codec: self.media_info.audio_codec,
             })
             .unwrap();
-
-        println!("recordrrrrr {:?}", self.media_info);
 
         Response::builder(req.version(), StatusCode::Ok)
             .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
@@ -112,9 +114,9 @@ impl Handler {
             .build(self.sdp.clone().unwrap())
     }
 
-    fn describe(&mut self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    fn describe(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         if self.sdp.is_none() {
-            println!("sdp is none");
+            error!("SDP data is none");
         }
 
         Response::builder(req.version(), StatusCode::Ok)
@@ -163,6 +165,7 @@ impl Handler {
                         let audio_rtcp_server_port = audio_server_port + 1;
 
                         self.media_info.audio_rtp_client = Some(rtp);
+                        self.media_info.audio_rtcp_client = rtcp;
                         self.media_info.audio_rtp_server = Some(audio_server_port);
                         self.media_info.audio_codec = media
                             .attributes
@@ -246,9 +249,8 @@ impl Handler {
                             .build(Vec::new());
                     }
                 }
-                println!("Updated self.media_info: {:?}", self.media_info);
             } else {
-                println!("SDP data is not available");
+                warn!("SDP data is not available");
             }
         }
 
@@ -261,7 +263,7 @@ impl Handler {
     fn announce(&mut self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         self.set_sdp(req.body().to_vec());
         let sdp = Session::parse(req.body()).unwrap();
-        println!("parsed sdp: {:?}", sdp);
+        debug!("parsed sdp: {:?}", sdp);
 
         Response::builder(req.version(), StatusCode::Ok)
             .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
@@ -338,7 +340,6 @@ pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Res
                         continue;
                     }
                     Err(e) => {
-                        println!("parse error: {:?}", e);
                         return Err(anyhow!("parse error: {:?}", e));
                     }
                 }

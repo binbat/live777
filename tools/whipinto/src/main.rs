@@ -21,7 +21,9 @@ use webrtc::{
     },
     rtcp,
     rtp::packet::Packet,
-    rtp_transceiver::{rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender},
+    rtp_transceiver::{
+        rtp_codec::RTCRtpCodecCapability, rtp_codec::RTPCodecType, rtp_sender::RTCRtpSender,
+    },
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
     },
@@ -151,16 +153,17 @@ async fn main() -> Result<()> {
 
         media_info = rx.recv().await.unwrap();
     } else if input.scheme() == SCHEME_RTSP_CLIENT {
-        let (rtp_port, audio_port, video_codec, audio_codec) =
+        let (video_port, audio_port, video_codec, audio_codec) =
             setup_rtsp_session(&args.input).await?;
         media_info = rtsp::MediaInfo {
             video_rtp_client: None,
             audio_rtp_client: None,
             video_codec: Some(video_codec),
             audio_codec: Some(audio_codec),
-            video_rtp_server: Some(rtp_port),
+            video_rtp_server: Some(video_port),
             audio_rtp_server: Some(audio_port),
-            video_rtcp_client: Some(rtp_port + 1),
+            video_rtcp_client: Some(video_port + 1),
+            audio_rtcp_client: Some(audio_port + 1),
         };
     } else {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -226,6 +229,7 @@ async fn main() -> Result<()> {
             video_rtp_server: video_track.map(|track| track.port),
             audio_rtp_server: audio_track.map(|track| track.port),
             video_rtcp_client: None,
+            audio_rtcp_client: None,
         };
     }
     debug!("media info: {:?}", media_info);
@@ -268,9 +272,23 @@ async fn main() -> Result<()> {
     }
 
     let senders = peer.get_senders().await;
-    if let Some(rtcp_sender_port) = media_info.video_rtcp_client {
-        for sender in senders {
-            tokio::spawn(read_rtcp(sender, host.clone(), rtcp_sender_port));
+    if let Some(video_rtcp_port) = media_info.video_rtcp_client {
+        for sender in &senders {
+            if let Some(track) = sender.track().await {
+                if track.kind() == RTPCodecType::Video {
+                    tokio::spawn(read_rtcp(sender.clone(), host.clone(), video_rtcp_port));
+                }
+            }
+        }
+    }
+
+    if let Some(audio_rtcp_port) = media_info.audio_rtcp_client {
+        for sender in &senders {
+            if let Some(track) = sender.track().await {
+                if track.kind() == RTPCodecType::Audio {
+                    tokio::spawn(read_rtcp(sender.clone(), host.clone(), audio_rtcp_port));
+                }
+            }
         }
     }
 
