@@ -18,17 +18,29 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub strategy: Strategy,
+    pub strategy: api::strategy::Strategy,
+
+    #[cfg(feature = "net4mqtt")]
+    #[serde(default)]
+    pub net4mqtt: Option<Net4mqtt>,
+
     #[serde(default)]
     pub webhook: Webhook,
+}
+
+#[cfg(feature = "net4mqtt")]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct Net4mqtt {
+    #[serde(default)]
+    pub mqtt_url: String,
+    #[serde(default)]
+    pub alias: String,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Webhook {
     #[serde(default)]
     pub webhooks: Vec<String>,
-    #[serde(default)]
-    pub node_addr: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -51,45 +63,6 @@ pub struct Auth {
 pub struct Log {
     #[serde(default = "default_log_level")]
     pub level: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Strategy {
-    #[serde(default)]
-    pub reforward_close_sub: bool,
-    #[serde(default = "default_true")]
-    pub auto_create_whip: bool,
-    #[serde(default = "default_true")]
-    pub auto_create_whep: bool,
-    #[serde(default)]
-    pub auto_delete_whip: AutoDestrayTime,
-    #[serde(default)]
-    pub auto_delete_whep: AutoDestrayTime,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for Strategy {
-    fn default() -> Self {
-        Self {
-            reforward_close_sub: false,
-            auto_create_whip: true,
-            auto_create_whep: true,
-            auto_delete_whip: AutoDestrayTime::default(),
-            auto_delete_whep: AutoDestrayTime::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutoDestrayTime(pub i64);
-
-impl Default for AutoDestrayTime {
-    fn default() -> Self {
-        AutoDestrayTime(60)
-    }
 }
 
 fn default_http_listen() -> SocketAddr {

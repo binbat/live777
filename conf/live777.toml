@@ -33,6 +33,9 @@ urls = [
 # level = "warn"
 
 [strategy]
+# If not set, use default u16::MAX
+# Default: 65535
+# each_stream_max_sub = 1
 # If reforward is beginning, close all subscriber
 # reforward_close_sub = false
 
@@ -50,9 +53,11 @@ urls = [
 # Auto a destroy a stream at no sub
 # auto_delete_whep = 60
 
-# Need enable `--features=webhook`
+# Experimental Feature
 # [webhook]
 # webhooks = ["http://127.0.0.1:8080/webhook?token="]
-# If not set, auto detect
-# node_addr = "127.0.0.1:7777"
 
+# Default enabled `--features=net4mqtt`
+# [net4mqtt]
+# mqtt_url = "mqtt://localhost:1883/net4mqtt"
+# alias = "liveion-0"

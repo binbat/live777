@@ -21,7 +21,7 @@ use auth::{access::access_middleware, ManyValidate};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
-use crate::mem::{MemStorage, Server};
+use crate::mem::{MemStorage, Node, NodeKind, Server};
 
 #[derive(RustEmbed)]
 #[folder = "../assets/liveman/"]
@@ -46,65 +46,26 @@ struct Args {
     config: Option<String>,
 }
 
-#[cfg(debug_assertions)]
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-
-    #[cfg(feature = "liveion")]
-    let mut cfg = Config::parse(args.config);
-
-    #[cfg(not(feature = "liveion"))]
     let cfg = Config::parse(args.config);
 
+    #[cfg(debug_assertions)]
     utils::set_log(format!(
         "liveman={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
 
-    warn!("set log level : {}", cfg.log.level);
-    debug!("config : {:?}", cfg);
-
-    #[cfg(feature = "liveion")]
-    {
-        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
-        info!("liveion buildin servers: {:?}", servers);
-        cfg.nodes.extend(servers)
-    }
-    let listener = tokio::net::TcpListener::bind(cfg.http.listen)
-        .await
-        .unwrap();
-    info!("Server listening on {}", listener.local_addr().unwrap());
-
-    server_up(cfg, listener, shutdown_signal()).await;
-    info!("Server shutdown");
-}
-
-#[cfg(not(debug_assertions))]
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-
-    #[cfg(feature = "liveion")]
-    let mut cfg = Config::parse(args.config);
-
-    #[cfg(not(feature = "liveion"))]
-    let cfg = Config::parse(args.config);
-
+    #[cfg(not(debug_assertions))]
     utils::set_log(format!(
         "liveman={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level
     ));
 
-    #[cfg(feature = "liveion")]
-    {
-        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
-        info!("liveion buildin servers: {:?}", servers);
-        cfg.nodes.extend(servers)
-    }
-
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
+
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
         .unwrap();
@@ -121,10 +82,98 @@ where
     let client: Client =
         hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
             .build(HttpConnector::new());
+
+    #[cfg(feature = "net4mqtt")]
+    let net4mqtt_domain = "net4mqtt.local";
+
+    #[cfg(feature = "net4mqtt")]
+    let proxy_addr = match cfg.net4mqtt.clone() {
+        Some(c) => Some((c.listen, net4mqtt_domain.to_string())),
+        None => None,
+    };
+    #[cfg(not(feature = "net4mqtt"))]
+    let proxy_addr = None;
+
+    let store = MemStorage::new(proxy_addr);
+    let nodes = store.get_map_nodes_mut();
+    for v in cfg.nodes.clone() {
+        nodes
+            .write()
+            .unwrap()
+            .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
+    }
+
+    #[cfg(feature = "liveion")]
+    {
+        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
+        info!("liveion buildin servers: {:?}", servers);
+        for v in servers {
+            nodes
+                .write()
+                .unwrap()
+                .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
+        }
+    }
+
+    #[cfg(feature = "net4mqtt")]
+    {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
+
+        if let Some(c) = cfg.net4mqtt.clone() {
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move {
+                        net4mqtt::proxy::local_socks(
+                            &c.mqtt_url,
+                            c.listen,
+                            "-",
+                            &c.alias.clone(),
+                            None,
+                            Some(sender),
+                            false,
+                        )
+                        .await
+                        .unwrap()
+                    });
+            });
+        }
+
+        std::thread::spawn(move || {
+            let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async move {
+                    loop {
+                        match receiver.recv().await {
+                            Some((agent_id, _local_id, data)) => {
+                                if data.len() > 5 {
+                                    nodes.write().unwrap().insert(
+                                        agent_id.clone(),
+                                        Node::new(
+                                            "".to_string(),
+                                            NodeKind::Net4mqtt,
+                                            format!("http://{}", dns.registry(&agent_id)),
+                                        ),
+                                    );
+                                } else {
+                                    nodes.write().unwrap().remove(&agent_id);
+                                }
+                            }
+                            None => {
+                                error!("net4mqtt discovery receiver channel closed");
+                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            }
+                        }
+                    }
+                })
+        });
+    }
+
     let app_state = AppState {
         config: cfg.clone(),
         client,
-        storage: MemStorage::new(cfg.nodes),
+        storage: store,
     };
 
     let auth_layer =

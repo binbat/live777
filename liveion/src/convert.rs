@@ -1,7 +1,5 @@
-use api::{event::NodeMetaData, response::Codec};
+use api::response::Codec;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-
-use crate::config::Config;
 
 impl From<crate::forward::message::Layer> for api::response::Layer {
     fn from(value: crate::forward::message::Layer) -> Self {
@@ -62,14 +60,6 @@ impl From<crate::forward::message::CascadeInfo> for api::response::CascadeInfo {
             target_url: value.target_url,
             session_url: value.session_url,
             source_url: value.source_url,
-        }
-    }
-}
-
-impl From<Config> for NodeMetaData {
-    fn from(value: Config) -> Self {
-        Self {
-            authorization: value.auth.tokens.first().cloned(),
         }
     }
 }
