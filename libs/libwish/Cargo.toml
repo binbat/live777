@@ -14,5 +14,4 @@ reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }
 parse_link_header = "0.3"
-base64 = "0.22.1"
 url = "2.5"

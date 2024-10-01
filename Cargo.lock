@@ -1644,7 +1644,6 @@ name = "libwish"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "http 1.1.0",
  "parse_link_header",
  "reqwest",

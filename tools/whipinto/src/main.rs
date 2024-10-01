@@ -54,21 +54,18 @@ struct Args {
     /// rtsp://[username]:[password]@[ip]:[port]/[stream] Or <stream.sdp>
     #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8554", SCHEME_RTSP_SERVER))]
     input: String,
-    /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
-    #[arg(short, long)]
-    whip: String,
     /// Set Listener address
     #[arg(long)]
     host: Option<String>,
+    /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
+    #[arg(short, long)]
+    whip: String,
+    /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
+    #[arg(short, long)]
+    token: Option<String>,
     /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
-    /// Authentication basic to use, will be sent in the HTTP Header as 'Basic ' e.g.: admin:public
-    #[arg(long)]
-    auth_basic: Option<String>,
-    /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
-    #[arg(long)]
-    auth_token: Option<String>,
 }
 
 #[tokio::main]
@@ -112,7 +109,7 @@ async fn main() -> Result<()> {
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let mut client = Client::new(
         args.whip.clone(),
-        Client::get_auth_header_map(args.auth_basic.clone(), args.auth_token.clone()),
+        Client::get_auth_header_map(args.token.clone()),
     );
 
     let child = if let Some(command) = &args.command {
