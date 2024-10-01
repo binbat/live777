@@ -53,10 +53,11 @@ urls = [
 # Auto a destroy a stream at no sub
 # auto_delete_whep = 60
 
-# Need enable `--features=webhook`
+# Experimental Feature
 # [webhook]
 # webhooks = ["http://127.0.0.1:8080/webhook?token="]
 
+# Default enabled `--features=net4mqtt`
 # [net4mqtt]
 # mqtt_url = "mqtt://localhost:1883/net4mqtt"
 # alias = "liveion-0"

@@ -7,7 +7,6 @@ pub struct ManagerConfig {
     pub ice_servers: Vec<RTCIceServer>,
     pub reforward_close_sub: bool,
     pub webhooks: Vec<String>,
-
     pub auto_create_pub: bool,
     pub auto_create_sub: bool,
     pub auto_delete_pub: i64,

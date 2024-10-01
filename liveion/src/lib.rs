@@ -122,7 +122,6 @@ where
         .with_graceful_shutdown(signal)
         .await
         .unwrap_or_else(|e| error!("Application error: {e}"));
-    let _ = app_state.stream_manager.shotdown().await;
 }
 
 async fn static_handler(uri: Uri) -> impl IntoResponse {

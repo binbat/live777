@@ -1,26 +1,24 @@
 use std::{str::FromStr, time::Duration};
 
-use api::event::{EventBody, NodeMetaData, NodeMetrics};
+use api::event::{EventBody, NodeMetrics};
 use async_trait::async_trait;
 use reqwest::{header::HeaderMap, Client, Method};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use super::{Event, EventHook, NodeEvent};
+use super::{Event, EventHook};
 use crate::{error::AppError, metrics, result::Result};
 
 #[derive(Clone, Debug)]
 pub struct WebHook {
     url: String,
-    metadata: NodeMetaData,
     client: Client,
 }
 
 impl WebHook {
-    pub fn new(url: String, metadata: NodeMetaData) -> Self {
+    pub fn new(url: String) -> Self {
         WebHook {
             url,
-            metadata,
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_millis(300))
                 .timeout(Duration::from_millis(500))
@@ -30,7 +28,7 @@ impl WebHook {
     }
 
     async fn event_handler(&self, event: Event) -> Result<()> {
-        let event = event.convert_api_event(self.metadata.clone());
+        let event = event.convert_api_event();
         let event_body = EventBody {
             metrics: node_metrics(),
             event,
@@ -81,15 +79,8 @@ impl WebHook {
 #[async_trait]
 impl EventHook for WebHook {
     async fn hook(&self, mut event_receiver: broadcast::Receiver<Event>) {
-        let mut is_down = false;
         while let Ok(event) = event_receiver.recv().await {
-            if let Event::Node(NodeEvent::Down) = &event {
-                is_down = true;
-            };
             let _ = self.event_handler(event).await;
-            if is_down {
-                break;
-            }
         }
     }
 }

@@ -1,18 +1,6 @@
-use api::event::{NodeEventType, NodeMetaData};
-
 use crate::forward::message;
 
-use super::{Event, NodeEvent, Stream, StreamEventType};
-
-impl From<NodeEvent> for NodeEventType {
-    fn from(value: NodeEvent) -> Self {
-        match value {
-            NodeEvent::Up => NodeEventType::Up,
-            NodeEvent::KeepAlive => NodeEventType::KeepAlive,
-            NodeEvent::Down => NodeEventType::Down,
-        }
-    }
-}
+use super::{Event, Stream, StreamEventType};
 
 impl From<StreamEventType> for api::event::StreamEventType {
     fn from(value: StreamEventType) -> Self {
@@ -73,12 +61,8 @@ impl From<message::ForwardEvent> for api::event::Event {
 }
 
 impl Event {
-    pub fn convert_api_event(self, metadata: NodeMetaData) -> api::event::Event {
+    pub fn convert_api_event(self) -> api::event::Event {
         match self {
-            Event::Node(event) => api::event::Event::Node {
-                r#type: event.into(),
-                metadata,
-            },
             Event::Stream(stream_evnet) => api::event::Event::Stream {
                 r#type: stream_evnet.r#type.into(),
                 stream: stream_evnet.stream.into(),

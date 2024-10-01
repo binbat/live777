@@ -1,21 +1,13 @@
 use crate::config::Config;
 use crate::forward::message::ForwardInfo;
 
-#[cfg(feature = "webhook")]
 use crate::hook::webhook::WebHook;
-
-#[cfg(feature = "webhook")]
-use crate::hook::EventHook;
-
-use crate::hook::{Event, NodeEvent, Stream, StreamEvent, StreamEventType};
+use crate::hook::{Event, EventHook, Stream, StreamEvent, StreamEventType};
 
 use crate::result::Result;
 
 use chrono::{DateTime, Utc};
 use std::time::Duration;
-
-#[cfg(feature = "webhook")]
-use api::event::NodeMetaData;
 
 use tokio::sync::broadcast;
 
@@ -44,19 +36,13 @@ impl Manager {
         let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         let send = new_broadcast_channel!(4);
-        #[cfg(feature = "webhook")]
-        {
-            let metadata: NodeMetaData = config.into();
-            for web_hook_url in cfg.webhooks.iter() {
-                let webhook = WebHook::new(web_hook_url.clone(), metadata.clone());
-                let recv = send.subscribe();
-                tokio::spawn(async move {
-                    webhook.hook(recv).await;
-                });
-            }
+        for web_hook_url in cfg.webhooks.iter() {
+            let webhook = WebHook::new(web_hook_url.clone());
+            let recv = send.subscribe();
+            tokio::spawn(async move {
+                webhook.hook(recv).await;
+            });
         }
-        let _ = send.send(Event::Node(NodeEvent::Up));
-        tokio::spawn(Self::keep_alive_tick(send.clone()));
 
         if cfg.auto_delete_pub >= 0 {
             tokio::spawn(Self::publish_check_tick(
@@ -78,13 +64,6 @@ impl Manager {
             stream_map,
             config: cfg,
             event_sender: send,
-        }
-    }
-
-    async fn keep_alive_tick(event_sender: broadcast::Sender<Event>) {
-        loop {
-            tokio::time::sleep(Duration::from_millis(5000)).await;
-            let _ = event_sender.send(Event::Node(NodeEvent::KeepAlive));
         }
     }
 
@@ -451,16 +430,6 @@ impl Manager {
         }
     }
 
-    pub async fn shotdown(&self) -> Result<()> {
-        let _ = self.event_sender.send(Event::Node(NodeEvent::Down));
-        #[cfg(feature = "webhook")]
-        {
-            tokio::time::sleep(Duration::from_millis(3000)).await;
-        }
-
-        Ok(())
-    }
-
     pub async fn sse_handler(
         &self,
         streams: Vec<String>,
@@ -471,7 +440,6 @@ impl Manager {
         tokio::spawn(async move {
             while let Ok(event) = evnet_recv.recv().await {
                 let stream = match event {
-                    Event::Node(_) => continue,
                     Event::Stream(val) => val.stream.stream,
                     Event::Forward(val) => val.stream_info.id,
                 };

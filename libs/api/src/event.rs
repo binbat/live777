@@ -9,22 +9,10 @@ pub struct EventBody {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Event {
-    Node {
-        r#type: NodeEventType,
-        metadata: NodeMetaData,
-    },
     Stream {
         r#type: StreamEventType,
         stream: Stream,
     },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum NodeEventType {
-    Up,
-    Down,
-    KeepAlive,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -47,12 +35,6 @@ pub struct Stream {
     pub publish: u64,
     pub subscribe: u64,
     pub reforward: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeMetaData {
-    pub authorization: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

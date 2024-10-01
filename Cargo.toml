@@ -48,7 +48,8 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 
 [features]
-webhook = ["liveion/webhook"]
+default = ["net4mqtt"]
+net4mqtt = ["liveion/net4mqtt"]
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb
