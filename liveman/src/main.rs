@@ -21,7 +21,7 @@ use auth::{access::access_middleware, ManyValidate};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
-use crate::mem::{MemStorage, Server};
+use crate::mem::{MemStorage, Node, NodeKind, Server};
 
 #[derive(RustEmbed)]
 #[folder = "../assets/liveman/"]
@@ -46,65 +46,26 @@ struct Args {
     config: Option<String>,
 }
 
-#[cfg(debug_assertions)]
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-
-    #[cfg(feature = "liveion")]
-    let mut cfg = Config::parse(args.config);
-
-    #[cfg(not(feature = "liveion"))]
     let cfg = Config::parse(args.config);
 
+    #[cfg(debug_assertions)]
     utils::set_log(format!(
         "liveman={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
 
-    warn!("set log level : {}", cfg.log.level);
-    debug!("config : {:?}", cfg);
-
-    #[cfg(feature = "liveion")]
-    {
-        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
-        info!("liveion buildin servers: {:?}", servers);
-        cfg.nodes.extend(servers)
-    }
-    let listener = tokio::net::TcpListener::bind(cfg.http.listen)
-        .await
-        .unwrap();
-    info!("Server listening on {}", listener.local_addr().unwrap());
-
-    server_up(cfg, listener, shutdown_signal()).await;
-    info!("Server shutdown");
-}
-
-#[cfg(not(debug_assertions))]
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-
-    #[cfg(feature = "liveion")]
-    let mut cfg = Config::parse(args.config);
-
-    #[cfg(not(feature = "liveion"))]
-    let cfg = Config::parse(args.config);
-
+    #[cfg(not(debug_assertions))]
     utils::set_log(format!(
         "liveman={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level
     ));
 
-    #[cfg(feature = "liveion")]
-    {
-        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
-        info!("liveion buildin servers: {:?}", servers);
-        cfg.nodes.extend(servers)
-    }
-
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);
+
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
         .unwrap();
@@ -133,10 +94,26 @@ where
     #[cfg(not(feature = "net4mqtt"))]
     let proxy_addr = None;
 
-    let mut store = MemStorage::new(cfg.nodes.clone(), proxy_addr);
+    let store = MemStorage::new(proxy_addr);
+    let nodes = store.get_map_nodes_mut();
+    for v in cfg.nodes.clone() {
+        nodes
+            .write()
+            .unwrap()
+            .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
+    }
 
-    #[cfg(feature = "net4mqtt")]
-    let nodes = store.get_map_nodes();
+    #[cfg(feature = "liveion")]
+    {
+        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
+        info!("liveion buildin servers: {:?}", servers);
+        for v in servers {
+            nodes
+                .write()
+                .unwrap()
+                .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
+        }
+    }
 
     #[cfg(feature = "net4mqtt")]
     {
@@ -173,17 +150,20 @@ where
                                 if data.len() > 5 {
                                     nodes.write().unwrap().insert(
                                         agent_id.clone(),
-                                        Server {
-                                            alias: agent_id.clone(),
-                                            url: format!("http://{}", dns.registry(&agent_id)),
-                                            ..Default::default()
-                                        },
+                                        Node::new(
+                                            "".to_string(),
+                                            NodeKind::Net4mqtt,
+                                            format!("http://{}", dns.registry(&agent_id)),
+                                        ),
                                     );
                                 } else {
                                     nodes.write().unwrap().remove(&agent_id);
                                 }
                             }
-                            None => error!("net4mqtt discovery receiver channel closed"),
+                            None => {
+                                error!("net4mqtt discovery receiver channel closed");
+                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            }
                         }
                     }
                 })

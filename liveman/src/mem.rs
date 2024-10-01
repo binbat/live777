@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, trace, warn};
 
 use api::response::Stream;
+use api::strategy::Strategy;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
@@ -23,6 +24,68 @@ pub struct Server {
     pub pub_max: u16,
     #[serde(default = "u16_max_value")]
     pub sub_max: u16,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Node {
+    pub token: String,
+    pub kind: NodeKind,
+    pub url: String,
+
+    strategy: Option<Strategy>,
+}
+
+impl Node {
+    pub fn new(token: String, kind: NodeKind, url: String) -> Self {
+        Self {
+            token,
+            kind,
+            url,
+            strategy: None,
+        }
+    }
+}
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeKind {
+    #[default]
+    #[serde(rename = "build-in")]
+    BuildIn,
+    #[serde(rename = "static")]
+    Static,
+    #[serde(rename = "manual")]
+    Manual,
+    #[serde(rename = "net4mqtt")]
+    Net4mqtt,
+}
+
+impl From<Server> for (String, Node) {
+    fn from(s: Server) -> Self {
+        (
+            s.alias,
+            Node {
+                token: s.token,
+                url: s.url,
+                ..Default::default()
+            },
+        )
+    }
+}
+
+impl From<(String, Node)> for Server {
+    fn from(r: (String, Node)) -> Self {
+        let (k, v) = r;
+        Self {
+            alias: k,
+            token: v.token,
+            url: v.url,
+            sub_max: match v.strategy {
+                Some(x) => x.each_stream_max_sub.0,
+                None => u16::MAX,
+            },
+            ..Default::default()
+        }
+    }
 }
 
 impl Default for Server {
@@ -49,23 +112,18 @@ fn u16_max_value() -> u16 {
 
 #[derive(Clone)]
 pub struct MemStorage {
+    list: Arc<RwLock<HashMap<String, Node>>>,
     time: SystemTime,
-    server: Arc<RwLock<HashMap<String, Server>>>,
     client: reqwest::Client,
+
     info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
     session: Arc<RwLock<HashMap<String, Server>>>,
 }
 
 impl MemStorage {
-    pub fn new(servers: Vec<Server>, proxy: Option<(SocketAddr, String)>) -> Self {
-        let server = Arc::new(RwLock::new(HashMap::new()));
-
-        info!("MemStorage: {:?}", servers);
-
-        for s in servers.clone() {
-            server.write().unwrap().insert(s.alias.clone(), s.clone());
-        }
+    pub fn new(proxy: Option<(SocketAddr, String)>) -> Self {
+        info!("Proxy is: {:?}", proxy);
         let mut client_builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(500))
             .timeout(Duration::from_millis(1000));
@@ -88,25 +146,42 @@ impl MemStorage {
         };
 
         Self {
-            server,
+            list: Arc::new(RwLock::new(HashMap::new())),
             time: SystemTime::now(),
             client: client_builder.build().unwrap(),
+
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn get_map_nodes(&mut self) -> Arc<RwLock<HashMap<String, Server>>> {
-        self.server.clone()
+    pub fn get_map_nodes_mut(&self) -> Arc<RwLock<HashMap<String, Node>>> {
+        self.list.clone()
+    }
+
+    pub fn get_map_nodes(&self) -> HashMap<String, Node> {
+        self.list.read().unwrap().clone()
     }
 
     pub fn get_cluster(&self) -> Vec<Server> {
-        self.server.read().unwrap().values().cloned().collect()
+        self.list
+            .read()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .map(|x| x.into())
+            .collect()
     }
 
     pub fn get_map_server(&self) -> HashMap<String, Server> {
-        self.server.read().unwrap().clone()
+        self.list
+            .read()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k.clone(), (k, v).into()))
+            .collect()
     }
 
     pub async fn nodes(&mut self) -> Vec<Server> {
@@ -168,11 +243,84 @@ impl MemStorage {
         }
     }
 
+    fn get_do_strategy_updata_list(&self) -> HashMap<String, Node> {
+        self.get_map_nodes()
+            .into_iter()
+            .filter(|(_, v)| v.strategy.is_none())
+            .collect()
+    }
+
+    async fn update_strategy_from(&mut self, nodes: HashMap<String, Node>) {
+        let start = Instant::now();
+        let mut requests = Vec::new();
+
+        for (alias, server) in nodes {
+            requests.push((
+                alias,
+                self.client
+                    .get(format!("{}{}", server.url, &api::path::strategy()))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                    .send(),
+            ));
+        }
+
+        let handles = requests
+            .into_iter()
+            .map(|(alias, value)| tokio::spawn(async move { (alias, value.await) }))
+            .collect::<Vec<
+                tokio::task::JoinHandle<(
+                    std::string::String,
+                    std::result::Result<reqwest::Response, reqwest::Error>,
+                )>,
+            >>();
+
+        let duration = start.elapsed();
+
+        if duration > Duration::from_secs(1) {
+            warn!("update duration: {:?}", duration);
+        } else {
+            debug!("update duration: {:?}", duration);
+        }
+
+        self.info.write().unwrap().clear();
+        self.stream.write().unwrap().clear();
+
+        // Maybe Don't need clear "session"
+        //self.session.write().unwrap().clear();
+
+        for handle in handles {
+            let result = tokio::join!(handle);
+            match result {
+                (Ok((alias, Ok(res))),) => {
+                    debug!("{}: Response: {:?}", alias, res);
+
+                    match serde_json::from_str::<Strategy>(&res.text().await.unwrap()) {
+                        Ok(strategy) => {
+                            if let Some(node) =
+                                self.get_map_nodes_mut().write().unwrap().get_mut(&alias)
+                            {
+                                node.strategy = Some(strategy)
+                            }
+                        }
+                        Err(e) => error!("Error: {:?}", e),
+                    };
+                }
+                (Ok((name, Err(e))),) => {
+                    error!("{}: Error: {:?}", name, e);
+                }
+                _ => {}
+            }
+        }
+    }
+
     async fn update(&mut self) {
         if self.time.elapsed().unwrap() < Duration::from_secs(3) {
             return;
         }
         self.time = SystemTime::now();
+
+        self.update_strategy_from(self.get_do_strategy_updata_list())
+            .await;
 
         let start = Instant::now();
         let servers = self.get_cluster();
@@ -223,8 +371,7 @@ impl MemStorage {
                             trace!("{:?}", streams.clone());
                             self.info_put(alias.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
-                                let target =
-                                    self.server.read().unwrap().get(&alias).unwrap().clone();
+                                let target = self.get_map_server().get(&alias).unwrap().clone();
                                 self.stream_put(stream.id.clone(), target.clone())
                                     .await
                                     .unwrap();

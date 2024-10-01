@@ -49,7 +49,6 @@
 alias = "buildin-0"
 # If port == 0, use random port. If count > 1, port must use 0
 url = "127.0.0.1:0"
-sub_max = 1
 
 [[liveion]]
 alias = "buildin-1"
@@ -66,10 +65,6 @@ url = "127.0.0.1:0"
 # token = "live777"
 # Live777 Address
 # url = "http://127.0.0.1:7777"
-# If not set, use default u16::MAX
-# Default: 65535
-# pub_max = 65535
-# sub_max = 65535
 
 # [[nodes]]
 # alias = "static-1"
@@ -83,8 +78,4 @@ url = "127.0.0.1:0"
 # token = "live777"
 # Live777 Address
 # url = "http://liveion-0.net4mqtt.local:7777"
-# If not set, use default u16::MAX
-# Default: 65535
-# pub_max = 65535
-# sub_max = 65535
 

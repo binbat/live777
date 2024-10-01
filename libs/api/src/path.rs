@@ -26,3 +26,7 @@ pub fn cascade(stream: &str) -> String {
 pub fn streams_sse() -> String {
     "/api/sse/streams".to_string()
 }
+
+pub fn strategy() -> String {
+    "/api/strategy/".to_string()
+}
