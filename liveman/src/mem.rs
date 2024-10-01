@@ -317,9 +317,10 @@ impl MemStorage {
         if self.time.elapsed().unwrap() < Duration::from_secs(3) {
             return;
         }
+        self.time = SystemTime::now();
+
         self.update_strategy_from(self.get_do_strategy_updata_list())
             .await;
-        self.time = SystemTime::now();
 
         let start = Instant::now();
         let servers = self.get_cluster();
