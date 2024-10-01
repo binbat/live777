@@ -94,17 +94,13 @@ where
     #[cfg(not(feature = "net4mqtt"))]
     let proxy_addr = None;
 
-    let mut store = MemStorage::new(proxy_addr);
-    let nodes = store.get_map_nodes();
+    let store = MemStorage::new(proxy_addr);
+    let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
-        nodes.write().unwrap().insert(
-            v.alias,
-            Node {
-                token: v.token,
-                kind: NodeKind::Static,
-                url: v.url,
-            },
-        );
+        nodes
+            .write()
+            .unwrap()
+            .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
     }
 
     #[cfg(feature = "liveion")]
@@ -112,14 +108,10 @@ where
         let servers = cluster::cluster_up(cfg.liveion.clone()).await;
         info!("liveion buildin servers: {:?}", servers);
         for v in servers {
-            nodes.write().unwrap().insert(
-                v.alias,
-                Node {
-                    token: v.token,
-                    kind: NodeKind::BuildIn,
-                    url: v.url,
-                },
-            );
+            nodes
+                .write()
+                .unwrap()
+                .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
         }
     }
 
@@ -158,11 +150,11 @@ where
                                 if data.len() > 5 {
                                     nodes.write().unwrap().insert(
                                         agent_id.clone(),
-                                        Node {
-                                            kind: NodeKind::Net4mqtt,
-                                            url: format!("http://{}", dns.registry(&agent_id)),
-                                            ..Default::default()
-                                        },
+                                        Node::new(
+                                            "".to_string(),
+                                            NodeKind::Net4mqtt,
+                                            format!("http://{}", dns.registry(&agent_id)),
+                                        ),
                                     );
                                 } else {
                                     nodes.write().unwrap().remove(&agent_id);

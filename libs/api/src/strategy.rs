@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Strategy {
     #[serde(default)]
     pub each_stream_max_sub: EachStreamMaxSub,
@@ -20,7 +20,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EachStreamMaxSub(pub u16);
 
 impl Default for EachStreamMaxSub {
@@ -45,7 +45,7 @@ impl Default for Strategy {
 /// -1: disable
 /// 0: immediately destroy
 /// >= 1: delay millisecond
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutoDestrayTime(pub i64);
 
 impl Default for AutoDestrayTime {

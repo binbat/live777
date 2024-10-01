@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, trace, warn};
 
 use api::response::Stream;
+use api::strategy::Strategy;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
@@ -30,11 +31,19 @@ pub struct Node {
     pub token: String,
     pub kind: NodeKind,
     pub url: String,
+
+    strategy: Option<Strategy>,
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct Status {
-    pub strategy: api::strategy::Strategy,
+impl Node {
+    pub fn new(token: String, kind: NodeKind, url: String) -> Self {
+        Self {
+            token,
+            kind,
+            url,
+            strategy: None,
+        }
+    }
 }
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +79,10 @@ impl From<(String, Node)> for Server {
             alias: k,
             token: v.token,
             url: v.url,
+            sub_max: match v.strategy {
+                Some(x) => x.each_stream_max_sub.0,
+                None => u16::MAX,
+            },
             ..Default::default()
         }
     }
@@ -102,8 +115,6 @@ pub struct MemStorage {
     list: Arc<RwLock<HashMap<String, Node>>>,
     time: SystemTime,
     client: reqwest::Client,
-
-    status: Arc<RwLock<HashMap<String, Status>>>,
 
     info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
@@ -139,16 +150,18 @@ impl MemStorage {
             time: SystemTime::now(),
             client: client_builder.build().unwrap(),
 
-            status: Arc::new(RwLock::new(HashMap::new())),
-
             info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn get_map_nodes(&mut self) -> Arc<RwLock<HashMap<String, Node>>> {
+    pub fn get_map_nodes_mut(&self) -> Arc<RwLock<HashMap<String, Node>>> {
         self.list.clone()
+    }
+
+    pub fn get_map_nodes(&self) -> HashMap<String, Node> {
+        self.list.read().unwrap().clone()
     }
 
     pub fn get_cluster(&self) -> Vec<Server> {
@@ -173,8 +186,6 @@ impl MemStorage {
 
     pub async fn nodes(&mut self) -> Vec<Server> {
         self.update().await;
-        self.update_status().await;
-        println!("status {:?}", self.status.read().unwrap());
         self.get_cluster()
     }
 
@@ -232,19 +243,20 @@ impl MemStorage {
         }
     }
 
-    async fn update_status(&mut self) {
-        //if self.time.elapsed().unwrap() < Duration::from_secs(3) {
-        //    return;
-        //}
-        //self.time = SystemTime::now();
+    fn get_do_strategy_updata_list(&self) -> HashMap<String, Node> {
+        self.get_map_nodes()
+            .into_iter()
+            .filter(|(_, v)| v.strategy.is_none())
+            .collect()
+    }
 
+    async fn update_strategy_from(&mut self, nodes: HashMap<String, Node>) {
         let start = Instant::now();
-        let servers = self.get_cluster();
         let mut requests = Vec::new();
 
-        for server in servers {
+        for (alias, server) in nodes {
             requests.push((
-                server.alias,
+                alias,
                 self.client
                     .get(format!("{}{}", server.url, &api::path::strategy()))
                     .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
@@ -282,14 +294,13 @@ impl MemStorage {
                 (Ok((alias, Ok(res))),) => {
                     debug!("{}: Response: {:?}", alias, res);
 
-                    match serde_json::from_str::<api::strategy::Strategy>(
-                        &res.text().await.unwrap(),
-                    ) {
+                    match serde_json::from_str::<Strategy>(&res.text().await.unwrap()) {
                         Ok(strategy) => {
-                            self.status
-                                .write()
-                                .unwrap()
-                                .insert(alias, Status { strategy });
+                            if let Some(node) =
+                                self.get_map_nodes_mut().write().unwrap().get_mut(&alias)
+                            {
+                                node.strategy = Some(strategy)
+                            }
                         }
                         Err(e) => error!("Error: {:?}", e),
                     };
@@ -306,6 +317,8 @@ impl MemStorage {
         if self.time.elapsed().unwrap() < Duration::from_secs(3) {
             return;
         }
+        self.update_strategy_from(self.get_do_strategy_updata_list())
+            .await;
         self.time = SystemTime::now();
 
         let start = Instant::now();
