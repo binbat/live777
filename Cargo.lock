@@ -2711,11 +2711,14 @@ name = "rtsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cli",
  "portpicker",
  "rtsp-types",
  "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "sdp-types",
  "tokio",
+ "tracing",
+ "webrtc",
 ]
 
 [[package]]
@@ -4309,11 +4312,14 @@ dependencies = [
  "clap",
  "cli",
  "libwish",
+ "portpicker",
  "rtsp",
  "scopeguard",
+ "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "signal",
  "tokio",
  "tracing",
+ "url",
  "utils",
  "webrtc",
 ]

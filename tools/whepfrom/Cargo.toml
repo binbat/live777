@@ -18,5 +18,7 @@ clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 webrtc = { workspace = true }
-
 scopeguard = "1.2.0"
+sdp = "0.6.2"
+portpicker = "0.1.1"
+url = "2.5.2"

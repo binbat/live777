@@ -1,15 +1,23 @@
-use std::{sync::Arc, time::Duration};
-
 use anyhow::{anyhow, Result};
-use clap::{ArgAction, Parser, ValueEnum};
-use core::net::Ipv4Addr;
+use clap::{ArgAction, Parser};
+use cli::create_child;
+use core::net::{Ipv4Addr, Ipv6Addr};
+use portpicker::pick_unused_port;
 use scopeguard::defer;
+use sdp::{description::media::RangedPort, SessionDescription};
+use std::{
+    fs::File,
+    io::{Cursor, Write},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::net::TcpListener;
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{unbounded_channel, UnboundedSender},
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
 };
 use tracing::{debug, error, info, trace, warn, Level};
+use url::{Host, Url};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::{
@@ -22,23 +30,18 @@ use webrtc::{
     },
     rtcp,
     rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters},
-        rtp_transceiver_direction::RTCRtpTransceiverDirection,
+        rtp_codec::RTPCodecType, rtp_transceiver_direction::RTCRtpTransceiverDirection,
         RTCRtpTransceiverInit,
     },
     util::MarshalSize,
 };
 
-use cli::{create_child, get_codec_type, Codec};
 use libwish::Client;
 
 const PREFIX_LIB: &str = "WEBRTC";
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum Mode {
-    Rtsp,
-    Rtp,
-}
+const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
+const _SCHEME_RTSP_CLIENT: &str = "rtsp";
+const SCHEME_RTP_SDP: &str = "sdp";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -46,23 +49,13 @@ struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
-    #[arg(short, long, value_enum, default_value_t = Mode::Rtsp)]
-    mode: Mode,
-    /// Set Listener address
-    #[arg(long, default_value_t = Ipv4Addr::UNSPECIFIED.to_string())]
-    host: String,
-    #[arg(long, default_value_t = 0)]
-    port: u16,
-    #[arg(short, long)]
-    target: String,
-    #[arg(short, long, value_enum)]
-    codec: Codec,
-    /// value: [96, 127]
-    #[arg(short, long, default_value_t = 96)]
-    payload_type: u8,
+    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", SCHEME_RTSP_SERVER))]
+    output: String,
+    #[arg(long)]
+    host: Option<String>,
     /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
     #[arg(short, long)]
-    url: String,
+    whep: String,
     /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
@@ -88,42 +81,70 @@ async fn main() -> Result<()> {
         }
     ));
 
-    let host = args.host.clone();
-    let mut _codec = args.codec;
-    let mut rtp_port = args.port;
+    let input = Url::parse(&args.output).unwrap_or(
+        Url::parse(&format!(
+            "{}://{}:0/{}",
+            SCHEME_RTP_SDP,
+            Ipv4Addr::UNSPECIFIED,
+            args.output
+        ))
+        .unwrap(),
+    );
+    info!("=== Received Output: {} ===", args.output);
 
-    let udp_socket = UdpSocket::bind(format!("{}:0", host)).await?;
+    let mut host = match input.host().unwrap() {
+        Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
+        Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
+    };
+
+    if let Some(ref h) = args.host {
+        debug!("=== Specified set host, using {} ===", h);
+        host.clone_from(h);
+    }
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
+    let mut media_info = rtsp::MediaInfo::default();
+    let (video_send, video_recv) = unbounded_channel::<Vec<u8>>();
+    let (audio_send, audio_recv) = unbounded_channel::<Vec<u8>>();
+    let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
 
-    let payload_type = args.payload_type;
-    assert!((96..=127).contains(&payload_type));
     let mut client = Client::new(
-        args.url,
-        Client::get_auth_header_map(args.auth_basic, args.auth_token),
+        args.whep.clone(),
+        Client::get_auth_header_map(args.auth_basic.clone(), args.auth_token.clone()),
     );
-    let (send, mut recv) = unbounded_channel::<Vec<u8>>();
 
     let (peer, answer) = webrtc_start(
         &mut client,
-        args.codec.into(),
-        send,
-        payload_type,
+        video_send,
+        audio_send,
         complete_tx.clone(),
+        codec_info.clone(),
     )
-    .await
-    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
+    .await?;
 
-    let mut rtcp_port = 0;
-    if args.mode == Mode::Rtsp {
-        let (tx, mut rx) = unbounded_channel::<String>();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let codec_info = codec_info.lock().await;
+    debug!("Codec Info {:?}", codec_info);
 
+    let filtered_sdp = match rtsp::filter_sdp(
+        &answer.sdp,
+        codec_info.video_codec.as_ref(),
+        codec_info.audio_codec.as_ref(),
+    ) {
+        Ok(sdp) => sdp,
+        Err(e) => e,
+    };
+    info!("SDP: {:?}", filtered_sdp);
+
+    if input.scheme() == SCHEME_RTSP_SERVER {
+        let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
-        handler.set_sdp(answer.sdp.as_bytes().to_vec());
-        info!("sdp:{:?}", answer.sdp);
+        handler.set_sdp(filtered_sdp.into_bytes());
 
+        let host2 = host.to_string();
+        let tcp_port = input.port().unwrap_or(0);
         tokio::spawn(async move {
-            let listener = TcpListener::bind(format!("{}:{}", host, args.port))
+            let listener = TcpListener::bind(format!("{}:{}", host2.clone(), tcp_port))
                 .await
                 .unwrap();
             warn!(
@@ -140,27 +161,48 @@ async fn main() -> Result<()> {
             }
         });
 
-        let (rtp_listen_port, _rtcp_listen_port, rtp_server_port) =
-            match (rx.recv().await, rx.recv().await, rx.recv().await) {
-                (Some(rtp), Some(rtcp), Some(rtp_server)) => {
-                    let rtp_port = rtp.parse::<u16>().unwrap_or(8002);
-                    let rtcp_port = rtcp.parse::<u16>().unwrap_or(8003);
-                    let rtp_server_port = rtp_server.parse::<u16>().unwrap_or(8004);
-                    println! {"receive port: {},{},{}",rtp_port,rtcp_port,rtp_server_port};
-                    (rtp_port, rtcp_port, rtp_server_port)
+        media_info = rx.recv().await.unwrap();
+    } else {
+        media_info.video_rtp_client = pick_unused_port();
+        media_info.audio_rtp_client = pick_unused_port();
+
+        let mut reader = Cursor::new(filtered_sdp.as_bytes());
+        let mut session = SessionDescription::unmarshal(&mut reader).unwrap();
+        for media in &mut session.media_descriptions {
+            if media.media_name.media == "video" {
+                if let Some(port) = media_info.video_rtp_client {
+                    media.media_name.port = RangedPort {
+                        value: port as isize,
+                        range: None,
+                    };
                 }
-                _ => {
-                    println!("Error receiving ports, using default values.");
-                    (8002, 8003, 8004)
+            } else if media.media_name.media == "audio" {
+                if let Some(port) = media_info.audio_rtp_client {
+                    media.media_name.port = RangedPort {
+                        value: port as isize,
+                        range: None,
+                    };
                 }
-            };
-        rtp_port = rtp_listen_port;
-        println!("=== Received RTPMAP: {} ===", rtp_port);
-        rtcp_port = rtp_server_port + 1;
+            }
+        }
+        let sdp = session.marshal();
+        let mut file = File::create("output.sdp")?;
+        file.write_all(sdp.as_bytes())?;
+        info!("SDP written to output.sdp");
     }
-    udp_socket
-        .connect(format!("127.0.0.1:{}", rtp_port))
-        .await?;
+    debug!("media info : {:?}", media_info);
+    tokio::spawn(rtp_send(
+        video_recv,
+        host.clone(),
+        media_info.video_rtp_client,
+        media_info.video_rtp_server,
+    ));
+    tokio::spawn(rtp_send(
+        audio_recv,
+        host.clone(),
+        media_info.audio_rtp_client,
+        media_info.audio_rtp_server,
+    ));
 
     let child = Arc::new(create_child(args.command)?);
     defer!({
@@ -171,11 +213,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    tokio::spawn(async move {
-        while let Some(data) = recv.recv().await {
-            let _ = udp_socket.send(&data).await;
-        }
-    });
     let wait_child = child.clone();
     tokio::spawn(async move {
         match wait_child.as_ref() {
@@ -193,58 +230,105 @@ async fn main() -> Result<()> {
             None => info!("No child process"),
         }
     });
-    if args.mode == Mode::Rtsp {
-        tokio::spawn(rtcp_listener(args.host, rtcp_port, peer.clone()));
+    if input.scheme() == SCHEME_RTSP_SERVER {
+        tokio::spawn(rtcp_listener(
+            host.clone(),
+            media_info.video_rtp_server,
+            peer.clone(),
+        ));
+        tokio::spawn(rtcp_listener(
+            host.clone(),
+            media_info.audio_rtp_server,
+            peer.clone(),
+        ));
     }
 
     tokio::select! {
-        _= complete_rx.recv() => { }
+        _ = complete_rx.recv() => { }
         msg = signal::wait_for_stop_signal() => warn!("Received signal: {}", msg)
     }
+
     let _ = client.remove_resource().await;
     let _ = peer.close().await;
+
     Ok(())
 }
 
-async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection>) {
-    let rtcp_listener = UdpSocket::bind(format!("{}:{}", host, rtcp_port))
-        .await
-        .unwrap();
-    println!(
-        "RTCP listener bound to: {}",
-        rtcp_listener.local_addr().unwrap()
-    );
-    let mut rtcp_buf = vec![0u8; 1500];
+async fn rtp_send(
+    mut receiver: UnboundedReceiver<Vec<u8>>,
+    host: String,
+    client_port: Option<u16>,
+    server_port: Option<u16>,
+) {
+    if let Some(port) = client_port {
+        let server_addr = if let Some(server_port) = server_port {
+            format!("{}:{}", host, server_port)
+        } else {
+            "0.0.0.0:0".to_string()
+        };
 
-    loop {
-        match rtcp_listener.recv_from(&mut rtcp_buf).await {
-            Ok((len, addr)) => {
-                if len > 0 {
-                    debug!("Received {} bytes of RTCP data from {}", len, addr);
-                    let mut rtcp_data = &rtcp_buf[..len];
+        let socket = match UdpSocket::bind(&server_addr).await {
+            Ok(s) => {
+                info!("UDP socket bound to {}", server_addr);
+                s
+            }
+            Err(e) => {
+                error!("Failed to bind UDP socket on {}: {}", server_addr, e);
+                return;
+            }
+        };
+        let client_addr = format!("{}:{}", host, port);
 
-                    match rtcp::packet::unmarshal(&mut rtcp_data) {
-                        Ok(rtcp_packets) => {
-                            for packet in rtcp_packets {
-                                debug!("Received RTCP packet from {}: {:?}", addr, packet);
-                                match peer.write_rtcp(&[packet]).await {
-                                    Ok(_) => {
-                                        debug!("Successfully sent RTCP packet to remote peer");
-                                    }
-                                    Err(e) => {
-                                        error!("Error sending RTCP data to remote peer: {}", e);
+        while let Some(data) = receiver.recv().await {
+            match socket.send_to(&data, &client_addr).await {
+                Ok(_) => {}
+                Err(e) => error!("Failed to send data to {}: {}", client_addr, e),
+            }
+        }
+    }
+}
+
+async fn rtcp_listener(host: String, rtcp_port: Option<u16>, peer: Arc<RTCPeerConnection>) {
+    if let Some(rtcp_port) = rtcp_port {
+        let rtcp_listener = UdpSocket::bind(format!("{}:{}", host, rtcp_port + 1))
+            .await
+            .unwrap();
+        info!(
+            "RTCP listener bound to: {:?}",
+            rtcp_listener.local_addr().unwrap()
+        );
+        let mut rtcp_buf = vec![0u8; 1500];
+
+        loop {
+            match rtcp_listener.recv_from(&mut rtcp_buf).await {
+                Ok((len, addr)) => {
+                    if len > 0 {
+                        debug!("Received {} bytes of RTCP data from {}", len, addr);
+                        let mut rtcp_data = &rtcp_buf[..len];
+
+                        match rtcp::packet::unmarshal(&mut rtcp_data) {
+                            Ok(rtcp_packets) => {
+                                for packet in rtcp_packets {
+                                    debug!("Received RTCP packet from {}: {:?}", addr, packet);
+                                    match peer.write_rtcp(&[packet]).await {
+                                        Ok(_) => {
+                                            debug!("Successfully sent RTCP packet to remote peer");
+                                        }
+                                        Err(e) => {
+                                            error!("Error sending RTCP data to remote peer: {}", e);
+                                        }
                                     }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            error!("Failed to parse RTCP packet: {}", e);
+                            Err(e) => {
+                                error!("Failed to parse RTCP packet: {}", e);
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                error!("Error receiving RTCP data: {}", e);
+                Err(e) => {
+                    error!("Error receiving RTCP data: {}", e);
+                }
             }
         }
     }
@@ -252,21 +336,20 @@ async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection
 
 async fn webrtc_start(
     client: &mut Client,
-    codec: RTCRtpCodecCapability,
-    send: UnboundedSender<Vec<u8>>,
-    payload_type: u8,
+    video_send: UnboundedSender<Vec<u8>>,
+    audio_send: UnboundedSender<Vec<u8>>,
     complete_tx: UnboundedSender<()>,
+    codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
 ) -> Result<(Arc<RTCPeerConnection>, RTCSessionDescription)> {
     let peer = new_peer(
-        RTCRtpCodecParameters {
-            capability: codec,
-            payload_type,
-            stats_id: Default::default(),
-        },
+        video_send,
+        audio_send,
         complete_tx.clone(),
-        send,
+        codec_info.clone(),
     )
-    .await?;
+    .await
+    .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
+
     let offer = peer.create_offer(None).await?;
 
     let mut gather_complete = peer.gathering_complete_promise().await;
@@ -278,6 +361,7 @@ async fn webrtc_start(
         .await?;
 
     debug!("Get http header link ice servers: {:?}", ice_servers);
+
     let mut current_config = peer.get_configuration().await;
     current_config.ice_servers.clone_from(&ice_servers);
     peer.set_configuration(current_config.clone()).await?;
@@ -290,51 +374,65 @@ async fn webrtc_start(
 }
 
 async fn new_peer(
-    codec: RTCRtpCodecParameters,
+    video_send: UnboundedSender<Vec<u8>>,
+    audio_send: UnboundedSender<Vec<u8>>,
     complete_tx: UnboundedSender<()>,
-    sender: UnboundedSender<Vec<u8>>,
+    codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
 ) -> Result<Arc<RTCPeerConnection>> {
-    let ct = get_codec_type(&codec.capability);
     let mut m = MediaEngine::default();
-    m.register_codec(codec, ct)?;
+
+    m.register_default_codecs()?;
+
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
     let api = APIBuilder::new()
         .with_media_engine(m)
         .with_interceptor_registry(registry)
         .build();
+
     let config = RTCConfiguration {
-        ice_servers: vec![{
-            RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                username: "".to_string(),
-                credential: "".to_string(),
-                credential_type: RTCIceCredentialType::Unspecified,
-            }
+        ice_servers: vec![RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            username: "".to_string(),
+            credential: "".to_string(),
+            credential_type: RTCIceCredentialType::Unspecified,
         }],
         ..Default::default()
     };
+
     let peer = Arc::new(
         api.new_peer_connection(config)
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
-    let _ = peer
-        .add_transceiver_from_kind(
-            ct,
-            Some(RTCRtpTransceiverInit {
-                direction: RTCRtpTransceiverDirection::Recvonly,
-                send_encodings: vec![],
-            }),
-        )
-        .await
-        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+
+    peer.add_transceiver_from_kind(
+        RTPCodecType::Video,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Recvonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await
+    .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+
+    peer.add_transceiver_from_kind(
+        RTPCodecType::Audio,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Recvonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await
+    .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+
     let pc = peer.clone();
+
     peer.on_peer_connection_state_change(Box::new(move |s| {
         let pc = pc.clone();
         let complete_tx = complete_tx.clone();
         tokio::spawn(async move {
-            warn!("connection state changed: {}", s);
+            warn!("Connection state changed: {}", s);
             match s {
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                     let _ = pc.close().await;
@@ -347,18 +445,47 @@ async fn new_peer(
         });
         Box::pin(async {})
     }));
-    peer.on_track(Box::new(move |track, _, _| {
-        let sender = sender.clone();
-        tokio::spawn(async move {
-            let mut b = [0u8; 1500];
-            while let Ok((rtp_packet, _)) = track.read(&mut b).await {
-                trace!("received packet: {}", rtp_packet);
-                let size = rtp_packet.marshal_size();
-                let data = b[0..size].to_vec();
-                let _ = sender.send(data);
+
+    peer.on_track(Box::new({
+        let codec_info = codec_info.clone();
+        move |track, _, _| {
+            let video_sender = video_send.clone();
+            let audio_sender = audio_send.clone();
+            let codec = track.codec().clone();
+            let track_kind = track.kind();
+
+            let codec_info = codec_info.clone();
+            tokio::spawn(async move {
+                let mut codec_info = codec_info.lock().await;
+                if track_kind == RTPCodecType::Video {
+                    debug!("Updating video codec info: {:?}", codec);
+                    codec_info.video_codec = Some(codec.clone());
+                } else if track_kind == RTPCodecType::Audio {
+                    debug!("Updating audio codec info: {:?}", codec);
+                    codec_info.audio_codec = Some(codec.clone());
+                }
+            });
+
+            let sender = match track_kind {
+                RTPCodecType::Video => Some(video_sender),
+                RTPCodecType::Audio => Some(audio_sender),
+                _ => None,
+            };
+
+            if let Some(sender) = sender {
+                tokio::spawn(async move {
+                    let mut b = [0u8; 1500];
+                    while let Ok((rtp_packet, _)) = track.read(&mut b).await {
+                        trace!("Received RTP packet: {:?}", rtp_packet);
+                        let size = rtp_packet.marshal_size();
+                        let data = b[0..size].to_vec();
+                        let _ = sender.send(data);
+                    }
+                });
             }
-        });
-        Box::pin(async {})
+            Box::pin(async {})
+        }
     }));
+
     Ok(peer)
 }
