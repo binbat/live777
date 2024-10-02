@@ -16,6 +16,14 @@ path = "src/main.rs"
 name = "liveman"
 path = "src/liveman.rs"
 
+[[bin]]
+name = "whipinto"
+path = "src/whipinto.rs"
+
+[[bin]]
+name = "whepfrom"
+path = "src/whepfrom.rs"
+
 [workspace]
 members = [
     ".",
@@ -51,6 +59,8 @@ tracing = "0.1"
 [dependencies]
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
+whipinto = { path = "tools/whipinto" }
+whepfrom = { path = "tools/whepfrom" }
 signal = { path = "libs/signal" }
 utils = { path = "libs/utils" }
 

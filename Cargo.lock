@@ -1674,6 +1674,8 @@ dependencies = [
  "tokio",
  "tracing",
  "utils",
+ "whepfrom",
+ "whipinto",
 ]
 
 [[package]]
@@ -4306,7 +4308,6 @@ name = "whepfrom"
 version = "0.5.1"
 dependencies = [
  "anyhow",
- "clap",
  "cli",
  "libwish",
  "portpicker",
@@ -4317,7 +4318,6 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "utils",
  "webrtc",
 ]
 
@@ -4327,7 +4327,6 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "bytes",
- "clap",
  "cli",
  "libwish",
  "md-5",
@@ -4341,7 +4340,6 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "utils",
  "webrtc",
 ]
 

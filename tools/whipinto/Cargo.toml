@@ -1,20 +1,21 @@
 [package]
 name = "whipinto"
-description = "RTP to WHIP tool"
+description = "RTP/RTSP to WHIP tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+crate-type = ["lib"]
 
 [dependencies]
 cli = { path = "../../libs/cli" }
 rtsp = { path = "../../libs/rtsp" }
 libwish = { path = "../../libs/libwish" }
 signal = { path = "../../libs/signal" }
-utils = { path = "../../libs/utils" }
 
 anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 webrtc = { workspace = true }

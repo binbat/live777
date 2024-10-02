@@ -39,5 +39,3 @@ async fn main() {
     liveman::server_up(cfg, listener, helper::shutdown_signal()).await;
     info!("Server shutdown");
 }
-
-
