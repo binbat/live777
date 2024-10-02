@@ -38,6 +38,8 @@ export const zh = defineConfig({
                     text: '参考',
                     collapsed: false,
                     items: [
+                        { text: 'WhipInto', link: 'whipinto' },
+                        { text: 'WhepFrom', link: 'whepfrom' },
                         { text: 'Live777 API', link: 'live777-api' },
                         { text: 'LiveMan API', link: 'liveman-api' },
                     ]

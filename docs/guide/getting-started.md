@@ -61,49 +61,30 @@ Stream protocol convert tool.
 
 - `RTP` => `WHIP`
 - `WHEP` => `RTP`
-- TODO: `RTSP` => `WHIP`
+- `RTSP` => `WHIP`
 - TODO: `WHEP` => `RTSP`
 
 ### whipinto
 
-**NOTE: About `pkt_size=1200`**
-
-WebRTC must need `pkt_size=1200`
-
-If `pkt_size > 1200` (most tool `> 1200`, for example: `ffmpeg` default `1472`), we need to de-payload after re-payload
-
-But now, We support re-size `pkt_size` in `VP8` and `VP9`, You can use any `pkt_size` value in `VP8` and `VP9`
-
-Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `OPUS` | `G722` |
------------------ | ------ | ------ | ------ | ------ | ------ | ------ |
-`pkt_size > 1200` | :shit: | :star: | :star: | :star: | :shit: | :shit: |
-
-- :star: It's working
-- :shit: Don't support
-
-* * *
-
 This tool is `rtp2whip`
 
 ```bash
-whipinto -c vp8 -u http://localhost:7777/whip/777 --port 5003
+whipinto -w http://localhost:7777/whip/777
 ```
+
+[Detail whipinto](whipinto)
 
 ### whepfrom
 
 This tool is `whep2rtp`
 
-Build
-
-```bash
-cargo build --package=whepfrom --release
-```
-
 Use WHEP protocol pull stream convert rtp sender
 
 ```bash
-whepfrom -c vp8 -u http://localhost:7777/whep/777 -t localhost:5004
+whepfrom -o <stream.sdp> -w http://localhost:7777/whep/777
 ```
+
+[Detail whepfrom](whepfrom)
 
 ### Web WHIP/WHEP client
 
