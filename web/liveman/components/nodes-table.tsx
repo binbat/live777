@@ -1,7 +1,7 @@
-import { useRefreshTimer } from '../shared/hooks/use-refresh-timer';
-import { StyledCheckbox } from '../shared/components/styled-checkbox';
+import { useRefreshTimer } from '../../shared/hooks/use-refresh-timer';
+import { StyledCheckbox } from '../../shared/components/styled-checkbox';
 
-import { getNodes } from './api';
+import { getNodes } from '../api';
 
 async function getNodesSorted() {
     const nodes = await getNodes();

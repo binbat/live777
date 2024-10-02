@@ -1,19 +1,23 @@
-export async function deleteSession(streamId: string, clientId: string) {
-    return fetch(`/session/${streamId}/${clientId}`, {
-        method: 'DELETE',
-    });
+import wretch from 'wretch';
+
+const base = wretch();
+
+let w = base;
+
+export function setAuthToken(token: string) {
+    w = base.auth(token);
 }
 
-export async function createStream(streamId: string) {
-    return fetch(`/api/streams/${streamId}`, {
-        method: 'POST',
-    });
+export function deleteSession(streamId: string, clientId: string) {
+    return w.url(`/session/${streamId}/${clientId}`).delete();
 }
 
-export async function deleteStream(streamId: string) {
-    return fetch(`/api/streams/${streamId}`, {
-        method: 'DELETE',
-    });
+export function createStream(streamId: string) {
+    return w.url(`/api/streams/${streamId}`).post();
+}
+
+export function deleteStream(streamId: string) {
+    return w.url(`/api/streams/${streamId}`).delete();
 }
 
 type SessionConnectionState =
@@ -54,16 +58,10 @@ export interface Cascade {
     targetUrl?: string;
 }
 
-export async function getStreams(): Promise<Stream[]> {
-    return (await fetch('/api/streams/')).json();
+export function getStreams() {
+    return w.url('/api/streams/').get().json<Stream[]>();
 }
 
-export async function cascade(streamId: string, params: Cascade): Promise<void> {
-    fetch(`/api/cascade/${streamId}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(params),
-    });
+export function cascade(streamId: string, params: Cascade) {
+    return w.url(`/api/cascade/${streamId}`).post(params);
 }

@@ -1,7 +1,8 @@
-import { useRef, useImperativeHandle, useState } from 'preact/hooks';
+import { useRef, useImperativeHandle, useState, useContext } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
 import { WHIPClient } from '@binbat/whip-whep/whip';
 
+import { TokenContext } from '../context';
 import { formatVideoTrackResolution } from '../utils';
 import { useLogger } from '../hooks/use-logger';
 
@@ -15,8 +16,9 @@ export interface IWebStreamDialog {
 
 export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) => {
     const [streamId, setStreamId] = useState('');
-    const [mediaStream, setMediaStream] = useState<MediaStream | null>();
-    const [whipClient, setWhipClient] = useState<WHIPClient | null>();
+    const tokenContext = useContext(TokenContext);
+    const refMediaStream = useRef<MediaStream | null>(null);
+    const refWhipClient = useRef<WHIPClient | null>(null);
     const [connState, setConnState] = useState('');
     const [videoResolution, setVideoResolution] = useState('');
     const logger = useLogger();
@@ -48,7 +50,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             audio: true,
             video: true
         });
-        setMediaStream(stream);
+        refMediaStream.current = stream;
         if (refVideo.current) {
             refVideo.current.srcObject = stream;
         }
@@ -65,8 +67,8 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             pc.addTransceiver(at, { direction: 'sendonly' });
         });
         const whip = new WHIPClient();
+        refWhipClient.current = whip;
         const url = `${location.origin}/whip/${streamId}`;
-        const token = '';
         whip.onOffer = sdp => {
             logger.log('http offer sent');
             return sdp;
@@ -75,9 +77,8 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             logger.log('http answer received');
             return sdp;
         };
-        setWhipClient(whip);
         try {
-            await whip.publish(pc, url, token);
+            await whip.publish(pc, url, tokenContext.token);
         } catch (e: any) {  // eslint-disable-line @typescript-eslint/no-explicit-any
             setConnState('Error');
             if (e instanceof Error) {
@@ -91,23 +92,23 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     };
 
     const handleStreamStop = async () => {
-        if (mediaStream) {
-            mediaStream.getTracks().forEach(t => t.stop());
-            setMediaStream(null);
+        if (refMediaStream.current) {
+            refMediaStream.current.getTracks().forEach(t => t.stop());
+            refMediaStream.current = null;
         }
         if (refVideo.current) {
             refVideo.current.srcObject = null;
         }
-        if (whipClient) {
-            await whipClient.stop();
-            setWhipClient(null);
+        if (refWhipClient.current) {
+            await refWhipClient.current.stop();
+            refWhipClient.current = null;
         }
         props.onStop();
         handleCloseDialog();
     };
 
     const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
-        const videoTrack = mediaStream?.getVideoTracks()[0];
+        const videoTrack = refMediaStream.current?.getVideoTracks()[0];
         if (videoTrack) {
             setVideoResolution(formatVideoTrackResolution(videoTrack));
         }
@@ -128,7 +129,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             </details>
             <div>
                 <button onClick={() => { handleCloseDialog(); }}>Hide</button>
-                {whipClient
+                {refWhipClient.current
                     ? <button onClick={() => { handleStreamStop(); }} class="text-red-500">Stop</button>
                     : <button onClick={() => { handleStreamStart(); }}>Start</button>
                 }

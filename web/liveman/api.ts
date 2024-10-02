@@ -1,4 +1,44 @@
-import { Stream } from '../shared/api';
+import wretch from 'wretch';
+
+import type { Stream } from '../shared/api';
+
+const unauthorizedCallbacks: (() => void)[] = [];
+
+export function addUnauthorizedCallback(cb: () => void) {
+    unauthorizedCallbacks.push(cb);
+}
+
+export function removeUnauthorizedCallback(cb: () => void) {
+    const i = unauthorizedCallbacks.indexOf(cb);
+    if (i >= 0) {
+        unauthorizedCallbacks.splice(i, 1);
+    }
+}
+
+const base = wretch().middlewares([
+    (next) => async (url, opts) => {
+        const res = await next(url, opts);
+        if (res.status === 401) {
+            unauthorizedCallbacks.forEach(cb => cb());
+        }
+        return res;
+    }
+]);
+
+let w = base;
+
+export function setAuthToken(token: string) {
+    w = base.auth(token);
+}
+
+export interface LoginResponse {
+    token_type: string;
+    access_token: string;
+}
+
+export function login(username: string, password: string) {
+    return w.url('/api/login').post({ username, password }).json<LoginResponse>();
+}
 
 export interface Node {
     alias: string;
@@ -8,15 +48,46 @@ export interface Node {
     status: 'running' | 'stopped';
 }
 
-export async function getNodes(): Promise<Node[]> {
-    return (await fetch('/api/nodes/')).json();
+export function getNodes() {
+    return w.url('/api/nodes/').get().json<Node[]>();
 }
-
 
 export interface StreamDetail {
     [key: string]: Stream;
 }
 
-export async function getStreamDetail(streamId: string): Promise<StreamDetail> {
-    return (await fetch(`/api/streams/${streamId}`)).json();
+export function getStreamDetail(streamId: string) {
+    return w.url(`/api/streams/${streamId}`).get().json<StreamDetail>();
+}
+
+export interface CreateStreamTokenRequest {
+    /**
+     * stream id, use `*` match any stream id
+     */
+    id: string;
+    /**
+     * Validity duration (second)
+     */
+    duration: number;
+    /**
+     * can use whep
+     */
+    subscribe: boolean;
+    /**
+     * can use whip
+     */
+    publish: boolean;
+    /**
+     * can use cascade and delete stream
+     */
+    admin: boolean;
+}
+
+export interface StreamTokenResponse {
+    token_type: string;
+    access_token: string;
+}
+
+export function createStreamToken(req: CreateStreamTokenRequest) {
+    return w.url('/api/token').post(req).json<StreamTokenResponse>();
 }

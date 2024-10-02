@@ -31,7 +31,6 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
     const onConfirmNewStreamId = (_e: Event) => {
         props.onNewStreamId(streamId);
         createStream(streamId);
-        refDialog.current?.close();
     };
 
     return (

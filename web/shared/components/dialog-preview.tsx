@@ -1,7 +1,8 @@
-import { useRef, useImperativeHandle, useState } from 'preact/hooks';
+import { useRef, useImperativeHandle, useState, useContext } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
 import { WHEPClient } from '@binbat/whip-whep/whep.js';
 
+import { TokenContext } from '../context';
 import { formatVideoTrackResolution } from '../utils';
 import { useLogger } from '../hooks/use-logger';
 
@@ -15,9 +16,10 @@ export interface IPreviewDialog {
 
 export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const [streamId, setStreamId] = useState('');
+    const tokenContext = useContext(TokenContext);
     const refPeerConnection = useRef<RTCPeerConnection | null>(null);
     const refWhepClient = useRef<WHEPClient | null>(null);
-    const refMediaStream = useRef<MediaStream | null>();
+    const refMediaStream = useRef<MediaStream | null>(null);
     const [connState, setConnState] = useState('');
     const [videoResolution, setVideoResolution] = useState('');
     const logger = useLogger();
@@ -107,7 +109,6 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         refPeerConnection.current = pc;
         const whep = new WHEPClient();
         const url = `${location.origin}/whep/${streamId}`;
-        const token = '';
         whep.onOffer = sdp => {
             logger.log('http offer sent');
             return sdp;
@@ -118,7 +119,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         };
         refWhepClient.current = whep;
         try {
-            await whep.view(pc, url, token);
+            await whep.view(pc, url, tokenContext.token);
         } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
             setConnState('Error');
             if (e instanceof Error) {
