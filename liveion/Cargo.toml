@@ -14,8 +14,6 @@ api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
 http-log = { path = "../libs/http-log" }
 libwish = { path = "../libs/libwish" }
-signal = { path = "../libs/signal" }
-utils = { path = "../libs/utils" }
 
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
 

@@ -6,6 +6,16 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+default-run = "live777"
+
+[[bin]]
+name = "live777"
+path = "src/main.rs"
+
+[[bin]]
+name = "liveman"
+path = "src/liveman.rs"
+
 [workspace]
 members = [
     ".",
@@ -40,6 +50,7 @@ tracing = "0.1"
 
 [dependencies]
 liveion = { path = "liveion" }
+liveman = { path = "liveman" }
 signal = { path = "libs/signal" }
 utils = { path = "libs/utils" }
 
@@ -49,7 +60,8 @@ tracing = { workspace = true }
 
 [features]
 default = ["net4mqtt"]
-net4mqtt = ["liveion/net4mqtt"]
+liveion = ["liveman/liveion"]
+net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb

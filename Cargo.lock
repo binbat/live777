@@ -1669,6 +1669,7 @@ version = "0.5.1"
 dependencies = [
  "clap",
  "liveion",
+ "liveman",
  "signal",
  "tokio",
  "tracing",
@@ -1702,13 +1703,11 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "signal",
  "tokio",
  "tokio-stream",
  "toml 0.8.14",
  "tower-http",
  "tracing",
- "utils",
  "webrtc",
 ]
 
@@ -1740,7 +1739,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "url",
- "utils",
 ]
 
 [[package]]

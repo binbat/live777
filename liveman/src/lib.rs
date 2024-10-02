@@ -5,7 +5,6 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Router;
 
-use clap::Parser;
 use http::{header, StatusCode, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
@@ -15,7 +14,10 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{error, info_span};
+
+#[cfg(feature = "liveion")]
+use tracing::info;
 
 use auth::{access::access_middleware, ManyValidate};
 
@@ -28,7 +30,7 @@ use crate::mem::{MemStorage, Node, NodeKind, Server};
 struct Assets;
 
 mod admin;
-mod config;
+pub mod config;
 mod error;
 mod mem;
 mod result;
@@ -37,43 +39,6 @@ mod tick;
 
 #[cfg(feature = "liveion")]
 mod cluster;
-
-#[derive(Parser)]
-#[command(version)]
-struct Args {
-    /// Set config file path
-    #[arg(short, long)]
-    config: Option<String>,
-}
-
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-    let cfg = Config::parse(args.config);
-
-    #[cfg(debug_assertions)]
-    utils::set_log(format!(
-        "liveman={},liveion={},http_log={},webrtc=error",
-        cfg.log.level, cfg.log.level, cfg.log.level
-    ));
-
-    #[cfg(not(debug_assertions))]
-    utils::set_log(format!(
-        "liveman={},http_log={},webrtc=error",
-        cfg.log.level, cfg.log.level
-    ));
-
-    warn!("set log level : {}", cfg.log.level);
-    debug!("config : {:?}", cfg);
-
-    let listener = tokio::net::TcpListener::bind(cfg.http.listen)
-        .await
-        .unwrap();
-    info!("Server listening on {}", listener.local_addr().unwrap());
-
-    server_up(cfg, listener, shutdown_signal()).await;
-    info!("Server shutdown");
-}
 
 pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
 where
@@ -228,11 +193,6 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
-}
-
-async fn shutdown_signal() {
-    let str = signal::wait_for_stop_signal().await;
-    debug!("Received signal: {}", str);
 }
 
 type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
