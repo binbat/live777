@@ -33,10 +33,9 @@ members = [
     "libs/libwish",
     "libs/signal",
     "libs/net4mqtt",
-    "tools/whepfrom",
-    "tools/whipinto",
     "liveion",
     "liveman",
+    "livetwo",
 ]
 
 [workspace.package]
@@ -59,8 +58,7 @@ tracing = "0.1"
 [dependencies]
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
-whipinto = { path = "tools/whipinto" }
-whepfrom = { path = "tools/whepfrom" }
+livetwo = { path = "livetwo" }
 signal = { path = "libs/signal" }
 utils = { path = "libs/utils" }
 

@@ -40,7 +40,7 @@ async fn main() {
         }
     ));
 
-    whipinto::whipinto(
+    livetwo::whip::into(
         args.input.clone(),
         args.host.clone(),
         args.whip.clone(),

@@ -40,7 +40,7 @@ async fn main() {
         }
     ));
 
-    whepfrom::whepfrom(
+    livetwo::whep::from(
         args.output.clone(),
         args.host.clone(),
         args.whep.clone(),

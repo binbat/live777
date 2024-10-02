@@ -37,12 +37,9 @@ use webrtc::{
 
 use libwish::Client;
 
-const PREFIX_LIB: &str = "WEBRTC";
-const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
-const _SCHEME_RTSP_CLIENT: &str = "rtsp";
-const SCHEME_RTP_SDP: &str = "sdp";
+use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_SERVER};
 
-pub async fn whepfrom(
+pub async fn from(
     target_url: String,
     set_host: Option<String>,
     whep_url: String,

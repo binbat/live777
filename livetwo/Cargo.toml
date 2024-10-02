@@ -1,6 +1,6 @@
 [package]
-name = "whepfrom"
-description = "WHEP to RTP/RTSP tool"
+name = "livetwo"
+description = "WHIP/WHEP convert RTP/RTSP tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,16 +10,21 @@ repository.workspace = true
 crate-type = ["lib"]
 
 [dependencies]
-cli = { path = "../../libs/cli" }
-rtsp = { path = "../../libs/rtsp" }
-libwish = { path = "../../libs/libwish" }
-signal = { path = "../../libs/signal" }
+cli = { path = "../libs/cli" }
+rtsp = { path = "../libs/rtsp" }
+libwish = { path = "../libs/libwish" }
+signal = { path = "../libs/signal" }
 
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 webrtc = { workspace = true }
+
+bytes = "1.6.0"
 scopeguard = "1.2.0"
-sdp = "0.6.2"
-portpicker = "0.1.1"
+md-5 = "0.10"
 url = "2.5.2"
+portpicker = "0.1.1"
+rtsp-types = "0.1.2"
+sdp-types = "0.1"
+sdp = "0.6.2"

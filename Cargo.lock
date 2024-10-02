@@ -1670,12 +1670,11 @@ dependencies = [
  "clap",
  "liveion",
  "liveman",
+ "livetwo",
  "signal",
  "tokio",
  "tracing",
  "utils",
- "whepfrom",
- "whipinto",
 ]
 
 [[package]]
@@ -1741,6 +1740,28 @@ dependencies = [
  "tower-http",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "livetwo"
+version = "0.5.1"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "cli",
+ "libwish",
+ "md-5",
+ "portpicker",
+ "rtsp",
+ "rtsp-types",
+ "scopeguard",
+ "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sdp-types",
+ "signal",
+ "tokio",
+ "tracing",
+ "url",
+ "webrtc",
 ]
 
 [[package]]
@@ -4301,46 +4322,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "winapi",
-]
-
-[[package]]
-name = "whepfrom"
-version = "0.5.1"
-dependencies = [
- "anyhow",
- "cli",
- "libwish",
- "portpicker",
- "rtsp",
- "scopeguard",
- "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "signal",
- "tokio",
- "tracing",
- "url",
- "webrtc",
-]
-
-[[package]]
-name = "whipinto"
-version = "0.5.1"
-dependencies = [
- "anyhow",
- "bytes",
- "cli",
- "libwish",
- "md-5",
- "portpicker",
- "rtsp",
- "rtsp-types",
- "scopeguard",
- "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "sdp-types",
- "signal",
- "tokio",
- "tracing",
- "url",
- "webrtc",
 ]
 
 [[package]]

@@ -32,19 +32,12 @@ use webrtc::{
 use cli::{codec_from_str, create_child};
 use libwish::Client;
 
-use rtspclient::setup_rtsp_session;
+use crate::payload;
+use crate::rtspclient::setup_rtsp_session;
 
-mod payload;
-mod rtspclient;
-#[cfg(test)]
-mod test;
+use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
-const PREFIX_LIB: &str = "WEBRTC";
-const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
-const SCHEME_RTSP_CLIENT: &str = "rtsp";
-const SCHEME_RTP_SDP: &str = "sdp";
-
-pub async fn whipinto(
+pub async fn into(
     target_url: String,
     set_host: Option<String>,
     whip_url: String,
