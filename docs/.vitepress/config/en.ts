@@ -36,6 +36,7 @@ export const en = defineConfig({
                     text: 'Reference',
                     collapsed: false,
                     items: [
+                        { text: 'NET4MQTT', link: 'net4mqtt' },
                         { text: 'WhipInto', link: 'whipinto' },
                         { text: 'WhepFrom', link: 'whepfrom' },
                         { text: 'Live777 API', link: 'live777-api' },
