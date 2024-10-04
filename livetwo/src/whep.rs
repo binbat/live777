@@ -148,9 +148,10 @@ pub async fn from(
             }
         }
         let sdp = session.marshal();
-        let mut file = File::create("output.sdp")?;
+        let file_path = input.path().strip_prefix('/').unwrap();
+        info!("SDP written to {}", file_path);
+        let mut file = File::create(file_path)?;
         file.write_all(sdp.as_bytes())?;
-        info!("SDP written to output.sdp");
     }
     debug!("media info : {:?}", media_info);
     tokio::spawn(rtp_send(
