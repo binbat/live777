@@ -1667,11 +1667,18 @@ checksum = "78b3ae25bc7c8c38cec158d1f2757ee79e9b3740fbc7ccf0e59e4b08d793fa89"
 name = "live777"
 version = "0.5.1"
 dependencies = [
+ "api",
  "clap",
+ "cli",
+ "http 1.1.0",
  "liveion",
  "liveman",
  "livetwo",
+ "reqwest",
+ "serde",
+ "serde_json",
  "signal",
+ "tempfile",
  "tokio",
  "tracing",
  "utils",

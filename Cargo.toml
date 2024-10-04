@@ -55,6 +55,21 @@ serde = "1"
 tokio = "1.36"
 tracing = "0.1"
 
+[dev-dependencies]
+http = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
+serde_json = "1.0"
+
+api = { path = "libs/api" }
+cli = { path = "libs/cli" }
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "socks",
+    "json"
+], default-features = false }
+
+tempfile = "3"
+
 [dependencies]
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
