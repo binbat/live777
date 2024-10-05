@@ -89,9 +89,10 @@ where
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
+                        let listener = TcpListener::bind(c.listen).await.unwrap();
                         net4mqtt::proxy::local_socks(
                             &c.mqtt_url,
-                            c.listen,
+                            listener,
                             "-",
                             &c.alias.clone(),
                             None,

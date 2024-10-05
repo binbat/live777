@@ -347,9 +347,9 @@ pub async fn agent(
     }
 }
 
-pub async fn local(
+pub async fn local_ports_tcp(
     mqtt_url: &str,
-    address: SocketAddr,
+    listener: TcpListener,
     agent_id: &str,
     local_id: &str,
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
@@ -376,14 +376,10 @@ pub async fn local(
     )
     .await;
 
-    let mut buf = [0; MAX_BUFFER_SIZE];
-    let listener = TcpListener::bind(address).await.unwrap();
-    let sock = UdpSocket::bind(address).await.unwrap();
     loop {
         let sender = sender.clone();
         let on_xdata = on_xdata.clone();
         select! {
-            // TCP Server
             Ok((socket, _)) = listener.accept() => {
                 let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
 
@@ -403,7 +399,85 @@ pub async fn local(
                 });
             }
 
-            // UDP Server
+            result = receiver.recv() => {
+                match result {
+                    Some((key, data)) => {
+                        client.publish(
+                            key,
+                            QoS::AtMostOnce,
+                            false,
+                            data
+                        ).await?;
+                    }
+                    None => return Err(anyhow!("recv error"))
+                }
+            }
+            result = eventloop.poll() => {
+                match result {
+                    Ok(notification) => {
+                        if let Some(p) = mqtt_receive(notification) {
+                            let topic = p.topic.clone();
+                            let (_prefix, agent_id, local_id, label, protocol, _address) = topic::parse(&topic);
+
+                            match (label, protocol) {
+                                (topic::label::X, _) => {
+                                    if let Some(s) = on_xdata {
+                                        s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await.unwrap();
+                                    }
+                                },
+                                (_, topic::protocol::KCP | topic::protocol::TCP) => {
+                                    if let Some(sender) = senders.get(&p.topic) {
+                                        if sender.is_closed() {
+                                            senders.remove(&p.topic);
+                                        } else {
+                                            sender.send((p.topic, p.payload.to_vec())).unwrap();
+                                        }
+                                    }
+                                },
+                                (label, protocol) => info!("unknown label: {} and protocol: {}", label, protocol)
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        error!("local mqtt error: {:?}", e);
+                        time::sleep(time::Duration::from_secs(1)).await;
+                    }
+                }
+
+            }
+            else => { error!("vlocal proxy error"); }
+        }
+    }
+}
+
+pub async fn local_ports_udp(
+    mqtt_url: &str,
+    sock: UdpSocket,
+    agent_id: &str,
+    local_id: &str,
+    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
+    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
+) -> Result<(), Error> {
+    let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
+
+    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
+    let prefix = prefix.as_str();
+
+    let (client, mut eventloop) = mqtt_client_init(
+        url,
+        topic::build_sub(prefix, topic::ANY, local_id, topic::label::O),
+        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
+        topic::build_pub_x(prefix, topic::NIL, local_id, topic::label::X),
+        xdata,
+        on_xdata.is_some(),
+    )
+    .await;
+
+    let mut buf = [0; MAX_BUFFER_SIZE];
+    loop {
+        let sender = sender.clone();
+        let on_xdata = on_xdata.clone();
+        select! {
             Ok((len, addr)) = sock.recv_from(&mut buf) => {
                 sender.send((
                     topic::build(prefix, agent_id, local_id, topic::label::I, topic::protocol::UDP, &addr.to_string()),
@@ -427,21 +501,12 @@ pub async fn local(
                     Ok(notification) => {
                         if let Some(p) = mqtt_receive(notification) {
                             let topic = p.topic.clone();
-                            let (_prefix, agent_id, local_id, label, protocol, address) = topic::parse(&topic);
+                            let (_prefix, _agent_id, _local_id, label, protocol, address) = topic::parse(&topic);
 
                             match (label, protocol) {
                                 (topic::label::X, _) => {
                                     if let Some(s) = on_xdata {
                                         s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await.unwrap();
-                                    }
-                                },
-                                (_, topic::protocol::KCP | topic::protocol::TCP) => {
-                                    if let Some(sender) = senders.get(&p.topic) {
-                                        if sender.is_closed() {
-                                            senders.remove(&p.topic);
-                                        } else {
-                                            sender.send((p.topic, p.payload.to_vec())).unwrap();
-                                        }
                                     }
                                 },
                                 (_, topic::protocol::UDP) => { let _ = sock.send_to(&p.payload, address).await.unwrap(); },
@@ -477,7 +542,7 @@ use std::sync::Arc;
 
 pub async fn local_socks(
     mqtt_url: &str,
-    address: SocketAddr,
+    listener: TcpListener,
     agent_id: &str,
     local_id: &str,
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
@@ -504,7 +569,6 @@ pub async fn local_socks(
     )
     .await;
 
-    let listener = TcpListener::bind(address).await.unwrap();
     let server = Server::new(listener, Arc::new(NoAuth));
 
     loop {

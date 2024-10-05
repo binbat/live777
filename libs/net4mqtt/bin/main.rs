@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::{ArgAction, Parser, Subcommand};
+use tokio::net::{TcpListener, UdpSocket};
 use tracing::{debug, info, trace, Level};
 
 use net4mqtt::proxy;
@@ -53,6 +54,9 @@ enum Commands {
         /// Set Current local id
         #[arg(short, long, default_value_t = format!("-"))]
         id: String,
+        /// use udp port
+        #[arg(short, long, default_value_t = false)]
+        udp: bool,
         /// enable kcp in mqtt
         #[arg(short, long, default_value_t = false)]
         kcp: bool,
@@ -99,7 +103,8 @@ async fn main() {
             info!("Running as socks, {:?}", listen);
             debug!("use domain: {:?}", domain);
 
-            proxy::local_socks(&mqtt_url, listen, &agent_id, &id, None, None, kcp)
+            let listener = TcpListener::bind(listen).await.unwrap();
+            proxy::local_socks(&mqtt_url, listener, &agent_id, &id, None, None, kcp)
                 .await
                 .unwrap();
         }
@@ -108,13 +113,22 @@ async fn main() {
             listen,
             agent_id,
             id,
+            udp,
             kcp,
         } => {
             info!("Running as local, {:?}", listen);
 
-            proxy::local(&mqtt_url, listen, &agent_id, &id, None, None, kcp)
-                .await
-                .unwrap();
+            if udp {
+                let sock = UdpSocket::bind(listen).await.unwrap();
+                proxy::local_ports_udp(&mqtt_url, sock, &agent_id, &id, None, None)
+                    .await
+                    .unwrap();
+            } else {
+                let listener = TcpListener::bind(listen).await.unwrap();
+                proxy::local_ports_tcp(&mqtt_url, listener, &agent_id, &id, None, None, kcp)
+                    .await
+                    .unwrap();
+            }
         }
         Commands::Agent {
             mqtt_url,
