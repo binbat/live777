@@ -245,6 +245,7 @@ describe("test cluster", () => {
         const fileContentVerge = `
 [strategy]
 reforward_close_sub = true
+each_stream_max_sub = 1
 `
 
         const fileContentCloud = `
@@ -258,7 +259,6 @@ close_other_sub = true
 [[nodes]]
 alias = "test-verge"
 url = "http://${localhost}:${live777VergePort}"
-sub_max = 1
 
 [[nodes]]
 alias = "test-cloud"
@@ -321,24 +321,15 @@ url = "http://${localhost}:${live777CloudPort}"
 
         await until(() => hasPublishStreams(live777CloudHost))
 
-        const whepfromPort = "5004"
-        await using _1 = await tempFile(tmpFileSdpWhepfrom, `
-v=0
-m=video ${whepfromPort} RTP/AVP 96
-c=IN IP4 127.0.0.1
-a=rtpmap:96 VP8/90000
-`)
-
         using _whepfrom = spawn([
             appWhepfrom,
-            "--mode", "rtp",
-            "--codec", "vp8",
-            "--url", `${live777CloudHost}/whep/${live777CloudStream}`,
-            "--target", `127.0.0.1:${whepfromPort}`,
-            "--port", "5004",
+            "-o", tmpFileSdpWhepfrom,
+            "-w", `${live777CloudHost}/whep/${live777CloudStream}`,
         ], {
             onExit: e => { e.exitCode && console.log(e.stderr) },
         })
+
+        await until(() => existsSync(tmpFileSdpWhepfrom))
 
         const res = spawnSync(["ffprobe", "-v", "error", "-hide_banner",
             "-protocol_whitelist", "file,rtp,udp", "-i", tmpFileSdpWhepfrom,
@@ -380,26 +371,18 @@ a=rtpmap:96 VP8/90000
         await until(() => hasPublishStreams(live777VergeHost))
         await until(() => hasPublishStreams(live777LivemanHost))
 
-        const whepfromPort = "5008"
         using _whepfrom1 = spawn([
             appWhepfrom,
-            "--mode", "rtp",
-            "--codec", "vp8",
-            "--url", `${live777LivemanHost}/whep/${live777LivemanStream}`,
-            "--target", `127.0.0.1:${whepfromPort}`,
-            "--port", whepfromPort,
+            "-o", tmpFileSdpWhepfrom,
+            "-w", `${live777LivemanHost}/whep/${live777LivemanStream}`,
         ], { onExit: e => { e.exitCode && console.log("whepfrom 1", e.stderr) } })
 
         await until(() => hasSubscribeStreams(live777VergeHost))
 
-        const whepfrom2Port = "5010"
         using _whepfrom2 = spawn([
             appWhepfrom,
-            "--mode", "rtp",
-            "--codec", "vp8",
-            "--url", `${live777LivemanHost}/whep/${live777LivemanStream}`,
-            "--target", `127.0.0.1:${whepfrom2Port}`,
-            "--port", whepfrom2Port,
+            "-o", tmpFileSdpWhepfrom,
+            "-w", `${live777LivemanHost}/whep/${live777LivemanStream}`,
         ], { onExit: e => { e.exitCode && console.log("whepfrom 2", e.stderr) } })
 
         await Promise.all([

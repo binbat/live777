@@ -2,14 +2,13 @@ use std::fs;
 use std::{sync::Arc, time::Duration, vec};
 
 use anyhow::{anyhow, Result};
-use clap::{ArgAction, Parser};
 use core::net::{Ipv4Addr, Ipv6Addr};
 use scopeguard::defer;
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
-use tracing::{debug, error, info, trace, warn, Level};
+use tracing::{debug, error, info, trace, warn};
 use url::{Host, Url};
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
@@ -33,72 +32,35 @@ use webrtc::{
 use cli::{codec_from_str, create_child};
 use libwish::Client;
 
-use rtspclient::setup_rtsp_session;
+use crate::payload;
+use crate::rtspclient::setup_rtsp_session;
 
-mod payload;
-mod rtspclient;
-#[cfg(test)]
-mod test;
+use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
-const PREFIX_LIB: &str = "WEBRTC";
-const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
-const SCHEME_RTSP_CLIENT: &str = "rtsp";
-const SCHEME_RTP_SDP: &str = "sdp";
-
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
-    #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
-    verbose: u8,
-    /// rtsp://[username]:[password]@[ip]:[port]/[stream] Or <stream.sdp>
-    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8554", SCHEME_RTSP_SERVER))]
-    input: String,
-    /// Set Listener address
-    #[arg(long)]
-    host: Option<String>,
-    /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
-    #[arg(short, long)]
-    whip: String,
-    /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
-    #[arg(short, long)]
+pub async fn into(
+    target_url: String,
+    set_host: Option<String>,
+    whip_url: String,
     token: Option<String>,
-    /// Run a command as childprocess
-    #[arg(long)]
     command: Option<String>,
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-
-    utils::set_log(format!(
-        "whipinto={},webrtc=error",
-        match args.verbose {
-            0 => Level::WARN,
-            1 => Level::INFO,
-            2 => Level::DEBUG,
-            _ => Level::TRACE,
-        }
-    ));
-
-    let input = Url::parse(&args.input).unwrap_or(
+) -> Result<()> {
+    let input = Url::parse(&target_url).unwrap_or(
         Url::parse(&format!(
             "{}://{}:0/{}",
             SCHEME_RTP_SDP,
             Ipv4Addr::UNSPECIFIED,
-            args.input
+            target_url
         ))
         .unwrap(),
     );
-    info!("=== Received Input: {} ===", args.input);
+    info!("=== Received Input: {} ===", input);
 
     let mut host = match input.host().unwrap() {
         Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
         Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
     };
 
-    if let Some(ref h) = args.host {
+    if let Some(ref h) = set_host {
         debug!("=== Specified set host, using {} ===", h);
         host.clone_from(h)
     }
@@ -107,12 +69,9 @@ async fn main() -> Result<()> {
     let media_info;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
-    let mut client = Client::new(
-        args.whip.clone(),
-        Client::get_auth_header_map(args.token.clone()),
-    );
+    let mut client = Client::new(whip_url.clone(), Client::get_auth_header_map(token.clone()));
 
-    let child = if let Some(command) = &args.command {
+    let child = if let Some(command) = &command {
         Arc::new(create_child(Some(command.to_string()))?)
     } else {
         Default::default()
@@ -151,7 +110,7 @@ async fn main() -> Result<()> {
         media_info = rx.recv().await.unwrap();
     } else if input.scheme() == SCHEME_RTSP_CLIENT {
         let (video_port, audio_port, video_codec, audio_codec) =
-            setup_rtsp_session(&args.input).await?;
+            setup_rtsp_session(&target_url).await?;
         media_info = rtsp::MediaInfo {
             video_rtp_client: None,
             audio_rtp_client: None,
@@ -164,7 +123,7 @@ async fn main() -> Result<()> {
         };
     } else {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let sdp = sdp_types::Session::parse(&fs::read(&args.input).unwrap()).unwrap();
+        let sdp = sdp_types::Session::parse(&fs::read(&target_url).unwrap()).unwrap();
         let video_track = sdp.medias.iter().find(|md| md.media == "video");
         let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
 
@@ -244,7 +203,7 @@ async fn main() -> Result<()> {
         media_info.video_codec.map(|c| c.into()),
         media_info.audio_codec.map(|c| c.into()),
         complete_tx.clone(),
-        &args,
+        target_url,
     )
     .await
     .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
@@ -390,19 +349,14 @@ async fn webrtc_start(
     video_codec: Option<RTCRtpCodecCapability>,
     audio_codec: Option<RTCRtpCodecCapability>,
     complete_tx: UnboundedSender<()>,
-    args: &Args,
+    input: String,
 ) -> Result<(
     Arc<RTCPeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
 )> {
-    let (peer, video_sender, audio_sender) = new_peer(
-        video_codec,
-        audio_codec,
-        complete_tx.clone(),
-        args.input.clone(),
-    )
-    .await?;
+    let (peer, video_sender, audio_sender) =
+        new_peer(video_codec, audio_codec, complete_tx.clone(), input).await?;
     let offer = peer.create_offer(None).await?;
 
     let mut gather_complete = peer.gathering_complete_promise().await;

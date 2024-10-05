@@ -6,6 +6,24 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+default-run = "live777"
+
+[[bin]]
+name = "live777"
+path = "src/main.rs"
+
+[[bin]]
+name = "liveman"
+path = "src/liveman.rs"
+
+[[bin]]
+name = "whipinto"
+path = "src/whipinto.rs"
+
+[[bin]]
+name = "whepfrom"
+path = "src/whepfrom.rs"
+
 [workspace]
 members = [
     ".",
@@ -15,10 +33,9 @@ members = [
     "libs/libwish",
     "libs/signal",
     "libs/net4mqtt",
-    "tools/whepfrom",
-    "tools/whipinto",
     "liveion",
     "liveman",
+    "livetwo",
 ]
 
 [workspace.package]
@@ -38,8 +55,25 @@ serde = "1"
 tokio = "1.36"
 tracing = "0.1"
 
+[dev-dependencies]
+http = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
+serde_json = "1.0"
+
+api = { path = "libs/api" }
+cli = { path = "libs/cli" }
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "socks",
+    "json"
+], default-features = false }
+
+tempfile = "3"
+
 [dependencies]
 liveion = { path = "liveion" }
+liveman = { path = "liveman" }
+livetwo = { path = "livetwo" }
 signal = { path = "libs/signal" }
 utils = { path = "libs/utils" }
 
@@ -49,7 +83,8 @@ tracing = { workspace = true }
 
 [features]
 default = ["net4mqtt"]
-net4mqtt = ["liveion/net4mqtt"]
+liveion = ["liveman/liveion"]
+net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 
 # cargo install cargo-deb
 # Reference:  https://github.com/kornelski/cargo-deb

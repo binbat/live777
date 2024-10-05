@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use clap::{ArgAction, Parser};
 use cli::create_child;
 use core::net::{Ipv4Addr, Ipv6Addr};
 use portpicker::pick_unused_port;
@@ -16,7 +15,7 @@ use tokio::{
     net::UdpSocket,
     sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
 };
-use tracing::{debug, error, info, trace, warn, Level};
+use tracing::{debug, error, info, trace, warn};
 use url::{Host, Url};
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -38,65 +37,32 @@ use webrtc::{
 
 use libwish::Client;
 
-const PREFIX_LIB: &str = "WEBRTC";
-const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
-const _SCHEME_RTSP_CLIENT: &str = "rtsp";
-const SCHEME_RTP_SDP: &str = "sdp";
+use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_SERVER};
 
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
-    #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
-    verbose: u8,
-    /// rtsp://[username]:[password]@[ip]:[port]/[stream] Or <stream.sdp>
-    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", SCHEME_RTSP_SERVER))]
-    output: String,
-    /// Set Listener address
-    #[arg(long)]
-    host: Option<String>,
-    /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
-    #[arg(short, long)]
-    whep: String,
-    /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
-    #[arg(short, long)]
+pub async fn from(
+    target_url: String,
+    set_host: Option<String>,
+    whep_url: String,
     token: Option<String>,
-    /// Run a command as childprocess
-    #[arg(long)]
     command: Option<String>,
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-
-    utils::set_log(format!(
-        "whepfrom={},webrtc=error",
-        match args.verbose {
-            0 => Level::WARN,
-            1 => Level::INFO,
-            2 => Level::DEBUG,
-            _ => Level::TRACE,
-        }
-    ));
-
-    let input = Url::parse(&args.output).unwrap_or(
+) -> Result<()> {
+    let input = Url::parse(&target_url).unwrap_or(
         Url::parse(&format!(
             "{}://{}:0/{}",
             SCHEME_RTP_SDP,
             Ipv4Addr::UNSPECIFIED,
-            args.output
+            target_url
         ))
         .unwrap(),
     );
-    info!("=== Received Output: {} ===", args.output);
+    info!("=== Received Output: {} ===", target_url);
 
     let mut host = match input.host().unwrap() {
         Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
         Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
     };
 
-    if let Some(ref h) = args.host {
+    if let Some(ref h) = set_host {
         debug!("=== Specified set host, using {} ===", h);
         host.clone_from(h);
     }
@@ -107,10 +73,7 @@ async fn main() -> Result<()> {
     let (audio_send, audio_recv) = unbounded_channel::<Vec<u8>>();
     let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
 
-    let mut client = Client::new(
-        args.whep.clone(),
-        Client::get_auth_header_map(args.token.clone()),
-    );
+    let mut client = Client::new(whep_url.clone(), Client::get_auth_header_map(token.clone()));
 
     let (peer, answer) = webrtc_start(
         &mut client,
@@ -185,9 +148,10 @@ async fn main() -> Result<()> {
             }
         }
         let sdp = session.marshal();
-        let mut file = File::create("output.sdp")?;
+        let file_path = input.path().strip_prefix('/').unwrap();
+        info!("SDP written to {}", file_path);
+        let mut file = File::create(file_path)?;
         file.write_all(sdp.as_bytes())?;
-        info!("SDP written to output.sdp");
     }
     debug!("media info : {:?}", media_info);
     tokio::spawn(rtp_send(
@@ -203,7 +167,7 @@ async fn main() -> Result<()> {
         media_info.audio_rtp_server,
     ));
 
-    let child = Arc::new(create_child(args.command)?);
+    let child = Arc::new(create_child(command)?);
     defer!({
         if let Some(child) = child.as_ref() {
             if let Ok(mut child) = child.lock() {

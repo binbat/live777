@@ -1,6 +1,8 @@
 use clap::Parser;
 use tracing::{debug, info, warn};
 
+mod helper;
+
 #[derive(Parser)]
 #[command(version)]
 struct Args {
@@ -26,11 +28,6 @@ async fn main() {
     let addr = listener.local_addr().unwrap();
     info!("Server listening on {}", addr);
 
-    liveion::server_up(cfg, listener, shutdown_signal()).await;
+    liveion::server_up(cfg, listener, helper::shutdown_signal()).await;
     info!("Server shutdown");
-}
-
-async fn shutdown_signal() {
-    let str = signal::wait_for_stop_signal().await;
-    debug!("Received signal: {}", str);
 }
