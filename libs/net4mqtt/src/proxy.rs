@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::str::FromStr;
 
 use anyhow::{anyhow, Error, Result};
 use kcp::Kcp;
@@ -171,7 +172,7 @@ async fn up_udp_vnet(
 }
 
 async fn up_agent_vclient(
-    address: SocketAddr,
+    address: &str,
     protocol: &str,
     topic: String,
     sender: UnboundedSender<(String, Vec<u8>)>,
@@ -179,26 +180,25 @@ async fn up_agent_vclient(
 ) -> Result<(), Error> {
     match protocol {
         topic::protocol::KCP => {
-            let socket = TcpStream::connect(address).await.unwrap();
+            let socket = TcpStream::connect(address).await?;
             up_kcp_vnet(socket, topic, sender, receiver).await
         }
         topic::protocol::TCP => {
-            let socket = TcpStream::connect(address).await.unwrap();
+            let socket = TcpStream::connect(address).await?;
             up_tcp_vnet(socket, topic, sender, receiver).await
         }
         topic::protocol::UDP => {
             let socket = UdpSocket::bind(SocketAddr::new(
                 // "0.0.0.0:0"
                 // "[::]:0"
-                match address {
+                match SocketAddr::from_str(address)? {
                     SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
                 },
                 0,
             ))
-            .await
-            .unwrap();
-            socket.connect(address).await.unwrap();
+            .await?;
+            socket.connect(address).await?;
             up_udp_vnet(socket, topic, sender, receiver).await
         }
         e => Err(anyhow!("unknown protocol {}", e)),
@@ -256,7 +256,7 @@ async fn mqtt_client_init(
 
 pub async fn agent(
     mqtt_url: &str,
-    address: SocketAddr,
+    address: &str,
     agent_id: &str,
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
     on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
@@ -288,8 +288,8 @@ pub async fn agent(
             result = receiver.recv() => {
                 match result {
                     Some((key, data)) => {
-                        let (prefix, agent_id, local_id, _label, protocol, address) = topic::parse(&key);
-                        client.publish(topic::build(prefix, agent_id, local_id, topic::label::O, protocol, address),
+                        let (prefix, agent_id, local_id, _label, protocol, src, dst) = topic::parse(&key);
+                        client.publish(topic::build(prefix, agent_id, local_id, topic::label::O, protocol, src, dst),
                             QoS::AtMostOnce,
                             false,
                             data
@@ -303,7 +303,7 @@ pub async fn agent(
                     Ok(notification) => {
                         if let Some(p) = mqtt_receive(notification) {
                             let topic = p.topic.clone();
-                            let (_prefix, agent_id, local_id, label, protocol, _address) = topic::parse(&topic);
+                            let (_prefix, agent_id, local_id, label, protocol, _src, dst) = topic::parse(&topic);
 
                             match label {
                                 topic::label::X => {
@@ -318,8 +318,9 @@ pub async fn agent(
                                             let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
                                             let topic = p.topic.clone();
                                             let protocol = protocol.to_string();
+                                            let dst = if dst == topic::NIL { address } else { dst }.to_string();
                                             task::spawn(async move {
-                                                if let Err(e) = up_agent_vclient(address, &protocol, topic, sender, vnet_rx).await {
+                                                if let Err(e) = up_agent_vclient(&dst, &protocol, topic, sender, vnet_rx).await {
                                                     error!("agent vnet error: {:?}", e)
                                                 }
                                             });
@@ -350,12 +351,14 @@ pub async fn agent(
 pub async fn local_ports_tcp(
     mqtt_url: &str,
     listener: TcpListener,
-    agent_id: &str,
-    local_id: &str,
+    target: Option<String>,
+    id: (&str, &str),
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
     on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
     tcp_over_kcp: bool,
 ) -> Result<(), Error> {
+    let (agent_id, local_id) = id;
+    let target = target.unwrap_or(topic::NIL.to_string());
     let mut senders =
         LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
             LRU_TIME_TO_LIVE,
@@ -386,8 +389,8 @@ pub async fn local_ports_tcp(
                 let protocol = if tcp_over_kcp { topic::protocol::KCP } else { topic::protocol::TCP };
 
                 let addr = socket.peer_addr().unwrap().to_string();
-                let key_send = topic::build(prefix, agent_id, local_id, topic::label::I, protocol, &addr);
-                let key_recv = topic::build(prefix, agent_id, local_id, topic::label::O, protocol, &addr);
+                let key_send = topic::build(prefix, agent_id, local_id, topic::label::I, protocol, &addr, &target);
+                let key_recv = topic::build(prefix, agent_id, local_id, topic::label::O, protocol, &addr, &target);
 
                 senders.insert(key_recv, vnet_tx);
                 task::spawn(async move {
@@ -417,12 +420,12 @@ pub async fn local_ports_tcp(
                     Ok(notification) => {
                         if let Some(p) = mqtt_receive(notification) {
                             let topic = p.topic.clone();
-                            let (_prefix, agent_id, local_id, label, protocol, _address) = topic::parse(&topic);
+                            let (_prefix, agent_id, local_id, label, protocol, _src, _dst) = topic::parse(&topic);
 
                             match (label, protocol) {
                                 (topic::label::X, _) => {
                                     if let Some(s) = on_xdata {
-                                        s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await.unwrap();
+                                        s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await?;
                                     }
                                 },
                                 (_, topic::protocol::KCP | topic::protocol::TCP) => {
@@ -430,7 +433,7 @@ pub async fn local_ports_tcp(
                                         if sender.is_closed() {
                                             senders.remove(&p.topic);
                                         } else {
-                                            sender.send((p.topic, p.payload.to_vec())).unwrap();
+                                            sender.send((p.topic, p.payload.to_vec()))?;
                                         }
                                     }
                                 },
@@ -453,11 +456,13 @@ pub async fn local_ports_tcp(
 pub async fn local_ports_udp(
     mqtt_url: &str,
     sock: UdpSocket,
-    agent_id: &str,
-    local_id: &str,
+    target: Option<String>,
+    id: (&str, &str),
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
     on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
 ) -> Result<(), Error> {
+    let (agent_id, local_id) = id;
+    let target = target.unwrap_or(topic::NIL.to_string());
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
     let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
@@ -480,7 +485,7 @@ pub async fn local_ports_udp(
         select! {
             Ok((len, addr)) = sock.recv_from(&mut buf) => {
                 sender.send((
-                    topic::build(prefix, agent_id, local_id, topic::label::I, topic::protocol::UDP, &addr.to_string()),
+                    topic::build(prefix, agent_id, local_id, topic::label::I, topic::protocol::UDP, &addr.to_string(), &target),
                     buf[..len].to_vec())).unwrap();
             }
             result = receiver.recv() => {
@@ -501,15 +506,15 @@ pub async fn local_ports_udp(
                     Ok(notification) => {
                         if let Some(p) = mqtt_receive(notification) {
                             let topic = p.topic.clone();
-                            let (_prefix, _agent_id, _local_id, label, protocol, address) = topic::parse(&topic);
+                            let (_prefix, _agent_id, _local_id, label, protocol, src, _dst) = topic::parse(&topic);
 
                             match (label, protocol) {
                                 (topic::label::X, _) => {
                                     if let Some(s) = on_xdata {
-                                        s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await.unwrap();
+                                        s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await?;
                                     }
                                 },
-                                (_, topic::protocol::UDP) => { let _ = sock.send_to(&p.payload, address).await.unwrap(); },
+                                (_, topic::protocol::UDP) => { let _ = sock.send_to(&p.payload, src).await?; },
                                 (label, protocol) => info!("unknown label: {} and protocol: {}", label, protocol)
                             }
                         }
@@ -543,12 +548,13 @@ use std::sync::Arc;
 pub async fn local_socks(
     mqtt_url: &str,
     listener: TcpListener,
-    agent_id: &str,
-    local_id: &str,
+    id: (&str, &str),
+    domain: Option<String>,
     xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
     on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
     tcp_over_kcp: bool,
 ) -> Result<(), Error> {
+    let (agent_id, local_id) = id;
     let mut senders =
         LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
             LRU_TIME_TO_LIVE,
@@ -576,11 +582,15 @@ pub async fn local_socks(
         let on_xdata = on_xdata.clone();
         select! {
             Ok((conn, _)) = server.accept() => {
-                match crate::socks::handle(conn).await {
-                    Ok((target, socket)) => {
-                        let agent_id = match target {
+                match crate::socks::handle(conn, domain.clone()).await {
+                    Ok((id, target, socket)) => {
+                        let agent_id = match id {
                             Some(id) => id,
                             None => agent_id.to_string(),
+                        };
+                        let target = match target {
+                            Some(t) => t,
+                            None => topic::NIL.to_string(),
                         };
 
                         let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
@@ -588,8 +598,8 @@ pub async fn local_socks(
                         let protocol = if tcp_over_kcp { topic::protocol::KCP } else { topic::protocol::TCP };
 
                         let addr = socket.peer_addr().unwrap().to_string();
-                        let key_send = topic::build(prefix, &agent_id, local_id, topic::label::I, protocol, &addr);
-                        let key_recv = topic::build(prefix, &agent_id, local_id, topic::label::O, protocol, &addr);
+                        let key_send = topic::build(prefix, &agent_id, local_id, topic::label::I, protocol, &addr, &target);
+                        let key_recv = topic::build(prefix, &agent_id, local_id, topic::label::O, protocol, &addr, &target);
 
                         senders.insert(key_recv, vnet_tx);
                         task::spawn(async move {
@@ -623,7 +633,7 @@ pub async fn local_socks(
                     Ok(notification) => {
                         if let Some(p) = mqtt_receive(notification) {
                             let topic = p.topic.clone();
-                            let (_prefix, agent_id, local_id, label, protocol, _address) = topic::parse(&topic);
+                            let (_prefix, agent_id, local_id, label, protocol, _src, _dst) = topic::parse(&topic);
 
                             match (label, protocol) {
                                 (topic::label::X, _) => {

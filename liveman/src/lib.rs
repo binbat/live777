@@ -93,8 +93,8 @@ where
                         net4mqtt::proxy::local_socks(
                             &c.mqtt_url,
                             listener,
-                            "-",
-                            &c.alias.clone(),
+                            ("-", &c.alias.clone()),
+                            Some(net4mqtt_domain.to_string()),
                             None,
                             Some(sender),
                             false,

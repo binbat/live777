@@ -97,7 +97,7 @@ where
                     .block_on(async move {
                         net4mqtt::proxy::agent(
                             &c.mqtt_url,
-                            cfg.http.listen,
+                            &cfg.http.listen.to_string(),
                             &c.alias.clone(),
                             Some((
                                 serde_json::json!({

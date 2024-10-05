@@ -48,6 +48,9 @@ enum Commands {
         /// Listen local port mapping as agent's target address
         #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
         listen: SocketAddr,
+        /// Agent's target address
+        #[arg(short, long)]
+        target: Option<String>,
         /// agent id
         #[arg(short, long, default_value_t = format!("-"))]
         agent_id: String,
@@ -67,9 +70,9 @@ enum Commands {
         /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         mqtt_url: String,
-        /// Agent's target address
-        #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7777))]
-        target: SocketAddr,
+        /// Default Agent's target address
+        #[arg(short, long, default_value_t = format!("{}", SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7777)))]
+        target: String,
         /// Set Current agent id
         #[arg(short, long, default_value_t = format!("-"))]
         id: String,
@@ -104,13 +107,22 @@ async fn main() {
             debug!("use domain: {:?}", domain);
 
             let listener = TcpListener::bind(listen).await.unwrap();
-            proxy::local_socks(&mqtt_url, listener, &agent_id, &id, None, None, kcp)
-                .await
-                .unwrap();
+            proxy::local_socks(
+                &mqtt_url,
+                listener,
+                (&agent_id, &id),
+                Some(domain),
+                None,
+                None,
+                kcp,
+            )
+            .await
+            .unwrap();
         }
         Commands::Local {
             mqtt_url,
             listen,
+            target,
             agent_id,
             id,
             udp,
@@ -120,14 +132,22 @@ async fn main() {
 
             if udp {
                 let sock = UdpSocket::bind(listen).await.unwrap();
-                proxy::local_ports_udp(&mqtt_url, sock, &agent_id, &id, None, None)
+                proxy::local_ports_udp(&mqtt_url, sock, target, (&agent_id, &id), None, None)
                     .await
                     .unwrap();
             } else {
                 let listener = TcpListener::bind(listen).await.unwrap();
-                proxy::local_ports_tcp(&mqtt_url, listener, &agent_id, &id, None, None, kcp)
-                    .await
-                    .unwrap();
+                proxy::local_ports_tcp(
+                    &mqtt_url,
+                    listener,
+                    target,
+                    (&agent_id, &id),
+                    None,
+                    None,
+                    kcp,
+                )
+                .await
+                .unwrap();
             }
         }
         Commands::Agent {
@@ -137,7 +157,7 @@ async fn main() {
         } => {
             info!("Running as agent, {:?}", target);
 
-            proxy::agent(&mqtt_url, target, &id, None, None)
+            proxy::agent(&mqtt_url, &target, &id, None, None)
                 .await
                 .unwrap();
         }

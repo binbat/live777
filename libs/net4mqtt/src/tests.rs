@@ -7,6 +7,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time;
 
 use crate::broker;
+use crate::kxdns;
 
 const MAX_BUFFER_SIZE: usize = 4096;
 
@@ -111,6 +112,7 @@ use portpicker::pick_unused_port;
 use crate::proxy;
 
 const MQTT_TOPIC_PREFIX: &str = "test";
+const DOMAIN_SUFFIX: &str = "test.local";
 
 struct Config {
     agent: u16,
@@ -173,7 +175,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     MQTT_TOPIC_PREFIX,
                     id
                 ),
-                addr,
+                &addr.to_string(),
                 &id.to_string(),
                 None,
                 None,
@@ -197,8 +199,8 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                         id
                     ),
                     listener,
-                    &id.to_string(),
-                    format!("local-{}", id).as_str(),
+                    None,
+                    (&id.to_string(), &format!("local-{}", id)),
                     None,
                     None,
                     cfg.kcp,
@@ -217,8 +219,8 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                         id
                     ),
                     sock,
-                    &id.to_string(),
-                    format!("local-{}", id).as_str(),
+                    None,
+                    (&id.to_string(), &format!("local-{}", id)),
                     None,
                     None,
                 ))
@@ -239,8 +241,8 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     id
                 ),
                 listener,
-                &id.to_string(),
-                format!("socks-{}", id).as_str(),
+                (&id.to_string(), &format!("socks-{}", id)),
+                Some(DOMAIN_SUFFIX.to_string()),
                 None,
                 None,
                 cfg.kcp,
@@ -635,12 +637,15 @@ async fn test_socks_simple() {
     let client = reqwest::Client::builder()
         .connect_timeout(time::Duration::from_secs(1))
         .timeout(time::Duration::from_secs(1))
-        .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+        .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
         .build()
         .unwrap();
 
     let res = client
-        .get(format!("http://{}/", local_addr))
+        .get(format!(
+            "http://{}/",
+            kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+        ))
         .send()
         .await
         .unwrap();
@@ -652,12 +657,15 @@ async fn test_socks_simple() {
     let client = reqwest::Client::builder()
         .connect_timeout(time::Duration::from_secs(1))
         .timeout(time::Duration::from_secs(1))
-        .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+        .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
         .build()
         .unwrap();
 
     let res = client
-        .get(format!("http://{}/", local_addr))
+        .get(format!(
+            "http://{}/",
+            kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+        ))
         .send()
         .await
         .unwrap();
@@ -674,8 +682,6 @@ async fn test_socks_restart() {
     let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
     let agent_port: u16 = pick_unused_port().expect("No ports free");
     let target = SocketAddr::new(ip, agent_port);
-
-    //let target = listener.local_addr().unwrap();
     let addrs = helper_cluster_up(Config {
         agent: 1,
         local_socks: 1,
@@ -697,12 +703,15 @@ async fn test_socks_restart() {
         let client = reqwest::Client::builder()
             .connect_timeout(time::Duration::from_secs(1))
             .timeout(time::Duration::from_secs(1))
-            .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+            .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
             .build()
             .unwrap();
 
         let res = client
-            .get(format!("http://{}/", local_addr))
+            .get(format!(
+                "http://{}/",
+                kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+            ))
             .send()
             .await
             .unwrap();
@@ -714,12 +723,15 @@ async fn test_socks_restart() {
         let client = reqwest::Client::builder()
             .connect_timeout(time::Duration::from_secs(1))
             .timeout(time::Duration::from_secs(1))
-            .proxy(reqwest::Proxy::http(format!("socks5://{}", local_addr)).unwrap())
+            .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
             .build()
             .unwrap();
 
         let res = client
-            .get(format!("http://{}/", local_addr))
+            .get(format!(
+                "http://{}/",
+                kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+            ))
             .send()
             .await
             .unwrap();
@@ -763,7 +775,7 @@ async fn test_socks_multiple_server() {
                     MQTT_TOPIC_PREFIX,
                     id
                 ),
-                addr,
+                &addr.to_string(),
                 &id.to_string(),
                 None,
                 None,
@@ -786,7 +798,10 @@ async fn test_socks_multiple_server() {
             .unwrap();
 
         let res = client
-            .get(format!("http://{}.test.local/", id))
+            .get(format!(
+                "http://{}/",
+                kxdns::Kxdns::new(DOMAIN_SUFFIX).registry(&id.to_string())
+            ))
             .send()
             .await
             .unwrap();
@@ -834,7 +849,7 @@ async fn test_xdata() {
                 MQTT_TOPIC_PREFIX,
                 id
             ),
-            addr,
+            &addr.to_string(),
             &id.to_string(),
             None,
             Some(sender),
@@ -853,7 +868,7 @@ async fn test_xdata() {
                 MQTT_TOPIC_PREFIX,
                 id
             ),
-            addr,
+            &addr.to_string(),
             &id.to_string(),
             Some((msg_1_clone, None)),
             None,
@@ -871,7 +886,7 @@ async fn test_xdata() {
                 MQTT_TOPIC_PREFIX,
                 id
             ),
-            addr,
+            &addr.to_string(),
             &id.to_string(),
             Some((msg_2_clone, None)),
             None,
@@ -891,8 +906,8 @@ async fn test_xdata() {
                 id
             ),
             listener,
-            id,
-            id,
+            None,
+            (id, id),
             Some((msg_3_clone, None)),
             None,
             false,
@@ -912,8 +927,8 @@ async fn test_xdata() {
                 id
             ),
             listener,
-            id,
-            id,
+            None,
+            (id, id),
             Some((msg_4_clone, None)),
             None,
             false,

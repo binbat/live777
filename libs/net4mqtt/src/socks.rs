@@ -10,7 +10,8 @@ use tokio::io::AsyncWriteExt;
 
 pub(crate) async fn handle(
     conn: IncomingConnection<(), NeedAuthenticate>,
-) -> Result<(Option<String>, Connect<Ready>), Error> {
+    domain: Option<String>,
+) -> Result<(Option<String>, Option<String>, Connect<Ready>), Error> {
     let conn = match conn.authenticate().await {
         Ok((conn, _)) => conn,
         Err((err, mut conn)) => {
@@ -51,12 +52,24 @@ pub(crate) async fn handle(
             let _ = conn.close().await;
         }
         Ok(Command::Connect(connect, addr)) => {
-            let target = match addr {
-                Address::DomainAddress(domain, _port) => match std::str::from_utf8(&domain) {
-                    Ok(raw) => Some(crate::kxdns::Kxdns::resolver(raw).to_string()),
-                    Err(_) => None,
-                },
-                Address::SocketAddress(_) => None,
+            let (id, target) = match addr {
+                Address::DomainAddress(domain_address, _port) => {
+                    match std::str::from_utf8(&domain_address) {
+                        Ok(raw) => {
+                            if let Some(d) = domain {
+                                if raw.ends_with(&d) {
+                                    (Some(crate::kxdns::Kxdns::resolver(raw).to_string()), None)
+                                } else {
+                                    (None, Some(raw.to_string()))
+                                }
+                            } else {
+                                (None, Some(raw.to_string()))
+                            }
+                        }
+                        Err(_) => (None, None),
+                    }
+                }
+                Address::SocketAddress(ip) => (None, Some(ip.to_string())),
             };
 
             let replied = connect
@@ -70,7 +83,7 @@ pub(crate) async fn handle(
                     return Err(anyhow!(err));
                 }
             };
-            return Ok((target, conn));
+            return Ok((id, target, conn));
         }
         Err((err, mut conn)) => {
             let _ = conn.shutdown().await;
