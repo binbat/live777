@@ -30,6 +30,10 @@ jobs:
         run: cargo build --all --release --verbose
       - name: Setup ffmpeg
         uses: AnimMouse/setup-ffmpeg@v1
+      - name: Show version information
+        run: |
+          ffmpeg -version
+          ffprobe -version
       - name: Run tests
         run: cargo test --all --verbose
       - name: Run e2e tests

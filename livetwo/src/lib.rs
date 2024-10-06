@@ -8,6 +8,6 @@ mod rtspclient;
 mod test;
 
 const PREFIX_LIB: &str = "WEBRTC";
-const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
-const SCHEME_RTSP_CLIENT: &str = "rtsp";
-const SCHEME_RTP_SDP: &str = "sdp";
+pub const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
+pub const SCHEME_RTSP_CLIENT: &str = "rtsp";
+pub const SCHEME_RTP_SDP: &str = "sdp";

@@ -1,8 +1,8 @@
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::{sync::Arc, time::Duration, vec};
 
 use anyhow::{anyhow, Result};
-use core::net::{Ipv4Addr, Ipv6Addr};
 use scopeguard::defer;
 use tokio::{
     net::{TcpListener, UdpSocket},
@@ -23,9 +23,7 @@ use webrtc::{
     rtp_transceiver::{
         rtp_codec::RTCRtpCodecCapability, rtp_codec::RTPCodecType, rtp_sender::RTCRtpSender,
     },
-    track::track_local::{
-        track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
-    },
+    track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter},
     util::Unmarshal,
 };
 
@@ -48,14 +46,17 @@ pub async fn into(
         Url::parse(&format!(
             "{}://{}:0/{}",
             SCHEME_RTP_SDP,
-            Ipv4Addr::UNSPECIFIED,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             target_url
         ))
         .unwrap(),
     );
     info!("=== Received Input: {} ===", input);
 
-    let mut host = match input.host().unwrap() {
+    let mut host = match input
+        .host()
+        .unwrap_or_else(|| panic!("Invalid host for {}", input))
+    {
         Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
         Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
     };
@@ -442,7 +443,7 @@ async fn new_peer(
             input.to_owned(),
         ));
         let _ = peer
-            .add_track(video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .add_track(video_track.clone())
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 
@@ -480,7 +481,7 @@ async fn new_peer(
             input.to_owned(),
         ));
         let _ = peer
-            .add_track(audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .add_track(audio_track.clone())
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 

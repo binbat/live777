@@ -1,6 +1,7 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use anyhow::{anyhow, Result};
 use cli::create_child;
-use core::net::{Ipv4Addr, Ipv6Addr};
 use portpicker::pick_unused_port;
 use scopeguard::defer;
 use sdp::{description::media::RangedPort, SessionDescription};
@@ -50,14 +51,17 @@ pub async fn from(
         Url::parse(&format!(
             "{}://{}:0/{}",
             SCHEME_RTP_SDP,
-            Ipv4Addr::UNSPECIFIED,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             target_url
         ))
         .unwrap(),
     );
     info!("=== Received Output: {} ===", target_url);
 
-    let mut host = match input.host().unwrap() {
+    let mut host = match input
+        .host()
+        .unwrap_or_else(|| panic!("Invalid host for {}", input))
+    {
         Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
         Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
     };
