@@ -1,8 +1,6 @@
 use clap::{ArgAction, Parser};
 use tracing::Level;
 
-const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
-
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -10,7 +8,7 @@ struct Args {
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
     /// rtsp://[username]:[password]@[ip]:[port]/[stream] Or <stream.sdp>
-    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", SCHEME_RTSP_SERVER))]
+    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", livetwo::SCHEME_RTSP_SERVER))]
     output: String,
     /// Set Listener address
     #[arg(long)]
