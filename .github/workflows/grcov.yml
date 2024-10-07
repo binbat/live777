@@ -24,8 +24,20 @@ jobs:
           - "--all-features"
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
-
+        uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: latest
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Build WebUI
+        run: npm run build
+      - name: Setup ffmpeg
+        uses: AnimMouse/setup-ffmpeg@v1
+      - name: Show version information
+        run: |
+          ffmpeg -version
+          ffprobe -version
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
