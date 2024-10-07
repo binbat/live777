@@ -178,6 +178,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                 &addr.to_string(),
                 &id.to_string(),
                 None,
+                None,
             ))
         });
     }
@@ -201,6 +202,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     None,
                     (&id.to_string(), &format!("local-{}", id)),
                     None,
+                    None,
                     cfg.kcp,
                 ))
             });
@@ -219,6 +221,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     sock,
                     None,
                     (&id.to_string(), &format!("local-{}", id)),
+                    None,
                     None,
                 ))
             });
@@ -240,6 +243,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                 listener,
                 (&id.to_string(), &format!("socks-{}", id)),
                 Some(DOMAIN_SUFFIX.to_string()),
+                None,
                 None,
                 cfg.kcp,
             ))
@@ -774,6 +778,7 @@ async fn test_socks_multiple_server() {
                 &addr.to_string(),
                 &id.to_string(),
                 None,
+                None,
             ))
         });
     }
@@ -850,6 +855,7 @@ async fn test_vdata() {
                 receiver: Some(sender),
                 ..Default::default()
             }),
+            None,
         ))
     });
 
@@ -871,6 +877,7 @@ async fn test_vdata() {
                 online: Some(msg_1_clone),
                 ..Default::default()
             }),
+            None,
         ))
     });
     time::sleep(time::Duration::from_millis(100)).await;
@@ -891,6 +898,7 @@ async fn test_vdata() {
                 online: Some(msg_2_clone),
                 ..Default::default()
             }),
+            None,
         ))
     });
 
@@ -913,6 +921,7 @@ async fn test_vdata() {
                 online: Some(msg_3_clone),
                 ..Default::default()
             }),
+            None,
             false,
         ))
     });
@@ -936,6 +945,7 @@ async fn test_vdata() {
                 online: Some(msg_4_clone),
                 ..Default::default()
             }),
+            None,
             false,
         ))
     });
@@ -955,4 +965,158 @@ async fn test_vdata() {
     assert_eq!("-", agent_id);
     assert_eq!(msg_4, data);
     assert_eq!("socks-x", local_id);
+}
+
+#[tokio::test]
+async fn test_xdata() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port: u16 = pick_unused_port().expect("No ports free");
+    let agent_port_1: u16 = pick_unused_port().expect("No ports free");
+    let agent_port_2: u16 = pick_unused_port().expect("No ports free");
+    helper_cluster_up(Config {
+        ip,
+        kcp: true,
+        broker: mqtt_broker_port,
+        ..Default::default()
+    })
+    .await;
+
+    let msg_1: Vec<u8> = "xxx".bytes().collect();
+    let msg_2: Vec<u8> = "yyyyyyyy".bytes().collect();
+    let msg_3: Vec<u8> = "333".bytes().collect();
+    let msg_4: Vec<u8> = "4444".bytes().collect();
+
+    let (sender_a, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (sender, mut receiver_a) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+
+    thread::spawn(move || {
+        let id = 'a';
+        let addr = SocketAddr::new(ip, agent_port);
+        tokio_test::block_on(proxy::agent(
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-agent-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
+            &addr.to_string(),
+            &id.to_string(),
+            None,
+            Some(proxy::XDataConfig {
+                sender: Some(sender),
+                receiver: Some(receiver),
+            }),
+        ))
+    });
+
+    let (sender_b, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (sender, mut receiver_b) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+
+    thread::spawn(move || {
+        let id = 'b';
+        let addr = SocketAddr::new(ip, agent_port_1);
+        tokio_test::block_on(proxy::agent(
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-agent-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
+            &addr.to_string(),
+            &id.to_string(),
+            None,
+            Some(proxy::XDataConfig {
+                sender: Some(sender),
+                receiver: Some(receiver),
+            }),
+        ))
+    });
+
+    let (sender_c, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (sender, mut receiver_c) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+
+    thread::spawn(move || {
+        let id = 'c';
+        let addr = SocketAddr::new(ip, agent_port_2);
+        tokio_test::block_on(proxy::agent(
+            &format!(
+                "mqtt://{}/{}?client_id=test-proxy-agent-{}",
+                SocketAddr::new(ip, mqtt_broker_port),
+                MQTT_TOPIC_PREFIX,
+                id
+            ),
+            &addr.to_string(),
+            &id.to_string(),
+            None,
+            Some(proxy::XDataConfig {
+                sender: Some(sender),
+                receiver: Some(receiver),
+            }),
+        ))
+    });
+
+    time::sleep(time::Duration::from_millis(100)).await;
+
+    let ev = "test".to_string();
+
+    sender_a.send((ev.clone(), msg_1.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+
+    sender_b.send((ev.clone(), msg_2.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_c.recv().await);
+
+    sender_c.send((ev.clone(), msg_3.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_c.recv().await);
+
+    time::sleep(time::Duration::from_millis(100)).await;
+    assert!(receiver_a.is_empty());
+    assert!(receiver_b.is_empty());
+    assert!(receiver_c.is_empty());
+
+    sender_a.send((ev.clone(), msg_2.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_c.recv().await);
+
+    sender_b.send((ev.clone(), msg_1.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+
+    sender_c.send((ev.clone(), msg_1.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+
+    sender_c.send((ev.clone(), msg_3.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_c.recv().await);
+
+    sender_a.send((ev.clone(), msg_4.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_c.recv().await);
+
+    sender_a.send((ev.clone(), msg_4.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_c.recv().await);
+
+    sender_a.send((ev.clone(), msg_1.clone())).unwrap();
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
+    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+
+    time::sleep(time::Duration::from_millis(100)).await;
+    assert!(receiver_a.is_empty());
+    assert!(receiver_b.is_empty());
+    assert!(receiver_c.is_empty());
 }

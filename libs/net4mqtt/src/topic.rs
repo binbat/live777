@@ -25,6 +25,7 @@ pub mod label {
     pub const I: &str = "i";
     pub const O: &str = "o";
     pub const V: &str = "v";
+    pub const X: &str = "x";
 }
 
 pub mod protocol {
@@ -52,8 +53,17 @@ pub fn build_sub(prefix: &str, agent_id: &str, local_id: &str, label: &str) -> S
     format!("{}/{}/{}/{}/{}", prefix, agent_id, local_id, label, ALL)
 }
 
-pub fn build_pub_x(prefix: &str, agent_id: &str, local_id: &str, label: &str) -> String {
-    format!("{}/{}/{}/{}/{}", prefix, agent_id, local_id, label, NIL)
+pub fn build_pub_x(
+    prefix: &str,
+    agent_id: &str,
+    local_id: &str,
+    label: &str,
+    protocol: &str,
+) -> String {
+    format!(
+        "{}/{}/{}/{}/{}",
+        prefix, agent_id, local_id, label, protocol
+    )
 }
 
 pub fn parse(topic: &str) -> (&str, &str, &str, &str, &str, &str, &str) {
@@ -104,7 +114,7 @@ fn test_build_parse() {
     );
 
     assert_eq!(
-        build_pub_x(prefix, agent_id, local_id, label::V),
+        build_pub_x(prefix, agent_id, local_id, label::V, NIL),
         "test_build_parse/3/7/v/-",
     );
 
