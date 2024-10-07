@@ -113,6 +113,7 @@ async fn main() {
                 (&agent_id, &id),
                 Some(domain),
                 None,
+                None,
                 kcp,
             )
             .await
@@ -131,14 +132,22 @@ async fn main() {
 
             if udp {
                 let sock = UdpSocket::bind(listen).await.unwrap();
-                proxy::local_ports_udp(&mqtt_url, sock, target, (&agent_id, &id), None)
+                proxy::local_ports_udp(&mqtt_url, sock, target, (&agent_id, &id), None, None)
                     .await
                     .unwrap();
             } else {
                 let listener = TcpListener::bind(listen).await.unwrap();
-                proxy::local_ports_tcp(&mqtt_url, listener, target, (&agent_id, &id), None, kcp)
-                    .await
-                    .unwrap();
+                proxy::local_ports_tcp(
+                    &mqtt_url,
+                    listener,
+                    target,
+                    (&agent_id, &id),
+                    None,
+                    None,
+                    kcp,
+                )
+                .await
+                .unwrap();
             }
         }
         Commands::Agent {
@@ -148,7 +157,9 @@ async fn main() {
         } => {
             info!("Running as agent, {:?}", target);
 
-            proxy::agent(&mqtt_url, &target, &id, None).await.unwrap();
+            proxy::agent(&mqtt_url, &target, &id, None, None)
+                .await
+                .unwrap();
         }
     }
 }
