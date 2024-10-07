@@ -127,7 +127,7 @@ s=No Name
 c=IN IP4 127.0.0.1
 t=0 0
 a=tool:libavformat 61.1.100
-m=video 0 RTP/AVP 96
+m=video 8765 RTP/AVP 96
 b=AS:256
 a=rtpmap:96 VP8/90000
     "#
