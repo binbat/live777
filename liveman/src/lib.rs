@@ -82,9 +82,10 @@ where
 
     #[cfg(feature = "net4mqtt")]
     {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
-
         if let Some(c) = cfg.net4mqtt.clone() {
+            let (sender, mut receiver) =
+                tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
+
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
@@ -105,37 +106,37 @@ where
                         .unwrap()
                     });
             });
-        }
 
-        std::thread::spawn(move || {
-            let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(async move {
-                    loop {
-                        match receiver.recv().await {
-                            Some((agent_id, _local_id, data)) => {
-                                if data.len() > 5 {
-                                    nodes.write().unwrap().insert(
-                                        agent_id.clone(),
-                                        Node::new(
-                                            "".to_string(),
-                                            NodeKind::Net4mqtt,
-                                            format!("http://{}", dns.registry(&agent_id)),
-                                        ),
-                                    );
-                                } else {
-                                    nodes.write().unwrap().remove(&agent_id);
+            std::thread::spawn(move || {
+                let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move {
+                        loop {
+                            match receiver.recv().await {
+                                Some((agent_id, _local_id, data)) => {
+                                    if data.len() > 5 {
+                                        nodes.write().unwrap().insert(
+                                            agent_id.clone(),
+                                            Node::new(
+                                                "".to_string(),
+                                                NodeKind::Net4mqtt,
+                                                format!("http://{}", dns.registry(&agent_id)),
+                                            ),
+                                        );
+                                    } else {
+                                        nodes.write().unwrap().remove(&agent_id);
+                                    }
+                                }
+                                None => {
+                                    error!("net4mqtt discovery receiver channel closed");
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                                 }
                             }
-                            None => {
-                                error!("net4mqtt discovery receiver channel closed");
-                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                            }
                         }
-                    }
-                })
-        });
+                    })
+            });
+        }
     }
 
     let app_state = AppState {
