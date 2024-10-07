@@ -71,12 +71,6 @@ jobs:
               --service-job-id ${{ github.job }} \
               --service-name "GitHub Actions" \
               --service-number ${{ github.run_id }}
-      - name: Upload coverage as artifact
-        uses: actions/upload-artifact@v2
-        with:
-          name: lcov.info
-          # path: ${{ steps.grcov.outputs.report }}
-          path: lcov.info
 
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v1
