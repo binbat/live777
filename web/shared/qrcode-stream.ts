@@ -143,8 +143,11 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
         // TODO: make it configurable
         if (this.seq >= 5) {
             this.seq = 0;
-            const now = Date.now();
-            this.decodeFrame(now, metadata.width, metadata.height);
+            try {
+                this.decodeFrame(Date.now(), metadata.width, metadata.height);
+            } catch (e) {
+                console.log(e);
+            }
         }
         if (this.scheduled) {
             this.video.requestVideoFrameCallback(this.videoFrameCallback);
