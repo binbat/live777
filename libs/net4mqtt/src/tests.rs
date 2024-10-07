@@ -178,7 +178,6 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                 &addr.to_string(),
                 &id.to_string(),
                 None,
-                None,
             ))
         });
     }
@@ -202,7 +201,6 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     None,
                     (&id.to_string(), &format!("local-{}", id)),
                     None,
-                    None,
                     cfg.kcp,
                 ))
             });
@@ -221,7 +219,6 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     sock,
                     None,
                     (&id.to_string(), &format!("local-{}", id)),
-                    None,
                     None,
                 ))
             });
@@ -243,7 +240,6 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                 listener,
                 (&id.to_string(), &format!("socks-{}", id)),
                 Some(DOMAIN_SUFFIX.to_string()),
-                None,
                 None,
                 cfg.kcp,
             ))
@@ -778,7 +774,6 @@ async fn test_socks_multiple_server() {
                 &addr.to_string(),
                 &id.to_string(),
                 None,
-                None,
             ))
         });
     }
@@ -813,7 +808,7 @@ async fn test_socks_multiple_server() {
 }
 
 #[tokio::test]
-async fn test_xdata() {
+async fn test_vdata() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mqtt_broker_port: u16 = pick_unused_port().expect("No ports free");
     let agent_port: u16 = pick_unused_port().expect("No ports free");
@@ -851,8 +846,10 @@ async fn test_xdata() {
             ),
             &addr.to_string(),
             &id.to_string(),
-            None,
-            Some(sender),
+            Some(proxy::VDataConfig {
+                receiver: Some(sender),
+                ..Default::default()
+            }),
         ))
     });
 
@@ -870,8 +867,10 @@ async fn test_xdata() {
             ),
             &addr.to_string(),
             &id.to_string(),
-            Some((msg_1_clone, None)),
-            None,
+            Some(proxy::VDataConfig {
+                online: Some(msg_1_clone),
+                ..Default::default()
+            }),
         ))
     });
     time::sleep(time::Duration::from_millis(100)).await;
@@ -888,8 +887,10 @@ async fn test_xdata() {
             ),
             &addr.to_string(),
             &id.to_string(),
-            Some((msg_2_clone, None)),
-            None,
+            Some(proxy::VDataConfig {
+                online: Some(msg_2_clone),
+                ..Default::default()
+            }),
         ))
     });
 
@@ -908,8 +909,10 @@ async fn test_xdata() {
             listener,
             None,
             (id, id),
-            Some((msg_3_clone, None)),
-            None,
+            Some(proxy::VDataConfig {
+                online: Some(msg_3_clone),
+                ..Default::default()
+            }),
             false,
         ))
     });
@@ -929,8 +932,10 @@ async fn test_xdata() {
             listener,
             None,
             (id, id),
-            Some((msg_4_clone, None)),
-            None,
+            Some(proxy::VDataConfig {
+                online: Some(msg_4_clone),
+                ..Default::default()
+            }),
             false,
         ))
     });

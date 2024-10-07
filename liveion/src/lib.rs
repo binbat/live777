@@ -99,16 +99,18 @@ where
                             &c.mqtt_url,
                             &cfg.http.listen.to_string(),
                             &c.alias.clone(),
-                            Some((
-                                serde_json::json!({
-                                    "alias": c.alias,
-                                })
-                                .to_string()
-                                .bytes()
-                                .collect(),
-                                Some("{}".bytes().collect()),
-                            )),
-                            None,
+                            Some(net4mqtt::proxy::VDataConfig {
+                                online: Some(
+                                    serde_json::json!({
+                                        "alias": c.alias,
+                                    })
+                                    .to_string()
+                                    .bytes()
+                                    .collect(),
+                                ),
+                                offline: Some("{}".bytes().collect()),
+                                ..Default::default()
+                            }),
                         )
                         .await
                         .unwrap()

@@ -95,8 +95,10 @@ where
                             listener,
                             ("-", &c.alias.clone()),
                             Some(net4mqtt_domain.to_string()),
-                            None,
-                            Some(sender),
+                            Some(net4mqtt::proxy::VDataConfig {
+                                receiver: Some(sender),
+                                ..Default::default()
+                            }),
                             false,
                         )
                         .await

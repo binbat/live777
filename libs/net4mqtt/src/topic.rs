@@ -12,7 +12,7 @@
 ///
 /// About MQTT online status (Option)
 ///
-/// TOPIC: prefix/agent-0/local-0/x/-
+/// TOPIC: prefix/agent-0/local-0/v/-
 /// Retain: true
 
 pub const ANY: &str = "+";
@@ -24,7 +24,7 @@ const SPLIT: char = '/';
 pub mod label {
     pub const I: &str = "i";
     pub const O: &str = "o";
-    pub const X: &str = "x";
+    pub const V: &str = "v";
 }
 
 pub mod protocol {
@@ -104,8 +104,8 @@ fn test_build_parse() {
     );
 
     assert_eq!(
-        build_pub_x(prefix, agent_id, local_id, label::X),
-        "test_build_parse/3/7/x/-",
+        build_pub_x(prefix, agent_id, local_id, label::V),
+        "test_build_parse/3/7/v/-",
     );
 
     assert_eq!(("a", "b", NIL, NIL, NIL, NIL, NIL), parse("a/b"));

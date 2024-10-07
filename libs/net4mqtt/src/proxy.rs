@@ -206,84 +206,117 @@ async fn up_agent_vclient(
 }
 
 async fn mqtt_client_init(
-    mqtt_url: Url,
-    topic_io_sub: String,
-    topic_x_sub: String,
-    topic_x_pub: String,
-    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
-    is_on_xdata: bool,
-) -> (AsyncClient, EventLoop) {
-    let mut mqtt_options = rumqttc::MqttOptions::parse_url(mqtt_url.as_str()).unwrap();
+    mqtt_url: &str,
+    topic_io_sub: (&str, &str, &str),
+    id: (&str, &str),
+    vdata: VDataConfig,
+) -> Result<
+    (
+        AsyncClient,
+        EventLoop,
+        String,
+        Option<Sender<(String, String, Vec<u8>)>>,
+    ),
+    Error,
+> {
+    let (agent_id, local_id) = id;
+    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
+
+    let VDataConfig {
+        online,
+        offline,
+        receiver,
+    } = vdata;
+    let topic_v_sub = topic::build_sub(&prefix, topic::ANY, topic::ANY, topic::label::V);
+    let topic_v_pub = topic::build_pub_x(&prefix, agent_id, local_id, topic::label::V);
+
+    let mut mqtt_options = rumqttc::MqttOptions::parse_url(url)?;
     debug!("mqtt_options: {:?}", mqtt_options);
 
     // MQTT LastWill
-    // MQTT Client OnDisconnected publish at label::X
+    // MQTT Client OnDisconnected publish at label::V
     // NOTE:
     // MQTT Payload data is null, retain will loss
-    if let Some((_, Some(x))) = xdata.clone() {
+    if let Some(v) = offline {
         mqtt_options.set_last_will(rumqttc::mqttbytes::v4::LastWill {
-            topic: topic_x_pub.clone(),
+            topic: topic_v_pub.clone(),
             qos: QoS::AtMostOnce,
             retain: true,
-            message: x.into(),
+            message: v.into(),
         });
     }
 
+    let (a, b, c) = topic_io_sub;
     let (client, eventloop) = AsyncClient::new(mqtt_options, MQTT_BUFFER_CAPACITY);
     client
-        .subscribe(topic_io_sub, QoS::AtMostOnce)
+        .subscribe(topic::build_sub(&prefix, a, b, c), QoS::AtMostOnce)
         .await
         .unwrap();
 
-    // MQTT Client OnConnected publish at label::X
-    if let Some((x, _xx)) = xdata {
+    // MQTT Client OnConnected publish at label::V
+    if let Some(v) = online {
         client
-            .publish(topic_x_pub, QoS::AtMostOnce, true, x)
+            .publish(topic_v_pub, QoS::AtMostOnce, true, v)
             .await
             .unwrap();
     }
 
-    // MQTT subscribe at label::X
-    if is_on_xdata {
+    // MQTT subscribe at label::V
+    if receiver.is_some() {
         client
-            .subscribe(topic_x_sub, QoS::AtMostOnce)
+            .subscribe(topic_v_sub, QoS::AtMostOnce)
             .await
             .unwrap();
     }
 
-    (client, eventloop)
+    Ok((client, eventloop, prefix, receiver))
 }
 
+#[derive(Default)]
+pub struct VDataConfig {
+    pub online: Option<Vec<u8>>,
+    pub offline: Option<Vec<u8>>,
+    pub receiver: Option<Sender<(String, String, Vec<u8>)>>,
+}
+
+/// Agent service
+///
+/// # Arguments
+///
+/// * `mqtt_url` - The name of the person to greet, as a string slice.
+/// * `address` - The age of the default target address, if local no set `DST`, use this as address.
+/// * `agent_id` - The ID is all agents unique ID.
+/// * `vdata` - MQTT system message: (online, offline, on_receiver(online, offline))
+///
+/// # Examples
+///
+/// ```
+/// net4mqtt::proxy::agent("mqtt://127.0.0.1:1883", "127.0.0.1:4444", "agent-0", None);
+/// ```
 pub async fn agent(
     mqtt_url: &str,
     address: &str,
     agent_id: &str,
-    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
-    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
+    vdata: Option<VDataConfig>,
 ) -> Result<(), Error> {
+    let (client, mut eventloop, _prefix, on_vdata) = mqtt_client_init(
+        mqtt_url,
+        (agent_id, topic::ANY, topic::label::I),
+        (agent_id, topic::NIL),
+        vdata.unwrap_or_default(),
+    )
+    .await?;
+
     let mut senders =
         LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
             LRU_TIME_TO_LIVE,
             LRU_MAX_CAPACITY,
         );
+
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
-
-    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
-    let prefix = prefix.as_str();
-
-    let (client, mut eventloop) = mqtt_client_init(
-        url,
-        topic::build_sub(prefix, agent_id, topic::ANY, topic::label::I),
-        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
-        topic::build_pub_x(prefix, agent_id, topic::NIL, topic::label::X),
-        xdata,
-        on_xdata.is_some(),
-    )
-    .await;
-
     loop {
         let sender = sender.clone();
-        let on_xdata = on_xdata.clone();
+        let on_vdata = on_vdata.clone();
         select! {
             result = receiver.recv() => {
                 match result {
@@ -306,8 +339,8 @@ pub async fn agent(
                             let (_prefix, agent_id, local_id, label, protocol, _src, dst) = topic::parse(&topic);
 
                             match label {
-                                topic::label::X => {
-                                    if let Some(s) = on_xdata {
+                                topic::label::V => {
+                                    if let Some(s) = on_vdata {
                                         s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await?;
                                     }
                                 },
@@ -353,11 +386,19 @@ pub async fn local_ports_tcp(
     listener: TcpListener,
     target: Option<String>,
     id: (&str, &str),
-    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
-    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
+    vdata: Option<VDataConfig>,
     tcp_over_kcp: bool,
 ) -> Result<(), Error> {
     let (agent_id, local_id) = id;
+
+    let (client, mut eventloop, prefix, on_vdata) = mqtt_client_init(
+        mqtt_url,
+        (topic::ANY, local_id, topic::label::O),
+        (topic::NIL, local_id),
+        vdata.unwrap_or_default(),
+    )
+    .await?;
+
     let target = target.unwrap_or(topic::NIL.to_string());
     let mut senders =
         LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
@@ -365,23 +406,9 @@ pub async fn local_ports_tcp(
             LRU_MAX_CAPACITY,
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
-
-    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
-    let prefix = prefix.as_str();
-
-    let (client, mut eventloop) = mqtt_client_init(
-        url,
-        topic::build_sub(prefix, topic::ANY, local_id, topic::label::O),
-        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
-        topic::build_pub_x(prefix, topic::NIL, local_id, topic::label::X),
-        xdata,
-        on_xdata.is_some(),
-    )
-    .await;
-
     loop {
         let sender = sender.clone();
-        let on_xdata = on_xdata.clone();
+        let on_vdata = on_vdata.clone();
         select! {
             Ok((socket, _)) = listener.accept() => {
                 let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
@@ -389,8 +416,8 @@ pub async fn local_ports_tcp(
                 let protocol = if tcp_over_kcp { topic::protocol::KCP } else { topic::protocol::TCP };
 
                 let addr = socket.peer_addr().unwrap().to_string();
-                let key_send = topic::build(prefix, agent_id, local_id, topic::label::I, protocol, &addr, &target);
-                let key_recv = topic::build(prefix, agent_id, local_id, topic::label::O, protocol, &addr, &target);
+                let key_send = topic::build(&prefix, agent_id, local_id, topic::label::I, protocol, &addr, &target);
+                let key_recv = topic::build(&prefix, agent_id, local_id, topic::label::O, protocol, &addr, &target);
 
                 senders.insert(key_recv, vnet_tx);
                 task::spawn(async move {
@@ -423,8 +450,8 @@ pub async fn local_ports_tcp(
                             let (_prefix, agent_id, local_id, label, protocol, _src, _dst) = topic::parse(&topic);
 
                             match (label, protocol) {
-                                (topic::label::X, _) => {
-                                    if let Some(s) = on_xdata {
+                                (topic::label::V, _) => {
+                                    if let Some(s) = on_vdata {
                                         s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await?;
                                     }
                                 },
@@ -458,34 +485,28 @@ pub async fn local_ports_udp(
     sock: UdpSocket,
     target: Option<String>,
     id: (&str, &str),
-    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
-    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
+    vdata: Option<VDataConfig>,
 ) -> Result<(), Error> {
     let (agent_id, local_id) = id;
-    let target = target.unwrap_or(topic::NIL.to_string());
-    let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
 
-    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
-    let prefix = prefix.as_str();
-
-    let (client, mut eventloop) = mqtt_client_init(
-        url,
-        topic::build_sub(prefix, topic::ANY, local_id, topic::label::O),
-        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
-        topic::build_pub_x(prefix, topic::NIL, local_id, topic::label::X),
-        xdata,
-        on_xdata.is_some(),
+    let (client, mut eventloop, prefix, on_vdata) = mqtt_client_init(
+        mqtt_url,
+        (topic::ANY, local_id, topic::label::O),
+        (topic::NIL, local_id),
+        vdata.unwrap_or_default(),
     )
-    .await;
+    .await?;
 
+    let target = target.unwrap_or(topic::NIL.to_string());
     let mut buf = [0; MAX_BUFFER_SIZE];
+    let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
     loop {
         let sender = sender.clone();
-        let on_xdata = on_xdata.clone();
+        let on_vdata = on_vdata.clone();
         select! {
             Ok((len, addr)) = sock.recv_from(&mut buf) => {
                 sender.send((
-                    topic::build(prefix, agent_id, local_id, topic::label::I, topic::protocol::UDP, &addr.to_string(), &target),
+                    topic::build(&prefix, agent_id, local_id, topic::label::I, topic::protocol::UDP, &addr.to_string(), &target),
                     buf[..len].to_vec())).unwrap();
             }
             result = receiver.recv() => {
@@ -509,8 +530,8 @@ pub async fn local_ports_udp(
                             let (_prefix, _agent_id, _local_id, label, protocol, src, _dst) = topic::parse(&topic);
 
                             match (label, protocol) {
-                                (topic::label::X, _) => {
-                                    if let Some(s) = on_xdata {
+                                (topic::label::V, _) => {
+                                    if let Some(s) = on_vdata {
                                         s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await?;
                                     }
                                 },
@@ -550,36 +571,29 @@ pub async fn local_socks(
     listener: TcpListener,
     id: (&str, &str),
     domain: Option<String>,
-    xdata: Option<(Vec<u8>, Option<Vec<u8>>)>,
-    on_xdata: Option<Sender<(String, String, Vec<u8>)>>,
+    vdata: Option<VDataConfig>,
     tcp_over_kcp: bool,
 ) -> Result<(), Error> {
     let (agent_id, local_id) = id;
+
+    let (client, mut eventloop, prefix, on_vdata) = mqtt_client_init(
+        mqtt_url,
+        (topic::ANY, local_id, topic::label::O),
+        (topic::NIL, local_id),
+        vdata.unwrap_or_default(),
+    )
+    .await?;
+
+    let server = Server::new(listener, Arc::new(NoAuth));
     let mut senders =
         LruCache::<String, UnboundedSender<(String, Vec<u8>)>>::with_expiry_duration_and_capacity(
             LRU_TIME_TO_LIVE,
             LRU_MAX_CAPACITY,
         );
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
-
-    let (url, prefix) = crate::utils::pre_url(mqtt_url.parse::<Url>()?);
-    let prefix = prefix.as_str();
-
-    let (client, mut eventloop) = mqtt_client_init(
-        url,
-        topic::build_sub(prefix, topic::ANY, local_id, topic::label::O),
-        topic::build_sub(prefix, topic::ANY, topic::ANY, topic::label::X),
-        topic::build_pub_x(prefix, topic::NIL, local_id, topic::label::X),
-        xdata,
-        on_xdata.is_some(),
-    )
-    .await;
-
-    let server = Server::new(listener, Arc::new(NoAuth));
-
     loop {
         let sender_clone = sender.clone();
-        let on_xdata = on_xdata.clone();
+        let on_vdata = on_vdata.clone();
         select! {
             Ok((conn, _)) = server.accept() => {
                 match crate::socks::handle(conn, domain.clone()).await {
@@ -598,8 +612,8 @@ pub async fn local_socks(
                         let protocol = if tcp_over_kcp { topic::protocol::KCP } else { topic::protocol::TCP };
 
                         let addr = socket.peer_addr().unwrap().to_string();
-                        let key_send = topic::build(prefix, &agent_id, local_id, topic::label::I, protocol, &addr, &target);
-                        let key_recv = topic::build(prefix, &agent_id, local_id, topic::label::O, protocol, &addr, &target);
+                        let key_send = topic::build(&prefix, &agent_id, local_id, topic::label::I, protocol, &addr, &target);
+                        let key_recv = topic::build(&prefix, &agent_id, local_id, topic::label::O, protocol, &addr, &target);
 
                         senders.insert(key_recv, vnet_tx);
                         task::spawn(async move {
@@ -636,8 +650,8 @@ pub async fn local_socks(
                             let (_prefix, agent_id, local_id, label, protocol, _src, _dst) = topic::parse(&topic);
 
                             match (label, protocol) {
-                                (topic::label::X, _) => {
-                                    if let Some(s) = on_xdata {
+                                (topic::label::V, _) => {
+                                    if let Some(s) = on_vdata {
                                         s.send((agent_id.to_string(), local_id.to_string(), p.payload.to_vec())).await.unwrap();
                                     }
                                 },
