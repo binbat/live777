@@ -20,7 +20,9 @@
   },
   "dependencies": {
     "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
+    "@nuintun/qrcode": "^4.1.5",
     "preact": "^10.23.2",
+    "typescript-event-target": "^1.1.1",
     "wretch": "^2.9.1"
   },
   "devDependencies": {
