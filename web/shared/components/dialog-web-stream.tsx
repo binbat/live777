@@ -5,6 +5,7 @@ import { WHIPClient } from '@binbat/whip-whep/whip';
 import { TokenContext } from '../context';
 import { formatVideoTrackResolution } from '../utils';
 import { useLogger } from '../hooks/use-logger';
+import { QRCodeStream } from '../qrcode-stream';
 
 interface Props {
     onStop(): void
@@ -24,6 +25,8 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     const logger = useLogger();
     const refDialog = useRef<HTMLDialogElement>(null);
     const refVideo = useRef<HTMLVideoElement>(null);
+    const refCanvas = useRef<HTMLCanvasElement>(null);
+    const refQrCodeStream = useRef<QRCodeStream>(null);
 
     useImperativeHandle(ref, () => {
         return {
@@ -43,13 +46,9 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         logger.log(state);
     };
 
-    const handleStreamStart = async () => {
+    const handleStreamStart = async (stream: MediaStream) => {
         logger.clear();
         setConnState('');
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-            audio: true,
-            video: true
-        });
         refMediaStream.current = stream;
         if (refVideo.current) {
             refVideo.current.srcObject = stream;
@@ -91,7 +90,26 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         }
     };
 
+    const handleDisplayMediaStart = async () => {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            audio: true,
+            video: true
+        });
+        handleStreamStart(stream);
+    }
+
+    const handleEncodeLatencyStart = () => {
+        if (!refQrCodeStream.current) {
+            refQrCodeStream.current = new QRCodeStream(refCanvas.current!);
+        }
+        handleStreamStart(refQrCodeStream.current!.capture());
+    };
+
     const handleStreamStop = async () => {
+        if (refQrCodeStream.current) {
+            refQrCodeStream.current.stop();
+            refQrCodeStream.current = null;
+        }
         if (refMediaStream.current) {
             refMediaStream.current.getTracks().forEach(t => t.stop());
             refMediaStream.current = null;
@@ -128,12 +146,18 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
                 <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
             </details>
             <div>
-                <button onClick={() => { handleCloseDialog(); }}>Hide</button>
+                <button onClick={handleCloseDialog}>Hide</button>
                 {refWhipClient.current
-                    ? <button onClick={() => { handleStreamStop(); }} class="text-red-500">Stop</button>
-                    : <button onClick={() => { handleStreamStart(); }}>Start</button>
+                    ? <button onClick={handleStreamStop} class="text-red-500">Stop</button>
+                    : (
+                        <>
+                            <button onClick={handleDisplayMediaStart}>Start</button>
+                            <button onClick={handleEncodeLatencyStart}>Encode Latency</button>
+                        </>
+                    )
                 }
             </div>
+            <canvas ref={refCanvas} class="hidden" width={1280} height={720}></canvas>
         </dialog>
     );
 });

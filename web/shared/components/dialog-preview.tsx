@@ -5,6 +5,7 @@ import { WHEPClient } from '@binbat/whip-whep/whep.js';
 import { TokenContext } from '../context';
 import { formatVideoTrackResolution } from '../utils';
 import { useLogger } from '../hooks/use-logger';
+import { QRCodeStreamDecoder } from '../qrcode-stream';
 
 interface Props {
     onStop(): void
@@ -22,9 +23,12 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     const refMediaStream = useRef<MediaStream | null>(null);
     const [connState, setConnState] = useState('');
     const [videoResolution, setVideoResolution] = useState('');
+    const refVideoResolutionInterval = useRef(-1);
     const logger = useLogger();
     const refDialog = useRef<HTMLDialogElement>(null);
     const refVideo = useRef<HTMLVideoElement>(null);
+    const refStreamDecoder = useRef<QRCodeStreamDecoder>(null);
+    const [latency, setLatency] = useState<string>();
 
     useImperativeHandle(ref, () => {
         return {
@@ -46,6 +50,11 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     };
 
     const handlePreviewStop = async () => {
+        window.clearInterval(refVideoResolutionInterval.current);
+        if (refStreamDecoder.current) {
+            refStreamDecoder.current.stop();
+            refStreamDecoder.current = null;
+        }
         if (refVideo.current) {
             refVideo.current.srcObject = null;
         }
@@ -130,13 +139,18 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
                 logger.log(await r.text());
             }
         }
+        if (refVideoResolutionInterval.current >= 0) {
+            window.clearInterval(refVideoResolutionInterval.current);
+            refVideoResolutionInterval.current = -1;
+        }
+        refVideoResolutionInterval.current = window.setInterval(refreshVideoResolution, 1000);
     };
 
     const handleVideoCanPlay = (_: TargetedEvent<HTMLVideoElement>) => {
         logger.log('video canplay');
     };
 
-    const handleVideoResize = (_: TargetedEvent<HTMLVideoElement>) => {
+    const refreshVideoResolution = (_: TargetedEvent<HTMLVideoElement>) => {
         if (refMediaStream.current) {
             const videoTrack = refMediaStream.current.getVideoTracks()[0];
             if (videoTrack) {
@@ -145,11 +159,24 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         }
     };
 
+    const handleDecodeLatency = (e: TargetedEvent) => {
+        e.preventDefault();
+        setLatency('-- ms');
+        if (refVideo.current != null && refStreamDecoder.current == null) {
+            refStreamDecoder.current = new QRCodeStreamDecoder(refVideo.current);
+        }
+        const decoder = refStreamDecoder.current!;
+        decoder.start();
+        decoder.addEventListener('latency', (e: CustomEvent<number>) => {
+            setLatency(`${e.detail} ms`);
+        })
+    };
+
     return (
         <dialog ref={refDialog}>
             <h3>Preview {streamId} {videoResolution}</h3>
             <div>
-                <video ref={refVideo} controls autoplay onCanPlay={handleVideoCanPlay} onResize={handleVideoResize} class="max-w-[90vw] max-h-[70vh]"></video>
+                <video ref={refVideo} controls autoplay onCanPlay={handleVideoCanPlay} onResize={refreshVideoResolution} class="max-w-[90vw] max-h-[70vh]"></video>
             </div>
             <details>
                 <summary>
@@ -159,8 +186,15 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
                 <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
             </details>
             <form method="dialog">
-                <button onClick={() => handleCloseDialog()}>Hide</button>
-                <button onClick={() => handlePreviewStop()} class="text-red-500">Stop</button>
+                <button onClick={handleCloseDialog}>Hide</button>
+                <button onClick={handlePreviewStop} class="text-red-500">Stop</button>
+                {
+                    typeof latency === 'string' ? (
+                        <span>Latency: {latency}</span>
+                    ) : (
+                        <button onClick={handleDecodeLatency}>Decode Latency</button>
+                    )
+                }
             </form>
         </dialog>
     );
