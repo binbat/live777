@@ -7,7 +7,6 @@ use axum::Router;
 use error::AppError;
 use http::{header, StatusCode, Uri};
 use rust_embed::RustEmbed;
-use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -98,18 +97,20 @@ where
                     .block_on(async move {
                         net4mqtt::proxy::agent(
                             &c.mqtt_url,
-                            cfg.http.listen,
+                            &cfg.http.listen.to_string(),
                             &c.alias.clone(),
-                            Some((
-                                json!({
-                                    "alias": c.alias,
-                                })
-                                .to_string()
-                                .bytes()
-                                .collect(),
-                                Some("{}".bytes().collect()),
-                            )),
-                            None,
+                            Some(net4mqtt::proxy::VDataConfig {
+                                online: Some(
+                                    serde_json::json!({
+                                        "alias": c.alias,
+                                    })
+                                    .to_string()
+                                    .bytes()
+                                    .collect(),
+                                ),
+                                offline: Some("{}".bytes().collect()),
+                                ..Default::default()
+                            }),
                         )
                         .await
                         .unwrap()

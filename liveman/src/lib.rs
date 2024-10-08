@@ -5,7 +5,6 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Router;
 
-use clap::Parser;
 use http::{header, StatusCode, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
@@ -15,7 +14,10 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{error, info_span};
+
+#[cfg(feature = "liveion")]
+use tracing::info;
 
 use auth::{access::access_middleware, ManyValidate};
 
@@ -28,7 +30,7 @@ use crate::mem::{MemStorage, Node, NodeKind, Server};
 struct Assets;
 
 mod admin;
-mod config;
+pub mod config;
 mod error;
 mod mem;
 mod result;
@@ -37,43 +39,6 @@ mod tick;
 
 #[cfg(feature = "liveion")]
 mod cluster;
-
-#[derive(Parser)]
-#[command(version)]
-struct Args {
-    /// Set config file path
-    #[arg(short, long)]
-    config: Option<String>,
-}
-
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-    let cfg = Config::parse(args.config);
-
-    #[cfg(debug_assertions)]
-    utils::set_log(format!(
-        "liveman={},liveion={},http_log={},webrtc=error",
-        cfg.log.level, cfg.log.level, cfg.log.level
-    ));
-
-    #[cfg(not(debug_assertions))]
-    utils::set_log(format!(
-        "liveman={},http_log={},webrtc=error",
-        cfg.log.level, cfg.log.level
-    ));
-
-    warn!("set log level : {}", cfg.log.level);
-    debug!("config : {:?}", cfg);
-
-    let listener = tokio::net::TcpListener::bind(cfg.http.listen)
-        .await
-        .unwrap();
-    info!("Server listening on {}", listener.local_addr().unwrap());
-
-    server_up(cfg, listener, shutdown_signal()).await;
-    info!("Server shutdown");
-}
 
 pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
 where
@@ -117,57 +82,61 @@ where
 
     #[cfg(feature = "net4mqtt")]
     {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
-
         if let Some(c) = cfg.net4mqtt.clone() {
+            let (sender, mut receiver) =
+                tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
+
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
+                        let listener = TcpListener::bind(c.listen).await.unwrap();
                         net4mqtt::proxy::local_socks(
                             &c.mqtt_url,
-                            c.listen,
-                            "-",
-                            &c.alias.clone(),
-                            None,
-                            Some(sender),
+                            listener,
+                            ("-", &c.alias.clone()),
+                            Some(net4mqtt_domain.to_string()),
+                            Some(net4mqtt::proxy::VDataConfig {
+                                receiver: Some(sender),
+                                ..Default::default()
+                            }),
                             false,
                         )
                         .await
                         .unwrap()
                     });
             });
-        }
 
-        std::thread::spawn(move || {
-            let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(async move {
-                    loop {
-                        match receiver.recv().await {
-                            Some((agent_id, _local_id, data)) => {
-                                if data.len() > 5 {
-                                    nodes.write().unwrap().insert(
-                                        agent_id.clone(),
-                                        Node::new(
-                                            "".to_string(),
-                                            NodeKind::Net4mqtt,
-                                            format!("http://{}", dns.registry(&agent_id)),
-                                        ),
-                                    );
-                                } else {
-                                    nodes.write().unwrap().remove(&agent_id);
+            std::thread::spawn(move || {
+                let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move {
+                        loop {
+                            match receiver.recv().await {
+                                Some((agent_id, _local_id, data)) => {
+                                    if data.len() > 5 {
+                                        nodes.write().unwrap().insert(
+                                            agent_id.clone(),
+                                            Node::new(
+                                                "".to_string(),
+                                                NodeKind::Net4mqtt,
+                                                format!("http://{}", dns.registry(&agent_id)),
+                                            ),
+                                        );
+                                    } else {
+                                        nodes.write().unwrap().remove(&agent_id);
+                                    }
+                                }
+                                None => {
+                                    error!("net4mqtt discovery receiver channel closed");
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                                 }
                             }
-                            None => {
-                                error!("net4mqtt discovery receiver channel closed");
-                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                            }
                         }
-                    }
-                })
-        });
+                    })
+            });
+        }
     }
 
     let app_state = AppState {
@@ -181,7 +150,7 @@ where
     let mut app = Router::new()
         .merge(
             route::proxy::route()
-                .route("/token", post(token))
+                .route("/api/token", post(token))
                 .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
@@ -190,7 +159,7 @@ where
         } else {
             CorsLayer::new()
         })
-        .route("/login", post(authorize))
+        .route("/api/login", post(authorize))
         .with_state(app_state.clone())
         .layer(axum::middleware::from_fn(http_log::print_request_response))
         .layer(
@@ -228,11 +197,6 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
-}
-
-async fn shutdown_signal() {
-    let str = signal::wait_for_stop_signal().await;
-    debug!("Received signal: {}", str);
 }
 
 type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;

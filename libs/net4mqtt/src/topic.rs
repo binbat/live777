@@ -1,8 +1,8 @@
 /// Publish:
-/// TOPIC: <prefix>/<agent id>/<local id>/<label>/<protocol>/<address:port>
+/// TOPIC: <prefix>/<agent id>/<local id>/<label>/<protocol>/<src(address:port)>/<dst(address:port)>
 ///
-/// Pub topic example: prefix/agent-0/local-0/i/udp/127.0.0.1:4433
-/// Pub topic example: prefix/agent-0/local-0/o/udp/127.0.0.1:4433
+/// Pub topic example: prefix/agent-0/local-0/i/udp/127.0.0.1:4444/127.0.0.1:4433
+/// Pub topic example: prefix/agent-0/local-0/o/udp/127.0.0.1:4444/127.0.0.1:4433
 ///
 /// Subscribe:
 /// TOPIC: <prefix>/< + | agent id>/< + | local id>/<label>/#
@@ -12,7 +12,7 @@
 ///
 /// About MQTT online status (Option)
 ///
-/// TOPIC: prefix/agent-0/local-0/x/-/-
+/// TOPIC: prefix/agent-0/local-0/v/-
 /// Retain: true
 
 pub const ANY: &str = "+";
@@ -24,7 +24,7 @@ const SPLIT: char = '/';
 pub mod label {
     pub const I: &str = "i";
     pub const O: &str = "o";
-    pub const X: &str = "x";
+    pub const V: &str = "v";
 }
 
 pub mod protocol {
@@ -39,11 +39,12 @@ pub fn build(
     local_id: &str,
     label: &str,
     protocol: &str,
-    address: &str,
+    src: &str,
+    dst: &str,
 ) -> String {
     format!(
-        "{}/{}/{}/{}/{}/{}",
-        prefix, agent_id, local_id, label, protocol, address
+        "{}/{}/{}/{}/{}/{}/{}",
+        prefix, agent_id, local_id, label, protocol, src, dst
     )
 }
 
@@ -52,15 +53,13 @@ pub fn build_sub(prefix: &str, agent_id: &str, local_id: &str, label: &str) -> S
 }
 
 pub fn build_pub_x(prefix: &str, agent_id: &str, local_id: &str, label: &str) -> String {
-    format!(
-        "{}/{}/{}/{}/{}/{}",
-        prefix, agent_id, local_id, label, NIL, NIL
-    )
+    format!("{}/{}/{}/{}/{}", prefix, agent_id, local_id, label, NIL)
 }
 
-pub fn parse(topic: &str) -> (&str, &str, &str, &str, &str, &str) {
-    let v: Vec<&str> = topic.split(SPLIT).collect();
-    (v[0], v[1], v[2], v[3], v[4], v[5])
+pub fn parse(topic: &str) -> (&str, &str, &str, &str, &str, &str, &str) {
+    let mut v: Vec<&str> = topic.split(SPLIT).collect();
+    v.extend((0..(7 - v.len())).map(|_| NIL).collect::<Vec<&str>>());
+    (v[0], v[1], v[2], v[3], v[4], v[5], v[6])
 }
 
 #[test]
@@ -68,12 +67,21 @@ fn test_build_parse() {
     let prefix = "test_build_parse";
     let agent_id = "3";
     let local_id = "7";
-    let address = "address";
+    let src = "src";
+    let dst = "dst";
 
-    let result = "test_build_parse/3/7/i/kcp/address";
+    let result = "test_build_parse/3/7/i/kcp/src/dst";
 
     assert_eq!(
-        build(prefix, agent_id, local_id, label::I, protocol::KCP, address),
+        build(
+            prefix,
+            agent_id,
+            local_id,
+            label::I,
+            protocol::KCP,
+            src,
+            dst
+        ),
         result,
     );
 
@@ -82,16 +90,23 @@ fn test_build_parse() {
         "test_build_parse/3/7/i/#",
     );
 
-    let (prefix2, agent_id2, local_id2, label2, protocol2, address2) = parse(result);
-    assert_eq!(prefix2, prefix);
-    assert_eq!(agent_id2, agent_id);
-    assert_eq!(local_id2, local_id);
-    assert_eq!(label2, label::I);
-    assert_eq!(protocol2, protocol::KCP);
-    assert_eq!(address2, address);
+    assert_eq!(
+        (
+            prefix,
+            agent_id,
+            local_id,
+            label::I,
+            protocol::KCP,
+            src,
+            dst
+        ),
+        parse(result)
+    );
 
     assert_eq!(
-        build_pub_x(prefix, agent_id, local_id, label::X),
-        "test_build_parse/3/7/x/-/-",
+        build_pub_x(prefix, agent_id, local_id, label::V),
+        "test_build_parse/3/7/v/-",
     );
+
+    assert_eq!(("a", "b", NIL, NIL, NIL, NIL, NIL), parse("a/b"));
 }
