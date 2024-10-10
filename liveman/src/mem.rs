@@ -26,12 +26,13 @@ pub struct Server {
     pub sub_max: u16,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub token: String,
     pub kind: NodeKind,
     pub url: String,
 
+    streams: Vec<Stream>,
     strategy: Option<Strategy>,
 }
 
@@ -41,6 +42,7 @@ impl Node {
             token,
             kind,
             url,
+            streams: Vec::new(),
             strategy: None,
         }
     }
@@ -116,7 +118,6 @@ pub struct MemStorage {
     time: SystemTime,
     client: reqwest::Client,
 
-    info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
     stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
     session: Arc<RwLock<HashMap<String, Server>>>,
 }
@@ -150,7 +151,6 @@ impl MemStorage {
             time: SystemTime::now(),
             client: client_builder.build().unwrap(),
 
-            info: Arc::new(RwLock::new(HashMap::new())),
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -189,22 +189,32 @@ impl MemStorage {
         self.get_cluster()
     }
 
-    pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<()> {
-        self.info.write().unwrap().insert(alias, target);
+    pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<(), Error> {
+        match self.list.write().unwrap().get_mut(&alias) {
+            Some(node) => node.streams = target,
+            None => return Err(anyhow!("node not found")),
+        };
         Ok(())
     }
 
     pub async fn info_get(&mut self, alias: String) -> Result<Vec<Stream>, Error> {
         self.update().await;
-        match self.info.read().unwrap().get(&alias) {
-            Some(server) => Ok(server.clone()),
-            None => Err(anyhow!("stream not found")),
+        match self.list.read().unwrap().get(&alias) {
+            Some(node) => Ok(node.streams.clone()),
+            None => Err(anyhow!("node not found")),
         }
     }
 
     pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<Stream>>, Error> {
         self.update().await;
-        Ok(self.info.read().unwrap().clone())
+        Ok(self
+            .list
+            .read()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k.clone(), v.streams.clone()))
+            .collect())
     }
 
     pub async fn stream_put(&self, stream: String, target: Server) -> Result<()> {
@@ -282,7 +292,6 @@ impl MemStorage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.info.write().unwrap().clear();
         self.stream.write().unwrap().clear();
 
         // Maybe Don't need clear "session"
@@ -354,7 +363,6 @@ impl MemStorage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.info.write().unwrap().clear();
         self.stream.write().unwrap().clear();
 
         // Maybe Don't need clear "session"
