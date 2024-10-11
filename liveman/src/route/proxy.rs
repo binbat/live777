@@ -27,8 +27,14 @@ pub fn route() -> Router<AppState> {
             &api::path::session_layer(":stream", ":session"),
             get(session).post(session).delete(session),
         )
-        .route("/api/whip/:alias/:stream", post(api_whip))
-        .route("/api/whep/:alias/:stream", post(api_whep))
+        .route(
+            &api::path::whip_with_node(":stream", ":alias"),
+            post(api_whip),
+        )
+        .route(
+            &api::path::whep_with_node(":stream", ":alias"),
+            post(api_whep),
+        )
         .route("/api/nodes/", get(node::index))
         .route("/api/streams/", get(stream::index))
         .route("/api/streams/:stream", get(stream::show))

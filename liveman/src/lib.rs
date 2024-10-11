@@ -55,8 +55,8 @@ where
     let proxy_addr = None;
 
     let client_builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(500))
-        .timeout(Duration::from_millis(1000));
+        .connect_timeout(Duration::from_millis(1000))
+        .timeout(Duration::from_millis(10000));
 
     let client = if let Some((addr, domain)) = proxy_addr {
         // References: https://github.com/seanmonstar/reqwest/issues/899

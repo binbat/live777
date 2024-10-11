@@ -55,6 +55,8 @@ pub struct Http {
     pub listen: SocketAddr,
     #[serde(default)]
     pub cors: bool,
+    #[serde(default)]
+    pub public: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -111,6 +113,7 @@ impl Default for Http {
     fn default() -> Self {
         Self {
             listen: default_http_listen(),
+            public: Default::default(),
             cors: Default::default(),
         }
     }
@@ -169,14 +172,17 @@ impl Config {
         let result = fs::read_to_string(path.unwrap_or(String::from("liveman.toml")))
             .or(fs::read_to_string("/etc/live777/liveman.toml"))
             .unwrap_or("".to_string());
-        let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
+        let mut cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
         match cfg.validate() {
             Ok(_) => cfg,
             Err(err) => panic!("config validate [{}]", err),
         }
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
+    fn validate(&mut self) -> anyhow::Result<()> {
+        if self.http.public.is_empty() {
+            self.http.public = format!("http://{}", self.http.listen);
+        }
         Ok(())
     }
 }

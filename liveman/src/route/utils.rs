@@ -59,6 +59,7 @@ async fn force_check(client: reqwest::Client, server: Server, stream: String) ->
 }
 
 pub async fn cascade_push(
+    public: String,
     client: reqwest::Client,
     server_src: Server,
     server_dst: Server,
@@ -68,7 +69,11 @@ pub async fn cascade_push(
     headers.append("Content-Type", "application/json".parse().unwrap());
     let url = format!("{}{}", server_src.url, &api::path::cascade(&stream));
     let body = serde_json::to_string(&Cascade {
-        target_url: Some(format!("{}{}", server_dst.url, api::path::whip(&stream))),
+        target_url: Some(format!(
+            "{}{}",
+            public,
+            api::path::whip_with_node(&stream, &server_dst.alias)
+        )),
         token: None,
         source_url: None,
     })

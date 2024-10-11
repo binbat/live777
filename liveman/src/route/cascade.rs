@@ -25,6 +25,7 @@ pub async fn cascade_new_node(
 
     tokio::spawn(async move {
         match cascade_push(
+            state.config.http.public.clone(),
             state.client.clone(),
             server_src.clone(),
             server_dst.clone(),
