@@ -1,4 +1,5 @@
-use axum::body::Body;
+use std::time::Duration;
+
 use axum::extract::Request;
 use axum::middleware;
 use axum::response::IntoResponse;
@@ -6,8 +7,6 @@ use axum::routing::post;
 use axum::Router;
 
 use http::{header, StatusCode, Uri};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::TokioExecutor;
 use rust_embed::RustEmbed;
 use std::future::Future;
 use tokio::net::TcpListener;
@@ -44,10 +43,6 @@ pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let client: Client =
-        hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
-            .build(HttpConnector::new());
-
     #[cfg(feature = "net4mqtt")]
     let net4mqtt_domain = "net4mqtt.local";
 
@@ -59,7 +54,30 @@ where
     #[cfg(not(feature = "net4mqtt"))]
     let proxy_addr = None;
 
-    let store = MemStorage::new(proxy_addr);
+    let client_builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_millis(1000));
+
+    let client = if let Some((addr, domain)) = proxy_addr {
+        // References: https://github.com/seanmonstar/reqwest/issues/899
+        let target = reqwest::Url::parse(format!("socks5h://{}", addr).as_str()).unwrap();
+        client_builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
+            Some(host) => {
+                if host.ends_with(domain.as_str()) {
+                    Some(target.clone())
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }))
+    } else {
+        client_builder
+    }
+    .build()
+    .unwrap();
+
+    let store = MemStorage::new(client.clone());
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
         nodes
@@ -199,11 +217,9 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     }
 }
 
-type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
-
 #[derive(Clone)]
 struct AppState {
     config: Config,
-    client: Client,
+    client: reqwest::Client,
     storage: MemStorage,
 }

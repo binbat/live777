@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -123,34 +122,13 @@ pub struct MemStorage {
 }
 
 impl MemStorage {
-    pub fn new(proxy: Option<(SocketAddr, String)>) -> Self {
-        info!("Proxy is: {:?}", proxy);
-        let mut client_builder = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(500))
-            .timeout(Duration::from_millis(1000));
-
-        client_builder = if let Some((addr, domain)) = proxy {
-            // References: https://github.com/seanmonstar/reqwest/issues/899
-            let target = reqwest::Url::parse(format!("socks5h://{}", addr).as_str()).unwrap();
-            client_builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
-                Some(host) => {
-                    if host.ends_with(domain.as_str()) {
-                        Some(target.clone())
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            }))
-        } else {
-            client_builder
-        };
+    pub fn new(client: reqwest::Client) -> Self {
+        info!("Proxy is: {:?}", client);
 
         Self {
             list: Arc::new(RwLock::new(HashMap::new())),
             time: SystemTime::now(),
-            client: client_builder.build().unwrap(),
-
+            client,
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
         }

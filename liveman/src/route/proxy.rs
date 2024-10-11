@@ -200,12 +200,20 @@ async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Re
             HeaderValue::from_str(&format!("Bearer {}", target.token))?,
         );
     };
-    Ok(state
+
+    let (headers, body) = req.into_parts();
+    use http_body_util::BodyExt;
+    let body = body.collect().await.unwrap().to_bytes();
+    let req: Request<axum::body::Bytes> = Request::from_parts(headers, body);
+    let req = reqwest::Request::try_from(req).unwrap();
+
+    let res = state
         .client
-        .request(req)
+        .execute(req)
         .await
-        .map_err(|_| AppError::RequestProxyError)
-        .into_response())
+        .map_err(|_| AppError::RequestProxyError)?;
+    let res = http::Response::from(res);
+    Ok(res.into_response())
 }
 
 async fn maximum_idle_node(
