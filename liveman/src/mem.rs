@@ -33,6 +33,7 @@ pub struct Node {
 
     streams: Vec<Stream>,
     strategy: Option<Strategy>,
+    duration: Option<std::time::Duration>,
 }
 
 impl Node {
@@ -41,8 +42,7 @@ impl Node {
             token,
             kind,
             url,
-            streams: Vec::new(),
-            strategy: None,
+            ..Default::default()
         }
     }
 }
@@ -254,10 +254,13 @@ impl MemStorage {
 
         let handles = requests
             .into_iter()
-            .map(|(alias, value)| tokio::spawn(async move { (alias, value.await) }))
+            .map(|(alias, value)| {
+                tokio::spawn(async move { (alias, start.elapsed(), value.await) })
+            })
             .collect::<Vec<
                 tokio::task::JoinHandle<(
                     std::string::String,
+                    std::time::Duration,
                     std::result::Result<reqwest::Response, reqwest::Error>,
                 )>,
             >>();
@@ -278,22 +281,26 @@ impl MemStorage {
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
-                (Ok((alias, Ok(res))),) => {
-                    debug!("{}: Response: {:?}", alias, res);
+                (Ok((alias, duration, Ok(res))),) => {
+                    debug!(
+                        "{}: spend time: [{:?}] Response: {:?}",
+                        alias, duration, res
+                    );
 
                     match serde_json::from_str::<Strategy>(&res.text().await.unwrap()) {
                         Ok(strategy) => {
                             if let Some(node) =
                                 self.get_map_nodes_mut().write().unwrap().get_mut(&alias)
                             {
-                                node.strategy = Some(strategy)
+                                node.duration = Some(duration);
+                                node.strategy = Some(strategy);
                             }
                         }
                         Err(e) => error!("Error: {:?}", e),
                     };
                 }
-                (Ok((name, Err(e))),) => {
-                    error!("{}: Error: {:?}", name, e);
+                (Ok((name, duration, Err(e))),) => {
+                    error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
                 }
                 _ => {}
             }
@@ -325,10 +332,13 @@ impl MemStorage {
 
         let handles = requests
             .into_iter()
-            .map(|(alias, value)| tokio::spawn(async move { (alias, value.await) }))
+            .map(|(alias, value)| {
+                tokio::spawn(async move { (alias, start.elapsed(), value.await) })
+            })
             .collect::<Vec<
                 tokio::task::JoinHandle<(
                     std::string::String,
+                    std::time::Duration,
                     std::result::Result<reqwest::Response, reqwest::Error>,
                 )>,
             >>();
@@ -349,8 +359,11 @@ impl MemStorage {
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
-                (Ok((alias, Ok(res))),) => {
-                    debug!("{}: Response: {:?}", alias, res);
+                (Ok((alias, duration, Ok(res))),) => {
+                    debug!(
+                        "{}: spend time: [{:?}] Response: {:?}",
+                        alias, duration, res
+                    );
 
                     match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
@@ -379,8 +392,8 @@ impl MemStorage {
                         Err(e) => error!("Error: {:?}", e),
                     };
                 }
-                (Ok((name, Err(e))),) => {
-                    error!("{}: Error: {:?}", name, e);
+                (Ok((name, duration, Err(e))),) => {
+                    error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
                 }
                 _ => {}
             }
