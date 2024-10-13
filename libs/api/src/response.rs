@@ -6,7 +6,7 @@ pub struct Layer {
     pub encoding_id: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Stream {
     pub id: String,
@@ -16,14 +16,14 @@ pub struct Stream {
     pub codecs: Vec<Codec>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PubSub {
     pub leave_at: i64,
     pub sessions: Vec<Session>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
@@ -34,7 +34,7 @@ pub struct Session {
     pub has_data_channel: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Codec {
     pub kind: String,
@@ -42,7 +42,7 @@ pub struct Codec {
     pub fmtp: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CascadeInfo {
     #[serde(skip_serializing_if = "Option::is_none")]

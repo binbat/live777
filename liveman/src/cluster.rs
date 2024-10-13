@@ -1,9 +1,9 @@
 use std::net::ToSocketAddrs;
 use tracing::{debug, info};
 
-use crate::mem::Server;
+use crate::config::Node;
 
-pub async fn cluster_up(liveions: Vec<Server>) -> Vec<Server> {
+pub async fn cluster_up(liveions: Vec<Node>) -> Vec<Node> {
     let mut results = Vec::new();
 
     for liveion in liveions.iter() {
@@ -22,15 +22,13 @@ pub async fn cluster_up(liveions: Vec<Server>) -> Vec<Server> {
             shutdown_signal(addr.to_string()),
         ));
 
-        results.push(Server {
+        results.push(Node {
             alias: if liveion.alias.is_empty() {
                 format!("buildin-{}", addr.port())
             } else {
                 liveion.alias.clone()
             },
             url: format!("http://{}", addr),
-            pub_max: liveion.pub_max,
-            sub_max: liveion.sub_max,
             ..Default::default()
         })
     }

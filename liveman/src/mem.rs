@@ -25,7 +25,7 @@ pub struct Server {
     pub sub_max: u16,
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
     pub token: String,
     pub kind: NodeKind,
@@ -33,7 +33,7 @@ pub struct Node {
 
     streams: Vec<Stream>,
     strategy: Option<Strategy>,
-    duration: Option<std::time::Duration>,
+    duration: Option<Duration>,
 }
 
 impl Node {

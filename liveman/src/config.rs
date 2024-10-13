@@ -10,7 +10,7 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub liveion: Vec<crate::mem::Server>,
+    pub liveion: Vec<Node>,
     #[serde(default)]
     pub reforward: Reforward,
 
@@ -19,7 +19,17 @@ pub struct Config {
     pub net4mqtt: Option<Net4mqtt>,
 
     #[serde(default)]
-    pub nodes: Vec<crate::mem::Server>,
+    pub nodes: Vec<Node>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Node {
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 #[cfg(feature = "net4mqtt")]
