@@ -44,40 +44,37 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     #[cfg(feature = "net4mqtt")]
-    let net4mqtt_domain = "net4mqtt.local";
-
-    #[cfg(feature = "net4mqtt")]
-    let proxy_addr = match cfg.net4mqtt.clone() {
-        Some(c) => Some((c.listen, net4mqtt_domain.to_string())),
+    let proxy_plugin = match cfg.net4mqtt.clone() {
+        Some(c) => {
+            // References: https://github.com/seanmonstar/reqwest/issues/899
+            let target = reqwest::Url::parse(&format!("socks5h://{}", c.listen)).unwrap();
+            Some(reqwest::Proxy::custom(move |url| match url.host_str() {
+                Some(host) => {
+                    if host.ends_with(c.domain.as_str()) {
+                        Some(target.clone())
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }))
+        }
         None => None,
     };
     #[cfg(not(feature = "net4mqtt"))]
-    let proxy_addr = None;
+    let proxy_plugin = None;
 
-    let client_builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(1000))
-        .timeout(Duration::from_millis(10000));
-
-    let client = if let Some((addr, domain)) = proxy_addr {
-        // References: https://github.com/seanmonstar/reqwest/issues/899
-        let target = reqwest::Url::parse(format!("socks5h://{}", addr).as_str()).unwrap();
-        client_builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
-            Some(host) => {
-                if host.ends_with(domain.as_str()) {
-                    Some(target.clone())
-                } else {
-                    None
-                }
-            }
-            None => None,
-        }))
+    let client_req = reqwest::Client::builder();
+    let client_mem = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_millis(1000));
+    let (client_req, client_mem) = if let Some(proxy) = proxy_plugin {
+        (client_req.proxy(proxy.clone()), client_mem.proxy(proxy))
     } else {
-        client_builder
-    }
-    .build()
-    .unwrap();
+        (client_req, client_mem)
+    };
 
-    let store = MemStorage::new(client.clone());
+    let store = MemStorage::new(client_mem.build().unwrap());
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
         nodes
@@ -104,6 +101,8 @@ where
             let (sender, mut receiver) =
                 tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
 
+            let domain = c.domain.clone();
+
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
@@ -113,7 +112,7 @@ where
                             &c.mqtt_url,
                             listener,
                             ("-", &c.alias.clone()),
-                            Some(net4mqtt_domain.to_string()),
+                            Some(c.domain),
                             Some(net4mqtt::proxy::VDataConfig {
                                 receiver: Some(sender),
                                 ..Default::default()
@@ -126,7 +125,7 @@ where
             });
 
             std::thread::spawn(move || {
-                let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
+                let dns = net4mqtt::kxdns::Kxdns::new(domain);
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
@@ -159,7 +158,7 @@ where
 
     let app_state = AppState {
         config: cfg.clone(),
-        client,
+        client: client_req.build().unwrap(),
         storage: store,
     };
 

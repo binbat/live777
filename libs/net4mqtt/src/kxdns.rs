@@ -1,11 +1,11 @@
 const SPLIT: char = '.';
 
 pub struct Kxdns {
-    domain: &'static str,
+    domain: String,
 }
 
 impl Kxdns {
-    pub fn new(domain: &'static str) -> Self {
+    pub fn new(domain: String) -> Self {
         Self { domain }
     }
 
@@ -21,7 +21,7 @@ impl Kxdns {
 
 #[test]
 fn test_kxdns() {
-    let kxdns = Kxdns::new("kxdns.com");
+    let kxdns = Kxdns::new("kxdns.com".to_string());
     let key = "test";
     let domain = kxdns.registry(key);
     assert_eq!(domain, "test.kxdns.com");
