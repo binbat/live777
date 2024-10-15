@@ -1,28 +1,18 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
-use axum::extract::Request;
-use axum::middleware;
-use axum::response::IntoResponse;
-use axum::routing::post;
-use axum::Router;
-
+use axum::{extract::Request, middleware, response::IntoResponse, routing::post, Router};
 use http::{header, StatusCode, Uri};
 use rust_embed::RustEmbed;
-use std::future::Future;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
-use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::{error, info_span};
-
-#[cfg(feature = "liveion")]
-use tracing::info;
-
-use auth::{access::access_middleware, ManyValidate};
+use tower_http::{
+    cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
+};
+use tracing::{error, info, info_span};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
 use crate::mem::{MemStorage, Node, NodeKind, Server};
+use auth::{access::access_middleware, ManyValidate};
 
 #[derive(RustEmbed)]
 #[folder = "../assets/liveman/"]
@@ -39,12 +29,18 @@ mod tick;
 #[cfg(feature = "liveion")]
 mod cluster;
 
-pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
+pub async fn serve<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    info!("Server listening on {}", listener.local_addr().unwrap());
+    let client_req = reqwest::Client::builder();
+    let client_mem = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_millis(1000));
+
     #[cfg(feature = "net4mqtt")]
-    let proxy_plugin = match cfg.net4mqtt.clone() {
+    let (client_req, client_mem) = if let Some(proxy) = match cfg.net4mqtt.clone() {
         Some(c) => {
             // References: https://github.com/seanmonstar/reqwest/issues/899
             let target = reqwest::Url::parse(&format!("socks5h://{}", c.listen)).unwrap();
@@ -60,15 +56,8 @@ where
             }))
         }
         None => None,
-    };
-    #[cfg(not(feature = "net4mqtt"))]
-    let proxy_plugin = None;
-
-    let client_req = reqwest::Client::builder();
-    let client_mem = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(500))
-        .timeout(Duration::from_millis(1000));
-    let (client_req, client_mem) = if let Some(proxy) = proxy_plugin {
+    } {
+        info!("net4mqtt proxy: {:?}", proxy);
         (client_req.proxy(proxy.clone()), client_mem.proxy(proxy))
     } else {
         (client_req, client_mem)
@@ -188,7 +177,10 @@ where
                     span_id = tracing::field::Empty,
                     target_addr = tracing::field::Empty,
                 );
-                span.record("span_id", span.id().unwrap().into_u64());
+                span.record(
+                    "span_id",
+                    span.id().unwrap_or(tracing::Id::from_u64(42)).into_u64(),
+                );
                 span
             }),
         );

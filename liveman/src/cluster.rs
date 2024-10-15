@@ -16,7 +16,7 @@ pub async fn cluster_up(liveions: Vec<Node>) -> Vec<Node> {
         let addr = listener.local_addr().unwrap();
         debug!("Liveion listening on {addr}");
 
-        tokio::spawn(liveion::server_up(
+        tokio::spawn(liveion::serve(
             cfg,
             listener,
             shutdown_signal(addr.to_string()),

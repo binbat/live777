@@ -28,6 +28,6 @@ async fn main() {
     let addr = listener.local_addr().unwrap();
     info!("Server listening on {}", addr);
 
-    liveion::server_up(cfg, listener, helper::shutdown_signal()).await;
+    liveion::serve(cfg, listener, helper::shutdown_signal()).await;
     info!("Server shutdown");
 }

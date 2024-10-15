@@ -1,21 +1,16 @@
-use axum::extract::Request;
-use axum::middleware;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::Router;
+use std::{future::Future, sync::Arc};
 
-use error::AppError;
+use axum::{extract::Request, middleware, response::IntoResponse, routing::get, Router};
 use http::{header, StatusCode, Uri};
 use rust_embed::RustEmbed;
-use std::future::Future;
-use std::sync::Arc;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
-use tower_http::validate_request::ValidateRequestHeaderLayer;
+use tower_http::{
+    cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
+};
 use tracing::{error, info_span, Level};
 
 use auth::{access::access_middleware, ManyValidate};
+use error::AppError;
 
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
@@ -39,7 +34,7 @@ mod result;
 mod route;
 mod stream;
 
-pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
+pub async fn serve<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {

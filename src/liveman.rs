@@ -34,8 +34,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(cfg.http.listen)
         .await
         .unwrap();
-    info!("Server listening on {}", listener.local_addr().unwrap());
 
-    liveman::server_up(cfg, listener, helper::shutdown_signal()).await;
+    liveman::serve(cfg, listener, helper::shutdown_signal()).await;
     info!("Server shutdown");
 }

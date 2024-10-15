@@ -17,7 +17,7 @@ async fn test_liveion_simple() {
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    tokio::spawn(liveion::server_up(cfg, listener, shutdown_signal()));
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
     let res = reqwest::get(format!("http://{addr}{}", api::path::strategy()))
         .await
@@ -40,7 +40,7 @@ async fn test_liveion_ipv6() {
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    tokio::spawn(liveion::server_up(cfg, listener, shutdown_signal()));
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
     let res = reqwest::get(format!("http://{addr}{}", api::path::strategy()))
         .await
@@ -62,7 +62,7 @@ async fn test_liveion_stream_create() {
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    tokio::spawn(liveion::server_up(cfg, listener, shutdown_signal()));
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
     let res = reqwest::Client::new()
         .post(format!("http://{addr}{}", api::path::streams("-")))
@@ -91,7 +91,7 @@ async fn test_liveion_stream_connect() {
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    tokio::spawn(liveion::server_up(cfg, listener, shutdown_signal()));
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
     let res = reqwest::Client::new()
         .post(format!("http://{addr}{}", api::path::streams("-")))
@@ -221,7 +221,7 @@ async fn test_liveion_stream_ffmpeg() {
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    tokio::spawn(liveion::server_up(cfg, listener, shutdown_signal()));
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
     let res = reqwest::Client::new()
         .post(format!("http://{addr}{}", api::path::streams("-")))

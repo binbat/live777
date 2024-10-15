@@ -42,7 +42,6 @@ tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 url = "2.5"
 
 [features]
-default = ["net4mqtt"]
 liveion = ["dep:liveion"]
 net4mqtt = ["dep:net4mqtt"]
 
