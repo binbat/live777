@@ -9,7 +9,7 @@ use api::{
     response::{RTCPeerConnectionState, Stream},
 };
 
-use crate::Server;
+use crate::store::Server;
 
 pub async fn force_check_times(
     client: reqwest::Client,

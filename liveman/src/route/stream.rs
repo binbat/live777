@@ -28,8 +28,8 @@ pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<api::re
     let streams = state.storage.stream_all().await;
     let mut result_streams: HashMap<String, Stream> = HashMap::new();
     for (stream_id, servers) in streams.into_iter() {
-        for server in servers.iter() {
-            let alias = format!("{}:{}", server.alias, stream_id);
+        for server_alias in servers.iter() {
+            let alias = format!("{}:{}", server_alias, stream_id);
             match map_server_stream.get(&alias) {
                 Some(s) => {
                     let new_stream = match result_streams.get(&stream_id) {

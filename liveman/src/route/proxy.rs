@@ -12,7 +12,7 @@ use api::response::Stream;
 use crate::route::cascade;
 use crate::route::node;
 use crate::route::stream;
-use crate::Server;
+use crate::store::Server;
 use crate::{error::AppError, result::Result, AppState};
 
 pub fn route() -> Router<AppState> {
@@ -102,13 +102,16 @@ async fn whip(
                             Some(location) => {
                                 state
                                     .storage
-                                    .stream_put(stream.clone(), server.clone())
+                                    .stream_put(stream.clone(), server.alias.clone())
                                     .await
                                     .unwrap();
 
                                 state
                                     .storage
-                                    .session_put(String::from(location.to_str().unwrap()), server)
+                                    .session_put(
+                                        String::from(location.to_str().unwrap()),
+                                        server.alias,
+                                    )
                                     .await
                                     .unwrap();
                             }
@@ -159,7 +162,7 @@ async fn whep(
                         match res.headers().get("Location") {
                             Some(location) => state
                                 .storage
-                                .session_put(String::from(location.to_str().unwrap()), server)
+                                .session_put(String::from(location.to_str().unwrap()), server.alias)
                                 .await
                                 .unwrap(),
                             None => error!("WHEP Error: Location not found {:?}", res),

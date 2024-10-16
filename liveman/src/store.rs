@@ -1,12 +1,12 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Error, Result};
 use http::header;
 use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use api::response::Stream;
 use api::strategy::Strategy;
@@ -112,19 +112,16 @@ fn u16_max_value() -> u16 {
 }
 
 #[derive(Clone)]
-pub struct MemStorage {
+pub struct Storage {
     list: Arc<RwLock<HashMap<String, Node>>>,
     time: SystemTime,
     client: reqwest::Client,
-
-    stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
-    session: Arc<RwLock<HashMap<String, Server>>>,
+    stream: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    session: Arc<RwLock<HashMap<String, String>>>,
 }
 
-impl MemStorage {
+impl Storage {
     pub fn new(client: reqwest::Client) -> Self {
-        info!("Proxy is: {:?}", client);
-
         Self {
             list: Arc::new(RwLock::new(HashMap::new())),
             time: SystemTime::now(),
@@ -139,6 +136,7 @@ impl MemStorage {
     }
 
     pub fn get_map_nodes(&self) -> HashMap<String, Node> {
+        //self.list.read().unwrap_or_default().clone()
         self.list.read().unwrap().clone()
     }
 
@@ -195,11 +193,11 @@ impl MemStorage {
             .collect())
     }
 
-    pub async fn stream_put(&self, stream: String, target: Server) -> Result<()> {
+    pub async fn stream_put(&self, stream: String, alias: String) -> Result<()> {
         {
-            let mut ctx = self.stream.write().unwrap();
-            let mut arr = ctx.get(&stream).unwrap_or(&Vec::new()).clone();
-            arr.push(target);
+            let mut ctx = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+            let mut arr = ctx.get(&stream).cloned().unwrap_or(Vec::new());
+            arr.push(alias);
             ctx.insert(stream, arr);
         }
         Ok(())
@@ -207,28 +205,58 @@ impl MemStorage {
 
     pub async fn stream_get(&mut self, stream: String) -> Result<Vec<Server>, Error> {
         self.update().await;
-        match self.stream.read().unwrap().get(&stream) {
-            Some(server) => Ok(server.clone()),
-            None => Ok(Vec::new()),
+
+        let streams = self
+            .stream
+            .read()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .get(&stream)
+            .cloned()
+            .unwrap_or(vec![]);
+
+        let nodes = self.get_map_nodes();
+
+        let mut result: Vec<Server> = vec![];
+        for alias in streams {
+            if let Some(n) = nodes.get(&alias) {
+                result.push((alias, n.clone()).into());
+            }
         }
+        Ok(result)
     }
 
-    pub async fn stream_all(&mut self) -> HashMap<String, Vec<Server>> {
+    pub async fn stream_all(&mut self) -> HashMap<String, Vec<String>> {
         self.update().await;
         self.stream.read().unwrap().clone()
     }
 
-    pub async fn session_put(&self, session: String, target: Server) -> Result<()> {
-        self.session.write().unwrap().insert(session, target);
+    pub async fn session_put(&self, session: String, alias: String) -> Result<()> {
+        self.session
+            .write()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .insert(session, alias);
         Ok(())
     }
 
-    pub async fn session_get(&mut self, session: String) -> Result<Server, Error> {
+    pub async fn session_get(&mut self, session: String) -> Result<Server> {
         self.update().await;
-        match self.session.read().unwrap().get(&session) {
-            Some(data) => Ok(data.clone()),
-            None => Err(anyhow!("session not found")),
-        }
+        let alias = self
+            .session
+            .read()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .get(&session)
+            .ok_or(anyhow!("session not found"))?
+            .clone();
+
+        let node = self
+            .list
+            .read()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .get(&alias)
+            .ok_or(anyhow!("node not found"))?
+            .clone();
+
+        Ok((alias, node).into())
     }
 
     fn get_do_strategy_updata_list(&self) -> HashMap<String, Node> {
@@ -371,7 +399,7 @@ impl MemStorage {
                             self.info_put(alias.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
                                 let target = self.get_map_server().get(&alias).unwrap().clone();
-                                self.stream_put(stream.id.clone(), target.clone())
+                                self.stream_put(stream.id.clone(), target.alias.clone())
                                     .await
                                     .unwrap();
 
@@ -379,7 +407,7 @@ impl MemStorage {
                                     match self
                                         .session_put(
                                             api::path::session(&stream.id, &session.id),
-                                            target.clone(),
+                                            target.alias.clone(),
                                         )
                                         .await
                                     {

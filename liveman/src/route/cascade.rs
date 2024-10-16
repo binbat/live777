@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use tracing::{error, info};
 
 use crate::route::utils::{cascade_push, force_check_times, session_delete};
-use crate::Server;
+use crate::store::Server;
 use crate::{error::AppError, result::Result, AppState};
 
 pub async fn cascade_new_node(

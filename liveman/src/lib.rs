@@ -11,7 +11,7 @@ use tracing::{error, info, info_span};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
-use crate::mem::{MemStorage, Node, NodeKind, Server};
+use crate::store::{Node, NodeKind, Storage};
 use auth::{access::access_middleware, ManyValidate};
 
 #[derive(RustEmbed)]
@@ -21,9 +21,9 @@ struct Assets;
 mod admin;
 pub mod config;
 mod error;
-mod mem;
 mod result;
 mod route;
+mod store;
 mod tick;
 
 #[cfg(feature = "liveion")]
@@ -63,7 +63,7 @@ where
         (client_req, client_mem)
     };
 
-    let store = MemStorage::new(client_mem.build().unwrap());
+    let store = Storage::new(client_mem.build().unwrap());
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
         nodes
@@ -212,5 +212,5 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 struct AppState {
     config: Config,
     client: reqwest::Client,
-    storage: MemStorage,
+    storage: Storage,
 }
