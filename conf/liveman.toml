@@ -42,6 +42,7 @@
 # mqtt_url = "mqtt://localhost:1883/net4mqtt"
 # alias = "liveman-0"
 # listen = "127.0.0.1:1077"
+# domain = "net4mqtt.local"
 
 # Build-in Live777 SFU Server
 # Need enable `--features=liveion`
