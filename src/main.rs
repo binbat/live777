@@ -15,7 +15,8 @@ struct Args {
 async fn main() {
     liveion::metrics_register();
     let args = Args::parse();
-    let cfg = liveion::config::Config::parse(args.config);
+    let cfg: liveion::config::Config = helper::load("live777".to_string(), args.config);
+    cfg.validate().unwrap();
     utils::set_log(format!(
         "live777={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level

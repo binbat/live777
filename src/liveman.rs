@@ -14,7 +14,8 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let cfg = liveman::config::Config::parse(args.config);
+    let mut cfg: liveman::config::Config = helper::load("liveman".to_string(), args.config);
+    cfg.validate().unwrap();
 
     #[cfg(debug_assertions)]
     utils::set_log(format!(

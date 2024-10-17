@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{env, fs, net::SocketAddr, str::FromStr};
+use std::{env, net::SocketAddr, str::FromStr};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -186,18 +186,7 @@ impl Default for CheckReforwardTickTime {
 }
 
 impl Config {
-    pub fn parse(path: Option<String>) -> Self {
-        let result = fs::read_to_string(path.unwrap_or(String::from("liveman.toml")))
-            .or(fs::read_to_string("/etc/live777/liveman.toml"))
-            .unwrap_or("".to_string());
-        let mut cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
-        match cfg.validate() {
-            Ok(_) => cfg,
-            Err(err) => panic!("config validate [{}]", err),
-        }
-    }
-
-    fn validate(&mut self) -> anyhow::Result<()> {
+    pub fn validate(&mut self) -> anyhow::Result<()> {
         if self.http.public.is_empty() {
             self.http.public = format!("http://{}", self.http.listen);
         }

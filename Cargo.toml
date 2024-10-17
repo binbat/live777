@@ -57,7 +57,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 http = { workspace = true }
-serde = { workspace = true, features = ["serde_derive"] }
 serde_json = "1.0"
 
 api = { path = "libs/api" }
@@ -80,6 +79,9 @@ utils = { path = "libs/utils" }
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
+serde = { workspace = true }
+
+toml = "0.8.19"
 
 [features]
 default = ["net4mqtt"]
