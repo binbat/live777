@@ -34,8 +34,8 @@ net (TCP/UDP) over mqtt tool
 Usage: net4mqtt [OPTIONS] <COMMAND>
 
 Commands:
-  socks  use local socks5 mode as client
-  local  use local proxy mode as client
+  socks  use local socks5 proxy mode as client
+  local  use local port proxy mode as client
   agent  use agent mode as server
   help   Print this message or the help of the given subcommand(s)
 
@@ -67,13 +67,13 @@ net4mqtt -vvv local --agent-id 0 --id 0
 4. up a TCP Client
 
 ```bash
-nc 127.0.0.1 6666
+nc 127.0.0.1 4444
 ```
 
 5. For UDP
 
 ```bash
 nc -l -u 7777
-nc -u 127.0.0.1 6666
+nc -u 127.0.0.1 4444
 ```
 

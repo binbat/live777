@@ -18,13 +18,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// use local socks5 mode as client
+    /// use local socks5 proxy mode as client
     Socks {
         /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         mqtt_url: String,
         /// Listen socks5 server address
-        #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
+        #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4444))]
         listen: SocketAddr,
         /// Built-in DNS: (<agent_id>.<domain>)
         #[arg(short, long, default_value_t = format!("net4mqtt.local"))]
@@ -40,15 +40,15 @@ enum Commands {
         kcp: bool,
     },
 
-    /// use local proxy mode as client
+    /// use local port proxy mode as client
     Local {
         /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         mqtt_url: String,
         /// Listen local port mapping as agent's target address
-        #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666))]
+        #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4444))]
         listen: SocketAddr,
-        /// Agent's target address
+        /// Agent's target address. if noset, use agent's default target address
         #[arg(short, long)]
         target: Option<String>,
         /// agent id
@@ -57,7 +57,7 @@ enum Commands {
         /// Set Current local id
         #[arg(short, long, default_value_t = format!("-"))]
         id: String,
-        /// use udp port
+        /// default use tcp port, enabled use udp port
         #[arg(short, long, default_value_t = false)]
         udp: bool,
         /// enable kcp in mqtt
