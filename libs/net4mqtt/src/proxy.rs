@@ -67,7 +67,7 @@ where
 {
     let mut buf = [0; MAX_BUFFER_SIZE];
 
-    let mut kcp = Kcp::new(0, ChannelOutput::new(key.clone(), sender));
+    let mut kcp = Kcp::new_stream(0, ChannelOutput::new(key.clone(), sender.clone()));
     let mut interval = time::interval(time::Duration::from_millis(10));
     loop {
         select! {
@@ -75,6 +75,10 @@ where
             result = receiver.recv() => {
                 match result {
                     Some((_key, mut raw)) => {
+                        if raw.is_empty() {
+                            info!("KCP vnet: {}, send to: {}, received close signal", key, peer_addr);
+                            break
+                        }
                         kcp.input(raw.as_mut_slice())?;
                         match kcp.recv(buf.as_mut_slice()) {
                             Ok(n) => {
@@ -92,7 +96,11 @@ where
                 match result {
                     Ok(n) => {
                         trace!("KCP vnet: {}, received from: {}, length {} bytes", key, local_addr, n);
-                        if n == 0 { break };
+                        if n == 0 {
+                            sender.send((key.clone(), buf[..n].to_vec()))?;
+                            info!("KCP vnet: {}, received from: {}, send close signal", key, local_addr);
+                            break
+                        };
                         kcp.send(&buf[..n])?;
                     }
                     Err(e) => return Err(anyhow!(e)),
@@ -122,6 +130,10 @@ where
             result = receiver.recv() => {
                 match result {
                     Some((_key, data)) => {
+                        if data.is_empty() {
+                            info!("TCP vnet: {}, send to: {}, received close signal", key, peer_addr);
+                            break
+                        }
                         socket.write_all(data.as_slice()).await?;
                         trace!("TCP vnet: {}, send to: {}, length {} bytes", key, peer_addr, data.len());
                     }
@@ -132,10 +144,13 @@ where
                 match result {
                     Ok(n) => {
                         trace!("TCP vnet: {}, received from: {}, length {} bytes", key, local_addr, n);
-                        if n == 0 { break };
                         sender.send((key.clone(),
                             buf[..n].to_vec()
-                        ))?
+                        ))?;
+                        if n == 0 {
+                            info!("TCP vnet: {}, received from: {}, send close signal", key, local_addr);
+                            break
+                        };
                     }
                     Err(e) => return Err(anyhow!(e)),
                 }
