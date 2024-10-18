@@ -38,11 +38,11 @@ export const zh = defineConfig({
                     text: '参考',
                     collapsed: false,
                     items: [
-                        { text: 'NET4MQTT', link: 'net4mqtt' },
                         { text: 'WhipInto', link: 'whipinto' },
                         { text: 'WhepFrom', link: 'whepfrom' },
                         { text: 'Live777 API', link: 'live777-api' },
                         { text: 'LiveMan API', link: 'liveman-api' },
+                        { text: 'NET4MQTT', link: 'net4mqtt' },
                     ]
                 }
             ]},

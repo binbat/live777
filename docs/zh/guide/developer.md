@@ -55,40 +55,6 @@ cargo run -- -c conf/live777.toml
 cargo run --bin=liveman --features=liveion -- -c conf/liveman.toml
 ```
 
-### NET4MQTT
-
-```bash
-cargo run --features=net4mqtt
-cargo run --features=net4mqtt --bin=liveman
-```
-
-
-Enable in `live777.toml`
-
-::: tip
-live777 binary build with [net4mqtt](/zh/guide/net4mqtt) agent
-:::
-
-```toml
-[net4mqtt]
-mqtt_url = "mqtt://localhost:1883/net4mqtt"
-alias = "liveion-0"
-```
-
-Enable in `liveman.toml`
-
-::: tip
-liveman binary build with [net4mqtt](/zh/guide/net4mqtt) local sock mode
-:::
-
-```toml
-[net4mqtt]
-mqtt_url = "mqtt://localhost:1883/net4mqtt"
-alias = "liveman-0"
-listen = "127.0.0.1:1077"
-domain = "net4mqtt.local"
-```
-
 ### whipinto && whepfrom
 
 ```bash

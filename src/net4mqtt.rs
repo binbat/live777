@@ -20,8 +20,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// use local socks5 proxy mode as client
-    Socks {
+    /// [mode::local], use socks5 proxy. Look like: [shadowsocks::local] or [v2ray::socks]
+    LocalSocks {
         /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         mqtt_url: String,
@@ -42,8 +42,8 @@ enum Commands {
         kcp: bool,
     },
 
-    /// use local port proxy mode as client
-    Local {
+    /// [mode::local], port forwarding. Look like: [shadowsocks::tunnel] or [v2ray::dokodemo]
+    LocalPort {
         /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
         mqtt_url: String,
@@ -67,7 +67,7 @@ enum Commands {
         kcp: bool,
     },
 
-    /// use agent mode as server
+    /// [mode::agent]. Look like: [shadowsocks::server] or [v2ray::freedom]
     Agent {
         /// Mqtt Broker Address (<scheme>://<host>:<port>/<prefix>?client_id=<client_id>)
         #[arg(short, long, default_value_t = format!("mqtt://localhost:1883/net4mqtt"))]
@@ -97,7 +97,7 @@ async fn main() {
 
     trace!("{:?}", args);
     match args.command {
-        Commands::Socks {
+        Commands::LocalSocks {
             mqtt_url,
             listen,
             domain,
@@ -120,7 +120,7 @@ async fn main() {
             .await
             .unwrap();
         }
-        Commands::Local {
+        Commands::LocalPort {
             mqtt_url,
             listen,
             target,
