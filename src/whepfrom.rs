@@ -1,6 +1,8 @@
 use clap::{ArgAction, Parser};
 use tracing::Level;
 
+mod log;
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -28,7 +30,7 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
-    utils::set_log(format!(
+    log::set(format!(
         "livetwo={},webrtc=error",
         match args.verbose {
             0 => Level::WARN,

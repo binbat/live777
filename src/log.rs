@@ -1,7 +1,6 @@
-use std::env;
-use tracing_subscriber::EnvFilter;
-
-pub fn set_log(env_filter: String) {
+pub fn set(env_filter: String) {
+    use std::env;
+    use tracing_subscriber::EnvFilter;
     let _ = env::var("RUST_LOG").is_err_and(|_| {
         env::set_var("RUST_LOG", env_filter);
         true

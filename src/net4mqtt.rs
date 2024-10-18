@@ -6,6 +6,8 @@ use tracing::{debug, info, trace, Level};
 
 use net4mqtt::proxy;
 
+mod log;
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -83,7 +85,7 @@ enum Commands {
 async fn main() {
     let args = Cli::parse();
 
-    utils::set_log(format!(
+    log::set(format!(
         "net4mqtt={}",
         match args.verbose {
             0 => Level::WARN,

@@ -1,7 +1,8 @@
 use clap::Parser;
 use tracing::{debug, info, warn};
 
-mod helper;
+mod log;
+mod utils;
 
 #[derive(Parser)]
 #[command(version)]
@@ -14,11 +15,11 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let mut cfg: liveman::config::Config = helper::load("liveman".to_string(), args.config);
+    let mut cfg: liveman::config::Config = utils::load("liveman".to_string(), args.config);
     cfg.validate().unwrap();
 
     #[cfg(debug_assertions)]
-    utils::set_log(format!(
+    log::set(format!(
         "liveman={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
@@ -36,6 +37,6 @@ async fn main() {
         .await
         .unwrap();
 
-    liveman::serve(cfg, listener, helper::shutdown_signal()).await;
+    liveman::serve(cfg, listener, utils::shutdown_signal()).await;
     info!("Server shutdown");
 }

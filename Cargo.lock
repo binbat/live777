@@ -1674,6 +1674,7 @@ dependencies = [
  "liveion",
  "liveman",
  "livetwo",
+ "net4mqtt",
  "reqwest",
  "serde",
  "serde_json",
@@ -1682,7 +1683,7 @@ dependencies = [
  "tokio",
  "toml 0.8.19",
  "tracing",
- "utils",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1984,7 +1985,6 @@ name = "net4mqtt"
 version = "0.5.1"
 dependencies = [
  "anyhow",
- "clap",
  "kcp",
  "lru_time_cache",
  "portpicker",
@@ -1997,7 +1997,6 @@ dependencies = [
  "tokio-test",
  "tracing",
  "url",
- "utils",
 ]
 
 [[package]]
@@ -3976,13 +3975,6 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "utils"
-version = "0.0.0"
-dependencies = [
- "tracing-subscriber",
-]
 
 [[package]]
 name = "uuid"

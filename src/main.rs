@@ -1,7 +1,8 @@
 use clap::Parser;
 use tracing::{debug, info, warn};
 
-mod helper;
+mod log;
+mod utils;
 
 #[derive(Parser)]
 #[command(version)]
@@ -15,9 +16,9 @@ struct Args {
 async fn main() {
     liveion::metrics_register();
     let args = Args::parse();
-    let cfg: liveion::config::Config = helper::load("live777".to_string(), args.config);
+    let cfg: liveion::config::Config = utils::load("live777".to_string(), args.config);
     cfg.validate().unwrap();
-    utils::set_log(format!(
+    log::set(format!(
         "live777={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
@@ -29,6 +30,6 @@ async fn main() {
     let addr = listener.local_addr().unwrap();
     info!("Server listening on {}", addr);
 
-    liveion::serve(cfg, listener, helper::shutdown_signal()).await;
+    liveion::serve(cfg, listener, utils::shutdown_signal()).await;
     info!("Server shutdown");
 }
