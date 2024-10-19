@@ -50,6 +50,7 @@ export interface Session {
         targetUrl?: string;
         sessionUrl: string;
     };
+    reforward?: boolean;
 }
 
 export interface Cascade {

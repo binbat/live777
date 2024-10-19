@@ -1,5 +1,5 @@
 import { Encoder, Numeric, binarize, Decoder, Detector, grayscale } from '@nuintun/qrcode';
-import { TypedEventTarget } from "typescript-event-target";
+import { TypedEventTarget } from 'typescript-event-target';
 
 export class QRCodeStream {
 
