@@ -4,6 +4,16 @@ Depends:
 - [cargo](https://www.rust-lang.org/)
 - [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
+## 二进制包和源码对应关系
+
+Binary     | Package    | Comment
+---------- | ---------- | -----------
+`live777`  | `liveion`  | 核心服务 SFU Server
+`liveman`  | `liveman`  | Live777 集群控制器
+`whipinto` | `livetwo`  | rtp, rtsp to whip
+`whepfrom` | `livetwo`  | whep ro rtp, rtsp
+`livenil`  | `livenil`  | 集群启动器，主要用在开发和测试环境
+
 ## Release build
 
 ```bash
@@ -52,7 +62,17 @@ cargo run -- -c conf/live777.toml
 ### LiveMan
 
 ```bash
-cargo run --bin=liveman --features=liveion -- -c conf/liveman.toml
+cargo run --bin=liveman -- -c conf/liveman.toml
+```
+
+### LiveNil
+
+如果你想开发或测试集群的一些功能，很明显手动依次启动不是一个明智的选择
+
+可以使用这个工具批量启动一个 `liveman` 和 N 个 `live777` 实例
+
+```bash
+cargo run --bin=livenil -- -c conf/livenil
 ```
 
 ### whipinto && whepfrom
