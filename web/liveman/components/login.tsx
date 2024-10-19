@@ -1,96 +1,121 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { TargetedEvent } from 'preact/compat';
+import { WretchError } from 'wretch/resolver';
+import { Alert, Button, Loading, Modal, Tabs } from 'react-daisyui';
 
 import * as livemanApi from '../api';
-import * as sharedApi from '../../shared/api';
-import { alertError } from '../../shared/utils';
+import * as sharedApi from '@/shared/api';
+
+enum AuthorizeType {
+    Password = 'Password',
+    Token = 'Token'
+}
+
+const AuthTypes = [
+    AuthorizeType.Password,
+    AuthorizeType.Token
+];
 
 function useInput(label: string, type = 'text') {
     const [value, setValue] = useState('');
 
     const inputElement = (
-        <div>
-            <label>
-                <span class="inline-block min-w-24 font-bold">{label}</span>
-                <input type={type} value={value} onInput={e => setValue(e.currentTarget?.value)} />
-            </label>
-        </div>
+        <label class="input input-bordered flex items-center gap-2 my-4">
+            <span>{label}</span>
+            <input type={type} class="grow" name={label} value={value} onInput={e => setValue(e.currentTarget?.value)} />
+        </label>
     );
 
     return [value, inputElement] as const;
 }
 
-enum AuthorizeType {
-    Password = 'Password', Token = 'Token'
-}
-
 export interface LoginProps {
+    show: boolean;
     onSuccess?: (token: string) => void;
 }
 
-export function Login({ onSuccess }: LoginProps) {
+export function Login({ show, onSuccess }: LoginProps) {
+    const refDialog = useRef<HTMLDialogElement>(null);
+    const [authType, setAuthType] = useState(AuthorizeType.Password);
     const [username, usernameInput] = useInput('Username');
     const [password, passwordInput] = useInput('Password', 'password');
-
     const [token, tokenInput] = useInput('Token');
+    const [loading, setLoading] = useState(false);
+    const [errMsg, setErrMsg] = useState<string | null>(null);
 
-    const [authType, setAuthType] = useState(AuthorizeType.Password);
-    const onAuthTypeInput = (e: TargetedEvent<HTMLInputElement>) => {
-        setAuthType(e.currentTarget.value as AuthorizeType);
-    };
+    useEffect(() => {
+        if (show) {
+            refDialog.current?.showModal();
+        } else {
+            refDialog.current?.close();
+        }
+    }, [show]);
 
-    const onLoginSubmit = async (e: TargetedEvent) => {
-        e.preventDefault();
-        try {
-            const res = await livemanApi.login(username, password);
-            const tk = `${res.token_type} ${res.access_token}`;
-            livemanApi.setAuthToken(tk);
-            sharedApi.setAuthToken(tk);
-            onSuccess?.(res.access_token);
-        } catch (e) {
-            alertError(e);
+    const handleDialogClose = () => {
+        if (show) {
+            refDialog.current?.showModal();
         }
     };
 
-    const onTokenSubmit = async (e: TargetedEvent) => {
+    const handleLogin = async (e: TargetedEvent) => {
+        setErrMsg(null);
+        setLoading(true);
         e.preventDefault();
-        const tk = token.indexOf(' ') < 0 ? `Bearer ${token}` : token;
-        livemanApi.setAuthToken(tk);
-        sharedApi.setAuthToken(tk);
         try {
-            await livemanApi.getNodes();
-            onSuccess?.(token);
+            let tokenType, tokenValue;
+            switch (authType) {
+                case AuthorizeType.Password: {
+                    const res = await livemanApi.login(username, password);
+                    tokenType = res.token_type;
+                    tokenValue = res.access_token;
+                    break;
+                }
+                case AuthorizeType.Token: {
+                    tokenType = 'Bearer';
+                    tokenValue = token;
+                    livemanApi.setAuthToken(`${tokenType} ${tokenValue}`);
+                    await livemanApi.getNodes();
+                    break;
+                }
+            }
+            const tk = `${tokenType} ${tokenValue}`;
+            livemanApi.setAuthToken(tk);
+            sharedApi.setAuthToken(tk);
+            onSuccess?.(tokenValue);
         } catch (e) {
             livemanApi.setAuthToken('');
             sharedApi.setAuthToken('');
-            alertError(e);
+            if (e instanceof WretchError) {
+                setErrMsg(e.json?.error ?? e.text ?? `Status: ${e.status}`);
+            } else if (e instanceof Error) {
+                setErrMsg(e.message);
+            } else {
+                setErrMsg(String(e));
+            }
         }
+        setLoading(false);
     };
 
     return (
-        <fieldset>
-            <legend>Authorization Required</legend>
-            <div>
-                <span>Authorize Type:</span>
-                {[AuthorizeType.Password, AuthorizeType.Token].map(t => (
-                    <label>
-                        <input type="radio" name="authorizeType" value={t} checked={authType === t} onInput={onAuthTypeInput} />
-                        <span>{t}</span>
-                    </label>
+        <Modal ref={refDialog} onClose={handleDialogClose}>
+            <h3 class="text-lg font-bold">Authorization Required</h3>
+            {/* @ts-expect-error -- size */}
+            <Tabs variant="bordered" size="lg" className="my-4">
+                {AuthTypes.map(t => (
+                    <Tabs.Tab className="text-base" active={t === authType} onClick={() => setAuthType(t)}>{t}</Tabs.Tab>
                 ))}
-            </div>
-            {authType === AuthorizeType.Password ? (
-                <form onSubmit={onLoginSubmit}>
-                    {usernameInput}
-                    {passwordInput}
-                    <input type="submit" value="Login" />
-                </form>
-            ) : authType === AuthorizeType.Token ? (
-                <form onSubmit={onTokenSubmit}>
-                    {tokenInput}
-                    <input type="submit" value="Login" />
-                </form>
-            ) : null}
-        </fieldset>
+            </Tabs>
+            {typeof errMsg === 'string' ? <Alert status="error" >{errMsg}</Alert> : null}
+            <form onSubmit={handleLogin}>
+                {authType === AuthorizeType.Password ? [usernameInput, passwordInput]
+                    : authType === AuthorizeType.Token ? tokenInput
+                        : null}
+                <Button type="submit" color="primary" className="w-full text-base" disabled={loading}>
+                    {/* @ts-expect-error -- size */}
+                    {loading ? <Loading size="sm" /> : null}
+                    <span>Login</span>
+                </Button>
+            </form>
+        </Modal>
     );
 }

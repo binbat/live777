@@ -30,17 +30,13 @@ export function Liveman() {
     return (
         <TokenContext.Provider value={{ token }}>
             <Live777Logo />
-            {needsAuthorizaiton ? (
-                <>
-                    <Login onSuccess={onLoginSuccess} />
-                </>
-            ) : (
-                <>
-                    <NodesTable />
-                    <StreamsTable renderExtraActions={renderCreateToken} />
-                </>
-            )}
+            <NodesTable />
+            <StreamsTable renderExtraActions={renderCreateToken} />
             <StreamTokenDialog ref={refStreamTokenDialog} />
+            <Login
+                show={needsAuthorizaiton}
+                onSuccess={onLoginSuccess}
+            />
         </TokenContext.Provider>
     );
 }

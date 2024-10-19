@@ -203,8 +203,8 @@ async function startWhep() {
     document.getElementById(idWhepDataChannel).dataChannel = pc.createDataChannel("")
 
     pc.oniceconnectionstatechange = e => logWhep(num, pc.iceConnectionState)
-    pc.addTransceiver("video", { "direction": "recvonly" })
-    pc.addTransceiver("audio", { "direction": "recvonly" })
+    pc.addTransceiver("video", { direction: "recvonly" })
+    pc.addTransceiver("audio", { direction: "recvonly" })
 
     const ms = new MediaStream();
     document.getElementById("whep-video-player").srcObject = ms;

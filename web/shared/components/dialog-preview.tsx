@@ -169,7 +169,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         decoder.start();
         decoder.addEventListener('latency', (e: CustomEvent<number>) => {
             setLatency(`${e.detail} ms`);
-        })
+        });
     };
 
     return (
