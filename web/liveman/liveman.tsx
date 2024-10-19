@@ -1,27 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-
-import { addUnauthorizedCallback, removeUnauthorizedCallback } from './api';
+import { useCallback, useRef, useState } from 'preact/hooks';
 
 import type { Stream } from '../shared/api';
+import { TokenContext } from '../shared/context';
 import { Live777Logo } from '../shared/components/live777-logo';
 import { StreamsTable } from '../shared/components/streams-table';
-import { TokenContext } from '../shared/context';
+import { useNeedAuthorization } from '../shared/hooks/use-need-authorization';
 
+import * as api from './api';
 import { Login } from './components/login';
 import { NodesTable } from './components/nodes-table';
 import { type IStreamTokenDialog, StreamTokenDialog } from './components/dialog-token';
 
 export function Liveman() {
     const [token, setToken] = useState('');
-    const [needsAuthorizaiton, setNeedsAuthorizaiton] = useState(false);
-    const unauthorizedCallback = useCallback(() => {
-        setNeedsAuthorizaiton(true);
-    }, []);
+    const [needsAuthorizaiton, setNeedsAuthorization] = useNeedAuthorization(api);
 
-    useEffect(() => {
-        addUnauthorizedCallback(unauthorizedCallback);
-        return () => removeUnauthorizedCallback(unauthorizedCallback);
-    }, []);
+    const onLoginSuccess = (t: string) => {
+        setToken(t);
+        setNeedsAuthorization(false);
+    };
 
     const refStreamTokenDialog = useRef<IStreamTokenDialog>(null);
     const renderCreateToken = useCallback((stream: Stream) => {
@@ -35,12 +32,7 @@ export function Liveman() {
             <Live777Logo />
             {needsAuthorizaiton ? (
                 <>
-                    <Login
-                        onSuccess={t => {
-                            setToken(t);
-                            setNeedsAuthorizaiton(false);
-                        }}
-                    />
+                    <Login onSuccess={onLoginSuccess} />
                 </>
             ) : (
                 <>
