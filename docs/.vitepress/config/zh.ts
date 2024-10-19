@@ -21,7 +21,8 @@ export const zh = defineConfig({
                         { text: '什么是 Live777 ？', link: 'what-is-live777' },
                         { text: '安装部署', link: 'installation' },
                         { text: '快速开始', link: 'getting-started' },
-                        { text: '开发者', link: 'developer' }
+                        { text: '级连', link: 'cascade' },
+                        { text: '开发者', link: 'developer' },
                     ]
                 },
                 {

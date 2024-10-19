@@ -52,10 +52,6 @@ Live777 has the following characteristics:
 
   Linux, MacOS, Windows, Android and arm, x86 with multi-platform native support.
 
-### Cascade
-
-![live777-cascade](./docs/live777-cascade.excalidraw.svg)
-
 ### DataChannel Forward
 
 > NOTE: About `createDataChannel()`

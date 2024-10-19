@@ -19,7 +19,8 @@ export const en = defineConfig({
                         { text: 'What is live777 ?', link: 'what-is-live777' },
                         { text: 'Installation', link: 'installation' },
                         { text: 'Getting Started', link: 'getting-started' },
-                        { text: 'For developer', link: 'developer' }
+                        { text: 'Cascade', link: 'cascade' },
+                        { text: 'For developer', link: 'developer' },
                     ]
                 },
                 {
