@@ -1735,7 +1735,6 @@ dependencies = [
  "http-body 1.0.0",
  "http-body-util",
  "http-log",
- "liveion",
  "mime_guess",
  "net4mqtt",
  "reqwest",

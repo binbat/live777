@@ -26,9 +26,6 @@ mod route;
 mod store;
 mod tick;
 
-#[cfg(feature = "liveion")]
-mod cluster;
-
 pub async fn serve<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -69,19 +66,7 @@ where
         nodes
             .write()
             .unwrap()
-            .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
-    }
-
-    #[cfg(feature = "liveion")]
-    {
-        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
-        info!("liveion buildin servers: {:?}", servers);
-        for v in servers {
-            nodes
-                .write()
-                .unwrap()
-                .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
-        }
+            .insert(v.alias, Node::new(v.token, NodeKind::Static, v.url));
     }
 
     #[cfg(feature = "net4mqtt")]

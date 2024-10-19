@@ -50,8 +50,6 @@ impl Node {
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     #[default]
-    #[serde(rename = "build-in")]
-    BuildIn,
     #[serde(rename = "static")]
     Static,
     #[serde(rename = "manual")]
