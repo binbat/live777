@@ -13,9 +13,15 @@
 whepfrom -o output.sdp -w http://localhost:7777/whep/777
 ```
 
-使用 `ffplay` 来播放
+使用 [`ffplay`](/guide/ffmpeg) 来播放
 
 ```bash
 ffplay -protocol_whitelist rtp,file,udp -i output.sdp
+```
+
+使用 [`vlc`](/guide/vlc) 来播放
+
+```bash
+vlc output.sdp
 ```
 

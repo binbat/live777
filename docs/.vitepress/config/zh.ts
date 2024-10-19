@@ -29,8 +29,8 @@ export const zh = defineConfig({
                     collapsed: false,
                     items: [
                         { text: 'OBS Studio', link: 'obs-studio' },
-                        { text: 'Gstreamer', link: 'gstreamer' },
                         { text: 'FFmpeg', link: 'ffmpeg' },
+                        { text: 'Gstreamer', link: 'gstreamer' },
                         { text: 'VLC', link: 'vlc' },
                     ]
                 },
