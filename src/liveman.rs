@@ -25,7 +25,7 @@ async fn main() {
     ));
 
     #[cfg(not(debug_assertions))]
-    utils::set_log(format!(
+    log::set(format!(
         "liveman={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level
     ));
