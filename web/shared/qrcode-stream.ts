@@ -1,10 +1,23 @@
 import { Encoder, Numeric, binarize, Decoder, Detector, grayscale } from '@nuintun/qrcode';
-import { TypedEventTarget } from "typescript-event-target";
+import { TypedEventTarget } from 'typescript-event-target';
+
+function timestamp(value: number) {
+    const date = new Date(value);
+    const s = date.toLocaleString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23'
+    });
+    const ms = date.getMilliseconds().toString().padStart(3, '0');
+    return `${s}.${ms}`;
+}
 
 export class QRCodeStream {
 
     static White = '#fff';
     static Black = '#000';
+    static TimestampTextSample = '12:34:56.789';
 
     private encoder: Encoder;
     private width: number;
@@ -13,6 +26,8 @@ export class QRCodeStream {
     private qrSize: number;
     private qrMarginX: number;
     private qrMarginY: number;
+    private textOriginX: number;
+    private textOriginY: number;
 
     private scheduled = false;
     private frameRequestCallback: FrameRequestCallback;
@@ -29,6 +44,32 @@ export class QRCodeStream {
         this.qrMarginX = (width - this.qrSize) / 2;
         this.qrMarginY = (height - this.qrSize) / 2;
         this.frameRequestCallback = this.frameRequestCallback_unbound.bind(this);
+        // try fit timestamp text beside QR code
+        const textMarginX = Math.max(4, width * 0.01);
+        const textMarginY = Math.max(4, height * 0.01);
+        let fontSize = 1000;
+        this.ctx.font = `bold ${fontSize}px monospace`;
+        const metrics = this.ctx.measureText(QRCodeStream.TimestampTextSample);
+        const textWidth = metrics.width;
+        const textHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+        if (this.qrMarginX > 0) {
+            if (textWidth > this.qrMarginX) {
+                fontSize *= (this.qrMarginX - textMarginX * 2) / textWidth;
+            }
+        } else if (this.qrMarginY > 0) {
+            let scale = 1;
+            if (textWidth > this.width) {
+                scale = Math.min(scale, (this.width - textMarginX * 2) / textWidth);
+            }
+            if (textHeight > this.qrMarginY) {
+                scale = Math.min(scale, (this.qrMarginY - textMarginY * 2) / textHeight);
+            }
+            fontSize *= scale;
+        }
+        this.ctx.font = `bold ${fontSize}px monospace`;
+        this.textOriginX = textMarginX;
+        const realMetrics = this.ctx.measureText(QRCodeStream.TimestampTextSample);
+        this.textOriginY = textMarginY + realMetrics.actualBoundingBoxAscent + realMetrics.actualBoundingBoxDescent;;
     }
 
     private doFrame(now: number) {
@@ -50,6 +91,7 @@ export class QRCodeStream {
                 }
             }
         }
+        this.ctx.fillText(timestamp(now), this.textOriginX, this.textOriginY);
     }
 
     private frameRequestCallback_unbound(_time: DOMHighResTimeStamp) {
