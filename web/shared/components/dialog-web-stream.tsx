@@ -96,7 +96,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             video: true
         });
         handleStreamStart(stream);
-    }
+    };
 
     const handleEncodeLatencyStart = () => {
         if (!refQrCodeStream.current) {

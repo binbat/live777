@@ -6,6 +6,7 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "skipLibCheck": true,
     "paths": {
+      "@/*": ["./web/*"],
       "react": ["./node_modules/preact/compat/"],
       "react-dom": ["./node_modules/preact/compat/"]
     },
@@ -26,5 +27,9 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["web"],
+  "exclude": [
+    "./web/**/vite.config.ts",
+    "./web/tailwind.config.ts"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
