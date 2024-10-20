@@ -4,6 +4,16 @@ Depends:
 - [cargo](https://www.rust-lang.org/)
 - [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
+## Binary and source code
+
+Binary     | Package    | Comment
+---------- | ---------- | -----------
+`live777`  | `liveion`  | Core, SFU Server
+`liveman`  | `liveman`  | Live777 Cluster Manager
+`whipinto` | `livetwo`  | rtp, rtsp to whip
+`whepfrom` | `livetwo`  | whep ro rtp, rtsp
+`livenil`  | `livenil`  | Only at developer, test, demo
+
 ## Release build
 
 ```bash
@@ -68,7 +78,17 @@ cargo run -- -c conf/live777.toml
 ### LiveMan
 
 ```bash
-cargo run --bin=liveman --features=liveion -- -c conf/liveman.toml
+cargo run --bin=liveman -- -c conf/liveman.toml
+```
+
+### LiveNil
+
+If you want quick up a cluster, you can use this up a cluster for develop environment
+
+up one `liveman` and N `live777`
+
+```bash
+cargo run --bin=livenil -- -c conf/livenil
 ```
 
 ### whipinto && whepfrom

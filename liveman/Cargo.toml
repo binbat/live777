@@ -10,7 +10,6 @@ repository.workspace = true
 crate-type = ["lib"]
 
 [dependencies]
-liveion = { path = "../liveion", optional = true }
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
 
 api = { path = "../libs/api" }
@@ -41,6 +40,5 @@ tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 url = "2.5"
 
 [features]
-liveion = ["dep:liveion"]
 net4mqtt = ["dep:net4mqtt"]
 

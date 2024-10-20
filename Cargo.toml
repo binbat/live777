@@ -17,6 +17,10 @@ name = "liveman"
 path = "src/liveman.rs"
 
 [[bin]]
+name = "livenil"
+path = "src/livenil.rs"
+
+[[bin]]
 name = "whipinto"
 path = "src/whipinto.rs"
 
@@ -90,7 +94,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 default = ["net4mqtt"]
-liveion = ["liveman/liveion"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 
 # cargo install cargo-deb
