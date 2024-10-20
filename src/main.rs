@@ -19,8 +19,8 @@ async fn main() {
     let cfg: liveion::config::Config = utils::load("live777".to_string(), args.config);
     cfg.validate().unwrap();
     log::set(format!(
-        "live777={},liveion={},http_log={},webrtc=error",
-        cfg.log.level, cfg.log.level, cfg.log.level
+        "live777={},liveion={},net4mqtt={},http_log={},webrtc=error",
+        cfg.log.level, cfg.log.level, cfg.log.level, cfg.log.level
     ));
     warn!("set log level : {}", cfg.log.level);
     debug!("config : {:?}", cfg);

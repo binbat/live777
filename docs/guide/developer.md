@@ -29,6 +29,22 @@ cp conf/live777.toml live777.toml
 cp conf/liveman.toml liveman.toml
 ```
 
+## Log
+
+Use `RUST_LOG` environment variable for set custom log level
+
+For `live777`, default log set
+
+```bash
+RUST_LOG=live777=<cfg.log.level>,net4mqtt=<cfg.log.level>,http_log=<cfg.log.level>,webrtc=error",
+```
+
+You can use this for override default log set
+
+```bash
+RUST_LOG=live777=error,net4mqtt=debug,webrtc=error",
+```
+
 ## Run in debug mode
 
 ### WebUI

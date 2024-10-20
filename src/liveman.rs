@@ -20,7 +20,7 @@ async fn main() {
 
     #[cfg(debug_assertions)]
     log::set(format!(
-        "liveman={},liveion={},http_log={},webrtc=error",
+        "liveman={},net4mqtt={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level
     ));
 

@@ -29,6 +29,22 @@ cp conf/live777.toml live777.toml
 cp conf/liveman.toml liveman.toml
 ```
 
+## Log
+
+可以使用 `RUST_LOG` 环境变量来设置日志分模块输出
+
+比如 `live777`, 目前模块日志输出为：
+
+```bash
+RUST_LOG=live777=<cfg.log.level>,net4mqtt=<cfg.log.level>,http_log=<cfg.log.level>,webrtc=error",
+```
+
+我们可以用这个变量覆盖默认的日志输出方案
+
+```bash
+RUST_LOG=live777=error,net4mqtt=debug,webrtc=error",
+```
+
 ## 以开发模式运行
 
 ### WebUI
