@@ -1,3 +1,5 @@
+import { WretchError } from 'wretch/resolver';
+
 export const formatTime = (timestamp: number) => new Date(timestamp).toLocaleString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
@@ -25,3 +27,13 @@ export const nextSeqId = (prefix: string, existingIds: string[]) => {
     }
     return newId;
 };
+
+export function alertError(e: unknown) {
+    if (e instanceof WretchError) {
+        alert(e.text);
+    } else if (e instanceof Error) {
+        alert(e.message);
+    } else {
+        alert(e);
+    }
+}

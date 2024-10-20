@@ -1,9 +1,9 @@
 import { useState } from 'preact/hooks';
 import { TargetedEvent } from 'preact/compat';
-import { WretchError } from 'wretch/resolver';
 
 import * as livemanApi from '../api';
 import * as sharedApi from '../../shared/api';
+import { alertError } from '../../shared/utils';
 
 function useInput(label: string, type = 'text') {
     const [value, setValue] = useState('');
@@ -22,16 +22,6 @@ function useInput(label: string, type = 'text') {
 
 enum AuthorizeType {
     Password = 'Password', Token = 'Token'
-}
-
-function alertError(e: unknown) {
-    if (e instanceof WretchError) {
-        alert(e.text);
-    } else if (e instanceof Error) {
-        alert(e.message);
-    } else {
-        alert(e);
-    }
 }
 
 export interface LoginProps {
@@ -71,6 +61,8 @@ export function Login({ onSuccess }: LoginProps) {
             await livemanApi.getNodes();
             onSuccess?.(token);
         } catch (e) {
+            livemanApi.setAuthToken('');
+            sharedApi.setAuthToken('');
             alertError(e);
         }
     };

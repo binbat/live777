@@ -1,35 +1,15 @@
 import wretch from 'wretch';
 
 import type { Stream } from '../shared/api';
+import { makeAuthorizationMiddleware } from '../shared/authorization-middleware';
 
-const unauthorizedCallbacks: (() => void)[] = [];
+const authMiddleware = makeAuthorizationMiddleware();
 
-export function addUnauthorizedCallback(cb: () => void) {
-    unauthorizedCallbacks.push(cb);
-}
+const w = wretch().middlewares([authMiddleware]);
 
-export function removeUnauthorizedCallback(cb: () => void) {
-    const i = unauthorizedCallbacks.indexOf(cb);
-    if (i >= 0) {
-        unauthorizedCallbacks.splice(i, 1);
-    }
-}
-
-const base = wretch().middlewares([
-    (next) => async (url, opts) => {
-        const res = await next(url, opts);
-        if (res.status === 401) {
-            unauthorizedCallbacks.forEach(cb => cb());
-        }
-        return res;
-    }
-]);
-
-let w = base;
-
-export function setAuthToken(token: string) {
-    w = base.auth(token);
-}
+export const setAuthToken = authMiddleware.setAuthorization;
+export const addUnauthorizedCallback = authMiddleware.addUnauthorizedCallback;
+export const removeUnauthorizedCallback = authMiddleware.removeUnauthorizedCallback;
 
 export interface LoginResponse {
     token_type: string;
