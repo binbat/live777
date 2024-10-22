@@ -19,8 +19,19 @@ export const en = defineConfig({
                         { text: 'What is live777 ?', link: 'what-is-live777' },
                         { text: 'Installation', link: 'installation' },
                         { text: 'Getting Started', link: 'getting-started' },
-                        { text: 'Cascade', link: 'cascade' },
                         { text: 'For developer', link: 'developer' },
+                    ]
+                },
+                {
+                    text: 'Components',
+                    collapsed: false,
+                    items: [
+                        { text: 'Live777', link: 'live777' },
+                        { text: 'Web UI', link: 'webui' },
+                        { text: 'LiveMan', link: 'liveman' },
+                        { text: 'WhipInto', link: 'whipinto' },
+                        { text: 'WhepFrom', link: 'whepfrom' },
+                        { text: 'NET4MQTT', link: 'net4mqtt' },
                     ]
                 },
                 {
@@ -37,11 +48,8 @@ export const en = defineConfig({
                     text: 'Reference',
                     collapsed: false,
                     items: [
-                        { text: 'WhipInto', link: 'whipinto' },
-                        { text: 'WhepFrom', link: 'whepfrom' },
                         { text: 'Live777 API', link: 'live777-api' },
                         { text: 'LiveMan API', link: 'liveman-api' },
-                        { text: 'NET4MQTT', link: 'net4mqtt' },
                     ]
                 }
             ]},

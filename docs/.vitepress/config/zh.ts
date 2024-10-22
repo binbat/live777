@@ -21,8 +21,19 @@ export const zh = defineConfig({
                         { text: '什么是 Live777 ？', link: 'what-is-live777' },
                         { text: '安装部署', link: 'installation' },
                         { text: '快速开始', link: 'getting-started' },
-                        { text: '级连', link: 'cascade' },
                         { text: '开发者', link: 'developer' },
+                    ]
+                },
+                {
+                    text: '组件',
+                    collapsed: false,
+                    items: [
+                        { text: 'Live777', link: 'live777' },
+                        { text: 'Web UI', link: 'webui' },
+                        { text: 'LiveMan', link: 'liveman' },
+                        { text: 'WhipInto', link: 'whipinto' },
+                        { text: 'WhepFrom', link: 'whepfrom' },
+                        { text: 'NET4MQTT', link: 'net4mqtt' },
                     ]
                 },
                 {
@@ -39,11 +50,8 @@ export const zh = defineConfig({
                     text: '参考',
                     collapsed: false,
                     items: [
-                        { text: 'WhipInto', link: 'whipinto' },
-                        { text: 'WhepFrom', link: 'whepfrom' },
                         { text: 'Live777 API', link: 'live777-api' },
                         { text: 'LiveMan API', link: 'liveman-api' },
-                        { text: 'NET4MQTT', link: 'net4mqtt' },
                     ]
                 }
             ]},
