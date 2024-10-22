@@ -4,17 +4,29 @@ This Web UI is build in live777
 
 ## Web WHIP/WHEP client
 
-**Open your browser, enter the URL: [`http://localhost:7777/`](http://localhost:7777/)**
+**Open your browser, enter the URL: `http://localhost:7777/`**
+
+```
+http://localhost:7777/
+```
 
 ## Debugger
 
-example: [`http://localhost:7777/tools/debugger.html`](http://localhost:7777/tools/debugger.html)
+example:
+
+```
+http://localhost:7777/tools/debugger.html
+```
 
 You can use this test WebRTC-SVC
 
 ## Single Page Player
 
-example: [`http://localhost:7777/tools/player.html?id=web-0&autoplay&controls&muted&reconnect=3000`](http://localhost:7777/tools/player.html?id=web-0&autoplay&controls&muted&reconnect=3000)
+example:
+
+```
+http://localhost:7777/tools/player.html?id=web-0&autoplay&controls&muted&reconnect=3000
+```
 
 URL params:
 
