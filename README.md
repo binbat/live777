@@ -4,13 +4,21 @@
 </h1>
 
 <div align="center">
-    <a href="https://live777.pages.dev/"><b>&gt;&gt;&gt; Document Is Here &lt;&lt;&lt;</b></a>
-    <br/>
-    <br/>
+  <a href="https://live777.pages.dev/guide/what-is-live777">                                                                                                                                    
+    <b>Documentation</b>                                                                                                                                                                        
+  </a>                                                                                                                                                                                          
+  |                                                                                                                                                                                             
+  <a href="https://live777.pages.dev/zh/guide/what-is-live777">                                                                                                                                 
+    <b>中文文档</b>                                                                                                                                                                             
+  </a>   
+    
+  <br/>
+  <br/>
 </div>
 
 <div align="center">
-
+    
+[![codecov](https://codecov.io/gh/binbat/live777/graph/badge.svg)](https://codecov.io/gh/binbat/live777)
 [![Rust](https://github.com/binbat/live777/actions/workflows/rust.yml/badge.svg)](https://github.com/binbat/live777/actions/workflows/rust.yml)
 [![GitHub release](https://img.shields.io/github/tag/binbat/live777.svg?label=release)](https://github.com/binbat/live777/releases)
 
