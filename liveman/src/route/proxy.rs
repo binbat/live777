@@ -12,7 +12,7 @@ use api::response::Stream;
 use crate::route::cascade;
 use crate::route::node;
 use crate::route::stream;
-use crate::Server;
+use crate::store::Server;
 use crate::{error::AppError, result::Result, AppState};
 
 pub fn route() -> Router<AppState> {
@@ -27,8 +27,14 @@ pub fn route() -> Router<AppState> {
             &api::path::session_layer(":stream", ":session"),
             get(session).post(session).delete(session),
         )
-        .route("/api/whip/:alias/:stream", post(api_whip))
-        .route("/api/whep/:alias/:stream", post(api_whep))
+        .route(
+            &api::path::whip_with_node(":stream", ":alias"),
+            post(api_whip),
+        )
+        .route(
+            &api::path::whep_with_node(":stream", ":alias"),
+            post(api_whep),
+        )
         .route("/api/nodes/", get(node::index))
         .route("/api/streams/", get(stream::index))
         .route("/api/streams/:stream", get(stream::show))
@@ -96,13 +102,16 @@ async fn whip(
                             Some(location) => {
                                 state
                                     .storage
-                                    .stream_put(stream.clone(), server.clone())
+                                    .stream_put(stream.clone(), server.alias.clone())
                                     .await
                                     .unwrap();
 
                                 state
                                     .storage
-                                    .session_put(String::from(location.to_str().unwrap()), server)
+                                    .session_put(
+                                        String::from(location.to_str().unwrap()),
+                                        server.alias,
+                                    )
                                     .await
                                     .unwrap();
                             }
@@ -153,7 +162,7 @@ async fn whep(
                         match res.headers().get("Location") {
                             Some(location) => state
                                 .storage
-                                .session_put(String::from(location.to_str().unwrap()), server)
+                                .session_put(String::from(location.to_str().unwrap()), server.alias)
                                 .await
                                 .unwrap(),
                             None => error!("WHEP Error: Location not found {:?}", res),
@@ -200,12 +209,20 @@ async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Re
             HeaderValue::from_str(&format!("Bearer {}", target.token))?,
         );
     };
-    Ok(state
+
+    let (headers, body) = req.into_parts();
+    use http_body_util::BodyExt;
+    let body = body.collect().await.unwrap().to_bytes();
+    let req: Request<axum::body::Bytes> = Request::from_parts(headers, body);
+    let req = reqwest::Request::try_from(req).unwrap();
+
+    let res = state
         .client
-        .request(req)
+        .execute(req)
         .await
-        .map_err(|_| AppError::RequestProxyError)
-        .into_response())
+        .map_err(|_| AppError::RequestProxyError)?;
+    let res = http::Response::from(res);
+    Ok(res.into_response())
 }
 
 async fn maximum_idle_node(

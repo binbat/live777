@@ -1,13 +1,12 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Error, Result};
 use http::header;
 use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use api::response::Stream;
 use api::strategy::Strategy;
@@ -26,13 +25,15 @@ pub struct Server {
     pub sub_max: u16,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
     pub token: String,
     pub kind: NodeKind,
     pub url: String,
 
+    streams: Vec<Stream>,
     strategy: Option<Strategy>,
+    duration: Option<Duration>,
 }
 
 impl Node {
@@ -41,7 +42,7 @@ impl Node {
             token,
             kind,
             url,
-            strategy: None,
+            ..Default::default()
         }
     }
 }
@@ -49,8 +50,6 @@ impl Node {
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     #[default]
-    #[serde(rename = "build-in")]
-    BuildIn,
     #[serde(rename = "static")]
     Static,
     #[serde(rename = "manual")]
@@ -111,46 +110,20 @@ fn u16_max_value() -> u16 {
 }
 
 #[derive(Clone)]
-pub struct MemStorage {
+pub struct Storage {
     list: Arc<RwLock<HashMap<String, Node>>>,
     time: SystemTime,
     client: reqwest::Client,
-
-    info: Arc<RwLock<HashMap<String, Vec<Stream>>>>,
-    stream: Arc<RwLock<HashMap<String, Vec<Server>>>>,
-    session: Arc<RwLock<HashMap<String, Server>>>,
+    stream: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    session: Arc<RwLock<HashMap<String, String>>>,
 }
 
-impl MemStorage {
-    pub fn new(proxy: Option<(SocketAddr, String)>) -> Self {
-        info!("Proxy is: {:?}", proxy);
-        let mut client_builder = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(500))
-            .timeout(Duration::from_millis(1000));
-
-        client_builder = if let Some((addr, domain)) = proxy {
-            // References: https://github.com/seanmonstar/reqwest/issues/899
-            let target = reqwest::Url::parse(format!("socks5h://{}", addr).as_str()).unwrap();
-            client_builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
-                Some(host) => {
-                    if host.ends_with(domain.as_str()) {
-                        Some(target.clone())
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            }))
-        } else {
-            client_builder
-        };
-
+impl Storage {
+    pub fn new(client: reqwest::Client) -> Self {
         Self {
             list: Arc::new(RwLock::new(HashMap::new())),
             time: SystemTime::now(),
-            client: client_builder.build().unwrap(),
-
-            info: Arc::new(RwLock::new(HashMap::new())),
+            client,
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -161,6 +134,7 @@ impl MemStorage {
     }
 
     pub fn get_map_nodes(&self) -> HashMap<String, Node> {
+        //self.list.read().unwrap_or_default().clone()
         self.list.read().unwrap().clone()
     }
 
@@ -189,29 +163,39 @@ impl MemStorage {
         self.get_cluster()
     }
 
-    pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<()> {
-        self.info.write().unwrap().insert(alias, target);
+    pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<(), Error> {
+        match self.list.write().unwrap().get_mut(&alias) {
+            Some(node) => node.streams = target,
+            None => return Err(anyhow!("node not found")),
+        };
         Ok(())
     }
 
     pub async fn info_get(&mut self, alias: String) -> Result<Vec<Stream>, Error> {
         self.update().await;
-        match self.info.read().unwrap().get(&alias) {
-            Some(server) => Ok(server.clone()),
-            None => Err(anyhow!("stream not found")),
+        match self.list.read().unwrap().get(&alias) {
+            Some(node) => Ok(node.streams.clone()),
+            None => Err(anyhow!("node not found")),
         }
     }
 
     pub async fn info_raw_all(&mut self) -> Result<HashMap<String, Vec<Stream>>, Error> {
         self.update().await;
-        Ok(self.info.read().unwrap().clone())
+        Ok(self
+            .list
+            .read()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k.clone(), v.streams.clone()))
+            .collect())
     }
 
-    pub async fn stream_put(&self, stream: String, target: Server) -> Result<()> {
+    pub async fn stream_put(&self, stream: String, alias: String) -> Result<()> {
         {
-            let mut ctx = self.stream.write().unwrap();
-            let mut arr = ctx.get(&stream).unwrap_or(&Vec::new()).clone();
-            arr.push(target);
+            let mut ctx = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+            let mut arr = ctx.get(&stream).cloned().unwrap_or(Vec::new());
+            arr.push(alias);
             ctx.insert(stream, arr);
         }
         Ok(())
@@ -219,28 +203,58 @@ impl MemStorage {
 
     pub async fn stream_get(&mut self, stream: String) -> Result<Vec<Server>, Error> {
         self.update().await;
-        match self.stream.read().unwrap().get(&stream) {
-            Some(server) => Ok(server.clone()),
-            None => Ok(Vec::new()),
+
+        let streams = self
+            .stream
+            .read()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .get(&stream)
+            .cloned()
+            .unwrap_or(vec![]);
+
+        let nodes = self.get_map_nodes();
+
+        let mut result: Vec<Server> = vec![];
+        for alias in streams {
+            if let Some(n) = nodes.get(&alias) {
+                result.push((alias, n.clone()).into());
+            }
         }
+        Ok(result)
     }
 
-    pub async fn stream_all(&mut self) -> HashMap<String, Vec<Server>> {
+    pub async fn stream_all(&mut self) -> HashMap<String, Vec<String>> {
         self.update().await;
         self.stream.read().unwrap().clone()
     }
 
-    pub async fn session_put(&self, session: String, target: Server) -> Result<()> {
-        self.session.write().unwrap().insert(session, target);
+    pub async fn session_put(&self, session: String, alias: String) -> Result<()> {
+        self.session
+            .write()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .insert(session, alias);
         Ok(())
     }
 
-    pub async fn session_get(&mut self, session: String) -> Result<Server, Error> {
+    pub async fn session_get(&mut self, session: String) -> Result<Server> {
         self.update().await;
-        match self.session.read().unwrap().get(&session) {
-            Some(data) => Ok(data.clone()),
-            None => Err(anyhow!("session not found")),
-        }
+        let alias = self
+            .session
+            .read()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .get(&session)
+            .ok_or(anyhow!("session not found"))?
+            .clone();
+
+        let node = self
+            .list
+            .read()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .get(&alias)
+            .ok_or(anyhow!("node not found"))?
+            .clone();
+
+        Ok((alias, node).into())
     }
 
     fn get_do_strategy_updata_list(&self) -> HashMap<String, Node> {
@@ -266,10 +280,13 @@ impl MemStorage {
 
         let handles = requests
             .into_iter()
-            .map(|(alias, value)| tokio::spawn(async move { (alias, value.await) }))
+            .map(|(alias, value)| {
+                tokio::spawn(async move { (alias, start.elapsed(), value.await) })
+            })
             .collect::<Vec<
                 tokio::task::JoinHandle<(
                     std::string::String,
+                    std::time::Duration,
                     std::result::Result<reqwest::Response, reqwest::Error>,
                 )>,
             >>();
@@ -282,7 +299,6 @@ impl MemStorage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.info.write().unwrap().clear();
         self.stream.write().unwrap().clear();
 
         // Maybe Don't need clear "session"
@@ -291,22 +307,26 @@ impl MemStorage {
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
-                (Ok((alias, Ok(res))),) => {
-                    debug!("{}: Response: {:?}", alias, res);
+                (Ok((alias, duration, Ok(res))),) => {
+                    debug!(
+                        "{}: spend time: [{:?}] Response: {:?}",
+                        alias, duration, res
+                    );
 
                     match serde_json::from_str::<Strategy>(&res.text().await.unwrap()) {
                         Ok(strategy) => {
                             if let Some(node) =
                                 self.get_map_nodes_mut().write().unwrap().get_mut(&alias)
                             {
-                                node.strategy = Some(strategy)
+                                node.duration = Some(duration);
+                                node.strategy = Some(strategy);
                             }
                         }
                         Err(e) => error!("Error: {:?}", e),
                     };
                 }
-                (Ok((name, Err(e))),) => {
-                    error!("{}: Error: {:?}", name, e);
+                (Ok((name, duration, Err(e))),) => {
+                    error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
                 }
                 _ => {}
             }
@@ -338,10 +358,13 @@ impl MemStorage {
 
         let handles = requests
             .into_iter()
-            .map(|(alias, value)| tokio::spawn(async move { (alias, value.await) }))
+            .map(|(alias, value)| {
+                tokio::spawn(async move { (alias, start.elapsed(), value.await) })
+            })
             .collect::<Vec<
                 tokio::task::JoinHandle<(
                     std::string::String,
+                    std::time::Duration,
                     std::result::Result<reqwest::Response, reqwest::Error>,
                 )>,
             >>();
@@ -354,7 +377,6 @@ impl MemStorage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.info.write().unwrap().clear();
         self.stream.write().unwrap().clear();
 
         // Maybe Don't need clear "session"
@@ -363,8 +385,11 @@ impl MemStorage {
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
-                (Ok((alias, Ok(res))),) => {
-                    debug!("{}: Response: {:?}", alias, res);
+                (Ok((alias, duration, Ok(res))),) => {
+                    debug!(
+                        "{}: spend time: [{:?}] Response: {:?}",
+                        alias, duration, res
+                    );
 
                     match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
@@ -372,7 +397,7 @@ impl MemStorage {
                             self.info_put(alias.clone(), streams.clone()).await.unwrap();
                             for stream in streams {
                                 let target = self.get_map_server().get(&alias).unwrap().clone();
-                                self.stream_put(stream.id.clone(), target.clone())
+                                self.stream_put(stream.id.clone(), target.alias.clone())
                                     .await
                                     .unwrap();
 
@@ -380,7 +405,7 @@ impl MemStorage {
                                     match self
                                         .session_put(
                                             api::path::session(&stream.id, &session.id),
-                                            target.clone(),
+                                            target.alias.clone(),
                                         )
                                         .await
                                     {
@@ -393,8 +418,8 @@ impl MemStorage {
                         Err(e) => error!("Error: {:?}", e),
                     };
                 }
-                (Ok((name, Err(e))),) => {
-                    error!("{}: Error: {:?}", name, e);
+                (Ok((name, duration, Err(e))),) => {
+                    error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
                 }
                 _ => {}
             }

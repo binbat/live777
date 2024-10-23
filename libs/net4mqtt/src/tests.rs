@@ -640,7 +640,7 @@ async fn test_socks_simple() {
     let res = client
         .get(format!(
             "http://{}/",
-            kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+            kxdns::Kxdns::new(DOMAIN_SUFFIX.to_string()).registry("0")
         ))
         .send()
         .await
@@ -660,7 +660,7 @@ async fn test_socks_simple() {
     let res = client
         .get(format!(
             "http://{}/",
-            kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+            kxdns::Kxdns::new(DOMAIN_SUFFIX.to_string()).registry("0")
         ))
         .send()
         .await
@@ -706,7 +706,7 @@ async fn test_socks_restart() {
         let res = client
             .get(format!(
                 "http://{}/",
-                kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+                kxdns::Kxdns::new(DOMAIN_SUFFIX.to_string()).registry("0")
             ))
             .send()
             .await
@@ -726,7 +726,7 @@ async fn test_socks_restart() {
         let res = client
             .get(format!(
                 "http://{}/",
-                kxdns::Kxdns::new(DOMAIN_SUFFIX).registry("0")
+                kxdns::Kxdns::new(DOMAIN_SUFFIX.to_string()).registry("0")
             ))
             .send()
             .await
@@ -795,7 +795,7 @@ async fn test_socks_multiple_server() {
         let res = client
             .get(format!(
                 "http://{}/",
-                kxdns::Kxdns::new(DOMAIN_SUFFIX).registry(&id.to_string())
+                kxdns::Kxdns::new(DOMAIN_SUFFIX.to_string()).registry(&id.to_string())
             ))
             .send()
             .await

@@ -2,6 +2,16 @@
 
 Gstreamer `WHIP`/`WHEP` client
 
+```
+gstreamer::whipsink -> live777 -> gstreamer::whepsrc
+```
+
+We have tools [whipinto](/guide/whipinto) and [whepfrom](/guide/whepfrom) for support `rtp` <-> `whip`/`whep` convert
+
+```
+gstreamer -> whipinto -> live777 -> whepfrom -> gstreamer
+```
+
 This `WHIP`/ `WHEP` (`whipsink` and `whepsrc`) plugins and RTP AV1 (`rtpav1pay` and `rtpav1depay`) from [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
 
 ```bash

@@ -59,6 +59,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                         "reforward idle for long periods of time"
                                     );
                                     match session_delete(
+                                        state.client.clone(),
                                         server.clone(),
                                         stream_info.id.clone(),
                                         session_info.id.clone(),

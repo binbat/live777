@@ -10,7 +10,6 @@ repository.workspace = true
 crate-type = ["lib"]
 
 [dependencies]
-liveion = { path = "../liveion", optional = true }
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
 
 api = { path = "../libs/api" }
@@ -29,7 +28,7 @@ tracing = { workspace = true }
 axum = { version = "0.7", features = ["multipart", "tracing"] }
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
 chrono = { version = "0.4", features = ["serde"] }
-hyper-util = { version = "0.1", features = ["client-legacy"] }
+http-body-util = "0.1.2"
 mime_guess = "2.0.4"
 reqwest = { version = "0.12", features = [
     "rustls-tls",
@@ -37,12 +36,9 @@ reqwest = { version = "0.12", features = [
 ], default-features = false }
 rust-embed = { version = "8.4", features = ["axum-ex"] }
 serde_json = "1.0.114"
-toml = "0.8.10"
 tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
 url = "2.5"
 
 [features]
-default = ["net4mqtt"]
-liveion = ["dep:liveion"]
 net4mqtt = ["dep:net4mqtt"]
 

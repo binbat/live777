@@ -2,7 +2,15 @@
 
 Gstreamer `WHIP`/`WHEP` 插件
 
+```
+gstreamer::whipsink -> live777 -> gstreamer::whepsrc
+```
 
+We have tools [whipinto](/guide/whipinto) and [whepfrom](/guide/whepfrom) for support `rtp` <-> `whip`/`whep` convert
+
+```
+gstreamer -> whipinto -> live777 -> whepfrom -> gstreamer
+```
 
 `WHIP` / `WHEP` (`whipsink` 和 `whepsrc`) 插件和 RTP AV1 (`rtpav1pay` and `rtpav1depay`) 在 [gst-plugins-rs](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/)
 

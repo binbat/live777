@@ -25,8 +25,8 @@ docker run --name live777-server --rm --network host ghcr.io/binbat/live777-serv
 ## Cargo
 
 ```bash
-cargo install --git http://github.com/binbat/live777 whipinto
-cargo install --git http://github.com/binbat/live777 whepfrom
+cargo install --git http://github.com/binbat/live777 live777 --bin=whipinto
+cargo install --git http://github.com/binbat/live777 live777 --bin=whepfrom
 ```
 
 ## Windows

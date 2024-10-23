@@ -17,12 +17,20 @@ name = "liveman"
 path = "src/liveman.rs"
 
 [[bin]]
+name = "livenil"
+path = "src/livenil.rs"
+
+[[bin]]
 name = "whipinto"
 path = "src/whipinto.rs"
 
 [[bin]]
 name = "whepfrom"
 path = "src/whepfrom.rs"
+
+[[bin]]
+name = "net4mqtt"
+path = "src/net4mqtt.rs"
 
 [workspace]
 members = [
@@ -57,7 +65,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 http = { workspace = true }
-serde = { workspace = true, features = ["serde_derive"] }
 serde_json = "1.0"
 
 api = { path = "libs/api" }
@@ -74,16 +81,19 @@ tempfile = "3"
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
 livetwo = { path = "livetwo" }
+net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
-utils = { path = "libs/utils" }
 
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
+serde = { workspace = true }
+
+toml = "0.8.19"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 default = ["net4mqtt"]
-liveion = ["liveman/liveion"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 
 # cargo install cargo-deb

@@ -1,12 +1,14 @@
 import wretch from 'wretch';
 
-const base = wretch();
+import { makeAuthorizationMiddleware } from '../shared/authorization-middleware';
 
-let w = base;
+const authMiddleware = makeAuthorizationMiddleware();
 
-export function setAuthToken(token: string) {
-    w = base.auth(token);
-}
+const w = wretch().middlewares([authMiddleware]);
+
+export const setAuthToken = authMiddleware.setAuthorization;
+export const addUnauthorizedCallback = authMiddleware.addUnauthorizedCallback;
+export const removeUnauthorizedCallback = authMiddleware.removeUnauthorizedCallback;
 
 export function deleteSession(streamId: string, clientId: string) {
     return w.url(`/session/${streamId}/${clientId}`).delete();

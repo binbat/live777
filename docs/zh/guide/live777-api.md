@@ -166,7 +166,7 @@ Request:
 ```
 
 - `token`: Option, auth header
-- `sourceUrl`: Option. if has, use pull mode
-- `targetUrl`: Option. if has, use pull mode
+- `sourceUrl`: `Option<WHEP url>`. if has, use pull mode
+- `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 

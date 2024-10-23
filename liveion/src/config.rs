@@ -1,4 +1,4 @@
-use std::{env, fs, net::SocketAddr, str::FromStr};
+use std::{env, net::SocketAddr, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use webrtc::{
@@ -181,18 +181,7 @@ impl From<IceServer> for RTCIceServer {
 }
 
 impl Config {
-    pub fn parse(path: Option<String>) -> Self {
-        let result = fs::read_to_string(path.unwrap_or(String::from("live777.toml")))
-            .or(fs::read_to_string("/etc/live777/live777.toml"))
-            .unwrap_or("".to_string());
-        let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
-        match cfg.validate() {
-            Ok(_) => cfg,
-            Err(err) => panic!("config validate [{}]", err),
-        }
-    }
-
-    fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self) -> anyhow::Result<()> {
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()

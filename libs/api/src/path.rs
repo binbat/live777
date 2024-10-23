@@ -8,6 +8,13 @@ pub fn whep(stream: &str) -> String {
     format!("/whep/{}", stream)
 }
 
+pub fn whip_with_node(stream: &str, alias: &str) -> String {
+    format!("/api/whip/{}/{}", alias, stream)
+}
+pub fn whep_with_node(stream: &str, alias: &str) -> String {
+    format!("/api/whep/{}/{}", alias, stream)
+}
+
 pub fn session(stream: &str, session: &str) -> String {
     format!("/session/{}/{}", stream, session)
 }

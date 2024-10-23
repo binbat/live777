@@ -9,14 +9,19 @@ use api::{
     response::{RTCPeerConnectionState, Stream},
 };
 
-use crate::Server;
+use crate::store::Server;
 
-pub async fn force_check_times(server: Server, stream: String, count: u8) -> Result<u8, Error> {
+pub async fn force_check_times(
+    client: reqwest::Client,
+    server: Server,
+    stream: String,
+    count: u8,
+) -> Result<u8, Error> {
     for i in 0..count {
         let timeout = tokio::time::sleep(Duration::from_millis(1000));
         tokio::pin!(timeout);
         let _ = timeout.as_mut().await;
-        match force_check(server.clone(), stream.clone()).await {
+        match force_check(client.clone(), server.clone(), stream.clone()).await {
             Ok(()) => return Ok(i),
             Err(e) => warn!("force_check failed {:?}", e),
         };
@@ -24,8 +29,7 @@ pub async fn force_check_times(server: Server, stream: String, count: u8) -> Res
     Err(anyhow!("reforward check failed"))
 }
 
-async fn force_check(server: Server, stream: String) -> Result<(), Error> {
-    let client = reqwest::Client::new();
+async fn force_check(client: reqwest::Client, server: Server, stream: String) -> Result<(), Error> {
     let url = format!("{}{}", server.url, &api::path::streams(""));
 
     let response = client.get(url).send().await?;
@@ -55,16 +59,21 @@ async fn force_check(server: Server, stream: String) -> Result<(), Error> {
 }
 
 pub async fn cascade_push(
+    public: String,
+    client: reqwest::Client,
     server_src: Server,
     server_dst: Server,
     stream: String,
 ) -> Result<(), Error> {
     let mut headers = HeaderMap::new();
     headers.append("Content-Type", "application/json".parse().unwrap());
-    let client = reqwest::Client::new();
     let url = format!("{}{}", server_src.url, &api::path::cascade(&stream));
     let body = serde_json::to_string(&Cascade {
-        target_url: Some(format!("{}{}", server_dst.url, api::path::whip(&stream))),
+        target_url: Some(format!(
+            "{}{}",
+            public,
+            api::path::whip_with_node(&stream, &server_dst.alias)
+        )),
         token: None,
         source_url: None,
     })
@@ -91,8 +100,12 @@ pub async fn cascade_push(
     }
 }
 
-pub async fn session_delete(server: Server, stream: String, session: String) -> Result<(), Error> {
-    let client = reqwest::Client::new();
+pub async fn session_delete(
+    client: reqwest::Client,
+    server: Server,
+    stream: String,
+    session: String,
+) -> Result<(), Error> {
     let url = format!("{}/session/{}/{}", server.url, stream, session);
 
     let response = client.delete(url).send().await?;

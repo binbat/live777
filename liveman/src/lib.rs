@@ -1,29 +1,18 @@
-use axum::body::Body;
-use axum::extract::Request;
-use axum::middleware;
-use axum::response::IntoResponse;
-use axum::routing::post;
-use axum::Router;
+use std::{future::Future, time::Duration};
 
+use axum::{extract::Request, middleware, response::IntoResponse, routing::post, Router};
 use http::{header, StatusCode, Uri};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::TokioExecutor;
 use rust_embed::RustEmbed;
-use std::future::Future;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
-use tower_http::validate_request::ValidateRequestHeaderLayer;
-use tracing::{error, info_span};
-
-#[cfg(feature = "liveion")]
-use tracing::info;
-
-use auth::{access::access_middleware, ManyValidate};
+use tower_http::{
+    cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
+};
+use tracing::{error, info, info_span};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
-use crate::mem::{MemStorage, Node, NodeKind, Server};
+use crate::store::{Node, NodeKind, Storage};
+use auth::{access::access_middleware, ManyValidate};
 
 #[derive(RustEmbed)]
 #[folder = "../assets/liveman/"]
@@ -32,52 +21,52 @@ struct Assets;
 mod admin;
 pub mod config;
 mod error;
-mod mem;
 mod result;
 mod route;
+mod store;
 mod tick;
 
-#[cfg(feature = "liveion")]
-mod cluster;
-
-pub async fn server_up<F>(cfg: Config, listener: TcpListener, signal: F)
+pub async fn serve<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let client: Client =
-        hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
-            .build(HttpConnector::new());
+    info!("Server listening on {}", listener.local_addr().unwrap());
+    let client_req = reqwest::Client::builder();
+    let client_mem = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_millis(1000));
 
     #[cfg(feature = "net4mqtt")]
-    let net4mqtt_domain = "net4mqtt.local";
-
-    #[cfg(feature = "net4mqtt")]
-    let proxy_addr = match cfg.net4mqtt.clone() {
-        Some(c) => Some((c.listen, net4mqtt_domain.to_string())),
+    let (client_req, client_mem) = if let Some(proxy) = match cfg.net4mqtt.clone() {
+        Some(c) => {
+            // References: https://github.com/seanmonstar/reqwest/issues/899
+            let target = reqwest::Url::parse(&format!("socks5h://{}", c.listen)).unwrap();
+            Some(reqwest::Proxy::custom(move |url| match url.host_str() {
+                Some(host) => {
+                    if host.ends_with(c.domain.as_str()) {
+                        Some(target.clone())
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }))
+        }
         None => None,
+    } {
+        info!("net4mqtt proxy: {:?}", proxy);
+        (client_req.proxy(proxy.clone()), client_mem.proxy(proxy))
+    } else {
+        (client_req, client_mem)
     };
-    #[cfg(not(feature = "net4mqtt"))]
-    let proxy_addr = None;
 
-    let store = MemStorage::new(proxy_addr);
+    let store = Storage::new(client_mem.build().unwrap());
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
         nodes
             .write()
             .unwrap()
-            .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
-    }
-
-    #[cfg(feature = "liveion")]
-    {
-        let servers = cluster::cluster_up(cfg.liveion.clone()).await;
-        info!("liveion buildin servers: {:?}", servers);
-        for v in servers {
-            nodes
-                .write()
-                .unwrap()
-                .insert(v.alias, Node::new(v.token, NodeKind::BuildIn, v.url));
-        }
+            .insert(v.alias, Node::new(v.token, NodeKind::Static, v.url));
     }
 
     #[cfg(feature = "net4mqtt")]
@@ -85,6 +74,8 @@ where
         if let Some(c) = cfg.net4mqtt.clone() {
             let (sender, mut receiver) =
                 tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
+
+            let domain = c.domain.clone();
 
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
@@ -95,7 +86,7 @@ where
                             &c.mqtt_url,
                             listener,
                             ("-", &c.alias.clone()),
-                            Some(net4mqtt_domain.to_string()),
+                            Some(c.domain),
                             Some(net4mqtt::proxy::VDataConfig {
                                 receiver: Some(sender),
                                 ..Default::default()
@@ -108,7 +99,7 @@ where
             });
 
             std::thread::spawn(move || {
-                let dns = net4mqtt::kxdns::Kxdns::new(net4mqtt_domain);
+                let dns = net4mqtt::kxdns::Kxdns::new(domain);
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
@@ -141,7 +132,7 @@ where
 
     let app_state = AppState {
         config: cfg.clone(),
-        client,
+        client: client_req.build().unwrap(),
         storage: store,
     };
 
@@ -171,7 +162,10 @@ where
                     span_id = tracing::field::Empty,
                     target_addr = tracing::field::Empty,
                 );
-                span.record("span_id", span.id().unwrap().into_u64());
+                span.record(
+                    "span_id",
+                    span.id().unwrap_or(tracing::Id::from_u64(42)).into_u64(),
+                );
                 span
             }),
         );
@@ -199,11 +193,9 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     }
 }
 
-type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
-
 #[derive(Clone)]
 struct AppState {
     config: Config,
-    client: Client,
-    storage: MemStorage,
+    client: reqwest::Client,
+    storage: Storage,
 }

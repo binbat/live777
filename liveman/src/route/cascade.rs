@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use tracing::{error, info};
 
 use crate::route::utils::{cascade_push, force_check_times, session_delete};
-use crate::Server;
+use crate::store::Server;
 use crate::{error::AppError, result::Result, AppState};
 
 pub async fn cascade_new_node(
@@ -24,9 +24,18 @@ pub async fn cascade_new_node(
     info!("cascade from: {:?}, to: {:?}", server_src, server_dst);
 
     tokio::spawn(async move {
-        match cascade_push(server_src.clone(), server_dst.clone(), stream.clone()).await {
+        match cascade_push(
+            state.config.http.public.clone(),
+            state.client.clone(),
+            server_src.clone(),
+            server_dst.clone(),
+            stream.clone(),
+        )
+        .await
+        {
             Ok(()) => {
                 match force_check_times(
+                    state.client.clone(),
                     server_dst.clone(),
                     stream.clone(),
                     state.config.reforward.check_attempts.0,
@@ -61,8 +70,13 @@ async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: 
                         match sub_info.cascade {
                             Some(v) => info!("Skip. Is Reforward: {:?}", v),
                             None => {
-                                match session_delete(server.clone(), stream.clone(), sub_info.id)
-                                    .await
+                                match session_delete(
+                                    state.client.clone(),
+                                    server.clone(),
+                                    stream.clone(),
+                                    sub_info.id,
+                                )
+                                .await
                                 {
                                     Ok(_) => {}
                                     Err(e) => error!("reforward close other sub error: {:?}", e),

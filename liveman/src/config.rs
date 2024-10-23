@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{env, fs, net::SocketAddr, str::FromStr};
+use std::{env, net::SocketAddr, str::FromStr};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -10,7 +10,7 @@ pub struct Config {
     #[serde(default)]
     pub log: Log,
     #[serde(default)]
-    pub liveion: Vec<crate::mem::Server>,
+    pub liveion: Vec<Node>,
     #[serde(default)]
     pub reforward: Reforward,
 
@@ -19,7 +19,17 @@ pub struct Config {
     pub net4mqtt: Option<Net4mqtt>,
 
     #[serde(default)]
-    pub nodes: Vec<crate::mem::Server>,
+    pub nodes: Vec<Node>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Node {
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 #[cfg(feature = "net4mqtt")]
@@ -29,8 +39,10 @@ pub struct Net4mqtt {
     pub mqtt_url: String,
     #[serde(default)]
     pub alias: String,
-    #[serde(default = "default_socks_listen")]
+    #[serde(default = "default_net4mqtt_listen")]
     pub listen: SocketAddr,
+    #[serde(default = "default_net4mqtt_domain")]
+    pub domain: String,
 }
 
 #[cfg(feature = "net4mqtt")]
@@ -39,14 +51,20 @@ impl Default for Net4mqtt {
         Self {
             mqtt_url: String::new(),
             alias: String::new(),
-            listen: default_socks_listen(),
+            listen: default_net4mqtt_listen(),
+            domain: default_net4mqtt_domain(),
         }
     }
 }
 
 #[cfg(feature = "net4mqtt")]
-fn default_socks_listen() -> SocketAddr {
+fn default_net4mqtt_listen() -> SocketAddr {
     SocketAddr::from_str("0.0.0.0:1077").expect("invalid listen socks address")
+}
+
+#[cfg(feature = "net4mqtt")]
+fn default_net4mqtt_domain() -> String {
+    String::from("net4mqtt.local")
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -55,6 +73,8 @@ pub struct Http {
     pub listen: SocketAddr,
     #[serde(default)]
     pub cors: bool,
+    #[serde(default)]
+    pub public: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -111,6 +131,7 @@ impl Default for Http {
     fn default() -> Self {
         Self {
             listen: default_http_listen(),
+            public: Default::default(),
             cors: Default::default(),
         }
     }
@@ -165,18 +186,10 @@ impl Default for CheckReforwardTickTime {
 }
 
 impl Config {
-    pub fn parse(path: Option<String>) -> Self {
-        let result = fs::read_to_string(path.unwrap_or(String::from("liveman.toml")))
-            .or(fs::read_to_string("/etc/live777/liveman.toml"))
-            .unwrap_or("".to_string());
-        let cfg: Self = toml::from_str(result.as_str()).expect("config parse error");
-        match cfg.validate() {
-            Ok(_) => cfg,
-            Err(err) => panic!("config validate [{}]", err),
+    pub fn validate(&mut self) -> anyhow::Result<()> {
+        if self.http.public.is_empty() {
+            self.http.public = format!("http://{}", self.http.listen);
         }
-    }
-
-    fn validate(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
