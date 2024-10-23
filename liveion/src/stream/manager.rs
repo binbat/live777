@@ -417,7 +417,7 @@ impl Manager {
         drop(streams);
         if let Some(forward) = forward {
             forward.subscribe_push(dst, token).await?;
-            if self.config.reforward_close_sub {
+            if self.config.cascade_push_close_sub {
                 for subscribe_session_info in forward.info().await.subscribe_session_infos {
                     if subscribe_session_info.cascade.is_none() {
                         let _ = forward.remove_peer(subscribe_session_info.id).await;

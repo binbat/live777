@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, str::FromStr};
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -12,7 +13,7 @@ pub struct Config {
     #[serde(default)]
     pub liveion: Vec<Node>,
     #[serde(default)]
-    pub reforward: Reforward,
+    pub cascade: Cascade,
 
     #[cfg(feature = "net4mqtt")]
     #[serde(default)]
@@ -156,11 +157,11 @@ fn default_log_level() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Reforward {
+pub struct Cascade {
     #[serde(default)]
-    pub check_attempts: ReforwardCheckAttempts,
+    pub check_attempts: CascadeCheckAttempts,
     #[serde(default)]
-    pub check_tick_time: CheckReforwardTickTime,
+    pub check_tick_time: CheckCascadeTickTime,
     #[serde(default = "default_reforward_maximum_idle_time")]
     pub maximum_idle_time: u64,
     #[serde(default)]
@@ -168,20 +169,20 @@ pub struct Reforward {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReforwardCheckAttempts(pub u8);
+pub struct CascadeCheckAttempts(pub u8);
 
-impl Default for ReforwardCheckAttempts {
+impl Default for CascadeCheckAttempts {
     fn default() -> Self {
-        ReforwardCheckAttempts(5)
+        CascadeCheckAttempts(5)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckReforwardTickTime(pub u64);
+pub struct CheckCascadeTickTime(pub u64);
 
-impl Default for CheckReforwardTickTime {
+impl Default for CheckCascadeTickTime {
     fn default() -> Self {
-        CheckReforwardTickTime(60 * 1000)
+        CheckCascadeTickTime(60 * 1000)
     }
 }
 

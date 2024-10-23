@@ -172,7 +172,7 @@ where
 
     app = app.fallback(static_handler);
 
-    tokio::spawn(tick::reforward_check(app_state.clone()));
+    tokio::spawn(tick::cascade_check(app_state.clone()));
     axum::serve(listener, app)
         .with_graceful_shutdown(signal)
         .await
