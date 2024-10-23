@@ -1,4 +1,4 @@
-FROM rust:slim-bookworm as builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -10,15 +10,9 @@ RUN npm install && npm run build
 
 RUN cargo build --release
 
-RUN cargo build --package=whipinto --release
-RUN cargo build --package=whepfrom --release
-
 FROM debian:bookworm-slim
 
 COPY --from=builder /app/conf/live777.toml /etc/live777/live777.toml
 COPY --from=builder /app/target/release/live777 /usr/local/bin/live777
-
-COPY --from=builder /app/target/release/whipinto /usr/local/bin/whipinto
-COPY --from=builder /app/target/release/whepfrom /usr/local/bin/whepfrom
 
 CMD ["live777"]

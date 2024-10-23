@@ -1,4 +1,4 @@
-FROM rust:slim-bookworm as builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -8,7 +8,7 @@ RUN apt update -y && apt install -y --no-install-recommends npm
 
 RUN npm install && npm run build
 
-RUN cargo build --package=liveman --release
+RUN cargo build --bin=liveman --release
 
 FROM debian:bookworm-slim
 
