@@ -32,8 +32,8 @@ pub struct Node {
     pub url: String,
 
     streams: Vec<Stream>,
-    strategy: Option<Strategy>,
-    duration: Option<Duration>,
+    pub strategy: Option<Strategy>,
+    pub duration: Option<Duration>,
 }
 
 impl Node {
