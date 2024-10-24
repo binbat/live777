@@ -93,7 +93,7 @@ toml = "0.8.19"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
-default = ["net4mqtt"]
+webui = ["liveion/webui", "liveman/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 
 # cargo install cargo-deb
