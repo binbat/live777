@@ -244,13 +244,13 @@ describe("test cluster", () => {
     beforeAll(async () => {
         const fileContentVerge = `
 [strategy]
-reforward_close_sub = true
+cascade_push_close_sub = true
 each_stream_max_sub = 1
 `
 
         const fileContentCloud = `
 [strategy]
-reforward_close_sub = true
+cascade_push_close_sub = true
 `
         const fileContentMan = `
 [reforward]

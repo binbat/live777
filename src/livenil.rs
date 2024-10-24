@@ -31,6 +31,8 @@ async fn main() {
         NAME.to_string(),
         args.config.clone().map(|s| format!("{}/liveman.toml", s)),
     );
+    cfg.validate().unwrap();
+
     log::set(format!(
         "livenil={},liveman={},liveion={},http_log={},webrtc=error",
         cfg.log.level, cfg.log.level, cfg.log.level, cfg.log.level

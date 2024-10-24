@@ -5,7 +5,7 @@ pub struct Strategy {
     #[serde(default)]
     pub each_stream_max_sub: EachStreamMaxSub,
     #[serde(default)]
-    pub reforward_close_sub: bool,
+    pub cascade_push_close_sub: bool,
     #[serde(default = "default_true")]
     pub auto_create_whip: bool,
     #[serde(default = "default_true")]
@@ -33,7 +33,7 @@ impl Default for Strategy {
     fn default() -> Self {
         Self {
             each_stream_max_sub: Default::default(),
-            reforward_close_sub: false,
+            cascade_push_close_sub: false,
             auto_create_whip: true,
             auto_create_whep: true,
             auto_delete_whip: Default::default(),
