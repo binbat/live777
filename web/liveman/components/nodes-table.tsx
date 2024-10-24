@@ -24,8 +24,8 @@ export function NodesTable() {
                         <tr>
                             <th class="min-w-24">Alias</th>
                             <th class="min-w-24">Status</th>
-                            <th>Max Publish Cnt.</th>
-                            <th>Max subscribe Cnt.</th>
+                            <th>Delay</th>
+                            <th>Strategy</th>
                             <th class="min-w-72">API URL</th>
                         </tr>
                     </thead>
@@ -34,8 +34,8 @@ export function NodesTable() {
                             <tr>
                                 <td class="text-center">{n.alias}</td>
                                 <td class="text-center">{n.status}</td>
-                                <td class="text-center">{n.pub_max}</td>
-                                <td class="text-center">{n.sub_max}</td>
+                                <td class="text-center">{n.duration}ms</td>
+                                <td class="text-center">{JSON.stringify(n.strategy)}</td>
                                 <td class="text-center"><a href={n.url} target="_blank">{n.url}</a></td>
                             </tr>
                         ))}
