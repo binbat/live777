@@ -1,10 +1,10 @@
-FROM rust:slim-bookworm as builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
 COPY . .
 
-RUN cargo build --package=whepfrom --release
+RUN cargo build --bin=whepfrom --release
 
 FROM debian:bookworm-slim
 

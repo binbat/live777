@@ -1,8 +1,7 @@
 use std::{future::Future, time::Duration};
 
 use axum::{extract::Request, middleware, response::IntoResponse, routing::post, Router};
-use http::{header, StatusCode, Uri};
-use rust_embed::RustEmbed;
+use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
 use tower_http::{
     cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
@@ -14,7 +13,8 @@ use crate::config::Config;
 use crate::store::{Node, NodeKind, Storage};
 use auth::{access::access_middleware, ManyValidate};
 
-#[derive(RustEmbed)]
+#[cfg(feature = "webui")]
+#[derive(rust_embed::RustEmbed)]
 #[folder = "../assets/liveman/"]
 struct Assets;
 
@@ -138,7 +138,7 @@ where
 
     let auth_layer =
         ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
-    let mut app = Router::new()
+    let app = Router::new()
         .merge(
             route::proxy::route()
                 .route("/api/token", post(token))
@@ -168,9 +168,8 @@ where
                 );
                 span
             }),
-        );
-
-    app = app.fallback(static_handler);
+        )
+        .fallback(static_handler);
 
     tokio::spawn(tick::cascade_check(app_state.clone()));
     axum::serve(listener, app)
@@ -179,6 +178,7 @@ where
         .unwrap_or_else(|e| error!("Application error: {e}"));
 }
 
+#[cfg(feature = "webui")]
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/');
     if path.is_empty() {
@@ -187,10 +187,15 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     match Assets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            ([(http::header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+#[cfg(not(feature = "webui"))]
+async fn static_handler(_: Uri) -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, "feature webui not enable")
 }
 
 #[derive(Clone)]
