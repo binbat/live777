@@ -92,7 +92,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          $BUILD_CMD $BUILD_NDK build --locked --all --release --target=${{ matrix.job.target }}
+          $BUILD_CMD $BUILD_NDK build --locked --all-targets --all-features --release --target=${{ matrix.job.target }}
 
       - name: Archive
         shell: bash
@@ -103,6 +103,7 @@ jobs:
           echo "PKG_LIVEMAN_NAME=liveman-${PKG_BUILDNAME}" >> $GITHUB_ENV
           echo "PKG_WHEPFROM_NAME=whepfrom-${PKG_BUILDNAME}" >> $GITHUB_ENV
           echo "PKG_WHIPINTO_NAME=whipinto-${PKG_BUILDNAME}" >> $GITHUB_ENV
+          echo "PKG_NET4MQTT_NAME=net4mqtt-${PKG_BUILDNAME}" >> $GITHUB_ENV
 
       - name: Create Live777 tarball
         shell: bash
@@ -170,16 +171,23 @@ jobs:
           name: ${{ env.PKG_WHIPINTO_NAME }}
           path: ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }}
 
+      - name: Artifact Upload Net4mqtt
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG_NET4MQTT_NAME }}
+          path: ${{ env.BUILD_PATH }}/net4mqtt${{ env.EXE_SUFFIX }}
+
       - name: Rename binary
         shell: bash
         run: |
           mv ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }} ${{ env.PKG_WHEPFROM_NAME }}
           mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
+          mv ${{ env.BUILD_PATH }}/net4mqtt${{ env.EXE_SUFFIX }} ${{ env.PKG_NET4MQTT_NAME }}
 
       - name: Upload release archive
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.TAR_LIVEMAN_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
+        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.TAR_LIVEMAN_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }} ${{ env.PKG_NET4MQTT_NAME }}
         env:
           GH_TOKEN: ${{ github.token }}
 
