@@ -53,7 +53,7 @@ type NodeStrategyTableProps = Pick<Node, 'strategy'>;
 function NodeStrategyTable({ strategy }: NodeStrategyTableProps) {
     return (
         <div class="h-[1lh] overflow-hidden relative group hover:overflow-visible">
-            <table class="mx-auto px-1 bg-neutral-800 rounded group-hover:absolute group-hover:inset-x-0 group-hover:z-1 group-hover:outline group-hover:outline-indigo-500">
+            <table class="mx-auto px-1 bg-white @dark:bg-neutral-800 rounded group-hover:absolute group-hover:inset-x-0 group-hover:z-1 group-hover:outline group-hover:outline-indigo-500">
                 <tbody>
                     {Object.entries(strategy).map(([k, v]) => (
                         <tr>
