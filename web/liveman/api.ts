@@ -23,8 +23,8 @@ export function login(username: string, password: string) {
 export interface Node {
     alias: string;
     url: string;
-    pub_max: number;
-    sub_max: number;
+    duration: string;
+    strategy: Record<string, string | number | boolean>,
     status: 'running' | 'stopped';
 }
 

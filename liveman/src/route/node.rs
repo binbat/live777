@@ -1,6 +1,8 @@
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
+use api::strategy::Strategy;
+
 use crate::{result::Result, AppState};
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,29 +16,31 @@ pub enum NodeState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
-    pub alias: String,
-    pub url: String,
-    pub pub_max: u16,
-    pub sub_max: u16,
-    pub status: NodeState,
+    alias: String,
+    url: String,
+    status: NodeState,
+    strategy: Strategy,
+    duration: String,
 }
 
 pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
-    let map_info = state.storage.info_raw_all().await.unwrap();
-
+    state.storage.nodes().await;
     Ok(Json(
         state
             .storage
-            .get_cluster()
+            .get_map_nodes()
             .into_iter()
-            .map(|x| Node {
-                alias: x.alias.clone(),
-                url: x.url,
-                pub_max: x.pub_max,
-                sub_max: x.sub_max,
-                status: match map_info.get(&x.alias) {
+            .map(|(alias, node)| Node {
+                alias,
+                url: node.url,
+                status: match node.strategy {
                     Some(_) => NodeState::Running,
                     None => NodeState::Stopped,
+                },
+                strategy: node.strategy.unwrap_or_default(),
+                duration: match node.duration {
+                    Some(s) => format!("{}", s.as_millis()),
+                    None => Default::default(),
                 },
             })
             .collect(),
