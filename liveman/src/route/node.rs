@@ -19,8 +19,9 @@ pub struct Node {
     alias: String,
     url: String,
     status: NodeState,
-    strategy: Strategy,
     duration: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strategy: Option<Strategy>,
 }
 
 pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
@@ -37,10 +38,10 @@ pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>>
                     Some(_) => NodeState::Running,
                     None => NodeState::Stopped,
                 },
-                strategy: node.strategy.unwrap_or_default(),
+                strategy: node.strategy,
                 duration: match node.duration {
-                    Some(s) => format!("{}", s.as_millis()),
-                    None => Default::default(),
+                    Some(s) => format!("{}ms", s.as_millis()),
+                    None => "-".to_string(),
                 },
             })
             .collect(),

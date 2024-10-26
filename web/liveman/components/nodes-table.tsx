@@ -34,9 +34,12 @@ export function NodesTable() {
                             <tr>
                                 <td class="text-center">{n.alias}</td>
                                 <td class="text-center">{n.status}</td>
-                                <td class="text-center">{n.duration}ms</td>
+                                <td class="text-center">{n.duration}</td>
                                 <td class="text-center">
-                                    <NodeStrategyTable strategy={n.strategy} />
+                                    { n.strategy
+                                        ? <NodeStrategyTable strategy={n.strategy} />
+                                        : <>-</>
+                                    }
                                 </td>
                                 <td class="text-center"><a href={n.url} target="_blank">{n.url}</a></td>
                             </tr>
