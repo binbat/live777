@@ -4,6 +4,8 @@
 # Cross-Origin Resource Sharing (CORS)
 # reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 # cors = false
+# Cascade need proxy all request, each node can connect this address
+# public = "http://localhost:8888"
 
 # WHIP/WHEP auth token
 # Headers["Authorization"] = "Bearer {token}"
@@ -24,18 +26,18 @@
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
-[reforward]
-# When a new whep beginning, and trigger reforward, check reforward status done times
+[cascade]
+# When a new whep beginning, and trigger cascade, check cascade status done times
 # Every times check after wait 100ms. If Mare than 5 * 500ms return error
 # check_attempts = 5
-# Check cluster all node reforward status time interval
+# Check cluster all node cascade status time interval
 # Default: 60s
 # check_tick_time = 60000
-# If reforward is working, but no consumer subscription, This reforward status is: `idle`
-# When status `idle` more than this time duration, close this reforward.
+# If cascade is working, but no consumer subscription, This cascade status is: `idle`
+# When status `idle` more than this time duration, close this cascade.
 # Default: 60s
 # maximum_idle_time = 60000
-# When reforward is working, close src server not reforward subscription
+# When cascade is working, close src server not cascade push session subscription
 # close_other_sub = false
 
 # [net4mqtt]

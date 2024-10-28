@@ -38,22 +38,22 @@ pub async fn cascade_new_node(
                     state.client.clone(),
                     server_dst.clone(),
                     stream.clone(),
-                    state.config.reforward.check_attempts.0,
+                    state.config.cascade.check_attempts.0,
                 )
                 .await
                 {
                     Ok(count) => {
-                        if state.config.reforward.close_other_sub {
-                            reforward_close_other_sub(state, server_src, stream).await
+                        if state.config.cascade.close_other_sub {
+                            cascade_close_other_sub(state, server_src, stream).await
                         }
-                        info!("reforward success, checked attempts: {}", count)
+                        info!("cascade success, checked attempts: {}", count)
                     }
-                    Err(e) => error!("reforward check error: {:?}", e),
+                    Err(e) => error!("cascade check error: {:?}", e),
                 }
                 Ok(server_dst.clone())
             }
             Err(e) => {
-                error!("reforward error: {:?}", e);
+                error!("cascade error: {:?}", e);
                 Err(AppError::InternalServerError(e))
             }
         }
@@ -61,14 +61,14 @@ pub async fn cascade_new_node(
     Ok(server_ds0.clone())
 }
 
-async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: String) {
+async fn cascade_close_other_sub(mut state: AppState, server: Server, stream: String) {
     match state.storage.info_get(server.clone().alias).await {
         Ok(streams) => {
             for stream_info in streams.into_iter() {
                 if stream_info.id == stream {
                     for sub_info in stream_info.subscribe.sessions.into_iter() {
                         match sub_info.cascade {
-                            Some(v) => info!("Skip. Is Reforward: {:?}", v),
+                            Some(v) => info!("Skip. Is cascade: {:?}", v),
                             None => {
                                 match session_delete(
                                     state.client.clone(),
@@ -79,7 +79,7 @@ async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: 
                                 .await
                                 {
                                     Ok(_) => {}
-                                    Err(e) => error!("reforward close other sub error: {:?}", e),
+                                    Err(e) => error!("cascade close other sub error: {:?}", e),
                                 }
                             }
                         }
@@ -87,6 +87,6 @@ async fn reforward_close_other_sub(mut state: AppState, server: Server, stream: 
                 }
             }
         }
-        Err(e) => error!("reforward don't closed other sub: {:?}", e),
+        Err(e) => error!("cascade don't closed other sub: {:?}", e),
     }
 }

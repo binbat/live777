@@ -1,8 +1,7 @@
 use std::{future::Future, sync::Arc};
 
 use axum::{extract::Request, middleware, response::IntoResponse, routing::get, Router};
-use http::{header, StatusCode, Uri};
-use rust_embed::RustEmbed;
+use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
 use tower_http::{
     cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
@@ -17,7 +16,8 @@ use crate::route::{admin, session, whep, whip, AppState};
 
 use stream::manager::Manager;
 
-#[derive(RustEmbed)]
+#[cfg(feature = "webui")]
+#[derive(rust_embed::RustEmbed)]
 #[folder = "../assets/liveion/"]
 struct Assets;
 
@@ -44,7 +44,7 @@ where
     };
     let auth_layer =
         ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
-    let mut app = Router::new()
+    let app = Router::new()
         .merge(
             whip::route()
                 .merge(whep::route())
@@ -79,9 +79,8 @@ where
                 })
                 .on_response(tower_http::trace::DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(tower_http::trace::DefaultOnFailure::new().level(Level::INFO)),
-        );
-
-    app = app.fallback(static_handler);
+        )
+        .fallback(static_handler);
 
     #[cfg(feature = "net4mqtt")]
     {
@@ -120,6 +119,7 @@ where
         .unwrap_or_else(|e| error!("Application error: {e}"));
 }
 
+#[cfg(feature = "webui")]
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/');
     if path.is_empty() {
@@ -128,10 +128,15 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     match Assets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            ([(http::header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+#[cfg(not(feature = "webui"))]
+async fn static_handler(_: Uri) -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, "feature webui not enable")
 }
 
 pub fn metrics_register() {

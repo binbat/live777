@@ -6,18 +6,18 @@ use url::Url;
 
 use crate::{error::AppError, result::Result, route::utils::session_delete, AppState};
 
-pub async fn reforward_check(state: AppState) {
+pub async fn cascade_check(state: AppState) {
     loop {
         let timeout = tokio::time::sleep(Duration::from_millis(
-            state.config.reforward.check_tick_time.0,
+            state.config.cascade.check_tick_time.0,
         ));
         tokio::pin!(timeout);
         let _ = timeout.as_mut().await;
-        let _ = do_reforward_check(state.clone()).await;
+        let _ = do_cascade_check(state.clone()).await;
     }
 }
 
-async fn do_reforward_check(mut state: AppState) -> Result<()> {
+async fn do_cascade_check(mut state: AppState) -> Result<()> {
     let servers = state.storage.nodes().await;
 
     let mut map_url_server = HashMap::new();
@@ -35,9 +35,9 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
         let server = map_server.get(alias).unwrap();
         for stream_info in streams {
             for session_info in &stream_info.subscribe.sessions {
-                if let Some(reforward_info) = &session_info.cascade {
+                if let Some(cascade_info) = &session_info.cascade {
                     if let Ok((target_node_addr, target_stream)) =
-                        parse_node_and_stream(reforward_info.target_url.clone().unwrap())
+                        parse_node_and_stream(cascade_info.target_url.clone().unwrap())
                     {
                         if let Some(target_node) = map_url_server.get(&target_node_addr) {
                             if let Some(target_stream_info) = nodes
@@ -49,14 +49,14 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                 if target_stream_info.subscribe.leave_at != 0
                                     && Utc::now().timestamp_millis()
                                         >= target_stream_info.subscribe.leave_at
-                                            + state.config.reforward.maximum_idle_time as i64
+                                            + state.config.cascade.maximum_idle_time as i64
                                 {
                                     info!(
                                         ?server,
                                         stream_info.id,
                                         session_info.id,
                                         ?target_stream_info,
-                                        "reforward idle for long periods of time"
+                                        "cascade idle for long periods of time"
                                     );
                                     match session_delete(
                                         state.client.clone(),
@@ -68,7 +68,7 @@ async fn do_reforward_check(mut state: AppState) -> Result<()> {
                                     {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            error!("reforward session delete error: {:?}", e)
+                                            error!("cascade session delete error: {:?}", e)
                                         }
                                     }
                                 }

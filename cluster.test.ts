@@ -103,7 +103,7 @@ async function hasSubscribeStreams(server: string): Promise<boolean> {
     return (await getStreams(server))[0]?.subscribe.sessions.length > 0
 }
 
-async function reforward(server: string, streamId: string, url: string) {
+async function cascade(server: string, streamId: string, url: string) {
     return fetch(`${server}/api/cascade/${streamId}`, {
         method: "POST",
         headers: {
@@ -244,16 +244,16 @@ describe("test cluster", () => {
     beforeAll(async () => {
         const fileContentVerge = `
 [strategy]
-reforward_close_sub = true
+cascade_push_close_sub = true
 each_stream_max_sub = 1
 `
 
         const fileContentCloud = `
 [strategy]
-reforward_close_sub = true
+cascade_push_close_sub = true
 `
         const fileContentMan = `
-[reforward]
+[cascade]
 close_other_sub = true
 
 [[nodes]]
@@ -291,7 +291,7 @@ url = "http://${localhost}:${live777CloudPort}"
         await until(() => getStreams(live777LivemanHost), s => s.length === 0)
     })
 
-    test("reforward", { timeout: 60 * 1000 }, async () => {
+    test("cascade", { timeout: 60 * 1000 }, async () => {
         const width = 320, height = 240
         const whipintoPort = "5002"
         using _ffmpeg = spawn([
@@ -316,8 +316,8 @@ url = "http://${localhost}:${live777CloudPort}"
 
         await until(() => hasPublishStreams(live777VergeHost))
 
-        const resReforward = await reforward(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
-        assert(resReforward.ok)
+        const resCascade = await cascade(`http://127.0.0.1:${live777VergePort}`, live777VergeStream, `${live777CloudHost}/whip/${live777CloudStream}`)
+        assert(resCascade.ok)
 
         await until(() => hasPublishStreams(live777CloudHost))
 

@@ -36,22 +36,22 @@ urls = [
 # If not set, use default u16::MAX
 # Default: 65535
 # each_stream_max_sub = 1
-# If reforward is beginning, close all subscriber
-# reforward_close_sub = false
+# If cascade push is beginning, close all subscriber
+# cascade_push_close_sub = false
 
 # WHIP auto a stream
 # auto_create_whip = true
 # WHEP auto a stream
 # auto_create_whep = true
 #
-# Default: (60000)s
+# Default: -1
 # -1: disable
 # 0: immediately destroy
 # >= 1: delay millisecond
 # Auto a destroy a stream at no pub
-# auto_delete_whip = 60
+# auto_delete_whip = 60000
 # Auto a destroy a stream at no sub
-# auto_delete_whep = 60
+# auto_delete_whep = 60000
 
 # Experimental Feature
 # [webhook]

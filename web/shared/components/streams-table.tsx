@@ -198,6 +198,7 @@ export function StreamsTable(props: StreamTableProps) {
                         : null
                     }
                     <button onClick={handleNewStream}>New Stream</button>
+                    <button onClick={() => handleOpenDebuggerPage("")}>Debugger</button>
                     {webStreams.map(s =>
                         <button onClick={() => { handleOpenWebStream(s); }}>{s}</button>
                     )}

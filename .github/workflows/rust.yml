@@ -27,7 +27,7 @@ jobs:
       - name: Build WebUI
         run: npm run build
       - name: Build
-        run: cargo build --all --release --verbose
+        run: cargo build --all-targets --all-features --release --verbose
       - name: Setup ffmpeg
         uses: AnimMouse/setup-ffmpeg@v1
       - name: Show version information

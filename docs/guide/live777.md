@@ -39,6 +39,40 @@ OBS Studio `whip`    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
   2. I don't know why av1 and whep error
   3. [OBS av1 codec can't play](https://github.com/binbat/live777/issues/169)
 
+## Authentication
+
+### No Authentication {#noauth}
+
+::: danger
+No Authentication is Default
+:::
+
+If no set any about `[auth]` section in configuration file, There will no authentication
+
+### Bearer token {#token}
+
+Static HTTP bearer token is super admin access, you should use in develop, test, debug or cluster manager
+
+```toml
+# WHIP/WHEP auth token
+# Headers["Authorization"] = "Bearer {token}"
+[auth]
+# static JWT token, superadmin, debuggger can use this token
+tokens = ["live777"]
+```
+
+### JWT(JSON Web Token) {#JWT}
+
+Use this authentication, the token include access, you can control stream, publish, subscribe...
+
+```toml
+# WHIP/WHEP auth token
+# Headers["Authorization"] = "Bearer {token}"
+[auth]
+# JSON WEB TOKEN secret
+secret = "<jwt_secret>"
+```
+
 ## Cascade
 
 ### What is cascade?
