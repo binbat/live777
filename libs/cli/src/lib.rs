@@ -133,7 +133,14 @@ pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
 
 pub fn create_child(command: Option<String>) -> Result<Option<Mutex<Child>>> {
     let child = if let Some(command) = command {
+        let command = if cfg!(windows) {
+            command.replace('\\', "/")
+        } else {
+            command
+        };
+
         let mut args = shellwords::split(&command)?;
+
         Some(Mutex::new(
             Command::new(args.remove(0))
                 .args(args)
@@ -145,5 +152,6 @@ pub fn create_child(command: Option<String>) -> Result<Option<Mutex<Child>>> {
     } else {
         None
     };
+
     Ok(child)
 }
