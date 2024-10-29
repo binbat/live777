@@ -81,7 +81,6 @@ async fn test_liveion_stream_create() {
     assert_eq!(1, body.len());
 }
 
-#[cfg(not(windows))]
 #[tokio::test]
 async fn test_liveion_stream_connect() {
     let cfg = liveion::config::Config::default();
@@ -208,7 +207,6 @@ a=rtpmap:96 VP8/90000
     assert!(result.is_some());
 }
 
-#[cfg(not(windows))]
 #[tokio::test]
 async fn test_liveion_stream_ffmpeg() {
     let cfg = liveion::config::Config::default();

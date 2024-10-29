@@ -63,7 +63,7 @@ pub async fn from(
         Some(Host::Domain(_)) | Some(Host::Ipv4(_)) => Ipv4Addr::UNSPECIFIED.to_string(),
         Some(Host::Ipv6(_)) => Ipv6Addr::UNSPECIFIED.to_string(),
         None => {
-            eprintln!("Invalid host for {}, using default.", input);
+            error!("Invalid host for {}, using default.", input);
             Ipv4Addr::UNSPECIFIED.to_string()
         }
     };
@@ -141,7 +141,7 @@ pub async fn from(
             .connection_information
             .and_then(|conn_info| conn_info.address)
             .map(|address| address.to_string())
-            .unwrap_or("127.0.0.1".to_string());
+            .unwrap_or(Ipv4Addr::LOCALHOST.to_string());
         for media in &mut session.media_descriptions {
             if media.media_name.media == "video" {
                 if let Some(port) = media_info.video_rtp_client {
