@@ -1,5 +1,7 @@
 import { useRef, useImperativeHandle, useState, useContext } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
+import { Button, Collapse, Modal } from 'react-daisyui';
+import { ClockIcon } from '@heroicons/react/24/outline';
 import { WHEPClient } from '@binbat/whip-whep/whep.js';
 
 import { TokenContext } from '../context';
@@ -173,29 +175,44 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     };
 
     return (
-        <dialog ref={refDialog}>
-            <h3>Preview {streamId} {videoResolution}</h3>
-            <div>
-                <video ref={refVideo} controls autoplay onCanPlay={handleVideoCanPlay} onResize={refreshVideoResolution} class="max-w-[90vw] max-h-[70vh]"></video>
-            </div>
-            <details>
-                <summary>
-                    <b>Connection Status: </b>
-                    <code>{connState}</code>
-                </summary>
-                <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
-            </details>
-            <form method="dialog">
-                <button onClick={handleCloseDialog}>Hide</button>
-                <button onClick={handlePreviewStop} class="text-red-500">Stop</button>
-                {
-                    typeof latency === 'string' ? (
-                        <span>Latency: {latency}</span>
+        <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]">
+            <Modal.Header className="mb-6">
+                <h3 className="font-bold">Preview {streamId} {videoResolution}</h3>
+            </Modal.Header>
+            <Modal.Body>
+                <video
+                    ref={refVideo}
+                    className="mx-[-1.5rem] min-w-[28rem] max-w-[90vw] max-h-[70vh]"
+                    onCanPlay={handleVideoCanPlay}
+                    onResize={refreshVideoResolution}
+                    controls autoplay
+                />
+                <Collapse.Details icon="arrow" className="text-sm">
+                    <Collapse.Details.Title className="px-0">
+                        <b>Connection Status: </b>
+                        <code>{connState}</code>
+                    </Collapse.Details.Title>
+                    <Collapse.Content className="px-0">
+                        <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
+                    </Collapse.Content>
+                </Collapse.Details>
+            </Modal.Body>
+            <Modal.Actions className="mt-0">
+                <div className="mr-auto">
+                    {typeof latency === 'string' ? (
+                        <Button
+                            color="ghost"
+                            className="font-normal"
+                            animation={false}
+                            startIcon={<ClockIcon className="size-5 stroke-current" />}
+                        >Latency: {latency}</Button>
                     ) : (
-                        <button onClick={handleDecodeLatency}>Decode Latency</button>
-                    )
-                }
-            </form>
-        </dialog>
+                        <Button color="info" onClick={handleDecodeLatency}>Decode Latency</Button>
+                    )}
+                </div>
+                <Button color="error" onClick={handlePreviewStop}>Stop</Button>
+                <Button onClick={handleCloseDialog}>Hide</Button>
+            </Modal.Actions>
+        </Modal>
     );
 });

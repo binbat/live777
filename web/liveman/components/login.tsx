@@ -11,11 +11,6 @@ enum AuthorizeType {
     Token = 'Token'
 }
 
-const AuthTypes = [
-    AuthorizeType.Password,
-    AuthorizeType.Token
-];
-
 function useInput(label: string, type = 'text') {
     const [value, setValue] = useState('');
 
@@ -98,12 +93,14 @@ export function Login({ show, onSuccess }: LoginProps) {
 
     return (
         <Modal ref={refDialog} onClose={handleDialogClose}>
-            <h3 class="text-lg font-bold">Authorization Required</h3>
+            <Modal.Header className="mb-2">
+                <h3 className="font-bold">Authorization Required</h3>
+            </Modal.Header>
             {/* @ts-expect-error -- size */}
             <Tabs variant="bordered" size="lg" className="my-4">
-                {AuthTypes.map(t => (
+                {Object.values(AuthorizeType).map(t =>
                     <Tabs.Tab className="text-base" active={t === authType} onClick={() => setAuthType(t)}>{t}</Tabs.Tab>
-                ))}
+                )}
             </Tabs>
             {typeof errMsg === 'string' ? <Alert status="error" >{errMsg}</Alert> : null}
             <form onSubmit={handleLogin}>

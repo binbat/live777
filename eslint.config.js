@@ -17,9 +17,9 @@ export default ts.config(
             '@stylistic/js': stylisticJs
         },
         rules: {
-            '@stylistic/js/semi': ['error', 'always'],
+            '@stylistic/js/semi': ['warn', 'always'],
             '@stylistic/js/quotes': ['error', 'single', { 'avoidEscape': true }],
-            '@stylistic/js/indent': ['error', 4, { 'SwitchCase': 1 }],
+            '@stylistic/js/indent': ['warn', 4, { 'SwitchCase': 1 }],
             '@stylistic/js/jsx-quotes': ['error', 'prefer-double']
         }
     },

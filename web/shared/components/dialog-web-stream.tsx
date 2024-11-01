@@ -1,5 +1,6 @@
 import { useRef, useImperativeHandle, useState, useContext } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
+import { Button, Collapse, Modal } from 'react-daisyui';
 import { WHIPClient } from '@binbat/whip-whep/whip';
 
 import { TokenContext } from '../context';
@@ -133,31 +134,39 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     };
 
     return (
-        <dialog ref={refDialog}>
-            <h3>Web Stream {streamId} {videoResolution}</h3>
-            <div>
-                <video ref={refVideo} controls autoplay onResize={handleVideoResize} class="max-w-[90vw] max-h-[70vh]"></video>
-            </div>
-            <details>
-                <summary>
-                    <b>Connection Status: </b>
-                    <code>{connState}</code>
-                </summary>
-                <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
-            </details>
-            <div>
-                <button onClick={handleCloseDialog}>Hide</button>
-                {refWhipClient.current
-                    ? <button onClick={handleStreamStop} class="text-red-500">Stop</button>
-                    : (
-                        <>
-                            <button onClick={handleDisplayMediaStart}>Start</button>
-                            <button onClick={handleEncodeLatencyStart}>Encode Latency</button>
-                        </>
-                    )
-                }
-            </div>
+        <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]">
+            <Modal.Header className="mb-6">
+                <h3 className="font-bold">Web Stream {streamId} {videoResolution}</h3>
+            </Modal.Header>
+            <Modal.Body>
+                <video
+                    ref={refVideo}
+                    className="mx-[-1.5rem] min-w-[28rem] max-w-[90vw] max-h-[70vh]"
+                    onResize={handleVideoResize}
+                    controls autoplay
+                />
+                <Collapse.Details icon="arrow" className="text-sm">
+                    <Collapse.Details.Title className="px-0">
+                        <b>Connection Status: </b>
+                        <code>{connState}</code>
+                    </Collapse.Details.Title>
+                    <Collapse.Content className="px-0">
+                        <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
+                    </Collapse.Content>
+                </Collapse.Details>
+            </Modal.Body>
+            <Modal.Actions className="mt-0">
+                {refWhipClient.current ? (
+                    <Button color="error" onClick={handleStreamStop}>Stop</Button>
+                ) : (
+                    <>
+                        <Button color="info" onClick={handleEncodeLatencyStart}>Encode Latency</Button>
+                        <Button onClick={handleDisplayMediaStart}>Start</Button>
+                    </>
+                )}
+                <Button onClick={handleCloseDialog}>Hide</Button>
+            </Modal.Actions>
             <canvas ref={refCanvas} class="hidden" width={1280} height={720}></canvas>
-        </dialog>
+        </Modal>
     );
 });

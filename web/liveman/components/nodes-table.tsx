@@ -1,5 +1,7 @@
-import { useRefreshTimer } from '../../shared/hooks/use-refresh-timer';
-import { StyledCheckbox } from '../../shared/components/styled-checkbox';
+import { Button, Checkbox, Dropdown, Link, Table } from 'react-daisyui';
+import { ArrowPathIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
+
+import { useRefreshTimer } from '@/shared/hooks/use-refresh-timer';
 
 import { type Node, getNodes } from '../api';
 
@@ -13,59 +15,73 @@ export function NodesTable() {
 
     return (
         <>
-            <fieldset>
-                <legend class="inline-flex items-center gap-x-4">
-                    <span>Nodes (total: {nodes.data.length})</span>
-                    <button onClick={() => nodes.updateData()}>Refresh</button>
-                    <StyledCheckbox label="Auto Refresh" checked={nodes.isRefreshing} onClick={nodes.toggleTimer}></StyledCheckbox>
-                </legend>
-                <table>
-                    <thead>
-                        <tr>
-                            <th class="min-w-24">Alias</th>
-                            <th class="min-w-24">Status</th>
-                            <th>Delay</th>
-                            <th class="min-w-72">Strategy</th>
-                            <th class="min-w-72">API URL</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {nodes.data.map(n => (
-                            <tr>
-                                <td class="text-center">{n.alias}</td>
-                                <td class="text-center">{n.status}</td>
-                                <td class="text-center">{n.duration}</td>
-                                <td class="text-center">
-                                    { n.strategy
-                                        ? <NodeStrategyTable strategy={n.strategy} />
-                                        : <>-</>
-                                    }
-                                </td>
-                                <td class="text-center"><a href={n.url} target="_blank">{n.url}</a></td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </fieldset>
+            <div className="flex items-center gap-2 px-4 h-12">
+                <span className="font-bold text-lg mr-auto">Nodes (total: {nodes.data.length})</span>
+                <Button
+                    size="sm"
+                    color="ghost"
+                    endIcon={<Checkbox size="xs" checked={nodes.isRefreshing} />}
+                    onClick={nodes.toggleTimer}
+                >Auto Refresh</Button>
+                <Button
+                    size="sm"
+                    color="ghost"
+                    endIcon={<ArrowPathIcon className="size-4 stroke-current" />}
+                    onClick={nodes.updateData}
+                >Refresh</Button>
+            </div>
+
+            <Table className="overflow-x-auto">
+                <Table.Head>
+                    <span>Alias</span>
+                    <span>Status</span>
+                    <span>Delay</span>
+                    <span>Strategy</span>
+                    <span>API URL</span>
+                </Table.Head>
+                <Table.Body>
+                    {nodes.data.length > 0 ? nodes.data.map(n =>
+                        <Table.Row>
+                            <span>{n.alias}</span>
+                            <span>{n.status}</span>
+                            <span>{n.duration}</span>
+                            <NodeStrategyLabel strategy={n.strategy} />
+                            <Link href={n.url} target="_blank">{n.url}</Link>
+                        </Table.Row>
+                    ) : <tr><td colspan={5} className="text-center">N/A</td></tr>}
+                </Table.Body>
+            </Table>
         </>
     );
 }
 
-type NodeStrategyTableProps = Pick<Node, 'strategy'>;
+type NodeStrategyLabelProps = Pick<Node, 'strategy'>;
 
-function NodeStrategyTable({ strategy }: NodeStrategyTableProps) {
+function NodeStrategyLabel({ strategy }: NodeStrategyLabelProps) {
+    const entries = Object.entries(strategy ?? {});
+    if (entries.length <= 1) {
+        return <span className="font-mono">{entries[0]?.join(' = ') ?? '-'}</span>;
+    }
     return (
-        <div class="h-[1lh] overflow-hidden relative group hover:overflow-visible">
-            <table class="mx-auto px-1 rounded group-hover:absolute group-hover:inset-x-0 group-hover:z-1 group-hover:outline group-hover:outline-indigo-500" data-theme="">
-                <tbody>
-                    {Object.entries(strategy).map(([k, v]) => (
-                        <tr>
-                            <th class="text-left">{k}</th>
-                            <td>{`${v}`}</td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-        </div>
+        <Dropdown hover>
+            <Dropdown.Toggle button={false} className="font-mono flex items-center gap-1">
+                {/* <InformationCircleIcon className="size-4" /> */}
+                <span>{entries[0].join(' = ')}</span>
+                <EllipsisHorizontalIcon className="size-4" />
+            </Dropdown.Toggle>
+            <Dropdown.Menu className="z-10 mx-[-1rem]">
+                {/* @ts-expect-error -- size */}
+                <Table size="xs">
+                    <Table.Body>
+                        {entries.map(([k, v]) =>
+                            <Table.Row>
+                                <span className="text-sm font-mono">{`${k}`}</span>
+                                <span className="text-sm font-mono">{`${v}`}</span>
+                            </Table.Row>
+                        )}
+                    </Table.Body>
+                </Table>
+            </Dropdown.Menu>
+        </Dropdown>
     );
 }
