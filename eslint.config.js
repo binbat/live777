@@ -7,6 +7,8 @@ export default ts.config(
     {
         ignores: [
             'assets/',
+            'docs/.vitepress/cache/',
+            'docs/.vitepress/dist/',
             'web/shared/tools/debugger/**/*.js'
         ]
     },
