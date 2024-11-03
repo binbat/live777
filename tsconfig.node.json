@@ -8,8 +8,7 @@
     "strict": true
   },
   "include": [
-    "./web/uno.config.ts",
-    "./web/vite.config.ts",
-    "./web/*/vite.config.ts"
+    "./web/**/vite.config.ts",
+    "./web/tailwind.config.ts"
   ]
 }

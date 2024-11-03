@@ -1,10 +1,10 @@
 import { useCallback, useRef, useState } from 'preact/hooks';
+import { Button } from 'react-daisyui';
 
-import type { Stream } from '../shared/api';
-import { TokenContext } from '../shared/context';
-import { Live777Logo } from '../shared/components/live777-logo';
-import { StreamsTable } from '../shared/components/streams-table';
-import { useNeedAuthorization } from '../shared/hooks/use-need-authorization';
+import type { Stream } from '@/shared/api';
+import { useNeedAuthorization } from '@/shared/hooks/use-need-authorization';
+import { StreamsTable } from '@/shared/components/streams-table';
+import { PageLayout } from '@/shared/components/page-layout';
 
 import * as api from './api';
 import { Login } from './components/login';
@@ -23,24 +23,21 @@ export function Liveman() {
     const refStreamTokenDialog = useRef<IStreamTokenDialog>(null);
     const renderCreateToken = useCallback((stream: Stream) => {
         return (
-            <button onClick={() => refStreamTokenDialog?.current?.show(stream.id)}>Create token</button>
+            <Button size="sm" onClick={() => refStreamTokenDialog?.current?.show(stream.id)}>Create token</Button>
         );
     }, []);
 
     return (
-        <TokenContext.Provider value={{ token }}>
-            <Live777Logo />
-            {needsAuthorizaiton ? (
-                <>
-                    <Login onSuccess={onLoginSuccess} />
-                </>
-            ) : (
-                <>
-                    <NodesTable />
-                    <StreamsTable renderExtraActions={renderCreateToken} />
-                </>
-            )}
+        <>
+            <PageLayout token={token}>
+                <NodesTable />
+                <StreamsTable renderExtraActions={renderCreateToken} />
+            </PageLayout>
             <StreamTokenDialog ref={refStreamTokenDialog} />
-        </TokenContext.Provider>
+            <Login
+                show={needsAuthorizaiton}
+                onSuccess={onLoginSuccess}
+            />
+        </>
     );
 }

@@ -1,5 +1,6 @@
 import { useState, useRef, useImperativeHandle } from 'preact/hooks';
 import { forwardRef, TargetedEvent } from 'preact/compat';
+import { Button, Input, Modal } from 'react-daisyui';
 
 import { cascade } from '../api';
 
@@ -39,25 +40,27 @@ export const CascadePullDialog = forwardRef<ICascadeDialog>((_props, ref) => {
     };
 
     return (
-        <dialog ref={refDialog}>
-            <h3>Cascade Pull</h3>
-            <p>
-                <label>Stream ID:
-                    <br />
-                    <input className="min-w-sm" value={streamId} onChange={handleStreamIdInputChange} />
-                </label>
-            </p>
-            <p>
-                <label>Source URL:
-                    <br />
-                    <input className="min-w-sm" value={cascadeURL} onChange={handleURLInputChange} />
-                </label>
-            </p>
-            <form method="dialog">
-                <button>Cancel</button>
-                <button onClick={onConfirmCascadeURL}>Confirm</button>
-            </form>
-        </dialog>
+        <Modal ref={refDialog} className="max-w-md">
+            <Modal.Header className="mb-2">
+                <h3 className="font-bold">Cascade Pull</h3>
+            </Modal.Header>
+            <Modal.Body>
+                <div className="form-control">
+                    <label className="label px-0">Stream ID:</label>
+                    <Input borderOffset value={streamId} onChange={handleStreamIdInputChange} />
+                </div>
+                <div className="form-control">
+                    <label className="label px-0">Source URL:</label>
+                    <Input borderOffset value={cascadeURL} onChange={handleURLInputChange} />
+                </div>
+            </Modal.Body>
+            <Modal.Actions>
+                <form method="dialog" className="flex gap-2">
+                    <Button onClick={onConfirmCascadeURL}>Confirm</Button>
+                    <Button>Cancel</Button>
+                </form>
+            </Modal.Actions>
+        </Modal>
     );
 });
 
@@ -89,18 +92,22 @@ export const CascadePushDialog = forwardRef<ICascadeDialog>((_props, ref) => {
     };
 
     return (
-        <dialog ref={refDialog}>
-            <h3>Cascade Push ({streamId})</h3>
-            <p>
-                <label>Target URL:
-                    <br />
-                    <input className="min-w-sm" value={cascadeURL} onChange={handleURLInputChange} />
-                </label>
-            </p>
-            <form method="dialog">
-                <button>Cancel</button>
-                <button onClick={onConfirmCascadeURL}>Confirm</button>
-            </form>
-        </dialog>
+        <Modal ref={refDialog} className="max-w-md">
+            <Modal.Header className="mb-2">
+                <h3 className="font-bold">Cascade Push ({streamId})</h3>
+            </Modal.Header>
+            <Modal.Body>
+                <div className="form-control">
+                    <label className="label px-0">Target URL:</label>
+                    <Input borderOffset value={cascadeURL} onChange={handleURLInputChange} />
+                </div>
+            </Modal.Body>
+            <Modal.Actions>
+                <form method="dialog" className="flex gap-2">
+                    <Button onClick={onConfirmCascadeURL}>Confirm</Button>
+                    <Button>Cancel</Button>
+                </form>
+            </Modal.Actions>
+        </Modal>
     );
 });

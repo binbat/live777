@@ -1,5 +1,6 @@
 import { useState, useRef, useImperativeHandle } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
+import { Button, Input, Modal } from 'react-daisyui';
 
 import { createStream } from '../api';
 
@@ -34,17 +35,22 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
     };
 
     return (
-        <dialog ref={refDialog}>
-            <h3>New Stream</h3>
-            <p>
-                <label>Stream ID:
-                    <input type="text" value={streamId} onChange={onStreamIdInput} />
-                </label>
-            </p>
-            <form method="dialog">
-                <button>Cancel</button>
-                <button onClick={onConfirmNewStreamId}>Confirm</button>
-            </form>
-        </dialog>
+        <Modal ref={refDialog} className="max-w-md">
+            <Modal.Header className="mb-2">
+                <h3 className="font-bold">New Stream</h3>
+            </Modal.Header>
+            <Modal.Body>
+                <div className="form-control">
+                    <label className="label px-0">Stream ID:</label>
+                    <Input borderOffset value={streamId} onChange={onStreamIdInput} />
+                </div>
+            </Modal.Body>
+            <Modal.Actions>
+                <form method="dialog" className="flex gap-2">
+                    <Button onClick={onConfirmNewStreamId}>Confirm</Button>
+                    <Button>Cancel</Button>
+                </form>
+            </Modal.Actions>
+        </Modal>
     );
 });

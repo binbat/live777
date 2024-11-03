@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect, useContext } from 'preact/hooks';
 import { ReactNode } from 'preact/compat';
 
+import { Button, Checkbox, Table } from 'react-daisyui';
+import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
+
 import { type Stream, getStreams, deleteStream } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
-
 import { TokenContext } from '../context';
-import { StyledCheckbox } from './styled-checkbox';
+
 import { IClientsDialog, ClientsDialog } from './dialog-clients';
 import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade';
 import { IPreviewDialog, PreviewDialog } from './dialog-preview';
@@ -114,10 +116,93 @@ export function StreamsTable(props: StreamTableProps) {
 
     return (
         <>
-            <ClientsDialog ref={refClients} id={selectedStreamId} sessions={streams.data.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []} />
+            <div className="flex items-center gap-2 px-4 h-12">
+                <span className="font-bold text-lg mr-auto">Streams (total: {streams.data.length})</span>
+                {props.showCascade ? (
+                    <Button
+                        size="sm"
+                        color="ghost"
+                        startIcon={<ArrowRightEndOnRectangleIcon className="size-4 stroke-current" />}
+                        onClick={handleCascadePullStream}
+                    >Cascade Pull
+                    </Button>
+                ) : null}
+                <Button
+                    size="sm"
+                    color="ghost"
+                    endIcon={<Checkbox size="xs" checked={streams.isRefreshing} />}
+                    onClick={streams.toggleTimer}
+                >Auto Refresh</Button>
+                <Button
+                    size="sm"
+                    color="ghost"
+                    endIcon={<ArrowPathIcon className="size-4 stroke-current" />}
+                    onClick={streams.updateData}
+                >Refresh</Button>
+            </div>
 
-            <CascadePullDialog ref={refCascadePull} />
-            <CascadePushDialog ref={refCascadePush} />
+            <Table className="overflow-x-auto">
+                <Table.Head>
+                    <span>ID</span>
+                    <span>Publisher</span>
+                    <span>Subscriber</span>
+                    <span>Cascade</span>
+                    <span>Creation Time</span>
+                    <span>Operation</span>
+                </Table.Head>
+                <Table.Body>
+                    {streams.data.length > 0 ? streams.data.map(i =>
+                        <Table.Row>
+                            <span>{i.id}</span>
+                            <span>{i.publish.sessions.length}</span>
+                            <span>{i.subscribe.sessions.length}</span>
+                            <span>{i.publish.sessions.filter(t => t.cascade).length + i.subscribe.sessions.filter(t => t.cascade).length}</span>
+                            <span>{formatTime(i.createdAt)}</span>
+                            <div className="flex gap-1">
+                                <Button
+                                    size="sm"
+                                    color={previewStreams.includes(i.id) ? 'info' : undefined}
+                                    onClick={() => handlePreview(i.id)}
+                                >Preview</Button>
+                                <Button size="sm" onClick={() => handleViewClients(i.id)}>Clients</Button>
+                                {props.showCascade
+                                    ? <Button size="sm" onClick={() => handleCascadePushStream(i.id)}>Cascade Push</Button>
+                                    : null
+                                }
+                                <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
+                                <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
+                                {props.renderExtraActions?.(i)}
+                                <Button size="sm" color="error" onClick={() => deleteStream(i.id)}>Destroy</Button>
+                            </div>
+                        </Table.Row>
+                    ) : <tr><td colspan={6} className="text-center">N/A</td></tr>}
+                </Table.Body>
+            </Table>
+
+            <div className="flex gap-2 p-4">
+                <Button
+                    size="sm"
+                    color="primary"
+                    startIcon={<PlusIcon className="size-5 stroke-current" />}
+                    onClick={handleNewStream}
+                >New Stream</Button>
+                {webStreams.map(s =>
+                    <Button size="sm" onClick={() => { handleOpenWebStream(s); }}>{s}</Button>
+                )}
+            </div>
+
+            <ClientsDialog
+                ref={refClients}
+                id={selectedStreamId}
+                sessions={streams.data.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []}
+            />
+
+            {props.showCascade ? (
+                <>
+                    <CascadePullDialog ref={refCascadePull} />
+                    <CascadePushDialog ref={refCascadePush} />
+                </>
+            ) : null}
 
             {previewStreams.map(s =>
                 <PreviewDialog
@@ -129,7 +214,7 @@ export function StreamsTable(props: StreamTableProps) {
                             refPreviewStreams.current.delete(s);
                         }
                     }}
-                    onStop={() => { handlePreviewStop(s); }}
+                    onStop={() => handlePreviewStop(s)}
                 />
             )}
 
@@ -145,65 +230,9 @@ export function StreamsTable(props: StreamTableProps) {
                             refWebStreams.current.delete(s);
                         }
                     }}
-                    onStop={() => { handleWebStreamStop(s); }}
+                    onStop={() => handleWebStreamStop(s)}
                 />
             )}
-
-            <fieldset>
-                <legend class="inline-flex items-center gap-x-4">
-                    <span>Streams (total: {streams.data.length})</span>
-                    <button onClick={() => streams.updateData()}>Refresh</button>
-                    <StyledCheckbox label="Auto Refresh" checked={streams.isRefreshing} onClick={streams.toggleTimer}></StyledCheckbox>
-                </legend>
-                <table>
-                    <thead>
-                        <tr>
-                            <th class="min-w-12">ID</th>
-                            <th>Publisher</th>
-                            <th>Subscriber</th>
-                            <th>Cascade</th>
-                            <th class="min-w-72">Creation Time</th>
-                            <th class="min-w-72">Operation</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {streams.data.map(i =>
-                            <tr>
-                                <td class="text-center">{i.id}</td>
-                                <td class="text-center">{i.publish.sessions.length}</td>
-                                <td class="text-center">{i.subscribe.sessions.length}</td>
-                                <td class="text-center">{
-                                    i.publish.sessions.filter(t => t.cascade).length + i.subscribe.sessions.filter(t => t.cascade).length
-                                }</td>
-                                <td class="text-center">{formatTime(i.createdAt)}</td>
-                                <td>
-                                    <button onClick={() => handlePreview(i.id)} class={previewStreams.includes(i.id) ? 'text-blue-500' : undefined} >Preview</button>
-                                    <button onClick={() => handleViewClients(i.id)}>Clients</button>
-                                    {props.showCascade
-                                        ? <button onClick={() => handleCascadePushStream(i.id)}>Cascade Push</button>
-                                        : null
-                                    }
-                                    <button onClick={() => handleOpenPlayerPage(i.id)}>Player</button>
-                                    <button onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</button>
-                                    {props.renderExtraActions?.(i)}
-                                    <button onClick={() => deleteStream(i.id)} class="text-red-500">Destroy</button>
-                                </td>
-                            </tr>
-                        )}
-                    </tbody>
-                </table>
-                <div>
-                    {props.showCascade
-                        ? <button onClick={handleCascadePullStream}>Cascade Pull</button>
-                        : null
-                    }
-                    <button onClick={handleNewStream}>New Stream</button>
-                    <button onClick={() => handleOpenDebuggerPage("")}>Debugger</button>
-                    {webStreams.map(s =>
-                        <button onClick={() => { handleOpenWebStream(s); }}>{s}</button>
-                    )}
-                </div>
-            </fieldset>
         </>
     );
 }
