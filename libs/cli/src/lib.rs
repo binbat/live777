@@ -132,21 +132,21 @@ pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
 }
 
 pub fn create_child(command: Option<String>) -> Result<Option<Mutex<Child>>> {
-    let child = if let Some(command) = command {
-        let command = command.replace('\\', "/");
-        let mut args = shellwords::split(&command)?;
+    Ok(match command {
+        Some(command) => {
+            #[cfg(windows)]
+            let command = command.replace('\\', "/");
 
-        Some(Mutex::new(
-            Command::new(args.remove(0))
-                .args(args)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .spawn()?,
-        ))
-    } else {
-        None
-    };
-
-    Ok(child)
+            let mut args = shellwords::split(&command)?;
+            Some(Mutex::new(
+                Command::new(args.remove(0))
+                    .args(args)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .spawn()?,
+            ))
+        }
+        None => None,
+    })
 }
