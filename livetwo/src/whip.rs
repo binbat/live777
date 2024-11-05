@@ -1,5 +1,6 @@
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::Path;
 use std::{sync::Arc, time::Duration, vec};
 
 use anyhow::{anyhow, Result};
@@ -53,12 +54,13 @@ pub async fn into(
     );
     info!("=== Received Input: {} ===", input);
 
-    let mut host = match input
-        .host()
-        .unwrap_or_else(|| panic!("Invalid host for {}", input))
-    {
-        Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
-        Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
+    let mut host = match input.host() {
+        Some(Host::Domain(_)) | Some(Host::Ipv4(_)) => Ipv4Addr::UNSPECIFIED.to_string(),
+        Some(Host::Ipv6(_)) => Ipv6Addr::UNSPECIFIED.to_string(),
+        None => {
+            eprintln!("Invalid host for {}, using default.", input);
+            Ipv4Addr::UNSPECIFIED.to_string()
+        }
     };
 
     if let Some(ref h) = set_host {
@@ -124,7 +126,11 @@ pub async fn into(
         };
     } else {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let sdp = sdp_types::Session::parse(&fs::read(&target_url).unwrap()).unwrap();
+        let path = Path::new(&target_url);
+        let sdp = sdp_types::Session::parse(&fs::read(path).unwrap()).unwrap();
+        if let Some(connection_info) = &sdp.connection {
+            host.clone_from(&connection_info.connection_address);
+        }
         let video_track = sdp.medias.iter().find(|md| md.media == "video");
         let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
 

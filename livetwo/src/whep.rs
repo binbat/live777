@@ -8,6 +8,7 @@ use sdp::{description::media::RangedPort, SessionDescription};
 use std::{
     fs::File,
     io::{Cursor, Write},
+    path::Path,
     sync::Arc,
     time::Duration,
 };
@@ -58,12 +59,13 @@ pub async fn from(
     );
     info!("=== Received Output: {} ===", target_url);
 
-    let mut host = match input
-        .host()
-        .unwrap_or_else(|| panic!("Invalid host for {}", input))
-    {
-        Host::Domain(_) | Host::Ipv4(_) => Ipv4Addr::UNSPECIFIED.to_string(),
-        Host::Ipv6(_) => Ipv6Addr::UNSPECIFIED.to_string(),
+    let mut host = match input.host() {
+        Some(Host::Domain(_)) | Some(Host::Ipv4(_)) => Ipv4Addr::UNSPECIFIED.to_string(),
+        Some(Host::Ipv6(_)) => Ipv6Addr::UNSPECIFIED.to_string(),
+        None => {
+            error!("Invalid host for {}, using default.", input);
+            Ipv4Addr::UNSPECIFIED.to_string()
+        }
     };
 
     if let Some(ref h) = set_host {
@@ -134,6 +136,12 @@ pub async fn from(
 
         let mut reader = Cursor::new(filtered_sdp.as_bytes());
         let mut session = SessionDescription::unmarshal(&mut reader).unwrap();
+        host = session
+            .clone()
+            .connection_information
+            .and_then(|conn_info| conn_info.address)
+            .map(|address| address.to_string())
+            .unwrap_or(Ipv4Addr::LOCALHOST.to_string());
         for media in &mut session.media_descriptions {
             if media.media_name.media == "video" {
                 if let Some(port) = media_info.video_rtp_client {
@@ -152,9 +160,14 @@ pub async fn from(
             }
         }
         let sdp = session.marshal();
-        let file_path = input.path().strip_prefix('/').unwrap();
-        info!("SDP written to {}", file_path);
-        let mut file = File::create(file_path)?;
+
+        let file_path = Path::new(&target_url);
+        info!("SDP written to {:?}", file_path);
+        let mut file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(file_path)?;
         file.write_all(sdp.as_bytes())?;
     }
     debug!("media info : {:?}", media_info);
