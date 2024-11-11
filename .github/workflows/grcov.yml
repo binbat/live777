@@ -14,15 +14,7 @@ env:
 jobs:
   grcov:
     name: Coverage
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os:
-          - ubuntu-latest
-        toolchain:
-          - nightly
-        cargo_flags:
-          - "--all-features"
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -39,50 +31,10 @@ jobs:
         run: |
           ffmpeg -version
           ffprobe -version
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.toolchain }}
-          override: true
-
-      - name: Install grcov
-        uses: actions-rs/install@v0.1
-        with:
-          crate: grcov
-          version: latest
-          use-tool-cache: true
-
-      - name: Test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all --no-fail-fast ${{ matrix.cargo_flags }}
-        env:
-          CARGO_INCREMENTAL: "0"
-          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort -Cdebug-assertions=off'
-          RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort -Cdebug-assertions=off'
-
-      - name: Generate coverage data
-        run: |
-          grcov target/debug/ \
-              --branch \
-              --llvm \
-              --source-dir . \
-              --output-path lcov.info \
-              --ignore='/**' \
-              --ignore='C:/**' \
-              --ignore='../**' \
-              --ignore-not-existing \
-              --excl-line "#\\[derive\\(" \
-              --excl-br-line "#\\[derive\\(" \
-              --excl-start "#\\[cfg\\(test\\)\\]" \
-              --excl-br-start "#\\[cfg\\(test\\)\\]" \
-              --commit-sha ${{ github.sha }} \
-              --service-job-id ${{ github.job }} \
-              --service-name "GitHub Actions" \
-              --service-number ${{ github.run_id }}
-
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v4
         with:
