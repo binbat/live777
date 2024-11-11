@@ -1,0 +1,17 @@
+name: "whepfrom"
+arch: "${NFPM_ARCH}"
+platform: "linux"
+version: "${NFPM_VERSION}"
+section: "utility"
+priority: "optional"
+maintainer: "Max A-wing <1@233.email>"
+description: |
+  A very simple, high performance, edge WebRTC SFU.
+  WHEP to RTP/RTSP tool
+vendor: "BinBat"
+homepage: "http://live777.binbat.com"
+license: "MPL-2.0"
+contents:
+  - src: ./target/${NFPM_TARGET}/release/whepfrom
+    dst: /usr/bin/whepfrom
+

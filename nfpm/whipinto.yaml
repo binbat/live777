@@ -1,0 +1,17 @@
+name: "whipinto"
+arch: "${NFPM_ARCH}"
+platform: "linux"
+version: "${NFPM_VERSION}"
+section: "utility"
+priority: "optional"
+maintainer: "Max A-wing <1@233.email>"
+description: |
+  A very simple, high performance, edge WebRTC SFU.
+  RTP/RTSP to WHIP tool
+vendor: "BinBat"
+homepage: "http://live777.binbat.com"
+license: "MPL-2.0"
+contents:
+  - src: ./target/${NFPM_TARGET}/release/whipinto
+    dst: /usr/bin/whipinto
+

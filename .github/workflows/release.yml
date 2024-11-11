@@ -17,23 +17,22 @@ jobs:
       matrix:
         job:
           # https://doc.rust-lang.org/nightly/rustc/platform-support.html
-          - { target: aarch64-apple-darwin        , os: macos-13                      }
+          - { target: aarch64-apple-darwin        , os: macos-14                      }
           - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
-          - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: true }
-          - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
-          - { target: aarch64-unknown-linux-musl  , os: ubuntu-22.04, use-cross: true }
-          - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
-          - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
+          - { target: aarch64-linux-android       , os: ubuntu-24.04, use-cross: true }
+          - { target: aarch64-unknown-linux-gnu   , os: ubuntu-24.04, use-cross: true }
+          - { target: aarch64-unknown-linux-musl  , os: ubuntu-24.04, use-cross: true, nfpm: arm64 }
+          - { target: arm-unknown-linux-gnueabihf , os: ubuntu-24.04, use-cross: true }
+          - { target: arm-unknown-linux-musleabihf, os: ubuntu-24.04, use-cross: true }
           - { target: i686-pc-windows-msvc        , os: windows-2022                  }
-          - { target: i686-unknown-linux-gnu      , os: ubuntu-22.04, use-cross: true }
-          - { target: i686-unknown-linux-musl     , os: ubuntu-22.04, use-cross: true }
-          - { target: x86_64-apple-darwin         , os: macos-13                      }
+          - { target: i686-unknown-linux-gnu      , os: ubuntu-24.04, use-cross: true }
+          - { target: i686-unknown-linux-musl     , os: ubuntu-24.04, use-cross: true }
+          - { target: x86_64-apple-darwin         , os: macos-14                      }
           - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
           - { target: x86_64-pc-windows-msvc      , os: windows-2022                  }
-          - { target: x86_64-unknown-linux-gnu    , os: ubuntu-22.04, use-cross: true }
-          - { target: x86_64-unknown-linux-musl   , os: ubuntu-22.04, use-cross: true }
+          - { target: x86_64-unknown-linux-gnu    , os: ubuntu-24.04, use-cross: true }
+          - { target: x86_64-unknown-linux-musl   , os: ubuntu-24.04, use-cross: true, nfpm: amd64 }
     env:
-      VERSION: $GITHUB_REF_NAME
       BUILD_CMD: cargo
       EXE_SUFFIX: ""
       PKG_LIVE777_NAME: ""
@@ -55,8 +54,14 @@ jobs:
         run: npm run build
 
       - name: Get the release version from the tag
+        shell: bash
         run: |
-          echo "version is: ${{ env.VERSION }}"
+          VERSION=${GITHUB_REF_NAME}
+          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
+            VERSION=v0.0.0
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "version is: ${VERSION}"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -147,35 +152,37 @@ jobs:
           # Let subsequent steps know where to find the compressed package
           echo "TAR_LIVEMAN_NAME=${TAR_NAME}" >> $GITHUB_ENV
 
-      - name: Artifact Upload Live777
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.TAR_LIVE777_NAME }}
-          path: ${{ env.TAR_LIVE777_NAME }}
+      - name: Install nFPM
+        if: ${{ matrix.job.nfpm }}
+        run: |
+            echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+            sudo apt update
+            sudo apt install nfpm
 
-      - name: Artifact Upload LiveMan
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.TAR_LIVEMAN_NAME }}
-          path: ${{ env.TAR_LIVEMAN_NAME }}
+      - name: Set nFPM environment
+        if: ${{ matrix.job.nfpm }}
+        run: |
+          echo "NFPM_ARCH=${{ matrix.job.nfpm }}" >> $GITHUB_ENV
+          echo "NFPM_TARGET=${{ matrix.job.target }}" >> $GITHUB_ENV
+          echo "NFPM_VERSION=${{ env.VERSION }}" >> $GITHUB_ENV
 
-      - name: Artifact Upload Whepfrom
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.PKG_WHEPFROM_NAME }}
-          path: ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }}
+      - name: Build nFPM config
+        if: ${{ matrix.job.nfpm }}
+        run: |
+          envsubst < nfpm/live777.yaml > live777.yaml
+          envsubst < nfpm/liveman.yaml > liveman.yaml
+          envsubst < nfpm/net4mqtt.yaml > net4mqtt.yaml
+          envsubst < nfpm/whipinto.yaml > whipinto.yaml
+          envsubst < nfpm/whepfrom.yaml > whepfrom.yaml
 
-      - name: Artifact Upload Whipinto
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.PKG_WHIPINTO_NAME }}
-          path: ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }}
-
-      - name: Artifact Upload Net4mqtt
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.PKG_NET4MQTT_NAME }}
-          path: ${{ env.BUILD_PATH }}/net4mqtt${{ env.EXE_SUFFIX }}
+      - name: Use nFPM
+        if: ${{ matrix.job.nfpm }}
+        run: |
+          nfpm pkg --packager deb --config live777.yaml
+          nfpm pkg --packager deb --config liveman.yaml
+          nfpm pkg --packager deb --config net4mqtt.yaml
+          nfpm pkg --packager deb --config whipinto.yaml
+          nfpm pkg --packager deb --config whepfrom.yaml
 
       - name: Rename binary
         shell: bash
@@ -184,10 +191,29 @@ jobs:
           mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
           mv ${{ env.BUILD_PATH }}/net4mqtt${{ env.EXE_SUFFIX }} ${{ env.PKG_NET4MQTT_NAME }}
 
+      - name: Artifact Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_binary
+          path: |
+            ${{ env.TAR_LIVE777_NAME }}
+            ${{ env.TAR_LIVEMAN_NAME }}
+            ${{ env.PKG_WHEPFROM_NAME }}
+            ${{ env.PKG_WHIPINTO_NAME }}
+            ${{ env.PKG_NET4MQTT_NAME }}
+
+      - name: Artifact Upload debian
+        uses: actions/upload-artifact@v4
+        if: ${{ matrix.job.nfpm }}
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_debian
+          path: |
+              *.deb
+
       - name: Upload release archive
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.TAR_LIVEMAN_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }} ${{ env.PKG_NET4MQTT_NAME }}
+        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.TAR_LIVEMAN_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }} ${{ env.PKG_NET4MQTT_NAME }} *.deb
         env:
           GH_TOKEN: ${{ github.token }}
 
