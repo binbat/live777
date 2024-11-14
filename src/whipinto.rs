@@ -4,7 +4,7 @@ use tracing::Level;
 mod log;
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "whipinto", version)]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
