@@ -4,6 +4,7 @@ description = "A very simple, high performance, edge WebRTC SFU"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 
 default-run = "live777"
@@ -50,6 +51,7 @@ members = [
 version = "0.6.0"
 edition = "2021"
 license = "MPL-2.0"
+authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]

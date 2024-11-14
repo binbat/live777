@@ -4,7 +4,7 @@ platform: "linux"
 version: "${NFPM_VERSION}"
 section: "utility"
 priority: "optional"
-maintainer: "Max A-wing <1@233.email>"
+maintainer: "BinBat Ltd <hey@binbat.com>"
 description: |
   A very simple, high performance, edge WebRTC SFU.
   Live777 cluster manager controller
