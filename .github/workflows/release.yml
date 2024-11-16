@@ -42,6 +42,8 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -58,7 +60,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME}
           if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
-            VERSION=v0.0.0
+            VERSION=`git describe --tags`
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "version is: ${VERSION}"
@@ -182,7 +184,9 @@ jobs:
         run: |
           echo "NFPM_ARCH=${{ matrix.job.nfpm }}" >> $GITHUB_ENV
           echo "NFPM_TARGET=${{ matrix.job.target }}" >> $GITHUB_ENV
-          echo "NFPM_VERSION=${{ env.VERSION }}" >> $GITHUB_ENV
+          echo "NFPM_VERSION=`git describe --tags | cut -d - -f 1`" >> $GITHUB_ENV
+          echo "NFPM_RELEASE=`git describe --tags | cut -d - -f 2`" >> $GITHUB_ENV
+          echo "NFPM_PRERELEASE=`git describe --tags | cut -d - -f 3`" >> $GITHUB_ENV
 
       - name: Build nFPM config
         if: ${{ matrix.job.nfpm }}
