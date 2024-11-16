@@ -182,11 +182,12 @@ jobs:
       - name: Set nFPM environment
         if: ${{ matrix.job.nfpm }}
         run: |
+          DESCRIBE=`git describe --tags`-
           echo "NFPM_ARCH=${{ matrix.job.nfpm }}" >> $GITHUB_ENV
           echo "NFPM_TARGET=${{ matrix.job.target }}" >> $GITHUB_ENV
-          echo "NFPM_VERSION=`git describe --tags | cut -d - -f 1`" >> $GITHUB_ENV
-          echo "NFPM_RELEASE=`git describe --tags | cut -d - -f 2`" >> $GITHUB_ENV
-          echo "NFPM_PRERELEASE=`git describe --tags | cut -d - -f 3`" >> $GITHUB_ENV
+          echo "NFPM_VERSION=`echo ${DESCRIBE} | cut -d - -f 1`" >> $GITHUB_ENV
+          echo "NFPM_RELEASE=`echo ${DESCRIBE} | cut -d - -f 2`" >> $GITHUB_ENV
+          echo "NFPM_PRERELEASE=`echo ${DESCRIBE} | cut -d - -f 3`" >> $GITHUB_ENV
 
       - name: Build nFPM config
         if: ${{ matrix.job.nfpm }}
@@ -245,7 +246,14 @@ jobs:
       - name: Upload release archive
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.TAR_LIVEMAN_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }} ${{ env.PKG_NET4MQTT_NAME }} *.deb *.rpm *.pkg.tar.zst
+        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.TAR_LIVEMAN_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }} ${{ env.PKG_NET4MQTT_NAME }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload release archive nFPM package
+        shell: bash
+        if: ${{ (github.ref_type == 'tag') && (matrix.job.nfpm) }}
+        run: gh release upload ${{ env.VERSION }} *.deb *.rpm *.pkg.tar.zst
         env:
           GH_TOKEN: ${{ github.token }}
 
