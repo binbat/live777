@@ -1,11 +1,15 @@
 use clap::Parser;
+use const_str::concat;
 use tracing::{debug, info, warn};
+use shadow_rs::shadow;
+
+shadow!(build);
 
 mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(version)]
+#[command(version = concat!("v",build::PKG_VERSION,"-",build::SHORT_COMMIT))]
 struct Args {
     /// Set config file path
     #[arg(short, long)]

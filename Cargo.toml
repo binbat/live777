@@ -9,6 +9,10 @@ repository.workspace = true
 
 default-run = "live777"
 
+build = "build.rs"
+[build-dependencies]
+shadow-rs = "0.35.1"
+
 [[bin]]
 name = "live777"
 path = "src/main.rs"
@@ -87,9 +91,11 @@ net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
 
 clap = { workspace = true, features = ["derive"] }
+const-str = "0.5.7"
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 serde = { workspace = true }
+shadow-rs = "0.35.1"
 
 toml = "0.8.19"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
