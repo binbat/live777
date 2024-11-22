@@ -1,7 +1,7 @@
 use clap::Parser;
 use const_str::concat;
-use tracing::{debug, info, warn};
 use shadow_rs::shadow;
+use tracing::{debug, info, warn};
 
 shadow!(build);
 
