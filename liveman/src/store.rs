@@ -281,13 +281,13 @@ impl Storage {
         let handles = requests
             .into_iter()
             .map(|(alias, value)| {
-                tokio::spawn(async move { (alias, start.elapsed(), value.await) })
+                tokio::spawn(async move { (alias, value.await, start.elapsed()) })
             })
             .collect::<Vec<
                 tokio::task::JoinHandle<(
                     std::string::String,
-                    std::time::Duration,
                     std::result::Result<reqwest::Response, reqwest::Error>,
+                    std::time::Duration,
                 )>,
             >>();
 
@@ -307,7 +307,7 @@ impl Storage {
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
-                (Ok((alias, duration, Ok(res))),) => {
+                (Ok((alias, Ok(res), duration)),) => {
                     debug!(
                         "{}: spend time: [{:?}] Response: {:?}",
                         alias, duration, res
@@ -325,7 +325,7 @@ impl Storage {
                         Err(e) => error!("Error: {:?}", e),
                     };
                 }
-                (Ok((name, duration, Err(e))),) => {
+                (Ok((name, Err(e), duration)),) => {
                     error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
                 }
                 _ => {}
