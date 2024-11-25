@@ -34,3 +34,9 @@ pub struct StreamSSE {
     #[serde(default)]
     pub streams: Vec<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Record {
+    // todo
+}

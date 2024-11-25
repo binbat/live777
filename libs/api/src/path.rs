@@ -37,3 +37,7 @@ pub fn streams_sse() -> String {
 pub fn strategy() -> String {
     "/api/strategy/".to_string()
 }
+
+pub fn record(stream: &str) -> String {
+    format!("/api/record/{}", stream)
+}

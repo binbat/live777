@@ -44,6 +44,8 @@ reqwest = { version = "0.12", features = [
 ], default-features = false }
 
 rust-embed = { version = "8.4", features = ["axum-ex"], optional = true }
+which = "7.0.0"
+portpicker = "0.1.1"
 
 [features]
 webui = ["dep:rust-embed"]

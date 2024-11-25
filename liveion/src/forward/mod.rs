@@ -221,6 +221,10 @@ impl PeerForward {
             Err(AppError::throw("not layers"))
         }
     }
+
+    pub async fn record(&self) -> Result<()> {
+        self.internal.record().await
+    }
 }
 
 // subscribe

@@ -1,9 +1,19 @@
 use std::borrow::ToOwned;
+use std::fs;
+use std::io::Cursor;
+use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use libwish::Client;
+use portpicker::pick_unused_port;
+use tokio::io::AsyncWriteExt;
+use tokio::net::UdpSocket;
+use tokio::process::Command;
+use tokio::sync::broadcast::Receiver;
 use tokio::sync::{broadcast, RwLock};
+use tokio::time::sleep;
 use tracing::{debug, info};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
@@ -18,12 +28,15 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpTransceiverInit};
+use webrtc::sdp::description::common::Attribute;
+use webrtc::sdp::description::media::RangedPort;
 use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
+use webrtc::sdp::SessionDescription;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
@@ -39,6 +52,7 @@ use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::PublishTrackRemote;
+use webrtc::util::Marshal;
 
 const MESSAGE_SIZE: usize = 1024 * 16;
 
@@ -633,5 +647,219 @@ impl PeerForwardInternal {
             session,
             stream_info: self.info().await,
         });
+    }
+}
+
+// record
+impl PeerForwardInternal {
+    pub(crate) async fn record(&self) -> Result<()> {
+        if which::which("ffmpeg").is_err() {
+            return Err(AppError::throw("not support record"));
+        }
+        let publish = self.publish.read().await;
+        match publish.as_ref() {
+            Some(publish) => {
+                let peer_tracks =
+                    publish.media_info.video_transceiver.0 + publish.media_info.video_transceiver.1;
+                let current_tracks = self.publish_tracks.read().await;
+                if peer_tracks != current_tracks.len() as u8 {
+                    return Err(AppError::throw("peer track incomplete"));
+                }
+                let video_port = pick_unused_port().ok_or(AppError::throw("server error"))?;
+                let audio_port = pick_unused_port().ok_or(AppError::throw("server error"))?;
+                let video_track = current_tracks
+                    .iter()
+                    .find(|track| track.kind == RTPCodecType::Video);
+                let video = video_track
+                    .cloned()
+                    .map(|track| (video_port, track.subscribe()));
+                let video_ssrc = video_track.map(|track| track.track.ssrc());
+                let audio = current_tracks
+                    .iter()
+                    .find(|track| track.kind == RTPCodecType::Audio)
+                    .map(|track| (audio_port, track.subscribe()));
+                let (sdp, codecs) = Self::get_sdp_and_codecs(publish.peer.clone()).await?;
+                let sdp = Self::build_sdp(&sdp, codecs, video_port, audio_port)?.marshal();
+                let dir = format!("{}/{}", self.stream, Utc::now().timestamp_millis());
+                std::fs::create_dir_all(dir.clone())?;
+                let output = format!("{}/record.mpd", dir);
+                let has_video = video.is_some();
+                tokio::spawn(Self::do_record(sdp, video, audio, output.clone()));
+                // Keyframe
+                if has_video {
+                    let peer_weak = Arc::downgrade(&publish.peer);
+                    tokio::spawn(async move {
+                        let check_path = format!("{}/init-stream0.m4s", dir);
+                        while !fs::exists(check_path.clone()).unwrap_or(false) {
+                            match peer_weak.upgrade() {
+                                Some(pc) => {
+                                    let _ = pc
+                                        .write_rtcp(&[RtcpMessage::PictureLossIndication
+                                            .to_rtcp_packet(video_ssrc.unwrap())])
+                                        .await;
+                                }
+                                None => {
+                                    break;
+                                }
+                            }
+                            sleep(Duration::from_millis(500)).await;
+                        }
+                    });
+                }
+                Ok(())
+            }
+            None => Err(AppError::throw("publish is none")),
+        }
+    }
+
+    async fn do_record(
+        sdp: String,
+        video: Option<(u16, Receiver<Arc<webrtc::rtp::packet::Packet>>)>,
+        audio: Option<(u16, Receiver<Arc<webrtc::rtp::packet::Packet>>)>,
+        output: String,
+    ) -> Result<()> {
+        let mut args = vec![
+            "ffmpeg",
+            "-protocol_whitelist",
+            "rtp,file,udp,pipe,http",
+            "-f",
+            "sdp",
+            "-i",
+            "pipe:0",
+            "-f",
+            "dash",
+            &output,
+        ];
+        info!("record cli : {:?}", args);
+        let mut ffmpeg = Command::new(args.remove(0))
+            .stdin(Stdio::piped())
+            .args(&args)
+            .spawn()?;
+        if let Some((video_port, video_rtp_recv)) = video {
+            tokio::spawn(Self::send_udp(video_port, video_rtp_recv));
+        }
+        if let Some((audio_port, audio_rtp_recv)) = audio {
+            tokio::spawn(Self::send_udp(audio_port, audio_rtp_recv));
+        }
+        let mut input = ffmpeg.stdin.take().unwrap();
+        input.write_all(sdp.as_bytes()).await?;
+        drop(input);
+        let status = ffmpeg.wait().await?;
+        info!("record exited with: {}", status);
+        Ok(())
+    }
+
+    async fn send_udp(
+        port: u16,
+        mut rtp_recv: Receiver<Arc<webrtc::rtp::packet::Packet>>,
+    ) -> Result<()> {
+        let udp = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let target = format!("127.0.0.1:{}", port);
+        while let Ok(packet) = rtp_recv.recv().await {
+            let data = packet.marshal().unwrap();
+            let result = udp.send_to(&data, target.clone()).await;
+            if let Err(e) = result {
+                info!("Failed to send RTP packet: {:?}", e);
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_sdp_and_codecs(
+        peer: Arc<RTCPeerConnection>,
+    ) -> Result<(String, Vec<RTCRtpCodecParameters>)> {
+        let sdp = peer.remote_description().await.unwrap().sdp;
+        let mut codecs = vec![];
+        for receiver in peer.get_receivers().await {
+            for track in receiver.tracks().await {
+                match track.kind() {
+                    webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Unspecified => {}
+                    _ => {
+                        codecs.push(track.codec());
+                    }
+                }
+            }
+        }
+        Ok((sdp, codecs))
+    }
+
+    fn build_sdp(
+        webrtc_sdp: &str,
+        codecs: Vec<RTCRtpCodecParameters>,
+        video_port: u16,
+        audio_port: u16,
+    ) -> Result<SessionDescription> {
+        let mut reader = Cursor::new(webrtc_sdp.as_bytes());
+        let mut session = match SessionDescription::unmarshal(&mut reader) {
+            Ok(sdp) => sdp,
+            Err(e) => return Err(e.into()),
+        };
+        session.media_descriptions.retain_mut(|media| {
+            let codec = codecs.iter().find(|codec| {
+                codec
+                    .capability
+                    .mime_type
+                    .to_lowercase()
+                    .starts_with(&media.media_name.media.to_lowercase())
+            });
+            if codec.is_none() {
+                return false;
+            }
+            let codec = codec.unwrap();
+
+            media.attributes.retain(|attr| {
+                attr.key == "rtpmap"
+                    && attr
+                        .value
+                        .as_ref()
+                        .map_or(false, |v| v.starts_with(&codec.payload_type.to_string()))
+            });
+            media.attributes.push(Attribute {
+                key: "control".to_string(),
+                value: Some("streamid=0".to_string()),
+            });
+            media
+                .media_name
+                .formats
+                .retain(|fmt| fmt == &codec.payload_type.to_string());
+            media.media_name.protos = vec!["RTP".to_string(), "AVP".to_string()];
+            media.media_name.port = RangedPort {
+                value: if media.media_name.media.to_lowercase() == "video" {
+                    video_port.try_into().unwrap()
+                } else {
+                    audio_port.try_into().unwrap()
+                },
+                range: None,
+            };
+
+            media.attributes.retain(|attr| {
+                !attr.key.starts_with("rtcp")
+                    && !attr.key.starts_with("ssrc")
+                    && !attr.key.starts_with("candidate")
+                    && !attr.key.starts_with("fmtp")
+                    && !attr.key.starts_with("setup")
+                    && !attr.key.starts_with("mid")
+                    && !attr.key.starts_with("ice-ufrag")
+                    && !attr.key.starts_with("ice-pwd")
+                    && !attr.key.starts_with("extmap")
+                    && !attr.key.starts_with("end-of-candidates")
+            });
+            true
+        });
+        session.attributes.retain(|attr| {
+            !attr.key.starts_with("group")
+                && !attr.key.starts_with("fingerprint")
+                && !attr.key.starts_with("end-of-candidates")
+                && !attr.key.starts_with("setup")
+                && !attr.key.starts_with("mid")
+                && !attr.key.starts_with("ice-ufrag")
+                && !attr.key.starts_with("ice-pwd")
+                && !attr.key.starts_with("extmap")
+        });
+        if session.media_descriptions.is_empty() {
+            Err(AppError::throw("no media descriptions"))
+        } else {
+            Ok(session)
+        }
     }
 }

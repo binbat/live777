@@ -7,7 +7,9 @@ use crate::result::Result;
 use crate::AppState;
 
 pub fn route() -> Router<AppState> {
-    Router::new().route(&api::path::cascade(":stream"), post(cascade))
+    Router::new()
+        .route(&api::path::cascade(":stream"), post(cascade))
+        .route(&api::path::record(":stream"), post(record))
 }
 
 async fn cascade(
@@ -36,5 +38,14 @@ async fn cascade(
             .cascade_push(stream, body.target_url.unwrap(), body.token)
             .await?;
     }
+    Ok("".to_string())
+}
+
+async fn record(
+    State(state): State<AppState>,
+    Path(stream): Path<String>,
+    Json(_body): Json<api::request::Record>,
+) -> Result<String> {
+    state.stream_manager.record(stream).await?;
     Ok("".to_string())
 }

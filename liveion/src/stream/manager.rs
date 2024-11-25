@@ -458,4 +458,15 @@ impl Manager {
         });
         Ok(recv)
     }
+
+    pub async fn record(&self, stream: String) -> Result<()> {
+        let streams = self.stream_map.read().await;
+        let forward = streams.get(&stream).cloned();
+        drop(streams);
+        if let Some(forward) = forward {
+            forward.record().await
+        } else {
+            Err(AppError::stream_not_found("stream not exists"))
+        }
+    }
 }

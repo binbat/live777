@@ -8,6 +8,7 @@ gateway.toml
 
 # Vitepress
 docs/.vitepress/cache
+.vitepress/
 
 # Logs
 logs
