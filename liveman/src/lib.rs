@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tower_http::{
     cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
 };
-use tracing::{error, info, info_span};
+use tracing::{error, info, info_span, warn};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
@@ -81,20 +81,26 @@ where
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
-                        let listener = TcpListener::bind(c.listen).await.unwrap();
-                        net4mqtt::proxy::local_socks(
-                            &c.mqtt_url,
-                            listener,
-                            ("-", &c.alias.clone()),
-                            Some(c.domain),
-                            Some(net4mqtt::proxy::VDataConfig {
-                                receiver: Some(sender),
-                                ..Default::default()
-                            }),
-                            false,
-                        )
-                        .await
-                        .unwrap()
+                        loop {
+                            let listener = TcpListener::bind(c.listen).await.unwrap();
+                            match net4mqtt::proxy::local_socks(
+                                &c.mqtt_url,
+                                listener,
+                                ("-", &c.alias.clone()),
+                                Some(c.domain.clone()),
+                                Some(net4mqtt::proxy::VDataConfig {
+                                    receiver: Some(sender.clone()),
+                                    ..Default::default()
+                                }),
+                                false,
+                            )
+                            .await
+                            {
+                                Ok(_) => warn!("net4mqtt service is end, restart net4mqtt service"),
+                                Err(e) => error!("mqtt4mqtt error: {:?}", e),
+                            }
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        }
                     });
             });
 
