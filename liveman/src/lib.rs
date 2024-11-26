@@ -71,7 +71,8 @@ where
 
     #[cfg(feature = "net4mqtt")]
     {
-        if let Some(c) = cfg.net4mqtt.clone() {
+        if let Some(mut c) = cfg.net4mqtt.clone() {
+            c.validate();
             let (sender, mut receiver) =
                 tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
 

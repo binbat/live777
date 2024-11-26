@@ -41,8 +41,10 @@
 # close_other_sub = false
 
 # [net4mqtt]
-# mqtt_url = "mqtt://localhost:1883/net4mqtt"
+# Global unique alias
 # alias = "liveman-0"
+# `client_id={alias}` use alias as MQTT `client_id`
+# mqtt_url = "mqtt://localhost:1883/net4mqtt?client_id={alias}"
 # listen = "127.0.0.1:1077"
 # domain = "net4mqtt.local"
 

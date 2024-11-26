@@ -84,7 +84,8 @@ where
 
     #[cfg(feature = "net4mqtt")]
     {
-        if let Some(c) = cfg.net4mqtt {
+        if let Some(mut c) = cfg.net4mqtt {
+            c.validate();
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()

@@ -59,5 +59,8 @@ urls = [
 
 # Default enabled `--features=net4mqtt`
 # [net4mqtt]
-# mqtt_url = "mqtt://localhost:1883/net4mqtt"
+# Global unique alias
 # alias = "liveion-0"
+# `client_id={alias}` use alias as MQTT `client_id`
+# mqtt_url = "mqtt://localhost:1883/net4mqtt?client_id={alias}"
+

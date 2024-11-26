@@ -37,6 +37,13 @@ pub struct Net4mqtt {
     pub alias: String,
 }
 
+#[cfg(feature = "net4mqtt")]
+impl Net4mqtt {
+    pub fn validate(&mut self) {
+        self.mqtt_url = self.mqtt_url.replace("{alias}", &self.alias)
+    }
+}
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Webhook {
     #[serde(default)]
