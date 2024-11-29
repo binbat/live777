@@ -47,6 +47,13 @@ pub struct Net4mqtt {
 }
 
 #[cfg(feature = "net4mqtt")]
+impl Net4mqtt {
+    pub fn validate(&mut self) {
+        self.mqtt_url = self.mqtt_url.replace("{alias}", &self.alias)
+    }
+}
+
+#[cfg(feature = "net4mqtt")]
 impl Default for Net4mqtt {
     fn default() -> Self {
         Self {
