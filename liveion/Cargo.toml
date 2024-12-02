@@ -12,7 +12,7 @@ crate-type = ["lib"]
 [dependencies]
 api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
-http-log = { path = "../libs/http-log" }
+# http-log = { path = "../libs/http-log" }
 libwish = { path = "../libs/libwish" }
 
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
@@ -46,6 +46,7 @@ reqwest = { version = "0.12", features = [
 rust-embed = { version = "8.4", features = ["axum-ex"], optional = true }
 which = "7.0.0"
 portpicker = "0.1.1"
+opendal = { version = "0.50.2", features = ["services-fs"] }
 
 [features]
 webui = ["dep:rust-embed"]

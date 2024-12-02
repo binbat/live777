@@ -46,6 +46,7 @@ async fn record(
     Path(stream): Path<String>,
     Json(_body): Json<api::request::Record>,
 ) -> Result<String> {
-    state.stream_manager.record(stream).await?;
+    let endpoint = format!("http://{}/api/record", state.config.http.listen);
+    state.stream_manager.record(stream, endpoint).await?;
     Ok("".to_string())
 }

@@ -1,12 +1,12 @@
 use std::borrow::ToOwned;
-use std::fs;
 use std::io::Cursor;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use chrono::Utc;
 use libwish::Client;
+use opendal::{services, Operator};
 use portpicker::pick_unused_port;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
@@ -652,7 +652,7 @@ impl PeerForwardInternal {
 
 // record
 impl PeerForwardInternal {
-    pub(crate) async fn record(&self) -> Result<()> {
+    pub(crate) async fn record(&self, endpoint: String) -> Result<()> {
         if which::which("ffmpeg").is_err() {
             return Err(AppError::throw("not support record"));
         }
@@ -680,35 +680,46 @@ impl PeerForwardInternal {
                     .map(|track| (audio_port, track.subscribe()));
                 let (sdp, codecs) = Self::get_sdp_and_codecs(publish.peer.clone()).await?;
                 let sdp = Self::build_sdp(&sdp, codecs, video_port, audio_port)?.marshal();
-                let dir = format!("{}/{}", self.stream, Utc::now().timestamp_millis());
-                std::fs::create_dir_all(dir.clone())?;
-                let output = format!("{}/record.mpd", dir);
+                let dir = format!("{}/{}/", self.stream, Utc::now().timestamp_millis());
+                let output = format!("{}/{}record.mpd", endpoint, dir);
                 let has_video = video.is_some();
+                let mut builder = services::Fs::default();
+                builder = builder.root(".");
+                let op = Operator::new(builder)?.finish();
+                op.create_dir(&dir).await?;
                 tokio::spawn(Self::do_record(sdp, video, audio, output.clone()));
                 // Keyframe
                 if has_video {
-                    let peer_weak = Arc::downgrade(&publish.peer);
-                    tokio::spawn(async move {
-                        let check_path = format!("{}/init-stream0.m4s", dir);
-                        while !fs::exists(check_path.clone()).unwrap_or(false) {
-                            match peer_weak.upgrade() {
-                                Some(pc) => {
-                                    let _ = pc
-                                        .write_rtcp(&[RtcpMessage::PictureLossIndication
-                                            .to_rtcp_packet(video_ssrc.unwrap())])
-                                        .await;
-                                }
-                                None => {
-                                    break;
-                                }
-                            }
-                            sleep(Duration::from_millis(500)).await;
-                        }
-                    });
+                    let mut builder = services::Fs::default();
+                    builder = builder.root(&dir);
+                    let op = Operator::new(builder)?.finish();
+                    let pc = Arc::downgrade(&publish.peer);
+                    tokio::spawn(Self::record_pli(op, pc, video_ssrc.unwrap()));
                 }
                 Ok(())
             }
             None => Err(AppError::throw("publish is none")),
+        }
+    }
+
+    // Keyframe
+    async fn record_pli(op: Operator, pc: Weak<RTCPeerConnection>, ssrc: u32) {
+        while let Ok(list) = op.list("").await {
+            let list = list.iter().filter(|e| e.path() != "/").count();
+            if list > 0 {
+                break;
+            }
+            match pc.upgrade() {
+                Some(pc) => {
+                    let _ = pc
+                        .write_rtcp(&[RtcpMessage::PictureLossIndication.to_rtcp_packet(ssrc)])
+                        .await;
+                }
+                None => {
+                    break;
+                }
+            }
+            sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -721,13 +732,15 @@ impl PeerForwardInternal {
         let mut args = vec![
             "ffmpeg",
             "-protocol_whitelist",
-            "rtp,file,udp,pipe,http",
+            "rtp,udp,file,pipe,http",
             "-f",
             "sdp",
             "-i",
             "pipe:0",
             "-f",
             "dash",
+            "-chunked_post",
+            "0",
             &output,
         ];
         info!("record cli : {:?}", args);

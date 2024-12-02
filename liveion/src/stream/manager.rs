@@ -459,12 +459,12 @@ impl Manager {
         Ok(recv)
     }
 
-    pub async fn record(&self, stream: String) -> Result<()> {
+    pub async fn record(&self, stream: String, endpoint: String) -> Result<()> {
         let streams = self.stream_map.read().await;
         let forward = streams.get(&stream).cloned();
         drop(streams);
         if let Some(forward) = forward {
-            forward.record().await
+            forward.record(endpoint).await
         } else {
             Err(AppError::stream_not_found("stream not exists"))
         }

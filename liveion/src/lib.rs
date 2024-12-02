@@ -2,6 +2,7 @@ use std::{future::Future, sync::Arc};
 
 use axum::{extract::Request, middleware, response::IntoResponse, routing::get, Router};
 use http::{StatusCode, Uri};
+use route::record;
 use tokio::net::TcpListener;
 use tower_http::{
     cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
@@ -55,6 +56,7 @@ where
                 .layer(middleware::from_fn(access_middleware))
                 .layer(auth_layer),
         )
+        .merge(record::route())
         .route(api::path::METRICS, get(metrics))
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {

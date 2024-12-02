@@ -222,8 +222,8 @@ impl PeerForward {
         }
     }
 
-    pub async fn record(&self) -> Result<()> {
-        self.internal.record().await
+    pub async fn record(&self, endpoint: String) -> Result<()> {
+        self.internal.record(endpoint).await
     }
 }
 

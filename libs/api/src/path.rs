@@ -41,3 +41,7 @@ pub fn strategy() -> String {
 pub fn record(stream: &str) -> String {
     format!("/api/record/{}", stream)
 }
+
+pub fn record_file(stream: &str, dir: &str, file: &str) -> String {
+    format!("/api/record/{}/{}/{}", stream, dir, file)
+}

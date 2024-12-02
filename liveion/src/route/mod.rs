@@ -4,6 +4,7 @@ use crate::config::{Config, IceServer};
 use crate::stream::manager::Manager;
 
 pub mod admin;
+pub mod record;
 pub mod session;
 pub mod strategy;
 pub mod stream;
