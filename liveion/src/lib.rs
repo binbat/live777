@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tower_http::{
     cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
 };
-use tracing::{error, info_span, Level};
+use tracing::{error, info_span, warn, Level};
 
 use auth::{access::access_middleware, ManyValidate};
 use error::AppError;
@@ -84,30 +84,37 @@ where
 
     #[cfg(feature = "net4mqtt")]
     {
-        if let Some(c) = cfg.net4mqtt {
+        if let Some(mut c) = cfg.net4mqtt {
+            c.validate();
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
-                        net4mqtt::proxy::agent(
-                            &c.mqtt_url,
-                            &cfg.http.listen.to_string(),
-                            &c.alias.clone(),
-                            Some(net4mqtt::proxy::VDataConfig {
-                                online: Some(
-                                    serde_json::json!({
-                                        "alias": c.alias,
-                                    })
-                                    .to_string()
-                                    .bytes()
-                                    .collect(),
-                                ),
-                                offline: Some("{}".bytes().collect()),
-                                ..Default::default()
-                            }),
-                        )
-                        .await
-                        .unwrap()
+                        loop {
+                            match net4mqtt::proxy::agent(
+                                &c.mqtt_url,
+                                &cfg.http.listen.to_string(),
+                                &c.alias.clone(),
+                                Some(net4mqtt::proxy::VDataConfig {
+                                    online: Some(
+                                        serde_json::json!({
+                                            "alias": c.alias,
+                                        })
+                                        .to_string()
+                                        .bytes()
+                                        .collect(),
+                                    ),
+                                    offline: Some("{}".bytes().collect()),
+                                    ..Default::default()
+                                }),
+                            )
+                            .await
+                            {
+                                Ok(_) => warn!("net4mqtt service is end, restart net4mqtt service"),
+                                Err(e) => error!("mqtt4mqtt error: {:?}", e),
+                            }
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        }
                     });
             });
         }

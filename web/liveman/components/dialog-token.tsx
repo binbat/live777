@@ -1,5 +1,6 @@
 import { useState, useRef, useImperativeHandle, useEffect } from 'preact/hooks';
 import { forwardRef } from 'preact/compat';
+import { Button, Checkbox, Input, Modal } from 'react-daisyui';
 
 import { createStreamToken } from '../api';
 
@@ -8,12 +9,6 @@ enum StreamTokenPermission {
     Pub = 'publish',
     Admin = 'admin'
 }
-
-const AllPermissions = [
-    StreamTokenPermission.Sub,
-    StreamTokenPermission.Pub,
-    StreamTokenPermission.Admin
-];
 
 export interface IStreamTokenDialog {
     show(id: string): void
@@ -62,43 +57,49 @@ export const StreamTokenDialog = forwardRef<IStreamTokenDialog>((_, ref) => {
     };
 
     return (
-        <dialog class="min-w-96" ref={refDialog} onClose={onClose}>
-            <h3>Create Token for stream {streamId}</h3>
-            <p>
-                <label>
-                    <span>Duration: </span>
-                    <br />
-                    <input type="number" value={duration} onInput={e => setDuration(e.currentTarget.valueAsNumber)} />
-                    <span>(seconds)</span>
-                </label>
-            </p>
-            <p>
-                <span>Permissions:</span>
-                <br />
-                {AllPermissions.map(p => (
-                    <label>
+        <Modal ref={refDialog} className="max-w-md" onClose={onClose}>
+            <Modal.Header className="mb-2">
+                <h3 className="font-bold">Create Token for stream {streamId}</h3>
+            </Modal.Header>
+            <Modal.Body>
+                <label className="form-control">
+                    <label className="label px-0">Duration:</label>
+                    <label class="input input-bordered flex items-center gap-2">
                         <input
-                            type="checkbox" name={p} checked={permissions[p]}
-                            onChange={e => setPermissions({ ...permissions, [p]: e.currentTarget.checked })}
+                            className="grow"
+                            type="number"
+                            value={duration} onInput={e => setDuration(e.currentTarget.valueAsNumber)}
                         />
-                        <span>{p}</span>
-                        <br />
+                        <span>Seconds</span>
                     </label>
-                ))}
-            </p>
-            <form method="dialog">
-                <button>Cancel</button>
-                <button onClick={onConfirm}>Confirm</button>
-            </form>
+                </label>
+                <label className="form-control mt-4">
+                    <label className="label px-0 pb-0">Permissions:</label>
+                    {Object.values(StreamTokenPermission).map(p =>
+                        <label class="label justify-start gap-2">
+                            <Checkbox
+                                size="xs"
+                                name={p}
+                                checked={permissions[p]}
+                                onChange={e => setPermissions({ ...permissions, [p]: e.currentTarget.checked })}
+                            />
+                            <span>{p}</span>
+                        </label>
+                    )}
+                </label>
+            </Modal.Body>
+            <Modal.Actions>
+                <form method="dialog" className="flex gap-2">
+                    <Button onClick={onConfirm}>Confirm</Button>
+                    <Button>Cancel</Button>
+                </form>
+            </Modal.Actions>
             {token ? (
-                <>
-                    <hr />
-                    <label class="flex flex-col">
-                        <span>Token:</span>
-                        <input type="text" class="grow" value={token} ref={refTokenResult} />
-                    </label>
-                </>
+                <label className="form-control">
+                    <label className="label px-0">Token:</label>
+                    <Input borderOffset type="text" value={token} ref={refTokenResult} />
+                </label>
             ) : null}
-        </dialog>
+        </Modal>
     );
 });

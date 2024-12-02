@@ -406,10 +406,7 @@ pub async fn agent(
                             }
                         }
                     },
-                    Err(e) => {
-                        error!("agent mqtt error: {:?}", e);
-                        time::sleep(time::Duration::from_secs(1)).await;
-                    }
+                    Err(e) => return Err(anyhow!("agent mqtt error: {:?}", e))
                 }
             }
             else => { error!("vagent proxy error"); }
@@ -508,10 +505,7 @@ pub async fn local_ports_tcp(
                             }
                         }
                     },
-                    Err(e) => {
-                        error!("local mqtt error: {:?}", e);
-                        time::sleep(time::Duration::from_secs(1)).await;
-                    }
+                    Err(e) => return Err(anyhow!("local mqtt error: {:?}", e))
                 }
 
             }
@@ -580,10 +574,7 @@ pub async fn local_ports_udp(
                             }
                         }
                     },
-                    Err(e) => {
-                        error!("local mqtt error: {:?}", e);
-                        time::sleep(time::Duration::from_secs(1)).await;
-                    }
+                    Err(e) => return Err(anyhow!("local mqtt error: {:?}", e))
                 }
 
             }
@@ -716,10 +707,7 @@ pub async fn local_socks(
                             }
                         }
                     },
-                    Err(e) => {
-                        error!("local mqtt error: {:?}", e);
-                        time::sleep(time::Duration::from_secs(1)).await;
-                    }
+                    Err(e) => return Err(anyhow!("local mqtt error: {:?}", e))
                 }
 
             }

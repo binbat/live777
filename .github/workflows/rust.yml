@@ -1,16 +1,12 @@
-name: Rust
+name: CI
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+on: [ push, pull_request ]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -18,8 +14,38 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Setup ffmpeg
+        uses: AnimMouse/setup-ffmpeg@v1
+      - name: Show version information
+        run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --all --lcov --output-path lcov.info
+      - name: Upload coverage to codecov.io
+        uses: codecov/codecov-action@v4
+        with:
+          file: lcov.info
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  e2e:
+    needs: [test, check_format, check_clippy]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest, windows-latest, ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Setup Nodejs
+        uses: actions/setup-node@v4
         with:
           node-version: latest
       - name: Install npm dependencies
@@ -34,8 +60,6 @@ jobs:
         run: |
           ffmpeg -version
           ffprobe -version
-      - name: Run tests
-        run: cargo test --all --verbose
       - name: Run e2e tests
         if: ${{ matrix.os != 'windows-latest' }}
         run: npm run e2e:cluster
@@ -43,7 +67,8 @@ jobs:
   check_format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
       - name: Show version information
         run: |
           cargo --version
@@ -55,7 +80,8 @@ jobs:
   check_clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: latest

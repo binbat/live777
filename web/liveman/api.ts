@@ -24,7 +24,7 @@ export interface Node {
     alias: string;
     url: string;
     duration: string;
-    strategy: Record<string, string | number | boolean>,
+    strategy?: Record<string, string | number | boolean>,
     status: 'running' | 'stopped';
 }
 

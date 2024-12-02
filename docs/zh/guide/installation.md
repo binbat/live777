@@ -29,6 +29,30 @@ cargo install --git http://github.com/binbat/live777 live777 --bin=whipinto
 cargo install --git http://github.com/binbat/live777 live777 --bin=whepfrom
 ```
 
+## Debian / Ubuntu
+
+```bash
+wget https://github.com/binbat/live777/releases/download/latest/live777_<X>.<Y>.<Z>_amd64.deb
+dpkg -I live777_<X>.<Y>.<Z>_amd64.deb
+systemctl start live777
+```
+
+## Centos / Fedora
+
+```bash
+wget https://github.com/binbat/live777/releases/download/latest/live777-<X>.<Y>.<Z>.x86_64.rpm
+rpm -i live777-<X>.<Y>.<Z>.x86_64.rpm
+systemctl start live777
+```
+
+## Archlinux
+
+```bash
+wget https://github.com/binbat/live777/releases/download/latest/live777-<X>.<Y>.<Z>-x86_64.pkg.tar.zst
+pacman -U live777-<X>.<Y>.<Z>-x86_64.pkg.tar.zst
+systemctl start live777
+```
+
 ## Windows
 
 **Winget**

@@ -1,0 +1,24 @@
+name: "live777"
+arch: "${NFPM_ARCH}"
+platform: "linux"
+version: "${NFPM_VERSION}"
+release: "${NFPM_RELEASE}"
+prerelease: "${NFPM_PRERELEASE}"
+section: "utility"
+priority: "optional"
+maintainer: "BinBat Ltd <hey@binbat.com>"
+description: |
+  A very simple, high performance, edge WebRTC SFU.
+  Real-time video streaming for the `WHIP`/`WHEP` as first protocol.
+vendor: "BinBat"
+homepage: "http://live777.binbat.com"
+license: "MPL-2.0"
+contents:
+  - src: ./target/${NFPM_TARGET}/release/live777
+    dst: /usr/bin/live777
+  - src: ./conf/live777.service
+    dst: /usr/lib/systemd/system/live777.service
+  - src: ./conf/live777.toml
+    dst: /etc/live777/live777.toml
+    type: config
+

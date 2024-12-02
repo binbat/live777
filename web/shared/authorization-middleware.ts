@@ -4,15 +4,15 @@ const Authorization = 'Authorization';
 
 export type UnauthorizedCallback = () => void;
 
-interface AuthorizationContext {
-    token: string | null;
-    callbacks: UnauthorizedCallback[];
-}
-
 export interface AuthorizationCallbacks {
     setAuthorization: (token: string) => void;
     addUnauthorizedCallback: (cb: UnauthorizedCallback) => void;
     removeUnauthorizedCallback: (cb: UnauthorizedCallback) => boolean;
+}
+
+interface AuthorizationContext {
+    token: string | null;
+    callbacks: UnauthorizedCallback[];
 }
 
 type AuthorizationMiddleware = ConfiguredMiddleware & AuthorizationCallbacks;
@@ -27,7 +27,7 @@ export function makeAuthorizationMiddleware(): AuthorizationMiddleware {
             if (typeof opts.headers !== 'object') {
                 opts.headers = { [Authorization]: ctx.token };
             } else {
-                opts.headers[Authorization] = ctx.token;
+                Reflect.set(opts.headers, Authorization, ctx.token);
             }
         }
         const res = await next(url, opts);

@@ -1,5 +1,5 @@
 import { TargetedEvent } from 'preact/compat';
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
 declare module 'preact' {
     // preact uses namespace JSXInternal and exports it as JSX
@@ -47,12 +47,24 @@ function useUrlParamsInput(key: string) {
     return { value, onInput };
 }
 
-const WhipLayerSelect = [
+const AudioCodecOptions = [
+    { value: '', text: 'default' },
+    { value: 'opus/48000', text: 'OPUS' },
+    { value: 'g722/8000', text: 'G722' },
+];
+const VideoCodecOptions = [
+    { value: '', text: 'default' },
+    { value: 'av1/90000', text: 'AV1' },
+    { value: 'vp9/90000', text: 'VP9' },
+    { value: 'vp8/90000', text: 'VP8' },
+    { value: 'h264/90000', text: 'H264' },
+];
+const WhipLayerOptions = [
     { value: 'f', text: 'Base' },
     { value: 'h', text: 'Base + 1/2' },
     { value: 'q', text: 'Base + 1/2 + 1/4' },
 ];
-const WhepLayerSelect = [
+const WhepLayerOptions = [
     { value: '', text: 'AUTO' },
     { value: 'q', text: 'LOW' },
     { value: 'h', text: 'MEDIUM' },
@@ -88,7 +100,7 @@ export default function DebuggerCompat() {
     const [audioDevices, setAudioDevices] = useState([NoneDevice]);
     const [videoDevices, setVideoDevices] = useState([NoneDevice]);
 
-    const refreshDevice = useCallback(async () => {
+    const refreshDevice = async () => {
         try {
             // to obtain non-empty device label, there needs to be an active media stream or persistent permission
             // https://developer.mozilla.org/en-US/docs/Web/API/MediaDeviceInfo/label#value
@@ -107,9 +119,7 @@ export default function DebuggerCompat() {
             console.error('refreshDevice failed:', e);
         }
         setRefreshDisabled(true);
-    }, []);
-    const startWhip = useCallback(() => window.startWhip(), []);
-    const startWhep = useCallback(() => window.startWhep(), []);
+    };
 
     return (
         <>
@@ -117,7 +127,7 @@ export default function DebuggerCompat() {
                 <legend>Common</legend>
                 <section style="display: flex;justify-content: space-evenly;flex-wrap: wrap;">
                     <div>Stream ID: <input id="id" type="text" {...streamIdInput} /></div>
-                    <div>Bearer Token: <input id="token" type="text"  {...idBearerTokenInput} /></div>
+                    <div>Bearer Token: <input id="token" type="text" {...idBearerTokenInput} /></div>
                 </section>
             </fieldset>
 
@@ -141,30 +151,24 @@ export default function DebuggerCompat() {
 
                         <section>
                             Audio Codec: <select id="whip-audio-codec">
-                                <option value="" selected>default</option>
-                                <option value="opus/48000">OPUS</option>
-                                <option value="g722/8000">G722</option>
+                                {AudioCodecOptions.map(o => <option value={o.value}>{o.text}</option>)}
                             </select>
                             Video Codec: <select id="whip-video-codec">
-                                <option value="" selected>default</option>
-                                <option value="av1/90000">AV1</option>
-                                <option value="vp9/90000">VP9</option>
-                                <option value="vp8/90000">VP8</option>
-                                <option value="h264/90000">H264</option>
+                                {VideoCodecOptions.map(o => <option value={o.value}>{o.text}</option>)}
                             </select>
                         </section>
                         <section>
                             <video-size-select id="whip-video-size"></video-size-select>
                         </section>
                         <section>SVC Layer: <select id="whip-layer-select">
-                            {WhipLayerSelect.map(l => <option value={l.value}>{l.text}</option>)}
+                            {WhipLayerOptions.map(o => <option value={o.value}>{o.text}</option>)}
                         </select>
                         </section>
                         <section>
                             <input type="checkbox" id="whip-pseudo-audio" />Pseudo Audio Track
                         </section>
                         <section>
-                            <button onClick={startWhip}>Start</button>
+                            <button onClick={window.startWhip}>Start</button>
                             <button id="whip-button-stop">Stop</button>
                         </section>
 
@@ -184,7 +188,7 @@ export default function DebuggerCompat() {
                     <legend>WHEP</legend>
                     <center>
                         <section>SVC Layer: <select disabled id="whep-layer-select">
-                            {WhepLayerSelect.map(l => <option value={l.value}>{l.text}</option>)}
+                            {WhepLayerOptions.map(o => <option value={o.value}>{o.text}</option>)}
                         </select>
                         </section>
                         <section>
@@ -192,7 +196,7 @@ export default function DebuggerCompat() {
                             <button id="whep-button-disable-video">Disable Video</button>
                         </section>
                         <section>
-                            <button onClick={startWhep}>Start</button>
+                            <button onClick={window.startWhep}>Start</button>
                             <button id="whep-button-stop">Stop</button>
                         </section>
 

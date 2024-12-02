@@ -1,21 +1,16 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 
-import { type UnauthorizedCallback   } from '../authorization-middleware';
+import { type AuthorizationCallbacks } from '../authorization-middleware';
 
-interface AuthorizationCallbacks {
-    addUnauthorizedCallback: (cb: UnauthorizedCallback) => void;
-    removeUnauthorizedCallback: (cb: UnauthorizedCallback) => boolean;
-}
-
-export function useNeedAuthorization(auth: AuthorizationCallbacks) {
+export function useNeedAuthorization(auth: Omit<AuthorizationCallbacks, 'setAuthorization'>) {
     const needsAuthorizaiton = useState(false);
-    const unauthorizedCallback = useCallback(() => {
+    const cb = useCallback(() => {
         needsAuthorizaiton[1](true);
     }, []);
 
     useEffect(() => {
-        auth.addUnauthorizedCallback(unauthorizedCallback);
-        return () => auth.removeUnauthorizedCallback(unauthorizedCallback);
+        auth.addUnauthorizedCallback(cb);
+        return () => auth.removeUnauthorizedCallback(cb);
     }, []);
 
     return needsAuthorizaiton;

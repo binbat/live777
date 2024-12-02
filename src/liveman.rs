@@ -5,7 +5,7 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(version)]
+#[command(name = "liveman", version)]
 struct Args {
     /// Set config file path
     #[arg(short, long)]

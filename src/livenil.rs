@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 const NAME: &str = "liveman";
 
 #[derive(Parser)]
-#[command(version)]
+#[command(name = "livenil", version)]
 struct Args {
     /// Set config file path
     #[arg(short, long)]
