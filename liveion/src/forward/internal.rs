@@ -739,8 +739,8 @@ impl PeerForwardInternal {
             "pipe:0",
             "-f",
             "dash",
-            "-chunked_post",
-            "0",
+            "-method",
+            "PUT",
             &output,
         ];
         info!("record cli : {:?}", args);
