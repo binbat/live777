@@ -1,13 +1,52 @@
 import { defineConfig } from 'vitepress';
-import { shared } from './shared';
+
 import { en } from './en';
 import { zh } from './zh';
 
-// https://vitepress.dev/reference/site-config
+/**
+ * @see https://vitepress.dev/reference/site-config
+ */
 export default defineConfig({
-    ...shared,
+    title: 'Live777',
+
+    lastUpdated: true,
+    cleanUrls: true,
+    metaChunk: true,
+
+    head: [
+        ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
+        ['meta', { name: 'theme-color', content: '#5f67ee' }],
+        ['meta', { property: 'og:type', content: 'website' }],
+        ['meta', { property: 'og:locale', content: 'en' }],
+        ['meta', { property: 'og:title', content: 'Live777 | A very simple, high performance, edge WebRTC SFU' }],
+        ['meta', { property: 'og:site_name', content: 'VitePress' }],
+        ['meta', { property: 'og:image', content: 'https://live777.binbat.com/logo.svg' }],
+        ['meta', { property: 'og:url', content: 'https://live777.binbat.com/' }],
+    ],
+
+    themeConfig: {
+        logo: { src: '/logo.svg', width: 24, height: 24 },
+
+        socialLinks: [
+            { icon: 'github', link: 'https://github.com/binbat/live777' }
+        ],
+
+        footer: {
+            message: 'Released under the MPL-2.0 License.',
+            copyright: 'Copyright © 2023-present BinBat LTD'
+        }
+    },
+
     locales: {
-        root: { label: 'English', ...en },
-        zh: { label: '简体中文', ...zh },
+        root: en,
+        zh,
+    },
+
+    vite: {
+        css: {
+            postcss: {
+                // don't need postcss in docs
+            }
+        }
     }
 });
