@@ -1,19 +1,19 @@
-/// Publish:
-/// TOPIC: <prefix>/<agent id>/<local id>/<label>/<protocol>/<src(address:port)>/<dst(address:port)>
-///
-/// Pub topic example: prefix/agent-0/local-0/i/udp/127.0.0.1:4444/127.0.0.1:4433
-/// Pub topic example: prefix/agent-0/local-0/o/udp/127.0.0.1:4444/127.0.0.1:4433
-///
-/// Subscribe:
-/// TOPIC: <prefix>/< + | agent id>/< + | local id>/<label>/#
-///
-/// Sub topic example: prefix/+/local-0/i/#
-/// Sub topic example: prefix/agent-0/+/o/#
-///
-/// About MQTT online status (Option)
-///
-/// TOPIC: prefix/agent-0/local-0/v/-
-/// Retain: true
+//! Publish:
+//! TOPIC: <prefix>/<agent id>/<local id>/<label>/<protocol>/<src(address:port)>/<dst(address:port)>
+//!
+//! Pub topic example: prefix/agent-0/local-0/i/udp/127.0.0.1:4444/127.0.0.1:4433
+//! Pub topic example: prefix/agent-0/local-0/o/udp/127.0.0.1:4444/127.0.0.1:4433
+//!
+//! Subscribe:
+//! TOPIC: <prefix>/< + | agent id>/< + | local id>/<label>/#
+//!
+//! Sub topic example: prefix/+/local-0/i/#
+//! Sub topic example: prefix/agent-0/+/o/#
+//!
+//! About MQTT online status (Option)
+//!
+//! TOPIC: prefix/agent-0/local-0/v/-
+//! Retain: true
 
 pub const ANY: &str = "+";
 pub const ALL: &str = "#";
