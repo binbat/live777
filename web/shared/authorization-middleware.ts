@@ -1,4 +1,4 @@
-import { ConfiguredMiddleware } from 'wretch';
+import { type ConfiguredMiddleware } from 'wretch';
 
 const Authorization = 'Authorization';
 

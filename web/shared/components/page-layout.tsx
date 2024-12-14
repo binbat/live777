@@ -1,9 +1,9 @@
-import { PropsWithChildren } from 'preact/compat';
+import { type PropsWithChildren } from 'preact/compat';
 import { PageHeader } from './page-header';
 
-import { ITokenContext, TokenContext } from '../context';
+import { type ITokenContext, TokenContext } from '../context';
 
-export type PageLayoutProps = ITokenContext & PropsWithChildren;
+export type PageLayoutProps = PropsWithChildren<ITokenContext>;
 
 export function PageLayout({ token, children }: PageLayoutProps) {
     return (
