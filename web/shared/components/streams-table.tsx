@@ -207,6 +207,7 @@ export function StreamsTable(props: StreamTableProps) {
                 ref={refClients}
                 id={selectedStreamId}
                 sessions={streams.data.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []}
+                onClientKicked={streams.updateData}
             />
 
             {props.showCascade ? (

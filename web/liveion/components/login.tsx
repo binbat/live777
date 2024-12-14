@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { TargetedEvent } from 'preact/compat';
-import { Alert, Button, Modal } from 'react-daisyui';
+import { Alert, Button, Loading, Modal } from 'react-daisyui';
 import { WretchError } from 'wretch/resolver';
 
 import * as api from '@/shared/api';

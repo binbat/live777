@@ -8,6 +8,7 @@ import { formatTime } from '../utils';
 interface Props {
     id: string
     sessions: Session[]
+    onClientKicked: () => void
 }
 
 export interface IClientsDialog {
@@ -24,6 +25,11 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
             }
         };
     });
+
+    const handleKickClient = async (streamId: string, clientId: string) => {
+        await deleteSession(streamId, clientId);
+        props.onClientKicked();
+    };
 
     return (
         <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]">
@@ -44,7 +50,7 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                                 <span>{c.id + (c.reforward ? '(reforward)' : '')}</span>
                                 <span>{c.state}</span>
                                 <span>{formatTime(c.createdAt)}</span>
-                                <Button size="sm" color="error" onClick={() => deleteSession(props.id, c.id)}>Kick</Button>
+                                <Button size="sm" color="error" onClick={() => handleKickClient(props.id, c.id)}>Kick</Button>
                             </Table.Row>
                         ): <tr><td colspan={4} className="text-center">N/A</td></tr>}
                     </Table.Body>
