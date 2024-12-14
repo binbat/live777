@@ -5,12 +5,15 @@ use axum::{
     response::Response,
     Json,
 };
+use axum_extra::extract::Query;
 use http::{header, StatusCode};
 use tracing::warn;
 
 use api::response::Stream;
 
 use crate::{error::AppError, result::Result, AppState};
+
+use super::proxy::QueryExtract;
 
 fn get_map_server_stream(map_info: HashMap<String, Vec<Stream>>) -> HashMap<String, Stream> {
     let mut map_server_stream = HashMap::new();
@@ -22,13 +25,19 @@ fn get_map_server_stream(map_info: HashMap<String, Vec<Stream>>) -> HashMap<Stri
     map_server_stream
 }
 
-pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<api::response::Stream>>> {
+pub async fn index(
+    State(mut state): State<AppState>,
+    Query(query_extract): Query<QueryExtract>,
+) -> Result<Json<Vec<api::response::Stream>>> {
     let map_server_stream = get_map_server_stream(state.storage.info_raw_all().await.unwrap());
 
     let streams = state.storage.stream_all().await;
     let mut result_streams: HashMap<String, Stream> = HashMap::new();
     for (stream_id, servers) in streams.into_iter() {
         for server_alias in servers.iter() {
+            if !query_extract.nodes.is_empty() && !query_extract.nodes.contains(server_alias) {
+                continue;
+            }
             let alias = format!("{}:{}", server_alias, stream_id);
             match map_server_stream.get(&alias) {
                 Some(s) => {
