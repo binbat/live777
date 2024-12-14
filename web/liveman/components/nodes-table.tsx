@@ -1,6 +1,9 @@
-import { Button, Checkbox, Dropdown, Link, Table } from 'react-daisyui';
+import { useContext, useEffect } from 'preact/hooks';
+
+import { Badge, Button, Checkbox, Dropdown, Link, Table } from 'react-daisyui';
 import { ArrowPathIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
 
+import { TokenContext } from '@/shared/context';
 import { useRefreshTimer } from '@/shared/hooks/use-refresh-timer';
 
 import { type Node, getNodes } from '../api';
@@ -12,11 +15,19 @@ async function getNodesSorted() {
 
 export function NodesTable() {
     const nodes = useRefreshTimer([], getNodesSorted);
+    const tokenContext = useContext(TokenContext);
+
+    useEffect(() => {
+        if (tokenContext.token.length > 0) {
+            nodes.updateData();
+        }
+    }, [tokenContext.token]);
 
     return (
         <>
             <div className="flex items-center gap-2 px-4 h-12">
-                <span className="font-bold text-lg mr-auto">Nodes (total: {nodes.data.length})</span>
+                <span className="font-bold text-lg">Nodes</span>
+                <Badge color="ghost" className="font-bold mr-auto">{nodes.data.length}</Badge>
                 <Button
                     size="sm"
                     color="ghost"

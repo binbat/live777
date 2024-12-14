@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'preact/hooks';
 import { Button } from 'react-daisyui';
 
-import type { Stream } from '@/shared/api';
+import { type Stream } from '@/shared/api';
 import { useNeedAuthorization } from '@/shared/hooks/use-need-authorization';
 import { StreamsTable } from '@/shared/components/streams-table';
 import { PageLayout } from '@/shared/components/page-layout';

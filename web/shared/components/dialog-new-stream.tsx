@@ -6,6 +6,7 @@ import { createStream } from '../api';
 
 interface Props {
     onNewStreamId(id: string): void
+    onStreamCreated(): void
 }
 
 export interface INewStreamDialog {
@@ -29,9 +30,10 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
         setStreamId(e.currentTarget.value);
     };
 
-    const onConfirmNewStreamId = (_e: Event) => {
+    const onConfirmNewStreamId = async (_e: Event) => {
         props.onNewStreamId(streamId);
-        createStream(streamId);
+        await createStream(streamId);
+        props.onStreamCreated();
     };
 
     return (
