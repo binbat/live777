@@ -52,24 +52,23 @@ impl RtspSession {
     }
 
     fn generate_digest_response(&self, realm: &str, nonce: &str, method: &str) -> String {
-        let ha1 = format!("{:x}", {
+        format!("{:x}", {
             let mut hasher = Md5::new();
             hasher.update(format!(
                 "{}:{}:{}",
-                self.auth_params.username, realm, self.auth_params.password
+                format_args!("{:x}", {
+                    let hasher = Md5::new_with_prefix(format!(
+                        "{}:{}:{}",
+                        self.auth_params.username, realm, self.auth_params.password
+                    ));
+                    hasher.finalize()
+                }),
+                nonce,
+                format_args!("{:x}", {
+                    let hasher = Md5::new_with_prefix(format!("{}:{}", method, self.uri));
+                    hasher.finalize()
+                })
             ));
-            hasher.finalize()
-        });
-
-        let ha2 = format!("{:x}", {
-            let mut hasher = Md5::new();
-            hasher.update(format!("{}:{}", method, self.uri));
-            hasher.finalize()
-        });
-
-        format!("{:x}", {
-            let mut hasher = Md5::new();
-            hasher.update(format!("{}:{}:{}", ha1, nonce, ha2));
             hasher.finalize()
         })
     }
