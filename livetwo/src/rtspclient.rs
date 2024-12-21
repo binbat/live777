@@ -454,10 +454,7 @@ fn generate_digest_response(
         hasher.update(format!(
             "{}:{}:{}",
             format_args!("{:x}", {
-                let hasher = Md5::new_with_prefix(format!(
-                    "{}:{}:{}",
-                    username, realm, password
-                ));
+                let hasher = Md5::new_with_prefix(format!("{}:{}:{}", username, realm, password));
                 hasher.finalize()
             }),
             nonce,
