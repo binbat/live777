@@ -52,25 +52,14 @@ impl RtspSession {
     }
 
     fn generate_digest_response(&self, realm: &str, nonce: &str, method: &str) -> String {
-        format!("{:x}", {
-            let mut hasher = Md5::new();
-            hasher.update(format!(
-                "{}:{}:{}",
-                format_args!("{:x}", {
-                    let hasher = Md5::new_with_prefix(format!(
-                        "{}:{}:{}",
-                        self.auth_params.username, realm, self.auth_params.password
-                    ));
-                    hasher.finalize()
-                }),
-                nonce,
-                format_args!("{:x}", {
-                    let hasher = Md5::new_with_prefix(format!("{}:{}", method, self.uri));
-                    hasher.finalize()
-                })
-            ));
-            hasher.finalize()
-        })
+        generate_digest_response(
+            &self.auth_params.username,
+            &self.auth_params.password,
+            &self.uri,
+            realm,
+            nonce,
+            method,
+        )
     }
 
     fn generate_authorization_header(&self, realm: &str, nonce: &str, method: &Method) -> String {
@@ -450,4 +439,54 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, u16, Codec, Code
     let audio_codec = codec_from_str(&audio_codec)?;
 
     Ok((rtp_port, rtp_audio_port, video_codec, audio_codec))
+}
+
+fn generate_digest_response(
+    username: &str,
+    password: &str,
+    uri: &str,
+    realm: &str,
+    nonce: &str,
+    method: &str,
+) -> String {
+    format!("{:x}", {
+        let mut hasher = Md5::new();
+        hasher.update(format!(
+            "{}:{}:{}",
+            format_args!("{:x}", {
+                let hasher = Md5::new_with_prefix(format!(
+                    "{}:{}:{}",
+                    username, realm, password
+                ));
+                hasher.finalize()
+            }),
+            nonce,
+            format_args!("{:x}", {
+                let hasher = Md5::new_with_prefix(format!("{}:{}", method, uri));
+                hasher.finalize()
+            })
+        ));
+        hasher.finalize()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_digest_response() {
+        let username = "username";
+        let password = "password";
+        let uri = "/resource";
+        let realm = "Realm";
+        let nonce = "1234567890";
+        let method = "GET";
+
+        let expected_response = "5a8a58beeb78f36ed2c0f0d474288f3d";
+
+        let response = generate_digest_response(username, password, uri, realm, nonce, method);
+
+        assert_eq!(response, expected_response);
+    }
 }
