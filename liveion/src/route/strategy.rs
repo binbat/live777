@@ -4,7 +4,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 
 pub fn route() -> Router<AppState> {
-    Router::new().route(&api::path::strategy(), get(show))
+    Router::new().route(api::path::strategy(), get(show))
 }
 
 async fn show(
