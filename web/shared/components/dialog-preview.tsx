@@ -10,6 +10,7 @@ import { useLogger } from '../hooks/use-logger';
 import { QRCodeStreamDecoder } from '../qrcode-stream';
 
 interface Props {
+    getWhepUrl?: (streamId: string) => string;
     onStop(): void
 }
 
@@ -119,7 +120,6 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         });
         refPeerConnection.current = pc;
         const whep = new WHEPClient();
-        const url = `${location.origin}/whep/${streamId}`;
         whep.onOffer = sdp => {
             logger.log('http offer sent');
             return sdp;
@@ -130,6 +130,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         };
         refWhepClient.current = whep;
         try {
+            const url = props.getWhepUrl?.(streamId) ?? `${location.origin}/whep/${streamId}`;
             await whep.view(pc, url, tokenContext.token);
         } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
             setConnState('Error');

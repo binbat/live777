@@ -9,6 +9,7 @@ import { useLogger } from '../hooks/use-logger';
 import { QRCodeStream } from '../qrcode-stream';
 
 interface Props {
+    getWhipUrl?: (streamId: string) => string;
     onStop(): void
 }
 
@@ -68,7 +69,6 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         });
         const whip = new WHIPClient();
         refWhipClient.current = whip;
-        const url = `${location.origin}/whip/${streamId}`;
         whip.onOffer = sdp => {
             logger.log('http offer sent');
             return sdp;
@@ -78,6 +78,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             return sdp;
         };
         try {
+            const url = props.getWhipUrl?.(streamId) ?? `${location.origin}/whep/${streamId}`;
             await whip.publish(pc, url, tokenContext.token);
         } catch (e: any) {  // eslint-disable-line @typescript-eslint/no-explicit-any
             setConnState('Error');

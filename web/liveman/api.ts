@@ -1,11 +1,12 @@
 import wretch from 'wretch';
+import QueryStringAddon from 'wretch/addons/queryString';
 
-import type { Stream } from '../shared/api';
+import { type Stream } from '../shared/api';
 import { makeAuthorizationMiddleware } from '../shared/authorization-middleware';
 
 const authMiddleware = makeAuthorizationMiddleware();
 
-const w = wretch().middlewares([authMiddleware]);
+const w = wretch().addon(QueryStringAddon).middlewares([authMiddleware]);
 
 export const setAuthToken = authMiddleware.setAuthorization;
 export const addUnauthorizedCallback = authMiddleware.addUnauthorizedCallback;
@@ -30,6 +31,12 @@ export interface Node {
 
 export function getNodes() {
     return w.url('/api/nodes/').get().json<Node[]>();
+}
+
+export { type Stream };
+
+export function getStreams(nodes?: string[]) {
+    return w.url('/api/streams/').query({ nodes }).get().json<Stream[]>();
 }
 
 export interface StreamDetail {

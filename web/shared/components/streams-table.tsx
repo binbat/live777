@@ -21,12 +21,15 @@ async function getStreamsSorted() {
 }
 
 export interface StreamTableProps {
+    getStreams?: () => Promise<Stream[]>;
+    getWhepUrl?: (streamId: string) => string;
+    getWhipUrl?: (streamId: string) => string;
     showCascade?: boolean;
     renderExtraActions?: (s: Stream) => ReactNode;
 }
 
 export function StreamsTable(props: StreamTableProps) {
-    const streams = useRefreshTimer([], getStreamsSorted);
+    const streams = useRefreshTimer([], props.getStreams ?? getStreamsSorted);
     const [selectedStreamId, setSelectedStreamId] = useState('');
     const refCascadePull = useRef<ICascadeDialog>(null);
     const refCascadePush = useRef<ICascadeDialog>(null);
@@ -227,6 +230,7 @@ export function StreamsTable(props: StreamTableProps) {
                             refPreviewStreams.current.delete(s);
                         }
                     }}
+                    getWhepUrl={props.getWhepUrl}
                     onStop={() => handlePreviewStop(s)}
                 />
             )}
@@ -243,6 +247,7 @@ export function StreamsTable(props: StreamTableProps) {
                             refWebStreams.current.delete(s);
                         }
                     }}
+                    getWhipUrl={props.getWhipUrl}
                     onStop={() => handleWebStreamStop(s)}
                 />
             )}
