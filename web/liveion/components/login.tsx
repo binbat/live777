@@ -62,8 +62,7 @@ export function Login({ show, onSuccess }: LoginProps) {
                     <span>Token</span>
                     <input class="grow" value={token} onInput={e => setToken(e.currentTarget?.value)} />
                 </label>
-                <Button type="submit" color="primary" className="w-full text-base" disabled={loading}>
-                    {/* @ts-expect-error -- size */}
+                <Button color="primary" className="w-full text-base" disabled={loading}>
                     {loading ? <Loading size="sm" /> : null}
                     <span>Login</span>
                 </Button>

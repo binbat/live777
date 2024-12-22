@@ -1,29 +1,25 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useState } from 'preact/hooks';
 
 export function useRefreshTimer<T>(initial: T, fetchData: () => Promise<T>, timeout = 3000, immediate = true) {
     const [data, setData] = useState<T>(initial);
     const [isImmediate, _setIsImmediate] = useState(immediate);
     const [refreshTimer, setRefreshTimer] = useState(-1);
     const isRefreshing = refreshTimer > 0;
-    const updateData = async () => {
-        setData(await fetchData());
-    };
+    const updateData = useCallback(async () => setData(await fetchData()), [fetchData]);
     useEffect(() => {
         if (isImmediate) {
             updateData();
         }
-        return () => {
-            if (isRefreshing) {
-                window.clearInterval(refreshTimer);
-            }
-        };
     }, []);
     useEffect(() => {
         if (isRefreshing) {
-            clearInterval(refreshTimer);
+            window.clearInterval(refreshTimer);
             setRefreshTimer(window.setInterval(updateData, timeout));
         }
-    }, [timeout]);
+        return () => {
+            window.clearInterval(refreshTimer);
+        };
+    }, [updateData, timeout]);
     const toggleTimer = () => {
         if (isRefreshing) {
             clearInterval(refreshTimer);
