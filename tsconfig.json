@@ -28,8 +28,7 @@
   },
   "include": ["web"],
   "exclude": [
-    "./web/**/vite.config.ts",
-    "./web/tailwind.config.ts"
+    "./web/**/vite.config.ts"
   ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

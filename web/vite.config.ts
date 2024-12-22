@@ -2,6 +2,8 @@ import { resolve } from 'node:path';
 
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
+import tailwindcss from 'tailwindcss';
+import daisyui from 'daisyui';
 
 export const ProjectRoot = resolve(import.meta.dirname, '..');
 
@@ -20,6 +22,22 @@ export default defineConfig({
     resolve: {
         alias: {
             '@': resolve(ProjectRoot, 'web')
+        }
+    },
+    css: {
+        postcss: {
+            plugins: [
+                tailwindcss({
+                    content: [
+                        'node_modules/daisyui/dist/**/*.js',
+                        'node_modules/react-daisyui/dist/**/*.js',
+                        'web/**/*.{html,tsx}'
+                    ].map(p => resolve(ProjectRoot, p)),
+                    plugins: [
+                        daisyui
+                    ],
+                })
+            ]
         }
     }
 });

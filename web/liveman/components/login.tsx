@@ -96,7 +96,6 @@ export function Login({ show, onSuccess }: LoginProps) {
             <Modal.Header className="mb-2">
                 <h3 className="font-bold">Authorization Required</h3>
             </Modal.Header>
-            {/* @ts-expect-error -- size */}
             <Tabs variant="bordered" size="lg" className="my-4">
                 {Object.values(AuthorizeType).map(t =>
                     <Tabs.Tab className="text-base" active={t === authType} onClick={() => setAuthType(t)}>{t}</Tabs.Tab>
@@ -107,8 +106,7 @@ export function Login({ show, onSuccess }: LoginProps) {
                 {authType === AuthorizeType.Password ? [usernameInput, passwordInput]
                     : authType === AuthorizeType.Token ? tokenInput
                         : null}
-                <Button type="submit" color="primary" className="w-full text-base" disabled={loading}>
-                    {/* @ts-expect-error -- size */}
+                <Button color="primary" className="w-full text-base" disabled={loading}>
                     {loading ? <Loading size="sm" /> : null}
                     <span>Login</span>
                 </Button>

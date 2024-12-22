@@ -81,7 +81,6 @@ function NodeStrategyLabel({ strategy }: NodeStrategyLabelProps) {
                 <EllipsisHorizontalIcon className="size-4" />
             </Dropdown.Toggle>
             <Dropdown.Menu className="z-10 mx-[-1rem]">
-                {/* @ts-expect-error -- size */}
                 <Table size="xs">
                     <Table.Body>
                         {entries.map(([k, v]) =>

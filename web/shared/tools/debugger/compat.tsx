@@ -174,7 +174,7 @@ export default function DebuggerCompat() {
 
                         <section>
                             <h3>WHIP Video:</h3>
-                            <debug-player controls autoplay id="whip-video-player"></debug-player>
+                            <debug-player id="whip-video-player"></debug-player>
                         </section>
                         <section>
                             <data-channel id="whip-datachannel"></data-channel>
@@ -202,7 +202,7 @@ export default function DebuggerCompat() {
 
                         <section>
                             <h3>WHEP Video:</h3>
-                            <debug-player controls autoplay id="whep-video-player"></debug-player>
+                            <debug-player id="whep-video-player"></debug-player>
                         </section>
                         <section>
                             <data-channel id="whep-datachannel"></data-channel>

@@ -41,12 +41,4 @@ export default defineConfig({
         root: en,
         zh,
     },
-
-    vite: {
-        css: {
-            postcss: {
-                // don't need postcss in docs
-            }
-        }
-    }
 });
