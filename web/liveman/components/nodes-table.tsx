@@ -57,7 +57,7 @@ export function NodesTable() {
                             <span>{n.status}</span>
                             <span>{n.duration}</span>
                             <NodeStrategyLabel strategy={n.strategy} />
-                            <Link href={n.url} target="_blank">{n.url}</Link>
+                            <Link href={location.href + '?nodes=' + n.alias} target="_blank">{location.href + '?nodes=' + n.alias}</Link>
                         </Table.Row>
                     ) : <tr><td colspan={5} className="text-center">N/A</td></tr>}
                 </Table.Body>
