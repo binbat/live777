@@ -26,7 +26,7 @@ function useInput(label: string, type = 'text') {
 
 export interface LoginProps {
     show: boolean;
-    onSuccess?: (token: string) => void;
+    onSuccess?: (tokenType: string, tokenValue: string) => void;
 }
 
 export function Login({ show, onSuccess }: LoginProps) {
@@ -76,7 +76,7 @@ export function Login({ show, onSuccess }: LoginProps) {
             const tk = `${tokenType} ${tokenValue}`;
             livemanApi.setAuthToken(tk);
             sharedApi.setAuthToken(tk);
-            onSuccess?.(tokenValue);
+            onSuccess?.(tokenType, tokenValue);
         } catch (e) {
             livemanApi.setAuthToken('');
             sharedApi.setAuthToken('');

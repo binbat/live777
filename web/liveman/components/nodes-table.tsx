@@ -18,9 +18,7 @@ export function NodesTable() {
     const tokenContext = useContext(TokenContext);
 
     useEffect(() => {
-        if (tokenContext.token.length > 0) {
-            nodes.updateData();
-        }
+        nodes.updateData();
     }, [tokenContext.token]);
 
     return (
@@ -57,7 +55,7 @@ export function NodesTable() {
                             <span>{n.status}</span>
                             <span>{n.duration}</span>
                             <NodeStrategyLabel strategy={n.strategy} />
-                            <Link href={location.href + '?nodes=' + n.alias} target="_blank">{location.href + '?nodes=' + n.alias}</Link>
+                            <NodeLink node={n} />
                         </Table.Row>
                     ) : <tr><td colspan={5} className="text-center">N/A</td></tr>}
                 </Table.Body>
@@ -76,7 +74,6 @@ function NodeStrategyLabel({ strategy }: NodeStrategyLabelProps) {
     return (
         <Dropdown hover>
             <Dropdown.Toggle button={false} className="font-mono flex items-center gap-1">
-                {/* <InformationCircleIcon className="size-4" /> */}
                 <span>{entries[0].join(' = ')}</span>
                 <EllipsisHorizontalIcon className="size-4" />
             </Dropdown.Toggle>
@@ -93,5 +90,14 @@ function NodeStrategyLabel({ strategy }: NodeStrategyLabelProps) {
                 </Table>
             </Dropdown.Menu>
         </Dropdown>
+    );
+}
+
+function NodeLink({ node }: { node: Node }) {
+    const urlObject = new URL(location.href);
+    urlObject.searchParams.set('nodes', node.alias);
+    const url = urlObject.toString();
+    return (
+        <Link href={url} target="_blank">{url}</Link>
     );
 }
