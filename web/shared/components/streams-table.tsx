@@ -44,9 +44,7 @@ export function StreamsTable(props: StreamTableProps) {
     const tokenContext = useContext(TokenContext);
 
     useEffect(() => {
-        if (tokenContext.token.length > 0) {
-            streams.updateData();
-        }
+        streams.updateData();
     }, [tokenContext.token]);
 
     const handleViewClients = (id: string) => {
