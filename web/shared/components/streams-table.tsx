@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useContext } from 'preact/hooks';
-import { ReactNode } from 'preact/compat';
+import { type ReactNode } from 'preact/compat';
 
-import { Button, Checkbox, Table } from 'react-daisyui';
+import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
 import { type Stream, getStreams, deleteStream } from '../api';
@@ -9,11 +9,11 @@ import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 import { TokenContext } from '../context';
 
-import { IClientsDialog, ClientsDialog } from './dialog-clients';
-import { ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade';
-import { IPreviewDialog, PreviewDialog } from './dialog-preview';
-import { IWebStreamDialog, WebStreamDialog } from './dialog-web-stream';
-import { INewStreamDialog, NewStreamDialog } from './dialog-new-stream';
+import { type IClientsDialog, ClientsDialog } from './dialog-clients';
+import { type ICascadeDialog, CascadePullDialog, CascadePushDialog } from './dialog-cascade';
+import { type IPreviewDialog, PreviewDialog } from './dialog-preview';
+import { type IWebStreamDialog, WebStreamDialog } from './dialog-web-stream';
+import { type INewStreamDialog, NewStreamDialog } from './dialog-new-stream';
 
 async function getStreamsSorted() {
     const streams = await getStreams();
@@ -21,12 +21,15 @@ async function getStreamsSorted() {
 }
 
 export interface StreamTableProps {
+    getStreams?: () => Promise<Stream[]>;
+    getWhepUrl?: (streamId: string) => string;
+    getWhipUrl?: (streamId: string) => string;
     showCascade?: boolean;
     renderExtraActions?: (s: Stream) => ReactNode;
 }
 
 export function StreamsTable(props: StreamTableProps) {
-    const streams = useRefreshTimer([], getStreamsSorted);
+    const streams = useRefreshTimer([], props.getStreams ?? getStreamsSorted);
     const [selectedStreamId, setSelectedStreamId] = useState('');
     const refCascadePull = useRef<ICascadeDialog>(null);
     const refCascadePush = useRef<ICascadeDialog>(null);
@@ -39,6 +42,10 @@ export function StreamsTable(props: StreamTableProps) {
     const [previewStreamId, setPreviewStreamId] = useState('');
     const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map());
     const tokenContext = useContext(TokenContext);
+
+    useEffect(() => {
+        streams.updateData();
+    }, [tokenContext.token]);
 
     const handleViewClients = (id: string) => {
         setSelectedStreamId(id);
@@ -114,10 +121,16 @@ export function StreamsTable(props: StreamTableProps) {
         window.open(url);
     };
 
+    const handleDestroyStream = async (id: string) => {
+        await deleteStream(id);
+        await streams.updateData();
+    };
+
     return (
         <>
             <div className="flex items-center gap-2 px-4 h-12">
-                <span className="font-bold text-lg mr-auto">Streams (total: {streams.data.length})</span>
+                <span className="font-bold text-lg">Streams</span>
+                <Badge color="ghost" className="font-bold mr-auto">{streams.data.length}</Badge>
                 {props.showCascade ? (
                     <Button
                         size="sm"
@@ -172,7 +185,7 @@ export function StreamsTable(props: StreamTableProps) {
                                 <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
                                 <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
                                 {props.renderExtraActions?.(i)}
-                                <Button size="sm" color="error" onClick={() => deleteStream(i.id)}>Destroy</Button>
+                                <Button size="sm" color="error" onClick={() => handleDestroyStream(i.id)}>Destroy</Button>
                             </div>
                         </Table.Row>
                     ) : <tr><td colspan={6} className="text-center">N/A</td></tr>}
@@ -187,7 +200,7 @@ export function StreamsTable(props: StreamTableProps) {
                     onClick={handleNewStream}
                 >New Stream</Button>
                 {webStreams.map(s =>
-                    <Button size="sm" onClick={() => { handleOpenWebStream(s); }}>{s}</Button>
+                    <Button size="sm" onClick={() => handleOpenWebStream(s)}>{s}</Button>
                 )}
             </div>
 
@@ -195,6 +208,7 @@ export function StreamsTable(props: StreamTableProps) {
                 ref={refClients}
                 id={selectedStreamId}
                 sessions={streams.data.find(s => s.id == selectedStreamId)?.subscribe.sessions ?? []}
+                onClientKicked={streams.updateData}
             />
 
             {props.showCascade ? (
@@ -214,11 +228,12 @@ export function StreamsTable(props: StreamTableProps) {
                             refPreviewStreams.current.delete(s);
                         }
                     }}
+                    getWhepUrl={props.getWhepUrl}
                     onStop={() => handlePreviewStop(s)}
                 />
             )}
 
-            <NewStreamDialog ref={refNewStream} onNewStreamId={handleNewStreamId} />
+            <NewStreamDialog ref={refNewStream} onNewStreamId={handleNewStreamId} onStreamCreated={streams.updateData} />
 
             {webStreams.map(s =>
                 <WebStreamDialog
@@ -230,6 +245,7 @@ export function StreamsTable(props: StreamTableProps) {
                             refWebStreams.current.delete(s);
                         }
                     }}
+                    getWhipUrl={props.getWhipUrl}
                     onStop={() => handleWebStreamStop(s)}
                 />
             )}

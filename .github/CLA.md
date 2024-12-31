@@ -54,3 +54,4 @@ Example:
 - Rocket Aaron, @rocka, 2024/04/22
 - Likai Zhao, @agougougoua, 2024/05/09
 - Yihan Wen, @udrs, 2024/6/21
+- George Hu, @Integral-Tech, 2024/12/21

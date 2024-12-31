@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tower_http::{
     cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
 };
-use tracing::{error, info_span, warn, Level};
+use tracing::{error, info_span, Level};
 
 use auth::{access::access_middleware, ManyValidate};
 use error::AppError;
@@ -110,7 +110,9 @@ where
                             )
                             .await
                             {
-                                Ok(_) => warn!("net4mqtt service is end, restart net4mqtt service"),
+                                Ok(_) => tracing::warn!(
+                                    "net4mqtt service is end, restart net4mqtt service"
+                                ),
                                 Err(e) => error!("mqtt4mqtt error: {:?}", e),
                             }
                             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

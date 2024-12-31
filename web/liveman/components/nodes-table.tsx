@@ -1,6 +1,9 @@
-import { Button, Checkbox, Dropdown, Link, Table } from 'react-daisyui';
+import { useContext, useEffect } from 'preact/hooks';
+
+import { Badge, Button, Checkbox, Dropdown, Link, Table } from 'react-daisyui';
 import { ArrowPathIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
 
+import { TokenContext } from '@/shared/context';
 import { useRefreshTimer } from '@/shared/hooks/use-refresh-timer';
 
 import { type Node, getNodes } from '../api';
@@ -12,11 +15,17 @@ async function getNodesSorted() {
 
 export function NodesTable() {
     const nodes = useRefreshTimer([], getNodesSorted);
+    const tokenContext = useContext(TokenContext);
+
+    useEffect(() => {
+        nodes.updateData();
+    }, [tokenContext.token]);
 
     return (
         <>
             <div className="flex items-center gap-2 px-4 h-12">
-                <span className="font-bold text-lg mr-auto">Nodes (total: {nodes.data.length})</span>
+                <span className="font-bold text-lg">Nodes</span>
+                <Badge color="ghost" className="font-bold mr-auto">{nodes.data.length}</Badge>
                 <Button
                     size="sm"
                     color="ghost"
@@ -46,7 +55,7 @@ export function NodesTable() {
                             <span>{n.status}</span>
                             <span>{n.duration}</span>
                             <NodeStrategyLabel strategy={n.strategy} />
-                            <Link href={n.url} target="_blank">{n.url}</Link>
+                            <NodeLink node={n} />
                         </Table.Row>
                     ) : <tr><td colspan={5} className="text-center">N/A</td></tr>}
                 </Table.Body>
@@ -65,12 +74,10 @@ function NodeStrategyLabel({ strategy }: NodeStrategyLabelProps) {
     return (
         <Dropdown hover>
             <Dropdown.Toggle button={false} className="font-mono flex items-center gap-1">
-                {/* <InformationCircleIcon className="size-4" /> */}
                 <span>{entries[0].join(' = ')}</span>
                 <EllipsisHorizontalIcon className="size-4" />
             </Dropdown.Toggle>
             <Dropdown.Menu className="z-10 mx-[-1rem]">
-                {/* @ts-expect-error -- size */}
                 <Table size="xs">
                     <Table.Body>
                         {entries.map(([k, v]) =>
@@ -83,5 +90,14 @@ function NodeStrategyLabel({ strategy }: NodeStrategyLabelProps) {
                 </Table>
             </Dropdown.Menu>
         </Dropdown>
+    );
+}
+
+function NodeLink({ node }: { node: Node }) {
+    const urlObject = new URL(location.href);
+    urlObject.searchParams.set('nodes', node.alias);
+    const url = urlObject.toString();
+    return (
+        <Link href={url} target="_blank">{url}</Link>
     );
 }

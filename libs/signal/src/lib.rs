@@ -1,8 +1,8 @@
-/// References: https://stackoverflow.com/questions/77585473/rust-tokio-how-to-handle-more-signals-than-just-sigint-i-e-sigquit
+//! References: https://stackoverflow.com/questions/77585473/rust-tokio-how-to-handle-more-signals-than-just-sigint-i-e-sigquit
 
 /// Waits for a signal that requests a graceful shutdown, like SIGTERM or SIGINT.
 #[cfg(unix)]
-async fn wait_for_signal_impl() -> String {
+async fn wait_for_signal_impl() -> &'static str {
     use tokio::signal::unix::{signal, SignalKind};
 
     // Infos here:
@@ -11,14 +11,14 @@ async fn wait_for_signal_impl() -> String {
     let mut signal_interrupt = signal(SignalKind::interrupt()).unwrap();
 
     tokio::select! {
-        _ = signal_terminate.recv() => "SIGTERM".to_string(),
-        _ = signal_interrupt.recv() => "SIGINT".to_string(),
+        _ = signal_terminate.recv() => "SIGTERM",
+        _ = signal_interrupt.recv() => "SIGINT",
     }
 }
 
 /// Waits for a signal that requests a graceful shutdown, Ctrl-C (SIGINT).
 #[cfg(windows)]
-async fn wait_for_signal_impl() -> String {
+async fn wait_for_signal_impl() -> &'static str {
     use tokio::signal::windows;
 
     // Infos here:
@@ -29,15 +29,15 @@ async fn wait_for_signal_impl() -> String {
     let mut signal_shutdown = windows::ctrl_shutdown().unwrap();
 
     tokio::select! {
-        _ = signal_c.recv() => "CTRL_C".to_string(),
-        _ = signal_break.recv() => "CTRL_BREAK".to_string(),
-        _ = signal_close.recv() => "CTRL_CLOSE".to_string(),
-        _ = signal_shutdown.recv() => "CTRL_SHUTDOWN".to_string(),
+        _ = signal_c.recv() => "CTRL_C",
+        _ = signal_break.recv() => "CTRL_BREAK",
+        _ = signal_close.recv() => "CTRL_CLOSE",
+        _ = signal_shutdown.recv() => "CTRL_SHUTDOWN",
     }
 }
 
 /// Registers signal handlers and waits for a signal that
 /// indicates a shutdown request.
-pub async fn wait_for_stop_signal() -> String {
+pub async fn wait_for_stop_signal() -> &'static str {
     wait_for_signal_impl().await
 }

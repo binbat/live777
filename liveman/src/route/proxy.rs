@@ -4,7 +4,9 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use axum_extra::extract::Query;
 use http::{header, HeaderValue, Uri};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn, Span};
 
 use api::response::Stream;
@@ -14,6 +16,12 @@ use crate::route::node;
 use crate::route::stream;
 use crate::store::Server;
 use crate::{error::AppError, result::Result, AppState};
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QueryExtract {
+    #[serde(default)]
+    pub nodes: Vec<String>,
+}
 
 pub fn route() -> Router<AppState> {
     Router::new()
@@ -73,23 +81,27 @@ async fn api_whep(
 async fn whip(
     State(mut state): State<AppState>,
     Path(stream): Path<String>,
+    Query(query_extract): Query<QueryExtract>,
     req: Request,
 ) -> Result<Response> {
     let stream_nodes = state.storage.stream_get(stream.clone()).await?;
     debug!("{:?}", stream_nodes);
     let target = match stream_nodes.is_empty() {
         true => {
-            let nodes = state.storage.nodes().await;
+            let mut nodes = state.storage.nodes().await;
             warn!("{:?}", nodes);
+            if !query_extract.nodes.is_empty() {
+                nodes.retain(|x| query_extract.nodes.contains(&x.alias));
+            }
             maximum_idle_node(state.clone(), nodes, stream.clone()).await
         }
-        false => match stream_nodes.first() {
-            Some(node) => Some(node.clone()),
-            None => {
-                error!("WHIP Error: No available node");
-                None
+        false => {
+            let mut nodes = stream_nodes.clone();
+            if !query_extract.nodes.is_empty() {
+                nodes.retain(|x| query_extract.nodes.contains(&x.alias));
             }
-        },
+            nodes.first().cloned()
+        }
     };
 
     match target {
@@ -133,9 +145,13 @@ async fn whip(
 async fn whep(
     State(mut state): State<AppState>,
     Path(stream): Path<String>,
+    Query(query_extract): Query<QueryExtract>,
     req: Request,
 ) -> Result<Response> {
-    let servers = state.storage.stream_get(stream.clone()).await.unwrap();
+    let mut servers = state.storage.stream_get(stream.clone()).await.unwrap();
+    if !query_extract.nodes.is_empty() {
+        servers.retain(|x| query_extract.nodes.contains(&x.alias));
+    }
     if servers.is_empty() {
         debug!("whep servers is empty");
         return Err(AppError::ResourceNotFound);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { TargetedEvent } from 'preact/compat';
-import { Alert, Button, Modal } from 'react-daisyui';
+import { Alert, Button, Loading, Modal } from 'react-daisyui';
 import { WretchError } from 'wretch/resolver';
 
 import * as api from '@/shared/api';
@@ -62,8 +62,7 @@ export function Login({ show, onSuccess }: LoginProps) {
                     <span>Token</span>
                     <input class="grow" value={token} onInput={e => setToken(e.currentTarget?.value)} />
                 </label>
-                <Button type="submit" color="primary" className="w-full text-base" disabled={loading}>
-                    {/* @ts-expect-error -- size */}
+                <Button color="primary" className="w-full text-base" disabled={loading}>
                     {loading ? <Loading size="sm" /> : null}
                     <span>Login</span>
                 </Button>
