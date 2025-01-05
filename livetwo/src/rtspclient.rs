@@ -612,7 +612,12 @@ async fn setup_track(
         }
     });
 
-    Ok((Some(rtp_client_port), Some(rtp_client_port + 1), Some(rtp_server_port), codec))
+    Ok((
+        Some(rtp_client_port),
+        Some(rtp_client_port + 1),
+        Some(rtp_server_port),
+        codec,
+    ))
 }
 
 fn generate_digest_response(
