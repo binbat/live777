@@ -368,17 +368,19 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     let mut media_info = rtsp::MediaInfo::default();
 
     if let Some(video_track) = video_track {
-        let (rtp_client, rtp_server, codec) =
+        let (rtp_client, rtcp_client, rtp_server, codec) =
             setup_track(&mut rtsp_session, video_track, "0").await?;
         media_info.video_rtp_server = rtp_client;
+        media_info.video_rtcp_client = rtcp_client;
         media_info.video_rtp_client = rtp_server;
         media_info.video_codec = codec;
     }
 
     if let Some(audio_track) = audio_track {
-        let (rtp_client, rtp_server, codec) =
+        let (rtp_client, rtcp_client, rtp_server, codec) =
             setup_track(&mut rtsp_session, audio_track, "1").await?;
         media_info.audio_rtp_server = rtp_client;
+        media_info.audio_rtcp_client = rtcp_client;
         media_info.audio_rtp_client = rtp_server;
         media_info.audio_codec = codec;
     }
@@ -576,7 +578,7 @@ async fn setup_track(
     rtsp_session: &mut RtspSession,
     track: &sdp_types::Media,
     track_id: &str,
-) -> Result<(Option<u16>, Option<u16>, Option<Codec>)> {
+) -> Result<(Option<u16>, Option<u16>, Option<u16>, Option<Codec>)> {
     let track_url = track
         .attributes
         .iter()
@@ -601,8 +603,6 @@ async fn setup_track(
     let (session_id, rtp_server_port) = rtsp_session.send_setup_request().await?;
     rtsp_session.session_id = Some(session_id);
 
-    let rtcp_client_port = Some(rtp_client_port + 1);
-
     let codec = track.attributes.iter().find_map(|attr| {
         if attr.attribute == "rtpmap" {
             let value = attr.value.as_ref()?.split_whitespace().nth(1)?;
@@ -612,7 +612,7 @@ async fn setup_track(
         }
     });
 
-    Ok((Some(rtp_client_port), Some(rtp_server_port), codec))
+    Ok((Some(rtp_client_port), Some(rtp_client_port + 1), Some(rtp_server_port), codec))
 }
 
 fn generate_digest_response(
