@@ -1,0 +1,46 @@
+[package]
+name = "liveman"
+description = "Live777 cluster manager controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+net4mqtt = { path = "../libs/net4mqtt", optional = true }
+
+api = { path = "../libs/api" }
+auth = { path = "../libs/auth" }
+http-log = { path = "../libs/http-log" }
+signal = { path = "../libs/signal" }
+
+anyhow = { workspace = true, features = ["backtrace"] }
+clap = { workspace = true, features = ["derive"] }
+http = { workspace = true }
+http-body = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+
+axum = { version = "0.7", features = ["multipart", "tracing"] }
+axum-extra = { version = "0.9.3", features = ["typed-header"] }
+chrono = { version = "0.4", features = ["serde"] }
+http-body-util = "0.1.2"
+mime_guess = "2.0.4"
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "socks",
+], default-features = false }
+serde_json = "1.0.114"
+tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
+url = "2.5"
+
+rust-embed = { version = "8.4", features = ["axum-ex"], optional = true }
+
+[features]
+webui = ["dep:rust-embed"]
+net4mqtt = ["dep:net4mqtt"]
+

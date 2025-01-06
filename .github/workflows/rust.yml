@@ -1,35 +1,99 @@
-name: Rust
+name: CI
 
-on: push
+on: [ push, pull_request ]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ macos-latest, windows-latest, ubuntu-latest ]
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v1
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Setup ffmpeg
+        uses: AnimMouse/setup-ffmpeg@v1
+      - name: Show version information
+        run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --all --lcov --output-path lcov.info
+      - name: Upload coverage to codecov.io
+        uses: codecov/codecov-action@v4
         with:
-          bun-version: latest
-      - name: Install
-        run: bun install
-      - name: Build Webui
-        run: bun run build
+          file: lcov.info
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  e2e:
+    needs: [test, check_format, check_clippy]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest, windows-latest, ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Setup Nodejs
+        uses: actions/setup-node@v4
+        with:
+          node-version: latest
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Build WebUI
+        run: npm run build
       - name: Build
-        run: cargo build --verbose
-      - name: Run tests
-        run: cargo test --verbose
+        run: cargo build --all-targets --all-features --release --verbose
+      - name: Setup ffmpeg
+        uses: AnimMouse/setup-ffmpeg@v1
+      - name: Show version information
+        run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Run e2e tests
+        if: ${{ matrix.os != 'windows-latest' }}
+        run: npm run e2e:cluster
+
+  check_format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Show version information
+        run: |
+          cargo --version
+          cargo fmt --version
+
+      - name: Cargo format
+        run: cargo fmt --all -- --check
 
   check_clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: latest
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Build WebUI
+        run: npm run build
+      - name: Show version information
+        run: |
+          cargo --version
+          cargo clippy --version
+
       - name: Cargo clippy
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 

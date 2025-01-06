@@ -3,10 +3,10 @@ name: Release
 on:
   push:
     branches:
-    - test
+      - test
   release:
     types:
-    - 'published'
+      - 'published'
 
 jobs:
   build:
@@ -16,145 +16,244 @@ jobs:
       fail-fast: false
       matrix:
         job:
-        - { target: aarch64-apple-darwin        , os: macos-13                      }
-        - { target: aarch64-linux-android       , os: ubuntu-22.04, use-cross: true }
-        - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04, use-cross: true }
-        - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04, use-cross: true }
-        - { target: arm-unknown-linux-musleabihf, os: ubuntu-22.04, use-cross: true }
-        - { target: i686-pc-windows-msvc        , os: windows-2022                  }
-        - { target: i686-unknown-linux-gnu      , os: ubuntu-22.04, use-cross: true }
-        - { target: i686-unknown-linux-musl     , os: ubuntu-22.04, use-cross: true }
-        - { target: x86_64-apple-darwin         , os: macos-13                      }
-        - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
-        - { target: x86_64-pc-windows-msvc      , os: windows-2022                  }
-        - { target: x86_64-unknown-linux-gnu    , os: ubuntu-22.04, use-cross: true }
-        - { target: x86_64-unknown-linux-musl   , os: ubuntu-22.04, use-cross: true }
+          # https://doc.rust-lang.org/nightly/rustc/platform-support.html
+          - { target: aarch64-apple-darwin        , os: macos-14                      }
+          - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
+          - { target: aarch64-linux-android       , os: ubuntu-24.04, use-cross: true }
+          - { target: aarch64-unknown-linux-gnu   , os: ubuntu-24.04, use-cross: true }
+          - { target: aarch64-unknown-linux-musl  , os: ubuntu-24.04, use-cross: true, nfpm: arm64 }
+          - { target: arm-unknown-linux-gnueabihf , os: ubuntu-24.04, use-cross: true }
+          - { target: arm-unknown-linux-musleabihf, os: ubuntu-24.04, use-cross: true }
+          - { target: i686-pc-windows-msvc        , os: windows-2022                  }
+          - { target: i686-unknown-linux-gnu      , os: ubuntu-24.04, use-cross: true }
+          - { target: i686-unknown-linux-musl     , os: ubuntu-24.04, use-cross: true }
+          - { target: x86_64-apple-darwin         , os: macos-14                      }
+          - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
+          - { target: x86_64-pc-windows-msvc      , os: windows-2022                  }
+          - { target: x86_64-unknown-linux-gnu    , os: ubuntu-24.04, use-cross: true }
+          - { target: x86_64-unknown-linux-musl   , os: ubuntu-24.04, use-cross: true, nfpm: amd64 }
     env:
-      VERSION: $GITHUB_REF_NAME
       BUILD_CMD: cargo
-      BUILD_NDK: ""
       EXE_SUFFIX: ""
       PKG_LIVE777_NAME: ""
+      PKG_LIVEMAN_NAME: ""
       PKG_WHEPFROM_NAME: ""
       PKG_WHIPINTO_NAME: ""
     steps:
-    - name: Checkout source code
-      uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Get the release version from the tag
-      run: |
-        echo "version is: ${{ env.VERSION }}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: latest
 
-    - name: Install cargo-ndk
-      if: contains(matrix.job.target, 'android')
-      run: |
-        cargo install cargo-ndk
-        echo "BUILD_NDK=ndk -t arm64-v8a" >> $GITHUB_ENV
+      - name: Install npm dependencies
+        run: npm ci
 
-    - name: Install prerequisites
-      shell: bash
-      run: |
-        case ${{ matrix.job.target }} in
-          arm-unknown-linux-*) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
-          aarch64-unknown-linux-gnu) sudo apt-get -y update ; sudo apt-get -y install gcc-aarch64-linux-gnu ;;
-        esac
+      - name: Build WebUI
+        run: npm run build
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: ${{ matrix.job.target }}
+      - name: Get the release version from the tag
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
+            VERSION=`git describe --tags`
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "version is: ${VERSION}"
 
-    - name: Install cross
-      if: matrix.job.use-cross
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cross
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.job.target }}
 
-    - name: Overwrite build command env variable
-      if: matrix.job.use-cross
-      shell: bash
-      run: echo "BUILD_CMD=cross" >> $GITHUB_ENV
+      - name: Install cross
+        if: matrix.job.use-cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
-    - name: Overwrite suffix env variable
-      if: runner.os == 'Windows'
-      shell: bash
-      run: echo "EXE_SUFFIX=.exe" >> $GITHUB_ENV
+      - name: Overwrite build command env variable
+        if: matrix.job.use-cross
+        shell: bash
+        run: echo "BUILD_CMD=cross" >> $GITHUB_ENV
 
-    - name: Show version information (Rust, cargo, GCC)
-      shell: bash
-      run: |
-        gcc --version || true
-        rustup -V
-        rustup toolchain list
-        rustup default
-        cargo -V
-        rustc -V
+      - name: Overwrite suffix env variable
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "EXE_SUFFIX=.exe" >> $GITHUB_ENV
 
-    - name: Build
-      shell: bash
-      run: |
-        $BUILD_CMD $BUILD_NDK build --locked --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whepfrom --release --target=${{ matrix.job.target }}
-        $BUILD_CMD $BUILD_NDK build --locked --package=whipinto --release --target=${{ matrix.job.target }}
+      - name: Show version information (Rust, cargo, GCC)
+        shell: bash
+        run: |
+          gcc --version || true
+          cross --version || true
+          rustup -V
+          rustup toolchain list
+          rustup default
+          cargo -V
+          rustc -V
+          echo "BUILD_CMD: ${BUILD_CMD}"
 
-    - name: Archive
-      shell: bash
-      run: |
-        PKG_BUILDNAME=${{ env.VERSION }}-${{ matrix.job.target }}${{ env.EXE_SUFFIX }}
-        echo "BUILD_PATH=target/${{ matrix.job.target }}/release" >> $GITHUB_ENV
-        echo "PKG_LIVE777_NAME=live777-${PKG_BUILDNAME}" >> $GITHUB_ENV
-        echo "PKG_WHEPFROM_NAME=whepfrom-${PKG_BUILDNAME}" >> $GITHUB_ENV
-        echo "PKG_WHIPINTO_NAME=whipinto-${PKG_BUILDNAME}" >> $GITHUB_ENV
+      - name: Build
+        shell: bash
+        run: |
+          $BUILD_CMD $BUILD_NDK build --locked --all-targets --all-features --release --target=${{ matrix.job.target }}
 
-    - name: Create tarball
-      shell: bash
-      run: |
-        TAR_SUFFIX=".tar.gz" ; case ${{ matrix.job.target }} in *-pc-windows-*) TAR_SUFFIX=".zip" ;; esac;
-        TAR_BASENAME=live777-${{ env.VERSION }}-${{ matrix.job.target }}
-        TAR_NAME=${TAR_BASENAME}${TAR_SUFFIX}
-        ARCHIVE_DIR="${TAR_BASENAME}/"
+      - name: Archive
+        shell: bash
+        run: |
+          PKG_BUILDNAME=${{ env.VERSION }}-${{ matrix.job.target }}${{ env.EXE_SUFFIX }}
+          echo "BUILD_PATH=target/${{ matrix.job.target }}/release" >> $GITHUB_ENV
+          echo "PKG_LIVE777_NAME=live777-${PKG_BUILDNAME}" >> $GITHUB_ENV
+          echo "PKG_LIVEMAN_NAME=liveman-${PKG_BUILDNAME}" >> $GITHUB_ENV
+          echo "PKG_WHEPFROM_NAME=whepfrom-${PKG_BUILDNAME}" >> $GITHUB_ENV
+          echo "PKG_WHIPINTO_NAME=whipinto-${PKG_BUILDNAME}" >> $GITHUB_ENV
+          echo "PKG_NET4MQTT_NAME=net4mqtt-${PKG_BUILDNAME}" >> $GITHUB_ENV
 
-        mkdir -p "${ARCHIVE_DIR}"
-        cp "${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
-        cp "README.md" "LICENSE" "config-dist.toml" "live777.service" "$ARCHIVE_DIR"
+      - name: Create Live777 tarball
+        shell: bash
+        run: |
+          TAR_SUFFIX=".tar.gz" ; case ${{ matrix.job.target }} in *-pc-windows-*) TAR_SUFFIX=".zip" ;; esac;
+          TAR_BASENAME=live777-${{ env.VERSION }}-${{ matrix.job.target }}
+          TAR_NAME=${TAR_BASENAME}${TAR_SUFFIX}
+          ARCHIVE_DIR="${TAR_BASENAME}/"
 
-        # base compressed package
-        case ${{ matrix.job.target }} in
+          mkdir -p "${ARCHIVE_DIR}"
+          cp "${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
+          cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
+
+          # base compressed package
+          case ${{ matrix.job.target }} in
           *-pc-windows-*) 7z -y a "${TAR_NAME}" "${TAR_BASENAME}"/* | tail -2 ;;
           *) tar czf "${TAR_NAME}" "${TAR_BASENAME}"/* ;;
-        esac;
+          esac;
 
-        # Let subsequent steps know where to find the compressed package
-        echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
+          # Let subsequent steps know where to find the compressed package
+          echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
 
-    - name: Artifact Upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.TAR_LIVE777_NAME }}
-        path: ${{ env.TAR_LIVE777_NAME }}
+      - name: Create LiveMan tarball
+        shell: bash
+        run: |
+          TAR_SUFFIX=".tar.gz" ; case ${{ matrix.job.target }} in *-pc-windows-*) TAR_SUFFIX=".zip" ;; esac;
+          TAR_BASENAME=liveman-${{ env.VERSION }}-${{ matrix.job.target }}
+          TAR_NAME=${TAR_BASENAME}${TAR_SUFFIX}
+          ARCHIVE_DIR="${TAR_BASENAME}/"
 
-    - name: Artifact Upload Whepfrom
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.PKG_WHEPFROM_NAME }}
-        path: ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }}
+          mkdir -p "${ARCHIVE_DIR}"
+          cp "${{ env.BUILD_PATH }}/liveman${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
+          cp "README.md" "LICENSE" "conf/liveman.toml" "conf/liveman.service" "$ARCHIVE_DIR"
 
-    - name: Artifact Upload Whipinto
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.PKG_WHIPINTO_NAME }}
-        path: ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }}
+          # base compressed package
+          case ${{ matrix.job.target }} in
+          *-pc-windows-*) 7z -y a "${TAR_NAME}" "${TAR_BASENAME}"/* | tail -2 ;;
+          *) tar czf "${TAR_NAME}" "${TAR_BASENAME}"/* ;;
+          esac;
 
-    - name: Rename binary
-      shell: bash
-      run: |
-        mv ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }} ${{ env.PKG_WHEPFROM_NAME }}
-        mv ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
+          # Let subsequent steps know where to find the compressed package
+          echo "TAR_LIVEMAN_NAME=${TAR_NAME}" >> $GITHUB_ENV
 
-    - name: Upload release archive
-      shell: bash
-      if: github.ref_type == 'tag'
-      run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }}
-      env:
-        GH_TOKEN: ${{ github.token }}
+      - name: Rename binary
+        shell: bash
+        run: |
+          cp ${{ env.BUILD_PATH }}/whepfrom${{ env.EXE_SUFFIX }} ${{ env.PKG_WHEPFROM_NAME }}
+          cp ${{ env.BUILD_PATH }}/whipinto${{ env.EXE_SUFFIX }} ${{ env.PKG_WHIPINTO_NAME }}
+          cp ${{ env.BUILD_PATH }}/net4mqtt${{ env.EXE_SUFFIX }} ${{ env.PKG_NET4MQTT_NAME }}
+
+      - name: Artifact Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_bin
+          path: |
+            ${{ env.TAR_LIVE777_NAME }}
+            ${{ env.TAR_LIVEMAN_NAME }}
+            ${{ env.PKG_WHEPFROM_NAME }}
+            ${{ env.PKG_WHIPINTO_NAME }}
+            ${{ env.PKG_NET4MQTT_NAME }}
+
+      - name: Install nFPM
+        if: ${{ matrix.job.nfpm }}
+        run: |
+            echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+            sudo apt update
+            sudo apt install nfpm
+
+      - name: Set nFPM environment
+        if: ${{ matrix.job.nfpm }}
+        run: |
+          DESCRIBE=`git describe --tags`-
+          echo "NFPM_ARCH=${{ matrix.job.nfpm }}" >> $GITHUB_ENV
+          echo "NFPM_TARGET=${{ matrix.job.target }}" >> $GITHUB_ENV
+          echo "NFPM_VERSION=`echo ${DESCRIBE} | cut -d - -f 1`" >> $GITHUB_ENV
+          echo "NFPM_RELEASE=`echo ${DESCRIBE} | cut -d - -f 2`" >> $GITHUB_ENV
+          echo "NFPM_PRERELEASE=`echo ${DESCRIBE} | cut -d - -f 3`" >> $GITHUB_ENV
+
+      - name: Build nFPM config
+        if: ${{ matrix.job.nfpm }}
+        run: |
+          envsubst < nfpm/live777.yaml > live777.yaml
+          envsubst < nfpm/liveman.yaml > liveman.yaml
+          envsubst < nfpm/net4mqtt.yaml > net4mqtt.yaml
+          envsubst < nfpm/whipinto.yaml > whipinto.yaml
+          envsubst < nfpm/whepfrom.yaml > whepfrom.yaml
+
+      - name: Use nFPM
+        if: ${{ matrix.job.nfpm }}
+        run: |
+          nfpm pkg --packager deb --config live777.yaml
+          nfpm pkg --packager deb --config liveman.yaml
+          nfpm pkg --packager deb --config net4mqtt.yaml
+          nfpm pkg --packager deb --config whipinto.yaml
+          nfpm pkg --packager deb --config whepfrom.yaml
+
+          nfpm pkg --packager rpm --config live777.yaml
+          nfpm pkg --packager rpm --config liveman.yaml
+          nfpm pkg --packager rpm --config net4mqtt.yaml
+          nfpm pkg --packager rpm --config whipinto.yaml
+          nfpm pkg --packager rpm --config whepfrom.yaml
+
+          nfpm pkg --packager archlinux --config live777.yaml
+          nfpm pkg --packager archlinux --config liveman.yaml
+          nfpm pkg --packager archlinux --config net4mqtt.yaml
+          nfpm pkg --packager archlinux --config whipinto.yaml
+          nfpm pkg --packager archlinux --config whepfrom.yaml
+
+      - name: Artifact Upload deb package
+        uses: actions/upload-artifact@v4
+        if: ${{ matrix.job.nfpm }}
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_deb
+          path: |
+              *.deb
+
+      - name: Artifact Upload rpm package
+        uses: actions/upload-artifact@v4
+        if: ${{ matrix.job.nfpm }}
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_rpm
+          path: |
+              *.rpm
+
+      - name: Artifact Upload archlinux package
+        uses: actions/upload-artifact@v4
+        if: ${{ matrix.job.nfpm }}
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_archlinux
+          path: |
+              *.pkg.tar.zst
+
+      - name: Upload release archive
+        shell: bash
+        if: github.ref_type == 'tag'
+        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }} ${{ env.TAR_LIVEMAN_NAME }} ${{ env.PKG_WHEPFROM_NAME }} ${{ env.PKG_WHIPINTO_NAME }} ${{ env.PKG_NET4MQTT_NAME }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload release archive nFPM package
+        shell: bash
+        if: ${{ (github.ref_type == 'tag') && (matrix.job.nfpm) }}
+        run: gh release upload ${{ env.VERSION }} *.deb *.rpm *.pkg.tar.zst
+        env:
+          GH_TOKEN: ${{ github.token }}
 

@@ -1,0 +1,18 @@
+FROM rust:slim-bookworm AS builder
+
+WORKDIR /app
+
+COPY . .
+
+RUN apt update -y && apt install -y --no-install-recommends npm
+
+RUN npm install && npm run build
+
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+
+COPY --from=builder /app/conf/live777.toml /etc/live777/live777.toml
+COPY --from=builder /app/target/release/live777 /usr/local/bin/live777
+
+CMD ["live777"]

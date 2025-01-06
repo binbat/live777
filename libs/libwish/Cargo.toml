@@ -1,18 +1,17 @@
 [package]
 name = "libwish"
-version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 crate-type = ["lib"]
 
 [dependencies]
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
-anyhow = "1.0"
-reqwest = { version = "0.12.4", features = [
+anyhow = { workspace = true }
+http = { workspace = true }
+webrtc = { workspace = true }
+
+reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }
 parse_link_header = "0.3"
-base64 = "0.22.1"
 url = "2.5"

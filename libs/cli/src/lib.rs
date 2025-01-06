@@ -3,7 +3,7 @@ use std::{
     sync::Mutex,
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::ValueEnum;
 use webrtc::{
     api::media_engine::*,
@@ -13,7 +13,7 @@ use webrtc::{
     },
 };
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[derive(Copy, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Codec {
     Vp8,
     Vp9,
@@ -108,6 +108,18 @@ impl From<Codec> for RTCRtpCodecCapability {
     }
 }
 
+pub fn codec_from_str(s: &str) -> Result<Codec> {
+    match s.to_uppercase().as_str() {
+        "VP8" => Ok(Codec::Vp8),
+        "VP9" => Ok(Codec::Vp9),
+        "H264" => Ok(Codec::H264),
+        "AV1" => Ok(Codec::AV1),
+        "OPUS" => Ok(Codec::Opus),
+        "G722" => Ok(Codec::G722),
+        _ => Err(anyhow!("Unknown codec: {}", s)),
+    }
+}
+
 pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
     let mime_type = &codec.mime_type;
     if mime_type.starts_with("video") {
@@ -120,18 +132,21 @@ pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
 }
 
 pub fn create_child(command: Option<String>) -> Result<Option<Mutex<Child>>> {
-    let child = if let Some(command) = command {
-        let mut args = shellwords::split(&command)?;
-        Some(Mutex::new(
-            Command::new(args.remove(0))
-                .args(args)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .spawn()?,
-        ))
-    } else {
-        None
-    };
-    Ok(child)
+    Ok(match command {
+        Some(command) => {
+            #[cfg(windows)]
+            let command = command.replace('\\', "/");
+
+            let mut args = shellwords::split(&command)?;
+            Some(Mutex::new(
+                Command::new(args.remove(0))
+                    .args(args)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .spawn()?,
+            ))
+        }
+        None => None,
+    })
 }

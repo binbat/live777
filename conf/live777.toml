@@ -16,44 +16,51 @@ urls = [
 # urls = [ "turn:turn.22333.fun", "turn:cn.22333.fun" ]
 # username = "live777"
 # credential = "live777"
+# credential_type = "password"
 
 # WHIP/WHEP auth token
 # Headers["Authorization"] = "Bearer {token}"
 # [auth]
+# JSON WEB TOKEN secret
+# secret = "<jwt_secret>"
+# static JWT token, superadmin, debuggger can use this token
 # tokens = ["live777"]
 
-# Not WHIP/WHEP standard
-# https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication#basic
-# Headers["Authorization"] = "Basic {Base64.encode({username}:{password})}"
-# [[auth.accounts]]
-# username = "live777"
-# password = "live777"
-
-# [log]
+[log]
 # Env: `LOG_LEVEL`
 # Default: info
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
-# [node_info]
-# ip_port = "localhost:7777"
+[strategy]
+# If not set, use default u16::MAX
+# Default: 65535
+# each_stream_max_sub = 1
+# If cascade push is beginning, close all subscriber
+# cascade_push_close_sub = false
+
+# WHIP auto a stream
+# auto_create_whip = true
+# WHEP auto a stream
+# auto_create_whep = true
 #
-# [node_info.storage]
-# model = "RedisStandalone"
-# addr = "redis://127.0.0.1:6379"
-#
-# [node_info.meta_data]
-# Producer Max Count, Maybe You don't need change this
-# pub_max = 1
-# Consumer Max Count, only this node instance max
-# sub_max = 1
-# If reforward is working, but no consumer subscription, This reforward status is: `idle`
-# When status `idle` more than this time duration, close this reforward.
-# Default: 60s
-# reforward_maximum_idle_time: 60000
-# This node is allowed as reforward target
-# reforward_cascade = false
-# The reforward is special sub, so when you up reforward, The will: sub + 1
-# If sub > sub_max, if enable this, random close a subscription
-# reforward_close_sub = false
+# Default: -1
+# -1: disable
+# 0: immediately destroy
+# >= 1: delay millisecond
+# Auto a destroy a stream at no pub
+# auto_delete_whip = 60000
+# Auto a destroy a stream at no sub
+# auto_delete_whep = 60000
+
+# Experimental Feature
+# [webhook]
+# webhooks = ["http://127.0.0.1:8080/webhook?token="]
+
+# Default enabled `--features=net4mqtt`
+# [net4mqtt]
+# Global unique alias
+# alias = "liveion-0"
+# `client_id={alias}` use alias as MQTT `client_id`
+# mqtt_url = "mqtt://localhost:1883/net4mqtt?client_id={alias}"
 

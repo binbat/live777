@@ -1,99 +1,100 @@
 [package]
 name = "live777"
-version = "0.4.1"
-edition = "2021"
-license = "MPL-2.0"
 description = "A very simple, high performance, edge WebRTC SFU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+default-run = "live777"
+
+[[bin]]
+name = "live777"
+path = "src/main.rs"
+
+[[bin]]
+name = "liveman"
+path = "src/liveman.rs"
+
+[[bin]]
+name = "livenil"
+path = "src/livenil.rs"
+
+[[bin]]
+name = "whipinto"
+path = "src/whipinto.rs"
+
+[[bin]]
+name = "whepfrom"
+path = "src/whepfrom.rs"
+
+[[bin]]
+name = "net4mqtt"
+path = "src/net4mqtt.rs"
 
 [workspace]
 members = [
     ".",
+    "libs/api",
     "libs/cli",
+    "libs/http-log",
     "libs/libwish",
     "libs/signal",
-    "libs/live777-http",
-    "libs/live777-storage",
-    "tools/whepfrom",
-    "tools/whipinto",
-    "./gateway",
+    "libs/net4mqtt",
+    "liveion",
+    "liveman",
+    "livetwo",
 ]
-[workspace.dependencies]
-serde = '1'
 
+[workspace.package]
+version = "0.7.3"
+edition = "2021"
+license = "MPL-2.0"
+authors = ["BinBat Ltd <hey@binbat.com>"]
+repository = "https://github.com/binbat/live777"
+
+[workspace.dependencies]
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "ae93e81" }
+
+anyhow = "1.0"
+clap = "4.5"
+http = "1.1"
+http-body = "1.0"
+serde = "1"
+tokio = "1.36"
+tracing = "0.1"
+
+[dev-dependencies]
+http = { workspace = true }
+serde_json = "1.0"
+
+api = { path = "libs/api" }
+cli = { path = "libs/cli" }
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "socks",
+    "json"
+], default-features = false }
+
+tempfile = "3"
 
 [dependencies]
-http-body-util = "0.1.0"
-axum = { version = "0.7.4", features = ["multipart", "tracing"] }
-tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "49140eabfe2bb18cb92ac595888be35ab3b6e5b9" }
-anyhow = { version = "1", features = ["backtrace"] }
-clap = { version = "4.5.1", features = ["derive"] }
-tokio = { version = "1.36", features = ["full"] }
-hyper = "1.2.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { workspace = true, features = ["serde_derive"] }
-toml = "0.8.10"
-serde_json = "1.0.114"
-http = "1.0.0"
-http-body = "1.0.0"
-base64 = "0.22.1"
-mime_guess = "2.0.4"
-rust-embed = { version = "8.3.0", features = ["axum-ex"] }
-prometheus = "0.13.3"
-lazy_static = "1.4.0"
-md5 = "0.7.0"
-chrono = "0.4"
-async-trait = "0.1"
-local-ip-address = "0.6"
-redis = { version = "0.25", features = ["tokio-comp", "cluster", "json"] }
-libwish = { path = "libs/libwish" }
+liveion = { path = "liveion" }
+liveman = { path = "liveman" }
+livetwo = { path = "livetwo" }
+net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
-live777-http = { path = "libs/live777-http" }
-live777-storage = { path = "libs/live777-storage" }
 
-# cargo install cargo-deb
-# Reference:  https://github.com/kornelski/cargo-deb
-[package.metadata.deb]
-maintainer = "Metal A-Wing <1@233.email>"
-copyright = "BinBat LTD <hey@binbat.com>"
-license-file = ["LICENSE"]
-extended-description = """\
-A very simple, high performance, edge WebRTC SFU.\
-Real-time video streaming for the `WHIP`/`WHEP` as first protocol.\
-"""
-depends = "libc6 systemd"
-section = "utility"
-priority = "optional"
-assets = [
-    [
-        "target/release/live777",
-        "usr/bin/",
-        "755",
-    ],
-    [
-        "target/release/whipinto",
-        "usr/bin/",
-        "755",
-    ],
-    [
-        "target/release/whepfrom",
-        "usr/bin/",
-        "755",
-    ],
-    [
-        "config-dist.toml",
-        "etc/live777/config.toml",
-        "644",
-    ],
-    [
-        "live777.service",
-        "usr/lib/systemd/system/live777.service",
-        "644",
-    ],
-    [
-        "README.md",
-        "usr/share/doc/live777/README",
-        "644",
-    ],
-]
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+serde = { workspace = true }
+
+toml = "0.8.19"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+webui = ["liveion/webui", "liveman/webui"]
+net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
+

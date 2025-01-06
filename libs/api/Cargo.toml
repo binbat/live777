@@ -1,0 +1,10 @@
+[package]
+name = "api"
+edition.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+serde = { workspace = true, features = ["serde_derive"] }
+serde_html_form = "0.2.6"

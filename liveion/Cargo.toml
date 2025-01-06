@@ -1,0 +1,50 @@
+[package]
+name = "liveion"
+description = "A very simple, high performance, edge WebRTC SFU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+api = { path = "../libs/api" }
+auth = { path = "../libs/auth" }
+http-log = { path = "../libs/http-log" }
+libwish = { path = "../libs/libwish" }
+
+net4mqtt = { path = "../libs/net4mqtt", optional = true }
+
+anyhow = { workspace = true, features = ["backtrace"] }
+clap = { workspace = true, features = ["derive"] }
+http = { workspace = true }
+http-body = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = "0.1.15"
+async-stream = "0.3.5"
+tracing = { workspace = true }
+webrtc = { workspace = true }
+
+async-trait = "0.1"
+axum = { version = "0.7", features = ["multipart", "tracing"] }
+axum-extra = { version = "0.9.3", features = ["query"] }
+chrono = "0.4"
+hyper = "1.2.0"
+lazy_static = "1.4.0"
+md5 = "0.7.0"
+mime_guess = "2.0.4"
+prometheus = "0.13.3"
+serde_json = "1.0.114"
+tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+], default-features = false }
+
+rust-embed = { version = "8.4", features = ["axum-ex"], optional = true }
+
+[features]
+webui = ["dep:rust-embed"]
+net4mqtt = ["dep:net4mqtt"]

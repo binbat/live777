@@ -1,7 +1,6 @@
 use anyhow::Result;
-use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::{
-    header::{HeaderMap, HeaderValue},
+    header::{self, HeaderMap, HeaderValue},
     Body, Method, Response, StatusCode,
 };
 use std::str::FromStr;
@@ -14,23 +13,16 @@ use webrtc::{
 #[derive(Clone)]
 pub struct Client {
     pub url: String,
-    pub resource_url: Option<String>,
+    pub session_url: Option<String>,
     pub default_headers: HeaderMap,
 }
 
 impl Client {
-    pub fn get_auth_header_map(basic: Option<String>, token: Option<String>) -> Option<HeaderMap> {
+    pub fn get_auth_header_map(token: Option<String>) -> Option<HeaderMap> {
         let mut header_map = HeaderMap::new();
-        if let Some(auth_basic) = basic {
-            let encoded = STANDARD.encode(auth_basic);
+        if let Some(auth_token) = token {
             header_map.insert(
-                "Authorization",
-                format!("Basic {}", encoded).parse().unwrap(),
-            );
-            Some(header_map)
-        } else if let Some(auth_token) = token {
-            header_map.insert(
-                "Authorization",
+                header::AUTHORIZATION,
                 format!("Bearer {}", auth_token).parse().unwrap(),
             );
             Some(header_map)
@@ -42,7 +34,7 @@ impl Client {
     pub fn get_authorization_header_map(authorization: Option<String>) -> Option<HeaderMap> {
         authorization.map(|authorization| {
             let mut header_map = HeaderMap::new();
-            header_map.insert("Authorization", authorization.parse().unwrap());
+            header_map.insert(header::AUTHORIZATION, authorization.parse().unwrap());
             header_map
         })
     }
@@ -50,19 +42,19 @@ impl Client {
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
         Client {
             url,
-            resource_url: None,
+            session_url: None,
             default_headers: defulat_headers.unwrap_or_default(),
         }
     }
 
     pub fn build(
         url: String,
-        resource_url: Option<String>,
+        session_url: Option<String>,
         defulat_headers: Option<HeaderMap>,
     ) -> Self {
         Client {
             url,
-            resource_url,
+            session_url,
             default_headers: defulat_headers.unwrap_or_default(),
         }
     }
@@ -72,25 +64,28 @@ impl Client {
         sdp: String,
     ) -> Result<(RTCSessionDescription, Vec<RTCIceServer>)> {
         let mut header_map = self.default_headers.clone();
-        header_map.insert("Content-Type", HeaderValue::from_str("application/sdp")?);
+        header_map.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str("application/sdp")?,
+        );
         let response = request(self.url.clone(), "POST", header_map, sdp).await?;
         if response.status() != StatusCode::CREATED {
             return Err(anyhow::anyhow!(get_response_error(response).await));
         }
-        let resource_url = response
+        let session_url = response
             .headers()
-            .get("location")
+            .get(header::LOCATION)
             .ok_or_else(|| anyhow::anyhow!("Response missing location header"))?
             .to_str()?
             .to_owned();
         let mut url = Url::parse(self.url.as_str())?;
-        match Url::parse(resource_url.as_str()) {
+        match Url::parse(session_url.as_str()) {
             Ok(url) => {
-                self.resource_url = Some(url.into());
+                self.session_url = Some(url.into());
             }
             Err(_) => {
-                url.set_path(resource_url.as_str());
-                self.resource_url = Some(url.into());
+                url.set_path(session_url.as_str());
+                self.session_url = Some(url.into());
             }
         }
         let ice_servers = Self::parse_ide_servers(&response)?;
@@ -100,7 +95,7 @@ impl Client {
     }
 
     fn parse_ide_servers(response: &Response) -> Result<Vec<RTCIceServer>> {
-        let links = response.headers().get_all("Link");
+        let links = response.headers().get_all(header::LINK);
         let mut ice_servers = vec![];
         for link in links {
             let mut link = link.to_str()?.to_owned();
@@ -110,12 +105,13 @@ impl Client {
                 if &rel != "ice-server" {
                     continue;
                 }
+
                 ice_servers.push(RTCIceServer {
-                    urls: vec![link.uri.to_string().replacen("://", ":", 1)],
-                    username: link.queries.remove("username").unwrap_or("".to_owned()),
-                    credential: link.queries.remove("credential").unwrap_or("".to_owned()),
+                    urls: vec![link.raw_uri.to_string().replacen("://", ":", 1)],
+                    username: link.params.remove("username").unwrap_or("".to_owned()),
+                    credential: link.params.remove("credential").unwrap_or("".to_owned()),
                     credential_type: link
-                        .queries
+                        .params
                         .remove("credential-type")
                         .unwrap_or("".to_owned())
                         .as_str()
@@ -127,12 +123,12 @@ impl Client {
     }
 
     pub async fn remove_resource(&self) -> Result<()> {
-        let resource_url = self
-            .resource_url
+        let session_url = self
+            .session_url
             .clone()
             .ok_or(anyhow::anyhow!("there is no resource url"))?;
         let header_map = self.default_headers.clone();
-        let response = request(resource_url, "DELETE", header_map, "").await?;
+        let response = request(session_url, "DELETE", header_map, "").await?;
         if response.status() != StatusCode::NO_CONTENT {
             Err(anyhow::anyhow!(get_response_error(response).await))
         } else {
@@ -163,4 +159,49 @@ async fn request<T: Into<Body>>(
         .send()
         .await
         .map_err(|e| e.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use http::header;
+    use http::response::Builder;
+    use reqwest::Response;
+    use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
+
+    use crate::Client;
+
+    #[test]
+    fn test_from_http_response() {
+        let response = Builder::new()
+            .header(header::LINK, r#"<stun:stun.22333.fun>; rel="ice-server""#)
+            .header(header::LINK, r#"<stun:stun.l.google.com:19302>; rel="ice-server""#)
+            .header(header::LINK, r#"<turn:turn.22333.fun>; rel="ice-server"; username="live777"; credential="live777"; credential-type="password""#)
+            .body("")
+            .unwrap();
+        let response = Response::from(response);
+
+        let ice_servers = Client::parse_ide_servers(&response).unwrap();
+        assert_eq!(ice_servers.len(), 3);
+        assert_eq!(
+            ice_servers.first().unwrap().urls.first().unwrap(),
+            "stun:stun.22333.fun"
+        );
+        assert_eq!(
+            ice_servers.get(1).unwrap().urls.first().unwrap(),
+            "stun:stun.l.google.com:19302"
+        );
+
+        assert_eq!(
+            ice_servers.get(2).unwrap().urls.first().unwrap(),
+            "turn:turn.22333.fun"
+        );
+        assert_eq!(ice_servers.get(2).unwrap().username, "live777");
+        assert_eq!(ice_servers.get(2).unwrap().credential, "live777");
+        assert_eq!(
+            ice_servers.get(2).unwrap().credential_type,
+            RTCIceCredentialType::Password
+        );
+
+        println!("{:?}", ice_servers);
+    }
 }
