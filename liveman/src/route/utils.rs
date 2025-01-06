@@ -117,3 +117,43 @@ pub async fn session_delete(
         Err(anyhow!("http status not success"))
     }
 }
+pub async fn cascade_pull(
+    client: reqwest::Client,
+    server_src: Server,
+    server_dst: Server,
+    stream: String,
+) -> Result<(), Error> {
+    let mut headers = HeaderMap::new();
+    headers.append("Content-Type", "application/json".parse().unwrap());
+
+    let url = format!("{}{}", server_dst.url, &api::path::cascade(&stream));
+
+ 
+    let body = serde_json::to_string(&Cascade {
+        source_url: Some(format!("{}/whep/{}", server_src.url, stream)),
+        token: Some(server_src.token.clone()),  
+        target_url: None,  
+    })
+    .unwrap();
+
+    trace!("cascade pull request: {:?}", body);
+
+    let response = client
+        .post(url.clone())
+        .headers(headers)
+        .body(body)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        error!(
+            "url: {:?}, [{:?}], response: {:?}",
+            url,
+            response.status(),
+            response.text().await?
+        );
+        Err(anyhow!("http status not success"))
+    }
+}
