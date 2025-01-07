@@ -128,11 +128,10 @@ pub async fn cascade_pull(
 
     let url = format!("{}{}", server_dst.url, &api::path::cascade(&stream));
 
- 
     let body = serde_json::to_string(&Cascade {
         source_url: Some(format!("{}/whep/{}", server_src.url, stream)),
-        token: Some(server_src.token.clone()),  
-        target_url: None,  
+        token: Some(server_src.token.clone()),
+        target_url: None,
     })
     .unwrap();
 
