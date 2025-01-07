@@ -1,6 +1,5 @@
-use std::{env, net::SocketAddr, str::FromStr};
-
 use serde::{Deserialize, Serialize};
+use std::{env, net::SocketAddr, str::FromStr};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -163,6 +162,15 @@ fn default_log_level() -> String {
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum CascadeMode {
+    #[default]
+    Push,
+    Pull,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cascade {
     #[serde(default)]
@@ -173,6 +181,9 @@ pub struct Cascade {
     pub maximum_idle_time: u64,
     #[serde(default)]
     pub close_other_sub: bool,
+
+    #[serde(default)]
+    pub mode: CascadeMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

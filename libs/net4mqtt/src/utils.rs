@@ -21,11 +21,11 @@ fn strip_slashes(path: &str) -> &str {
     let mut start = 0;
     let mut end = path.len();
 
-    if path.starts_with("/") {
+    if path.starts_with('/') {
         start = 1;
     }
 
-    if path.ends_with("/") {
+    if path.ends_with('/') {
         end -= 1;
     }
 
