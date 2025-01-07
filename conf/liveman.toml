@@ -41,7 +41,7 @@
 # close_other_sub = false
 # Cascade operating mode
 # Options: "push" or "pull". Determines whether cascade operates in push mode or pull mode.
-# Default is "pull"
+# Default is "push"
 # mode = "pull"
 
 # [net4mqtt]
