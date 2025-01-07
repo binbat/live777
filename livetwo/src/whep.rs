@@ -61,11 +61,11 @@ pub async fn from(
     info!("=== Received Output: {} ===", target_url);
 
     let mut host = match input.host() {
-        Some(Host::Domain(_)) | Some(Host::Ipv4(_)) => Ipv4Addr::UNSPECIFIED.to_string(),
-        Some(Host::Ipv6(_)) => Ipv6Addr::UNSPECIFIED.to_string(),
+        Some(Host::Domain(_)) | Some(Host::Ipv4(_)) => Ipv4Addr::LOCALHOST.to_string(),
+        Some(Host::Ipv6(_)) => Ipv6Addr::LOCALHOST.to_string(),
         None => {
             error!("Invalid host for {}, using default.", input);
-            Ipv4Addr::UNSPECIFIED.to_string()
+            Ipv4Addr::LOCALHOST.to_string()
         }
     };
 
@@ -134,6 +134,7 @@ pub async fn from(
     }
     if input.scheme() == SCHEME_RTSP_CLIENT {
         media_info = setup_rtsp_push_session(&target_url, filtered_sdp.clone()).await?;
+        info!("RTSP client media info: {:?}", media_info);
     } else {
         media_info.video_rtp_client = pick_unused_port();
         media_info.audio_rtp_client = pick_unused_port();
