@@ -112,18 +112,7 @@ pub async fn into(
 
         media_info = rx.recv().await.unwrap();
     } else if input.scheme() == SCHEME_RTSP_CLIENT {
-        let (video_port, audio_port, video_codec, audio_codec) =
-            setup_rtsp_session(&target_url).await?;
-        media_info = rtsp::MediaInfo {
-            video_rtp_client: None,
-            audio_rtp_client: None,
-            video_codec: Some(video_codec),
-            audio_codec: Some(audio_codec),
-            video_rtp_server: Some(video_port),
-            audio_rtp_server: Some(audio_port),
-            video_rtcp_client: Some(video_port + 1),
-            audio_rtcp_client: Some(audio_port + 1),
-        };
+        media_info = setup_rtsp_session(&target_url).await?;
     } else {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let path = Path::new(&target_url);

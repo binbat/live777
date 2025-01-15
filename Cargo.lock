@@ -1761,7 +1761,7 @@ dependencies = [
  "rtsp",
  "rtsp-types",
  "scopeguard",
- "sdp 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sdp 0.7.0",
  "sdp-types",
  "signal",
  "tokio",
@@ -3059,6 +3059,18 @@ dependencies = [
 name = "sdp"
 version = "0.6.2"
 source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+dependencies = [
+ "rand",
+ "substring",
+ "thiserror",
+ "url",
+]
+
+[[package]]
+name = "sdp"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02a526161f474ae94b966ba622379d939a8fe46c930eebbadb73e339622599d5"
 dependencies = [
  "rand",
  "substring",

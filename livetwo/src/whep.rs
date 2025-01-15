@@ -39,7 +39,8 @@ use webrtc::{
 
 use libwish::Client;
 
-use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_SERVER};
+use crate::rtspclient::setup_rtsp_push_session;
+use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
 pub async fn from(
     target_url: String,
@@ -107,7 +108,7 @@ pub async fn from(
     if input.scheme() == SCHEME_RTSP_SERVER {
         let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
-        handler.set_sdp(filtered_sdp.into_bytes());
+        handler.set_sdp(filtered_sdp.clone().into_bytes());
 
         let host2 = host.to_string();
         let tcp_port = input.port().unwrap_or(0);
@@ -130,6 +131,9 @@ pub async fn from(
         });
 
         media_info = rx.recv().await.unwrap();
+    }
+    if input.scheme() == SCHEME_RTSP_CLIENT {
+        media_info = setup_rtsp_push_session(&target_url, filtered_sdp.clone()).await?;
     } else {
         media_info.video_rtp_client = pick_unused_port();
         media_info.audio_rtp_client = pick_unused_port();
