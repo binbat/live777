@@ -39,6 +39,10 @@
 # maximum_idle_time = 60000
 # When cascade is working, close src server not cascade push session subscription
 # close_other_sub = false
+# Cascade operating mode
+# Options: "push" or "pull". Determines whether cascade operates in push mode or pull mode.
+# Default is "push"
+# mode = "pull"
 
 # [net4mqtt]
 # Global unique alias

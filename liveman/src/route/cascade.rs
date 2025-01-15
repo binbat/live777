@@ -2,37 +2,57 @@ use std::collections::HashSet;
 
 use tracing::{error, info};
 
-use crate::route::utils::{cascade_push, force_check_times, session_delete};
+use crate::config::CascadeMode;
+use crate::route::utils::{cascade_pull, cascade_push, force_check_times, session_delete};
 use crate::store::Server;
-use crate::{error::AppError, result::Result, AppState};
+use crate::{result::Result, AppState};
 
 pub async fn cascade_new_node(
     mut state: AppState,
     nodes: Vec<Server>,
     stream: String,
 ) -> Result<Server> {
-    let set_all: HashSet<Server> = state.storage.nodes().await.into_iter().clone().collect();
+    let set_all: HashSet<Server> = state.storage.nodes().await.into_iter().collect();
     let set_src: HashSet<Server> = nodes.clone().into_iter().collect();
     let set_dst: HashSet<&Server> = set_all.difference(&set_src).collect();
-
     let arr = set_dst.into_iter().collect::<Vec<&Server>>();
 
     let server_src = nodes.first().unwrap().clone();
     let server_ds0 = *arr.first().unwrap();
     let server_dst = server_ds0.clone();
 
-    info!("cascade from: {:?}, to: {:?}", server_src, server_dst);
+    let mode = state.config.cascade.mode.clone();
+    let public = state.config.http.public.clone();
+    let client = state.client.clone();
+
+    info!(
+        "cascade mode: {:?}, from: {:?}, to: {:?}",
+        mode, server_src, server_dst
+    );
 
     tokio::spawn(async move {
-        match cascade_push(
-            state.config.http.public.clone(),
-            state.client.clone(),
-            server_src.clone(),
-            server_dst.clone(),
-            stream.clone(),
-        )
-        .await
-        {
+        let cascade_result = match mode {
+            CascadeMode::Push => {
+                cascade_push(
+                    public,
+                    client.clone(),
+                    server_src.clone(),
+                    server_dst.clone(),
+                    stream.clone(),
+                )
+                .await
+            }
+            CascadeMode::Pull => {
+                cascade_pull(
+                    state.client.clone(),
+                    server_src.clone(),
+                    server_dst.clone(),
+                    stream.clone(),
+                )
+                .await
+            }
+        };
+        match cascade_result {
             Ok(()) => {
                 match force_check_times(
                     state.client.clone(),
@@ -46,18 +66,15 @@ pub async fn cascade_new_node(
                         if state.config.cascade.close_other_sub {
                             cascade_close_other_sub(state, server_src, stream).await
                         }
-                        info!("cascade success, checked attempts: {}", count)
+                        info!("cascade {:?} success, checked attempts: {}", mode, count)
                     }
                     Err(e) => error!("cascade check error: {:?}", e),
                 }
-                Ok(server_dst.clone())
             }
-            Err(e) => {
-                error!("cascade error: {:?}", e);
-                Err(AppError::InternalServerError(e))
-            }
+            Err(e) => error!("cascade {:?} error: {:?}", mode, e),
         }
     });
+
     Ok(server_ds0.clone())
 }
 
