@@ -1,5 +1,10 @@
 use std::{future::Future, time::Duration};
 
+use crate::admin::{authorize, token};
+use crate::config::Config;
+use crate::store::{Node, NodeKind, Storage};
+use auth::{access::access_middleware, ManyValidate};
+use axum::body::Body;
 use axum::{extract::Request, middleware, response::IntoResponse, routing::post, Router};
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
@@ -7,11 +12,6 @@ use tower_http::{
     cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
 };
 use tracing::{error, info, info_span};
-
-use crate::admin::{authorize, token};
-use crate::config::Config;
-use crate::store::{Node, NodeKind, Storage};
-use auth::{access::access_middleware, ManyValidate};
 
 #[cfg(feature = "webui")]
 #[derive(rust_embed::RustEmbed)]
@@ -145,8 +145,11 @@ where
         storage: store,
     };
 
-    let auth_layer =
-        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
+    // 修改 auth_layer 的创建
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::<Body>::new(
+        cfg.auth.secret,
+        cfg.auth.tokens,
+    ));
     let app = Router::new()
         .merge(
             route::proxy::route()

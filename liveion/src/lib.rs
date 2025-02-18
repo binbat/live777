@@ -10,9 +10,10 @@ use tracing::{error, info_span, Level};
 
 use auth::{access::access_middleware, ManyValidate};
 use error::AppError;
-
+// 在 use 声明中添加
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
+use axum::body::Body;
 
 use stream::manager::Manager;
 
@@ -42,8 +43,11 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let auth_layer =
-        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
+    // 修改 auth_layer 的创建
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::<Body>::new(
+        cfg.auth.secret,
+        cfg.auth.tokens,
+    ));
     let app = Router::new()
         .merge(
             whip::route()

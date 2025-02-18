@@ -371,7 +371,7 @@ pub fn filter_sdp(
                     .retain(|fmt| fmt == &video_codec.payload_type.to_string());
                 media.attributes.retain(|attr| {
                     attr.key == "rtpmap"
-                        && attr.value.as_ref().map_or(false, |v| {
+                        && attr.value.as_ref().is_some_and(|v| {
                             v.starts_with(&video_codec.payload_type.to_string())
                         })
                 });
@@ -391,7 +391,7 @@ pub fn filter_sdp(
                     .retain(|fmt| fmt == &audio_codec.payload_type.to_string());
                 media.attributes.retain(|attr| {
                     attr.key == "rtpmap"
-                        && attr.value.as_ref().map_or(false, |v| {
+                        && attr.value.as_ref().is_some_and(|v| {
                             v.starts_with(&audio_codec.payload_type.to_string())
                         })
                 });
@@ -402,10 +402,10 @@ pub fn filter_sdp(
                 });
             }
         }
-
+    
         true
     });
-
+    
     session.attributes.retain(|attr| {
         !attr.key.starts_with("group")
             && !attr.key.starts_with("fingerprint")
