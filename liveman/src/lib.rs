@@ -145,7 +145,6 @@ where
         storage: store,
     };
 
-    // 修改 auth_layer 的创建
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::<Body>::new(
         cfg.auth.secret,
         cfg.auth.tokens,

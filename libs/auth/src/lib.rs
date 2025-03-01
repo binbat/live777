@@ -4,7 +4,7 @@ use http::{header, Request, Response, StatusCode};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use std::{collections::HashSet, marker::PhantomData};
 use tower_http::validate_request::ValidateRequest;
-// 添加这个导入
+
 use crate::claims::Claims;
 
 pub mod access;
@@ -54,9 +54,7 @@ impl<ResBody> Clone for ManyValidate<ResBody> {
     }
 }
 
-// 修改这个实现，添加必要的trait bounds
 impl<B: Default> ValidateRequest<B> for ManyValidate<B> {
-    // 添加关联类型
     type ResponseBody = B;
 
     fn validate(&mut self, request: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>> {
