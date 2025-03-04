@@ -8,11 +8,11 @@ use tower_http::{
 };
 use tracing::{error, info_span, Level};
 
-use auth::{access::access_middleware, ManyValidate};
-use error::AppError;
-
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
+use auth::{access::access_middleware, ManyValidate};
+use axum::body::Body;
+use error::AppError;
 
 use stream::manager::Manager;
 
@@ -42,8 +42,10 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let auth_layer =
-        ValidateRequestHeaderLayer::custom(ManyValidate::new(cfg.auth.secret, cfg.auth.tokens));
+    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::<Body>::new(
+        cfg.auth.secret,
+        cfg.auth.tokens,
+    ));
     let app = Router::new()
         .merge(
             whip::route()
