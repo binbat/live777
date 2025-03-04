@@ -371,9 +371,10 @@ pub fn filter_sdp(
                     .retain(|fmt| fmt == &video_codec.payload_type.to_string());
                 media.attributes.retain(|attr| {
                     attr.key == "rtpmap"
-                        && attr.value.as_ref().map_or(false, |v| {
-                            v.starts_with(&video_codec.payload_type.to_string())
-                        })
+                        && attr
+                            .value
+                            .as_ref()
+                            .is_some_and(|v| v.starts_with(&video_codec.payload_type.to_string()))
                 });
                 media.media_name.protos = vec!["RTP".to_string(), "AVP".to_string()];
                 media.attributes.push(Attribute {
@@ -391,9 +392,10 @@ pub fn filter_sdp(
                     .retain(|fmt| fmt == &audio_codec.payload_type.to_string());
                 media.attributes.retain(|attr| {
                     attr.key == "rtpmap"
-                        && attr.value.as_ref().map_or(false, |v| {
-                            v.starts_with(&audio_codec.payload_type.to_string())
-                        })
+                        && attr
+                            .value
+                            .as_ref()
+                            .is_some_and(|v| v.starts_with(&audio_codec.payload_type.to_string()))
                 });
                 media.media_name.protos = vec!["RTP".to_string(), "AVP".to_string()];
                 media.attributes.push(Attribute {
