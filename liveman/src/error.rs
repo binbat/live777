@@ -6,9 +6,9 @@ pub enum AppError {
     NoAvailableNode,
     RequestProxyError,
     ResourceNotFound,
+    ResourceAlreadyExists,
     InternalServerError(anyhow::Error),
 }
-
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         match self {
@@ -25,6 +25,9 @@ impl IntoResponse for AppError {
                 .into_response(),
             AppError::ResourceNotFound => {
                 (StatusCode::NOT_FOUND, "resource not exists".to_string()).into_response()
+            }
+            AppError::ResourceAlreadyExists => {
+                (StatusCode::CONFLICT, "resource already exists".to_string()).into_response()
             }
         }
     }
