@@ -13,7 +13,7 @@ use tokio::{
     net::TcpStream,
     time::{self, Duration},
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 const USER_AGENT: &str = "whipinto";
 const DEFAULT_RTSP_PORT: u16 = 554;
@@ -136,12 +136,12 @@ impl RtspSession {
                 .await
                 .is_err()
             {
-                eprintln!("Failed to send OPTIONS request");
+                warn!("Failed to send OPTIONS request");
                 break;
             }
 
             if self.read_response().await.is_err() {
-                eprintln!("Failed to read OPTIONS response");
+                warn!("Failed to read OPTIONS response");
                 break;
             }
 
@@ -161,6 +161,42 @@ impl RtspSession {
             .await?;
         self.read_response().await?;
         self.cseq += 1;
+        Ok(())
+    }
+
+    async fn send_announce_request(&mut self, sdp: String) -> Result<()> {
+        let announce_request = Request::builder(Method::Announce, Version::V1_0)
+            .request_uri(
+                self.uri
+                    .parse::<Url>()
+                    .map_err(|_| anyhow!("Invalid URI"))?,
+            )
+            .header(headers::CSEQ, self.cseq.to_string())
+            .header(headers::CONTENT_TYPE, "application/sdp")
+            .header(headers::USER_AGENT, USER_AGENT)
+            .build(sdp.into_bytes());
+
+        self.send_request(&announce_request).await?;
+        let announce_response = self.read_response().await?;
+        self.cseq += 1;
+
+        if announce_response.status() == StatusCode::Unauthorized {
+            if let Some(auth_header) = announce_response.header(&WWW_AUTHENTICATE).cloned() {
+                let announce_response = self
+                    .handle_unauthorized(Method::Announce, &auth_header)
+                    .await?;
+                if announce_response.status() != StatusCode::Ok {
+                    return Err(anyhow!("ANNOUNCE request failed after authentication"));
+                }
+            } else {
+                return Err(anyhow!(
+                    "ANNOUNCE request failed with 401 Unauthorized and no WWW-Authenticate header"
+                ));
+            }
+        } else if announce_response.status() != StatusCode::Ok {
+            return Err(anyhow!("ANNOUNCE request failed"));
+        }
+
         Ok(())
     }
 
@@ -197,10 +233,25 @@ impl RtspSession {
         Ok(sdp_content)
     }
 
-    async fn send_setup_request(&mut self) -> Result<String> {
+    async fn send_setup_request(
+        &mut self,
+        transport_mode: Option<transport::TransportMode>,
+    ) -> Result<(String, u16)> {
         let rtp_client_port = self
             .rtp_client_port
             .ok_or_else(|| anyhow!("RTP server port not set"))?;
+        debug!("Using RTP client port: {}", rtp_client_port);
+
+        let mut transport_params = transport::RtpTransportParameters {
+            unicast: true,
+            client_port: Some((rtp_client_port, Some(rtp_client_port + 1))),
+            ..Default::default()
+        };
+
+        if let Some(mode) = transport_mode {
+            transport_params.mode.push(mode);
+        }
+
         let mut setup_request_builder = Request::builder(Method::Setup, Version::V1_0)
             .request_uri(
                 self.uri
@@ -213,50 +264,71 @@ impl RtspSession {
                 transport::Transport::Rtp(transport::RtpTransport {
                     profile: transport::RtpProfile::Avp,
                     lower_transport: None,
-                    params: transport::RtpTransportParameters {
-                        unicast: true,
-                        client_port: Some((rtp_client_port, Some(rtp_client_port + 1))),
-                        ..Default::default()
-                    },
+                    params: transport_params,
                 }),
             ]));
 
+        info!(
+            "Preparing SETUP request for URI: {}, RTP client port: {}-{}",
+            self.uri,
+            rtp_client_port,
+            rtp_client_port + 1
+        );
+
         if let Some(auth_header) = &self.auth_header {
+            debug!("Adding AUTHORIZATION header to SETUP request");
             let (realm, nonce) = Self::parse_auth(auth_header)?;
             let auth_header_value =
                 self.generate_authorization_header(&realm, &nonce, &Method::Setup);
             setup_request_builder =
-                setup_request_builder.header(headers::AUTHORIZATION, auth_header_value)
+                setup_request_builder.header(headers::AUTHORIZATION, auth_header_value);
+        } else {
+            debug!("No AUTHORIZATION header required for SETUP request");
         }
 
         if let Some(session_id) = &self.session_id {
+            debug!("Adding SESSION header with ID: {}", session_id);
             setup_request_builder =
                 setup_request_builder.header(headers::SESSION, session_id.as_str());
         }
 
         let setup_request = setup_request_builder.empty();
+        debug!("SETUP request constructed: {:?}", setup_request);
 
+        info!("Sending SETUP request...");
         self.send_request(&setup_request.map_body(|_| vec![]))
             .await?;
+        debug!("SETUP request sent successfully");
+
         let setup_response = self.read_response().await?;
         self.cseq += 1;
+        debug!("Received SETUP response: {:?}", setup_response);
 
         if setup_response.status() == StatusCode::Unauthorized {
+            error!("SETUP request returned 401 Unauthorized");
             if let Some(auth_header) = setup_response.header(&WWW_AUTHENTICATE).cloned() {
+                info!("Handling unauthorized response, retrying with authentication...");
                 let setup_response = self
                     .handle_unauthorized(Method::Setup, &auth_header)
                     .await?;
                 if setup_response.status() != StatusCode::Ok {
+                    error!("SETUP request failed after authentication");
                     return Err(anyhow!("SETUP request failed after authentication"));
                 }
             } else {
+                error!("401 Unauthorized response but no WWW-Authenticate header found");
                 return Err(anyhow!(
                     "SETUP request failed with 401 Unauthorized and no WWW-Authenticate header"
                 ));
             }
         } else if setup_response.status() != StatusCode::Ok {
+            error!(
+                "SETUP request failed with status: {}",
+                setup_response.status()
+            );
             return Err(anyhow!("SETUP request failed"));
         }
+        info!("SETUP request succeeded");
 
         let session_id = setup_response
             .header(&headers::SESSION)
@@ -266,12 +338,36 @@ impl RtspSession {
             .next()
             .ok_or_else(|| anyhow!("Failed to parse session ID"))?
             .to_string();
+        debug!("Extracted session ID: {}", session_id);
 
-        Ok(session_id)
+        let transport_header = setup_response
+            .header(&headers::TRANSPORT)
+            .ok_or_else(|| anyhow!("Transport header not found"))?
+            .as_str();
+        debug!("Received transport header: {}", transport_header);
+
+        let server_port = transport_header
+            .split(';')
+            .find_map(|part| part.strip_prefix("server_port="))
+            .and_then(|server_port_str| server_port_str.split('-').next())
+            .ok_or_else(|| anyhow!("server_port not found in transport header"))?
+            .parse::<u16>()
+            .map_err(|_| anyhow!("Failed to parse server port"))?;
+        info!(
+            "Extracted server port from transport header: {}",
+            server_port
+        );
+
+        info!(
+            "SETUP request completed. Session ID: {}, Server Port: {}",
+            session_id, server_port
+        );
+
+        Ok((session_id, server_port))
     }
 }
 
-pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, u16, Codec, Codec)> {
+pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     let mut url = Url::parse(rtsp_url)?;
     let host = url
         .host()
@@ -314,57 +410,25 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, u16, Codec, Code
         return Err(anyhow!("No tracks found in SDP"));
     }
 
-    let rtp_port = pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
-    let rtp_audio_port = pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
+    let mut media_info = rtsp::MediaInfo::default();
 
-    let video_uri = video_track
-        .and_then(|md| {
-            md.attributes.iter().find_map(|attr| {
-                if attr.attribute == "control" {
-                    let value = attr.value.clone().unwrap_or_default();
-                    if value.starts_with("rtsp://") {
-                        Some(value)
-                    } else {
-                        Some(format!("{}/{}", rtsp_session.uri, value))
-                    }
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or_else(|| format!("{}/trackID=1", rtsp_session.uri));
+    if let Some(video_track) = video_track {
+        let (rtp_client, rtcp_client, rtp_server, codec) =
+            setup_track(&mut rtsp_session, video_track, "0").await?;
+        media_info.video_rtp_server = rtp_client;
+        media_info.video_rtcp_client = rtcp_client;
+        media_info.video_rtp_client = rtp_server;
+        media_info.video_codec = codec;
+    }
 
-    let audio_uri = audio_track
-        .and_then(|md| {
-            md.attributes.iter().find_map(|attr| {
-                if attr.attribute == "control" {
-                    let value = attr.value.clone().unwrap_or_default();
-                    if value.starts_with("rtsp://") {
-                        Some(value)
-                    } else {
-                        Some(format!("{}/{}", rtsp_session.uri, value))
-                    }
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or_else(|| format!("{}/trackID=2", rtsp_session.uri));
-
-    trace!("video uri: {:?}", video_uri);
-    trace!("audio uri: {:?}", audio_uri);
-
-    rtsp_session.uri.clone_from(&video_uri);
-    rtsp_session.rtp_client_port = Some(rtp_port);
-
-    let session_id = rtsp_session.send_setup_request().await?;
-    trace!("session id: {:?}", session_id);
-
-    rtsp_session.session_id = Some(session_id);
-
-    rtsp_session.uri.clone_from(&audio_uri);
-    rtsp_session.rtp_client_port = Some(rtp_audio_port);
-    rtsp_session.send_setup_request().await?;
+    if let Some(audio_track) = audio_track {
+        let (rtp_client, rtcp_client, rtp_server, codec) =
+            setup_track(&mut rtsp_session, audio_track, "1").await?;
+        media_info.audio_rtp_server = rtp_client;
+        media_info.audio_rtcp_client = rtcp_client;
+        media_info.audio_rtp_client = rtp_server;
+        media_info.audio_codec = codec;
+    }
 
     let play_request = Request::builder(Method::Play, Version::V1_0)
         .request_uri(
@@ -401,44 +465,251 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<(u16, u16, Codec, Code
 
     tokio::spawn(rtsp_session.keep_rtsp_alive());
 
-    let video_codec = video_track
-        .and_then(|md| {
-            md.attributes.iter().find_map(|attr| {
-                if attr.attribute == "rtpmap" {
-                    let parts: Vec<&str> = attr.value.as_ref()?.split_whitespace().collect();
-                    if parts.len() > 1 {
-                        Some(parts[1].split('/').next().unwrap_or("").to_string())
+    Ok(media_info)
+}
+
+pub async fn setup_rtsp_push_session(
+    rtsp_url: &str,
+    sdp_content: String,
+) -> Result<rtsp::MediaInfo> {
+    let mut url = Url::parse(rtsp_url)?;
+    let host = url.host_str().ok_or_else(|| anyhow!("Invalid RTSP URL"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("Invalid RTSP URL"))?;
+
+    let addr = format!("{}:{}", host, port);
+
+    let stream = TcpStream::connect(&addr).await?;
+    info!("Connected to RTSP server: {}", addr);
+
+    let mut rtsp_session = RtspSession {
+        stream,
+        uri: url.as_str().to_string(),
+        cseq: 1,
+        auth_params: AuthParams {
+            username: url.username().to_string(),
+            password: url.password().unwrap_or("").to_string(),
+        },
+        session_id: None,
+        rtp_client_port: None,
+        auth_header: None,
+    };
+
+    url.set_username("").unwrap();
+    url.set_password(None).unwrap();
+
+    rtsp_session.send_options_request().await?;
+    debug!("OPTIONS request successful");
+
+    debug!("SDP Content: {}", sdp_content);
+    rtsp_session
+        .send_announce_request(sdp_content.clone())
+        .await?;
+    debug!("ANNOUNCE request successful");
+
+    let sdp: Session = Session::parse(sdp_content.as_bytes())
+        .map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
+    info!("Parsed SDP successfully");
+    debug!("Parsed SDP: {:?}", sdp);
+
+    let video_track = sdp.medias.iter().find(|md| md.media == "video");
+    let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
+    debug!(
+        "Found video track: {:?}, audio track: {:?}",
+        video_track, audio_track
+    );
+
+    if video_track.is_none() && audio_track.is_none() {
+        error!("No tracks found in SDP");
+        return Err(anyhow!("No tracks found in SDP"));
+    }
+    let mut media_info = rtsp::MediaInfo::default();
+
+    if let Some(video_track) = video_track {
+        info!("Setting up video track");
+        let video_url = video_track
+            .attributes
+            .iter()
+            .find_map(|attr| {
+                if attr.attribute == "control" {
+                    let value = attr.value.clone().unwrap_or_default();
+                    if value.starts_with("rtsp://") {
+                        Some(value)
                     } else {
-                        None
+                        Some(format!("{}/{}", rtsp_session.uri.clone(), value))
                     }
                 } else {
                     None
                 }
             })
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+            .unwrap_or_else(|| format!("{}/trackID=1", rtsp_session.uri));
+        debug!("Video track URL: {}", video_url);
 
-    let audio_codec = audio_track
-        .and_then(|md| {
-            md.attributes.iter().find_map(|attr| {
-                if attr.attribute == "rtpmap" {
-                    let parts: Vec<&str> = attr.value.as_ref()?.split_whitespace().collect();
-                    if parts.len() > 1 {
-                        Some(parts[1].split('/').next().unwrap_or("").to_string())
+        media_info.video_rtp_server =
+            Some(pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?);
+        debug!(
+            "Allocated RTP client port for video: {:?}",
+            media_info.video_rtp_server
+        );
+
+        rtsp_session.rtp_client_port = media_info.video_rtp_server;
+        rtsp_session.uri = video_url;
+
+        let (session_id, v_server_port) = rtsp_session
+            .send_setup_request(Some(transport::TransportMode::Record))
+            .await?;
+        info!(
+            "Video track SETUP successful, Session ID: {}, Server Port: {}",
+            session_id, v_server_port
+        );
+
+        rtsp_session.session_id = Some(session_id);
+        media_info.video_rtp_client = Some(v_server_port);
+    }
+
+    if let Some(audio_track) = audio_track {
+        rtsp_session.uri = url.as_str().to_string();
+        info!("Audio track URL: {:?}", audio_track);
+        let audio_url = audio_track
+            .attributes
+            .iter()
+            .find_map(|attr| {
+                if attr.attribute == "control" {
+                    let value = attr.value.clone().unwrap_or_default();
+                    if value.starts_with("rtsp://") {
+                        Some(value)
                     } else {
-                        None
+                        Some(format!("{}/{}", rtsp_session.uri.clone(), value))
                     }
                 } else {
                     None
                 }
             })
+            .unwrap_or_else(|| format!("{}/trackID=2", rtsp_session.uri));
+        debug!("Audio track URL: {}", audio_url);
+
+        media_info.audio_rtp_server =
+            Some(pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?);
+        debug!(
+            "Allocated RTP client port for audio: {:?}",
+            media_info.audio_rtp_server
+        );
+
+        rtsp_session.rtp_client_port = media_info.audio_rtp_server;
+        rtsp_session.uri = audio_url;
+
+        let (_session_id, a_server_port) = rtsp_session
+            .send_setup_request(Some(transport::TransportMode::Record))
+            .await?;
+        info!(
+            "Audio track SETUP successful, Server Port: {}",
+            a_server_port
+        );
+
+        media_info.audio_rtp_client = Some(a_server_port);
+    }
+
+    info!("Sending RECORD request");
+    rtsp_session.uri = url.as_str().to_string();
+    let record_request = Request::builder(Method::Record, Version::V1_0)
+        .request_uri(
+            rtsp_session
+                .uri
+                .parse::<Url>()
+                .map_err(|_| anyhow!("Invalid URI"))?,
+        )
+        .header(headers::CSEQ, rtsp_session.cseq.to_string())
+        .header(headers::USER_AGENT, USER_AGENT)
+        .header(
+            headers::SESSION,
+            rtsp_session
+                .session_id
+                .clone()
+                .ok_or_else(|| anyhow!("Missing session ID"))?,
+        )
+        .empty();
+
+    rtsp_session
+        .send_request(&record_request.map_body(|_| vec![]))
+        .await?;
+    let response = rtsp_session.read_response().await?;
+    rtsp_session.cseq += 1;
+
+    if response.status() == StatusCode::Unauthorized {
+        if let Some(auth_header) = response.header(&WWW_AUTHENTICATE).cloned() {
+            info!("Handling unauthorized response for RECORD request");
+            let response = rtsp_session
+                .handle_unauthorized(Method::Record, &auth_header)
+                .await?;
+            if response.status() != StatusCode::Ok {
+                error!("RECORD request failed after authentication");
+                return Err(anyhow!("RECORD request failed after authentication"));
+            }
+        } else {
+            error!("RECORD request failed with 401 Unauthorized and no WWW-Authenticate header");
+            return Err(anyhow!(
+                "RECORD request failed with 401 Unauthorized and no WWW-Authenticate header"
+            ));
+        }
+    } else if response.status() != StatusCode::Ok {
+        error!("RECORD request failed with status: {:?}", response.status());
+        return Err(anyhow!(
+            "RECORD request failed with status: {:?}",
+            response.status()
+        ));
+    }
+
+    info!("RTSP PUSH session setup complete, starting keep-alive task");
+    tokio::spawn(rtsp_session.keep_rtsp_alive());
+
+    Ok(media_info)
+}
+
+async fn setup_track(
+    rtsp_session: &mut RtspSession,
+    track: &sdp_types::Media,
+    track_id: &str,
+) -> Result<(Option<u16>, Option<u16>, Option<u16>, Option<Codec>)> {
+    let track_url = track
+        .attributes
+        .iter()
+        .find_map(|attr| {
+            if attr.attribute == "control" {
+                let value = attr.value.clone().unwrap_or_default();
+                if value.starts_with("rtsp://") {
+                    Some(value)
+                } else {
+                    Some(format!("{}/{}", rtsp_session.uri, value))
+                }
+            } else {
+                None
+            }
         })
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| format!("{}/trackID={}", rtsp_session.uri, track_id));
 
-    let video_codec = codec_from_str(&video_codec)?;
-    let audio_codec = codec_from_str(&audio_codec)?;
+    let rtp_client_port = pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
+    rtsp_session.rtp_client_port = Some(rtp_client_port);
+    rtsp_session.uri = track_url;
 
-    Ok((rtp_port, rtp_audio_port, video_codec, audio_codec))
+    let (session_id, rtp_server_port) = rtsp_session.send_setup_request(None).await?;
+    rtsp_session.session_id = Some(session_id);
+
+    let codec = track.attributes.iter().find_map(|attr| {
+        if attr.attribute == "rtpmap" {
+            let value = attr.value.as_ref()?.split_whitespace().nth(1)?;
+            codec_from_str(value).ok()
+        } else {
+            None
+        }
+    });
+
+    Ok((
+        Some(rtp_client_port),
+        Some(rtp_client_port + 1),
+        Some(rtp_server_port),
+        codec,
+    ))
 }
 
 fn generate_digest_response(
