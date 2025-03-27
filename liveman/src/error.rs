@@ -1,6 +1,5 @@
 use axum::response::{IntoResponse, Response};
 use http::StatusCode;
-
 #[derive(Debug)]
 pub enum AppError {
     NoAvailableNode,
