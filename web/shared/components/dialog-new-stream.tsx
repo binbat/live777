@@ -1,20 +1,20 @@
-import { useState, useRef, useImperativeHandle } from 'preact/hooks';
-import { TargetedEvent, forwardRef } from 'preact/compat';
-import { Button, Input, Modal } from 'react-daisyui';
+import { useState, useRef, useImperativeHandle } from "preact/hooks";
+import { TargetedEvent, forwardRef } from "preact/compat";
+import { Button, Input, Modal } from "react-daisyui";
 
-import { createStream } from '../api';
+import { createStream } from "../api";
 
 interface Props {
-    onNewStreamId(id: string): void
-    onStreamCreated(): void
+    onNewStreamId(id: string): void;
+    onStreamCreated(): void;
 }
 
 export interface INewStreamDialog {
-    show(initialId: string): void
+    show(initialId: string): void;
 }
 
 export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) => {
-    const [streamId, setStreamId] = useState('');
+    const [streamId, setStreamId] = useState("");
     const refDialog = useRef<HTMLDialogElement>(null);
 
     useImperativeHandle(ref, () => {
@@ -22,7 +22,7 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
             show: (initialId: string) => {
                 setStreamId(initialId);
                 refDialog.current?.showModal();
-            }
+            },
         };
     });
 
@@ -31,11 +31,14 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
     };
 
     const onConfirmNewStreamId = async (_e: Event) => {
-        props.onNewStreamId(streamId);
-        await createStream(streamId);
-        props.onStreamCreated();
+        try {
+            props.onNewStreamId(streamId);
+            await createStream(streamId);
+            props.onStreamCreated();
+        } catch (error) {
+            console.error("Failed to create stream:", error);
+        }
     };
-
     return (
         <Modal ref={refDialog} className="max-w-md">
             <Modal.Header className="mb-2">
