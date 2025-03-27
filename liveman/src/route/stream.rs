@@ -122,25 +122,21 @@ pub async fn show(
 pub async fn create(
     State(mut state): State<AppState>,
     Path(stream_id): Path<String>,
-    Query(query_extract): Query<QueryExtract>,  
+    Query(query_extract): Query<QueryExtract>,
 ) -> crate::result::Result<Response<String>> {
     let mut has = false;
     let map_server_stream = get_map_server_stream(state.storage.info_raw_all().await.unwrap());
 
     let servers = state.storage.get_cluster();
-    
 
     let server = if !query_extract.nodes.is_empty() {
-
-        servers.iter()
+        servers
+            .iter()
             .find(|s| query_extract.nodes.contains(&s.alias))
             .ok_or(AppError::NoAvailableNode)?
             .clone()
     } else {
-
-        servers.first()
-            .ok_or(AppError::NoAvailableNode)?
-            .clone()
+        servers.first().ok_or(AppError::NoAvailableNode)?.clone()
     };
 
     for srv in servers.iter() {

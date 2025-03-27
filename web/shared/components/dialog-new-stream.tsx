@@ -1,8 +1,8 @@
-import { useState, useRef, useImperativeHandle } from "preact/hooks";
-import { TargetedEvent, forwardRef } from "preact/compat";
-import { Button, Input, Modal } from "react-daisyui";
+import { useState, useRef, useImperativeHandle } from 'preact/hooks';
+import { TargetedEvent, forwardRef } from 'preact/compat';
+import { Button, Input, Modal } from 'react-daisyui';
 
-import { createStream } from "../api";
+import { createStream } from '../api';
 
 interface Props {
     onNewStreamId(id: string): void;
@@ -14,7 +14,7 @@ export interface INewStreamDialog {
 }
 
 export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) => {
-    const [streamId, setStreamId] = useState("");
+    const [streamId, setStreamId] = useState('');
     const refDialog = useRef<HTMLDialogElement>(null);
 
     useImperativeHandle(ref, () => {
@@ -36,7 +36,7 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
             await createStream(streamId);
             props.onStreamCreated();
         } catch (error) {
-            console.error("Failed to create stream:", error);
+            console.error('Failed to create stream:', error);
         }
     };
     return (
