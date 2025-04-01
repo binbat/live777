@@ -5,12 +5,12 @@ import { Button, Input, Modal } from 'react-daisyui';
 import { createStream } from '../api';
 
 interface Props {
-    onNewStreamId(id: string): void
-    onStreamCreated(): void
+    onNewStreamId(id: string): void;
+    onStreamCreated(): void;
 }
 
 export interface INewStreamDialog {
-    show(initialId: string): void
+    show(initialId: string): void;
 }
 
 export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) => {
@@ -22,7 +22,7 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
             show: (initialId: string) => {
                 setStreamId(initialId);
                 refDialog.current?.showModal();
-            }
+            },
         };
     });
 
@@ -30,10 +30,43 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
         setStreamId(e.currentTarget.value);
     };
 
+    function getCurrentNode(): string | null {
+        const urlParams = new URLSearchParams(window.location.search);
+        return urlParams.get('nodes');
+    }
+
+    async function handleCreateStream(streamId: string) {
+        const currentNode = getCurrentNode();
+        try {
+            await createStream(streamId, currentNode);
+            return true;
+        } catch (error: unknown) {
+            if (
+                error instanceof Object &&
+                'response' in error &&
+                typeof (error as { response: { status: number } }).response.status === 'number' &&
+                (error as { response: { status: number } }).response.status === 409
+            ) {
+                window.alert('Resource already exists, please use a different streamId');
+                return false;
+            }
+            window.alert('Failed to create stream, please try again later');
+            return false;
+        }
+    }
+
     const onConfirmNewStreamId = async (_e: Event) => {
+        if (!streamId.trim()) {
+            window.alert('Please enter a valid Stream ID');
+            return;
+        }
+
         props.onNewStreamId(streamId);
-        await createStream(streamId);
-        props.onStreamCreated();
+        const success = await handleCreateStream(streamId);
+        if (success) {
+            props.onStreamCreated();
+            refDialog.current?.close();
+        }
     };
 
     return (
@@ -50,7 +83,7 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
             <Modal.Actions>
                 <form method="dialog" className="flex gap-2">
                     <Button onClick={onConfirmNewStreamId}>Confirm</Button>
-                    <Button>Cancel</Button>
+                    <Button onClick={() => refDialog.current?.close()}>Cancel</Button>
                 </form>
             </Modal.Actions>
         </Modal>

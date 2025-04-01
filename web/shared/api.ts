@@ -14,21 +14,19 @@ export function deleteSession(streamId: string, clientId: string) {
     return w.url(`/session/${streamId}/${clientId}`).delete().res();
 }
 
-export function createStream(streamId: string) {
-    return w.url(`/api/streams/${streamId}`).post().res();
+export async function createStream(streamId: string, nodes: string | null = null): Promise<unknown> {
+    let url = `/api/streams/${streamId}`;
+    if (nodes !== null) {
+        url += `?nodes=${nodes}`;
+    }
+    return w.url(url).post().res();
 }
 
 export function deleteStream(streamId: string) {
     return w.url(`/api/streams/${streamId}`).delete().res();
 }
 
-type SessionConnectionState =
-    'new' |
-    'connecting' |
-    'connected' |
-    'disconnected' |
-    'failed' |
-    'closed'
+type SessionConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed';
 
 export interface Stream {
     id: string;
