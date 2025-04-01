@@ -1,8 +1,8 @@
-import { useState, useRef, useImperativeHandle } from "preact/hooks";
-import { TargetedEvent, forwardRef } from "preact/compat";
-import { Button, Input, Modal } from "react-daisyui";
+import { useState, useRef, useImperativeHandle } from 'preact/hooks';
+import { TargetedEvent, forwardRef } from 'preact/compat';
+import { Button, Input, Modal } from 'react-daisyui';
 
-import { createStream } from "../api";
+import { createStream } from '../api';
 
 interface Props {
     onNewStreamId(id: string): void;
@@ -14,7 +14,7 @@ export interface INewStreamDialog {
 }
 
 export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) => {
-    const [streamId, setStreamId] = useState("");
+    const [streamId, setStreamId] = useState('');
     const refDialog = useRef<HTMLDialogElement>(null);
 
     useImperativeHandle(ref, () => {
@@ -32,7 +32,7 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
 
     function getCurrentNode(): string | null {
         const urlParams = new URLSearchParams(window.location.search);
-        return urlParams.get("nodes");
+        return urlParams.get('nodes');
     }
 
     async function handleCreateStream(streamId: string) {
@@ -43,21 +43,21 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
         } catch (error: unknown) {
             if (
                 error instanceof Object &&
-                "response" in error &&
-                typeof (error as { response: { status: number } }).response.status === "number" &&
+                'response' in error &&
+                typeof (error as { response: { status: number } }).response.status === 'number' &&
                 (error as { response: { status: number } }).response.status === 409
             ) {
-                window.alert("Resource already exists, please use a different streamId");
+                window.alert('Resource already exists, please use a different streamId');
                 return false;
             }
-            window.alert("Failed to create stream, please try again later");
+            window.alert('Failed to create stream, please try again later');
             return false;
         }
     }
 
     const onConfirmNewStreamId = async (_e: Event) => {
         if (!streamId.trim()) {
-            window.alert("Please enter a valid Stream ID");
+            window.alert('Please enter a valid Stream ID');
             return;
         }
 
