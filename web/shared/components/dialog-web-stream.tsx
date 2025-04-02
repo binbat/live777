@@ -78,7 +78,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             return sdp;
         };
         try {
-            const url = props.getWhipUrl?.(streamId) ?? `${location.origin}/whep/${streamId}`;
+            const url = props.getWhipUrl?.(streamId) ?? `${location.origin}/whip/${streamId}`;
             await whip.publish(pc, url, tokenContext.token);
         } catch (e: any) {  // eslint-disable-line @typescript-eslint/no-explicit-any
             setConnState('Error');
