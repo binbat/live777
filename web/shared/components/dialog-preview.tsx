@@ -1,31 +1,31 @@
-import { useRef, useImperativeHandle, useState, useContext } from 'preact/hooks';
-import { TargetedEvent, forwardRef } from 'preact/compat';
-import { Button, Collapse, Modal } from 'react-daisyui';
-import { ClockIcon } from '@heroicons/react/24/outline';
-import { WHEPClient } from '@binbat/whip-whep/whep.js';
+import { useRef, useImperativeHandle, useState, useContext } from "preact/hooks";
+import { TargetedEvent, forwardRef } from "preact/compat";
+import { Button, Collapse, Modal } from "react-daisyui";
+import { ClockIcon } from "@heroicons/react/24/outline";
+import { WHEPClient } from "@binbat/whip-whep/whep.js";
 
-import { TokenContext } from '../context';
-import { formatVideoTrackResolution } from '../utils';
-import { useLogger } from '../hooks/use-logger';
-import { QRCodeStreamDecoder } from '../qrcode-stream';
+import { TokenContext } from "../context";
+import { formatVideoTrackResolution } from "../utils";
+import { useLogger } from "../hooks/use-logger";
+import { QRCodeStreamDecoder } from "../qrcode-stream";
 
 interface Props {
     getWhepUrl?: (streamId: string) => string;
-    onStop(): void
+    onStop(): void;
 }
 
 export interface IPreviewDialog {
-    show(streamId: string): void
+    show(streamId: string): void;
 }
 
 export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
-    const [streamId, setStreamId] = useState('');
+    const [streamId, setStreamId] = useState("");
     const tokenContext = useContext(TokenContext);
     const refPeerConnection = useRef<RTCPeerConnection | null>(null);
     const refWhepClient = useRef<WHEPClient | null>(null);
     const refMediaStream = useRef<MediaStream | null>(null);
-    const [connState, setConnState] = useState('');
-    const [videoResolution, setVideoResolution] = useState('');
+    const [connState, setConnState] = useState("");
+    const [videoResolution, setVideoResolution] = useState("");
     const refVideoResolutionInterval = useRef(-1);
     const logger = useLogger();
     const refDialog = useRef<HTMLDialogElement>(null);
@@ -37,14 +37,14 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
         return {
             show: async (newStreamId: string) => {
                 if (streamId !== newStreamId) {
-                    if (streamId !== '' && refWhepClient.current !== null) {
+                    if (streamId !== "" && refWhepClient.current !== null) {
                         await handlePreviewStop();
                     }
                     setStreamId(newStreamId);
                     handlePreviewStart(newStreamId);
                 }
                 refDialog.current?.showModal();
-            }
+            },
         };
     });
 
@@ -81,10 +81,10 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     };
 
     const logInboundRtpStats = async () => {
-        const stats = await refPeerConnection.current?.getStats() ?? null;
+        const stats = (await refPeerConnection.current?.getStats()) ?? null;
         if (!stats) return;
         for (const [_, s] of stats) {
-            if (s.type === 'inbound-rtp') {
+            if (s.type === "inbound-rtp") {
                 const { id, bytesReceived } = s as RTCInboundRtpStreamStats;
                 // log the first time bytesReceived is not 0
                 if (bytesReceived) {
@@ -98,42 +98,42 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
 
     const handlePreviewStart = async (streamId: string) => {
         logger.clear();
-        updateConnState('Started');
+        updateConnState("Started");
         const pc = new RTCPeerConnection();
-        pc.addTransceiver('video', { direction: 'recvonly' });
-        pc.addTransceiver('audio', { direction: 'recvonly' });
+        pc.addTransceiver("video", { direction: "recvonly" });
+        pc.addTransceiver("audio", { direction: "recvonly" });
         const ms = new MediaStream();
         refMediaStream.current = ms;
         if (refVideo.current) {
             refVideo.current.srcObject = ms;
         }
-        pc.addEventListener('track', ev => {
+        pc.addEventListener("track", (ev) => {
             logger.log(`track: ${ev.track.kind}`);
             ms.addTrack(ev.track);
         });
-        pc.addEventListener('iceconnectionstatechange', () => {
+        pc.addEventListener("iceconnectionstatechange", () => {
             const state = pc.iceConnectionState;
             updateConnState(state);
-            if (state === 'connected') {
+            if (state === "connected") {
                 window.queueMicrotask(logInboundRtpStats);
             }
         });
         refPeerConnection.current = pc;
         const whep = new WHEPClient();
-        whep.onOffer = sdp => {
-            logger.log('http offer sent');
+        whep.onOffer = (sdp) => {
+            logger.log("http offer sent");
             return sdp;
         };
-        whep.onAnswer = sdp => {
-            logger.log('http answer received');
+        whep.onAnswer = (sdp) => {
+            logger.log("http answer received");
             return sdp;
         };
         refWhepClient.current = whep;
         try {
             const url = props.getWhepUrl?.(streamId) ?? `${location.origin}/whep/${streamId}`;
             await whep.view(pc, url, tokenContext.token);
-        } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
-            setConnState('Error');
+        } catch (e: any) {
+            setConnState("Error");
             if (e instanceof Error) {
                 logger.log(e.message);
             }
@@ -150,7 +150,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     };
 
     const handleVideoCanPlay = (_: TargetedEvent<HTMLVideoElement>) => {
-        logger.log('video canplay');
+        logger.log("video canplay");
     };
 
     const refreshVideoResolution = (_: TargetedEvent<HTMLVideoElement>) => {
@@ -164,13 +164,13 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
 
     const handleDecodeLatency = (e: TargetedEvent) => {
         e.preventDefault();
-        setLatency('-- ms');
+        setLatency("-- ms");
         if (refVideo.current != null && refStreamDecoder.current == null) {
             refStreamDecoder.current = new QRCodeStreamDecoder(refVideo.current);
         }
         const decoder = refStreamDecoder.current!;
         decoder.start();
-        decoder.addEventListener('latency', (e: CustomEvent<number>) => {
+        decoder.addEventListener("latency", (e: CustomEvent<number>) => {
             setLatency(`${e.detail} ms`);
         });
     };
@@ -178,7 +178,9 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     return (
         <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]">
             <Modal.Header className="mb-6">
-                <h3 className="font-bold">Preview {streamId} {videoResolution}</h3>
+                <h3 className="font-bold">
+                    Preview {streamId} {videoResolution}
+                </h3>
             </Modal.Header>
             <Modal.Body>
                 <video
@@ -186,7 +188,8 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
                     className="mx-[-1.5rem] min-w-[28rem] max-w-[90vw] max-h-[70vh]"
                     onCanPlay={handleVideoCanPlay}
                     onResize={refreshVideoResolution}
-                    controls autoplay
+                    controls
+                    autoplay
                 />
                 <Collapse.Details icon="arrow" className="text-sm">
                     <Collapse.Details.Title className="px-0">
@@ -194,24 +197,30 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
                         <code>{connState}</code>
                     </Collapse.Details.Title>
                     <Collapse.Content className="px-0">
-                        <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
+                        <pre class="overflow-auto max-h-[10lh]">{logger.logs.join("\n")}</pre>
                     </Collapse.Content>
                 </Collapse.Details>
             </Modal.Body>
             <Modal.Actions className="mt-0">
                 <div className="mr-auto">
-                    {typeof latency === 'string' ? (
+                    {typeof latency === "string" ? (
                         <Button
                             color="ghost"
                             className="font-normal"
                             animation={false}
                             startIcon={<ClockIcon className="size-5 stroke-current" />}
-                        >Latency: {latency}</Button>
+                        >
+                            Latency: {latency}
+                        </Button>
                     ) : (
-                        <Button color="info" onClick={handleDecodeLatency}>Decode Latency</Button>
+                        <Button color="info" onClick={handleDecodeLatency}>
+                            Decode Latency
+                        </Button>
                     )}
                 </div>
-                <Button color="error" onClick={handlePreviewStop}>Stop</Button>
+                <Button color="error" onClick={handlePreviewStop}>
+                    Stop
+                </Button>
                 <Button onClick={handleCloseDialog}>Hide</Button>
             </Modal.Actions>
         </Modal>

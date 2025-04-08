@@ -1,45 +1,45 @@
 {
-  "name": "webui",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "npm run dev:liveion",
-    "dev:liveion": "vite -c web/liveion/vite.config.ts",
-    "dev:liveman": "vite -c web/liveman/vite.config.ts",
-    "preview": "npm run preview:liveion",
-    "preview:liveion": "vite preview -c web/liveion/vite.config.ts",
-    "preview:liveman": "vite preview -c web/liveman/vite.config.ts",
-    "lint": "eslint && tsc --noEmit",
-    "build": "npm run lint && npm run build:liveion && npm run build:liveman",
-    "build:liveion": "vite build -c web/liveion/vite.config.ts",
-    "build:liveman": "vite build -c web/liveman/vite.config.ts",
-    "e2e:cluster": "vitest",
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
-  },
-  "dependencies": {
-    "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
-    "@nuintun/qrcode": "^4.1.12",
-    "@heroicons/react": "^2.2.0",
-    "preact": "^10.25.3",
-    "react-daisyui": "^5.0.5",
-    "typescript-event-target": "^1.1.1",
-    "wretch": "^2.11.0"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.17.0",
-    "@preact/preset-vite": "^2.9.3",
-    "@stylistic/eslint-plugin-js": "^2.12.1",
-    "@types/node": "^22.10.2",
-    "daisyui": "^4.12.22",
-    "eslint": "^9.17.0",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.2",
-    "typescript-eslint": "^8.18.1",
-    "vite": "^6.0.5",
-    "vitepress": "^1.5.0",
-    "vitest": "^2.1.8"
-  }
+    "name": "webui",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "npm run dev:liveion",
+        "dev:liveion": "vite -c web/liveion/vite.config.ts",
+        "dev:liveman": "vite -c web/liveman/vite.config.ts",
+        "preview": "npm run preview:liveion",
+        "preview:liveion": "vite preview -c web/liveion/vite.config.ts",
+        "preview:liveman": "vite preview -c web/liveman/vite.config.ts",
+        "lint": "eslint && tsc --noEmit",
+        "build": "npm run build:liveion && npm run build:liveman",
+        "build:liveion": "vite build -c web/liveion/vite.config.ts",
+        "build:liveman": "vite build -c web/liveman/vite.config.ts",
+        "e2e:cluster": "vitest",
+        "docs:dev": "vitepress dev docs",
+        "docs:build": "vitepress build docs",
+        "docs:preview": "vitepress preview docs"
+    },
+    "dependencies": {
+        "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
+        "@nuintun/qrcode": "^4.1.12",
+        "@heroicons/react": "^2.2.0",
+        "preact": "^10.25.3",
+        "react-daisyui": "^5.0.5",
+        "typescript-event-target": "^1.1.1",
+        "wretch": "^2.11.0"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.17.0",
+        "@preact/preset-vite": "^2.9.3",
+        "@stylistic/eslint-plugin-js": "^2.12.1",
+        "@types/node": "^22.10.2",
+        "daisyui": "^4.12.22",
+        "eslint": "^9.17.0",
+        "tailwindcss": "^3.4.17",
+        "typescript": "^5.7.2",
+        "typescript-eslint": "^8.18.1",
+        "vite": "^6.0.5",
+        "vitepress": "^1.5.0",
+        "vitest": "^2.1.8"
+    }
 }
