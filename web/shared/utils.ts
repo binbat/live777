@@ -13,7 +13,7 @@ export const formatVideoTrackResolution = (track: MediaStreamTrack): string => {
     const { width, height, frameRate } = track.getSettings();
     if (!width || !height) return '';
     if (!frameRate) return `${width}x${height}`;
-    return `${width}x${height}@${frameRate}`;
+    return `${width}x${height}@${Math.round(frameRate)}`;
 };
 
 export const nextSeqId = (prefix: string, existingIds: string[]) => {
