@@ -390,7 +390,7 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
             .iter()
             .filter(|attr| attr.key == "mid")
             .map(|attr| attr.value.clone())
-            .last();
+            .next_back();
         let mid = mid
             .ok_or_else(|| anyhow::anyhow!("no mid"))?
             .ok_or_else(|| anyhow::anyhow!("no mid"))?;

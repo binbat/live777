@@ -129,7 +129,7 @@ impl SubscribeRTCPeerConnection {
                       let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
                         let publish_tracks = publish_tracks.read().await;
                         let current_rid = track_binding_publish_rid.get(&kind.clone().to_string());
-                        if publish_tracks.len() == 0 {
+                        if publish_tracks.is_empty() {
                             debug!("{} {} publish track len 0 , probably offline",stream,id);
                             recv = virtual_sender.subscribe();
                             let _ = sender.replace_track(None).await;
