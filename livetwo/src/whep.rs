@@ -131,8 +131,7 @@ pub async fn from(
         });
 
         media_info = rx.recv().await.unwrap();
-    }
-    if input.scheme() == SCHEME_RTSP_CLIENT {
+    } else if input.scheme() == SCHEME_RTSP_CLIENT {
         media_info = setup_rtsp_push_session(&target_url, filtered_sdp.clone()).await?;
         info!("RTSP client media info: {:?}", media_info);
     } else {
