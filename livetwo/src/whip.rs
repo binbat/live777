@@ -62,6 +62,12 @@ pub async fn into(
         }
     };
 
+    let original_host = match input.host() {
+        Some(Host::Ipv4(ip)) => ip.to_string(),
+        Some(Host::Ipv6(ip)) => ip.to_string(),
+        Some(Host::Domain(_)) | None => "127.0.0.1".to_string(),
+    };
+
     let video_port = input.port().unwrap_or(0);
     let media_info;
 
@@ -222,7 +228,12 @@ pub async fn into(
         for sender in &senders {
             if let Some(track) = sender.track().await {
                 if track.kind() == RTPCodecType::Video {
-                    tokio::spawn(read_rtcp(sender.clone(), host.clone(), video_rtcp_port));
+                    tokio::spawn(read_rtcp(
+                        sender.clone(),
+                        host.clone(),
+                        original_host.clone(),
+                        video_rtcp_port,
+                    ));
                 }
             }
         }
@@ -232,7 +243,12 @@ pub async fn into(
         for sender in &senders {
             if let Some(track) = sender.track().await {
                 if track.kind() == RTPCodecType::Audio {
-                    tokio::spawn(read_rtcp(sender.clone(), host.clone(), audio_rtcp_port));
+                    tokio::spawn(read_rtcp(
+                        sender.clone(),
+                        host.clone(),
+                        original_host.clone(),
+                        audio_rtcp_port,
+                    ));
                 }
             }
         }
@@ -302,7 +318,12 @@ async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection
     }
 }
 
-async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result<()> {
+async fn read_rtcp(
+    sender: Arc<RTCRtpSender>,
+    host: String,
+    bind_host: String,
+    port: u16,
+) -> Result<()> {
     let udp_socket = UdpSocket::bind(format!("{}:0", host)).await?;
 
     loop {
@@ -316,12 +337,13 @@ async fn read_rtcp(sender: Arc<RTCRtpSender>, host: String, port: u16) -> Result
                         buf.extend_from_slice(&serialized_packet);
                     }
                     if !buf.is_empty() {
-                        if let Err(err) =
-                            udp_socket.send_to(&buf, format!("{}:{}", host, port)).await
+                        if let Err(err) = udp_socket
+                            .send_to(&buf, format!("{}:{}", bind_host, port))
+                            .await
                         {
                             warn!("Failed to forward RTCP packet: {}", err);
                         } else {
-                            debug!("Forwarded RTCP packet to {}:{}", host, port);
+                            debug!("Forwarded RTCP packet to {}:{}", bind_host, port);
                         }
                     }
                 }
