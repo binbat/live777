@@ -60,8 +60,9 @@ pub async fn from(
     info!("=== Received Output: {} ===", target_url);
 
     let mut host = match input.host() {
-        Some(Host::Domain(_)) | Some(Host::Ipv4(_)) => Ipv4Addr::LOCALHOST.to_string(),
+        Some(Host::Ipv4(_)) => Ipv4Addr::LOCALHOST.to_string(),
         Some(Host::Ipv6(_)) => Ipv6Addr::LOCALHOST.to_string(),
+        Some(Host::Domain(_)) => Ipv6Addr::LOCALHOST.to_string(), 
         None => {
             error!("Invalid host for {}, using default.", input);
             Ipv4Addr::LOCALHOST.to_string()
