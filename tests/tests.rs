@@ -136,7 +136,6 @@ a=rtpmap:96 VP8/90000
 
     tokio::spawn(livetwo::whip::into(
         tmp_path.clone(),
-        None,
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         None,
@@ -175,7 +174,6 @@ a=rtpmap:96 VP8/90000
         .to_string();
     tokio::spawn(livetwo::whep::from(
         tmp_path.clone(),
-        None,
         format!("http://{addr}{}", api::path::whep("-")),
         None,
         None,
@@ -245,7 +243,6 @@ async fn test_liveion_stream_ffmpeg() {
         .to_string();
     tokio::spawn(livetwo::whip::into(
         tmp_path.clone(),
-        None,
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         Some(format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx -f rtp 'rtp://127.0.0.1:5002' -sdp_file {tmp_path}")),
@@ -284,7 +281,6 @@ async fn test_liveion_stream_ffmpeg() {
         .to_string();
     tokio::spawn(livetwo::whep::from(
         tmp_path.clone(),
-        None,
         format!("http://{addr}{}", api::path::whep("-")),
         None,
         None,
