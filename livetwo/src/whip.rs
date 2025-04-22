@@ -38,7 +38,6 @@ use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
 pub async fn into(
     target_url: String,
-    set_host: Option<String>,
     whip_url: String,
     token: Option<String>,
     command: Option<String>,
@@ -62,11 +61,6 @@ pub async fn into(
             Ipv4Addr::UNSPECIFIED.to_string()
         }
     };
-
-    if let Some(ref h) = set_host {
-        debug!("=== Specified set host, using {} ===", h);
-        host.clone_from(h)
-    }
 
     let video_port = input.port().unwrap_or(0);
     let media_info;

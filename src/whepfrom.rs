@@ -12,9 +12,6 @@ struct Args {
     /// rtsp://[username]:[password]@[ip]:[port]/[stream] Or <stream.sdp>
     #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", livetwo::SCHEME_RTSP_SERVER))]
     output: String,
-    /// Set Listener address
-    #[arg(long)]
-    host: Option<String>,
     /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
     #[arg(short, long)]
     whep: String,
@@ -42,7 +39,6 @@ async fn main() {
 
     livetwo::whep::from(
         args.output.clone(),
-        args.host.clone(),
         args.whep.clone(),
         args.token.clone(),
         args.command.clone(),
