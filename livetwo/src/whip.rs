@@ -65,7 +65,7 @@ pub async fn into(
     let original_host = match input.host() {
         Some(Host::Ipv4(ip)) => ip.to_string(),
         Some(Host::Ipv6(ip)) => ip.to_string(),
-        Some(Host::Domain(_)) | None => "127.0.0.1".to_string(),
+        Some(Host::Domain(_)) | None => Ipv4Addr::LOCALHOST.to_string(),
     };
 
     let video_port = input.port().unwrap_or(0);
