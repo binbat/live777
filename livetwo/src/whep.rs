@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 
 use anyhow::{anyhow, Result};
 use cli::create_child;
@@ -62,7 +62,25 @@ pub async fn from(
     let mut host = match input.host() {
         Some(Host::Ipv4(_)) => Ipv4Addr::LOCALHOST.to_string(),
         Some(Host::Ipv6(_)) => Ipv6Addr::LOCALHOST.to_string(),
-        Some(Host::Domain(_)) => Ipv6Addr::LOCALHOST.to_string(),
+        Some(Host::Domain(domain)) => match (domain, 0).to_socket_addrs() {
+            Ok(mut addrs) => {
+                if let Some(addr) = addrs.find(|addr| addr.is_ipv6()) {
+                    addr.ip().to_string()
+                } else if let Some(addr) = addrs.find(|addr| addr.is_ipv4()) {
+                    addr.ip().to_string()
+                } else {
+                    error!(
+                        "No valid IP address resolved for domain {}, using default.",
+                        domain
+                    );
+                    Ipv4Addr::LOCALHOST.to_string()
+                }
+            }
+            Err(e) => {
+                error!("Failed to resolve domain {}: {}, using default.", domain, e);
+                Ipv4Addr::LOCALHOST.to_string()
+            }
+        },
         None => {
             error!("Invalid host for {}, using default.", input);
             Ipv4Addr::LOCALHOST.to_string()
