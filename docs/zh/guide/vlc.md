@@ -2,7 +2,7 @@
 
 VLC RTP stream
 
-**Note: VLC can't support all video codec**
+**​注意：VLC 无法支持所有视频编解码器​​**
 
 ```
 vlc -> whipinto -> live777 -> whepfrom -> vlc
@@ -10,14 +10,14 @@ vlc -> whipinto -> live777 -> whepfrom -> vlc
 
 ## Video: VP8
 
-generates a video
+生成测试视频
 
 ```bash
 ffmpeg -f lavfi -i testsrc=size=640x480:rate=30:d=30 \
 -c:v libvpx output.webm
 ```
 
-use this video send rtp
+使用该视频发送 rtp
 
 ```bash
 vlc -vvv output.webm --loop --sout '#rtp{dst=127.0.0.1,port=5003}'
@@ -32,7 +32,7 @@ a=rtpmap:96 VP8/90000
 EOF
 ```
 
-Use VLC player
+使用 VLC player
 
 ```bash
 vlc stream.sdp
@@ -47,7 +47,7 @@ ffmpeg -f lavfi -i testsrc=size=640x480:rate=30:d=30 \
 output.mp4
 ```
 
-use this video send rtp
+使用该视频发送 rtp
 
 ```bash
 vlc -vvv output.mp4 --loop --sout '#rtp{dst=127.0.0.1,port=5003}'

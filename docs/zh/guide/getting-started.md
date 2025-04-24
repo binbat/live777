@@ -12,4 +12,4 @@
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
-**Open your browser, enter the URL: `http://localhost:7777/`**
+**打开浏览器，输入网址：`http://localhost:7777/`**

@@ -6,7 +6,7 @@ Gstreamer `WHIP`/`WHEP` 插件
 gstreamer::whipsink -> live777 -> gstreamer::whepsrc
 ```
 
-We have tools [whipinto](/guide/whipinto) and [whepfrom](/guide/whepfrom) for support `rtp` <-> `whip`/`whep` convert
+我们有工具 [whipinto](/guide/whipinto) 和 [whepfrom](/guide/whepfrom) 用于支持 `rtp` <-> `whip`/`whep` 转换
 
 ```
 gstreamer -> whipinto -> live777 -> whepfrom -> gstreamer
@@ -107,7 +107,7 @@ ghcr.io/binbat/live777-client:latest \
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:7777/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtph264depay ! decodebin ! videoconvert ! aasink
 ```
 
-Use `libav`
+使用 `libav`
 
 ```bash
 docker run --name live777-client-whep --rm --network host \
@@ -127,9 +127,9 @@ gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1p
 
 `WHEP`:
 
-I don't know why av1 and whep error
+我不知道为什么 av1 和 whep 会出错
 
-But, you can:
+但是，你可以：
 
 ```bash
 cargo run --package=whepfrom -- -c av1 -u http://localhost:7777/whep/777 -t 127.0.0.1:5004
@@ -161,7 +161,7 @@ gst-launch-1.0 audiotestsrc ! audioconvert ! opusenc ! rtpopuspay ! whipsink whi
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:7777/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtpopusdepay ! opusdec ! audioconvert ! autoaudiosink
 ```
 
-Maybe you can't play audio, we can audio to video display for ascii
+如果无法播放音频，我们可以将音频转换为 ASCII 形式的视频显示
 
 ```bash
 gst-launch-1.0 whepsrc whep-endpoint="http://localhost:7777/whep/777" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=102,encoding-name=H264,media=video,clock-rate=90000" ! rtpopusdepay ! opusdec ! audioconvert ! wavescope ! videoconvert ! aasink
@@ -169,7 +169,7 @@ gst-launch-1.0 whepsrc whep-endpoint="http://localhost:7777/whep/777" audio-caps
 
 ## Audio: G722
 
-**GStreamer G722 need `avenc_g722` in `gstreamer-libav`**
+**GStreamer 使用 G722 编码，需要 `avenc_g722` （位于 `gstreamer-libav`） 中**
 
 ```bash
 docker run --name live777-client --rm --network host \

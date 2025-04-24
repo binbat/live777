@@ -1,6 +1,6 @@
 # LiveMan HTTP API
 
-Live777 Cluster Manager
+Live777 集群管理器
 
 ## WHIP && WHEP
 
@@ -28,13 +28,13 @@ Response: [204]
 
 Response: [200]
 
-- `alias`: String, Alias must unique
-- `url`: String, Node API URL
-- `pub_max`: Int16, max publish count
-- `sub_max`: Int16, max subscribe count
-- `status`: StringEnum("running" | "stopped"), Node status
+- `alias`: String, 别名必须唯一
+- `url`: String, 节点 API 的 URL 地址
+- `pub_max`: Int16, 最大支持推流数
+- `sub_max`: Int16, 最大支持订阅数
+- `status`: StringEnum("running" | "stopped"), 节点状态
 
-For Example:
+例如:
 
 ```json
 [
@@ -66,7 +66,7 @@ For Example:
 
 ### Get all Stream
 
-**This API will merge all nodes streams**
+**API 说明：获取所有节点合并后的流列表​​**
 
 `GET` `/api/streams/`
 
@@ -83,7 +83,7 @@ Response: [200]
 - `(publish | subscribe).sessions.[].state`: String, [RTCPeerConnection/connectionState](https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/connectionState#value)
 - `(publish | subscribe).sessions.[].cascade`: Optional(Object(Cascade)
 
-For Example:
+例如:
 
 ```json
 [
@@ -170,7 +170,7 @@ For Example:
 
 ### Get a Stream Details
 
-**This API will return a stream in all nodes**
+**​API 说明：获取指定流在所有节点上的信息​​**
 
 `GET` `/api/streams/:streamId`
 
