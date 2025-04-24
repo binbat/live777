@@ -1,6 +1,6 @@
 # 开发者
 
-Depends:
+依赖:
 - [cargo](https://www.rust-lang.org/)
 - [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
@@ -98,7 +98,7 @@ cargo run --bin=whipinto
 cargo run --bin=whepfrom
 ```
 
-So. We support parameter `command`, You can use this:
+因此，我们支持参数 `command`, 你可以这样使用：
 
 ```bash
 cargo run --bin=whipinto -- -i input.sdp -w http://localhost:7777/whip/777 --command \

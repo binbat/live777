@@ -1,8 +1,8 @@
 # Live777 Core (liveion)
 
-A Pure Single SFU Server for WebRTC.
+一个为 WebRTC 而生的 SFU 服务器。
 
-Only `WHIP` / `WHEP` protocol supported.
+仅支持 `WHIP` / `WHEP` 协议.
 
 a core SFU server, If you need a single server, use this
 
@@ -31,13 +31,13 @@ VLC `whipinto`       | :shit: | :shit: | :star: | :star: | :star: | :shit: |
 VLC `whepfrom`       | :shit: | :shit: | :star: | :star: | :star: | :shit: |
 OBS Studio `whip`    | :tv: 3 | :shit: | :shit: | :star: | :star: | :shit: |
 
-- :star: It's working
-- :shit: Don't support
-- :bulb: I don't know, No testing
-- :tv: Note have some problem
-  1. Working, But Browser can't player this video, Gstreamer to Gstreamer is working
-  2. I don't know why av1 and whep error
-  3. [OBS av1 codec can't play](https://github.com/binbat/live777/issues/169)
+- :star: 正常运行
+- :shit: 不支持
+- :bulb: 未知/未测试​​
+- :tv: 存在问题（需注意）
+  1. 正常运行，但浏览器无法播放此视频，Gstreamer 到 Gstreamer 传输正常
+  2. 我不知道为什么 av1 和 whep 会出错
+  3. [OBS av1 编解码器无法播放](https://github.com/binbat/live777/issues/169)
 
 ## 认证
 
@@ -76,25 +76,25 @@ secret = "<jwt_secret>"
 
 ## Cascade
 
-### What is cascade?
+### 什么是 cascade?
 
 ![cascade](/cascade.excalidraw.svg)
 
-### Very large cluster
+### 庞大的集群
 
 ![mash-cascade](/mash-cascade.excalidraw.svg)
 
-live777 Cascade have two mode:
+live777 Cascade 有两种模式：
 - `cascade-pull`
 - `cascade-push`
 
 ![live777-cascade](/live777-cascade.excalidraw.svg)
 
-## DataChannel Forward
+## DataChannel 转发
 
-> NOTE: About `createDataChannel()`
-> 1. Live777 Don't support `label`, `createDataChannel(label)` this `label` is not used
-> 2. Live777 Don't support `negotiated`, `{ id: 42, negotiated: true }` this don't support
+> NOTE: 关于 `createDataChannel()`
+> 1. Live777 不支持 `label`, `createDataChannel(label)` 不使用 `label` 
+> 2. Live777 不支持 `negotiated`, 不支持 `{ id: 42, negotiated: true }` 
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
 
