@@ -8,9 +8,13 @@ import { useRefreshTimer } from '@/shared/hooks/use-refresh-timer';
 
 import { type Node, getNodes } from '../api';
 
-async function getNodesSorted() {
-    const nodes = await getNodes();
-    return nodes.sort((a, b) => a.alias.localeCompare(b.alias));
+async function getNodesSorted(): Promise<Node[]> {
+    try {
+        const nodes = await getNodes();
+        return nodes.sort((a, b) => a.alias.localeCompare(b.alias));
+    } catch {
+        return [];
+    }
 }
 
 export function NodesTable() {

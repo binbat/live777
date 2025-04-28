@@ -36,8 +36,12 @@ export function Liveman() {
         setFilterNodes(params.getAll('nodes'));
     }, [location.search]);
     const getStreams = useCallback(async () => {
-        const streams = await livemanApi.getStreams(filterNodes);
-        return streams.sort((a, b) => a.createdAt - b.createdAt);
+        try {
+            const streams = await livemanApi.getStreams(filterNodes);
+            return streams.sort((a, b) => a.createdAt - b.createdAt);
+        } catch {
+            return [];
+        }
     }, filterNodes);
     const getWhxpUrl = (whxp: 'whep' | 'whip', streamId: string) => {
         let url = `/${whxp}/${streamId}`;

@@ -15,9 +15,13 @@ import { type IPreviewDialog, PreviewDialog } from './dialog-preview';
 import { type IWebStreamDialog, WebStreamDialog } from './dialog-web-stream';
 import { type INewStreamDialog, NewStreamDialog } from './dialog-new-stream';
 
-async function getStreamsSorted() {
-    const streams = await getStreams();
-    return streams.sort((a, b) => a.createdAt - b.createdAt);
+async function getStreamsSorted(): Promise<Stream[]> {
+    try {
+        const streams = await getStreams();
+        return streams.sort((a, b) => a.createdAt - b.createdAt);
+    } catch {
+        return [];
+    }
 }
 
 export interface StreamTableProps {
