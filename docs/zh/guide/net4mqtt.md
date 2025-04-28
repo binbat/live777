@@ -24,7 +24,7 @@ client <---> local <--[MQTT]--> agent <---> server
 
 ### network input/output
 
-Publish topic example:
+​发布主题示例：​​
 
 ```
 prefix/agent-0/local-0/i/udp/127.0.0.1:4444/127.0.0.1:4433
@@ -32,7 +32,7 @@ prefix/agent-0/local-0/o/udp/127.0.0.1:4444/127.0.0.1:4433
 prefix/agent-0/local-0/o/udp/127.0.0.1:4444/-
 ```
 
-Subscribe topic example:
+​订阅主题示例：​​
 
 ```
 TOPIC: <prefix>/< + | agent id>/< + | local id>/<label>/#
@@ -42,10 +42,10 @@ Sub topic example: prefix/agent-0/+/o/#
 ```
 
 ::: warning
-Only MQTT QoS: `0`
+仅支持 MQTT QoS: `0`
 :::
 
-### online/offline status sync (Option)
+### 在线/离线状态同步（可选配置）​​
 
 ```
 prefix/agent-0/local-0/v/-
@@ -57,7 +57,7 @@ prefix/agent-0/local-0/v/-
 
 ### Agent
 
-If No set `dst`, use default `target` as `dst`
+​若未设置 `dst`，则默认使用 `target` 作为 `dst`
 
 ### Local-Port
 - tcp
@@ -92,13 +92,13 @@ Options:
   -V, --version  Print version
 ```
 
-1. Up a MQTT broker server
+1. 启动一个 MQTT 代理服务器​​
 
 ```bash
 mosquitto
 ```
 
-You can use a Monitor MQTT topic messages for debug
+​你可以通过监听 MQTT 主题消息来进行调试​​
 
 ```bash
 mosquitto_sub -L 'mqtt://localhost:1883/net4mqtt/#' -v
@@ -106,33 +106,33 @@ mosquitto_sub -L 'mqtt://localhost:1883/net4mqtt/#' -v
 
 ### TCP Proxy
 
-TCP/UDP simulation server test
+​TCP/UDP 模拟服务器测试​​
 
-2. up a TCP Server
+2. ​启动 TCP 服务器​​
 
 ```bash
 nc -l 7777
 ```
 
-3. up a net4mqtt agent
+3. ​启动 net4mqtt 代理服务​​
 
 ```bash
 net4mqtt -vvv agent --id 0
 ```
 
-4. up a net4mqtt local
+4. ​启动 net4mqtt 本地服务​​
 
 ```bash
 net4mqtt -vvv local-port --agent-id 0 --id 0
 ```
 
-5. up a TCP Client
+5. ​启动 TCP 客户端​​
 
 ```bash
 nc 127.0.0.1 4444
 ```
 
-For UDP
+针对 UDP 协议
 
 ```bash
 nc -l -u 7777
@@ -141,13 +141,13 @@ nc -u 127.0.0.1 4444
 
 ## Integration
 
-- *live777 integration net4mqtt agent*
-- *liveman integration net4mqtt local-socks*
+- *​live777 集成 net4mqtt 代理​​*
+- *liveman 集成 net4mqtt 本地 socks 服务​​*
 
 ![net4mqtt](/net4mqtt.excalidraw.svg)
 
 
-You can enable `--feature=net4mqtt` to use it.
+​您可通过启用 `--feature=net4mqtt` 参数使用该功能​​.
 
 ```bash
 cargo build --bin=live777 --features=net4mqtt
@@ -160,7 +160,7 @@ cargo build --bin=liveman --features=net4mqtt
 live777 会集成 [net4mqtt](/zh/guide/net4mqtt) `agent`
 :::
 
-Enable in `live777.toml`
+在 `live777.toml` 中启用​​
 
 ```toml
 [net4mqtt]
@@ -174,7 +174,7 @@ alias = "liveion-0"
 liveman 会集成 [net4mqtt](/zh/guide/net4mqtt) `local-socks`
 :::
 
-Enable in `liveman.toml`
+在 `liveman.toml` 中启用​​
 
 ```toml
 [net4mqtt]

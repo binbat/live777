@@ -1,36 +1,36 @@
 # Web UI
 
-This Web UI is build in live777
+​该 Web 界面内置于 live777 系统中​​
 
-## Web WHIP/WHEP client
+## Web WHIP/WHEP 客户端​​
 
-**Open your browser, enter the URL: `http://localhost:7777/`**
+**​打开浏览器并访问以下地址： `http://localhost:7777/`**
 
 ```
 http://localhost:7777/
 ```
 
-## Debugger
+## ​调试工具​​
 
 ```
 http://localhost:7777/tools/debugger.html
 ```
 
-You can use this test WebRTC-SVC
+您可通过此功能测试 WebRTC-SVC
 
-## Single Page Player
+## ​单页面播放器​​
 
-example:
+示例地址：
 
 ```
 http://localhost:7777/tools/player.html?id=web-0&autoplay&controls&muted&reconnect=3000
 ```
 
-URL params:
+​URL 参数说明：​​
 
-- `id`: string, live777 Stream ID
+- `id`: string, live777 流 ID
 - `autoplay`: boolean
 - `controls`: boolean
-- `muted`: boolean, whether to mute by default
-- `reconnect`: number, reconnect timeout in millisecond
+- `muted`: boolean, 是否默认静音
+- `reconnect`: number, 重连超时时间（毫秒）
 

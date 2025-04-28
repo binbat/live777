@@ -22,13 +22,13 @@ Response: [204]
 
 ## Stream
 
-### Create a Stream
+### 创建一个流
 
 `POST` `/api/streams/:streamId`
 
-`streamId` need unique id
+`streamId` 需要唯一标识符​​
 
-Maybe you can use this configuration auto create stream
+你可以使用此配置自动创建流​​
 
 ```toml
 [strategy]
@@ -60,7 +60,7 @@ Response: [200]
 - `(publish | subscribe).sessions.[].cascade.targetUrl`: Optional(String(URL))
 - `(publish | subscribe).sessions.[].cascade.sessionUrl`: String(URL)
 
-For Example:
+例如:
 
 ```json
 [
@@ -145,13 +145,13 @@ For Example:
 ]
 ```
 
-### Destroy a Stream
+### 销毁一个流
 
 `DELETE` `/api/streams/:streamId`
 
 Response: [204]
 
-## Cascade
+## ​级联
 
 `POST` `/api/cascade/:streamId`
 

@@ -88,17 +88,17 @@ whipinto -i rtsp://127.0.0.1:8554 -w http://localhost:7777/whip/777
 ## About `pkt_size=1200`
 
 ::: warning
-WebRTC must need `pkt_size<=1200`
+WebRTC必须满足 `pkt_size<=1200`
 
-If `pkt_size > 1200` (most tool default `> 1200`, for example: `ffmpeg` default `1472`), we need to de-payload after re-payload
+当 `pkt_size > 1200` 时（多数工具默认值 `> 1200`，例如： `ffmpeg` 默认 `1472`)，需要进行解封装后重新封装处理
 :::
 
-But now, We support re-size `pkt_size` in `VP8` and `VP9`, You can use any `pkt_size` value in `VP8` and `VP9`
+不过现在，我们已经在 `VP8` 和 `VP9` 编解码器中支持重新调整 `pkt_size` ，您可以在 `VP8` 和 `VP9` 中使用任意大小的 `pkt_size`值
 
 Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `OPUS` | `G722` |
 ----------------- | ------ | ------ | ------ | ------ | ------ | ------ |
 `pkt_size > 1200` | :shit: | :star: | :star: | :star: | :star: | :shit: |
 
-- :star: It's working
-- :shit: Don't support
+- :star: 正常运行
+- :shit: 不支持
 

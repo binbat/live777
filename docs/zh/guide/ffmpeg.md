@@ -2,7 +2,7 @@
 
 我们有 [whipinto](/guide/whipinto) 和 [whepfrom](/guide/whepfrom) 来把 `rtp` <-> `whip`/`whep` 进行转换
 
-For Example:
+例如:
 
 ```
 ffmpeg -> whipinto -> live777 -> whepfrom -> ffplay
@@ -10,7 +10,7 @@ ffmpeg -> whipinto -> live777 -> whepfrom -> ffplay
 
 ## Video: VP8
 
-Video Test Src
+视频测试源
 
 ```bash
 # send RTP and Create SDP file
@@ -18,13 +18,13 @@ ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 \
 -vcodec libvpx -f rtp 'rtp://127.0.0.1:5002' -sdp_file input.sdp
 ```
 
-For ffplay. You Need a sdp file
+对于 ffplay，你需要一个 sdp 文件
 
 ```bash
 ffplay -protocol_whitelist rtp,file,udp -i input.sdp
 ```
 
-You can use `whipinto` tools receiver RTP and convert to WebRTC
+你可以使用 `whipinto` 工具接收 RTP 并转换为 WebRTC
 
 ```bash
 # Use SDP file as input
@@ -35,7 +35,7 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 whepfrom -o output.sdp -w http://localhost:7777/whep/777
 ```
 
-For ffplay. You Need a sdp file
+对于 ffplay，你需要一个 sdp 文件
 
 ```bash
 ffplay -protocol_whitelist rtp,file,udp -i output.sdp
@@ -44,7 +44,7 @@ ffplay -protocol_whitelist rtp,file,udp -i output.sdp
 ## Video: VP9
 
 ::: warning
-Packetizing VP9 is experimental and its specification is still in draft state. Please set -strict experimental in order to enable it.
+VP9 打包功能尚处于实验阶段，其规范尚处于草案状态。请设置 -strict experiment 选项以启用此功能。
 :::
 
 ```bash
@@ -72,7 +72,7 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 ## Video: AV1
 
 ::: danger
-RTP Unsupported codec av1
+RTP 不支持的编解码器 av1
 :::
 
 ## Audio: Opus

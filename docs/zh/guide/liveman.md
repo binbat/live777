@@ -1,8 +1,8 @@
 # Liveman (Live777 Manager)
 
-Live777 Cluster manager.
+Live777 集群管理器.
 
-If I have so many servers (live777 core cluster), I need this manage them all.
+如果我有很多服务器（live777 核心集群），我需要统一管理它们。
 
 ## 认证
 
