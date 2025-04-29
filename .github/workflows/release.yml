@@ -17,19 +17,21 @@ jobs:
       matrix:
         job:
           # https://doc.rust-lang.org/nightly/rustc/platform-support.html
-          - { target: aarch64-apple-darwin        , os: macos-14                      }
-          - { target: aarch64-pc-windows-msvc     , os: windows-2022                  }
+          - { target: aarch64-apple-darwin        , os: macos-15                      }
+          - { target: aarch64-pc-windows-msvc     , os: windows-2025                  }
           - { target: aarch64-linux-android       , os: ubuntu-24.04, use-cross: true }
           - { target: aarch64-unknown-linux-gnu   , os: ubuntu-24.04, use-cross: true }
           - { target: aarch64-unknown-linux-musl  , os: ubuntu-24.04, use-cross: true, nfpm: arm64 }
           - { target: arm-unknown-linux-gnueabihf , os: ubuntu-24.04, use-cross: true }
           - { target: arm-unknown-linux-musleabihf, os: ubuntu-24.04, use-cross: true }
-          - { target: i686-pc-windows-msvc        , os: windows-2022                  }
+          - { target: i686-pc-windows-msvc        , os: windows-2025                  }
           - { target: i686-unknown-linux-gnu      , os: ubuntu-24.04, use-cross: true }
           - { target: i686-unknown-linux-musl     , os: ubuntu-24.04, use-cross: true }
-          - { target: x86_64-apple-darwin         , os: macos-14                      }
-          - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
-          - { target: x86_64-pc-windows-msvc      , os: windows-2022                  }
+          - { target: riscv64gc-unknown-linux-gnu , os: ubuntu-24.04, use-cross: true }
+          - { target: riscv64gc-unknown-linux-musl, os: ubuntu-24.04, use-cross: true, nfpm: riscv64 }
+          - { target: x86_64-apple-darwin         , os: macos-15                      }
+          - { target: x86_64-pc-windows-gnu       , os: windows-2025                  }
+          - { target: x86_64-pc-windows-msvc      , os: windows-2025                  }
           - { target: x86_64-unknown-linux-gnu    , os: ubuntu-24.04, use-cross: true }
           - { target: x86_64-unknown-linux-musl   , os: ubuntu-24.04, use-cross: true, nfpm: amd64 }
     env:
