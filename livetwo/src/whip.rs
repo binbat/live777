@@ -1,5 +1,5 @@
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::{sync::Arc, time::Duration, vec};
 
@@ -10,7 +10,7 @@ use tokio::{
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
 use tracing::{debug, error, info, trace, warn};
-use url::{Host, Url};
+use url::Url;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
@@ -33,6 +33,7 @@ use libwish::Client;
 
 use crate::payload;
 use crate::rtspclient::setup_rtsp_session;
+use crate::utils;
 
 use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
@@ -53,22 +54,13 @@ pub async fn into(
     );
     info!("=== Received Input: {} ===", input);
 
-    let mut host = match input.host() {
-        Some(Host::Domain(_)) | Some(Host::Ipv4(_)) => Ipv4Addr::UNSPECIFIED.to_string(),
-        Some(Host::Ipv6(_)) => Ipv6Addr::UNSPECIFIED.to_string(),
-        None => {
-            eprintln!("Invalid host for {}, using default.", input);
-            Ipv4Addr::UNSPECIFIED.to_string()
-        }
-    };
+    let (target_host, mut listen_host) = utils::parse_host(&input);
 
-    let original_host = match input.host() {
-        Some(Host::Ipv4(ip)) => ip.to_string(),
-        Some(Host::Ipv6(ip)) => ip.to_string(),
-        Some(Host::Domain(_)) | None => Ipv4Addr::LOCALHOST.to_string(),
-    };
+    debug!("=== Target Host: {} ===", target_host);
+    debug!("=== Listen Host: {} ===", listen_host);
 
     let video_port = input.port().unwrap_or(0);
+    debug!("Parsed port from input URL: {}", video_port);
     let media_info;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
@@ -91,13 +83,17 @@ pub async fn into(
         let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
 
-        let host2 = host.to_string();
+        let host2 = listen_host.to_string();
+        debug!(
+            "Starting RTSP server with host: {}, port: {}",
+            host2, video_port
+        );
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host2.clone(), video_port))
                 .await
                 .unwrap();
             warn!(
-                "=== RTSP listener started : {} ===",
+                "=== RTSP server listener started : {} ===",
                 listener.local_addr().unwrap()
             );
             loop {
@@ -118,7 +114,7 @@ pub async fn into(
         let path = Path::new(&target_url);
         let sdp = sdp_types::Session::parse(&fs::read(path).unwrap()).unwrap();
         if let Some(connection_info) = &sdp.connection {
-            host.clone_from(&connection_info.connection_address);
+            listen_host.clone_from(&connection_info.connection_address);
         }
         let video_track = sdp.medias.iter().find(|md| md.media == "video");
         let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
@@ -184,14 +180,14 @@ pub async fn into(
             audio_rtcp_client: None,
         };
     }
-    debug!("media info: {:?}", media_info);
+    info!("media info: {:?}", media_info);
     let mut video_listener = None;
     if let Some(video_port) = media_info.video_rtp_server {
-        video_listener = Some(UdpSocket::bind(format!("{}:{}", host, video_port)).await?);
+        video_listener = Some(UdpSocket::bind(format!("{}:{}", listen_host, video_port)).await?);
     }
     let mut audio_listener = None;
     if let Some(audio_port) = media_info.audio_rtp_server {
-        audio_listener = Some(UdpSocket::bind(format!("{}:{}", host, audio_port)).await?);
+        audio_listener = Some(UdpSocket::bind(format!("{}:{}", listen_host, audio_port)).await?);
     }
 
     let (peer, video_sender, audio_sender) = webrtc_start(
@@ -205,33 +201,37 @@ pub async fn into(
     .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
 
     if let Some(video_listener) = video_listener {
-        info!(
-            "=== video listener started : {} ===",
+        debug!(
+            "=== video rtp listener started : {} ===",
             video_listener.local_addr().unwrap()
         );
         tokio::spawn(rtp_listener(video_listener, video_sender));
     }
     if let Some(audio_listener) = audio_listener {
-        info!(
-            "=== audio listener started : {} ===",
+        debug!(
+            "=== audio rtp listener started : {} ===",
             audio_listener.local_addr().unwrap()
         );
         tokio::spawn(rtp_listener(audio_listener, audio_sender));
     }
 
     if let Some(port) = media_info.video_rtp_server {
-        tokio::spawn(rtcp_listener(host.clone(), port + 1, peer.clone()));
+        tokio::spawn(rtcp_listener(listen_host.clone(), port + 1, peer.clone()));
     }
 
     let senders = peer.get_senders().await;
     if let Some(video_rtcp_port) = media_info.video_rtcp_client {
+        debug!(
+            "Video RTCP client port: {}, listen host: {}, target_host: {}",
+            video_rtcp_port, listen_host, target_host
+        );
         for sender in &senders {
             if let Some(track) = sender.track().await {
                 if track.kind() == RTPCodecType::Video {
                     tokio::spawn(read_rtcp(
                         sender.clone(),
-                        host.clone(),
-                        original_host.clone(),
+                        listen_host.clone(),
+                        target_host.clone(),
                         video_rtcp_port,
                     ));
                 }
@@ -240,13 +240,17 @@ pub async fn into(
     }
 
     if let Some(audio_rtcp_port) = media_info.audio_rtcp_client {
+        debug!(
+            "Audio RTCP client port: {}, listen host: {}, target_host: {}",
+            audio_rtcp_port, listen_host, target_host
+        );
         for sender in &senders {
             if let Some(track) = sender.track().await {
                 if track.kind() == RTPCodecType::Audio {
                     tokio::spawn(read_rtcp(
                         sender.clone(),
-                        host.clone(),
-                        original_host.clone(),
+                        listen_host.clone(),
+                        target_host.clone(),
                         audio_rtcp_port,
                     ));
                 }
@@ -283,8 +287,9 @@ pub async fn into(
 async fn rtp_listener(socker: UdpSocket, sender: Option<UnboundedSender<Vec<u8>>>) {
     if let Some(sender) = sender {
         let mut inbound_rtp_packet = vec![0u8; 1600];
-        while let Ok((n, _)) = socker.recv_from(&mut inbound_rtp_packet).await {
+        while let Ok((n, addr)) = socker.recv_from(&mut inbound_rtp_packet).await {
             let data = inbound_rtp_packet[..n].to_vec();
+            trace!("Received RTP packet from {} ({} bytes)", addr, n);
             let _ = sender.send(data);
         }
     }
@@ -294,9 +299,9 @@ async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection
     let rtcp_listener = UdpSocket::bind(format!("{}:{}", host, rtcp_port))
         .await
         .unwrap();
-    info!(
+    debug!(
         "RTCP listener bound to: {}",
-        rtcp_listener.local_addr().unwrap()
+        rtcp_listener.local_addr().unwrap(),
     );
     let mut rtcp_buf = vec![0u8; 1500];
 
@@ -325,6 +330,10 @@ async fn read_rtcp(
     port: u16,
 ) -> Result<()> {
     let udp_socket = UdpSocket::bind(format!("{}:0", host)).await?;
+    info!(
+        "UDP socket for RTCP bound to: {}",
+        udp_socket.local_addr().unwrap()
+    );
 
     loop {
         match sender.read_rtcp().await {
@@ -343,7 +352,7 @@ async fn read_rtcp(
                         {
                             warn!("Failed to forward RTCP packet: {}", err);
                         } else {
-                            debug!("Forwarded RTCP packet to {}:{}", bind_host, port);
+                            trace!("Forwarded RTCP packet to {}:{}", bind_host, port);
                         }
                     }
                 }
