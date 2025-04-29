@@ -15,11 +15,7 @@ use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     interceptor::registry::Registry,
-    peer_connection::{
-        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        RTCPeerConnection,
-    },
-    rtcp,
+    peer_connection::{configuration::RTCConfiguration, RTCPeerConnection},
     rtp::packet::Packet,
     rtp_transceiver::{
         rtp_codec::RTCRtpCodecCapability, rtp_codec::RTPCodecType, rtp_sender::RTCRtpSender,
@@ -33,7 +29,7 @@ use libwish::Client;
 
 use crate::payload;
 use crate::rtspclient::setup_rtsp_session;
-use crate::utils;
+use crate::utils::{self, rtcp_listener};
 
 use crate::{PREFIX_LIB, SCHEME_RTP_SDP, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
@@ -52,21 +48,25 @@ pub async fn into(
         ))
         .unwrap(),
     );
-    info!("=== Received Input: {} ===", input);
+    info!("[WHIP] Processing input URL: {}", input);
 
     let (target_host, mut listen_host) = utils::parse_host(&input);
 
-    debug!("=== Target Host: {} ===", target_host);
-    debug!("=== Listen Host: {} ===", listen_host);
+    info!(
+        "[WHIP] Target host: {}, Listen host: {}",
+        target_host, listen_host
+    );
 
     let video_port = input.port().unwrap_or(0);
-    debug!("Parsed port from input URL: {}", video_port);
+    debug!("[WHIP] Parsed port from input URL: {}", video_port);
     let media_info;
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let mut client = Client::new(whip_url.clone(), Client::get_auth_header_map(token.clone()));
+    info!("[WHIP] WHIP client created");
 
     let child = if let Some(command) = &command {
+        info!("[WHIP] Creating child process with command: {}", command);
         Arc::new(create_child(Some(command.to_string()))?)
     } else {
         Default::default()
@@ -80,42 +80,43 @@ pub async fn into(
     });
 
     if input.scheme() == SCHEME_RTSP_SERVER {
+        info!("[WHIP] Starting RTSP server mode");
         let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
 
         let host2 = listen_host.to_string();
-        debug!(
-            "Starting RTSP server with host: {}, port: {}",
-            host2, video_port
-        );
+        debug!("[WHIP] Binding RTSP server to {}:{}", host2, video_port);
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host2.clone(), video_port))
                 .await
                 .unwrap();
-            warn!(
-                "=== RTSP server listener started : {} ===",
+            info!(
+                "[WHIP] RTSP server started: {}",
                 listener.local_addr().unwrap()
             );
             loop {
                 let (socket, _) = listener.accept().await.unwrap();
                 match rtsp::process_socket(socket, &mut handler).await {
-                    Ok(_) => {}
-                    Err(e) => error!("=== RTSP listener error: {} ===", e),
+                    Ok(_) => debug!("[WHIP] RTSP client connection processed successfully"),
+                    Err(e) => error!("[WHIP] RTSP client connection processing failed: {}", e),
                 };
-                warn!("=== RTSP client socket closed ===");
+                warn!("[WHIP] RTSP client connection closed");
             }
         });
 
         media_info = rx.recv().await.unwrap();
     } else if input.scheme() == SCHEME_RTSP_CLIENT {
+        info!("[WHIP] Starting RTSP client mode");
         media_info = setup_rtsp_session(&target_url).await?;
     } else {
+        info!("[WHIP] Processing RTP mode");
         tokio::time::sleep(Duration::from_secs(1)).await;
         let path = Path::new(&target_url);
         let sdp = sdp_types::Session::parse(&fs::read(path).unwrap()).unwrap();
         if let Some(connection_info) = &sdp.connection {
             listen_host.clone_from(&connection_info.connection_address);
         }
+        info!("[WHIP] SDP file parsed successfully");
         let video_track = sdp.medias.iter().find(|md| md.media == "video");
         let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
 
@@ -180,13 +181,21 @@ pub async fn into(
             audio_rtcp_client: None,
         };
     }
-    info!("media info: {:?}", media_info);
+    info!("[WHIP] Media info: {:?}", media_info);
     let mut video_listener = None;
     if let Some(video_port) = media_info.video_rtp_server {
+        info!(
+            "[WHIP] Creating video RTP listener: {}:{}",
+            listen_host, video_port
+        );
         video_listener = Some(UdpSocket::bind(format!("{}:{}", listen_host, video_port)).await?);
     }
     let mut audio_listener = None;
     if let Some(audio_port) = media_info.audio_rtp_server {
+        info!(
+            "[WHIP] Creating audio RTP listener: {}:{}",
+            listen_host, audio_port
+        );
         audio_listener = Some(UdpSocket::bind(format!("{}:{}", listen_host, audio_port)).await?);
     }
 
@@ -216,7 +225,11 @@ pub async fn into(
     }
 
     if let Some(port) = media_info.video_rtp_server {
-        tokio::spawn(rtcp_listener(listen_host.clone(), port + 1, peer.clone()));
+        tokio::spawn(rtcp_listener(
+            listen_host.clone(),
+            Some(port + 1),
+            peer.clone(),
+        ));
     }
 
     let senders = peer.get_senders().await;
@@ -295,34 +308,6 @@ async fn rtp_listener(socker: UdpSocket, sender: Option<UnboundedSender<Vec<u8>>
     }
 }
 
-async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection>) {
-    let rtcp_listener = UdpSocket::bind(format!("{}:{}", host, rtcp_port))
-        .await
-        .unwrap();
-    debug!(
-        "RTCP listener bound to: {}",
-        rtcp_listener.local_addr().unwrap(),
-    );
-    let mut rtcp_buf = vec![0u8; 1500];
-
-    loop {
-        let (len, addr) = rtcp_listener.recv_from(&mut rtcp_buf).await.unwrap();
-        if len > 0 {
-            debug!("Received {} bytes of RTCP data from {}", len, addr);
-            let mut rtcp_data = &rtcp_buf[..len];
-
-            if let Ok(rtcp_packets) = rtcp::packet::unmarshal(&mut rtcp_data) {
-                for packet in rtcp_packets {
-                    debug!("Received RTCP packet from {}: {:?}", addr, packet);
-                    if let Err(err) = peer.write_rtcp(&[packet]).await {
-                        warn!("Failed to send RTCP packet: {}", err);
-                    }
-                }
-            }
-        }
-    }
-}
-
 async fn read_rtcp(
     sender: Arc<RTCRtpSender>,
     host: String,
@@ -378,28 +363,13 @@ async fn webrtc_start(
 )> {
     let (peer, video_sender, audio_sender) =
         new_peer(video_codec, audio_codec, complete_tx.clone(), input).await?;
-    let offer = peer.create_offer(None).await?;
 
-    let mut gather_complete = peer.gathering_complete_promise().await;
-    peer.set_local_description(offer).await?;
-    let _ = gather_complete.recv().await;
+    utils::setup_webrtc_connection(peer.clone(), client).await?;
 
-    let (answer, ice_servers) = client
-        .wish(peer.local_description().await.unwrap().sdp)
-        .await?;
-
-    debug!("Get http header link ice servers: {:?}", ice_servers);
-    let mut current_config = peer.get_configuration().await;
-    current_config.ice_servers.clone_from(&ice_servers);
-    peer.set_configuration(current_config.clone()).await?;
-
-    peer.set_remote_description(answer)
-        .await
-        .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
+    utils::setup_peer_connection_handlers(peer.clone(), complete_tx).await;
 
     Ok((peer, video_sender, audio_sender))
 }
-
 async fn new_peer(
     video_codec: Option<RTCRtpCodecCapability>,
     audio_codec: Option<RTCRtpCodecCapability>,
@@ -435,25 +405,7 @@ async fn new_peer(
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
-
-    let pc = peer.clone();
-    peer.on_peer_connection_state_change(Box::new(move |s| {
-        let pc = pc.clone();
-        let complete_tx = complete_tx.clone();
-        tokio::spawn(async move {
-            warn!("Connection state changed: {}", s);
-            match s {
-                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                    let _ = pc.close().await;
-                }
-                RTCPeerConnectionState::Closed => {
-                    let _ = complete_tx.send(());
-                }
-                v => debug!("{}", v),
-            };
-        });
-        Box::pin(async {})
-    }));
+    utils::setup_peer_connection_handlers(peer.clone(), complete_tx).await;
 
     let video_tx = if let Some(video_codec) = video_codec {
         let video_track_id = format!("{}-video", input);
