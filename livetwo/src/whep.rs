@@ -263,26 +263,6 @@ async fn new_peer(
     complete_tx: UnboundedSender<()>,
     codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
 ) -> Result<Arc<RTCPeerConnection>> {
-    // let mut m = MediaEngine::default();
-
-    // m.register_default_codecs()?;
-
-    // let mut registry = Registry::new();
-    // registry = register_default_interceptors(registry, &mut m)?;
-    // let api = APIBuilder::new()
-    //     .with_media_engine(m)
-    //     .with_interceptor_registry(registry)
-    //     .build();
-
-    // let config = RTCConfiguration {
-    //     ice_servers: vec![RTCIceServer {
-    //         urls: vec!["stun:stun.l.google.com:19302".to_string()],
-    //         username: "".to_string(),
-    //         credential: "".to_string(),
-    //         credential_type: RTCIceCredentialType::Unspecified,
-    //     }],
-    //     ..Default::default()
-    // };
     let (api, config) = utils::create_webrtc_api().await?;
 
     let peer = Arc::new(
