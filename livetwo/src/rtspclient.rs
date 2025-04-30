@@ -268,7 +268,7 @@ impl RtspSession {
                 }),
             ]));
 
-        info!(
+        debug!(
             "Preparing SETUP request for URI: {}, RTP client port: {}-{}",
             self.uri,
             rtp_client_port,
@@ -295,7 +295,6 @@ impl RtspSession {
         let setup_request = setup_request_builder.empty();
         debug!("SETUP request constructed: {:?}", setup_request);
 
-        info!("Sending SETUP request...");
         self.send_request(&setup_request.map_body(|_| vec![]))
             .await?;
         debug!("SETUP request sent successfully");
@@ -353,12 +352,12 @@ impl RtspSession {
             .ok_or_else(|| anyhow!("server_port not found in transport header"))?
             .parse::<u16>()
             .map_err(|_| anyhow!("Failed to parse server port"))?;
-        info!(
+        debug!(
             "Extracted server port from transport header: {}",
             server_port
         );
 
-        info!(
+        debug!(
             "SETUP request completed. Session ID: {}, Server Port: {}",
             session_id, server_port
         );
@@ -376,12 +375,14 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     let port = url.port().unwrap_or(DEFAULT_RTSP_PORT);
 
     let addr = format!("{}:{}", host, port);
-    info!("Connecting to RTSP server at {}", addr);
+    info!("[RTSP] Connecting to RTSP server at {}", addr);
     let stream = TcpStream::connect(addr).await?;
+    info!("[RTSP] Connection established");
+    let base_url = url.as_str().to_string();
 
     let mut rtsp_session = RtspSession {
         stream,
-        uri: url.as_str().to_string(),
+        uri: base_url.clone(),
         cseq: 1,
         auth_params: AuthParams {
             username: url.username().to_string(),
@@ -391,22 +392,30 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
         rtp_client_port: None,
         auth_header: None,
     };
+    info!("[RTSP] Session initialized");
 
     url.set_username("").unwrap();
     url.set_password(None).unwrap();
 
     rtsp_session.send_options_request().await?;
+    info!("[RTSP] OPTIONS request sent successfully");
 
     let sdp_content = rtsp_session.send_describe_request().await?;
+    info!("[RTSP] DESCRIBE request completed");
 
     let sdp: Session = Session::parse(sdp_content.as_bytes())
         .map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
+    info!("[RTSP] SDP parsed successfully");
 
     let video_track = sdp.medias.iter().find(|md| md.media == "video");
     let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
-    debug!("track video: {:?}, audio: {:?}", video_track, audio_track);
+    debug!(
+        "[RTSP] Found tracks - video: {:?}, audio: {:?}",
+        video_track, audio_track
+    );
 
     if video_track.is_none() && audio_track.is_none() {
+        error!("[RTSP] No tracks found in SDP");
         return Err(anyhow!("No tracks found in SDP"));
     }
 
@@ -414,7 +423,7 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
 
     if let Some(video_track) = video_track {
         let (rtp_client, rtcp_client, rtp_server, codec) =
-            setup_track(&mut rtsp_session, video_track, "0").await?;
+            setup_track(&mut rtsp_session, video_track, "0", &base_url).await?;
         media_info.video_rtp_server = rtp_client;
         media_info.video_rtcp_client = rtcp_client;
         media_info.video_rtp_client = rtp_server;
@@ -423,13 +432,14 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
 
     if let Some(audio_track) = audio_track {
         let (rtp_client, rtcp_client, rtp_server, codec) =
-            setup_track(&mut rtsp_session, audio_track, "1").await?;
+            setup_track(&mut rtsp_session, audio_track, "1", &base_url).await?;
         media_info.audio_rtp_server = rtp_client;
         media_info.audio_rtcp_client = rtcp_client;
         media_info.audio_rtp_client = rtp_server;
         media_info.audio_codec = codec;
     }
 
+    rtsp_session.uri = base_url;
     let play_request = Request::builder(Method::Play, Version::V1_0)
         .request_uri(
             rtsp_session
@@ -448,11 +458,14 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     rtsp_session
         .send_request(&play_request.map_body(|_| vec![]))
         .await?;
+    info!("[RTSP] PLAY request sent");
+
     let mut play_response = rtsp_session.read_response().await?;
-    trace!("play_response: {:?}", play_response);
+    trace!("[RTSP] Play response: {:?}", play_response);
 
     if play_response.status() == StatusCode::Unauthorized {
         if let Some(auth_header) = play_response.header(&WWW_AUTHENTICATE).cloned() {
+            info!("[RTSP] Handling unauthorized response for PLAY request");
             play_response = rtsp_session
                 .handle_unauthorized(Method::Play, &auth_header)
                 .await?;
@@ -460,10 +473,16 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     }
 
     if play_response.status() != StatusCode::Ok {
+        error!(
+            "[RTSP] PLAY request failed with status: {}",
+            play_response.status()
+        );
         return Err(anyhow!("PLAY request failed"));
     }
+    info!("[RTSP] PLAY request successful");
 
     tokio::spawn(rtsp_session.keep_rtsp_alive());
+    info!("[RTSP] Keep-alive task started");
 
     Ok(media_info)
 }
@@ -471,21 +490,22 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
 pub async fn setup_rtsp_push_session(
     rtsp_url: &str,
     sdp_content: String,
+    target_host: &str,
 ) -> Result<rtsp::MediaInfo> {
     let mut url = Url::parse(rtsp_url)?;
-    let host = url.host_str().ok_or_else(|| anyhow!("Invalid RTSP URL"))?;
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("Invalid RTSP URL"))?;
 
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{}:{}", target_host, port);
+    let base_uri = url.as_str().to_string();
 
     let stream = TcpStream::connect(&addr).await?;
     info!("Connected to RTSP server: {}", addr);
 
     let mut rtsp_session = RtspSession {
         stream,
-        uri: url.as_str().to_string(),
+        uri: base_uri.clone(),
         cseq: 1,
         auth_params: AuthParams {
             username: url.username().to_string(),
@@ -510,7 +530,6 @@ pub async fn setup_rtsp_push_session(
 
     let sdp: Session = Session::parse(sdp_content.as_bytes())
         .map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
-    info!("Parsed SDP successfully");
     debug!("Parsed SDP: {:?}", sdp);
 
     let video_track = sdp.medias.iter().find(|md| md.media == "video");
@@ -527,7 +546,6 @@ pub async fn setup_rtsp_push_session(
     let mut media_info = rtsp::MediaInfo::default();
 
     if let Some(video_track) = video_track {
-        info!("Setting up video track");
         let video_url = video_track
             .attributes
             .iter()
@@ -537,13 +555,13 @@ pub async fn setup_rtsp_push_session(
                     if value.starts_with("rtsp://") {
                         Some(value)
                     } else {
-                        Some(format!("{}/{}", rtsp_session.uri.clone(), value))
+                        Some(format!("{}/{}", base_uri, value))
                     }
                 } else {
                     None
                 }
             })
-            .unwrap_or_else(|| format!("{}/trackID=1", rtsp_session.uri));
+            .unwrap_or_else(|| format!("{}/trackID=1", base_uri));
         debug!("Video track URL: {}", video_url);
 
         media_info.video_rtp_server =
@@ -559,7 +577,7 @@ pub async fn setup_rtsp_push_session(
         let (session_id, v_server_port) = rtsp_session
             .send_setup_request(Some(transport::TransportMode::Record))
             .await?;
-        info!(
+        debug!(
             "Video track SETUP successful, Session ID: {}, Server Port: {}",
             session_id, v_server_port
         );
@@ -569,8 +587,8 @@ pub async fn setup_rtsp_push_session(
     }
 
     if let Some(audio_track) = audio_track {
-        rtsp_session.uri = url.as_str().to_string();
-        info!("Audio track URL: {:?}", audio_track);
+        rtsp_session.uri.clone_from(&base_uri);
+        debug!("Audio track URL: {:?}", audio_track);
         let audio_url = audio_track
             .attributes
             .iter()
@@ -580,13 +598,13 @@ pub async fn setup_rtsp_push_session(
                     if value.starts_with("rtsp://") {
                         Some(value)
                     } else {
-                        Some(format!("{}/{}", rtsp_session.uri.clone(), value))
+                        Some(format!("{}/{}", base_uri, value))
                     }
                 } else {
                     None
                 }
             })
-            .unwrap_or_else(|| format!("{}/trackID=2", rtsp_session.uri));
+            .unwrap_or_else(|| format!("{}/trackID=0", base_uri));
         debug!("Audio track URL: {}", audio_url);
 
         media_info.audio_rtp_server =
@@ -602,7 +620,7 @@ pub async fn setup_rtsp_push_session(
         let (_session_id, a_server_port) = rtsp_session
             .send_setup_request(Some(transport::TransportMode::Record))
             .await?;
-        info!(
+        debug!(
             "Audio track SETUP successful, Server Port: {}",
             a_server_port
         );
@@ -611,7 +629,7 @@ pub async fn setup_rtsp_push_session(
     }
 
     info!("Sending RECORD request");
-    rtsp_session.uri = url.as_str().to_string();
+    rtsp_session.uri = base_uri;
     let record_request = Request::builder(Method::Record, Version::V1_0)
         .request_uri(
             rtsp_session
@@ -670,6 +688,7 @@ async fn setup_track(
     rtsp_session: &mut RtspSession,
     track: &sdp_types::Media,
     track_id: &str,
+    base_url: &str,
 ) -> Result<(Option<u16>, Option<u16>, Option<u16>, Option<Codec>)> {
     let track_url = track
         .attributes
@@ -680,13 +699,13 @@ async fn setup_track(
                 if value.starts_with("rtsp://") {
                     Some(value)
                 } else {
-                    Some(format!("{}/{}", rtsp_session.uri, value))
+                    Some(format!("{}/{}", base_url, value))
                 }
             } else {
                 None
             }
         })
-        .unwrap_or_else(|| format!("{}/trackID={}", rtsp_session.uri, track_id));
+        .unwrap_or_else(|| format!("{}/trackID={}", base_url, track_id));
 
     let rtp_client_port = pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
     rtsp_session.rtp_client_port = Some(rtp_client_port);
