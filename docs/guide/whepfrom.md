@@ -4,8 +4,8 @@
 
 This tool has three working mode:
 - `rtp`
-- TODO: `rtsp as client`
-- TODO: `rtsp as server`
+- `rtsp as client`
+- `rtsp as server`
 
 ## RTP
 
@@ -23,5 +23,29 @@ Use [`vlc`](/guide/vlc) play
 
 ```bash
 vlc output.sdp
+```
+
+## RTSP Server
+
+It's default mode
+
+This example is `whepfrom` as RTSP Server, use `ffplay` as client use RTSP pull stream
+
+```bash
+whepfrom -w http://localhost:7777/whep/777 -o rtsp-listen://0.0.0.0:8551
+```
+
+### Player
+
+```bash
+ffplay rtsp://localhost:8551
+```
+
+## RTSP Client
+
+`whepfrom` as a client, push stream from RTSP Server
+
+```bash
+whepfrom -w http://localhost:7777/whip/777 -o rtsp://127.0.0.1:8554
 ```
 
