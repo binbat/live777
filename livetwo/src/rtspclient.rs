@@ -716,8 +716,14 @@ async fn setup_track(
 
     let codec = track.attributes.iter().find_map(|attr| {
         if attr.attribute == "rtpmap" {
-            let value = attr.value.as_ref()?.split_whitespace().nth(1)?;
-            codec_from_str(value).ok()
+            let value = attr.value.as_ref()?;
+            let codec_name = value
+                .split_whitespace()
+                .nth(1)?
+                .split('/')
+                .next()?
+                .to_string();
+            codec_from_str(&codec_name).ok()
         } else {
             None
         }
