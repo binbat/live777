@@ -3,9 +3,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 
-async fn shutdown_signal() {
-    let _str = signal::wait_for_stop_signal().await;
-}
+mod common;
+use common::shutdown_signal;
 
 #[tokio::test]
 async fn test_liveion_simple() {
