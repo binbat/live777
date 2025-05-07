@@ -337,3 +337,116 @@ async fn new_peer(
 
     Ok(peer)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn create_test_sdp() -> String {
+        r#"v=0
+
+o=- 1234567890 1234567890 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 127.0.0.1
+a=rtpmap:96 VP8/90000
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtcp-fb:96 goog-remb
+a=mid:0
+a=sendonly
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 127.0.0.1
+a=rtpmap:111 opus/48000/2
+a=mid:1
+a=sendonly"#
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_new_peer() {
+        let (video_send, _) = unbounded_channel::<Vec<u8>>();
+        let (audio_send, _) = unbounded_channel::<Vec<u8>>();
+        let (complete_tx, _) = unbounded_channel();
+        let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
+
+        let peer = new_peer(video_send, audio_send, complete_tx, codec_info.clone()).await;
+
+        assert!(peer.is_ok(), "Failed to create peer connection");
+        let peer = peer.unwrap();
+
+        let transceivers = peer.get_transceivers().await;
+        assert_eq!(transceivers.len(), 2, "Expected two transceivers");
+
+        for transceiver in transceivers {
+            let direction = transceiver.direction();
+            assert_eq!(
+                direction,
+                RTCRtpTransceiverDirection::Recvonly,
+                "Transceiver should be recvonly"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sdp_creation() {
+        let sdp = create_test_sdp();
+
+        assert!(sdp.contains("m=video"), "SDP should contain video media");
+        assert!(sdp.contains("m=audio"), "SDP should contain audio media");
+        assert!(
+            sdp.contains("rtpmap:96 VP8/90000"),
+            "SDP should specify VP8 codec"
+        );
+        assert!(
+            sdp.contains("rtpmap:111 opus/48000/2"),
+            "SDP should specify Opus codec"
+        );
+    }
+
+    #[test]
+    fn test_sdp_filter() {
+        let sdp = create_test_sdp();
+
+        let video_codec = webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+            capability: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 96,
+            ..Default::default()
+        };
+
+        let audio_codec = webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+            capability: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                clock_rate: 48000,
+                channels: 2,
+                sdp_fmtp_line: "".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 111,
+            ..Default::default()
+        };
+
+        let result = rtsp::filter_sdp(&sdp, Some(&video_codec), Some(&audio_codec));
+        assert!(result.is_ok(), "SDP filtering should succeed");
+
+        if let Ok(filtered_sdp) = result {
+            assert!(
+                filtered_sdp.contains("VP8/90000"),
+                "Filtered SDP should contain video codec"
+            );
+            assert!(
+                filtered_sdp.contains("opus/48000"),
+                "Filtered SDP should contain audio codec"
+            );
+        }
+    }
+}

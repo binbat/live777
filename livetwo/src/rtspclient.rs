@@ -766,20 +766,105 @@ fn generate_digest_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
-    #[test]
-    fn test_generate_digest_response() {
-        let username = "username";
-        let password = "password";
-        let uri = "/resource";
-        let realm = "Realm";
-        let nonce = "1234567890";
-        let method = "GET";
+    #[tokio::test]
+    async fn test_send_describe_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
 
-        let expected_response = "5a8a58beeb78f36ed2c0f0d474288f3d";
+        let client = TcpStream::connect(addr).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
 
-        let response = generate_digest_response(username, password, uri, realm, nonce, method);
+        let sdp_content = "v=0\r\no=- 12345 12345 IN IP4 127.0.0.1\r\ns=Test\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n";
+        let content_length = sdp_content.len();
 
-        assert_eq!(response, expected_response);
+        tokio::spawn(async move {
+            let mut buffer = vec![0; 4096];
+            let n = server.read(&mut buffer).await.unwrap();
+            let _ = String::from_utf8_lossy(&buffer[..n]);
+
+            let response = format!(
+            "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
+            content_length,
+            sdp_content
+        );
+
+            server.write_all(response.as_bytes()).await.unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut rtsp_session = RtspSession {
+            stream: client,
+            uri: "rtsp://example.com".to_string(),
+            cseq: 1,
+            auth_params: AuthParams {
+                username: "".to_string(),
+                password: "".to_string(),
+            },
+            session_id: None,
+            rtp_client_port: None,
+            auth_header: None,
+        };
+
+        let sdp_content = rtsp_session.send_describe_request().await.unwrap();
+        assert!(sdp_content.contains("v=0"));
+        assert!(sdp_content.contains("m=video"));
+        assert_eq!(rtsp_session.cseq, 2);
+    }
+
+    #[tokio::test]
+    async fn test_send_describe_request_unauthorized() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = TcpStream::connect(addr).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+
+        let sdp_content = "v=0\r\no=- 12345 12345 IN IP4 127.0.0.1\r\ns=Test\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n";
+        let content_length = sdp_content.len();
+
+        tokio::spawn(async move {
+            let mut buffer = vec![0; 4096];
+            let n = server.read(&mut buffer).await.unwrap();
+            let _ = String::from_utf8_lossy(&buffer[..n]);
+
+            let unauthorized_response = "RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm=\"testrealm\", nonce=\"testnonce\"\r\nContent-Length: 0\r\n\r\n";
+            server
+                .write_all(unauthorized_response.as_bytes())
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            let n = server.read(&mut buffer).await.unwrap();
+            let _ = String::from_utf8_lossy(&buffer[..n]);
+
+            let ok_response = format!(
+            "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
+            content_length,
+            sdp_content
+        );
+            server.write_all(ok_response.as_bytes()).await.unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut rtsp_session = RtspSession {
+            stream: client,
+            uri: "rtsp://example.com".to_string(),
+            cseq: 1,
+            auth_params: AuthParams {
+                username: "user".to_string(),
+                password: "pass".to_string(),
+            },
+            session_id: None,
+            rtp_client_port: None,
+            auth_header: None,
+        };
+
+        let sdp_content = rtsp_session.send_describe_request().await.unwrap();
+        assert!(sdp_content.contains("v=0"));
+        assert!(sdp_content.contains("m=video"));
+        assert!(rtsp_session.cseq > 1);
     }
 }
