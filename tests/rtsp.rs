@@ -23,9 +23,21 @@ async fn test_livetwo_rtsp_vp8() {
 
     let width = 640;
     let height = 480;
-    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx");
+    let prefix =
+        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx");
 
-    helper_livetwo_rtsp(ip, port, &prefix, whip_port, whep_port, Detect { audio: None, video: Some((width, height)) }).await;
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -38,8 +50,20 @@ async fn test_livetwo_rtsp_vp8_ipv6() {
 
     let width = 640;
     let height = 480;
-    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx");
-    helper_livetwo_rtsp(ip, port, &prefix, whip_port, whep_port, Detect { audio: None, video: Some((width, height)) }).await;
+    let prefix =
+        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx");
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -55,7 +79,18 @@ async fn test_livetwo_rtsp_vp9() {
     let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p";
     let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
 
-    helper_livetwo_rtsp(ip, port, &prefix, whip_port, whep_port, Detect { audio: None, video: Some((width, height)) }).await;
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -69,7 +104,18 @@ async fn test_livetwo_rtsp_opus() {
     let codec = "-acodec libopus";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
 
-    helper_livetwo_rtsp(ip, port, &prefix, whip_port, whep_port, Detect { audio: Some(2), video: None }).await;
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: Some(2),
+            video: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -83,7 +129,18 @@ async fn test_livetwo_rtsp_g722() {
     let codec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
 
-    helper_livetwo_rtsp(ip, port, &prefix, whip_port, whep_port, Detect { audio: Some(1), video: None }).await;
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: Some(1),
+            video: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -98,10 +155,28 @@ async fn test_livetwo_rtsp_vp8_opus() {
     let height = 480;
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vcodec libvpx");
 
-    helper_livetwo_rtsp(ip, port, &prefix, whip_port, whep_port, Detect { audio: Some(2), video: Some((width, height)) }).await;
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: Some(2),
+            video: Some((width, height)),
+        },
+    )
+    .await;
 }
 
-async fn helper_livetwo_rtsp(ip: IpAddr, port: u16, prefix: &str, whip_port: u16, whep_port: u16, detect: Detect) {
+async fn helper_livetwo_rtsp(
+    ip: IpAddr,
+    port: u16,
+    prefix: &str,
+    whip_port: u16,
+    whep_port: u16,
+    detect: Detect,
+) {
     let cfg = liveion::config::Config::default();
 
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
@@ -126,10 +201,17 @@ async fn helper_livetwo_rtsp(ip: IpAddr, port: u16, prefix: &str, whip_port: u16
     assert_eq!(1, body.len());
 
     tokio::spawn(livetwo::whip::into(
-        format!("{}://{}", livetwo::SCHEME_RTSP_SERVER, SocketAddr::new(ip, whip_port)),
+        format!(
+            "{}://{}",
+            livetwo::SCHEME_RTSP_SERVER,
+            SocketAddr::new(ip, whip_port)
+        ),
         format!("http://{addr}{}", api::path::whip("-")),
         None,
-        Some(format!("{prefix} -f rtsp 'rtsp://{}'", SocketAddr::new(ip, whip_port))),
+        Some(format!(
+            "{prefix} -f rtsp 'rtsp://{}'",
+            SocketAddr::new(ip, whip_port)
+        )),
     ));
 
     let mut result = None;
@@ -158,7 +240,11 @@ async fn helper_livetwo_rtsp(ip: IpAddr, port: u16, prefix: &str, whip_port: u16
     assert!(result.is_some());
 
     tokio::spawn(livetwo::whep::from(
-        format!("{}://{}", livetwo::SCHEME_RTSP_SERVER, SocketAddr::new(ip, whep_port)),
+        format!(
+            "{}://{}",
+            livetwo::SCHEME_RTSP_SERVER,
+            SocketAddr::new(ip, whep_port)
+        ),
         format!("http://{addr}{}", api::path::whep("-")),
         None,
         None,
@@ -197,7 +283,11 @@ async fn helper_livetwo_rtsp(ip: IpAddr, port: u16, prefix: &str, whip_port: u16
             "error",
             "-hide_banner",
             "-i",
-            &format!("{}://{}", livetwo::SCHEME_RTSP_CLIENT, SocketAddr::new(ip, whep_port)),
+            &format!(
+                "{}://{}",
+                livetwo::SCHEME_RTSP_CLIENT,
+                SocketAddr::new(ip, whep_port)
+            ),
             "-show_format",
             "-show_streams",
             "-of",
@@ -234,14 +324,14 @@ async fn helper_livetwo_rtsp(ip: IpAddr, port: u16, prefix: &str, whip_port: u16
                     } else {
                         panic!("Shouldn't exsit video");
                     }
-                },
+                }
                 "audio" => {
                     if let Some(channels) = detect.audio {
                         assert_eq!(stream.channels.unwrap(), channels);
                     } else {
                         panic!("Shouldn't exsit audio");
                     }
-                },
+                }
                 _ => panic!("Unknown codec_type: {}", stream.codec_type),
             }
         }
