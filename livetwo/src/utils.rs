@@ -251,17 +251,15 @@ mod tests {
 
     #[test]
     fn test_parse_host_ipv4() {
-        let url = Url::parse("rtsp://192.168.1.1:554/stream").unwrap();
-        println!("url.host(): {:?}", url.host());
+        let url = Url::parse("rtsp://192.168.1.1:8554/stream").unwrap();
         let (target_host, listen_host) = parse_host(&url);
-        println!("target_host: {}, listen_host: {}", target_host, listen_host);
         assert_eq!(target_host, "192.168.1.1");
         assert_eq!(listen_host, Ipv4Addr::UNSPECIFIED.to_string());
     }
 
     #[test]
     fn test_parse_host_ipv6() {
-        let url = Url::parse("rtsp://[::1]:554/stream").unwrap();
+        let url = Url::parse("rtsp://[::1]:8554/stream").unwrap();
         let (target_host, listen_host) = parse_host(&url);
         assert_eq!(target_host, "::1");
         assert_eq!(listen_host, Ipv6Addr::UNSPECIFIED.to_string());
@@ -269,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_parse_host_domain() {
-        let url = Url::parse("rtsp://localhost:554/stream").unwrap();
+        let url = Url::parse("rtsp://localhost:8554/stream").unwrap();
         let (target_host, listen_host) = parse_host(&url);
 
         let is_target_ipv6 = target_host.parse::<Ipv6Addr>().is_ok();
