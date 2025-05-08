@@ -376,7 +376,7 @@ async fn test_whip_whep_chain_rtsp_complex() {
     let ffmpeg_rtsp_url = format!("rtsp://127.0.0.1:8554/test");
     println!("WHIP server URL: {}", whip_server_url);
     println!("RTSP URL: {}", ffmpeg_rtsp_url);
-    
+
     tokio::spawn(livetwo::whip::into(
         whip_server_url.clone(),
         format!("http://{addr}{}", api::path::whip("-")),
@@ -402,11 +402,14 @@ async fn test_whip_whep_chain_rtsp_complex() {
         };
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    assert!(whip_server_result.is_some(), "WHIP server connection failed");
+    assert!(
+        whip_server_result.is_some(),
+        "WHIP server connection failed"
+    );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let whip_server2_url = format!("rtsp-listen://127.0.0.1:8555/test");
-    
+
     tokio::spawn(livetwo::whip::into(
         whip_server2_url.clone(),
         format!("http://{addr}{}", api::path::whip("--")),
@@ -416,7 +419,7 @@ async fn test_whip_whep_chain_rtsp_complex() {
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let whep_client_url = format!("rtsp://127.0.0.1:8555/test");
-    
+
     tokio::spawn(livetwo::whep::from(
         whep_client_url.clone(),
         format!("http://{addr}{}", api::path::whep("-")),
@@ -442,11 +445,14 @@ async fn test_whip_whep_chain_rtsp_complex() {
         };
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    assert!(whep_client_result.is_some(), "WHEP client connection failed");
+    assert!(
+        whep_client_result.is_some(),
+        "WHEP client connection failed"
+    );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let whep_server_url = format!("rtsp-listen://127.0.0.1:8556/test");
-    
+
     tokio::spawn(livetwo::whep::from(
         whep_server_url.clone(),
         format!("http://{addr}{}", api::path::whep("--")),
@@ -472,11 +478,14 @@ async fn test_whip_whep_chain_rtsp_complex() {
         };
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    assert!(whep_server_result.is_some(), "WHEP server connection failed");
+    assert!(
+        whep_server_result.is_some(),
+        "WHEP server connection failed"
+    );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let whip_client_url = format!("rtsp://127.0.0.1:8556/test");
-    
+
     tokio::spawn(livetwo::whip::into(
         whip_client_url.clone(),
         format!("http://{addr}{}", api::path::whip("---")),
@@ -502,12 +511,15 @@ async fn test_whip_whep_chain_rtsp_complex() {
         };
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    assert!(whip_client_result.is_some(), "WHIP client connection failed");
+    assert!(
+        whip_client_result.is_some(),
+        "WHIP client connection failed"
+    );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let final_whep_server_url = format!("rtsp-listen://127.0.0.1:8557/test");
     let final_rtsp_url = format!("rtsp://127.0.0.1:8557/test");
-    
+
     tokio::spawn(livetwo::whep::from(
         final_whep_server_url.clone(),
         format!("http://{addr}{}", api::path::whep("---")),
@@ -556,9 +568,9 @@ async fn test_whip_whep_chain_rtsp_complex() {
         .output()
         .await
         .expect("Failed to execute command");
-    
+
     assert!(output.status.success(), "ffprobe verification failed");
-    
+
     #[derive(serde::Deserialize)]
     struct FfprobeStream {
         height: u16,
@@ -571,6 +583,6 @@ async fn test_whip_whep_chain_rtsp_complex() {
     let r: Ffprobe = serde_json::from_slice(output.stdout.as_slice()).unwrap();
     assert_eq!(r.streams[0].width, width);
     assert_eq!(r.streams[0].height, height);
-    
+
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 }
