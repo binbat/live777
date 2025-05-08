@@ -372,10 +372,8 @@ async fn test_whip_whep_chain_rtsp_complex() {
         .unwrap();
     assert_eq!(http::StatusCode::NO_CONTENT, res.status());
 
-    let whip_server_url = format!("rtsp-listen://127.0.0.1:8554/test");
-    let ffmpeg_rtsp_url = format!("rtsp://127.0.0.1:8554/test");
-    println!("WHIP server URL: {}", whip_server_url);
-    println!("RTSP URL: {}", ffmpeg_rtsp_url);
+    let whip_server_url = "rtsp-listen://127.0.0.1:8554/test".to_string();
+    let ffmpeg_rtsp_url = "rtsp://127.0.0.1:8554/test".to_string();
 
     tokio::spawn(livetwo::whip::into(
         whip_server_url.clone(),
@@ -408,7 +406,7 @@ async fn test_whip_whep_chain_rtsp_complex() {
     );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let whip_server2_url = format!("rtsp-listen://127.0.0.1:8555/test");
+    let whip_server2_url = "rtsp-listen://127.0.0.1:8555/test".to_string();
 
     tokio::spawn(livetwo::whip::into(
         whip_server2_url.clone(),
@@ -418,7 +416,7 @@ async fn test_whip_whep_chain_rtsp_complex() {
     ));
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let whep_client_url = format!("rtsp://127.0.0.1:8555/test");
+    let whep_client_url = "rtsp://127.0.0.1:8555/test".to_string();
 
     tokio::spawn(livetwo::whep::from(
         whep_client_url.clone(),
@@ -451,7 +449,7 @@ async fn test_whip_whep_chain_rtsp_complex() {
     );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let whep_server_url = format!("rtsp-listen://127.0.0.1:8556/test");
+    let whep_server_url = "rtsp-listen://127.0.0.1:8556/test".to_string();
 
     tokio::spawn(livetwo::whep::from(
         whep_server_url.clone(),
@@ -484,7 +482,7 @@ async fn test_whip_whep_chain_rtsp_complex() {
     );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let whip_client_url = format!("rtsp://127.0.0.1:8556/test");
+    let whip_client_url = "rtsp://127.0.0.1:8556/test".to_string();
 
     tokio::spawn(livetwo::whip::into(
         whip_client_url.clone(),
@@ -517,8 +515,8 @@ async fn test_whip_whep_chain_rtsp_complex() {
     );
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let final_whep_server_url = format!("rtsp-listen://127.0.0.1:8557/test");
-    let final_rtsp_url = format!("rtsp://127.0.0.1:8557/test");
+    let final_whep_server_url = "rtsp-listen://127.0.0.1:8557/test".to_string();
+    let final_rtsp_url = "rtsp://127.0.0.1:8557/test".to_string();
 
     tokio::spawn(livetwo::whep::from(
         final_whep_server_url.clone(),
