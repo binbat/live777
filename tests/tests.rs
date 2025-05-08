@@ -330,7 +330,12 @@ async fn test_liveion_stream_ffmpeg() {
         .await
         .expect("Failed to execute command");
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stdout: {}\r\nstderr: {}",
+        std::str::from_utf8(output.stdout.as_slice()).unwrap(),
+        std::str::from_utf8(output.stderr.as_slice()).unwrap()
+    );
 
     if output.status.success() {
         #[derive(serde::Deserialize)]
