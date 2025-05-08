@@ -14,19 +14,19 @@ struct Detect {
 }
 
 #[tokio::test]
-async fn test_livetwo_rtsp_vp8() {
+async fn test_livetwo_rtp_vp8() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8550;
-    let whep_port: u16 = 8555;
+    let whip_port: u16 = 5000;
+    let whep_port: u16 = 5005;
 
     let width = 640;
     let height = 480;
     let prefix =
         format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx");
 
-    helper_livetwo_rtsp(
+    helper_livetwo_rtp(
         ip,
         port,
         &prefix,
@@ -45,14 +45,14 @@ async fn test_livetwo_rtsp_vp8_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8560;
-    let whep_port: u16 = 8565;
+    let whip_port: u16 = 5010;
+    let whep_port: u16 = 5015;
 
     let width = 640;
     let height = 480;
     let prefix =
         format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx");
-    helper_livetwo_rtsp(
+    helper_livetwo_rtp(
         ip,
         port,
         &prefix,
@@ -71,15 +71,44 @@ async fn test_livetwo_rtsp_vp9() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8570;
-    let whep_port: u16 = 8575;
+    let whip_port: u16 = 5020;
+    let whep_port: u16 = 5025;
 
     let width = 640;
     let height = 480;
     let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p";
     let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
 
-    helper_livetwo_rtsp(
+    helper_livetwo_rtp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_rtsp_h264() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 5030;
+    let whep_port: u16 = 5035;
+
+    let width = 640;
+    let height = 480;
+    let codec = "-profile:v baseline -level 3.0 -pix_fmt yuv420p -g 30 -keyint_min 30 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency";
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 {codec}"
+    );
+
+    helper_livetwo_rtp(
         ip,
         port,
         &prefix,
@@ -98,13 +127,13 @@ async fn test_livetwo_rtsp_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8660;
-    let whep_port: u16 = 8665;
+    let whip_port: u16 = 5050;
+    let whep_port: u16 = 5055;
 
     let codec = "-acodec libopus";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
 
-    helper_livetwo_rtsp(
+    helper_livetwo_rtp(
         ip,
         port,
         &prefix,
@@ -123,13 +152,13 @@ async fn test_livetwo_rtsp_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8670;
-    let whep_port: u16 = 8675;
+    let whip_port: u16 = 5060;
+    let whep_port: u16 = 5065;
 
     let codec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
 
-    helper_livetwo_rtsp(
+    helper_livetwo_rtp(
         ip,
         port,
         &prefix,
@@ -148,14 +177,22 @@ async fn test_livetwo_rtsp_vp8_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8710;
-    let whep_port: u16 = 8715;
+    let whip_port: u16 = 5070;
+    let whep_port: u16 = 5075;
 
     let width = 640;
     let height = 480;
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vcodec libvpx");
 
-    helper_livetwo_rtsp(
+    // ffmpeg -re \
+    // -f lavfi -i sine=frequency=1000 \
+    // -f lavfi -i testsrc=size=640x480:rate=30 \
+    // -acodec libopus -vn -f rtp rtp://127.0.0.1:5002 \
+    // -vcodec libvpx -an -f rtp rtp://127.0.0.1:5004 \
+    // -sdp_file input.sdp
+    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vn -f rtp rtp://{} -vcodec libvpx -an",
+            SocketAddr::new(ip, whep_port));
+
+    helper_livetwo_rtp(
         ip,
         port,
         &prefix,
@@ -169,12 +206,12 @@ async fn test_livetwo_rtsp_vp8_opus() {
     .await;
 }
 
-async fn helper_livetwo_rtsp(
+async fn helper_livetwo_rtp(
     ip: IpAddr,
     port: u16,
     prefix: &str,
     whip_port: u16,
-    whep_port: u16,
+    _whep_port: u16,
     detect: Detect,
 ) {
     let cfg = liveion::config::Config::default();
@@ -200,16 +237,18 @@ async fn helper_livetwo_rtsp(
 
     assert_eq!(1, body.len());
 
+    let tmp_path = tempfile::tempdir()
+        .unwrap()
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string();
     tokio::spawn(livetwo::whip::into(
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, whip_port)
-        ),
+        tmp_path.clone(),
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         Some(format!(
-            "{prefix} -f rtsp 'rtsp://{}'",
+            "{prefix} -f rtp 'rtp://{}' -sdp_file {tmp_path}",
             SocketAddr::new(ip, whip_port)
         )),
     ));
@@ -239,12 +278,14 @@ async fn helper_livetwo_rtsp(
 
     assert!(result.is_some());
 
+    let tmp_path = tempfile::tempdir()
+        .unwrap()
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string();
     tokio::spawn(livetwo::whep::from(
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, whep_port)
-        ),
+        tmp_path.clone(),
         format!("http://{addr}{}", api::path::whep("-")),
         None,
         None,
@@ -282,12 +323,10 @@ async fn helper_livetwo_rtsp(
             "-v",
             "error",
             "-hide_banner",
+            "-protocol_whitelist",
+            "file,rtp,udp",
             "-i",
-            &format!(
-                "{}://{}",
-                livetwo::SCHEME_RTSP_CLIENT,
-                SocketAddr::new(ip, whep_port)
-            ),
+            tmp_path.as_str(),
             "-show_streams",
             "-of",
             "json",
