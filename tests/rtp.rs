@@ -41,7 +41,7 @@ async fn test_livetwo_rtp_vp8() {
 }
 
 #[tokio::test]
-async fn test_livetwo_rtsp_vp8_ipv6() {
+async fn test_livetwo_rtp_vp8_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
@@ -67,7 +67,7 @@ async fn test_livetwo_rtsp_vp8_ipv6() {
 }
 
 #[tokio::test]
-async fn test_livetwo_rtsp_vp9() {
+async fn test_livetwo_rtp_vp9() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -94,7 +94,7 @@ async fn test_livetwo_rtsp_vp9() {
 }
 
 #[tokio::test]
-async fn test_livetwo_rtsp_h264() {
+async fn test_livetwo_rtp_h264() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -123,7 +123,34 @@ async fn test_livetwo_rtsp_h264() {
 }
 
 #[tokio::test]
-async fn test_livetwo_rtsp_opus() {
+async fn test_livetwo_rtp_vp9_4k() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 5040;
+    let whep_port: u16 = 5045;
+
+    let width = 4096;
+    let height = 2160;
+    let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p";
+    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
+
+    helper_livetwo_rtp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_rtp_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -148,7 +175,7 @@ async fn test_livetwo_rtsp_opus() {
 }
 
 #[tokio::test]
-async fn test_livetwo_rtsp_g722() {
+async fn test_livetwo_rtp_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -173,7 +200,7 @@ async fn test_livetwo_rtsp_g722() {
 }
 
 #[tokio::test]
-async fn test_livetwo_rtsp_vp8_opus() {
+async fn test_livetwo_rtp_vp8_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -189,8 +216,10 @@ async fn test_livetwo_rtsp_vp8_opus() {
     // -acodec libopus -vn -f rtp rtp://127.0.0.1:5002 \
     // -vcodec libvpx -an -f rtp rtp://127.0.0.1:5004 \
     // -sdp_file input.sdp
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vn -f rtp rtp://{} -vcodec libvpx -an",
-            SocketAddr::new(ip, whep_port));
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vn -f rtp rtp://{} -vcodec libvpx -an",
+        SocketAddr::new(ip, whep_port),
+    );
 
     helper_livetwo_rtp(
         ip,
@@ -200,6 +229,43 @@ async fn test_livetwo_rtsp_vp8_opus() {
         whep_port,
         Detect {
             audio: Some(2),
+            video: Some((width, height)),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_rtp_h264_g722() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 5080;
+    let whep_port: u16 = 5085;
+
+    let width = 640;
+    let height = 480;
+
+    // ffmpeg -re \
+    // -f lavfi -i sine=frequency=1000 \
+    // -f lavfi -i testsrc=size=640x480:rate=30 \
+    // -acodec g722 -vn -f rtp rtp://127.0.0.1:5002 \
+    // -vcodec libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -g 30 -keyint_min 30 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -an -f rtp rtp://127.0.0.1:5004 \
+    // -sdp_file input.sdp
+    let vcodec = "-profile:v baseline -level 3.0 -pix_fmt yuv420p -g 30 -keyint_min 30 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency";
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec g722 -vn -f rtp rtp://{} -vcodec libx264 {vcodec} -an",
+        SocketAddr::new(ip, whep_port),
+    );
+
+    helper_livetwo_rtp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: Some(1),
             video: Some((width, height)),
         },
     )
