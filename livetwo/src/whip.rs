@@ -487,3 +487,55 @@ async fn new_peer(
 
     Ok((peer, video_tx, audio_tx))
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+
+    #[tokio::test]
+    async fn test_new_peer_with_codecs() {
+        let video_codec = Some(RTCRtpCodecCapability {
+            mime_type: "video/H264".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "".to_string(),
+            rtcp_feedback: vec![],
+        });
+        let audio_codec = Some(RTCRtpCodecCapability {
+            mime_type: "audio/opus".to_string(),
+            clock_rate: 48000,
+            channels: 2,
+            sdp_fmtp_line: "".to_string(),
+            rtcp_feedback: vec![],
+        });
+        let (complete_tx, _complete_rx) = mpsc::unbounded_channel();
+        let input = "test-input".to_string();
+
+        let result = new_peer(video_codec, audio_codec, complete_tx, input).await;
+        assert!(result.is_ok());
+
+        let (peer, video_tx, audio_tx) = result.unwrap();
+        assert!(video_tx.is_some(), "Video sender should be created");
+        assert!(audio_tx.is_some(), "Audio sender should be created");
+
+        let senders = peer.get_senders().await;
+        assert_eq!(senders.len(), 2, "Should have two tracks (video + audio)");
+    }
+
+    #[tokio::test]
+    async fn test_new_peer_no_codecs() {
+        let (complete_tx, _complete_rx) = mpsc::unbounded_channel();
+        let input = "test-input".to_string();
+
+        let result = new_peer(None, None, complete_tx, input).await;
+        assert!(result.is_ok());
+
+        let (peer, video_tx, audio_tx) = result.unwrap();
+        assert!(video_tx.is_none(), "No video sender should be created");
+        assert!(audio_tx.is_none(), "No audio sender should be created");
+
+        let senders = peer.get_senders().await;
+        assert_eq!(senders.len(), 0, "Should have no tracks");
+    }
+}
