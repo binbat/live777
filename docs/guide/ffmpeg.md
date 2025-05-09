@@ -98,11 +98,27 @@ ffmpeg -re -f lavfi -i sine=frequency=1000 \
 
 ## Both: Audio and Video
 
+VP8 And OPUS
+
 ```bash
 ffmpeg -re \
 -f lavfi -i sine=frequency=1000 \
 -f lavfi -i testsrc=size=640x480:rate=30 \
 -acodec libopus -vn -f rtp rtp://127.0.0.1:5002 \
 -vcodec libvpx -an -f rtp rtp://127.0.0.1:5004 -sdp_file input.sdp
+```
+
+
+H264 And G722
+
+```bash
+ffmpeg -re \
+-f lavfi -i sine=frequency=1000 \
+-f lavfi -i testsrc=size=640x480:rate=30 \
+-acodec g722 -vn -f rtp rtp://127.0.0.1:5002 \
+-vcodec libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p \
+-g 30 -keyint_min 30 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k \
+-preset ultrafast -tune zerolatency -an -f rtp rtp://127.0.0.1:5004 \
+-sdp_file input.sdp
 ```
 
