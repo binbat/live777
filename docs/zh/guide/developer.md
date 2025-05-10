@@ -4,6 +4,10 @@
 - [cargo](https://www.rust-lang.org/)
 - [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
+可选依赖:
+- [ffmpeg](https://www.ffmpeg.org/)
+- [just](https://github.com/casey/just)
+
 ## 二进制包和源码对应关系
 
 Binary     | Package    | Comment
