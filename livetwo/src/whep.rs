@@ -92,6 +92,8 @@ pub async fn from(
     };
     info!("[WHEP] SDP filtered successfully");
 
+    let child = Arc::new(tokio::sync::Mutex::new(None));
+
     if input.scheme() == SCHEME_RTSP_SERVER {
         let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
         let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
@@ -99,6 +101,10 @@ pub async fn from(
 
         let host2 = listen_host.to_string();
         let tcp_port = input.port().unwrap_or(0);
+        let rtsp_child = child.clone();
+        let command_clone = command.clone();
+        let complete_tx_clone = complete_tx.clone();
+
         tokio::spawn(async move {
             let listener = TcpListener::bind(format!("{}:{}", host2.clone(), tcp_port))
                 .await
@@ -107,6 +113,52 @@ pub async fn from(
                 "=== RTSP listener started : {} ===",
                 listener.local_addr().unwrap()
             );
+
+            if let Some(cmd) = command_clone {
+                match create_child(Some(cmd)) {
+                    Ok(child_proc) => {
+                        let mut lock = rtsp_child.lock().await;
+                        *lock = child_proc;
+                        info!("[WHEP] Child process created for RTSP server");
+
+                        let rtsp_child_monitor = rtsp_child.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                let exit_status = {
+                                    let lock = rtsp_child_monitor.lock().await;
+                                    if let Some(ref child_mutex) = *lock {
+                                        if let Ok(mut child) = child_mutex.lock() {
+                                            match child.try_wait() {
+                                                Ok(Some(status)) => Some(status),
+                                                Ok(None) => None,
+                                                Err(_) => Some(std::process::ExitStatus::default()),
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                if exit_status.is_some() {
+                                    let _ = complete_tx_clone.send(());
+                                    break;
+                                }
+
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!(
+                            "[WHEP] Failed to create child process for RTSP server: {}",
+                            e
+                        );
+                    }
+                }
+            }
+
             loop {
                 let (socket, _) = listener.accept().await.unwrap();
                 match rtsp::process_socket(socket, &mut handler).await {
@@ -160,7 +212,21 @@ pub async fn from(
             .truncate(true)
             .open(file_path)?;
         file.write_all(sdp.as_bytes())?;
+
+        if let Some(cmd) = command.clone() {
+            match create_child(Some(cmd)) {
+                Ok(child_proc) => {
+                    let mut lock = child.lock().await;
+                    *lock = child_proc;
+                    info!("[WHEP] Child process created for RTP SDP");
+                }
+                Err(e) => {
+                    error!("[WHEP] Failed to create child process for RTP SDP: {}", e);
+                }
+            }
+        }
     }
+
     info!("media info : {:?}", media_info);
     tokio::spawn(utils::rtp_send(
         video_recv,
@@ -180,33 +246,52 @@ pub async fn from(
     ));
     info!("[WHEP] Audio RTP sender started");
 
-    let child = Arc::new(create_child(command)?);
-    info!("[WHEP] Child process created");
     defer!({
-        if let Some(child) = child.as_ref() {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
-            }
-        }
+        tokio::task::block_in_place(|| {
+            let rt = tokio::runtime::Handle::current();
+            rt.block_on(async {
+                let lock = child.lock().await;
+                if let Some(ref child_mutex) = *lock {
+                    if let Ok(mut child_proc) = child_mutex.lock() {
+                        let _ = child_proc.kill();
+                        info!("[WHEP] Child process killed during cleanup");
+                    }
+                }
+            });
+        });
     });
 
     let wait_child = child.clone();
+    let complete_tx_monitor = complete_tx.clone();
     tokio::spawn(async move {
-        match wait_child.as_ref() {
-            Some(child) => loop {
-                if let Ok(mut child) = child.lock() {
-                    if let Ok(wait) = child.try_wait() {
-                        if wait.is_some() {
-                            let _ = complete_tx.send(());
-                            return;
+        loop {
+            let exit_status = {
+                let lock = wait_child.lock().await;
+                if let Some(ref child_mutex) = *lock {
+                    if let Ok(mut child) = child_mutex.lock() {
+                        match child.try_wait() {
+                            Ok(Some(status)) => Some(status),
+                            Ok(None) => None,
+                            Err(_) => Some(std::process::ExitStatus::default()),
                         }
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            },
-            None => info!("No child process"),
+            };
+
+            if let Some(status) = exit_status {
+                info!("[WHEP] Child process exited with status: {}", status);
+                let _ = complete_tx_monitor.send(());
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+
     if input.scheme() == SCHEME_RTSP_SERVER {
         info!("[WHEP] Starting RTCP listeners for RTSP server mode");
         tokio::spawn(utils::rtcp_listener(
@@ -231,7 +316,6 @@ pub async fn from(
 
     Ok(())
 }
-
 async fn webrtc_start(
     client: &mut Client,
     video_send: UnboundedSender<Vec<u8>>,
