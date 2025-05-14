@@ -23,14 +23,25 @@ pub struct Handler {
     up_tx: UnboundedSender<MediaInfo>,
     dn_tx: UnboundedSender<()>,
 }
+
+#[derive(Debug, Clone)]
+pub enum TransportInfo {
+    Tcp {
+        rtp_channel: u16,
+        rtcp_channel: u16,
+    },
+    Udp {
+        rtp_send_port: Option<u16>,
+        rtp_recv_port: Option<u16>,
+        rtcp_send_port: Option<u16>,
+        rtcp_recv_port: Option<u16>,
+    },
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MediaInfo {
-    pub video_rtp_client: Option<u16>,
-    pub video_rtcp_client: Option<u16>,
-    pub video_rtp_server: Option<u16>,
-    pub audio_rtp_client: Option<u16>,
-    pub audio_rtcp_client: Option<u16>,
-    pub audio_rtp_server: Option<u16>,
+    pub video_transport: Option<TransportInfo>,
+    pub audio_transport: Option<TransportInfo>,
     pub video_codec: Option<Codec>,
     pub audio_codec: Option<Codec>,
 }
@@ -77,12 +88,8 @@ impl Handler {
     fn play(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         self.up_tx
             .send(MediaInfo {
-                video_rtp_client: self.media_info.video_rtp_client,
-                video_rtcp_client: self.media_info.video_rtcp_client,
-                video_rtp_server: self.media_info.video_rtp_server,
-                audio_rtp_client: self.media_info.audio_rtp_client,
-                audio_rtcp_client: self.media_info.audio_rtcp_client,
-                audio_rtp_server: self.media_info.audio_rtp_server,
+                video_transport: self.media_info.video_transport.clone(),
+                audio_transport: self.media_info.audio_transport.clone(),
                 video_codec: self.media_info.video_codec,
                 audio_codec: self.media_info.audio_codec,
             })
@@ -97,12 +104,8 @@ impl Handler {
     fn record(&self, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         self.up_tx
             .send(MediaInfo {
-                video_rtp_client: self.media_info.video_rtp_client,
-                video_rtcp_client: self.media_info.video_rtcp_client,
-                video_rtp_server: self.media_info.video_rtp_server,
-                audio_rtp_client: self.media_info.audio_rtp_client,
-                audio_rtcp_client: self.media_info.audio_rtcp_client,
-                audio_rtp_server: self.media_info.audio_rtp_server,
+                video_transport: self.media_info.video_transport.clone(),
+                audio_transport: self.media_info.audio_transport.clone(),
                 video_codec: self.media_info.video_codec,
                 audio_codec: self.media_info.audio_codec,
             })
@@ -164,9 +167,13 @@ impl Handler {
                             pick_unused_port().expect("Failed to find an unused audio port");
                         let audio_rtcp_server_port = audio_server_port + 1;
 
-                        self.media_info.audio_rtp_client = Some(rtp);
-                        self.media_info.audio_rtcp_client = rtcp;
-                        self.media_info.audio_rtp_server = Some(audio_server_port);
+                        self.media_info.audio_transport = Some(TransportInfo::Udp {
+                            rtp_send_port: Some(rtp),
+                            rtp_recv_port: Some(audio_server_port),
+                            rtcp_send_port: rtcp,
+                            rtcp_recv_port: Some(audio_rtcp_server_port),
+                        });
+
                         self.media_info.audio_codec = media
                             .attributes
                             .iter()
@@ -209,9 +216,13 @@ impl Handler {
                             pick_unused_port().expect("Failed to find an unused video port");
                         let video_rtcp_server_port = video_server_port + 1;
 
-                        self.media_info.video_rtp_client = Some(rtp);
-                        self.media_info.video_rtcp_client = rtcp;
-                        self.media_info.video_rtp_server = Some(video_server_port);
+                        self.media_info.video_transport = Some(TransportInfo::Udp {
+                            rtp_send_port: Some(rtp),
+                            rtp_recv_port: Some(video_server_port),
+                            rtcp_send_port: rtcp,
+                            rtcp_recv_port: Some(video_rtcp_server_port),
+                        });
+
                         self.media_info.video_codec = media
                             .attributes
                             .iter()

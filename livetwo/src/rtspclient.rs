@@ -272,7 +272,7 @@ where
             ]));
 
         debug!(
-            "Preparing SETUP request for URI: {}, RTP client port: {}-{}",
+            "Preparing SETUP request for URI: {}, RTSP client port: {}-{}",
             self.uri,
             rtp_client_port,
             rtp_client_port + 1
@@ -425,20 +425,28 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     let mut media_info = rtsp::MediaInfo::default();
 
     if let Some(video_track) = video_track {
-        let (rtp_client, rtcp_client, rtp_server, codec) =
+        let (rtp_client, rtcp_client, rtp_server, rtcp_server, codec) =
             setup_track(&mut rtsp_session, video_track, "0", &base_url).await?;
-        media_info.video_rtp_server = rtp_client;
-        media_info.video_rtcp_client = rtcp_client;
-        media_info.video_rtp_client = rtp_server;
+
+        media_info.video_transport = Some(rtsp::TransportInfo::Udp {
+            rtp_send_port: rtp_server,
+            rtp_recv_port: rtp_client,
+            rtcp_send_port: rtcp_server,
+            rtcp_recv_port: rtcp_client,
+        });
         media_info.video_codec = codec;
     }
 
     if let Some(audio_track) = audio_track {
-        let (rtp_client, rtcp_client, rtp_server, codec) =
+        let (rtp_client, rtcp_client, rtp_server, rtcp_server, codec) =
             setup_track(&mut rtsp_session, audio_track, "1", &base_url).await?;
-        media_info.audio_rtp_server = rtp_client;
-        media_info.audio_rtcp_client = rtcp_client;
-        media_info.audio_rtp_client = rtp_server;
+
+        media_info.audio_transport = Some(rtsp::TransportInfo::Udp {
+            rtp_send_port: rtp_server,
+            rtp_recv_port: rtp_client,
+            rtcp_send_port: rtcp_server,
+            rtcp_recv_port: rtcp_client,
+        });
         media_info.audio_codec = codec;
     }
 
@@ -567,26 +575,31 @@ pub async fn setup_rtsp_push_session(
             .unwrap_or_else(|| format!("{}/trackID=1", base_uri));
         debug!("Video track URL: {}", video_url);
 
-        media_info.video_rtp_server =
-            Some(pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?);
+        let video_rtp_client =
+            pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
         debug!(
             "Allocated RTP client port for video: {:?}",
-            media_info.video_rtp_server
+            video_rtp_client
         );
 
-        rtsp_session.rtp_client_port = media_info.video_rtp_server;
+        rtsp_session.rtp_client_port = Some(video_rtp_client);
         rtsp_session.uri = video_url;
 
-        let (session_id, v_server_port) = rtsp_session
+        let (session_id, video_rtp_server) = rtsp_session
             .send_setup_request(Some(transport::TransportMode::Record))
             .await?;
         debug!(
             "Video track SETUP successful, Session ID: {}, Server Port: {}",
-            session_id, v_server_port
+            session_id, video_rtp_server
         );
 
         rtsp_session.session_id = Some(session_id);
-        media_info.video_rtp_client = Some(v_server_port);
+        media_info.video_transport = Some(rtsp::TransportInfo::Udp {
+            rtp_send_port: Some(video_rtp_server),
+            rtp_recv_port: Some(video_rtp_client),
+            rtcp_send_port: Some(video_rtp_server + 1),
+            rtcp_recv_port: Some(video_rtp_client + 1),
+        });
     }
 
     if let Some(audio_track) = audio_track {
@@ -610,25 +623,30 @@ pub async fn setup_rtsp_push_session(
             .unwrap_or_else(|| format!("{}/trackID=0", base_uri));
         debug!("Audio track URL: {}", audio_url);
 
-        media_info.audio_rtp_server =
-            Some(pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?);
+        let audio_rtp_client =
+            pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
         debug!(
             "Allocated RTP client port for audio: {:?}",
-            media_info.audio_rtp_server
+            audio_rtp_client
         );
 
-        rtsp_session.rtp_client_port = media_info.audio_rtp_server;
+        rtsp_session.rtp_client_port = Some(audio_rtp_client);
         rtsp_session.uri = audio_url;
 
-        let (_session_id, a_server_port) = rtsp_session
+        let (_session_id, audio_rtp_server) = rtsp_session
             .send_setup_request(Some(transport::TransportMode::Record))
             .await?;
         debug!(
             "Audio track SETUP successful, Server Port: {}",
-            a_server_port
+            audio_rtp_server
         );
 
-        media_info.audio_rtp_client = Some(a_server_port);
+        media_info.audio_transport = Some(rtsp::TransportInfo::Udp {
+            rtp_send_port: Some(audio_rtp_server),
+            rtp_recv_port: Some(audio_rtp_client),
+            rtcp_send_port: Some(audio_rtp_server + 1),
+            rtcp_recv_port: Some(audio_rtp_client + 1),
+        });
     }
 
     info!("Sending RECORD request");
@@ -692,7 +710,13 @@ async fn setup_track(
     track: &sdp_types::Media,
     track_id: &str,
     base_url: &str,
-) -> Result<(Option<u16>, Option<u16>, Option<u16>, Option<Codec>)> {
+) -> Result<(
+    Option<u16>,
+    Option<u16>,
+    Option<u16>,
+    Option<u16>,
+    Option<Codec>,
+)> {
     let track_url = track
         .attributes
         .iter()
@@ -736,6 +760,7 @@ async fn setup_track(
         Some(rtp_client_port),
         Some(rtp_client_port + 1),
         Some(rtp_server_port),
+        Some(rtp_server_port + 1),
         codec,
     ))
 }

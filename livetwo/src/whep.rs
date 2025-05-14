@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 use anyhow::{anyhow, Result};
 use cli::create_child;
@@ -14,8 +14,8 @@ use std::{
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::Notify;
 use tracing::{debug, error, info, trace, warn};
-use url::Url;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::{
     peer_connection::RTCPeerConnection,
@@ -30,7 +30,7 @@ use libwish::Client;
 
 use crate::rtspclient::setup_rtsp_push_session;
 use crate::utils;
-use crate::{SCHEME_RTP_SDP, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
+use crate::{SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
 pub async fn from(
     target_url: String,
@@ -38,32 +38,23 @@ pub async fn from(
     token: Option<String>,
     command: Option<String>,
 ) -> Result<()> {
-    let input = Url::parse(&target_url).unwrap_or(
-        Url::parse(&format!(
-            "{}://{}:0/{}",
-            SCHEME_RTP_SDP,
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            target_url
-        ))
-        .unwrap(),
-    );
+    let input = utils::parse_input_url(&target_url)?;
     info!("[WHEP] Processing output URL: {}", target_url);
 
-    let (mut target_host, listen_host) = utils::parse_host(&input);
+    let (target_host, listen_host) = utils::parse_host(&input);
     info!(
         "[WHEP] Target host: {}, Listen host: {}",
         target_host, listen_host
     );
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
-    let mut media_info = rtsp::MediaInfo::default();
     let (video_send, video_recv) = unbounded_channel::<Vec<u8>>();
     let (audio_send, audio_recv) = unbounded_channel::<Vec<u8>>();
     let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
-    info!("[WHEP] Channels and codec info initialized");
+    debug!("[WHEP] Channels and codec info initialized");
 
     let mut client = Client::new(whep_url.clone(), Client::get_auth_header_map(token.clone()));
-    info!("[WHEP] WHEP client created");
+    debug!("[WHEP] WHEP client created");
 
     let (peer, answer) = webrtc_start(
         &mut client,
@@ -90,114 +81,38 @@ pub async fn from(
             return Err(anyhow!("Failed to filter SDP: {}", e));
         }
     };
-    info!("[WHEP] SDP filtered successfully");
+    debug!("[WHEP] SDP filtered {:?}", filtered_sdp);
 
-    if input.scheme() == SCHEME_RTSP_SERVER {
-        let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
-        let mut handler = rtsp::Handler::new(tx, complete_tx.clone());
-        handler.set_sdp(filtered_sdp.clone().into_bytes());
+    let notify = Arc::new(Notify::new());
+    let notify_clone = notify.clone();
+    let complete_tx_for_child = complete_tx.clone();
 
-        let host2 = listen_host.to_string();
-        let tcp_port = input.port().unwrap_or(0);
-        tokio::spawn(async move {
-            let listener = TcpListener::bind(format!("{}:{}", host2.clone(), tcp_port))
-                .await
-                .unwrap();
-            warn!(
-                "=== RTSP listener started : {} ===",
-                listener.local_addr().unwrap()
-            );
-            loop {
-                let (socket, _) = listener.accept().await.unwrap();
-                match rtsp::process_socket(socket, &mut handler).await {
-                    Ok(_) => {}
-                    Err(e) => error!("=== RTSP listener error: {} ===", e),
-                };
-                warn!("=== RTSP client socket closed ===");
+    tokio::spawn(async move {
+        notify_clone.notified().await;
+        debug!("[WHEP] Received signal to start child process");
+
+        let child = match create_child(command) {
+            Ok(child) => Arc::new(child),
+            Err(e) => {
+                error!("[WHEP] Failed to create child process: {}", e);
+                return;
+            }
+        };
+        info!("[WHEP] Child process created");
+        defer!({
+            if let Some(child) = child.as_ref() {
+                if let Ok(mut child) = child.lock() {
+                    let _ = child.kill();
+                }
             }
         });
-
-        media_info = rx.recv().await.unwrap();
-    } else if input.scheme() == SCHEME_RTSP_CLIENT {
-        media_info =
-            setup_rtsp_push_session(&target_url, filtered_sdp.clone(), &target_host).await?;
-    } else {
-        media_info.video_rtp_client = pick_unused_port();
-        media_info.audio_rtp_client = pick_unused_port();
-
-        let mut reader = Cursor::new(filtered_sdp.as_bytes());
-        let mut session = SessionDescription::unmarshal(&mut reader).unwrap();
-        target_host = session
-            .clone()
-            .connection_information
-            .and_then(|conn_info| conn_info.address)
-            .map(|address| address.to_string())
-            .unwrap_or(Ipv4Addr::LOCALHOST.to_string());
-        for media in &mut session.media_descriptions {
-            if media.media_name.media == "video" {
-                if let Some(port) = media_info.video_rtp_client {
-                    media.media_name.port = RangedPort {
-                        value: port as isize,
-                        range: None,
-                    };
-                }
-            } else if media.media_name.media == "audio" {
-                if let Some(port) = media_info.audio_rtp_client {
-                    media.media_name.port = RangedPort {
-                        value: port as isize,
-                        range: None,
-                    };
-                }
-            }
-        }
-        let sdp = session.marshal();
-
-        let file_path = Path::new(&target_url);
-        debug!("SDP written to {:?}", file_path);
-        let mut file = File::options()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(file_path)?;
-        file.write_all(sdp.as_bytes())?;
-    }
-    info!("media info : {:?}", media_info);
-    tokio::spawn(utils::rtp_send(
-        video_recv,
-        listen_host.clone(),
-        target_host.clone(),
-        media_info.video_rtp_client,
-        media_info.video_rtp_server,
-    ));
-    info!("[WHEP] Video RTP sender started");
-
-    tokio::spawn(utils::rtp_send(
-        audio_recv,
-        listen_host.clone(),
-        target_host.clone(),
-        media_info.audio_rtp_client,
-        media_info.audio_rtp_server,
-    ));
-    info!("[WHEP] Audio RTP sender started");
-
-    let child = Arc::new(create_child(command)?);
-    info!("[WHEP] Child process created");
-    defer!({
-        if let Some(child) = child.as_ref() {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
-            }
-        }
-    });
-
-    let wait_child = child.clone();
-    tokio::spawn(async move {
+        let wait_child = child.clone();
         match wait_child.as_ref() {
             Some(child) => loop {
                 if let Ok(mut child) = child.lock() {
                     if let Ok(wait) = child.try_wait() {
                         if wait.is_some() {
-                            let _ = complete_tx.send(());
+                            let _ = complete_tx_for_child.send(());
                             return;
                         }
                     }
@@ -207,29 +122,219 @@ pub async fn from(
             None => info!("No child process"),
         }
     });
-    if input.scheme() == SCHEME_RTSP_SERVER {
-        info!("[WHEP] Starting RTCP listeners for RTSP server mode");
-        tokio::spawn(utils::rtcp_listener(
-            target_host.clone(),
-            media_info.video_rtp_server,
-            peer.clone(),
-        ));
-        tokio::spawn(utils::rtcp_listener(
-            target_host.clone(),
-            media_info.audio_rtp_server,
-            peer.clone(),
-        ));
-    }
+
+    let (media_info, target_host) = match input.scheme() {
+        SCHEME_RTSP_SERVER => {
+            let tcp_port = input.port().unwrap_or(0);
+            (
+                rtsp_server_mode(
+                    filtered_sdp,
+                    &listen_host,
+                    complete_tx.clone(),
+                    tcp_port,
+                    notify,
+                )
+                .await?,
+                target_host,
+            )
+        }
+        SCHEME_RTSP_CLIENT => (
+            rtsp_client_mode(filtered_sdp, &target_url, &target_host).await?,
+            target_host,
+        ),
+        _ => rtp_mode(filtered_sdp, &target_url, notify.clone()).await?,
+    };
+
+    info!("media info : {:?}", media_info);
+    setup_rtp_handlers(
+        video_recv,
+        audio_recv,
+        listen_host.clone(),
+        target_host.clone(),
+        &media_info,
+        peer.clone(),
+    );
 
     tokio::select! {
         _ = complete_rx.recv() => { }
         msg = signal::wait_for_stop_signal() => warn!("Received signal: {}", msg)
     }
 
-    let _ = client.remove_resource().await;
     let _ = peer.close().await;
 
     Ok(())
+}
+
+fn setup_rtp_handlers(
+    video_recv: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    audio_recv: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    listen_host: String,
+    target_host: String,
+    media_info: &rtsp::MediaInfo,
+    peer: Arc<RTCPeerConnection>,
+) {
+    tokio::spawn(utils::rtp_send(
+        video_recv,
+        listen_host.clone(),
+        target_host.clone(),
+        media_info.video_transport.as_ref().and_then(|t| match t {
+            rtsp::TransportInfo::Udp { rtp_send_port, .. } => *rtp_send_port,
+            _ => None,
+        }),
+        media_info.video_transport.as_ref().and_then(|t| match t {
+            rtsp::TransportInfo::Udp { rtp_recv_port, .. } => *rtp_recv_port,
+            _ => None,
+        }),
+    ));
+    info!("[WHEP] Video RTP sender started");
+
+    tokio::spawn(utils::rtp_send(
+        audio_recv,
+        listen_host.clone(),
+        target_host.clone(),
+        media_info.audio_transport.as_ref().and_then(|t| match t {
+            rtsp::TransportInfo::Udp { rtp_send_port, .. } => *rtp_send_port,
+            _ => None,
+        }),
+        media_info.audio_transport.as_ref().and_then(|t| match t {
+            rtsp::TransportInfo::Udp { rtp_recv_port, .. } => *rtp_recv_port,
+            _ => None,
+        }),
+    ));
+    info!("[WHEP] Audio RTP sender started");
+
+    let target_host_clone = target_host.clone();
+    if let Some(rtsp::TransportInfo::Udp {
+        rtcp_recv_port: Some(port),
+        ..
+    }) = &media_info.video_transport
+    {
+        info!("[WHEP] Starting up video RTCP on port {}", port);
+        tokio::spawn(utils::rtcp_listener(target_host_clone, *port, peer.clone()));
+    }
+    if let Some(rtsp::TransportInfo::Udp {
+        rtcp_recv_port: Some(port),
+        ..
+    }) = &media_info.audio_transport
+    {
+        info!("[WHEP] Starting up audio RTCP on port {}", port);
+        tokio::spawn(utils::rtcp_listener(target_host, *port, peer.clone()));
+    }
+}
+
+async fn rtsp_server_mode(
+    filtered_sdp: String,
+    listen_host: &str,
+    complete_tx: UnboundedSender<()>,
+    tcp_port: u16,
+    notify: Arc<Notify>,
+) -> Result<rtsp::MediaInfo> {
+    let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
+    let mut handler = rtsp::Handler::new(tx, complete_tx);
+    handler.set_sdp(filtered_sdp.into_bytes());
+
+    let host2 = listen_host.to_string();
+    tokio::spawn(async move {
+        let listener = TcpListener::bind(format!("{}:{}", host2.clone(), tcp_port))
+            .await
+            .unwrap();
+        warn!(
+            "=== RTSP listener started : {} ===",
+            listener.local_addr().unwrap()
+        );
+        notify.notify_one();
+        info!("[WHEP] Sent signal to start child process");
+
+        loop {
+            let (socket, _) = listener.accept().await.unwrap();
+            match rtsp::process_socket(socket, &mut handler).await {
+                Ok(_) => {}
+                Err(e) => error!("=== RTSP listener error: {} ===", e),
+            };
+            warn!("=== RTSP client socket closed ===");
+        }
+    });
+
+    Ok(rx.recv().await.unwrap())
+}
+
+async fn rtsp_client_mode(
+    filtered_sdp: String,
+    target_url: &str,
+    target_host: &str,
+) -> Result<rtsp::MediaInfo> {
+    setup_rtsp_push_session(target_url, filtered_sdp, target_host).await
+}
+
+async fn rtp_mode(
+    filtered_sdp: String,
+    target_url: &str,
+    notify: Arc<Notify>,
+) -> Result<(rtsp::MediaInfo, String)> {
+    let media_info = rtsp::MediaInfo {
+        video_transport: Some(rtsp::TransportInfo::Udp {
+            rtp_send_port: pick_unused_port(),
+            rtp_recv_port: None,
+            rtcp_send_port: None,
+            rtcp_recv_port: None,
+        }),
+        audio_transport: Some(rtsp::TransportInfo::Udp {
+            rtp_send_port: pick_unused_port(),
+            rtp_recv_port: None,
+            rtcp_send_port: None,
+            rtcp_recv_port: None,
+        }),
+        ..Default::default()
+    };
+
+    let mut reader = Cursor::new(filtered_sdp.as_bytes());
+    let mut session = SessionDescription::unmarshal(&mut reader).unwrap();
+    let sdp_target_host = session
+        .clone()
+        .connection_information
+        .and_then(|conn_info| conn_info.address)
+        .map(|address| address.to_string())
+        .unwrap_or(Ipv4Addr::LOCALHOST.to_string());
+
+    for media in &mut session.media_descriptions {
+        if media.media_name.media == "video" {
+            if let Some(rtsp::TransportInfo::Udp {
+                rtp_send_port: Some(port),
+                ..
+            }) = &media_info.video_transport
+            {
+                media.media_name.port = RangedPort {
+                    value: *port as isize,
+                    range: None,
+                };
+            }
+        } else if media.media_name.media == "audio" {
+            if let Some(rtsp::TransportInfo::Udp {
+                rtp_send_port: Some(port),
+                ..
+            }) = &media_info.audio_transport
+            {
+                media.media_name.port = RangedPort {
+                    value: *port as isize,
+                    range: None,
+                };
+            }
+        }
+    }
+    let sdp = session.marshal();
+
+    let file_path = Path::new(target_url);
+    debug!("SDP written to {:?}", file_path);
+    let mut file = File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(file_path)?;
+    file.write_all(sdp.as_bytes())?;
+    notify.notify_one();
+    info!("[WHEP] Sent signal to start child process after RTP mode SDP write");
+
+    Ok((media_info, sdp_target_host))
 }
 
 async fn webrtc_start(
