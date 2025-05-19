@@ -26,6 +26,20 @@ use common::shutdown_signal;
 // - whepfrom rtsp server
 // - ffprobe
 
+enum Transport {
+    Udp,
+    Tcp,
+}
+
+impl Transport {
+    fn as_str(&self) -> &str {
+        match self {
+            Transport::Udp => "",
+            Transport::Tcp => "?transport=tcp",
+        }
+    }
+}
+
 struct Ports {
     whip: u16,
     p_ab: u16,
@@ -67,6 +81,39 @@ async fn test_livetwo_cycle_rtsp_vp8() {
             audio: None,
             video: Some((width, height)),
         },
+        Transport::Udp,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_cycle_rtsp_vp8_tcp() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 7220;
+    let whep_port: u16 = 7235;
+
+    let width = 640;
+    let height = 480;
+    let prefix =
+        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx -rtsp_transport tcp");
+
+    helper_livetwo_cycle_rtsp(
+        ip,
+        port,
+        &prefix,
+        Ports {
+            whip: whip_port,
+            p_ab: 7225,
+            p_bc: 7230,
+            whep: whep_port,
+        },
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+        Transport::Tcp,
     )
     .await;
 }
@@ -98,6 +145,39 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6() {
             audio: None,
             video: Some((width, height)),
         },
+        Transport::Udp,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
+    let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 7240;
+    let whep_port: u16 = 7255;
+
+    let width = 640;
+    let height = 480;
+    let prefix =
+        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx -rtsp_transport tcp");
+
+    helper_livetwo_cycle_rtsp(
+        ip,
+        port,
+        &prefix,
+        Ports {
+            whip: whip_port,
+            p_ab: 7245,
+            p_bc: 7250,
+            whep: whep_port,
+        },
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+        Transport::Tcp,
     )
     .await;
 }
@@ -129,6 +209,41 @@ async fn test_livetwo_cycle_rtsp_vp9() {
             audio: None,
             video: Some((width, height)),
         },
+        Transport::Udp,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_cycle_rtsp_vp9_tcp() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 7260;
+    let whep_port: u16 = 7275;
+
+    let width = 640;
+    let height = 480;
+    let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p";
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec} -rtsp_transport tcp"
+    );
+
+    helper_livetwo_cycle_rtsp(
+        ip,
+        port,
+        &prefix,
+        Ports {
+            whip: whip_port,
+            p_ab: 7265,
+            p_bc: 7270,
+            whep: whep_port,
+        },
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+        Transport::Tcp,
     )
     .await;
 }
@@ -158,6 +273,37 @@ async fn test_livetwo_cycle_rtsp_opus() {
             audio: Some(2),
             video: None,
         },
+        Transport::Udp,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_cycle_rtsp_opus_tcp() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 7280;
+    let whep_port: u16 = 7295;
+
+    let codec = "-acodec libopus";
+    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec} -rtsp_transport tcp");
+
+    helper_livetwo_cycle_rtsp(
+        ip,
+        port,
+        &prefix,
+        Ports {
+            whip: whip_port,
+            p_ab: 7285,
+            p_bc: 7290,
+            whep: whep_port,
+        },
+        Detect {
+            audio: Some(2),
+            video: None,
+        },
+        Transport::Tcp,
     )
     .await;
 }
@@ -187,6 +333,37 @@ async fn test_livetwo_cycle_rtsp_g722() {
             audio: Some(1),
             video: None,
         },
+        Transport::Udp,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_cycle_rtsp_g722_tcp() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 7320;
+    let whep_port: u16 = 7335;
+
+    let codec = "-acodec g722";
+    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec} -rtsp_transport tcp");
+
+    helper_livetwo_cycle_rtsp(
+        ip,
+        port,
+        &prefix,
+        Ports {
+            whip: whip_port,
+            p_ab: 7325,
+            p_bc: 7330,
+            whep: whep_port,
+        },
+        Detect {
+            audio: Some(1),
+            video: None,
+        },
+        Transport::Tcp,
     )
     .await;
 }
@@ -217,6 +394,38 @@ async fn test_livetwo_cycle_rtsp_vp8_opus() {
             audio: Some(2),
             video: Some((width, height)),
         },
+        Transport::Udp,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 7340;
+    let whep_port: u16 = 7355;
+
+    let width = 640;
+    let height = 480;
+    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vcodec libvpx -rtsp_transport tcp");
+
+    helper_livetwo_cycle_rtsp(
+        ip,
+        port,
+        &prefix,
+        Ports {
+            whip: whip_port,
+            p_ab: 7345,
+            p_bc: 7350,
+            whep: whep_port,
+        },
+        Detect {
+            audio: Some(2),
+            video: Some((width, height)),
+        },
+        Transport::Tcp,
     )
     .await;
 }
@@ -231,6 +440,7 @@ async fn helper_livetwo_cycle_rtsp(
     prefix: &str,
     ports: Ports,
     detect: Detect,
+    transport: Transport,
 ) {
     let cfg = liveion::config::Config::default();
 
@@ -261,13 +471,13 @@ async fn helper_livetwo_cycle_rtsp(
         format!(
             "{}://{}",
             livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.whip)
+            SocketAddr::new(ip, ports.whip),
         ),
         format!("http://{addr}{}", api::path::whip(&stream_a)),
         None,
         Some(format!(
             "{prefix} -f rtsp 'rtsp://{}'",
-            SocketAddr::new(ip, ports.whip)
+            SocketAddr::new(ip, ports.whip),
         )),
     ));
 
@@ -289,7 +499,7 @@ async fn helper_livetwo_cycle_rtsp(
                     break;
                 }
             }
-        };
+        }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
@@ -300,7 +510,7 @@ async fn helper_livetwo_cycle_rtsp(
         format!(
             "{}://{}",
             livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.p_ab)
+            SocketAddr::new(ip, ports.p_ab),
         ),
         format!("http://{addr}{}", api::path::whep(&stream_a)),
         None,
@@ -325,7 +535,7 @@ async fn helper_livetwo_cycle_rtsp(
                     break;
                 }
             }
-        };
+        }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
@@ -338,9 +548,10 @@ async fn helper_livetwo_cycle_rtsp(
 
     tokio::spawn(livetwo::whip::into(
         format!(
-            "{}://{}",
+            "{}://{}{}",
             livetwo::SCHEME_RTSP_CLIENT,
-            SocketAddr::new(ip, ports.p_ab)
+            SocketAddr::new(ip, ports.p_ab),
+            transport.as_str()
         ),
         format!("http://{addr}{}", api::path::whip(&stream_b)),
         None,
@@ -365,7 +576,7 @@ async fn helper_livetwo_cycle_rtsp(
                     break;
                 }
             }
-        };
+        }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
@@ -378,7 +589,7 @@ async fn helper_livetwo_cycle_rtsp(
         format!(
             "{}://{}",
             livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.p_bc)
+            SocketAddr::new(ip, ports.p_bc),
         ),
         format!("http://{addr}{}", api::path::whip(&stream_c)),
         None,
@@ -387,9 +598,10 @@ async fn helper_livetwo_cycle_rtsp(
 
     tokio::spawn(livetwo::whep::from(
         format!(
-            "{}://{}",
+            "{}://{}{}",
             livetwo::SCHEME_RTSP_CLIENT,
-            SocketAddr::new(ip, ports.p_bc)
+            SocketAddr::new(ip, ports.p_bc),
+            transport.as_str()
         ),
         format!("http://{addr}{}", api::path::whep(&stream_b)),
         None,
@@ -414,7 +626,7 @@ async fn helper_livetwo_cycle_rtsp(
                     break;
                 }
             }
-        };
+        }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
@@ -427,7 +639,7 @@ async fn helper_livetwo_cycle_rtsp(
         format!(
             "{}://{}",
             livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.whep)
+            SocketAddr::new(ip, ports.whep),
         ),
         format!("http://{addr}{}", api::path::whep(&stream_c)),
         None,
@@ -452,7 +664,7 @@ async fn helper_livetwo_cycle_rtsp(
                     break;
                 }
             }
-        };
+        }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
@@ -468,9 +680,10 @@ async fn helper_livetwo_cycle_rtsp(
             "-hide_banner",
             "-i",
             &format!(
-                "{}://{}",
+                "{}://{}{}",
                 livetwo::SCHEME_RTSP_CLIENT,
-                SocketAddr::new(ip, ports.whep)
+                SocketAddr::new(ip, ports.whep),
+                transport.as_str()
             ),
             "-show_streams",
             "-of",
@@ -510,14 +723,14 @@ async fn helper_livetwo_cycle_rtsp(
                         assert_eq!(stream.width.unwrap(), width);
                         assert_eq!(stream.height.unwrap(), height);
                     } else {
-                        panic!("Shouldn't exsit video");
+                        panic!("Shouldn't exist video");
                     }
                 }
                 "audio" => {
                     if let Some(channels) = detect.audio {
                         assert_eq!(stream.channels.unwrap(), channels);
                     } else {
-                        panic!("Shouldn't exsit audio");
+                        panic!("Shouldn't exist audio");
                     }
                 }
                 _ => panic!("Unknown codec_type: {}", stream.codec_type),

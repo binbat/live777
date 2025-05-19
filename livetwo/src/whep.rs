@@ -452,11 +452,7 @@ async fn rtsp_server_mode(
     let uses_tcp = media_info
         .video_transport
         .as_ref()
-        .map_or(false, |t| matches!(t, rtsp::TransportInfo::Tcp { .. }))
-        || media_info
-            .audio_transport
-            .as_ref()
-            .map_or(false, |t| matches!(t, rtsp::TransportInfo::Tcp { .. }));
+        .is_some_and(|t| matches!(t, rtsp::TransportInfo::Tcp { .. }));
 
     if uses_tcp {
         Ok((media_info, Some(interleaved_tx), Some(rtcp_interleaved_rx)))

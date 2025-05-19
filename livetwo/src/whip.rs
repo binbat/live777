@@ -8,6 +8,7 @@ use cli::{codec_from_str, create_child};
 use libwish::Client;
 use scopeguard::defer;
 use std::io::Cursor;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
@@ -42,7 +43,7 @@ pub async fn into(
     let input = utils::parse_input_url(&target_url)?;
     info!("[WHIP] Processing input URL: {}", input);
 
-    let (target_host, mut listen_host) = utils::parse_host(&input);
+    let (mut target_host, listen_host) = utils::parse_host(&input);
     info!(
         "[WHIP] Target host: {}, Listen host: {}",
         target_host, listen_host
@@ -69,20 +70,34 @@ pub async fn into(
         }
     });
 
-    let (media_info, tx, rx) = match input.scheme() {
+    let (media_info, host, tx, rx) = match input.scheme() {
         SCHEME_RTSP_SERVER => {
-            rtsp_server_mode(video_port, &listen_host, complete_tx.clone()).await?
+            let (media_info, tx, rx) =
+                rtsp_server_mode(video_port, &listen_host, complete_tx.clone()).await?;
+            (media_info, target_host, tx, rx)
         }
-        SCHEME_RTSP_CLIENT => rtsp_client_mode(&target_url).await?,
+        SCHEME_RTSP_CLIENT => {
+            let (media_info, tx, rx) = rtsp_client_mode(&target_url).await?;
+            (media_info, target_host, tx, rx)
+        }
         _ => {
-            let media_info = rtp_mode(&target_url, &mut listen_host).await?;
-            (media_info, None, None)
+            let (media_info, host) = rtp_mode(&target_url).await?;
+            (media_info, host, None, None)
         }
     };
+    target_host = host;
     info!("[WHIP] Media info: {:?}", media_info);
 
-    let peer =
-        setup_rtp_handlers(&mut client, &media_info, complete_tx.clone(), input, rx, tx).await?;
+    let peer = setup_rtp_handlers(
+        &mut client,
+        &media_info,
+        complete_tx.clone(),
+        input,
+        target_host,
+        rx,
+        tx,
+    )
+    .await?;
 
     wait_for_completion(
         child.clone(),
@@ -138,11 +153,7 @@ async fn rtsp_server_mode(
     let uses_tcp = media_info
         .video_transport
         .as_ref()
-        .map_or(false, |t| matches!(t, rtsp::TransportInfo::Tcp { .. }))
-        || media_info
-            .audio_transport
-            .as_ref()
-            .map_or(false, |t| matches!(t, rtsp::TransportInfo::Tcp { .. }));
+        .is_some_and(|t| matches!(t, rtsp::TransportInfo::Tcp { .. }));
 
     if uses_tcp {
         Ok((media_info, Some(rtcp_interleaved_tx), Some(interleaved_rx)))
@@ -162,15 +173,20 @@ async fn rtsp_client_mode(
     setup_rtsp_session(target_url).await
 }
 
-async fn rtp_mode(target_url: &str, listen_host: &mut String) -> Result<rtsp::MediaInfo> {
+async fn rtp_mode(target_url: &str) -> Result<(rtsp::MediaInfo, String)> {
     info!("[WHIP] Processing RTP mode");
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let path = Path::new(target_url);
     let sdp = sdp_types::Session::parse(&fs::read(path).unwrap()).unwrap();
+    let mut host = String::new();
 
     if let Some(connection_info) = &sdp.connection {
-        listen_host.clone_from(&connection_info.connection_address);
+        let addr: IpAddr = connection_info
+            .connection_address
+            .parse()
+            .map_err(|e| anyhow!("Invalid IP address in SDP: {}", e))?;
+        host.clone_from(&addr.to_string());
     }
     info!("[WHIP] SDP file parsed successfully");
 
@@ -178,7 +194,7 @@ async fn rtp_mode(target_url: &str, listen_host: &mut String) -> Result<rtsp::Me
     let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
     let (codec_vid, codec_aud) = parse_codecs(&video_track, &audio_track);
 
-    Ok(rtsp::MediaInfo {
+    let media_info = rtsp::MediaInfo {
         video_transport: video_track.map(|track| rtsp::TransportInfo::Udp {
             rtp_send_port: None,
             rtp_recv_port: Some(track.port),
@@ -201,7 +217,9 @@ async fn rtp_mode(target_url: &str, listen_host: &mut String) -> Result<rtsp::Me
         } else {
             None
         },
-    })
+    };
+
+    Ok((media_info, host))
 }
 
 fn parse_codecs(
@@ -314,10 +332,15 @@ async fn setup_rtp_handlers(
     media_info: &rtsp::MediaInfo,
     complete_tx: UnboundedSender<()>,
     input: Url,
+    host: String,
     interleaved_rx: Option<UnboundedReceiver<(u8, Vec<u8>)>>,
     interleaved_tx: Option<UnboundedSender<(u8, Vec<u8>)>>,
 ) -> Result<Arc<RTCPeerConnection>> {
-    let (target_host, listen_host) = utils::parse_host(&input);
+    let listen_host = if host.parse::<Ipv6Addr>().is_ok() {
+        Ipv6Addr::UNSPECIFIED.to_string()
+    } else {
+        Ipv4Addr::UNSPECIFIED.to_string()
+    };
     let (video_listener, audio_listener) = setup_rtp_listeners(media_info, &listen_host).await?;
 
     let (peer, video_sender, audio_sender) =
@@ -563,7 +586,7 @@ async fn setup_rtp_handlers(
             if let Some(video_rtcp_port) = rtcp_recv_port {
                 debug!(
                     "[WHIP] Setting up video RTCP reader - port: {}, listen host: {}, target_host: {}",
-                    video_rtcp_port, listen_host, target_host
+                    video_rtcp_port, listen_host, host
                 );
                 for sender in &senders {
                     if let Some(track) = sender.track().await {
@@ -571,7 +594,7 @@ async fn setup_rtp_handlers(
                             tokio::spawn(read_rtcp(
                                 sender.clone(),
                                 listen_host.to_string(),
-                                target_host.to_string(),
+                                host.to_string(),
                                 *video_rtcp_port,
                             ));
                         }
@@ -591,7 +614,7 @@ async fn setup_rtp_handlers(
             if let Some(audio_rtcp_port) = rtcp_recv_port {
                 debug!(
                     "[WHIP] Setting up audio RTCP reader - port: {}, listen host: {}, target_host: {}",
-                    audio_rtcp_port, listen_host, target_host
+                    audio_rtcp_port, listen_host, host
                 );
                 for sender in &senders {
                     if let Some(track) = sender.track().await {
@@ -599,7 +622,7 @@ async fn setup_rtp_handlers(
                             tokio::spawn(read_rtcp(
                                 sender.clone(),
                                 listen_host.to_string(),
-                                target_host.to_string(),
+                                host.to_string(),
                                 *audio_rtcp_port,
                             ));
                         }
