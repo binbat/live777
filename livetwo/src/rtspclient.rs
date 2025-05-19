@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{anyhow, Result};
 use cli::{codec_from_str, Codec};
 use md5::{Digest, Md5};
 use portpicker::pick_unused_port;
@@ -9,15 +9,66 @@ use rtsp_types::{
 };
 use sdp_types::Session;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::TcpStream,
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     time::{self, Duration},
 };
 use tracing::{debug, error, info, trace, warn};
 
 const USER_AGENT: &str = "whipinto";
-const DEFAULT_RTSP_PORT: u16 = 554;
+const DEFAULT_RTSP_PORT: u16 = 8554;
+type RtspSender = UnboundedSender<(u8, Vec<u8>)>;
+type RtspReceiver = UnboundedReceiver<(u8, Vec<u8>)>;
 
+#[derive(Clone, Debug)]
+pub enum RtspMode {
+    Pull,
+    Push,
+}
+
+pub struct RtspChannels {
+    pub recv_tx: UnboundedSender<(u8, Vec<u8>)>,
+    pub recv_rx: Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+
+    pub send_tx: UnboundedSender<(u8, Vec<u8>)>,
+    pub send_rx: Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+}
+
+impl RtspChannels {
+    pub fn new() -> Self {
+        let (recv_tx, recv_rx) = unbounded_channel::<(u8, Vec<u8>)>();
+        let (send_tx, send_rx) = unbounded_channel::<(u8, Vec<u8>)>();
+
+        Self {
+            recv_tx,
+            recv_rx: Some(recv_rx),
+            send_tx,
+            send_rx: Some(send_rx),
+        }
+    }
+    pub fn get_channels(&mut self, mode: RtspMode) -> (RtspSender, RtspReceiver) {
+        match mode {
+            RtspMode::Pull => {
+                let send_rx = self.send_rx.take().expect("send_rx already taken");
+                (self.recv_tx.clone(), send_rx)
+            }
+            RtspMode::Push => {
+                let recv_rx = self.recv_rx.take().expect("recv_rx already taken");
+                (self.send_tx.clone(), recv_rx)
+            }
+        }
+    }
+
+    pub fn get_internal_rx(&mut self, mode: &RtspMode) -> RtspReceiver {
+        match mode {
+            RtspMode::Pull => self.recv_rx.take().expect("recv_rx already taken"),
+            RtspMode::Push => self.send_rx.take().expect("send_rx already taken"),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct AuthParams {
     username: String,
     password: String,
@@ -71,6 +122,9 @@ where
             Method::Describe => "DESCRIBE",
             Method::Setup => "SETUP",
             Method::Play => "PLAY",
+            Method::Record => "RECORD",
+            Method::Teardown => "TEARDOWN",
+            Method::Announce => "ANNOUNCE",
             _ => "UNKNOWN",
         };
 
@@ -123,35 +177,6 @@ where
         let response = self.read_response().await?;
         self.cseq += 1;
         Ok(response)
-    }
-
-    async fn keep_rtsp_alive(mut self) -> Result<()> {
-        let mut interval = time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            let options_request = Request::builder(Method::Options, Version::V1_0)
-                .header(headers::CSEQ, self.cseq.to_string())
-                .header(headers::USER_AGENT, USER_AGENT)
-                .empty();
-
-            if self
-                .send_request(&options_request.map_body(|_| vec![]))
-                .await
-                .is_err()
-            {
-                warn!("Failed to send OPTIONS request");
-                break;
-            }
-
-            if self.read_response().await.is_err() {
-                warn!("Failed to read OPTIONS response");
-                break;
-            }
-
-            self.cseq += 1;
-        }
-
-        Ok(())
     }
 
     async fn send_options_request(&mut self) -> Result<()> {
@@ -367,15 +392,327 @@ where
 
         Ok((session_id, server_port))
     }
+
+    async fn send_tcp_setup_request(
+        &mut self,
+        rtp_channel: u8,
+        rtcp_channel: u8,
+        transport_mode: Option<transport::TransportMode>,
+    ) -> Result<String> {
+        debug!(
+            "Setting up TCP transport with channels RTP: {}, RTCP: {}",
+            rtp_channel, rtcp_channel
+        );
+
+        let mut transport_params = transport::RtpTransportParameters {
+            unicast: true,
+            interleaved: Some((rtp_channel, Some(rtcp_channel))),
+            ..Default::default()
+        };
+
+        if let Some(mode) = transport_mode {
+            transport_params.mode.push(mode);
+        }
+
+        let mut setup_request_builder = Request::builder(Method::Setup, Version::V1_0)
+            .request_uri(
+                self.uri
+                    .parse::<Url>()
+                    .map_err(|_| anyhow!("Invalid URI"))?,
+            )
+            .header(headers::CSEQ, self.cseq.to_string())
+            .header(headers::USER_AGENT, USER_AGENT)
+            .typed_header(&transport::Transports::from(vec![
+                transport::Transport::Rtp(transport::RtpTransport {
+                    profile: transport::RtpProfile::Avp,
+                    lower_transport: Some(transport::RtpLowerTransport::Tcp),
+                    params: transport_params,
+                }),
+            ]));
+
+        if let Some(session_id) = &self.session_id {
+            setup_request_builder =
+                setup_request_builder.header(headers::SESSION, session_id.as_str());
+        }
+
+        if let Some(auth_header) = &self.auth_header {
+            let (realm, nonce) = Self::parse_auth(auth_header)?;
+            let auth_header_value =
+                self.generate_authorization_header(&realm, &nonce, &Method::Setup);
+            setup_request_builder =
+                setup_request_builder.header(headers::AUTHORIZATION, auth_header_value);
+        }
+
+        let setup_request = setup_request_builder.empty();
+        debug!("TCP SETUP request constructed: {:?}", setup_request);
+
+        self.send_request(&setup_request.map_body(|_| vec![]))
+            .await?;
+        let setup_response = self.read_response().await?;
+        self.cseq += 1;
+        debug!("Received TCP SETUP response: {:?}", setup_response);
+
+        if setup_response.status() == StatusCode::Unauthorized {
+            error!("TCP SETUP request returned 401 Unauthorized");
+            if let Some(auth_header) = setup_response.header(&WWW_AUTHENTICATE).cloned() {
+                info!("Handling unauthorized response, retrying with authentication...");
+                let setup_response = self
+                    .handle_unauthorized(Method::Setup, &auth_header)
+                    .await?;
+                if setup_response.status() != StatusCode::Ok {
+                    error!("TCP SETUP request failed after authentication");
+                    return Err(anyhow!("TCP SETUP request failed after authentication"));
+                }
+            } else {
+                error!("401 Unauthorized response but no WWW-Authenticate header found");
+                return Err(anyhow!(
+                    "TCP SETUP request failed with 401 Unauthorized and no WWW-Authenticate header"
+                ));
+            }
+        } else if setup_response.status() != StatusCode::Ok {
+            error!(
+                "TCP SETUP request failed with status: {}",
+                setup_response.status()
+            );
+            return Err(anyhow!("TCP SETUP request failed"));
+        }
+
+        let session_id = setup_response
+            .header(&headers::SESSION)
+            .ok_or_else(|| anyhow!("Session header not found"))?
+            .as_str()
+            .split(';')
+            .next()
+            .ok_or_else(|| anyhow!("Failed to parse session ID"))?
+            .to_string();
+
+        debug!(
+            "TCP SETUP completed successfully. Session ID: {}",
+            session_id
+        );
+        Ok(session_id)
+    }
+}
+pub struct RtspTcpHandler {
+    mode: RtspMode,
+    channels: RtspChannels,
 }
 
-pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
+impl RtspTcpHandler {
+    pub fn new(mode: RtspMode) -> Self {
+        Self {
+            mode,
+            channels: RtspChannels::new(),
+        }
+    }
+    pub async fn start(&mut self, stream: TcpStream) -> Result<()> {
+        let (reader, writer) = tokio::io::split(stream);
+
+        let rx = self.channels.get_internal_rx(&self.mode);
+        let reader_task = self.handle_read(reader);
+
+        let writer_task = self.handle_write(writer, rx);
+
+        let (reader_result, writer_result) = tokio::join!(reader_task, writer_task);
+
+        if let Err(e) = reader_result {
+            error!("[RTSP] Reader task failed: {}", e);
+        } else {
+            debug!("[RTSP] Reader task completed");
+        }
+
+        if let Err(e) = writer_result {
+            error!("[RTSP] Writer task failed: {}", e);
+        } else {
+            debug!("[RTSP] Writer task completed");
+        }
+
+        Ok(())
+    }
+
+    async fn handle_read<R>(&self, reader: R) -> Result<()>
+    where
+        R: AsyncReadExt + Unpin,
+    {
+        let mut reader = BufReader::new(reader);
+        let mut buffer = vec![0u8; 8192];
+        let mut accumulated_buf = Vec::new();
+        let recv_tx = self.channels.recv_tx.clone();
+
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) => {
+                    warn!("[RTSP] Connection closed by remote peer");
+                    return Ok(());
+                }
+                Ok(n) => {
+                    accumulated_buf.extend_from_slice(&buffer[..n]);
+
+                    while accumulated_buf.len() >= 4 && accumulated_buf[0] == b'$' {
+                        let channel = accumulated_buf[1];
+                        let length =
+                            ((accumulated_buf[2] as usize) << 8) | (accumulated_buf[3] as usize);
+
+                        if accumulated_buf.len() < 4 + length {
+                            break;
+                        }
+
+                        let data = accumulated_buf[4..4 + length].to_vec();
+                        trace!(
+                            "[RTSP] Received interleaved data on channel {}, {} bytes",
+                            channel,
+                            data.len()
+                        );
+
+                        if let Err(e) = recv_tx.send((channel, data)) {
+                            error!("[RTSP] Failed to forward interleaved data: {}", e);
+                            return Ok(());
+                        }
+
+                        accumulated_buf.drain(..4 + length);
+                    }
+
+                    if !accumulated_buf.is_empty() && accumulated_buf[0] != b'$' {
+                        match Message::<Vec<u8>>::parse(&accumulated_buf) {
+                            Ok((message, consumed)) => {
+                                debug!("[RTSP] Received RTSP message: {:?}", message);
+                                accumulated_buf.drain(..consumed);
+                                match message {
+                                    Message::Response(response) => {
+                                        debug!(
+                                            "[RTSP] Processing response: {:?}",
+                                            response.status()
+                                        );
+                                    }
+                                    Message::Request(request) => {
+                                        debug!(
+                                            "[RTSP] Received unexpected request: {:?}",
+                                            request.method()
+                                        );
+                                    }
+                                    Message::Data(_) => {
+                                        debug!("[RTSP] Received data message, ignoring");
+                                    }
+                                }
+                            }
+                            Err(rtsp_types::ParseError::Incomplete(_)) => {}
+                            Err(e) => {
+                                error!("[RTSP] Failed to parse RTSP message: {:?}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("[RTSP] Error reading from socket: {}", e);
+                    return Err(anyhow!("Socket read error: {}", e));
+                }
+            }
+        }
+    }
+
+    async fn handle_write<W>(
+        &self,
+        writer: W,
+        mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
+    ) -> Result<()>
+    where
+        W: AsyncWriteExt + Unpin,
+    {
+        let mut writer = BufWriter::new(writer);
+
+        while let Some((channel, data)) = rx.recv().await {
+            trace!(
+                "[RTSP] Sending data on channel {}, {} bytes",
+                channel,
+                data.len()
+            );
+
+            let mut frame = vec![
+                b'$',
+                channel,
+                ((data.len() >> 8) & 0xFF) as u8,
+                (data.len() & 0xFF) as u8,
+            ];
+            frame.extend_from_slice(&data);
+
+            if let Err(e) = writer.write_all(&frame).await {
+                error!("[RTSP] Failed to send data: {}", e);
+                break;
+            }
+
+            if let Err(e) = writer.flush().await {
+                error!("[RTSP] Failed to flush data: {}", e);
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_channels(&mut self) -> (RtspSender, RtspReceiver) {
+        self.channels.get_channels(self.mode.clone())
+    }
+}
+
+fn find_control_attribute(track: &sdp_types::Media, base_url: &str, track_id: &str) -> String {
+    track
+        .attributes
+        .iter()
+        .find_map(|attr| {
+            if attr.attribute == "control" {
+                let value = attr.value.clone().unwrap_or_default();
+                if value.starts_with("rtsp://") {
+                    Some(value)
+                } else {
+                    Some(format!("{}/{}", base_url, value))
+                }
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| format!("{}/trackID={}", base_url, track_id))
+}
+
+fn extract_codec_from_track(track: &sdp_types::Media) -> Option<Codec> {
+    track.attributes.iter().find_map(|attr| {
+        if attr.attribute == "rtpmap" {
+            let value = attr.value.as_ref()?;
+            let codec_name = value
+                .split_whitespace()
+                .nth(1)?
+                .split('/')
+                .next()?
+                .to_string();
+            codec_from_str(&codec_name).ok()
+        } else {
+            None
+        }
+    })
+}
+
+pub async fn setup_rtsp_session(
+    rtsp_url: &str,
+) -> Result<(
+    rtsp::MediaInfo,
+    Option<UnboundedSender<(u8, Vec<u8>)>>,
+    Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+)> {
     let mut url = Url::parse(rtsp_url)?;
     let host = url
         .host()
         .ok_or_else(|| anyhow!("Host not found"))?
         .to_string();
     let port = url.port().unwrap_or(DEFAULT_RTSP_PORT);
+
+    let use_tcp = url
+        .query_pairs()
+        .any(|(k, v)| (k == "transport" || k == "trans") && v == "tcp")
+        || rtsp_url.contains("rtp/tcp");
+
+    info!(
+        "[RTSP] Using transport mode: {}",
+        if use_tcp { "TCP" } else { "UDP" }
+    );
 
     let addr = format!("{}:{}", host, port);
     info!("[RTSP] Connecting to RTSP server at {}", addr);
@@ -413,8 +750,9 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     let video_track = sdp.medias.iter().find(|md| md.media == "video");
     let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
     debug!(
-        "[RTSP] Found tracks - video: {:?}, audio: {:?}",
-        video_track, audio_track
+        "[RTSP] Found tracks - video: {}, audio: {}",
+        video_track.is_some(),
+        audio_track.is_some()
     );
 
     if video_track.is_none() && audio_track.is_none() {
@@ -425,29 +763,82 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     let mut media_info = rtsp::MediaInfo::default();
 
     if let Some(video_track) = video_track {
-        let (rtp_client, rtcp_client, rtp_server, rtcp_server, codec) =
-            setup_track(&mut rtsp_session, video_track, "0", &base_url).await?;
+        if use_tcp {
+            debug!("[RTSP] Setting up video track with TCP transport");
 
-        media_info.video_transport = Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: rtp_server,
-            rtp_recv_port: rtp_client,
-            rtcp_send_port: rtcp_server,
-            rtcp_recv_port: rtcp_client,
-        });
-        media_info.video_codec = codec;
+            let video_control = find_control_attribute(video_track, &base_url, "0");
+            rtsp_session.uri = video_control;
+
+            let video_rtp_channel = 0;
+            let video_rtcp_channel = 1;
+
+            let session_id = rtsp_session
+                .send_tcp_setup_request(video_rtp_channel, video_rtcp_channel, None)
+                .await?;
+
+            rtsp_session.session_id = Some(session_id);
+
+            let codec = extract_codec_from_track(video_track);
+
+            media_info.video_transport = Some(rtsp::TransportInfo::Tcp {
+                rtp_channel: video_rtp_channel,
+                rtcp_channel: video_rtcp_channel,
+            });
+            media_info.video_codec = codec;
+        } else {
+            let (rtp_client, rtcp_client, rtp_server, rtcp_server, codec) =
+                setup_track(&mut rtsp_session, video_track, "0", &base_url).await?;
+
+            media_info.video_transport = Some(rtsp::TransportInfo::Udp {
+                rtp_send_port: rtp_server,
+                rtp_recv_port: rtp_client,
+                rtcp_send_port: rtcp_server,
+                rtcp_recv_port: rtcp_client,
+            });
+            media_info.video_codec = codec;
+        }
     }
 
     if let Some(audio_track) = audio_track {
-        let (rtp_client, rtcp_client, rtp_server, rtcp_server, codec) =
-            setup_track(&mut rtsp_session, audio_track, "1", &base_url).await?;
+        if use_tcp {
+            debug!("[RTSP] Setting up audio track with TCP transport");
 
-        media_info.audio_transport = Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: rtp_server,
-            rtp_recv_port: rtp_client,
-            rtcp_send_port: rtcp_server,
-            rtcp_recv_port: rtcp_client,
-        });
-        media_info.audio_codec = codec;
+            let audio_control = find_control_attribute(audio_track, &base_url, "1");
+            rtsp_session.uri = audio_control;
+
+            let audio_rtp_channel = 2;
+            let audio_rtcp_channel = 3;
+
+            if rtsp_session.session_id.is_none() {
+                let session_id = rtsp_session
+                    .send_tcp_setup_request(audio_rtp_channel, audio_rtcp_channel, None)
+                    .await?;
+                rtsp_session.session_id = Some(session_id);
+            } else {
+                rtsp_session
+                    .send_tcp_setup_request(audio_rtp_channel, audio_rtcp_channel, None)
+                    .await?;
+            }
+
+            let codec = extract_codec_from_track(audio_track);
+
+            media_info.audio_transport = Some(rtsp::TransportInfo::Tcp {
+                rtp_channel: audio_rtp_channel,
+                rtcp_channel: audio_rtcp_channel,
+            });
+            media_info.audio_codec = codec;
+        } else {
+            let (rtp_client, rtcp_client, rtp_server, rtcp_server, codec) =
+                setup_track(&mut rtsp_session, audio_track, "1", &base_url).await?;
+
+            media_info.audio_transport = Some(rtsp::TransportInfo::Udp {
+                rtp_send_port: rtp_server,
+                rtp_recv_port: rtp_client,
+                rtcp_send_port: rtcp_server,
+                rtcp_recv_port: rtcp_client,
+            });
+            media_info.audio_codec = codec;
+        }
     }
 
     rtsp_session.uri = base_url;
@@ -492,27 +883,92 @@ pub async fn setup_rtsp_session(rtsp_url: &str) -> Result<rtsp::MediaInfo> {
     }
     info!("[RTSP] PLAY request successful");
 
-    tokio::spawn(rtsp_session.keep_rtsp_alive());
-    info!("[RTSP] Keep-alive task started");
+    if use_tcp {
+        info!("[RTSP] TCP transport mode enabled, setting up interleaved data handling");
 
-    Ok(media_info)
+        let (rtsp_to_whip_tx, rtsp_to_whip_rx) = unbounded_channel::<(u8, Vec<u8>)>();
+        let (whip_to_rtsp_tx, whip_to_rtsp_rx) = unbounded_channel::<(u8, Vec<u8>)>();
+
+        let mut tcp_handler = RtspTcpHandler::new(RtspMode::Pull);
+
+        tcp_handler.channels.recv_tx = rtsp_to_whip_tx.clone();
+        tcp_handler.channels.send_rx = Some(whip_to_rtsp_rx);
+
+        let stream = rtsp_session.stream;
+        tokio::spawn(async move {
+            if let Err(e) = tcp_handler.start(stream).await {
+                error!("[RTSP] TCP handler error: {}", e);
+            }
+        });
+
+        Ok((media_info, Some(whip_to_rtsp_tx), Some(rtsp_to_whip_rx)))
+    } else {
+        let session_id = rtsp_session.session_id.clone().unwrap_or_default();
+        let mut rtsp_session_clone = rtsp_session;
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+
+                let options_request = Request::builder(Method::Options, Version::V1_0)
+                    .header(headers::CSEQ, rtsp_session_clone.cseq.to_string())
+                    .header(headers::USER_AGENT, USER_AGENT)
+                    .header(headers::SESSION, session_id.as_str())
+                    .empty();
+
+                if rtsp_session_clone
+                    .send_request(&options_request.map_body(|_| vec![]))
+                    .await
+                    .is_err()
+                {
+                    warn!("[RTSP] Failed to send keep-alive OPTIONS request");
+                    break;
+                }
+
+                if rtsp_session_clone.read_response().await.is_err() {
+                    warn!("[RTSP] Failed to read keep-alive OPTIONS response");
+                    break;
+                }
+            }
+        });
+
+        Ok((media_info, None, None))
+    }
 }
 
 pub async fn setup_rtsp_push_session(
     rtsp_url: &str,
     sdp_content: String,
     target_host: &str,
-) -> Result<rtsp::MediaInfo> {
-    let mut url = Url::parse(rtsp_url)?;
+) -> Result<(
+    rtsp::MediaInfo,
+    Option<UnboundedSender<(u8, Vec<u8>)>>,
+    Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+)> {
+    let mut url = Url::parse(rtsp_url).map_err(|e| anyhow!("Invalid RTSP URL: {}", e))?;
+    info!("[RTSP] Parsed RTSP URL: {}", rtsp_url);
+
+    let use_tcp = url
+        .query_pairs()
+        .any(|(k, v)| (k == "transport" || k == "trans") && v == "tcp")
+        || rtsp_url.contains("rtp/tcp");
+
+    info!(
+        "[RTSP] Using transport mode for push session: {}",
+        if use_tcp { "TCP" } else { "UDP" }
+    );
+
     let port = url
         .port_or_known_default()
-        .ok_or_else(|| anyhow!("Invalid RTSP URL"))?;
+        .ok_or_else(|| anyhow!("Invalid RTSP URL: no port specified"))?;
 
     let addr = format!("{}:{}", target_host, port);
     let base_uri = url.as_str().to_string();
 
-    let stream = TcpStream::connect(&addr).await?;
-    info!("Connected to RTSP server: {}", addr);
+    let stream = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| anyhow!("Failed to connect to RTSP server: {}", e))?;
+    info!("[RTSP] Connected to RTSP server: {}", addr);
 
     let mut rtsp_session = RtspSession {
         stream,
@@ -530,30 +986,36 @@ pub async fn setup_rtsp_push_session(
     url.set_username("").unwrap();
     url.set_password(None).unwrap();
 
-    rtsp_session.send_options_request().await?;
-    debug!("OPTIONS request successful");
+    rtsp_session
+        .send_options_request()
+        .await
+        .map_err(|e| anyhow!("OPTIONS request failed: {}", e))?;
+    debug!("[RTSP] OPTIONS request successful");
 
-    debug!("SDP Content: {}", sdp_content);
+    debug!("[RTSP] SDP Content: {}", sdp_content);
     rtsp_session
         .send_announce_request(sdp_content.clone())
-        .await?;
-    debug!("ANNOUNCE request successful");
+        .await
+        .map_err(|e| anyhow!("ANNOUNCE request failed: {}", e))?;
+    debug!("[RTSP] ANNOUNCE request successful");
 
     let sdp: Session = Session::parse(sdp_content.as_bytes())
         .map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
-    debug!("Parsed SDP: {:?}", sdp);
+    debug!("[RTSP] Parsed SDP: {:?}", sdp);
 
     let video_track = sdp.medias.iter().find(|md| md.media == "video");
     let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
     debug!(
-        "Found video track: {:?}, audio track: {:?}",
-        video_track, audio_track
+        "[RTSP] Found video track: {}, audio track: {}",
+        video_track.is_some(),
+        audio_track.is_some()
     );
 
     if video_track.is_none() && audio_track.is_none() {
-        error!("No tracks found in SDP");
+        error!("[RTSP] No tracks found in SDP");
         return Err(anyhow!("No tracks found in SDP"));
     }
+
     let mut media_info = rtsp::MediaInfo::default();
 
     if let Some(video_track) = video_track {
@@ -573,38 +1035,60 @@ pub async fn setup_rtsp_push_session(
                 }
             })
             .unwrap_or_else(|| format!("{}/trackID=1", base_uri));
-        debug!("Video track URL: {}", video_url);
+        debug!("[RTSP] Video track URL: {}", video_url);
 
-        let video_rtp_client =
-            pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
-        debug!(
-            "Allocated RTP client port for video: {:?}",
-            video_rtp_client
-        );
+        if use_tcp {
+            let video_rtp_channel = 0;
+            let video_rtcp_channel = 1;
 
-        rtsp_session.rtp_client_port = Some(video_rtp_client);
-        rtsp_session.uri = video_url;
+            rtsp_session.uri = video_url;
 
-        let (session_id, video_rtp_server) = rtsp_session
-            .send_setup_request(Some(transport::TransportMode::Record))
-            .await?;
-        debug!(
-            "Video track SETUP successful, Session ID: {}, Server Port: {}",
-            session_id, video_rtp_server
-        );
+            let session_id = rtsp_session
+                .send_tcp_setup_request(
+                    video_rtp_channel,
+                    video_rtcp_channel,
+                    Some(transport::TransportMode::Record),
+                )
+                .await
+                .map_err(|e| anyhow!("Video SETUP request failed: {}", e))?;
 
-        rtsp_session.session_id = Some(session_id);
-        media_info.video_transport = Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: Some(video_rtp_server),
-            rtp_recv_port: Some(video_rtp_client),
-            rtcp_send_port: Some(video_rtp_server + 1),
-            rtcp_recv_port: Some(video_rtp_client + 1),
-        });
+            rtsp_session.session_id = Some(session_id);
+
+            media_info.video_transport = Some(rtsp::TransportInfo::Tcp {
+                rtp_channel: video_rtp_channel,
+                rtcp_channel: video_rtcp_channel,
+            });
+        } else {
+            let video_rtp_client =
+                pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
+            debug!(
+                "[RTSP] Allocated RTP client port for video: {}",
+                video_rtp_client
+            );
+
+            rtsp_session.rtp_client_port = Some(video_rtp_client);
+            rtsp_session.uri = video_url;
+
+            let (session_id, video_rtp_server) = rtsp_session
+                .send_setup_request(Some(transport::TransportMode::Record))
+                .await
+                .map_err(|e| anyhow!("Video SETUP request failed: {}", e))?;
+            debug!(
+                "[RTSP] Video track SETUP successful, Session ID: {}, Server Port: {}",
+                session_id, video_rtp_server
+            );
+
+            rtsp_session.session_id = Some(session_id);
+            media_info.video_transport = Some(rtsp::TransportInfo::Udp {
+                rtp_send_port: Some(video_rtp_server),
+                rtp_recv_port: Some(video_rtp_client),
+                rtcp_send_port: Some(video_rtp_server + 1),
+                rtcp_recv_port: Some(video_rtp_client + 1),
+            });
+        }
     }
 
     if let Some(audio_track) = audio_track {
-        rtsp_session.uri.clone_from(&base_uri);
-        debug!("Audio track URL: {:?}", audio_track);
         let audio_url = audio_track
             .attributes
             .iter()
@@ -621,35 +1105,69 @@ pub async fn setup_rtsp_push_session(
                 }
             })
             .unwrap_or_else(|| format!("{}/trackID=0", base_uri));
-        debug!("Audio track URL: {}", audio_url);
+        debug!("[RTSP] Audio track URL: {}", audio_url);
 
-        let audio_rtp_client =
-            pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
-        debug!(
-            "Allocated RTP client port for audio: {:?}",
-            audio_rtp_client
-        );
+        if use_tcp {
+            let audio_rtp_channel = 2;
+            let audio_rtcp_channel = 3;
 
-        rtsp_session.rtp_client_port = Some(audio_rtp_client);
-        rtsp_session.uri = audio_url;
+            rtsp_session.uri = audio_url;
 
-        let (_session_id, audio_rtp_server) = rtsp_session
-            .send_setup_request(Some(transport::TransportMode::Record))
-            .await?;
-        debug!(
-            "Audio track SETUP successful, Server Port: {}",
-            audio_rtp_server
-        );
+            if rtsp_session.session_id.is_none() {
+                let session_id = rtsp_session
+                    .send_tcp_setup_request(
+                        audio_rtp_channel,
+                        audio_rtcp_channel,
+                        Some(transport::TransportMode::Record),
+                    )
+                    .await
+                    .map_err(|e| anyhow!("Audio SETUP request failed: {}", e))?;
+                rtsp_session.session_id = Some(session_id);
+            } else {
+                rtsp_session
+                    .send_tcp_setup_request(
+                        audio_rtp_channel,
+                        audio_rtcp_channel,
+                        Some(transport::TransportMode::Record),
+                    )
+                    .await
+                    .map_err(|e| anyhow!("Audio SETUP request failed: {}", e))?;
+            }
 
-        media_info.audio_transport = Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: Some(audio_rtp_server),
-            rtp_recv_port: Some(audio_rtp_client),
-            rtcp_send_port: Some(audio_rtp_server + 1),
-            rtcp_recv_port: Some(audio_rtp_client + 1),
-        });
+            media_info.audio_transport = Some(rtsp::TransportInfo::Tcp {
+                rtp_channel: audio_rtp_channel,
+                rtcp_channel: audio_rtcp_channel,
+            });
+        } else {
+            let audio_rtp_client =
+                pick_unused_port().ok_or_else(|| anyhow!("No available port found"))?;
+            debug!(
+                "[RTSP] Allocated RTP client port for audio: {}",
+                audio_rtp_client
+            );
+
+            rtsp_session.rtp_client_port = Some(audio_rtp_client);
+            rtsp_session.uri = audio_url;
+
+            let (_session_id, audio_rtp_server) = rtsp_session
+                .send_setup_request(Some(transport::TransportMode::Record))
+                .await
+                .map_err(|e| anyhow!("Audio SETUP request failed: {}", e))?;
+            debug!(
+                "[RTSP] Audio track SETUP successful, Server Port: {}",
+                audio_rtp_server
+            );
+
+            media_info.audio_transport = Some(rtsp::TransportInfo::Udp {
+                rtp_send_port: Some(audio_rtp_server),
+                rtp_recv_port: Some(audio_rtp_client),
+                rtcp_send_port: Some(audio_rtp_server + 1),
+                rtcp_recv_port: Some(audio_rtp_client + 1),
+            });
+        }
     }
 
-    info!("Sending RECORD request");
+    info!("[RTSP] Sending RECORD request");
     rtsp_session.uri = base_uri;
     let record_request = Request::builder(Method::Record, Version::V1_0)
         .request_uri(
@@ -671,42 +1189,106 @@ pub async fn setup_rtsp_push_session(
 
     rtsp_session
         .send_request(&record_request.map_body(|_| vec![]))
-        .await?;
-    let response = rtsp_session.read_response().await?;
+        .await
+        .map_err(|e| anyhow!("RECORD request failed: {}", e))?;
+    let response = rtsp_session
+        .read_response()
+        .await
+        .map_err(|e| anyhow!("Failed to read RECORD response: {}", e))?;
     rtsp_session.cseq += 1;
 
     if response.status() == StatusCode::Unauthorized {
         if let Some(auth_header) = response.header(&WWW_AUTHENTICATE).cloned() {
-            info!("Handling unauthorized response for RECORD request");
+            info!("[RTSP] Handling unauthorized response for RECORD request");
             let response = rtsp_session
                 .handle_unauthorized(Method::Record, &auth_header)
-                .await?;
+                .await
+                .map_err(|e| anyhow!("Authentication failed: {}", e))?;
             if response.status() != StatusCode::Ok {
-                error!("RECORD request failed after authentication");
-                return Err(anyhow!("RECORD request failed after authentication"));
+                error!(
+                    "[RTSP] RECORD request failed after authentication: {:?}",
+                    response.status()
+                );
+                return Err(anyhow!(
+                    "RECORD request failed after authentication: {:?}",
+                    response.status()
+                ));
             }
         } else {
-            error!("RECORD request failed with 401 Unauthorized and no WWW-Authenticate header");
+            error!(
+                "[RTSP] RECORD request failed with 401 Unauthorized and no WWW-Authenticate header"
+            );
             return Err(anyhow!(
                 "RECORD request failed with 401 Unauthorized and no WWW-Authenticate header"
             ));
         }
     } else if response.status() != StatusCode::Ok {
-        error!("RECORD request failed with status: {:?}", response.status());
+        error!(
+            "[RTSP] RECORD request failed with status: {:?}",
+            response.status()
+        );
         return Err(anyhow!(
             "RECORD request failed with status: {:?}",
             response.status()
         ));
     }
+    info!("[RTSP] RECORD request successful");
 
-    info!("RTSP PUSH session setup complete, starting keep-alive task");
-    tokio::spawn(rtsp_session.keep_rtsp_alive());
+    let session_id = rtsp_session
+        .session_id
+        .clone()
+        .ok_or_else(|| anyhow!("Missing session ID after SETUP"))?;
+    let mut rtsp_session_clone = rtsp_session;
 
-    Ok(media_info)
+    if use_tcp {
+        info!("[RTSP] TCP transport mode enabled for push session, setting up interleaved data handling");
+
+        let mut tcp_handler = RtspTcpHandler::new(RtspMode::Push);
+        let (whep_to_rtsp_tx, rtsp_to_whep_rx) = tcp_handler.get_channels();
+
+        let stream = rtsp_session_clone.stream;
+        tokio::spawn(async move {
+            if let Err(e) = tcp_handler.start(stream).await {
+                error!("[RTSP] TCP handler error: {}", e);
+            }
+        });
+
+        Ok((media_info, Some(whep_to_rtsp_tx), Some(rtsp_to_whep_rx)))
+    } else {
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+
+                let options_request = Request::builder(Method::Options, Version::V1_0)
+                    .header(headers::CSEQ, rtsp_session_clone.cseq.to_string())
+                    .header(headers::USER_AGENT, USER_AGENT)
+                    .header(headers::SESSION, session_id.as_str())
+                    .empty();
+
+                if rtsp_session_clone
+                    .send_request(&options_request.map_body(|_| vec![]))
+                    .await
+                    .is_err()
+                {
+                    warn!("[RTSP] Failed to send keep-alive OPTIONS request");
+                    break;
+                }
+
+                if rtsp_session_clone.read_response().await.is_err() {
+                    warn!("[RTSP] Failed to read keep-alive OPTIONS response");
+                    break;
+                }
+                rtsp_session_clone.cseq += 1;
+            }
+        });
+
+        Ok((media_info, None, None))
+    }
 }
 
-async fn setup_track(
-    rtsp_session: &mut RtspSession<TcpStream>,
+async fn setup_track<T>(
+    rtsp_session: &mut RtspSession<T>,
     track: &sdp_types::Media,
     track_id: &str,
     base_url: &str,
@@ -716,7 +1298,10 @@ async fn setup_track(
     Option<u16>,
     Option<u16>,
     Option<Codec>,
-)> {
+)>
+where
+    T: AsyncReadExt + AsyncWriteExt + Unpin,
+{
     let track_url = track
         .attributes
         .iter()
@@ -773,22 +1358,17 @@ fn generate_digest_response(
     nonce: &str,
     method: &str,
 ) -> String {
-    format!("{:x}", {
-        let mut hasher = Md5::new();
-        hasher.update(format!(
-            "{}:{}:{}",
-            format_args!("{:x}", {
-                let hasher = Md5::new_with_prefix(format!("{}:{}:{}", username, realm, password));
-                hasher.finalize()
-            }),
-            nonce,
-            format_args!("{:x}", {
-                let hasher = Md5::new_with_prefix(format!("{}:{}", method, uri));
-                hasher.finalize()
-            })
-        ));
-        hasher.finalize()
-    })
+    let mut hasher = Md5::new();
+    hasher.update(format!("{}:{}:{}", username, realm, password));
+    let ha1 = format!("{:x}", hasher.finalize());
+
+    let mut hasher = Md5::new();
+    hasher.update(format!("{}:{}", method, uri));
+    let ha2 = format!("{:x}", hasher.finalize());
+
+    let mut hasher = Md5::new();
+    hasher.update(format!("{}:{}:{}", ha1, nonce, ha2));
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]

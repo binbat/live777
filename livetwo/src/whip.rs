@@ -4,12 +4,16 @@ use std::sync::Mutex;
 use std::{sync::Arc, time::Duration, vec};
 
 use anyhow::{anyhow, Result};
+use cli::{codec_from_str, create_child};
+use libwish::Client;
 use scopeguard::defer;
+use std::io::Cursor;
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
 };
 use tracing::{debug, error, info, trace, warn};
+use url::Url;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
@@ -22,9 +26,6 @@ use webrtc::{
     track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter},
     util::Unmarshal,
 };
-
-use cli::{codec_from_str, create_child};
-use libwish::Client;
 
 use crate::payload;
 use crate::rtspclient::setup_rtsp_session;
@@ -68,24 +69,20 @@ pub async fn into(
         }
     });
 
-    let media_info = match input.scheme() {
+    let (media_info, tx, rx) = match input.scheme() {
         SCHEME_RTSP_SERVER => {
             rtsp_server_mode(video_port, &listen_host, complete_tx.clone()).await?
         }
         SCHEME_RTSP_CLIENT => rtsp_client_mode(&target_url).await?,
-        _ => rtp_mode(&target_url, &mut listen_host).await?,
+        _ => {
+            let media_info = rtp_mode(&target_url, &mut listen_host).await?;
+            (media_info, None, None)
+        }
     };
     info!("[WHIP] Media info: {:?}", media_info);
 
-    let peer = setup_rtp_handlers(
-        &mut client,
-        &media_info,
-        complete_tx.clone(),
-        target_url.clone(),
-        &listen_host,
-        &target_host,
-    )
-    .await?;
+    let peer =
+        setup_rtp_handlers(&mut client, &media_info, complete_tx.clone(), input, rx, tx).await?;
 
     wait_for_completion(
         child.clone(),
@@ -101,10 +98,20 @@ async fn rtsp_server_mode(
     video_port: u16,
     listen_host: &str,
     complete_tx: UnboundedSender<()>,
-) -> Result<rtsp::MediaInfo> {
+) -> Result<(
+    rtsp::MediaInfo,
+    Option<UnboundedSender<(u8, Vec<u8>)>>,
+    Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+)> {
     info!("[WHIP] Starting RTSP server mode");
     let (tx, mut rx) = unbounded_channel::<rtsp::MediaInfo>();
+
+    let (interleaved_tx, interleaved_rx) = unbounded_channel::<(u8, Vec<u8>)>();
+    let (rtcp_interleaved_tx, rtcp_interleaved_rx) = unbounded_channel::<(u8, Vec<u8>)>();
     let mut handler = rtsp::Handler::new(tx, complete_tx);
+
+    handler.set_interleaved_sender(interleaved_tx);
+    handler.set_interleaved_receiver(rtcp_interleaved_rx);
 
     let host2 = listen_host.to_string();
     debug!("[WHIP] Binding RTSP server to {}:{}", host2, video_port);
@@ -126,10 +133,31 @@ async fn rtsp_server_mode(
         }
     });
 
-    Ok(rx.recv().await.unwrap())
+    let media_info = rx.recv().await.unwrap();
+
+    let uses_tcp = media_info
+        .video_transport
+        .as_ref()
+        .map_or(false, |t| matches!(t, rtsp::TransportInfo::Tcp { .. }))
+        || media_info
+            .audio_transport
+            .as_ref()
+            .map_or(false, |t| matches!(t, rtsp::TransportInfo::Tcp { .. }));
+
+    if uses_tcp {
+        Ok((media_info, Some(rtcp_interleaved_tx), Some(interleaved_rx)))
+    } else {
+        Ok((media_info, None, None))
+    }
 }
 
-async fn rtsp_client_mode(target_url: &str) -> Result<rtsp::MediaInfo> {
+async fn rtsp_client_mode(
+    target_url: &str,
+) -> Result<(
+    rtsp::MediaInfo,
+    Option<UnboundedSender<(u8, Vec<u8>)>>,
+    Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+)> {
     info!("[WHIP] Starting RTSP client mode");
     setup_rtsp_session(target_url).await
 }
@@ -262,7 +290,7 @@ async fn setup_webrtc(
     client: &mut Client,
     media_info: &rtsp::MediaInfo,
     complete_tx: UnboundedSender<()>,
-    target_url: String,
+    input: Url,
 ) -> Result<(
     Arc<RTCPeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
@@ -273,7 +301,7 @@ async fn setup_webrtc(
         media_info.video_codec.map(|c| c.into()),
         media_info.audio_codec.map(|c| c.into()),
         complete_tx,
-        target_url,
+        input.to_string(),
     )
     .await
     .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
@@ -284,20 +312,202 @@ async fn setup_webrtc(
 async fn setup_rtp_handlers(
     client: &mut Client,
     media_info: &rtsp::MediaInfo,
-    complete_tx_for_webrtc: UnboundedSender<()>,
-    target_url_for_webrtc: String,
-    listen_host: &str,
-    target_host: &str,
+    complete_tx: UnboundedSender<()>,
+    input: Url,
+    interleaved_rx: Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+    interleaved_tx: Option<UnboundedSender<(u8, Vec<u8>)>>,
 ) -> Result<Arc<RTCPeerConnection>> {
-    let (video_listener, audio_listener) = setup_rtp_listeners(media_info, listen_host).await?;
+    let (target_host, listen_host) = utils::parse_host(&input);
+    let (video_listener, audio_listener) = setup_rtp_listeners(media_info, &listen_host).await?;
 
-    let (peer, video_sender, audio_sender) = setup_webrtc(
-        client,
-        media_info,
-        complete_tx_for_webrtc,
-        target_url_for_webrtc,
-    )
-    .await?;
+    let (peer, video_sender, audio_sender) =
+        setup_webrtc(client, media_info, complete_tx, input).await?;
+
+    if interleaved_rx.is_some() {
+        let mut rx = interleaved_rx.unwrap();
+
+        let video_rtp_channel = media_info.video_transport.as_ref().and_then(|t| {
+            if let rtsp::TransportInfo::Tcp { rtp_channel, .. } = t {
+                Some(*rtp_channel)
+            } else {
+                None
+            }
+        });
+
+        let video_rtcp_channel = media_info.video_transport.as_ref().and_then(|t| {
+            if let rtsp::TransportInfo::Tcp { rtcp_channel, .. } = t {
+                Some(*rtcp_channel)
+            } else {
+                None
+            }
+        });
+
+        let audio_rtp_channel = media_info.audio_transport.as_ref().and_then(|t| {
+            if let rtsp::TransportInfo::Tcp { rtp_channel, .. } = t {
+                Some(*rtp_channel)
+            } else {
+                None
+            }
+        });
+
+        let audio_rtcp_channel = media_info.audio_transport.as_ref().and_then(|t| {
+            if let rtsp::TransportInfo::Tcp { rtcp_channel, .. } = t {
+                Some(*rtcp_channel)
+            } else {
+                None
+            }
+        });
+
+        let video_sender_clone = video_sender.clone();
+        let audio_sender_clone = audio_sender.clone();
+        let peer_clone = peer.clone();
+
+        tokio::spawn(async move {
+            info!("[WHIP] Starting RTP/RTCP TCP interleaved handler");
+            debug!(
+                "Video channels - RTP: {:?}, RTCP: {:?}",
+                video_rtp_channel, video_rtcp_channel
+            );
+            debug!(
+                "Audio channels - RTP: {:?}, RTCP: {:?}",
+                audio_rtp_channel, audio_rtcp_channel
+            );
+
+            while let Some((channel, data)) = rx.recv().await {
+                trace!(
+                    "Received interleaved data on channel {}, {} bytes",
+                    channel,
+                    data.len()
+                );
+
+                if Some(channel) == video_rtp_channel {
+                    if let Some(sender) = &video_sender_clone {
+                        trace!("Forwarding video RTP data to WebRTC");
+                        if let Err(e) = sender.send(data) {
+                            error!("Failed to forward video RTP data: {}", e);
+                        }
+                    }
+                } else if Some(channel) == video_rtcp_channel {
+                    let mut cursor = Cursor::new(data.clone());
+                    if let Ok(rtcp_packets) = webrtc::rtcp::packet::unmarshal(&mut cursor) {
+                        trace!("Forwarding video RTCP data to WebRTC");
+                        for packet in rtcp_packets {
+                            if let Err(e) = peer_clone.write_rtcp(&[packet]).await {
+                                error!("Failed to write video RTCP packet: {}", e);
+                            }
+                        }
+                    } else {
+                        warn!("Failed to parse RTCP packet on channel {}", channel);
+                    }
+                } else if Some(channel) == audio_rtp_channel {
+                    if let Some(sender) = &audio_sender_clone {
+                        trace!("sending audio RTP data");
+                        if let Err(e) = sender.send(data) {
+                            error!("Failed to send audio RTP data: {}", e);
+                        }
+                    }
+                } else if Some(channel) == audio_rtcp_channel {
+                    let mut cursor = Cursor::new(data.clone());
+                    if let Ok(rtcp_packets) = webrtc::rtcp::packet::unmarshal(&mut cursor) {
+                        trace!("Forwarding audio RTCP data to WebRTC");
+                        for packet in rtcp_packets {
+                            if let Err(e) = peer_clone.write_rtcp(&[packet]).await {
+                                error!("Failed to write audio RTCP packet: {}", e);
+                            }
+                        }
+                    } else {
+                        warn!("Failed to parse RTCP packet on channel {}", channel);
+                    }
+                } else {
+                    warn!("Received data on unknown channel: {}", channel);
+                }
+            }
+
+            warn!("[WHIP] TCP interleaved data handler stopped");
+        });
+
+        if let Some(rtcp_tx) = interleaved_tx {
+            let senders = peer.get_senders().await;
+
+            if let Some(rtcp_channel) = video_rtcp_channel {
+                for sender in &senders {
+                    let sender_clone = sender.clone();
+                    if let Some(track) = sender.track().await {
+                        if track.kind() == RTPCodecType::Video {
+                            let rtcp_tx_clone = rtcp_tx.clone();
+                            let channel = rtcp_channel;
+
+                            tokio::spawn(async move {
+                                info!("[WHIP] Starting video RTCP reader for sending to RTSP client on channel {}", channel);
+
+                                loop {
+                                    match sender_clone.read_rtcp().await {
+                                        Ok((packets, _)) => {
+                                            for packet in packets {
+                                                debug!("Received video RTCP from WebRTC to forward to RTSP client: {:?}", packet);
+
+                                                if let Ok(data) = packet.marshal() {
+                                                    let data_vec = data.to_vec();
+                                                    if let Err(e) =
+                                                        rtcp_tx_clone.send((channel, data_vec))
+                                                    {
+                                                        error!("Failed to forward WebRTC video RTCP to RTSP client: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Error reading video RTCP from WebRTC: {}", e);
+                                            break;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
+            if let Some(rtcp_channel) = audio_rtcp_channel {
+                for sender in &senders {
+                    let sender_clone = sender.clone();
+                    if let Some(track) = sender.track().await {
+                        if track.kind() == RTPCodecType::Audio {
+                            let rtcp_tx_clone = rtcp_tx.clone();
+                            let channel = rtcp_channel;
+
+                            tokio::spawn(async move {
+                                info!("[WHIP] Starting audio RTCP reader for sending to RTSP client on channel {}", channel);
+
+                                loop {
+                                    match sender_clone.read_rtcp().await {
+                                        Ok((packets, _)) => {
+                                            for packet in packets {
+                                                debug!("Received audio RTCP from WebRTC to forward to RTSP client: {:?}", packet);
+
+                                                if let Ok(data) = packet.marshal() {
+                                                    let data_vec = data.to_vec();
+                                                    if let Err(e) =
+                                                        rtcp_tx_clone.send((channel, data_vec))
+                                                    {
+                                                        error!("Failed to forward WebRTC audio RTCP to RTSP client: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Error reading audio RTCP from WebRTC: {}", e);
+                                            break;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     if let Some(video_listener) = video_listener {
         debug!(
