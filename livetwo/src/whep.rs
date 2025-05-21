@@ -28,7 +28,7 @@ use webrtc::{
 
 use libwish::Client;
 
-use crate::rtspclient::setup_rtsp_push_session;
+use crate::rtspclient::{setup_rtsp_session, RtspMode};
 use crate::utils;
 use crate::{SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
@@ -39,22 +39,19 @@ pub async fn from(
     command: Option<String>,
 ) -> Result<()> {
     let input = utils::parse_input_url(&target_url)?;
-    info!("[WHEP] Processing output URL: {}", target_url);
+    info!("Processing output URL: {}", target_url);
 
     let (target_host, listen_host) = utils::parse_host(&input);
-    info!(
-        "[WHEP] Target host: {}, Listen host: {}",
-        target_host, listen_host
-    );
+    info!("Target host: {}, Listen host: {}", target_host, listen_host);
 
     let (complete_tx, mut complete_rx) = unbounded_channel();
     let (video_send, video_recv) = unbounded_channel::<Vec<u8>>();
     let (audio_send, audio_recv) = unbounded_channel::<Vec<u8>>();
     let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
-    debug!("[WHEP] Channels and codec info initialized");
+    debug!("Channels and codec info initialized");
 
     let mut client = Client::new(whep_url.clone(), Client::get_auth_header_map(token.clone()));
-    debug!("[WHEP] WHEP client created");
+    debug!("WHEP client created");
 
     let (peer, answer) = webrtc_start(
         &mut client,
@@ -64,11 +61,11 @@ pub async fn from(
         codec_info.clone(),
     )
     .await?;
-    info!("[WHEP] WebRTC connection established");
+    info!("WebRTC connection established");
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     let codec_info = codec_info.lock().await;
-    debug!("[WHEP] Codec info: {:?}", codec_info);
+    debug!("Codec info: {:?}", codec_info);
 
     let filtered_sdp = match rtsp::filter_sdp(
         &answer.sdp,
@@ -77,11 +74,11 @@ pub async fn from(
     ) {
         Ok(sdp) => sdp,
         Err(e) => {
-            error!("[WHEP] Failed to filter SDP: {}", e);
+            error!("Failed to filter SDP: {}", e);
             return Err(anyhow!("Failed to filter SDP: {}", e));
         }
     };
-    debug!("[WHEP] SDP filtered {:?}", filtered_sdp);
+    debug!("SDP filtered {:?}", filtered_sdp);
 
     let notify = Arc::new(Notify::new());
     let notify_clone = notify.clone();
@@ -89,16 +86,16 @@ pub async fn from(
 
     tokio::spawn(async move {
         notify_clone.notified().await;
-        debug!("[WHEP] Received signal to start child process");
+        debug!("Received signal to start child process");
 
         let child = match create_child(command) {
             Ok(child) => Arc::new(child),
             Err(e) => {
-                error!("[WHEP] Failed to create child process: {}", e);
+                error!("Failed to create child process: {}", e);
                 return;
             }
         };
-        info!("[WHEP] Child process created");
+        info!("Child process created");
         defer!({
             if let Some(child) = child.as_ref() {
                 if let Ok(mut child) = child.lock() {
@@ -123,7 +120,7 @@ pub async fn from(
         }
     });
 
-    let (media_info, new_target_host, tx, rx) = match input.scheme() {
+    let (media_info, host, tx, rx) = match input.scheme() {
         SCHEME_RTSP_SERVER => {
             let tcp_port = input.port().unwrap_or(0);
             let (media_info, interleaved_tx, interleaved_rx) = rtsp_server_mode(
@@ -147,7 +144,7 @@ pub async fn from(
         }
     };
 
-    let target_host = new_target_host;
+    let target_host = host;
 
     info!("media info : {:?}", media_info);
     setup_rtp_handlers(
@@ -187,7 +184,7 @@ fn setup_rtp_handlers(
             let mut video_recv = video_recv;
 
             tokio::spawn(async move {
-                info!("[WHEP] Starting video RTP sender on channel {}", channel);
+                info!("Starting video RTP sender on channel {}", channel);
 
                 while let Some(data) = video_recv.recv().await {
                     trace!("Sending video RTP data ({} bytes)", data.len());
@@ -198,7 +195,7 @@ fn setup_rtp_handlers(
                     }
                 }
 
-                warn!("[WHEP] Video RTP sender stopped");
+                warn!("Video RTP sender stopped");
             });
         }
         if let Some(rtsp::TransportInfo::Tcp { rtp_channel, .. }) = &media_info.audio_transport {
@@ -207,7 +204,7 @@ fn setup_rtp_handlers(
             let mut audio_recv = audio_recv;
 
             tokio::spawn(async move {
-                info!("[WHEP] Starting audio RTP sender on channel {}", channel);
+                info!("Starting audio RTP sender on channel {}", channel);
 
                 while let Some(data) = audio_recv.recv().await {
                     trace!("Sending audio RTP data ({} bytes)", data.len());
@@ -218,7 +215,7 @@ fn setup_rtp_handlers(
                     }
                 }
 
-                warn!("[WHEP] Audio RTP sender stopped");
+                warn!("Audio RTP sender stopped");
             });
         }
         if let Some(rtsp::TransportInfo::Tcp { rtcp_channel, .. }) = &media_info.video_transport {
@@ -228,7 +225,7 @@ fn setup_rtp_handlers(
             let peer_clone = peer.clone();
 
             tokio::spawn(async move {
-                info!("[WHEP] Starting video RTCP sender on channel {}", channel);
+                info!("Starting video RTCP sender on channel {}", channel);
 
                 let senders = peer_clone.get_senders().await;
                 for sender in senders {
@@ -274,7 +271,7 @@ fn setup_rtp_handlers(
             let peer_clone = peer.clone();
 
             tokio::spawn(async move {
-                info!("[WHEP] Starting audio RTCP sender on channel {}", channel);
+                info!("Starting audio RTCP sender on channel {}", channel);
 
                 let senders = peer_clone.get_senders().await;
                 for sender in senders {
@@ -316,7 +313,7 @@ fn setup_rtp_handlers(
         if let Some(mut rx) = interleaved_rx {
             let peer_clone = peer.clone();
             tokio::spawn(async move {
-                info!("[WHEP] Starting RTCP receiver from RTSP client");
+                info!("Starting RTCP receiver from RTSP client");
 
                 while let Some((channel, data)) = rx.recv().await {
                     debug!(
@@ -345,7 +342,7 @@ fn setup_rtp_handlers(
                     }
                 }
 
-                warn!("[WHEP] RTCP receiver from RTSP client stopped");
+                warn!("RTCP receiver from RTSP client stopped");
             });
         }
     } else {
@@ -369,7 +366,7 @@ fn setup_rtp_handlers(
                 _ => None,
             }),
         ));
-        info!("[WHEP] Video RTP sender started");
+        info!("Video RTP sender started");
 
         tokio::spawn(utils::rtp_send(
             audio_recv,
@@ -384,7 +381,7 @@ fn setup_rtp_handlers(
                 _ => None,
             }),
         ));
-        info!("[WHEP] Audio RTP sender started");
+        info!("Audio RTP sender started");
 
         let target_host_clone = target_host.clone();
         if let Some(rtsp::TransportInfo::Udp {
@@ -392,7 +389,7 @@ fn setup_rtp_handlers(
             ..
         }) = &media_info.video_transport
         {
-            info!("[WHEP] Starting up video RTCP on port {}", port);
+            info!("Starting up video RTCP on port {}", port);
             tokio::spawn(utils::rtcp_listener(target_host_clone, *port, peer.clone()));
         }
         if let Some(rtsp::TransportInfo::Udp {
@@ -400,7 +397,7 @@ fn setup_rtp_handlers(
             ..
         }) = &media_info.audio_transport
         {
-            info!("[WHEP] Starting up audio RTCP on port {}", port);
+            info!("Starting up audio RTCP on port {}", port);
             tokio::spawn(utils::rtcp_listener(target_host, *port, peer.clone()));
         }
     }
@@ -435,7 +432,7 @@ async fn rtsp_server_mode(
             listener.local_addr().unwrap()
         );
         notify.notify_one();
-        info!("[WHEP] Sent signal to start child process");
+        info!("Sent signal to start child process");
 
         loop {
             let (socket, _) = listener.accept().await.unwrap();
@@ -470,7 +467,7 @@ async fn rtsp_client_mode(
     Option<UnboundedSender<(u8, Vec<u8>)>>,
     Option<UnboundedReceiver<(u8, Vec<u8>)>>,
 )> {
-    setup_rtsp_push_session(target_url, filtered_sdp, target_host).await
+    setup_rtsp_session(target_url, Some(filtered_sdp), target_host, RtspMode::Push).await
 }
 
 async fn rtp_mode(
@@ -539,7 +536,7 @@ async fn rtp_mode(
         .open(file_path)?;
     file.write_all(sdp.as_bytes())?;
     notify.notify_one();
-    info!("[WHEP] Sent signal to start child process after RTP mode SDP write");
+    info!("Sent signal to start child process after RTP mode SDP write");
 
     Ok((media_info, sdp_target_host))
 }

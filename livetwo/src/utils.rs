@@ -39,24 +39,21 @@ pub fn parse_host(input: &Url) -> (String, String) {
                             addr.ip().to_string()
                         } else {
                             warn!(
-                                "[UTILS] No valid IP address resolved for domain {}, using default",
+                                "No valid IP address resolved for domain {}, using default",
                                 domain
                             );
                             Ipv4Addr::LOCALHOST.to_string()
                         }
                     }
                     Err(e) => {
-                        error!(
-                            "[UTILS] Failed to resolve domain {}: {}, using default",
-                            domain, e
-                        );
+                        error!("Failed to resolve domain {}: {}, using default", domain, e);
                         Ipv4Addr::LOCALHOST.to_string()
                     }
                 }
             }
         }
         None => {
-            error!("[UTILS] Invalid host for {}, using default", input);
+            error!("Invalid host for {}, using default", input);
             Ipv4Addr::LOCALHOST.to_string()
         }
     };
@@ -68,7 +65,7 @@ pub fn parse_host(input: &Url) -> (String, String) {
     };
 
     info!(
-        "[UTILS] Host parsed - target: {}, listen: {}",
+        "Host parsed - target: {}, listen: {}",
         target_host, listen_host
     );
     (target_host, listen_host)
@@ -79,7 +76,7 @@ pub async fn setup_webrtc_connection(
     client: &mut Client,
 ) -> Result<RTCSessionDescription> {
     let offer = peer.create_offer(None).await?;
-    debug!("[UTILS] WebRTC offer created:{:?}", offer);
+    debug!("WebRTC offer created:{:?}", offer);
 
     let mut gather_complete = peer.gathering_complete_promise().await;
     peer.set_local_description(offer).await?;
@@ -88,26 +85,26 @@ pub async fn setup_webrtc_connection(
     let (answer, ice_servers) = client
         .wish(peer.local_description().await.unwrap().sdp)
         .await?;
-    debug!("[UTILS] ICE servers from response: {:?}", ice_servers);
+    debug!("ICE servers from response: {:?}", ice_servers);
 
     let mut current_config = peer.get_configuration().await;
     current_config.ice_servers.clone_from(&ice_servers);
     peer.set_configuration(current_config.clone()).await?;
-    debug!("[UTILS] ICE configuration updated");
+    debug!("ICE configuration updated");
 
     peer.set_remote_description(answer.clone())
         .await
         .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
-    debug!("[UTILS] Remote description set successfully");
+    debug!("Remote description set successfully");
 
     Ok(answer)
 }
 
 pub async fn create_webrtc_api() -> Result<(APIBuilder, RTCConfiguration)> {
-    debug!("[UTILS] Creating WebRTC API");
+    debug!("Creating WebRTC API");
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
-    debug!("[UTILS] Default codecs registered");
+    debug!("Default codecs registered");
 
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
@@ -124,7 +121,7 @@ pub async fn create_webrtc_api() -> Result<(APIBuilder, RTCConfiguration)> {
         }],
         ..Default::default()
     };
-    debug!("[UTILS] Default ICE configuration created");
+    debug!("Default ICE configuration created");
 
     Ok((api, config))
 }
@@ -138,17 +135,17 @@ pub async fn setup_peer_connection_handlers(
         let pc = pc.clone();
         let complete_tx = complete_tx.clone();
         tokio::spawn(async move {
-            warn!("[UTILS] Connection state changed: {}", s);
+            warn!("Connection state changed: {}", s);
             match s {
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
                     let _ = pc.close().await;
-                    warn!("[UTILS] Connection closed due to failure or disconnection");
+                    warn!("Connection closed due to failure or disconnection");
                 }
                 RTCPeerConnectionState::Closed => {
                     let _ = complete_tx.send(());
-                    info!("[UTILS] Connection closed normally");
+                    info!("Connection closed normally");
                 }
-                _ => debug!("[UTILS] Connection state: {}", s),
+                _ => debug!("Connection state: {}", s),
             };
         });
         Box::pin(async {})
@@ -158,14 +155,11 @@ pub async fn setup_peer_connection_handlers(
 pub async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection>) {
     let rtcp_listener = match UdpSocket::bind(format!("{}:{}", host, rtcp_port)).await {
         Ok(socket) => {
-            info!(
-                "[UTILS] RTCP listener bound to: {}",
-                socket.local_addr().unwrap()
-            );
+            info!("RTCP listener bound to: {}", socket.local_addr().unwrap());
             socket
         }
         Err(e) => {
-            error!("[UTILS] Failed to bind RTCP listener: {}", e);
+            error!("Failed to bind RTCP listener: {}", e);
             return;
         }
     };
@@ -176,21 +170,21 @@ pub async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnec
         match rtcp_listener.recv_from(&mut rtcp_buf).await {
             Ok((len, addr)) => {
                 if len > 0 {
-                    debug!("[UTILS] Received {} bytes of RTCP data from {}", len, addr);
+                    debug!("Received {} bytes of RTCP data from {}", len, addr);
                     let mut rtcp_data = &rtcp_buf[..len];
 
                     if let Ok(rtcp_packets) = rtcp::packet::unmarshal(&mut rtcp_data) {
                         for packet in rtcp_packets {
-                            debug!("[UTILS] Received RTCP packet from {}: {:?}", addr, packet);
+                            debug!("Received RTCP packet from {}: {:?}", addr, packet);
                             if let Err(err) = peer.write_rtcp(&[packet]).await {
-                                warn!("[UTILS] Failed to send RTCP packet: {}", err);
+                                warn!("Failed to send RTCP packet: {}", err);
                             }
                         }
                     }
                 }
             }
             Err(e) => {
-                error!("[UTILS] Error receiving RTCP data: {}", e);
+                error!("Error receiving RTCP data: {}", e);
             }
         }
     }
@@ -212,21 +206,21 @@ pub async fn rtp_send(
 
         let socket = match UdpSocket::bind(&send_addr).await {
             Ok(s) => {
-                info!("[UTILS] UDP socket bound to {}", send_addr);
+                info!("UDP socket bound to {}", send_addr);
                 s
             }
             Err(e) => {
-                error!("[UTILS] Failed to bind UDP socket on {}: {}", send_addr, e);
+                error!("Failed to bind UDP socket on {}: {}", send_addr, e);
                 return;
             }
         };
         let recv_addr = format!("{}:{}", target_host, port);
-        info!("[UTILS] RTP sender ready to send to {}", recv_addr);
+        info!("RTP sender ready to send to {}", recv_addr);
 
         while let Some(data) = receiver.recv().await {
             match socket.send_to(&data, &recv_addr).await {
                 Ok(_) => {}
-                Err(e) => error!("[UTILS] Failed to send data to {}: {}", recv_addr, e),
+                Err(e) => error!("Failed to send data to {}: {}", recv_addr, e),
             }
         }
     }
