@@ -155,9 +155,9 @@ impl Handler {
         if let transport::Transport::Rtp(rtp_transport) = tr {
             if rtp_transport.lower_transport == Some(transport::RtpLowerTransport::Tcp) {
                 let interleaved = rtp_transport.params.interleaved.unwrap_or((0, Some(1)));
-                let uri = req.request_uri().unwrap().as_str();
+                let url = req.request_uri().unwrap().as_str();
 
-                let url_id = uri
+                let url_id = url
                     .split("streamid=")
                     .nth(1)
                     .and_then(|id_str| id_str.split('&').next())
@@ -188,21 +188,7 @@ impl Handler {
                                 rtcp_channel: interleaved.1.unwrap_or(1),
                             });
 
-                            self.media_info.audio_codec = media
-                                .attributes
-                                .iter()
-                                .find(|attr| attr.attribute == "rtpmap")
-                                .and_then(|attr| attr.value.as_ref())
-                                .and_then(|value| {
-                                    value
-                                        .split_whitespace()
-                                        .nth(1)
-                                        .unwrap_or("")
-                                        .split('/')
-                                        .next()
-                                        .map(|codec_str| codec_from_str(codec_str).ok())
-                                })
-                                .unwrap_or(None);
+                            self.media_info.audio_codec = extract_codec(media);
 
                             return Response::builder(req.version(), StatusCode::Ok)
                                 .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
@@ -230,21 +216,7 @@ impl Handler {
                                 rtcp_channel: interleaved.1.unwrap_or(1),
                             });
 
-                            self.media_info.video_codec = media
-                                .attributes
-                                .iter()
-                                .find(|attr| attr.attribute == "rtpmap")
-                                .and_then(|attr| attr.value.as_ref())
-                                .and_then(|value| {
-                                    value
-                                        .split_whitespace()
-                                        .nth(1)
-                                        .unwrap_or("")
-                                        .split('/')
-                                        .next()
-                                        .map(|codec_str| codec_from_str(codec_str).ok())
-                                })
-                                .unwrap_or(None);
+                            self.media_info.video_codec = extract_codec(media);
 
                             return Response::builder(req.version(), StatusCode::Ok)
                                 .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
@@ -306,21 +278,7 @@ impl Handler {
                                 rtcp_recv_port: Some(audio_rtcp_server_port),
                             });
 
-                            self.media_info.audio_codec = media
-                                .attributes
-                                .iter()
-                                .find(|attr| attr.attribute == "rtpmap")
-                                .and_then(|attr| attr.value.as_ref())
-                                .and_then(|value| {
-                                    value
-                                        .split_whitespace()
-                                        .nth(1)
-                                        .unwrap_or("")
-                                        .split('/')
-                                        .next()
-                                        .map(|codec_str| codec_from_str(codec_str).ok())
-                                })
-                                .unwrap_or(None);
+                            self.media_info.audio_codec = extract_codec(media);
 
                             return Response::builder(req.version(), StatusCode::Ok)
                                 .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
@@ -355,21 +313,7 @@ impl Handler {
                                 rtcp_recv_port: Some(video_rtcp_server_port),
                             });
 
-                            self.media_info.video_codec = media
-                                .attributes
-                                .iter()
-                                .find(|attr| attr.attribute == "rtpmap")
-                                .and_then(|attr| attr.value.as_ref())
-                                .and_then(|value| {
-                                    value
-                                        .split_whitespace()
-                                        .nth(1)
-                                        .unwrap_or("")
-                                        .split('/')
-                                        .next()
-                                        .map(|codec_str| codec_from_str(codec_str).ok())
-                                })
-                                .unwrap_or(None);
+                            self.media_info.video_codec = extract_codec(media);
 
                             return Response::builder(req.version(), StatusCode::Ok)
                                 .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
@@ -660,4 +604,22 @@ pub fn filter_sdp(
     }
 
     Ok(session.marshal())
+}
+
+pub fn extract_codec(media: &sdp_types::Media) -> Option<Codec> {
+    media
+        .attributes
+        .iter()
+        .find(|attr| attr.attribute == "rtpmap")
+        .and_then(|attr| attr.value.as_ref())
+        .and_then(|value| {
+            value
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("")
+                .split('/')
+                .next()
+                .map(|codec_str| codec_from_str(codec_str).ok())
+        })
+        .unwrap_or(None)
 }

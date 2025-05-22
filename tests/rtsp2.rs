@@ -515,6 +515,7 @@ async fn helper_livetwo_cycle_rtsp(
         format!("http://{addr}{}", api::path::whep(&stream_a)),
         None,
         None,
+        None,
     ));
 
     let mut result = None;
@@ -606,6 +607,7 @@ async fn helper_livetwo_cycle_rtsp(
         format!("http://{addr}{}", api::path::whep(&stream_b)),
         None,
         None,
+        None,
     ));
 
     let mut result = None;
@@ -642,6 +644,7 @@ async fn helper_livetwo_cycle_rtsp(
             SocketAddr::new(ip, ports.whep),
         ),
         format!("http://{addr}{}", api::path::whep(&stream_c)),
+        None,
         None,
         None,
     ));

@@ -15,6 +15,9 @@ struct Args {
     /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
     #[arg(short, long)]
     whep: String,
+    /// SDP filename to write to (used in RTP mode)
+    #[arg(long, default_value = "output.sdp")]
+    sdp_file: Option<String>,
     /// Authentication token to use, will be sent in the HTTP Header as 'Bearer '
     #[arg(short, long)]
     token: Option<String>,
@@ -40,6 +43,7 @@ async fn main() {
     livetwo::whep::from(
         args.output.clone(),
         args.whep.clone(),
+        args.sdp_file.clone(),
         args.token.clone(),
         args.command.clone(),
     )
