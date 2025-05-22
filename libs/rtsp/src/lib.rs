@@ -6,15 +6,20 @@ use rtsp_types::{headers, headers::transport, Message, Method, Request, Response
 use sdp::{description::common::Attribute, SessionDescription};
 use sdp_types::Session;
 use std::io::Cursor;
+use std::sync::Arc;
+use tokio::io::BufReader;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::UnboundedSender,
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
 };
+
 use tracing::{debug, error, warn};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
 
 const SERVER_NAME: &str = "whipinto";
+type InterleavedSender = Arc<tokio::sync::Mutex<UnboundedSender<(u8, Vec<u8>)>>>;
+type InterleavedReceiver = Arc<tokio::sync::Mutex<UnboundedReceiver<(u8, Vec<u8>)>>>;
 
 #[derive(Debug, Clone)]
 pub struct Handler {
@@ -22,13 +27,15 @@ pub struct Handler {
     media_info: MediaInfo,
     up_tx: UnboundedSender<MediaInfo>,
     dn_tx: UnboundedSender<()>,
+    pub interleaved_tx: Option<InterleavedSender>,
+    pub interleaved_rx: Option<InterleavedReceiver>,
 }
 
 #[derive(Debug, Clone)]
 pub enum TransportInfo {
     Tcp {
-        rtp_channel: u16,
-        rtcp_channel: u16,
+        rtp_channel: u8,
+        rtcp_channel: u8,
     },
     Udp {
         rtp_send_port: Option<u16>,
@@ -74,7 +81,17 @@ impl Handler {
             media_info: MediaInfo::default(),
             up_tx,
             dn_tx,
+            interleaved_tx: None,
+            interleaved_rx: None,
         }
+    }
+
+    pub fn set_interleaved_sender(&mut self, tx: UnboundedSender<(u8, Vec<u8>)>) {
+        self.interleaved_tx = Some(Arc::new(tokio::sync::Mutex::new(tx)));
+    }
+
+    pub fn set_interleaved_receiver(&mut self, rx: UnboundedReceiver<(u8, Vec<u8>)>) {
+        self.interleaved_rx = Some(Arc::new(tokio::sync::Mutex::new(rx)));
     }
 
     pub fn set_sdp(&mut self, sdp: Vec<u8>) {
@@ -136,132 +153,248 @@ impl Handler {
         let tr = trs.first().unwrap();
 
         if let transport::Transport::Rtp(rtp_transport) = tr {
-            let (rtp, rtcp) = rtp_transport.params.client_port.unwrap();
-            let uri = req.request_uri().unwrap().as_str();
+            if rtp_transport.lower_transport == Some(transport::RtpLowerTransport::Tcp) {
+                let interleaved = rtp_transport.params.interleaved.unwrap_or((0, Some(1)));
+                let uri = req.request_uri().unwrap().as_str();
 
-            let url_id = uri
-                .split("streamid=")
-                .nth(1)
-                .and_then(|id_str| id_str.split('&').next())
-                .map(|id| id.to_string());
+                let url_id = uri
+                    .split("streamid=")
+                    .nth(1)
+                    .and_then(|id_str| id_str.split('&').next())
+                    .map(|id| id.to_string());
 
-            if let Some(sdp_data) = &self.sdp {
-                let sdp = sdp_types::Session::parse(sdp_data).unwrap();
+                if let Some(sdp_data) = &self.sdp {
+                    let sdp = sdp_types::Session::parse(sdp_data).unwrap();
 
-                for media in sdp.medias.iter() {
-                    let media_control = media
-                        .attributes
-                        .iter()
-                        .find(|attr| attr.attribute == "control")
-                        .and_then(|attr| attr.value.as_deref())
-                        .and_then(|control| {
-                            if control.contains("streamid=") {
-                                control.split("streamid=").nth(1).map(|id| id.to_string())
-                            } else {
-                                None
-                            }
-                        });
-
-                    if media.media == "audio" && media_control.as_deref() == url_id.as_deref() {
-                        let audio_server_port =
-                            pick_unused_port().expect("Failed to find an unused audio port");
-                        let audio_rtcp_server_port = audio_server_port + 1;
-
-                        self.media_info.audio_transport = Some(TransportInfo::Udp {
-                            rtp_send_port: Some(rtp),
-                            rtp_recv_port: Some(audio_server_port),
-                            rtcp_send_port: rtcp,
-                            rtcp_recv_port: Some(audio_rtcp_server_port),
-                        });
-
-                        self.media_info.audio_codec = media
+                    for media in sdp.medias.iter() {
+                        let media_control = media
                             .attributes
                             .iter()
-                            .find(|attr| attr.attribute == "rtpmap")
-                            .and_then(|attr| attr.value.as_ref())
-                            .and_then(|value| {
-                                value
-                                    .split_whitespace()
-                                    .nth(1)
-                                    .unwrap_or("")
-                                    .split('/')
-                                    .next()
-                                    .map(|codec_str| codec_from_str(codec_str).ok())
-                            })
-                            .unwrap_or(None);
+                            .find(|attr| attr.attribute == "control")
+                            .and_then(|attr| attr.value.as_deref())
+                            .and_then(|control| {
+                                if control.contains("streamid=") {
+                                    control.split("streamid=").nth(1).map(|id| id.to_string())
+                                } else {
+                                    None
+                                }
+                            });
 
-                        return Response::builder(req.version(), StatusCode::Ok)
-                            .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
-                            .header(headers::SERVER, SERVER_NAME)
-                            .header(headers::SESSION, "1111-2222-3333-4444")
-                            .typed_header(&transport::Transports::from(vec![
-                                transport::Transport::Rtp(transport::RtpTransport {
-                                    profile: transport::RtpProfile::Avp,
-                                    lower_transport: None,
-                                    params: transport::RtpTransportParameters {
-                                        unicast: true,
-                                        server_port: Some((
-                                            audio_server_port,
-                                            Some(audio_rtcp_server_port),
-                                        )),
-                                        ..Default::default()
-                                    },
-                                }),
-                            ]))
-                            .build(Vec::new());
-                    } else if media.media == "video"
-                        && media_control.as_deref() == url_id.as_deref()
-                    {
-                        let video_server_port =
-                            pick_unused_port().expect("Failed to find an unused video port");
-                        let video_rtcp_server_port = video_server_port + 1;
+                        if media.media == "audio" && media_control.as_deref() == url_id.as_deref() {
+                            debug!("Setting up audio stream with TCP transport, interleaved channels: {:?}", interleaved);
 
-                        self.media_info.video_transport = Some(TransportInfo::Udp {
-                            rtp_send_port: Some(rtp),
-                            rtp_recv_port: Some(video_server_port),
-                            rtcp_send_port: rtcp,
-                            rtcp_recv_port: Some(video_rtcp_server_port),
-                        });
+                            self.media_info.audio_transport = Some(TransportInfo::Tcp {
+                                rtp_channel: interleaved.0,
+                                rtcp_channel: interleaved.1.unwrap_or(1),
+                            });
 
-                        self.media_info.video_codec = media
-                            .attributes
-                            .iter()
-                            .find(|attr| attr.attribute == "rtpmap")
-                            .and_then(|attr| attr.value.as_ref())
-                            .and_then(|value| {
-                                value
-                                    .split_whitespace()
-                                    .nth(1)
-                                    .unwrap_or("")
-                                    .split('/')
-                                    .next()
-                                    .map(|codec_str| codec_from_str(codec_str).ok())
-                            })
-                            .unwrap_or(None);
+                            self.media_info.audio_codec = media
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.attribute == "rtpmap")
+                                .and_then(|attr| attr.value.as_ref())
+                                .and_then(|value| {
+                                    value
+                                        .split_whitespace()
+                                        .nth(1)
+                                        .unwrap_or("")
+                                        .split('/')
+                                        .next()
+                                        .map(|codec_str| codec_from_str(codec_str).ok())
+                                })
+                                .unwrap_or(None);
 
-                        return Response::builder(req.version(), StatusCode::Ok)
-                            .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
-                            .header(headers::SERVER, SERVER_NAME)
-                            .header(headers::SESSION, "1111-2222-3333-4444")
-                            .typed_header(&transport::Transports::from(vec![
-                                transport::Transport::Rtp(transport::RtpTransport {
-                                    profile: transport::RtpProfile::Avp,
-                                    lower_transport: None,
-                                    params: transport::RtpTransportParameters {
-                                        unicast: true,
-                                        server_port: Some((
-                                            video_server_port,
-                                            Some(video_rtcp_server_port),
-                                        )),
-                                        ..Default::default()
-                                    },
-                                }),
-                            ]))
-                            .build(Vec::new());
+                            return Response::builder(req.version(), StatusCode::Ok)
+                                .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+                                .header(headers::SERVER, SERVER_NAME)
+                                .header(headers::SESSION, "1111-2222-3333-4444")
+                                .typed_header(&transport::Transports::from(vec![
+                                    transport::Transport::Rtp(transport::RtpTransport {
+                                        profile: transport::RtpProfile::Avp,
+                                        lower_transport: Some(transport::RtpLowerTransport::Tcp),
+                                        params: transport::RtpTransportParameters {
+                                            unicast: true,
+                                            interleaved: Some(interleaved),
+                                            ..Default::default()
+                                        },
+                                    }),
+                                ]))
+                                .build(Vec::new());
+                        } else if media.media == "video"
+                            && media_control.as_deref() == url_id.as_deref()
+                        {
+                            debug!("Setting up video stream with TCP transport, interleaved channels: {:?}", interleaved);
+
+                            self.media_info.video_transport = Some(TransportInfo::Tcp {
+                                rtp_channel: interleaved.0,
+                                rtcp_channel: interleaved.1.unwrap_or(1),
+                            });
+
+                            self.media_info.video_codec = media
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.attribute == "rtpmap")
+                                .and_then(|attr| attr.value.as_ref())
+                                .and_then(|value| {
+                                    value
+                                        .split_whitespace()
+                                        .nth(1)
+                                        .unwrap_or("")
+                                        .split('/')
+                                        .next()
+                                        .map(|codec_str| codec_from_str(codec_str).ok())
+                                })
+                                .unwrap_or(None);
+
+                            return Response::builder(req.version(), StatusCode::Ok)
+                                .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+                                .header(headers::SERVER, SERVER_NAME)
+                                .header(headers::SESSION, "1111-2222-3333-4444")
+                                .typed_header(&transport::Transports::from(vec![
+                                    transport::Transport::Rtp(transport::RtpTransport {
+                                        profile: transport::RtpProfile::Avp,
+                                        lower_transport: Some(transport::RtpLowerTransport::Tcp),
+                                        params: transport::RtpTransportParameters {
+                                            unicast: true,
+                                            interleaved: Some(interleaved),
+                                            ..Default::default()
+                                        },
+                                    }),
+                                ]))
+                                .build(Vec::new());
+                        }
                     }
+                } else {
+                    warn!("SDP data is not available for TCP setup");
                 }
             } else {
-                warn!("SDP data is not available");
+                let (rtp, rtcp) = rtp_transport.params.client_port.unwrap();
+                let uri = req.request_uri().unwrap().as_str();
+
+                let url_id = uri
+                    .split("streamid=")
+                    .nth(1)
+                    .and_then(|id_str| id_str.split('&').next())
+                    .map(|id| id.to_string());
+
+                if let Some(sdp_data) = &self.sdp {
+                    let sdp = sdp_types::Session::parse(sdp_data).unwrap();
+
+                    for media in sdp.medias.iter() {
+                        let media_control = media
+                            .attributes
+                            .iter()
+                            .find(|attr| attr.attribute == "control")
+                            .and_then(|attr| attr.value.as_deref())
+                            .and_then(|control| {
+                                if control.contains("streamid=") {
+                                    control.split("streamid=").nth(1).map(|id| id.to_string())
+                                } else {
+                                    None
+                                }
+                            });
+
+                        if media.media == "audio" && media_control.as_deref() == url_id.as_deref() {
+                            let audio_server_port =
+                                pick_unused_port().expect("Failed to find an unused audio port");
+                            let audio_rtcp_server_port = audio_server_port + 1;
+
+                            self.media_info.audio_transport = Some(TransportInfo::Udp {
+                                rtp_send_port: Some(rtp),
+                                rtp_recv_port: Some(audio_server_port),
+                                rtcp_send_port: rtcp,
+                                rtcp_recv_port: Some(audio_rtcp_server_port),
+                            });
+
+                            self.media_info.audio_codec = media
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.attribute == "rtpmap")
+                                .and_then(|attr| attr.value.as_ref())
+                                .and_then(|value| {
+                                    value
+                                        .split_whitespace()
+                                        .nth(1)
+                                        .unwrap_or("")
+                                        .split('/')
+                                        .next()
+                                        .map(|codec_str| codec_from_str(codec_str).ok())
+                                })
+                                .unwrap_or(None);
+
+                            return Response::builder(req.version(), StatusCode::Ok)
+                                .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+                                .header(headers::SERVER, SERVER_NAME)
+                                .header(headers::SESSION, "1111-2222-3333-4444")
+                                .typed_header(&transport::Transports::from(vec![
+                                    transport::Transport::Rtp(transport::RtpTransport {
+                                        profile: transport::RtpProfile::Avp,
+                                        lower_transport: None,
+                                        params: transport::RtpTransportParameters {
+                                            unicast: true,
+                                            server_port: Some((
+                                                audio_server_port,
+                                                Some(audio_rtcp_server_port),
+                                            )),
+                                            ..Default::default()
+                                        },
+                                    }),
+                                ]))
+                                .build(Vec::new());
+                        } else if media.media == "video"
+                            && media_control.as_deref() == url_id.as_deref()
+                        {
+                            let video_server_port =
+                                pick_unused_port().expect("Failed to find an unused video port");
+                            let video_rtcp_server_port = video_server_port + 1;
+
+                            self.media_info.video_transport = Some(TransportInfo::Udp {
+                                rtp_send_port: Some(rtp),
+                                rtp_recv_port: Some(video_server_port),
+                                rtcp_send_port: rtcp,
+                                rtcp_recv_port: Some(video_rtcp_server_port),
+                            });
+
+                            self.media_info.video_codec = media
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.attribute == "rtpmap")
+                                .and_then(|attr| attr.value.as_ref())
+                                .and_then(|value| {
+                                    value
+                                        .split_whitespace()
+                                        .nth(1)
+                                        .unwrap_or("")
+                                        .split('/')
+                                        .next()
+                                        .map(|codec_str| codec_from_str(codec_str).ok())
+                                })
+                                .unwrap_or(None);
+
+                            return Response::builder(req.version(), StatusCode::Ok)
+                                .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
+                                .header(headers::SERVER, SERVER_NAME)
+                                .header(headers::SESSION, "1111-2222-3333-4444")
+                                .typed_header(&transport::Transports::from(vec![
+                                    transport::Transport::Rtp(transport::RtpTransport {
+                                        profile: transport::RtpProfile::Avp,
+                                        lower_transport: None,
+                                        params: transport::RtpTransportParameters {
+                                            unicast: true,
+                                            server_port: Some((
+                                                video_server_port,
+                                                Some(video_rtcp_server_port),
+                                            )),
+                                            ..Default::default()
+                                        },
+                                    }),
+                                ]))
+                                .build(Vec::new());
+                        }
+                    }
+                } else {
+                    warn!("SDP data is not available");
+                }
             }
         }
 
@@ -308,8 +441,62 @@ impl Handler {
     }
 }
 
-pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Result<(), Error> {
-    let (mut reader, mut writer) = socket.split();
+pub async fn send_interleaved_frame(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    channel: u8,
+    data: &[u8],
+) -> Result<()> {
+    let mut frame = vec![
+        b'$',
+        channel,
+        ((data.len() >> 8) & 0xFF) as u8,
+        (data.len() & 0xFF) as u8,
+    ];
+    frame.extend_from_slice(data);
+    writer.write_all(&frame).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+pub async fn process_socket(socket: TcpStream, handler: &mut Handler) -> Result<(), Error> {
+    let (reader, writer) = tokio::io::split(socket);
+
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+
+    let interleaved_rx = match handler.interleaved_rx.take() {
+        Some(rx) => rx,
+        None => {
+            let (_, rx) = unbounded_channel::<(u8, Vec<u8>)>();
+            Arc::new(tokio::sync::Mutex::new(rx))
+        }
+    };
+    let writer_clone = writer.clone();
+    let _writer_task = tokio::spawn(async move {
+        loop {
+            let mut rx_guard = interleaved_rx.lock().await;
+            match rx_guard.recv().await {
+                Some((channel, data)) => {
+                    debug!(
+                        "Sending interleaved frame on channel {}, {} bytes",
+                        channel,
+                        data.len()
+                    );
+                    let mut writer_guard = writer_clone.lock().await;
+                    if let Err(e) = send_interleaved_frame(&mut *writer_guard, channel, &data).await
+                    {
+                        error!("Failed to send interleaved frame: {}", e);
+                        break;
+                    }
+                }
+                None => {
+                    warn!("Interleaved receiver closed");
+                    break;
+                }
+            }
+        }
+        warn!("Writer task stopped");
+    });
+    let mut reader = BufReader::new(reader);
     let mut accumulated_buf = Vec::new();
 
     loop {
@@ -319,8 +506,32 @@ pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Res
             Ok(n) => {
                 accumulated_buf.extend_from_slice(&buf[..n]);
 
+                while accumulated_buf.len() >= 4 && accumulated_buf[0] == b'$' {
+                    let channel = accumulated_buf[1];
+                    let len = ((accumulated_buf[2] as usize) << 8) | (accumulated_buf[3] as usize);
+                    if accumulated_buf.len() < 4 + len {
+                        break;
+                    }
+                    let rtp_data = accumulated_buf[4..4 + len].to_vec();
+                    if let Some(tx) = &handler.interleaved_tx {
+                        if let Ok(tx_guard) = tx.try_lock() {
+                            if let Err(e) = tx_guard.send((channel, rtp_data.clone())) {
+                                error!("Failed to forward interleaved data: {}", e);
+                            }
+                        } else {
+                            match tx.lock().await.send((channel, rtp_data)) {
+                                Ok(_) => {}
+                                Err(e) => error!("Failed to forward interleaved data: {}", e),
+                            }
+                        }
+                    }
+
+                    accumulated_buf.drain(..4 + len);
+                }
+
                 match Message::parse(&accumulated_buf) {
                     Ok((message, consumed)) => {
+                        debug!("Received RTSP message: {:?}", message);
                         accumulated_buf.drain(..consumed);
                         let response = match message {
                             Message::Request(ref request) => match request.method() {
@@ -345,7 +556,10 @@ pub async fn process_socket(mut socket: TcpStream, handler: &mut Handler) -> Res
 
                         let mut buffer = Vec::new();
                         response.write(&mut buffer)?;
-                        writer.write_all(&buffer).await?;
+                        //writer.write_all(&buffer).await?;
+                        let mut writer_guard = writer.lock().await;
+                        writer_guard.write_all(&buffer).await?;
+                        writer_guard.flush().await?;
                     }
                     Err(ParseError::Incomplete(_)) => {
                         continue;
