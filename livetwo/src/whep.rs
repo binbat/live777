@@ -2,13 +2,12 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use anyhow::{anyhow, Result};
 use cli::create_child;
-use portpicker::pick_unused_port;
 use scopeguard::defer;
+use sdp::description::common::{Address, ConnectionInformation};
 use sdp::{description::media::RangedPort, SessionDescription};
 use std::{
     fs::File,
     io::{Cursor, Write},
-    path::Path,
     sync::Arc,
     time::Duration,
 };
@@ -35,6 +34,7 @@ use crate::{SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 pub async fn from(
     target_url: String,
     whep_url: String,
+    sdp_file: Option<String>,
     token: Option<String>,
     command: Option<String>,
 ) -> Result<()> {
@@ -66,6 +66,7 @@ pub async fn from(
     tokio::time::sleep(Duration::from_secs(1)).await;
     let codec_info = codec_info.lock().await;
     debug!("Codec info: {:?}", codec_info);
+    let port = input.port().unwrap_or(0);
 
     let filtered_sdp = match rtsp::filter_sdp(
         &answer.sdp,
@@ -120,31 +121,28 @@ pub async fn from(
         }
     });
 
-    let (media_info, host, tx, rx) = match input.scheme() {
+    let (media_info, tx, rx) = match input.scheme() {
         SCHEME_RTSP_SERVER => {
-            let tcp_port = input.port().unwrap_or(0);
             let (media_info, interleaved_tx, interleaved_rx) = rtsp_server_mode(
                 filtered_sdp,
                 &listen_host,
                 complete_tx.clone(),
-                tcp_port,
+                port,
                 notify,
             )
             .await?;
-            (media_info, target_host, interleaved_tx, interleaved_rx)
+            (media_info, interleaved_tx, interleaved_rx)
         }
         SCHEME_RTSP_CLIENT => {
             let (media_info, interleaved_tx, interleaved_rx) =
                 rtsp_client_mode(filtered_sdp, &target_url, &target_host).await?;
-            (media_info, target_host, interleaved_tx, interleaved_rx)
+            (media_info, interleaved_tx, interleaved_rx)
         }
         _ => {
-            let (media_info, host) = rtp_mode(filtered_sdp, &target_url, notify.clone()).await?;
-            (media_info, host, None, None)
+            let media_info = rtp_mode(filtered_sdp, &input, sdp_file, notify.clone()).await?;
+            (media_info, None, None)
         }
     };
-
-    let target_host = host;
 
     info!("media info : {:?}", media_info);
     setup_rtp_handlers(
@@ -472,35 +470,126 @@ async fn rtsp_client_mode(
 
 async fn rtp_mode(
     filtered_sdp: String,
-    target_url: &str,
+    input: &url::Url,
+    sdp_filename: Option<String>,
     notify: Arc<Notify>,
-) -> Result<(rtsp::MediaInfo, String)> {
+) -> Result<rtsp::MediaInfo> {
+    let mut reader = Cursor::new(filtered_sdp.as_bytes());
+    let session = SessionDescription::unmarshal(&mut reader).unwrap();
+    let (target_host, _listen_host) = utils::parse_host(input);
+
+    let mut video_port: Option<u16> = None;
+    let mut audio_port: Option<u16> = None;
+
+    for (key, value) in input.query_pairs() {
+        match key.as_ref() {
+            "video" => {
+                video_port = value.parse::<u16>().ok();
+            }
+            "audio" => {
+                audio_port = value.parse::<u16>().ok();
+            }
+            _ => {}
+        }
+    }
+    let video_port = match video_port {
+        Some(port) => {
+            debug!("Video port set from URL: {}", port);
+            port
+        }
+        None => {
+            info!("No video port specified in URL, using default port: 5004");
+            5004
+        }
+    };
+    let audio_port = match audio_port {
+        Some(port) => {
+            debug!("Audio port set from URL: {}", port);
+            port
+        }
+        None => {
+            info!("No audio port specified in URL, using default port: 5006");
+            5006
+        }
+    };
+
+    let mut video_codec = None;
+    let mut audio_codec = None;
+
+    for media in &session.media_descriptions {
+        if media.media_name.media == "video" {
+            video_codec = media
+                .attributes
+                .iter()
+                .find(|attr| attr.key == "rtpmap")
+                .and_then(|attr| attr.value.as_ref())
+                .and_then(|value| {
+                    value
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .split('/')
+                        .next()
+                        .map(|codec_str| cli::codec_from_str(codec_str).ok())
+                })
+                .unwrap_or(None);
+        } else if media.media_name.media == "audio" {
+            audio_codec = media
+                .attributes
+                .iter()
+                .find(|attr| attr.key == "rtpmap")
+                .and_then(|attr| attr.value.as_ref())
+                .and_then(|value| {
+                    value
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .split('/')
+                        .next()
+                        .map(|codec_str| cli::codec_from_str(codec_str).ok())
+                })
+                .unwrap_or(None);
+        }
+    }
+
     let media_info = rtsp::MediaInfo {
         video_transport: Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: pick_unused_port(),
+            rtp_send_port: Some(video_port),
             rtp_recv_port: None,
             rtcp_send_port: None,
             rtcp_recv_port: None,
         }),
         audio_transport: Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: pick_unused_port(),
+            rtp_send_port: Some(audio_port),
             rtp_recv_port: None,
             rtcp_send_port: None,
             rtcp_recv_port: None,
         }),
-        ..Default::default()
+        video_codec,
+        audio_codec,
     };
 
-    let mut reader = Cursor::new(filtered_sdp.as_bytes());
-    let mut session = SessionDescription::unmarshal(&mut reader).unwrap();
-    let sdp_target_host = session
-        .clone()
-        .connection_information
-        .and_then(|conn_info| conn_info.address)
-        .map(|address| address.to_string())
-        .unwrap_or(Ipv4Addr::LOCALHOST.to_string());
+    let connection_info = ConnectionInformation {
+        network_type: "IN".to_string(),
+        address_type: if target_host.parse::<Ipv6Addr>().is_ok() {
+            "IP6"
+        } else {
+            "IP4"
+        }
+        .to_string(),
+        address: Some(Address {
+            address: target_host.to_string(),
+            ttl: None,
+            range: None,
+        }),
+    };
+
+    let mut session = session;
+    session.connection_information = Some(connection_info.clone());
 
     for media in &mut session.media_descriptions {
+        media.connection_information = Some(connection_info.clone());
+
         if media.media_name.media == "video" {
             if let Some(rtsp::TransportInfo::Udp {
                 rtp_send_port: Some(port),
@@ -525,9 +614,10 @@ async fn rtp_mode(
             }
         }
     }
+
     let sdp = session.marshal();
 
-    let file_path = Path::new(target_url);
+    let file_path = sdp_filename.unwrap_or_else(|| "output.sdp".to_string());
     debug!("SDP written to {:?}", file_path);
     let mut file = File::options()
         .write(true)
@@ -538,7 +628,7 @@ async fn rtp_mode(
     notify.notify_one();
     info!("Sent signal to start child process after RTP mode SDP write");
 
-    Ok((media_info, sdp_target_host))
+    Ok(media_info)
 }
 
 async fn webrtc_start(

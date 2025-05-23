@@ -198,11 +198,7 @@ pub async fn rtp_send(
     send_port: Option<u16>,
 ) {
     if let Some(port) = recv_port {
-        let send_addr = if let Some(send_port) = send_port {
-            format!("{}:{}", listen_host, send_port)
-        } else {
-            "0.0.0.0:0".to_string()
-        };
+        let send_addr = format!("{}:{}", listen_host, send_port.unwrap_or(0));
 
         let socket = match UdpSocket::bind(&send_addr).await {
             Ok(s) => {
