@@ -492,26 +492,6 @@ async fn rtp_mode(
             _ => {}
         }
     }
-    let video_port = match video_port {
-        Some(port) => {
-            debug!("Video port set from URL: {}", port);
-            port
-        }
-        None => {
-            info!("No video port specified in URL, using default port: 5004");
-            5004
-        }
-    };
-    let audio_port = match audio_port {
-        Some(port) => {
-            debug!("Audio port set from URL: {}", port);
-            port
-        }
-        None => {
-            info!("No audio port specified in URL, using default port: 5006");
-            5006
-        }
-    };
 
     let mut video_codec = None;
     let mut audio_codec = None;
@@ -552,15 +532,45 @@ async fn rtp_mode(
         }
     }
 
+    let video_port = if video_codec.is_some() {
+        match video_port {
+            Some(port) => {
+                debug!("Video port set from URL: {}", port);
+                Some(port)
+            }
+            None => {
+                info!("No video port specified in URL, using default port: 5004");
+                Some(5004)
+            }
+        }
+    } else {
+        None
+    };
+
+    let audio_port = if audio_codec.is_some() {
+        match audio_port {
+            Some(port) => {
+                debug!("Audio port set from URL: {}", port);
+                Some(port)
+            }
+            None => {
+                info!("No audio port specified in URL, using default port: 5006");
+                Some(5006)
+            }
+        }
+    } else {
+        None
+    };
+
     let media_info = rtsp::MediaInfo {
-        video_transport: Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: Some(video_port),
+        video_transport: video_port.map(|port| rtsp::TransportInfo::Udp {
+            rtp_send_port: Some(port),
             rtp_recv_port: None,
             rtcp_send_port: None,
             rtcp_recv_port: None,
         }),
-        audio_transport: Some(rtsp::TransportInfo::Udp {
-            rtp_send_port: Some(audio_port),
+        audio_transport: audio_port.map(|port| rtsp::TransportInfo::Udp {
+            rtp_send_port: Some(port),
             rtp_recv_port: None,
             rtcp_send_port: None,
             rtcp_recv_port: None,
