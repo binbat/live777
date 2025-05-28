@@ -9,8 +9,14 @@ This tool has three working mode:
 
 ## RTP
 
+RTP mode need `target` and `sdp file`
+
 ```bash
-whepfrom -o output.sdp -w http://localhost:7777/whep/777
+whepfrom -o rtp://{target_ip}?video={video_port}&audio={audio_port} -w http://localhost:7777/whep/777 --sdp-file output.sdp
+```
+
+```bash
+whepfrom -o rtp://localhost?video=9000&audio=9002 -w http://localhost:7777/whep/777 --sdp-file output.sdp
 ```
 
 Use [`ffplay`](/guide/ffmpeg) play
