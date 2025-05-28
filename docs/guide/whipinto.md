@@ -77,12 +77,29 @@ ffmpeg -re \
 -f rtsp 'rtsp://127.0.0.1:8554'
 ```
 
+### Use transport `tcp`
+
+```bash
+ffmpeg -re \
+-f lavfi -i sine=frequency=1000 \
+-f lavfi -i testsrc=size=640x480:rate=30 \
+-acodec libopus -vcodec libvpx \
+-rtsp_transport tcp \
+-f rtsp 'rtsp://127.0.0.1:8554'
+```
+
 ## RTSP Client
 
 `whipinto` as a client, pull stream from RTSP Server
 
 ```bash
 whipinto -i rtsp://127.0.0.1:8554 -w http://localhost:7777/whip/777
+```
+
+### Use transport `tcp`
+
+```bash
+whipinto -i rtsp://localhost:8554/test-rtsp?transport=tcp -w http://localhost:7777/whip/test-rtsp
 ```
 
 ## About `pkt_size=1200`
