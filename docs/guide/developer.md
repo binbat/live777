@@ -4,6 +4,10 @@ Depends:
 - [cargo](https://www.rust-lang.org/)
 - [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
 
+OptDepends:
+- [ffmpeg](https://www.ffmpeg.org/)
+- [just](https://github.com/casey/just)
+
 ## Binary and source code
 
 Binary     | Package    | Comment
