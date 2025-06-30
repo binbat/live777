@@ -458,4 +458,13 @@ impl Manager {
         });
         Ok(recv)
     }
+
+    pub fn subscribe_event(&self) -> broadcast::Receiver<Event> {
+        self.event_sender.subscribe()
+    }
+
+    pub async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
+        let map = self.stream_map.read().await;
+        map.get(stream).cloned()
+    }
 }

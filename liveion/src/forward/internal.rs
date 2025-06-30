@@ -54,7 +54,7 @@ pub(crate) struct PeerForwardInternal {
     publish_leave_at: RwLock<i64>,
     subscribe_leave_at: RwLock<i64>,
     publish: RwLock<Option<PublishRTCPeerConnection>>,
-    publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
+    pub(super) publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
     publish_tracks_change: broadcast::Sender<()>,
     publish_rtcp_channel: broadcast::Sender<(RtcpMessage, u32)>,
     subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,

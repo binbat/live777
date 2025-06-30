@@ -358,6 +358,20 @@ impl PeerForward {
             .select_kind_rid(session, codec_type, rid)
             .await
     }
+
+    /// Subscribe to the RTP packet broadcast of the first video Track.
+    pub async fn subscribe_video_rtp(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
+        // Directly read the internal publish_tracks list
+        let tracks = self.internal.publish_tracks.read().await;
+        for t in tracks.iter() {
+            if t.kind == RTPCodecType::Video {
+                return Some(t.subscribe());
+            }
+        }
+        None
+    }
 }
 
 async fn peer_complete(

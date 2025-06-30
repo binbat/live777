@@ -14,7 +14,7 @@ use webrtc::{
 /// WebRTC Build-in RTP must less 1200
 const RTP_OUTBOUND_MTU: usize = 1200;
 
-pub(crate) trait RePayload {
+pub trait RePayload {
     fn payload(&mut self, packet: Packet) -> Vec<Packet>;
 }
 
@@ -65,7 +65,7 @@ impl RePayloadBase {
     }
 }
 
-pub(crate) struct RePayloadCodec {
+pub struct RePayloadCodec {
     base: RePayloadBase,
     encoder: Box<dyn Payloader + Send>,
     decoder: Box<dyn Depacketizer + Send>,

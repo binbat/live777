@@ -34,6 +34,9 @@ mod result;
 mod route;
 mod stream;
 
+#[cfg(feature = "recorder")]
+pub mod recorder;
+
 pub async fn serve<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -42,6 +45,12 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
+
+    #[cfg(feature = "recorder")]
+    {
+        crate::recorder::init(app_state.stream_manager.clone(), cfg.recorder.clone()).await;
+    }
+
     let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::<Body>::new(
         cfg.auth.secret,
         cfg.auth.tokens,

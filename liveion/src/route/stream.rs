@@ -19,6 +19,7 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::streams(":stream"), post(create))
         .route(&api::path::streams(":stream"), delete(destroy))
         .route(api::path::streams_sse(), get(sse))
+        .route(&api::path::record(":stream"), post(record_stream))
 }
 
 async fn index(
@@ -100,4 +101,23 @@ async fn sse(
     });
     let resp = Sse::new(stream).keep_alive(KeepAlive::default());
     Ok(resp)
+}
+
+#[cfg(feature = "recorder")]
+async fn record_stream(
+    State(state): State<AppState>,
+    Path(stream): Path<String>,
+) -> crate::result::Result<Response<String>> {
+    crate::recorder::start(state.stream_manager.clone(), stream).await?;
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body("".to_string())?)
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn record_stream(
+    _state: State<AppState>,
+    Path(_stream): Path<String>,
+) -> crate::result::Result<Response<String>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
 }

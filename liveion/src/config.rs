@@ -26,6 +26,10 @@ pub struct Config {
 
     #[serde(default)]
     pub webhook: Webhook,
+
+    #[cfg(feature = "recorder")]
+    #[serde(default)]
+    pub recorder: RecorderConfig,
 }
 
 #[cfg(feature = "net4mqtt")]
@@ -196,4 +200,31 @@ impl Config {
         }
         Ok(())
     }
+}
+
+#[cfg(feature = "recorder")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecorderConfig {
+    /// 自动录制的流列表
+    #[serde(default)]
+    pub auto_streams: Vec<String>,
+
+    /// 存储根路径（OpenDAL Scheme）
+    #[serde(default = "default_recorder_root")]
+    pub root: String,
+}
+
+#[cfg(feature = "recorder")]
+impl Default for RecorderConfig {
+    fn default() -> Self {
+        Self {
+            auto_streams: Vec::new(),
+            root: default_recorder_root(),
+        }
+    }
+}
+
+#[cfg(feature = "recorder")]
+fn default_recorder_root() -> String {
+    "file://./records".to_string()
 }
