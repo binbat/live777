@@ -221,6 +221,10 @@ impl PeerForward {
             Err(AppError::throw("not layers"))
         }
     }
+
+    pub async fn first_video_codec(&self) -> Option<String> {
+        self.internal.first_publish_video_codec().await
+    }
 }
 
 // subscribe

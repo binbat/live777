@@ -1,9 +1,10 @@
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
+use glob::Pattern;
 use once_cell::sync::Lazy;
 use opendal::services::Fs;
 use opendal::Operator;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::hook::{Event, StreamEventType};
 use crate::stream::manager::Manager;
@@ -11,11 +12,12 @@ use crate::stream::manager::Manager;
 #[cfg(feature = "recorder")]
 use crate::config::RecorderConfig;
 
-mod task;
 mod segmenter;
+mod task;
 use task::RecordingTask;
 
-static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> = Lazy::new(|| RwLock::new(HashMap::new()));
+static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 static STORAGE: Lazy<RwLock<Option<Operator>>> = Lazy::new(|| RwLock::new(None));
 
@@ -50,8 +52,9 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
                 match stream_event.r#type {
                     StreamEventType::Up => {
                         let stream_name = stream_event.stream.stream;
-                        if cfg.auto_streams.is_empty() || cfg.auto_streams.contains(&stream_name) {
-                            if let Err(e) = start(manager_clone.clone(), stream_name.clone()).await {
+                        if should_record(&cfg.auto_streams, &stream_name) {
+                            if let Err(e) = start(manager_clone.clone(), stream_name.clone()).await
+                            {
                                 tracing::error!("[recorder] start failed: {}", e);
                             }
                         }
@@ -82,4 +85,15 @@ pub async fn start(manager: Arc<Manager>, stream: String) -> anyhow::Result<()> 
     map.insert(stream.clone(), task);
     tracing::info!("[recorder] spawn recording task for {}", stream);
     Ok(())
-} 
+}
+
+fn should_record(patterns: &[String], stream: &str) -> bool {
+    for p in patterns {
+        if let Ok(pat) = Pattern::new(p) {
+            if pat.matches(stream) {
+                return true;
+            }
+        }
+    }
+    false
+}
