@@ -205,11 +205,11 @@ impl Config {
 #[cfg(feature = "recorder")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecorderConfig {
-    /// 自动录制的流列表
+    /// List of stream names to automatically record
     #[serde(default)]
     pub auto_streams: Vec<String>,
 
-    /// 存储根路径（OpenDAL Scheme）
+    /// OpenDAL Scheme
     #[serde(default = "default_recorder_root")]
     pub root: String,
 }
