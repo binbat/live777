@@ -4,8 +4,6 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 use webrtc::api::media_engine::MIME_TYPE_H264;
 
@@ -82,20 +80,6 @@ impl RecordingTask {
 
         let stream_name_cloned = stream_name.clone();
         let handle = tokio::spawn(async move {
-            // Open raw .h264 stream file for debugging
-            let dump_path = format!("{}.h264", stream_name_cloned);
-            let mut dump_file = match OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&dump_path)
-                .await
-            {
-                Ok(f) => Some(f),
-                Err(e) => {
-                    tracing::warn!("[recorder] open dump file failed: {}", e);
-                    None
-                }
-            };
             let is_h264 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264);
             let mut parser = H264RtpParser::new();
             let mut frame_cnt: u64 = 0;
@@ -110,10 +94,6 @@ impl RecordingTask {
                     let _ = segmenter
                         .push_h264(Bytes::from(frame.clone()), is_idr)
                         .await;
-
-                    if let Some(f) = dump_file.as_mut() {
-                        let _ = f.write_all(&frame).await;
-                    }
 
                     frame_cnt += 1;
 
