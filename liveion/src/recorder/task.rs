@@ -1,18 +1,22 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 use webrtc::api::media_engine::MIME_TYPE_H264;
 
+use crate::recorder::rtp_h264::H264RtpParser;
 use crate::recorder::segmenter::Segmenter;
 use crate::recorder::STORAGE;
 use crate::stream::manager::Manager;
-use livetwo::payload::{RePayload, RePayloadCodec};
 
 #[derive(Debug)]
 pub struct RecordingTask {
+    #[allow(dead_code)]
     pub stream: String,
     handle: JoinHandle<()>,
 }
@@ -74,25 +78,53 @@ impl RecordingTask {
 
         tracing::info!("[recorder] stream {} use codec {}", stream_name, codec_mime);
 
+        tracing::info!("[recorder] subscribed RTP for stream {}", stream_name);
+
+        let stream_name_cloned = stream_name.clone();
         let handle = tokio::spawn(async move {
-            let mut depay = RePayloadCodec::new(codec_mime.clone());
-            let is_h264 = codec_mime == MIME_TYPE_H264;
+            // Open raw .h264 stream file for debugging
+            let dump_path = format!("{}.h264", stream_name_cloned);
+            let mut dump_file = match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&dump_path)
+                .await
+            {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    tracing::warn!("[recorder] open dump file failed: {}", e);
+                    None
+                }
+            };
+            let is_h264 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264);
+            let mut parser = H264RtpParser::new();
+            let mut frame_cnt: u64 = 0;
+            let mut last_log = Instant::now();
+
             while let Ok(packet) = rtp_receiver.recv().await {
-                // Depacketize RTP into complete frames
-                for p in depay.payload((*packet).clone()) {
-                    let payload = p.payload.clone();
-                    if payload.is_empty() {
-                        continue;
+                if !is_h264 {
+                    continue; // Currently only handle H.264
+                }
+
+                if let Ok(Some((frame, is_idr))) = parser.push_packet((*packet).clone()) {
+                    let _ = segmenter
+                        .push_h264(Bytes::from(frame.clone()), is_idr)
+                        .await;
+
+                    if let Some(f) = dump_file.as_mut() {
+                        let _ = f.write_all(&frame).await;
                     }
-                    if is_h264 {
-                        // For H.264, wrap with Annex-B start code and push to segmenter
-                        let nal_unit_type = payload[0] & 0x1F;
-                        let is_idr = nal_unit_type == 5;
-                        let mut buf = vec![0, 0, 0, 1];
-                        buf.extend_from_slice(&payload);
-                        let _ = segmenter.push_h264(Bytes::from(buf), is_idr).await;
-                    } else {
-                        // TODO: 支持 VP8/VP9 等编码封装到 fMP4
+
+                    frame_cnt += 1;
+
+                    if last_log.elapsed() >= Duration::from_secs(5) {
+                        tracing::info!(
+                            "[recorder] stream {} received {} frames in last 5s",
+                            stream_name_cloned,
+                            frame_cnt
+                        );
+                        frame_cnt = 0;
+                        last_log = Instant::now();
                     }
                 }
             }

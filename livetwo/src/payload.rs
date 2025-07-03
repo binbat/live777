@@ -73,22 +73,39 @@ pub struct RePayloadCodec {
 
 impl RePayloadCodec {
     pub fn new(mime_type: String) -> RePayloadCodec {
+        let mime_lc = mime_type.to_ascii_lowercase();
+
+        // Helper closure for matching in lowercase form
+        let is = |candidate: &str| mime_lc == candidate.to_ascii_lowercase();
+
+        let decoder: Box<dyn Depacketizer + Send> = if is(MIME_TYPE_VP8) {
+            Box::default() as Box<vp8::Vp8Packet>
+        } else if is(MIME_TYPE_VP9) {
+            Box::default() as Box<vp9::Vp9Packet>
+        } else if is(MIME_TYPE_H264) {
+            Box::default() as Box<h264::H264Packet>
+        } else if is(MIME_TYPE_OPUS) {
+            Box::default() as Box<opus::OpusPacket>
+        } else {
+            Box::default() as Box<vp8::Vp8Packet>
+        };
+
+        let encoder: Box<dyn Payloader + Send> = if is(MIME_TYPE_VP8) {
+            Box::default() as Box<vp8::Vp8Payloader>
+        } else if is(MIME_TYPE_VP9) {
+            Box::default() as Box<vp9::Vp9Payloader>
+        } else if is(MIME_TYPE_H264) {
+            Box::default() as Box<h264::H264Payloader>
+        } else if is(MIME_TYPE_OPUS) {
+            Box::default() as Box<opus::OpusPayloader>
+        } else {
+            Box::default() as Box<vp8::Vp8Payloader>
+        };
+
         RePayloadCodec {
             base: RePayloadBase::new(),
-            decoder: match mime_type.as_str() {
-                MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Packet>,
-                MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Packet>,
-                MIME_TYPE_H264 => Box::default() as Box<h264::H264Packet>,
-                MIME_TYPE_OPUS => Box::default() as Box<opus::OpusPacket>,
-                _ => Box::default() as Box<vp8::Vp8Packet>,
-            },
-            encoder: match mime_type.as_str() {
-                MIME_TYPE_VP8 => Box::default() as Box<vp8::Vp8Payloader>,
-                MIME_TYPE_VP9 => Box::default() as Box<vp9::Vp9Payloader>,
-                MIME_TYPE_H264 => Box::default() as Box<h264::H264Payloader>,
-                MIME_TYPE_OPUS => Box::default() as Box<opus::OpusPayloader>,
-                _ => Box::default() as Box<vp8::Vp8Payloader>,
-            },
+            decoder,
+            encoder,
         }
     }
 }
