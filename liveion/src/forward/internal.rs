@@ -403,6 +403,7 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    #[cfg(feature = "recorder")]
     pub(crate) async fn first_publish_video_codec(&self) -> Option<String> {
         let publish_tracks = self.publish_tracks.read().await;
         for t in publish_tracks.iter() {

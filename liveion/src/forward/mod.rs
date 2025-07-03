@@ -222,6 +222,7 @@ impl PeerForward {
         }
     }
 
+    #[cfg(feature = "recorder")]
     pub async fn first_video_codec(&self) -> Option<String> {
         self.internal.first_publish_video_codec().await
     }
@@ -364,6 +365,7 @@ impl PeerForward {
     }
 
     /// Subscribe to the RTP packet broadcast of the first video Track.
+    #[cfg(feature = "recorder")]
     pub async fn subscribe_video_rtp(
         &self,
     ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
