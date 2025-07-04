@@ -347,7 +347,12 @@ async fn helper_livetwo_rtp(
     };
 
     let target_url = if detect.audio.is_some() && detect.video.is_some() {
-        format!("rtp://{}?video={}&audio={}", ip_str, whep_port, whep_port + 2)
+        format!(
+            "rtp://{}?video={}&audio={}",
+            ip_str,
+            whep_port,
+            whep_port + 2
+        )
     } else if detect.video.is_some() {
         format!("rtp://{}?video={}", ip_str, whep_port)
     } else if detect.audio.is_some() {
