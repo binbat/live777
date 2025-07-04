@@ -156,7 +156,7 @@ impl Segmenter {
             3_000
         } else {
             duration_ticks
-        } as u32;
+        };
 
         let sample = Mp4Sample {
             start_time: self.current_pts,
@@ -173,7 +173,7 @@ impl Segmenter {
         self.total_ticks += dur as u64;
 
         // Dynamically update nominal FPS: prefer the highest observed value
-        let fps_cur = (self.timescale / dur) as u32;
+        let fps_cur = self.timescale / dur;
         if self.frame_rate == 0 || fps_cur > self.frame_rate {
             self.frame_rate = fps_cur;
         }
@@ -328,7 +328,7 @@ impl Segmenter {
 
         // Estimate average bitrate (bits per second) if we have stats
         let bandwidth = if self.total_ticks > 0 {
-            (self.total_bytes * 8 * self.timescale as u64 / self.total_ticks) as u64
+            self.total_bytes * 8 * self.timescale as u64 / self.total_ticks
         } else {
             0
         };
@@ -455,9 +455,9 @@ fn inject_mvex(mut data: Vec<u8>, track_id: u32) -> Vec<u8> {
 // ===== Convert AnnexB NALU to AVCC (length prefix) =====
 fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
     // Skip the 3/4-byte start code
-    let offset = if nalu.len() >= 4 && &nalu[..4] == &[0, 0, 0, 1][..] {
+    let offset = if nalu.len() >= 4 && nalu[..4] == [0, 0, 0, 1][..] {
         4
-    } else if nalu.len() >= 3 && &nalu[..3] == &[0, 0, 1][..] {
+    } else if nalu.len() >= 3 && nalu[..3] == [0, 0, 1][..] {
         3
     } else {
         0
@@ -530,7 +530,7 @@ fn build_fragment(
     fragment.extend_from_slice(&[0u8; 4]); // data offset placeholder
 
     for s in samples {
-        fragment.extend_from_slice(&(s.duration as u32).to_be_bytes());
+        fragment.extend_from_slice(&s.duration.to_be_bytes());
         fragment.extend_from_slice(&(s.bytes.len() as u32).to_be_bytes());
         // Sample flags: mark sync vs non-sync samples
         let flags: u32 = if s.is_sync {
