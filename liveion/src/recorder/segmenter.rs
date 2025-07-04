@@ -136,17 +136,6 @@ impl Segmenter {
             offset = next;
         }
 
-        // If init.m4s hasn't been created but we've got SPS/PPS, generate the init segment first and start the first media segment
-        if self.video_track_id.is_none() && self.sps.is_some() && self.pps.is_some() {
-            self.init_writer().await?;
-            // init_writer 内部会调用 open_new_segment()
-        }
-
-        // Return early if no valid payload could be parsed
-        if avcc_payload.is_empty() {
-            return Ok(());
-        }
-
         // Use provided duration, fallback to 3000 ticks if it looks invalid (e.g. 0)
         let dur = if duration_ticks == 0 { 3_000 } else { duration_ticks } as u32;
 
@@ -164,9 +153,16 @@ impl Segmenter {
         self.total_bytes += frame.len() as u64;
         self.total_ticks += dur as u64;
 
-        if self.frame_rate == 0 {
-            // First valid duration determines nominal FPS
-            self.frame_rate = (self.timescale / dur) as u32;
+        // Dynamically update nominal FPS: prefer the highest observed value
+        let fps_cur = (self.timescale / dur) as u32;
+        if self.frame_rate == 0 || fps_cur > self.frame_rate {
+            self.frame_rate = fps_cur;
+        }
+
+        // Now that we (likely) have frame rate, generate init segment if not yet written
+        if self.video_track_id.is_none() && self.sps.is_some() && self.pps.is_some() {
+            self.init_writer().await?;
+            // init_writer will call open_new_segment(), clear samples, so ensure it's called before samples are enqueued
         }
 
         // Check if we need to roll the segment: IDR + duration met
@@ -331,6 +327,25 @@ impl Segmenter {
         // Use computed frame_rate, default to 30 if unavailable
         let fps_val = if self.frame_rate > 0 { self.frame_rate } else { 30 };
 
+        // Calculate pixel aspect ratio (PAR) based on video dimension
+        let par_str = if self.video_width > 0 && self.video_height > 0 {
+            let mut w = self.video_width;
+            let mut h = self.video_height;
+            // gcd
+            while h != 0 {
+                let tmp = h;
+                h = w % h;
+                w = tmp;
+            }
+            if w == 0 {
+                "1:1".to_string()
+            } else {
+                format!("{}:{}", self.video_width / w, self.video_height / w)
+            }
+        } else {
+            "1:1".to_string()
+        };
+
         let mpd = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
@@ -342,7 +357,7 @@ impl Segmenter {
      mediaPresentationDuration=\"{media_duration}\"\n\
      maxSegmentDuration=\"{max_seg_dur}\"\n\
      minBufferTime=\"{min_buf}\">\n\
-    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"16:9\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n                    <SegmentTimeline>\n{timeline}                    </SegmentTimeline>\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n    </Period>\n</MPD>\n",
+    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n                    <SegmentTimeline>\n{timeline}                    </SegmentTimeline>\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n    </Period>\n</MPD>\n",
             media_duration = media_presentation_duration,
             max_seg_dur = max_segment_duration,
             min_buf = min_buffer_time,
@@ -353,6 +368,7 @@ impl Segmenter {
             codec = self.video_codec,
             fps = fps_val,
             bandwidth = bandwidth,
+            par = par_str,
         );
 
         self.store_file("manifest.mpd", mpd.into_bytes()).await
@@ -390,7 +406,7 @@ fn build_mvex(track_id: u32) -> Vec<u8> {
     buf
 }
 
-/// 将 mvex 注入到 mp4 数据中的 moov box 内部，并更新 moov size
+/// inject mvex into mp4 data's moov box, and update moov size
 fn inject_mvex(mut data: Vec<u8>, track_id: u32) -> Vec<u8> {
     let mvex = build_mvex(track_id);
 
