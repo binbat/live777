@@ -27,6 +27,7 @@ jobs:
       - name: Generate code coverage
         run: cargo llvm-cov --all --lcov --output-path lcov.info
       - name: Upload coverage to codecov.io
+        if: ${{ github.repository == 'binbat/live777' }}
         uses: codecov/codecov-action@v4
         with:
           file: lcov.info
