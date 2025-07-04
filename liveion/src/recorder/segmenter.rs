@@ -45,6 +45,15 @@ pub struct Segmenter {
     video_codec: String,
 
     current_pts: u64,
+
+    /// Frames per second, updated dynamically from incoming stream (timescale/duration)
+    frame_rate: u32,
+
+    /// Accumulated media size (bytes) for bitrate estimation
+    total_bytes: u64,
+
+    /// Accumulated media duration (in timescale ticks)
+    total_ticks: u64,
 }
 
 impl Segmenter {
@@ -66,11 +75,15 @@ impl Segmenter {
             video_height: 0,
             video_codec: String::new(),
             current_pts: 0,
+            frame_rate: 0,
+            total_bytes: 0,
+            total_ticks: 0,
         })
     }
 
     /// Feed one H.264 Frame (Annex-B format, may contain multiple NALUs)
-    pub async fn push_h264(&mut self, frame: Bytes, is_idr: bool) -> Result<()> {
+    /// `duration_ticks` – frame duration in the same timescale as self.timescale (90000 for H264)
+    pub async fn push_h264(&mut self, frame: Bytes, is_idr: bool, duration_ticks: u32) -> Result<()> {
         // ------- Split frame content into multiple NALUs -------
         let mut offset = 0usize;
         let mut avcc_payload = Vec::<u8>::new();
@@ -134,16 +147,27 @@ impl Segmenter {
             return Ok(());
         }
 
-        // Build an Mp4Sample (per full frame)
+        // Use provided duration, fallback to 3000 ticks if it looks invalid (e.g. 0)
+        let dur = if duration_ticks == 0 { 3_000 } else { duration_ticks } as u32;
+
         let sample = Mp4Sample {
             start_time: self.current_pts,
-            duration: 3_000, // Assume 30fps, each frame is 0.033s
+            duration: dur,
             rendering_offset: 0,
             is_sync: is_idr,
             bytes: avcc_payload.into(),
         };
         self.samples.push(sample);
-        self.current_pts += 3_000;
+        self.current_pts += dur as u64;
+
+        // Update dynamic statistics
+        self.total_bytes += frame.len() as u64;
+        self.total_ticks += dur as u64;
+
+        if self.frame_rate == 0 {
+            // First valid duration determines nominal FPS
+            self.frame_rate = (self.timescale / dur) as u32;
+        }
 
         // Check if we need to roll the segment: IDR + duration met
         if is_idr && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
@@ -297,6 +321,16 @@ impl Segmenter {
             ));
         }
 
+        // Estimate average bitrate (bits per second) if we have stats
+        let bandwidth = if self.total_ticks > 0 {
+            (self.total_bytes * 8 * self.timescale as u64 / self.total_ticks) as u64
+        } else {
+            0
+        };
+
+        // Use computed frame_rate, default to 30 if unavailable
+        let fps_val = if self.frame_rate > 0 { self.frame_rate } else { 30 };
+
         let mpd = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
@@ -308,7 +342,7 @@ impl Segmenter {
      mediaPresentationDuration=\"{media_duration}\"\n\
      maxSegmentDuration=\"{max_seg_dur}\"\n\
      minBufferTime=\"{min_buf}\">\n\
-    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"30/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"16:9\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"2000000\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n                    <SegmentTimeline>\n{timeline}                    </SegmentTimeline>\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n    </Period>\n</MPD>\n",
+    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"16:9\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n                    <SegmentTimeline>\n{timeline}                    </SegmentTimeline>\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n    </Period>\n</MPD>\n",
             media_duration = media_presentation_duration,
             max_seg_dur = max_segment_duration,
             min_buf = min_buffer_time,
@@ -317,6 +351,8 @@ impl Segmenter {
             timescale = self.timescale,
             timeline = timeline,
             codec = self.video_codec,
+            fps = fps_val,
+            bandwidth = bandwidth,
         );
 
         self.store_file("manifest.mpd", mpd.into_bytes()).await

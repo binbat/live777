@@ -82,6 +82,7 @@ impl RecordingTask {
         let handle = tokio::spawn(async move {
             let is_h264 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264);
             let mut parser = H264RtpParser::new();
+            let mut prev_ts: Option<u32> = None;
             let mut frame_cnt: u64 = 0;
             let mut last_log = Instant::now();
 
@@ -90,9 +91,20 @@ impl RecordingTask {
                     continue; // Currently only handle H.264
                 }
 
+                let pkt_ts = packet.header.timestamp;
+
                 if let Ok(Some((frame, is_idr))) = parser.push_packet((*packet).clone()) {
+                    // Calculate frame duration based on RTP timestamp delta
+                    let duration_ticks: u32 = if let Some(prev) = prev_ts {
+                        pkt_ts.wrapping_sub(prev)
+                    } else {
+                        // Fallback to 30fps => 3000 ticks @ 90kHz
+                        3_000
+                    };
+                    prev_ts = Some(pkt_ts);
+
                     let _ = segmenter
-                        .push_h264(Bytes::from(frame.clone()), is_idr)
+                        .push_h264(Bytes::from(frame.clone()), is_idr, duration_ticks)
                         .await;
 
                     frame_cnt += 1;
