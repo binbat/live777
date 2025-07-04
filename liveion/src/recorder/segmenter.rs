@@ -1,14 +1,12 @@
-use std::io::Cursor;
 use std::time::Duration;
 
 use anyhow::Result;
-use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
 use h264_reader::{
     nal::sps::SeqParameterSet,
     rbsp::{decode_nal, BitReader},
 };
-use mp4::{AvcConfig, MediaConfig, Mp4Config, Mp4Sample, Mp4Writer, TrackConfig, TrackType};
+use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
 use opendal::Operator;
 use tracing::{debug, info};
 
@@ -54,6 +52,9 @@ pub struct Segmenter {
 
     /// Accumulated media duration (in timescale ticks)
     total_ticks: u64,
+
+    // encapsulated fmp4 writer once initialized
+    fmp4_writer: Option<Fmp4Writer>,
 }
 
 impl Segmenter {
@@ -78,6 +79,7 @@ impl Segmenter {
             frame_rate: 0,
             total_bytes: 0,
             total_ticks: 0,
+            fmp4_writer: None,
         })
     }
 
@@ -193,20 +195,6 @@ impl Segmenter {
     }
 
     async fn init_writer(&mut self) -> Result<()> {
-        let cursor = Cursor::new(Vec::new());
-        let mp4_cfg = Mp4Config {
-            major_brand: "isom".parse().unwrap(),
-            minor_version: 512,
-            compatible_brands: vec![
-                "isom".parse().unwrap(),
-                "iso2".parse().unwrap(),
-                "avc1".parse().unwrap(),
-                "mp41".parse().unwrap(),
-            ],
-            timescale: self.timescale,
-        };
-        let mut writer = Mp4Writer::write_start(cursor, &mp4_cfg)?;
-
         // Parse SPS to get width/height if possible
         let (mut width, mut height) = (0u32, 0u32);
         if let Ok(rbsp) = decode_nal(&self.sps.clone().unwrap()) {
@@ -245,26 +233,21 @@ impl Segmenter {
         self.video_width = width;
         self.video_height = height;
 
-        // TrackConfig
-        let avc_config = AvcConfig {
-            width: width as u16,
-            height: height as u16,
-            seq_param_set: self.sps.clone().unwrap(),
-            pic_param_set: self.pps.clone().unwrap(),
-        };
-        let track_cfg = TrackConfig {
-            track_type: TrackType::Video,
-            timescale: self.timescale,
-            language: "und".into(),
-            media_conf: MediaConfig::AvcConfig(avc_config),
-        };
-        writer.add_track(&track_cfg)?;
-        // video track id is 1 (first) according to implementation
-        self.video_track_id = Some(1);
-        writer.write_end()?;
+        // Build init segment via our new fMP4 writer (track_id fixed to 1)
+        let track_id = 1u32;
+        let fmp4_writer = Fmp4Writer::new(
+            self.timescale,
+            track_id,
+            width,
+            height,
+            self.video_codec.clone(),
+            vec![self.sps.clone().unwrap(), self.pps.clone().unwrap()],
+        );
 
-        let track_id = self.video_track_id.unwrap_or(1);
-        let init_bytes = inject_mvex(writer.into_writer().into_inner(), track_id);
+        let init_bytes = fmp4_writer.build_init_segment();
+        self.video_track_id = Some(track_id);
+        self.fmp4_writer = Some(fmp4_writer);
+
         self.store_file("init.m4s", init_bytes).await?;
         info!("[segmenter] {} init.m4s written", self.stream);
 
@@ -277,7 +260,6 @@ impl Segmenter {
     }
 
     async fn open_new_segment(&mut self) -> Result<()> {
-        // Mp4Writer is no longer created; we buffer samples and let roll_segment build moof+mdat
         self.samples.clear();
         self.seg_start_dts = self.current_pts;
         self.seg_index += 1;
@@ -291,9 +273,13 @@ impl Segmenter {
         }
 
         let base_time = self.seg_start_dts;
-        let track_id = self.video_track_id.unwrap_or(1);
 
-        let fragment = build_fragment(track_id, self.seg_index, base_time, &self.samples);
+        let writer = self
+            .fmp4_writer
+            .as_ref()
+            .expect("fmp4 writer not initialized");
+
+        let fragment = writer.build_fragment(self.seg_index, base_time, &self.samples);
         let filename = format!("seg_{:04}.m4s", self.seg_index);
         self.store_file(&filename, fragment).await?;
         info!("[segmenter] {} {} written", self.stream, filename);
@@ -401,57 +387,6 @@ impl Segmenter {
     }
 }
 
-// ===== Utility: insert mvex/trex boxes into fMP4 to convert it into fragmented MP4 =====
-/// Create mvex+trex boxes based on TrackID (total 40 bytes)
-fn build_mvex(track_id: u32) -> Vec<u8> {
-    let trex_size: u32 = 32; // fixed size
-    let mvex_size: u32 = 8 + trex_size; // mvex header + trex
-
-    let mut buf = Vec::with_capacity(mvex_size as usize);
-    buf.extend_from_slice(&mvex_size.to_be_bytes()); // mvex size
-    buf.extend_from_slice(b"mvex");
-
-    // trex box
-    buf.extend_from_slice(&trex_size.to_be_bytes()); // trex size
-    buf.extend_from_slice(b"trex");
-    buf.extend_from_slice(&[0u8; 4]); // version(0)+flags(0)
-    buf.extend_from_slice(&track_id.to_be_bytes()); // track_ID
-    buf.extend_from_slice(&1u32.to_be_bytes()); // default_sample_description_index
-    buf.extend_from_slice(&0u32.to_be_bytes()); // default_sample_duration
-    buf.extend_from_slice(&0u32.to_be_bytes()); // default_sample_size
-                                                // Mark default samples as non-sync so that we must explicitly set the sync flag for IDR samples in the fragment
-                                                // sample_depends_on = 1 (depends on other frame), sample_is_non_sync = 1
-    let default_flags: u32 = 0x0101_0000;
-    buf.extend_from_slice(&default_flags.to_be_bytes()); // default_sample_flags
-    buf
-}
-
-/// inject mvex into mp4 data's moov box, and update moov size
-fn inject_mvex(mut data: Vec<u8>, track_id: u32) -> Vec<u8> {
-    let mvex = build_mvex(track_id);
-
-    let mut offset = 0usize;
-    while offset + 8 <= data.len() {
-        let size = BigEndian::read_u32(&data[offset..offset + 4]) as usize;
-        let box_type = &data[offset + 4..offset + 8];
-        if box_type == b"moov" {
-            let insert_pos = offset + size; // moov end
-            let new_size = size + mvex.len();
-            // update moov size
-            BigEndian::write_u32(&mut data[offset..offset + 4], new_size as u32);
-            // insert mvex
-            data.splice(insert_pos..insert_pos, mvex.iter().cloned());
-            break;
-        }
-        if size == 0 {
-            // Avoid infinite loop
-            break;
-        }
-        offset += size;
-    }
-    data
-}
-
 // ===== Convert AnnexB NALU to AVCC (length prefix) =====
 fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
     // Skip the 3/4-byte start code
@@ -467,108 +402,4 @@ fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(payload);
     out
-}
-
-// ===== build moof + mdat fragment =====
-fn build_fragment(
-    track_id: u32,
-    seq_number: u32,
-    base_time: u64,
-    samples: &[Mp4Sample],
-) -> Vec<u8> {
-    use byteorder::ByteOrder;
-
-    let total_data: usize = samples.iter().map(|s| s.bytes.len()).sum();
-
-    // ========= styp =========
-    let mut fragment: Vec<u8> = Vec::with_capacity(1024 + total_data);
-    const STYP_SIZE: u32 = 24;
-    fragment.extend_from_slice(&STYP_SIZE.to_be_bytes());
-    fragment.extend_from_slice(b"styp");
-    fragment.extend_from_slice(b"msdh");
-    fragment.extend_from_slice(&0u32.to_be_bytes()); // minor version
-    fragment.extend_from_slice(b"msdh");
-    fragment.extend_from_slice(b"dash");
-
-    // ========= moof =========
-    let moof_start = fragment.len();
-    fragment.extend_from_slice(&[0u8; 8]); // placeholder for moof size+type
-
-    // ---- mfhd ----
-    fragment.extend_from_slice(&16u32.to_be_bytes());
-    fragment.extend_from_slice(b"mfhd");
-    fragment.extend_from_slice(&0u32.to_be_bytes());
-    fragment.extend_from_slice(&seq_number.to_be_bytes());
-
-    // ---- traf ----
-    let traf_start = fragment.len();
-    fragment.extend_from_slice(&[0u8; 8]); // placeholder traf header
-
-    // tfhd
-    let tfhd_flags: u32 = 0x000200; // default-base-is-moof
-    fragment.extend_from_slice(&16u32.to_be_bytes());
-    fragment.extend_from_slice(b"tfhd");
-    fragment.extend_from_slice(&tfhd_flags.to_be_bytes());
-    fragment.extend_from_slice(&track_id.to_be_bytes());
-
-    // tfdt (version 1)
-    fragment.extend_from_slice(&20u32.to_be_bytes());
-    fragment.extend_from_slice(b"tfdt");
-    fragment.extend_from_slice(&0x01000000u32.to_be_bytes());
-    fragment.extend_from_slice(&base_time.to_be_bytes());
-
-    // trun
-    let sample_count = samples.len() as u32;
-    // trun flags: data-offset present | sample-duration present | sample-size present | sample-flags present
-    let trun_flags: u32 = 0x000001 | 0x000100 | 0x000200 | 0x000400;
-    let trun_start = fragment.len();
-    fragment.extend_from_slice(&[0u8; 4]); // placeholder size
-    fragment.extend_from_slice(b"trun");
-    fragment.extend_from_slice(&trun_flags.to_be_bytes());
-    fragment.extend_from_slice(&sample_count.to_be_bytes());
-    let data_offset_pos = fragment.len();
-    fragment.extend_from_slice(&[0u8; 4]); // data offset placeholder
-
-    for s in samples {
-        fragment.extend_from_slice(&s.duration.to_be_bytes());
-        fragment.extend_from_slice(&(s.bytes.len() as u32).to_be_bytes());
-        // Sample flags: mark sync vs non-sync samples
-        let flags: u32 = if s.is_sync {
-            // sample_depends_on = 2 (no dependencies, key frame)
-            0x0200_0000
-        } else {
-            // sample_depends_on = 1, sample_is_non_sync = 1
-            0x0101_0000
-        };
-        fragment.extend_from_slice(&flags.to_be_bytes());
-    }
-
-    // patch sizes
-    let trun_size = (fragment.len() - trun_start) as u32;
-    BigEndian::write_u32(&mut fragment[trun_start..trun_start + 4], trun_size);
-
-    let traf_size = (fragment.len() - traf_start) as u32;
-    BigEndian::write_u32(&mut fragment[traf_start..traf_start + 4], traf_size);
-    fragment[traf_start + 4..traf_start + 8].copy_from_slice(b"traf");
-
-    let moof_size = (fragment.len() - moof_start) as u32;
-    BigEndian::write_u32(&mut fragment[moof_start..moof_start + 4], moof_size);
-    fragment[moof_start + 4..moof_start + 8].copy_from_slice(b"moof");
-
-    // data-offset: distance from moof start to first byte of mdat payload
-    let data_offset_val = moof_size + 8; // mdat header
-    BigEndian::write_u32(
-        &mut fragment[data_offset_pos..data_offset_pos + 4],
-        data_offset_val,
-    );
-
-    // ========= mdat =========
-    let mdat_size = (8 + total_data) as u32;
-    fragment.extend_from_slice(&mdat_size.to_be_bytes());
-    fragment.extend_from_slice(b"mdat");
-    for s in samples {
-        fragment.extend_from_slice(s.bytes.as_ref());
-    }
-
-    fragment
 }

@@ -16,6 +16,7 @@ mod rtp_h264;
 mod segmenter;
 mod task;
 use task::RecordingTask;
+mod fmp4;
 
 static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
