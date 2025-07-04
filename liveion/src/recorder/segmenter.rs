@@ -83,7 +83,12 @@ impl Segmenter {
 
     /// Feed one H.264 Frame (Annex-B format, may contain multiple NALUs)
     /// `duration_ticks` – frame duration in the same timescale as self.timescale (90000 for H264)
-    pub async fn push_h264(&mut self, frame: Bytes, is_idr: bool, duration_ticks: u32) -> Result<()> {
+    pub async fn push_h264(
+        &mut self,
+        frame: Bytes,
+        mut is_idr: bool,
+        duration_ticks: u32,
+    ) -> Result<()> {
         // ------- Split frame content into multiple NALUs -------
         let mut offset = 0usize;
         let mut avcc_payload = Vec::<u8>::new();
@@ -107,6 +112,11 @@ impl Segmenter {
                 && !bytes[next..].starts_with(&[0, 0, 0, 1])
             {
                 next += 1;
+            }
+
+            // If we reached near the end without finding another start code, include the trailing bytes
+            if next + 3 >= bytes.len() {
+                next = bytes.len();
             }
 
             let nalu = &bytes[start_pos..next];
@@ -133,11 +143,20 @@ impl Segmenter {
             // Convert to AVCC and append to frame payload
             avcc_payload.extend_from_slice(&nalu_to_avcc(&Bytes::copy_from_slice(nalu)));
 
+            // Detect IDR frame automatically if any NALU type is 5 (IDR slice)
+            if nal_type == 5 {
+                is_idr = true;
+            }
+
             offset = next;
         }
 
         // Use provided duration, fallback to 3000 ticks if it looks invalid (e.g. 0)
-        let dur = if duration_ticks == 0 { 3_000 } else { duration_ticks } as u32;
+        let dur = if duration_ticks == 0 {
+            3_000
+        } else {
+            duration_ticks
+        } as u32;
 
         let sample = Mp4Sample {
             start_time: self.current_pts,
@@ -307,16 +326,6 @@ impl Segmenter {
             "PT1S".to_string()
         };
 
-        // Build the SegmentTimeline (for simplicity each segment uses the same d)
-        let mut timeline = String::new();
-        for i in 0..seg_count {
-            let start = seg_duration_ticks * i;
-            timeline.push_str(&format!(
-                "                            <S t=\"{}\" d=\"{}\" />\n",
-                start, seg_duration_ticks
-            ));
-        }
-
         // Estimate average bitrate (bits per second) if we have stats
         let bandwidth = if self.total_ticks > 0 {
             (self.total_bytes * 8 * self.timescale as u64 / self.total_ticks) as u64
@@ -325,7 +334,11 @@ impl Segmenter {
         };
 
         // Use computed frame_rate, default to 30 if unavailable
-        let fps_val = if self.frame_rate > 0 { self.frame_rate } else { 30 };
+        let fps_val = if self.frame_rate > 0 {
+            self.frame_rate
+        } else {
+            30
+        };
 
         // Calculate pixel aspect ratio (PAR) based on video dimension
         let par_str = if self.video_width > 0 && self.video_height > 0 {
@@ -346,6 +359,10 @@ impl Segmenter {
             "1:1".to_string()
         };
 
+        // Duration of each segment in timescale units
+        let seg_duration_ticks = self.timescale as u64 * self.duration_per_seg.as_secs();
+
+        // Build MPD with fixed-duration SegmentTemplate (no SegmentTimeline)
         let mpd = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
@@ -357,14 +374,14 @@ impl Segmenter {
      mediaPresentationDuration=\"{media_duration}\"\n\
      maxSegmentDuration=\"{max_seg_dur}\"\n\
      minBufferTime=\"{min_buf}\">\n\
-    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n                    <SegmentTimeline>\n{timeline}                    </SegmentTimeline>\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n    </Period>\n</MPD>\n",
+    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" duration=\"{seg_duration}\" startNumber=\"1\" />\n            </Representation>\n        </AdaptationSet>\n    </Period>\n</MPD>\n",
             media_duration = media_presentation_duration,
             max_seg_dur = max_segment_duration,
             min_buf = min_buffer_time,
             width = self.video_width,
             height = self.video_height,
             timescale = self.timescale,
-            timeline = timeline,
+            seg_duration = seg_duration_ticks,
             codec = self.video_codec,
             fps = fps_val,
             bandwidth = bandwidth,
@@ -402,7 +419,10 @@ fn build_mvex(track_id: u32) -> Vec<u8> {
     buf.extend_from_slice(&1u32.to_be_bytes()); // default_sample_description_index
     buf.extend_from_slice(&0u32.to_be_bytes()); // default_sample_duration
     buf.extend_from_slice(&0u32.to_be_bytes()); // default_sample_size
-    buf.extend_from_slice(&0u32.to_be_bytes()); // default_sample_flags
+                                                // Mark default samples as non-sync so that we must explicitly set the sync flag for IDR samples in the fragment
+                                                // sample_depends_on = 1 (depends on other frame), sample_is_non_sync = 1
+    let default_flags: u32 = 0x0101_0000;
+    buf.extend_from_slice(&default_flags.to_be_bytes()); // default_sample_flags
     buf
 }
 
@@ -415,11 +435,11 @@ fn inject_mvex(mut data: Vec<u8>, track_id: u32) -> Vec<u8> {
         let size = BigEndian::read_u32(&data[offset..offset + 4]) as usize;
         let box_type = &data[offset + 4..offset + 8];
         if box_type == b"moov" {
-            let insert_pos = offset + size; // moov 末尾
+            let insert_pos = offset + size; // moov end
             let new_size = size + mvex.len();
-            // 更新 moov size
+            // update moov size
             BigEndian::write_u32(&mut data[offset..offset + 4], new_size as u32);
-            // 插入 mvex 数据
+            // insert mvex
             data.splice(insert_pos..insert_pos, mvex.iter().cloned());
             break;
         }
@@ -449,7 +469,7 @@ fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
     out
 }
 
-// ===== New: build moof + mdat fragment =====
+// ===== build moof + mdat fragment =====
 fn build_fragment(
     track_id: u32,
     seq_number: u32,
@@ -499,7 +519,8 @@ fn build_fragment(
 
     // trun
     let sample_count = samples.len() as u32;
-    let trun_flags: u32 = 0x000001 | 0x000100 | 0x000200; // data-offset + dur + size
+    // trun flags: data-offset present | sample-duration present | sample-size present | sample-flags present
+    let trun_flags: u32 = 0x000001 | 0x000100 | 0x000200 | 0x000400;
     let trun_start = fragment.len();
     fragment.extend_from_slice(&[0u8; 4]); // placeholder size
     fragment.extend_from_slice(b"trun");
@@ -511,6 +532,15 @@ fn build_fragment(
     for s in samples {
         fragment.extend_from_slice(&(s.duration as u32).to_be_bytes());
         fragment.extend_from_slice(&(s.bytes.len() as u32).to_be_bytes());
+        // Sample flags: mark sync vs non-sync samples
+        let flags: u32 = if s.is_sync {
+            // sample_depends_on = 2 (no dependencies, key frame)
+            0x0200_0000
+        } else {
+            // sample_depends_on = 1, sample_is_non_sync = 1
+            0x0101_0000
+        };
+        fragment.extend_from_slice(&flags.to_be_bytes());
     }
 
     // patch sizes
