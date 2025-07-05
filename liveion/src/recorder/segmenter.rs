@@ -6,7 +6,7 @@ use h264_reader::{
     nal::sps::SeqParameterSet,
     rbsp::{decode_nal, BitReader},
 };
-use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
+use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample, nalu_to_avcc};
 use opendal::Operator;
 use tracing::{debug, info};
 
@@ -385,21 +385,4 @@ impl Segmenter {
         debug!("[segmenter] stored file {}", path);
         Ok(())
     }
-}
-
-// ===== Convert AnnexB NALU to AVCC (length prefix) =====
-fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
-    // Skip the 3/4-byte start code
-    let offset = if nalu.len() >= 4 && nalu[..4] == [0, 0, 0, 1][..] {
-        4
-    } else if nalu.len() >= 3 && nalu[..3] == [0, 0, 1][..] {
-        3
-    } else {
-        0
-    };
-    let payload = &nalu[offset..];
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    out.extend_from_slice(payload);
-    out
 }

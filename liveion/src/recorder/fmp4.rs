@@ -204,93 +204,91 @@ impl Fmp4Writer {
 
 fn build_mvhd(timescale: u32, next_track_id: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(100);
-    payload.extend_from_slice(&0u32.to_be_bytes()); // version & flags
-    payload.extend_from_slice(&0u32.to_be_bytes()); // creation_time
-    payload.extend_from_slice(&0u32.to_be_bytes()); // modification_time
-    payload.extend_from_slice(&timescale.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes()); // duration – unknown
-    payload.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // rate 1.0
-    payload.extend_from_slice(&0x0100u16.to_be_bytes()); // volume 1.0 (full)
-    payload.extend_from_slice(&0u16.to_be_bytes()); // reserved
-    payload.extend_from_slice(&[0u8; 8]); // reserved
+    be_u32(&mut payload, 0);                // version & flags
+    zeroes(&mut payload, 8);                // creation & modification time
+    be_u32(&mut payload, timescale);
+    be_u32(&mut payload, 0);                // duration unknown
+    be_u32(&mut payload, 0x0001_0000);      // rate 1.0
+    be_u16(&mut payload, 0x0100);           // volume 1.0
+    be_u16(&mut payload, 0);                // reserved
+    zeroes(&mut payload, 8);                // reserved
 
-    // unity matrix
-    payload.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // a
-    payload.extend_from_slice(&0u32.to_be_bytes()); // b
-    payload.extend_from_slice(&0u32.to_be_bytes()); // u
-    payload.extend_from_slice(&0u32.to_be_bytes()); // c
-    payload.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // d
-    payload.extend_from_slice(&0u32.to_be_bytes()); // v
-    payload.extend_from_slice(&0u32.to_be_bytes()); // x
-    payload.extend_from_slice(&0u32.to_be_bytes()); // y
-    payload.extend_from_slice(&0x4000_0000u32.to_be_bytes()); // w
+    // unity matrix (identity)
+    be_u32(&mut payload, 0x0001_0000);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0x0001_0000);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0x4000_0000);
 
-    payload.extend_from_slice(&[0u8; 24]); // pre_defined[6]
-    payload.extend_from_slice(&next_track_id.to_be_bytes());
+    zeroes(&mut payload, 24);               // pre_defined[6]
+    be_u32(&mut payload, next_track_id);
     make_box(b"mvhd", &payload)
 }
 
 fn build_tkhd(track_id: u32, width: u32, height: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(92);
-    // flags: track_enabled | track_in_movie | track_in_preview = 0x7
-    payload.extend_from_slice(&0x0000_0007u32.to_be_bytes()); // version & flags
-    payload.extend_from_slice(&0u32.to_be_bytes()); // creation_time
-    payload.extend_from_slice(&0u32.to_be_bytes()); // modification_time
-    payload.extend_from_slice(&track_id.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes()); // reserved
-    payload.extend_from_slice(&0u32.to_be_bytes()); // duration
-    payload.extend_from_slice(&[0u8; 8]); // reserved
-    payload.extend_from_slice(&0u16.to_be_bytes()); // layer
-    payload.extend_from_slice(&0u16.to_be_bytes()); // alternate group
-    payload.extend_from_slice(&0u16.to_be_bytes()); // volume (mute)
-    payload.extend_from_slice(&0u16.to_be_bytes()); // reserved
+    be_u32(&mut payload, 0x0000_0007);      // version & flags
+    zeroes(&mut payload, 8);                // creation & modification time
+    be_u32(&mut payload, track_id);
+    be_u32(&mut payload, 0);                // reserved
+    be_u32(&mut payload, 0);                // duration
+    zeroes(&mut payload, 8);                // reserved
+    be_u16(&mut payload, 0);                // layer
+    be_u16(&mut payload, 0);                // alternate group
+    be_u16(&mut payload, 0);                // volume (mute)
+    be_u16(&mut payload, 0);                // reserved
 
     // unity matrix
-    payload.extend_from_slice(&0x0001_0000u32.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes());
-    payload.extend_from_slice(&0x0001_0000u32.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes());
-    payload.extend_from_slice(&0x4000_0000u32.to_be_bytes());
+    be_u32(&mut payload, 0x0001_0000);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0x0001_0000);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0x4000_0000);
 
-    // width/height in 16.16 fixed point
-    payload.extend_from_slice(&((width << 16) as u32).to_be_bytes());
-    payload.extend_from_slice(&((height << 16) as u32).to_be_bytes());
+    // width/height 16.16 fixed
+    be_u32(&mut payload, (width << 16) as u32);
+    be_u32(&mut payload, (height << 16) as u32);
 
     make_box(b"tkhd", &payload)
 }
 
 fn build_mdhd(timescale: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(32);
-    payload.extend_from_slice(&0u32.to_be_bytes()); // version & flags
-    payload.extend_from_slice(&0u32.to_be_bytes()); // creation_time
-    payload.extend_from_slice(&0u32.to_be_bytes()); // modification_time
-    payload.extend_from_slice(&timescale.to_be_bytes());
-    payload.extend_from_slice(&0u32.to_be_bytes()); // duration
-    payload.extend_from_slice(&0u16.to_be_bytes()); // language (und)
-    payload.extend_from_slice(&0u16.to_be_bytes()); // pre_defined
+    be_u32(&mut payload, 0);                // version & flags
+    zeroes(&mut payload, 8);                // creation & modification time
+    be_u32(&mut payload, timescale);
+    be_u32(&mut payload, 0);                // duration
+    be_u16(&mut payload, 0);                // language (und)
+    be_u16(&mut payload, 0);                // pre_defined
     make_box(b"mdhd", &payload)
 }
 
 fn build_hdlr() -> Vec<u8> {
     let name_bytes = b"VideoHandler\0";
     let mut payload = Vec::with_capacity(32 + name_bytes.len());
-    payload.extend_from_slice(&0u32.to_be_bytes()); // version & flags
-    payload.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
-    payload.extend_from_slice(b"vide"); // handler_type
-    payload.extend_from_slice(&[0u8; 12]); // reserved
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    payload.extend_from_slice(b"vide");
+    zeroes(&mut payload, 12);
     payload.extend_from_slice(name_bytes);
     make_box(b"hdlr", &payload)
 }
 
 fn build_vmhd() -> Vec<u8> {
     let mut payload = Vec::with_capacity(12);
-    payload.extend_from_slice(&0x0000_0001u32.to_be_bytes()); // version & flags (default-graphics-mode)
-    payload.extend_from_slice(&0u16.to_be_bytes()); // graphics_mode
-    payload.extend_from_slice(&[0u16.to_be_bytes(), 0u16.to_be_bytes(), 0u16.to_be_bytes()].concat());
+    be_u32(&mut payload, 0x0000_0001);      // version & flags
+    be_u16(&mut payload, 0);                // graphics_mode
+    be_u16(&mut payload, 0);
+    be_u16(&mut payload, 0);
+    be_u16(&mut payload, 0);
     make_box(b"vmhd", &payload)
 }
 
@@ -298,13 +296,13 @@ fn build_dinf() -> Vec<u8> {
     let dref = {
         let url_box = {
             let mut payload = Vec::with_capacity(4);
-            payload.extend_from_slice(&0x0000_0001u32.to_be_bytes()); // version 0 + flags 1 (self-contained)
+            be_u32(&mut payload, 0x0000_0001);        // version 0 + flags 1 (self-contained)
             make_box(b"url ", &payload)
         };
 
         let mut payload = Vec::with_capacity(8 + url_box.len());
-        payload.extend_from_slice(&0u32.to_be_bytes()); // version & flags
-        payload.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+        be_u32(&mut payload, 0);                     // version & flags
+        be_u32(&mut payload, 1);                     // entry_count
         payload.extend_from_slice(&url_box);
         make_box(b"dref", &payload)
     };
@@ -313,17 +311,17 @@ fn build_dinf() -> Vec<u8> {
 }
 
 fn build_empty_full_box(typ: &[u8; 4]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(4);
-    payload.extend_from_slice(&0u32.to_be_bytes()); // version & flags
-    payload.extend_from_slice(&0u32.to_be_bytes()); // entry_count or similar
+    let mut payload = Vec::with_capacity(8);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
     make_box(typ, &payload)
 }
 
 fn build_empty_stsz() -> Vec<u8> {
     let mut payload = Vec::with_capacity(12);
-    payload.extend_from_slice(&0u32.to_be_bytes()); // version & flags
-    payload.extend_from_slice(&0u32.to_be_bytes()); // sample_size
-    payload.extend_from_slice(&0u32.to_be_bytes()); // sample_count
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
+    be_u32(&mut payload, 0);
     make_box(b"stsz", &payload)
 }
 
@@ -370,18 +368,17 @@ fn build_mvex(track_id: u32) -> Vec<u8> {
     let mvex_size: u32 = 8 + trex_size;
 
     let mut buf = Vec::with_capacity(mvex_size as usize);
-    buf.extend_from_slice(&mvex_size.to_be_bytes());
+    be_u32(&mut buf, mvex_size);
     buf.extend_from_slice(b"mvex");
 
-    buf.extend_from_slice(&trex_size.to_be_bytes());
+    be_u32(&mut buf, trex_size);
     buf.extend_from_slice(b"trex");
-    buf.extend_from_slice(&0u32.to_be_bytes()); // version & flags
-    buf.extend_from_slice(&track_id.to_be_bytes()); // track_ID
-    buf.extend_from_slice(&1u32.to_be_bytes()); // default_sample_description_index
-    buf.extend_from_slice(&0u32.to_be_bytes()); // default_sample_duration
-    buf.extend_from_slice(&0u32.to_be_bytes()); // default_sample_size
-    let default_flags: u32 = 0x0101_0000;
-    buf.extend_from_slice(&default_flags.to_be_bytes());
+    be_u32(&mut buf, 0);                 // version & flags
+    be_u32(&mut buf, track_id);
+    be_u32(&mut buf, 1);                 // default_sample_description_index
+    be_u32(&mut buf, 0);                 // default_sample_duration
+    be_u32(&mut buf, 0);                 // default_sample_size
+    be_u32(&mut buf, 0x0101_0000);       // default flags
     buf
 }
 
@@ -502,4 +499,33 @@ fn _build_fragment_internal(
     }
 
     fragment
+}
+
+// Helpers for big-endian writing & padding -------------------------------
+#[inline]
+fn be_u8(buf: &mut Vec<u8>, v: u8) { buf.push(v); }
+#[inline]
+fn be_u16(buf: &mut Vec<u8>, v: u16) { buf.extend_from_slice(&v.to_be_bytes()); }
+#[inline]
+fn be_u32(buf: &mut Vec<u8>, v: u32) { buf.extend_from_slice(&v.to_be_bytes()); }
+#[inline]
+fn be_u64(buf: &mut Vec<u8>, v: u64) { buf.extend_from_slice(&v.to_be_bytes()); }
+#[inline]
+fn zeroes(buf: &mut Vec<u8>, n: usize) { buf.extend(std::iter::repeat(0u8).take(n)); }
+
+/// Convert an Annex-B NALU (with or without start code) to a 4-byte-length-prefixed AVCC buffer.
+pub fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
+    // Determine where the raw payload starts (skip 3- or 4-byte start code if present)
+    let offset = if nalu.len() >= 4 && nalu[..4] == [0, 0, 0, 1][..] {
+        4
+    } else if nalu.len() >= 3 && nalu[..3] == [0, 0, 1][..] {
+        3
+    } else {
+        0
+    };
+    let payload = &nalu[offset..];
+    let mut out = Vec::with_capacity(4 + payload.len());
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
 } 
