@@ -226,6 +226,12 @@ impl PeerForward {
     pub async fn first_video_codec(&self) -> Option<String> {
         self.internal.first_publish_video_codec().await
     }
+
+    /// Subscribe to publish track change events so external components can react without polling.
+    #[cfg(feature = "recorder")]
+    pub fn subscribe_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
+        self.internal.subscribe_publish_tracks_change()
+    }
 }
 
 // subscribe

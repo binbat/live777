@@ -418,6 +418,12 @@ impl PeerForwardInternal {
         }
         None
     }
+
+    /// Subscribe to notifications when publish tracks change (e.g., new tracks arrive).
+    #[cfg(feature = "recorder")]
+    pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
+        self.publish_tracks_change.subscribe()
+    }
 }
 
 // subscribe

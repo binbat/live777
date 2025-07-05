@@ -50,7 +50,10 @@ impl RecordingTask {
 
         let forward = peer_forward_opt.ok_or(anyhow!("stream forward not found"))?;
 
-        // Wait for video track and obtain codec mime type
+        // Subscribe to track change notifications to avoid polling
+        let mut track_change_rx = forward.subscribe_tracks_change();
+
+        // Wait for video track and obtain codec mime type without busy polling
         let codec_mime = loop {
             if let Some(c) = forward.first_video_codec().await {
                 break c;
@@ -59,7 +62,10 @@ impl RecordingTask {
                 "[recorder] waiting for video codec of stream {}",
                 stream_name
             );
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Await next track-change notification; error indicates the channel is closed
+            if track_change_rx.recv().await.is_err() {
+                return Err(anyhow!("forward closed while waiting for video codec"));
+            }
         };
 
         // Subscribe to video RTP after we know codec
@@ -71,7 +77,9 @@ impl RecordingTask {
                 "[recorder] waiting for video track of stream {}",
                 stream_name
             );
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if track_change_rx.recv().await.is_err() {
+                return Err(anyhow!("forward closed while waiting for video track"));
+            }
         };
 
         tracing::info!("[recorder] stream {} use codec {}", stream_name, codec_mime);
