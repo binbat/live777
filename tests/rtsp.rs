@@ -27,6 +27,62 @@ struct Detect {
 }
 
 #[tokio::test]
+async fn test_livetwo_rtsp_h264() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 8530;
+    let whep_port: u16 = 8535;
+
+    let width = 640;
+    let height = 480;
+    let prefix =
+        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1");
+
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+        Transport::Udp,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_rtsp_h264_tcp() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 8540;
+    let whep_port: u16 = 8545;
+
+    let width = 640;
+    let height = 480;
+    let prefix =
+        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1");
+
+    helper_livetwo_rtsp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+        Transport::Tcp,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_livetwo_rtsp_vp8() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
