@@ -86,7 +86,11 @@ impl RecordingTask {
         // Also subscribe to audio RTP (Opus) if available
         let audio_receiver_opt = forward.subscribe_audio_rtp().await;
 
-        tracing::info!("[recorder] stream {} use video codec {}", stream_name, codec_mime);
+        tracing::info!(
+            "[recorder] stream {} use video codec {}",
+            stream_name,
+            codec_mime
+        );
         if audio_receiver_opt.is_some() {
             tracing::info!("[recorder] stream {} audio track detected", stream_name);
         }
@@ -154,22 +158,32 @@ impl RecordingTask {
             } else {
                 // Video only loop
                 while let Ok(packet) = rtp_receiver.recv().await {
-                    if !is_h264 { continue; }
+                    if !is_h264 {
+                        continue;
+                    }
 
                     let pkt_ts = packet.header.timestamp;
 
                     if let Ok(Some((frame, is_idr))) = parser_video.push_packet((*packet).clone()) {
                         let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
                             pkt_ts.wrapping_sub(prev)
-                        } else { 3_000 };
+                        } else {
+                            3_000
+                        };
 
                         prev_ts_video = Some(pkt_ts);
-                        let _ = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await;
+                        let _ = segmenter
+                            .push_h264(Bytes::from(frame), is_idr, duration_ticks)
+                            .await;
                         frame_cnt_video += 1;
                     }
 
                     if last_log.elapsed() >= Duration::from_secs(5) {
-                        tracing::info!("[recorder] stream {} received {} video frames in last 5s", stream_name_cloned, frame_cnt_video);
+                        tracing::info!(
+                            "[recorder] stream {} received {} video frames in last 5s",
+                            stream_name_cloned,
+                            frame_cnt_video
+                        );
                         frame_cnt_video = 0;
                         last_log = Instant::now();
                     }

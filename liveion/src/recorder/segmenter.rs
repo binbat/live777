@@ -1,12 +1,12 @@
 use std::time::Duration;
 
+use crate::recorder::fmp4::{nalu_to_avcc, Fmp4Writer, Mp4Sample};
 use anyhow::Result;
 use bytes::Bytes;
 use h264_reader::{
     nal::sps::SeqParameterSet,
     rbsp::{decode_nal, BitReader},
 };
-use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample, nalu_to_avcc};
 use opendal::Operator;
 use tracing::{debug, info};
 
@@ -181,7 +181,11 @@ impl Segmenter {
         }
 
         // Use provided duration, fallback to 3000 ticks if it looks invalid (e.g. 0)
-        let dur = if duration_ticks == 0 { 3_000 } else { duration_ticks };
+        let dur = if duration_ticks == 0 {
+            3_000
+        } else {
+            duration_ticks
+        };
 
         // -------- Segment boundary check *before* enqueuing the new sample --------
         // We want the very first IDR *after* reaching the nominal segment length to

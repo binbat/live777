@@ -173,9 +173,8 @@ impl Fmp4Writer {
         let stsz = build_empty_stsz();
         let stco = build_empty_full_box(b"stco");
 
-        let mut payload = Vec::with_capacity(
-            stsd.len() + stts.len() + stsc.len() + stsz.len() + stco.len(),
-        );
+        let mut payload =
+            Vec::with_capacity(stsd.len() + stts.len() + stsc.len() + stsz.len() + stco.len());
         payload.extend_from_slice(&stsd);
         payload.extend_from_slice(&stts);
         payload.extend_from_slice(&stsc);
@@ -285,14 +284,14 @@ impl Fmp4Writer {
 
 fn build_mvhd(timescale: u32, next_track_id: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(100);
-    be_u32(&mut payload, 0);                // version & flags
-    zeroes(&mut payload, 8);                // creation & modification time
+    be_u32(&mut payload, 0); // version & flags
+    zeroes(&mut payload, 8); // creation & modification time
     be_u32(&mut payload, timescale);
-    be_u32(&mut payload, 0);                // duration unknown
-    be_u32(&mut payload, 0x0001_0000);      // rate 1.0
-    be_u16(&mut payload, 0x0100);           // volume 1.0
-    be_u16(&mut payload, 0);                // reserved
-    zeroes(&mut payload, 8);                // reserved
+    be_u32(&mut payload, 0); // duration unknown
+    be_u32(&mut payload, 0x0001_0000); // rate 1.0
+    be_u16(&mut payload, 0x0100); // volume 1.0
+    be_u16(&mut payload, 0); // reserved
+    zeroes(&mut payload, 8); // reserved
 
     // unity matrix (identity)
     be_u32(&mut payload, 0x0001_0000);
@@ -305,23 +304,23 @@ fn build_mvhd(timescale: u32, next_track_id: u32) -> Vec<u8> {
     be_u32(&mut payload, 0);
     be_u32(&mut payload, 0x4000_0000);
 
-    zeroes(&mut payload, 24);               // pre_defined[6]
+    zeroes(&mut payload, 24); // pre_defined[6]
     be_u32(&mut payload, next_track_id);
     make_box(b"mvhd", &payload)
 }
 
 fn build_tkhd(track_id: u32, width: u32, height: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(92);
-    be_u32(&mut payload, 0x0000_0007);      // version & flags
-    zeroes(&mut payload, 8);                // creation & modification time
+    be_u32(&mut payload, 0x0000_0007); // version & flags
+    zeroes(&mut payload, 8); // creation & modification time
     be_u32(&mut payload, track_id);
-    be_u32(&mut payload, 0);                // reserved
-    be_u32(&mut payload, 0);                // duration
-    zeroes(&mut payload, 8);                // reserved
-    be_u16(&mut payload, 0);                // layer
-    be_u16(&mut payload, 0);                // alternate group
-    be_u16(&mut payload, 0);                // volume (mute)
-    be_u16(&mut payload, 0);                // reserved
+    be_u32(&mut payload, 0); // reserved
+    be_u32(&mut payload, 0); // duration
+    zeroes(&mut payload, 8); // reserved
+    be_u16(&mut payload, 0); // layer
+    be_u16(&mut payload, 0); // alternate group
+    be_u16(&mut payload, 0); // volume (mute)
+    be_u16(&mut payload, 0); // reserved
 
     // unity matrix
     be_u32(&mut payload, 0x0001_0000);
@@ -343,12 +342,12 @@ fn build_tkhd(track_id: u32, width: u32, height: u32) -> Vec<u8> {
 
 fn build_mdhd(timescale: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(32);
-    be_u32(&mut payload, 0);                // version & flags
-    zeroes(&mut payload, 8);                // creation & modification time
+    be_u32(&mut payload, 0); // version & flags
+    zeroes(&mut payload, 8); // creation & modification time
     be_u32(&mut payload, timescale);
-    be_u32(&mut payload, 0);                // duration
-    be_u16(&mut payload, 0);                // language (und)
-    be_u16(&mut payload, 0);                // pre_defined
+    be_u32(&mut payload, 0); // duration
+    be_u16(&mut payload, 0); // language (und)
+    be_u16(&mut payload, 0); // pre_defined
     make_box(b"mdhd", &payload)
 }
 
@@ -364,8 +363,8 @@ fn build_hdlr(typ: &[u8; 4], name: &[u8]) -> Vec<u8> {
 
 fn build_vmhd() -> Vec<u8> {
     let mut payload = Vec::with_capacity(12);
-    be_u32(&mut payload, 0x0000_0001);      // version & flags
-    be_u16(&mut payload, 0);                // graphics_mode
+    be_u32(&mut payload, 0x0000_0001); // version & flags
+    be_u16(&mut payload, 0); // graphics_mode
     be_u16(&mut payload, 0);
     be_u16(&mut payload, 0);
     be_u16(&mut payload, 0);
@@ -374,8 +373,8 @@ fn build_vmhd() -> Vec<u8> {
 
 fn build_smhd() -> Vec<u8> {
     let mut payload = Vec::with_capacity(12);
-    be_u32(&mut payload, 0x0000_0001);      // version & flags
-    be_u16(&mut payload, 0);                // balance
+    be_u32(&mut payload, 0x0000_0001); // version & flags
+    be_u16(&mut payload, 0); // balance
     be_u16(&mut payload, 0);
     be_u16(&mut payload, 0);
     be_u16(&mut payload, 0);
@@ -386,13 +385,13 @@ fn build_dinf() -> Vec<u8> {
     let dref = {
         let url_box = {
             let mut payload = Vec::with_capacity(4);
-            be_u32(&mut payload, 0x0000_0001);        // version 0 + flags 1 (self-contained)
+            be_u32(&mut payload, 0x0000_0001); // version 0 + flags 1 (self-contained)
             make_box(b"url ", &payload)
         };
 
         let mut payload = Vec::with_capacity(8 + url_box.len());
-        be_u32(&mut payload, 0);                     // version & flags
-        be_u32(&mut payload, 1);                     // entry_count
+        be_u32(&mut payload, 0); // version & flags
+        be_u32(&mut payload, 1); // entry_count
         payload.extend_from_slice(&url_box);
         make_box(b"dref", &payload)
     };
@@ -463,12 +462,12 @@ fn build_mvex(track_id: u32) -> Vec<u8> {
 
     be_u32(&mut buf, trex_size);
     buf.extend_from_slice(b"trex");
-    be_u32(&mut buf, 0);                 // version & flags
+    be_u32(&mut buf, 0); // version & flags
     be_u32(&mut buf, track_id);
-    be_u32(&mut buf, 1);                 // default_sample_description_index
-    be_u32(&mut buf, 0);                 // default_sample_duration
-    be_u32(&mut buf, 0);                 // default_sample_size
-    be_u32(&mut buf, 0x0101_0000);       // default flags
+    be_u32(&mut buf, 1); // default_sample_description_index
+    be_u32(&mut buf, 0); // default_sample_duration
+    be_u32(&mut buf, 0); // default_sample_size
+    be_u32(&mut buf, 0x0101_0000); // default flags
     buf
 }
 
@@ -593,15 +592,25 @@ fn _build_fragment_internal(
 
 // Helpers for big-endian writing & padding -------------------------------
 #[inline]
-fn be_u8(buf: &mut Vec<u8>, v: u8) { buf.push(v); }
+fn be_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+}
 #[inline]
-fn be_u16(buf: &mut Vec<u8>, v: u16) { buf.extend_from_slice(&v.to_be_bytes()); }
+fn be_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
 #[inline]
-fn be_u32(buf: &mut Vec<u8>, v: u32) { buf.extend_from_slice(&v.to_be_bytes()); }
+fn be_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
 #[inline]
-fn be_u64(buf: &mut Vec<u8>, v: u64) { buf.extend_from_slice(&v.to_be_bytes()); }
+fn be_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
 #[inline]
-fn zeroes(buf: &mut Vec<u8>, n: usize) { buf.extend(std::iter::repeat(0u8).take(n)); }
+fn zeroes(buf: &mut Vec<u8>, n: usize) {
+    buf.extend(std::iter::repeat(0u8).take(n));
+}
 
 /// Convert an Annex-B NALU (with or without start code) to a 4-byte-length-prefixed AVCC buffer.
 pub fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
@@ -618,4 +627,4 @@ pub fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(payload);
     out
-} 
+}

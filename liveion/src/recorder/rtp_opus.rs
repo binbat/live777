@@ -25,4 +25,4 @@ impl OpusRtpParser {
     pub fn push_packet(&mut self, pkt: Packet) -> Result<(BytesMut, u32)> {
         Ok((BytesMut::from(pkt.payload.as_ref()), pkt.header.timestamp))
     }
-} 
+}
