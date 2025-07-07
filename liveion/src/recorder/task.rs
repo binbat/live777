@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 use webrtc::api::media_engine::MIME_TYPE_H264;
 
 use crate::recorder::rtp_h264::H264RtpParser;
+use crate::recorder::rtp_opus::OpusRtpParser;
 use crate::recorder::segmenter::Segmenter;
 use crate::recorder::STORAGE;
 use crate::stream::manager::Manager;
@@ -82,48 +83,94 @@ impl RecordingTask {
             }
         };
 
-        tracing::info!("[recorder] stream {} use codec {}", stream_name, codec_mime);
+        // Also subscribe to audio RTP (Opus) if available
+        let audio_receiver_opt = forward.subscribe_audio_rtp().await;
+
+        tracing::info!("[recorder] stream {} use video codec {}", stream_name, codec_mime);
+        if audio_receiver_opt.is_some() {
+            tracing::info!("[recorder] stream {} audio track detected", stream_name);
+        }
 
         tracing::info!("[recorder] subscribed RTP for stream {}", stream_name);
 
         let stream_name_cloned = stream_name.clone();
         let handle = tokio::spawn(async move {
             let is_h264 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264);
-            let mut parser = H264RtpParser::new();
-            let mut prev_ts: Option<u32> = None;
-            let mut frame_cnt: u64 = 0;
+            let mut parser_video = H264RtpParser::new();
+            let mut prev_ts_video: Option<u32> = None;
+
+            let mut parser_audio = OpusRtpParser::new();
+            let mut prev_ts_audio: Option<u32> = None;
+
+            let mut frame_cnt_video: u64 = 0;
+            let mut frame_cnt_audio: u64 = 0;
             let mut last_log = Instant::now();
 
-            while let Ok(packet) = rtp_receiver.recv().await {
-                if !is_h264 {
-                    continue; // Currently only handle H.264
-                }
+            if let Some(mut audio_rx) = audio_receiver_opt {
+                loop {
+                    tokio::select! {
+                        result = rtp_receiver.recv() => {
+                            if let Ok(packet) = result {
+                                if !is_h264 { continue; }
 
-                let pkt_ts = packet.header.timestamp;
+                                let pkt_ts = packet.header.timestamp;
 
-                if let Ok(Some((frame, is_idr))) = parser.push_packet((*packet).clone()) {
-                    // Calculate frame duration based on RTP timestamp delta
-                    let duration_ticks: u32 = if let Some(prev) = prev_ts {
-                        pkt_ts.wrapping_sub(prev)
-                    } else {
-                        // Fallback to 30fps => 3000 ticks @ 90kHz
-                        3_000
-                    };
-                    prev_ts = Some(pkt_ts);
+                                if let Ok(Some((frame, is_idr))) = parser_video.push_packet((*packet).clone()) {
+                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
+                                        pkt_ts.wrapping_sub(prev)
+                                    } else { 3_000 }; // fallback 30fps
 
-                    let _ = segmenter
-                        .push_h264(Bytes::from(frame.clone()), is_idr, duration_ticks)
-                        .await;
-
-                    frame_cnt += 1;
+                                    prev_ts_video = Some(pkt_ts);
+                                    let _ = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await;
+                                    frame_cnt_video += 1;
+                                }
+                            } else {
+                                break;
+                            }
+                        },
+                        result = audio_rx.recv() => {
+                            if let Ok(packet) = result {
+                                let (payload, pkt_ts) = match parser_audio.push_packet((*packet).clone()) {
+                                    Ok(v) => v,
+                                    Err(_) => continue,
+                                };
+                                let duration_ticks: u32 = if let Some(prev) = prev_ts_audio {
+                                    pkt_ts.wrapping_sub(prev)
+                                } else { 960 };
+                                prev_ts_audio = Some(pkt_ts);
+                                let _ = segmenter.push_opus(Bytes::from(payload.clone()), duration_ticks).await;
+                                frame_cnt_audio += 1;
+                            }
+                        }
+                    }
 
                     if last_log.elapsed() >= Duration::from_secs(5) {
-                        tracing::info!(
-                            "[recorder] stream {} received {} frames in last 5s",
-                            stream_name_cloned,
-                            frame_cnt
-                        );
-                        frame_cnt = 0;
+                        tracing::info!("[recorder] stream {} received {} video frames and {} audio packets in last 5s", stream_name_cloned, frame_cnt_video, frame_cnt_audio);
+                        frame_cnt_video = 0;
+                        frame_cnt_audio = 0;
+                        last_log = Instant::now();
+                    }
+                }
+            } else {
+                // Video only loop
+                while let Ok(packet) = rtp_receiver.recv().await {
+                    if !is_h264 { continue; }
+
+                    let pkt_ts = packet.header.timestamp;
+
+                    if let Ok(Some((frame, is_idr))) = parser_video.push_packet((*packet).clone()) {
+                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
+                            pkt_ts.wrapping_sub(prev)
+                        } else { 3_000 };
+
+                        prev_ts_video = Some(pkt_ts);
+                        let _ = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await;
+                        frame_cnt_video += 1;
+                    }
+
+                    if last_log.elapsed() >= Duration::from_secs(5) {
+                        tracing::info!("[recorder] stream {} received {} video frames in last 5s", stream_name_cloned, frame_cnt_video);
+                        frame_cnt_video = 0;
                         last_log = Instant::now();
                     }
                 }

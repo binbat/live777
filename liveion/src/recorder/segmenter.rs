@@ -28,8 +28,14 @@ pub struct Segmenter {
     seg_start_dts: u64,
     video_track_id: Option<u32>,
 
+    // Audio track id (Opus)
+    audio_track_id: Option<u32>,
+
     // All samples buffered for the current segment (already converted to AVCC length prefix)
     samples: Vec<Mp4Sample>,
+
+    // audio samples buffered for current segment
+    audio_samples: Vec<Mp4Sample>,
 
     // codec config collection before init
     sps: Option<Vec<u8>>,
@@ -55,6 +61,15 @@ pub struct Segmenter {
 
     // encapsulated fmp4 writer once initialized
     fmp4_writer: Option<Fmp4Writer>,
+
+    // audio writer for Opus
+    audio_writer: Option<Fmp4Writer>,
+    // track pts for audio
+    audio_current_pts: u64,
+
+    // audio bitrate stats
+    audio_total_bytes: u64,
+    audio_total_ticks: u64,
 }
 
 impl Segmenter {
@@ -69,7 +84,13 @@ impl Segmenter {
             seg_index: 0,
             seg_start_dts: 0,
             video_track_id: None,
+
+            audio_track_id: None,
+
             samples: Vec::new(),
+
+            audio_samples: Vec::new(),
+
             sps: None,
             pps: None,
             video_width: 0,
@@ -80,6 +101,12 @@ impl Segmenter {
             total_bytes: 0,
             total_ticks: 0,
             fmp4_writer: None,
+
+            audio_writer: None,
+            audio_current_pts: 0,
+
+            audio_total_bytes: 0,
+            audio_total_ticks: 0,
         })
     }
 
@@ -154,12 +181,20 @@ impl Segmenter {
         }
 
         // Use provided duration, fallback to 3000 ticks if it looks invalid (e.g. 0)
-        let dur = if duration_ticks == 0 {
-            3_000
-        } else {
-            duration_ticks
-        };
+        let dur = if duration_ticks == 0 { 3_000 } else { duration_ticks };
 
+        // -------- Segment boundary check *before* enqueuing the new sample --------
+        // We want the very first IDR *after* reaching the nominal segment length to
+        // start the next segment. Therefore, if this frame is an IDR **and** the
+        // accumulated duration of the *current* segment has already reached the
+        // target length, we should finish the current segment _before_ adding the
+        // sample.
+        if is_idr && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
+            self.roll_segment().await?;
+        }
+
+        // After a possible roll, `self.current_pts` and `seg_start_dts` are intact
+        // for the (potentially) new segment, so we can safely add the sample.
         let sample = Mp4Sample {
             start_time: self.current_pts,
             duration: dur,
@@ -186,11 +221,31 @@ impl Segmenter {
             // init_writer will call open_new_segment(), clear samples, so ensure it's called before samples are enqueued
         }
 
-        // Check if we need to roll the segment: IDR + duration met
-        if is_idr && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
-            self.roll_segment().await?;
+        Ok(())
+    }
+
+    /// Feed Opus audio sample from RTP payload
+    /// `duration_ticks` – duration in the 48 kHz time base (i.e. RTP timestamp delta)
+    pub async fn push_opus(&mut self, payload: Bytes, duration_ticks: u32) -> Result<()> {
+        // Initialize writer if not yet done
+        if self.audio_track_id.is_none() {
+            self.init_audio_writer().await?;
         }
 
+        let size_bytes = payload.len();
+        let sample = Mp4Sample {
+            start_time: self.audio_current_pts,
+            duration: duration_ticks,
+            rendering_offset: 0,
+            is_sync: true, // audio samples are always sync
+            bytes: payload,
+        };
+        self.audio_samples.push(sample);
+        self.audio_current_pts += duration_ticks as u64;
+
+        // stats
+        self.audio_total_bytes += size_bytes as u64;
+        self.audio_total_ticks += duration_ticks as u64;
         Ok(())
     }
 
@@ -259,8 +314,32 @@ impl Segmenter {
         Ok(())
     }
 
+    async fn init_audio_writer(&mut self) -> Result<()> {
+        let track_id = 2u32;
+        let channels = 2u16;
+        let sample_rate = 48_000u32;
+        let codec_string = "opus".to_string();
+
+        let writer = Fmp4Writer::new_audio(
+            sample_rate,
+            track_id,
+            channels,
+            sample_rate,
+            codec_string.clone(),
+            vec![],
+        );
+
+        let init_bytes = writer.build_init_segment();
+        self.audio_writer = Some(writer);
+        self.audio_track_id = Some(track_id);
+
+        self.store_file("audio_init.m4s", init_bytes).await?;
+        Ok(())
+    }
+
     async fn open_new_segment(&mut self) -> Result<()> {
         self.samples.clear();
+        self.audio_samples.clear();
         self.seg_start_dts = self.current_pts;
         self.seg_index += 1;
         Ok(())
@@ -283,6 +362,25 @@ impl Segmenter {
         let filename = format!("seg_{:04}.m4s", self.seg_index);
         self.store_file(&filename, fragment).await?;
         info!("[segmenter] {} {} written", self.stream, filename);
+
+        // Write audio fragment if any samples are available
+        if let (Some(writer), true) = (self.audio_writer.as_ref(), !self.audio_samples.is_empty()) {
+            // Use the decode timestamp of the *first* audio sample in this fragment
+            // for the tfdt base time. Using `audio_current_pts` (which points to the
+            // *end* of the last pushed sample) caused a time‐shift in the generated
+            // fragments leading to playback errors once an audio track was present.
+            let audio_base_time = self
+                .audio_samples
+                .first()
+                .map(|s| s.start_time)
+                .unwrap_or(self.audio_current_pts);
+
+            let fragment_a =
+                writer.build_fragment(self.seg_index, audio_base_time, &self.audio_samples);
+            let filename_a = format!("audio_seg_{:04}.m4s", self.seg_index);
+            self.store_file(&filename_a, fragment_a).await?;
+            self.audio_samples.clear();
+        }
 
         // Clear the cache and start the next segment
         self.open_new_segment().await?;
@@ -312,11 +410,31 @@ impl Segmenter {
             "PT1S".to_string()
         };
 
-        // Estimate average bitrate (bits per second) if we have stats
-        let bandwidth = if self.total_ticks > 0 {
+        // Estimate average video bitrate (bits per second)
+        let video_bandwidth = if self.total_ticks > 0 {
             self.total_bytes * 8 * self.timescale as u64 / self.total_ticks
         } else {
             0
+        };
+
+        // Audio params if available
+        let audio_section = if let Some(ref a_writer) = self.audio_writer {
+            let audio_bandwidth = if self.audio_total_ticks > 0 {
+                self.audio_total_bytes * 8 * a_writer.timescale as u64 / self.audio_total_ticks
+            } else {
+                0
+            };
+            let audio_seg_duration = a_writer.timescale as u64 * self.duration_per_seg.as_secs();
+            format!(
+                "        <AdaptationSet id=\"1\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"1\" mimeType=\"audio/mp4\" codecs=\"{}\" bandwidth=\"{}\" audioSamplingRate=\"{}\" >\n                <SegmentTemplate timescale=\"{}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" duration=\"{}\" startNumber=\"1\" />\n            </Representation>\n        </AdaptationSet>\n",
+                a_writer.codec_string,
+                audio_bandwidth,
+                a_writer.sample_rate,
+                a_writer.timescale,
+                audio_seg_duration
+            )
+        } else {
+            String::new()
         };
 
         // Use computed frame_rate, default to 30 if unavailable
@@ -349,7 +467,7 @@ impl Segmenter {
         let seg_duration_ticks = self.timescale as u64 * self.duration_per_seg.as_secs();
 
         // Build MPD with fixed-duration SegmentTemplate (no SegmentTimeline)
-        let mpd = format!(
+        let mpd_body = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
      xmlns=\"urn:mpeg:dash:schema:mpd:2011\"\n\
@@ -360,7 +478,7 @@ impl Segmenter {
      mediaPresentationDuration=\"{media_duration}\"\n\
      maxSegmentDuration=\"{max_seg_dur}\"\n\
      minBufferTime=\"{min_buf}\">\n\
-    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" duration=\"{seg_duration}\" startNumber=\"1\" />\n            </Representation>\n        </AdaptationSet>\n    </Period>\n</MPD>\n",
+    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" duration=\"{seg_duration}\" startNumber=\"1\" />\n            </Representation>\n        </AdaptationSet>\n        {audio_section}\n    </Period>\n</MPD>\n",
             media_duration = media_presentation_duration,
             max_seg_dur = max_segment_duration,
             min_buf = min_buffer_time,
@@ -370,11 +488,12 @@ impl Segmenter {
             seg_duration = seg_duration_ticks,
             codec = self.video_codec,
             fps = fps_val,
-            bandwidth = bandwidth,
+            bandwidth = video_bandwidth,
             par = par_str,
+            audio_section = audio_section,
         );
 
-        self.store_file("manifest.mpd", mpd.into_bytes()).await
+        self.store_file("manifest.mpd", mpd_body.into_bytes()).await
     }
 
     async fn store_file(&self, name: &str, data: Vec<u8>) -> Result<()> {

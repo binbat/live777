@@ -232,6 +232,20 @@ impl PeerForward {
     pub fn subscribe_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.internal.subscribe_publish_tracks_change()
     }
+
+    /// Subscribe to the RTP packet broadcast of the first audio Track.
+    #[cfg(feature = "recorder")]
+    pub async fn subscribe_audio_rtp(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
+        let tracks = self.internal.publish_tracks.read().await;
+        for t in tracks.iter() {
+            if t.kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
+                return Some(t.subscribe());
+            }
+        }
+        None
+    }
 }
 
 // subscribe

@@ -26,10 +26,19 @@ pub struct Fmp4Writer {
     pub track_id: u32,
     pub width: u32,
     pub height: u32,
-    pub codec_string: String, // e.g. "avc1.42E01E" or "hev1.1.6.L93.90"
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub kind: TrackKind,
+    pub codec_string: String, // e.g. "avc1.42E01E" or "hev1.1.6.L93.90" or "opus"
     // Raw codec private blobs that should be put into the sample entry's
     // codec-specific configuration box (e.g. SPS/PPS for AVC).
     pub codec_config: Vec<Vec<u8>>, // Usually [sps, pps] for AVC
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrackKind {
+    Video,
+    Audio,
 }
 
 impl Fmp4Writer {
@@ -46,6 +55,31 @@ impl Fmp4Writer {
             track_id,
             width,
             height,
+            channels: 0,
+            sample_rate: 0,
+            kind: TrackKind::Video,
+            codec_string,
+            codec_config,
+        }
+    }
+
+    /// Create an *audio* track (Opus).
+    pub fn new_audio(
+        timescale: u32,
+        track_id: u32,
+        channels: u16,
+        sample_rate: u32,
+        codec_string: String,
+        codec_config: Vec<Vec<u8>>, // usually contains OpusHead in dOps
+    ) -> Self {
+        Self {
+            timescale,
+            track_id,
+            width: 0,
+            height: 0,
+            channels,
+            sample_rate,
+            kind: TrackKind::Audio,
             codec_string,
             codec_config,
         }
@@ -102,7 +136,11 @@ impl Fmp4Writer {
 
     fn build_mdia(&self) -> Vec<u8> {
         let mdhd = build_mdhd(self.timescale);
-        let hdlr = build_hdlr();
+        let hdlr = if self.kind == TrackKind::Video {
+            build_hdlr(b"vide", b"VideoHandler\0")
+        } else {
+            build_hdlr(b"soun", b"SoundHandler\0")
+        };
         let minf = self.build_minf();
 
         let mut payload = Vec::with_capacity(mdhd.len() + hdlr.len() + minf.len());
@@ -113,12 +151,16 @@ impl Fmp4Writer {
     }
 
     fn build_minf(&self) -> Vec<u8> {
-        let vmhd = build_vmhd();
+        let header = if self.kind == TrackKind::Video {
+            build_vmhd()
+        } else {
+            build_smhd()
+        };
         let dinf = build_dinf();
         let stbl = self.build_stbl();
 
-        let mut payload = Vec::with_capacity(vmhd.len() + dinf.len() + stbl.len());
-        payload.extend_from_slice(&vmhd);
+        let mut payload = Vec::with_capacity(header.len() + dinf.len() + stbl.len());
+        payload.extend_from_slice(&header);
         payload.extend_from_slice(&dinf);
         payload.extend_from_slice(&stbl);
         make_box(b"minf", &payload)
@@ -143,8 +185,12 @@ impl Fmp4Writer {
     }
 
     fn build_stsd(&self) -> Vec<u8> {
-        // Only one entry – the video sample entry (e.g. avc1)
-        let sample_entry = self.build_avc1_sample_entry();
+        // Only one entry – sample entry depending on track kind
+        let sample_entry = if self.kind == TrackKind::Video {
+            self.build_avc1_sample_entry()
+        } else {
+            self.build_opus_sample_entry()
+        };
 
         let mut payload = Vec::with_capacity(4 + 4 + sample_entry.len());
         payload.extend_from_slice(&0u32.to_be_bytes()); // version & flags
@@ -187,6 +233,41 @@ impl Fmp4Writer {
         payload.extend_from_slice(&avcc);
 
         make_box(b"avc1", &payload)
+    }
+
+    fn build_opus_sample_entry(&self) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0u8; 6]); // reserved
+        payload.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+
+        // reserved
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+
+        // channelcount & samplesize
+        payload.extend_from_slice(&self.channels.to_be_bytes());
+        payload.extend_from_slice(&16u16.to_be_bytes()); // sample size 16-bit placeholder
+
+        // pre_defined & reserved
+        payload.extend_from_slice(&0u16.to_be_bytes());
+        payload.extend_from_slice(&0u16.to_be_bytes());
+
+        // samplerate 32-bit fixed (sampleRate<<16)
+        let fixed_rate = (self.sample_rate as u32) << 16;
+        payload.extend_from_slice(&fixed_rate.to_be_bytes());
+
+        // Minimal dOps box
+        let mut dops_payload = Vec::new();
+        dops_payload.push(0u8); // version
+        dops_payload.push(self.channels as u8); // output channel count
+        dops_payload.extend_from_slice(&0u16.to_be_bytes()); // pre-skip
+        dops_payload.extend_from_slice(&self.sample_rate.to_be_bytes()); // input sample rate
+        dops_payload.extend_from_slice(&0i16.to_be_bytes()); // output gain
+        dops_payload.push(0u8); // channel mapping family
+        let dops = make_box(b"dOps", &dops_payload);
+        payload.extend_from_slice(&dops);
+
+        make_box(b"Opus", &payload)
     }
 
     /// Build a media fragment (styp+moof+mdat) for the given samples using this writer's track id.
@@ -271,14 +352,13 @@ fn build_mdhd(timescale: u32) -> Vec<u8> {
     make_box(b"mdhd", &payload)
 }
 
-fn build_hdlr() -> Vec<u8> {
-    let name_bytes = b"VideoHandler\0";
-    let mut payload = Vec::with_capacity(32 + name_bytes.len());
+fn build_hdlr(typ: &[u8; 4], name: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(32 + name.len());
     be_u32(&mut payload, 0);
     be_u32(&mut payload, 0);
-    payload.extend_from_slice(b"vide");
+    payload.extend_from_slice(typ);
     zeroes(&mut payload, 12);
-    payload.extend_from_slice(name_bytes);
+    payload.extend_from_slice(name);
     make_box(b"hdlr", &payload)
 }
 
@@ -290,6 +370,16 @@ fn build_vmhd() -> Vec<u8> {
     be_u16(&mut payload, 0);
     be_u16(&mut payload, 0);
     make_box(b"vmhd", &payload)
+}
+
+fn build_smhd() -> Vec<u8> {
+    let mut payload = Vec::with_capacity(12);
+    be_u32(&mut payload, 0x0000_0001);      // version & flags
+    be_u16(&mut payload, 0);                // balance
+    be_u16(&mut payload, 0);
+    be_u16(&mut payload, 0);
+    be_u16(&mut payload, 0);
+    make_box(b"smhd", &payload)
 }
 
 fn build_dinf() -> Vec<u8> {
