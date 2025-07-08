@@ -28,7 +28,7 @@ pub struct Fmp4Writer {
     pub height: u32,
     pub channels: u16,
     pub sample_rate: u32,
-    pub kind: TrackKind,
+    kind: TrackKind,
     pub codec_string: String, // e.g. "avc1.42E01E" or "hev1.1.6.L93.90" or "opus"
     // Raw codec private blobs that should be put into the sample entry's
     // codec-specific configuration box (e.g. SPS/PPS for AVC).
@@ -627,4 +627,43 @@ pub fn nalu_to_avcc(nalu: &Bytes) -> Vec<u8> {
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(payload);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_init_segment_contains_ftyp_and_moov() {
+        // Minimal SPS/PPS derivation for testing
+        let sps = vec![0x67, 0x42, 0xE0, 0x1E];
+        let pps = vec![0x68, 0xCE, 0x06, 0xE2];
+        let writer = Fmp4Writer::new(
+            90_000,
+            1,
+            640,
+            480,
+            "avc1.42E01E".to_string(),
+            vec![sps, pps],
+        );
+
+        let init_seg = writer.build_init_segment();
+        // The first box should be 'ftyp'
+        assert_eq!(&init_seg[4..8], b"ftyp");
+        // Ensure that the moov box is also present somewhere in the buffer
+        assert!(init_seg.windows(4).any(|w| w == b"moov"));
+    }
+
+    #[test]
+    fn test_nalu_to_avcc_conversion() {
+        use bytes::Bytes;
+        // Annex-B formatted NALU (with a 4-byte start code)
+        let nalu = Bytes::from_static(&[0, 0, 0, 1, 0x65, 0xAA, 0xBB, 0xCC]);
+        let avcc = nalu_to_avcc(&nalu);
+
+        // The first four bytes represent the payload length (big-endian)
+        let len = u32::from_be_bytes([avcc[0], avcc[1], avcc[2], avcc[3]]);
+        assert_eq!(len, 4);
+        assert_eq!(&avcc[4..], &[0x65, 0xAA, 0xBB, 0xCC]);
+    }
 }

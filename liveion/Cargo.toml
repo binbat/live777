@@ -61,3 +61,6 @@ recorder = [
     "dep:opendal", "dep:bytes", "dep:h264-reader", "dep:livetwo", "dep:byteorder"
 ]
 
+[dev-dependencies]
+tempfile = "3.10"
+

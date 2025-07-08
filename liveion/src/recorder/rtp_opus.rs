@@ -26,3 +26,22 @@ impl OpusRtpParser {
         Ok((BytesMut::from(pkt.payload.as_ref()), pkt.header.timestamp))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use webrtc::rtp::packet::Packet;
+
+    #[test]
+    fn test_opus_parser_pass_through() {
+        let mut pkt = Packet::default();
+        pkt.header.timestamp = 960;
+        pkt.payload = Bytes::from_static(&[1, 2, 3, 4]);
+
+        let mut parser = OpusRtpParser::new();
+        let (out, ts) = parser.push_packet(pkt).unwrap();
+        assert_eq!(ts, 960);
+        assert_eq!(out.as_ref(), &[1, 2, 3, 4]);
+    }
+}

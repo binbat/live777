@@ -107,3 +107,27 @@ impl H264RtpParser {
         self.buffer.extend_from_slice(nalu);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use webrtc::rtp::packet::Packet;
+
+    #[test]
+    fn test_single_nalu_idr_detection() {
+        // Construct a minimal RTP packet carrying a single IDR NALU (type 5)
+        let mut pkt = Packet::default();
+        pkt.header.marker = true;
+        pkt.header.timestamp = 0;
+        pkt.payload = Bytes::from_static(&[0x65, 0xAA, 0xBB, 0xCC]); // 0x65 => nal_ref_idc=3, nal_type=5 (IDR)
+
+        let mut parser = H264RtpParser::new();
+        let res = parser.push_packet(pkt).unwrap();
+        assert!(res.is_some(), "Parser should output a frame on marker");
+        let (frame, is_idr) = res.unwrap();
+        assert!(is_idr, "Frame should be detected as IDR");
+        // Frame must start with Annex-B start code
+        assert!(frame.starts_with(&[0, 0, 0, 1]));
+    }
+}
