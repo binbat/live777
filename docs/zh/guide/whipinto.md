@@ -60,6 +60,23 @@ ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 \
 -vcodec libvpx -f rtsp 'rtsp://127.0.0.1:8554'
 ```
 
+::: danger 注意：
+**对于 H264 FFmpeg RTSP client**
+
+必须要加上 `-x264-params repeat_headers=1`
+:::
+
+```bash
+ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 \
+-vcodec libx264 \
+-profile:v baseline -level 3.1 -pix_fmt yuv420p \
+-g 15 -keyint_min 15 -b:v 1000k \
+-minrate 1000k -maxrate 1000k -bufsize 1000k \
+-preset ultrafast -tune zerolatency \
+-x264-params repeat_headers=1 \
+-f rtsp rtsp://127.0.0.1:8554
+```
+
 ### Only audio
 
 ```bash
