@@ -25,7 +25,7 @@ mod internal;
 mod media;
 pub mod message;
 mod publish;
-mod rtcp;
+pub mod rtcp;
 mod subscribe;
 mod track;
 
@@ -231,6 +231,18 @@ impl PeerForward {
     #[cfg(feature = "recorder")]
     pub fn subscribe_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.internal.subscribe_publish_tracks_change()
+    }
+
+    /// Get the first video track for keyframe requests
+    #[cfg(feature = "recorder")]
+    pub async fn first_video_track(&self) -> Option<Arc<webrtc::track::track_remote::TrackRemote>> {
+        self.internal.first_video_track().await
+    }
+
+    /// Send RTCP message to publish peer
+    #[cfg(feature = "recorder")]
+    pub async fn send_rtcp_to_publish(&self, message: rtcp::RtcpMessage, ssrc: u32) -> Result<()> {
+        self.internal.send_rtcp_to_publish(message, ssrc).await
     }
 
     /// Subscribe to the RTP packet broadcast of the first audio Track.

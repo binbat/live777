@@ -1,17 +1,16 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
-use bytes::Bytes;
-use chrono::{Datelike, Utc};
-use tokio::task::JoinHandle;
-use webrtc::api::media_engine::MIME_TYPE_H264;
-
 use crate::recorder::rtp_h264::H264RtpParser;
 use crate::recorder::rtp_opus::OpusRtpParser;
 use crate::recorder::segmenter::Segmenter;
 use crate::recorder::STORAGE;
 use crate::stream::manager::Manager;
+use anyhow::{anyhow, Result};
+use bytes::Bytes;
+use chrono::{Datelike, Utc};
+use tokio::task::JoinHandle;
+use webrtc::api::media_engine::MIME_TYPE_H264;
 
 #[derive(Debug)]
 pub struct RecordingTask {
@@ -98,6 +97,7 @@ impl RecordingTask {
         tracing::info!("[recorder] subscribed RTP for stream {}", stream_name);
 
         let stream_name_cloned = stream_name.clone();
+        let forward_clone = forward.clone();
         let handle = tokio::spawn(async move {
             let is_h264 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264);
             let mut parser_video = H264RtpParser::new();
@@ -110,9 +110,25 @@ impl RecordingTask {
             let mut frame_cnt_audio: u64 = 0;
             let mut last_log = Instant::now();
 
+            // Timer for checking keyframe request
+            let mut keyframe_check_interval = tokio::time::interval(Duration::from_secs(1));
+
             if let Some(mut audio_rx) = audio_receiver_opt {
                 loop {
                     tokio::select! {
+                        _ = keyframe_check_interval.tick() => {
+                            if segmenter.should_request_keyframe() {
+                                // Request keyframe via PLI
+                                if let Some(video_track) = forward_clone.first_video_track().await {
+                                    let ssrc = video_track.ssrc();
+                                    if let Err(e) = forward_clone.send_rtcp_to_publish(crate::forward::rtcp::RtcpMessage::PictureLossIndication, ssrc).await {
+                                        tracing::warn!("[recorder] {} failed to send PLI: {:?}", stream_name_cloned, e);
+                                    } else {
+                                        tracing::debug!("[recorder] {} sent PLI request for keyframe", stream_name_cloned);
+                                    }
+                                }
+                            }
+                        }
                         result = rtp_receiver.recv() => {
                             if let Ok(packet) = result {
                                 if !is_h264 { continue; }
@@ -157,35 +173,57 @@ impl RecordingTask {
                 }
             } else {
                 // Video only loop
-                while let Ok(packet) = rtp_receiver.recv().await {
-                    if !is_h264 {
-                        continue;
-                    }
+                loop {
+                    tokio::select! {
+                        _ = keyframe_check_interval.tick() => {
+                            if segmenter.should_request_keyframe() {
+                                // Request keyframe via PLI
+                                if let Some(video_track) = forward_clone.first_video_track().await {
+                                    let ssrc = video_track.ssrc();
+                                    if let Err(e) = forward_clone.send_rtcp_to_publish(crate::forward::rtcp::RtcpMessage::PictureLossIndication, ssrc).await {
+                                        tracing::warn!("[recorder] {} failed to send PLI: {:?}", stream_name_cloned, e);
+                                    } else {
+                                        tracing::debug!("[recorder] {} sent PLI request for keyframe", stream_name_cloned);
+                                    }
+                                }
+                            }
+                        }
+                        result = rtp_receiver.recv() => {
+                            let packet = match result {
+                                Ok(packet) => packet,
+                                Err(_) => break,
+                            };
 
-                    let pkt_ts = packet.header.timestamp;
+                            if !is_h264 {
+                                continue;
+                            }
 
-                    if let Ok(Some((frame, is_idr))) = parser_video.push_packet((*packet).clone()) {
-                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
-                            pkt_ts.wrapping_sub(prev)
-                        } else {
-                            3_000
-                        };
+                            let pkt_ts = packet.header.timestamp;
 
-                        prev_ts_video = Some(pkt_ts);
-                        let _ = segmenter
-                            .push_h264(Bytes::from(frame), is_idr, duration_ticks)
-                            .await;
-                        frame_cnt_video += 1;
-                    }
+                            if let Ok(Some((frame, is_idr))) = parser_video.push_packet((*packet).clone()) {
+                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
+                                    pkt_ts.wrapping_sub(prev)
+                                } else {
+                                    3_000
+                                };
 
-                    if last_log.elapsed() >= Duration::from_secs(5) {
-                        tracing::info!(
-                            "[recorder] stream {} received {} video frames in last 5s",
-                            stream_name_cloned,
-                            frame_cnt_video
-                        );
-                        frame_cnt_video = 0;
-                        last_log = Instant::now();
+                                prev_ts_video = Some(pkt_ts);
+                                let _ = segmenter
+                                    .push_h264(Bytes::from(frame), is_idr, duration_ticks)
+                                    .await;
+                                frame_cnt_video += 1;
+                            }
+
+                            if last_log.elapsed() >= Duration::from_secs(5) {
+                                tracing::info!(
+                                    "[recorder] stream {} received {} video frames in last 5s",
+                                    stream_name_cloned,
+                                    frame_cnt_video
+                                );
+                                frame_cnt_video = 0;
+                                last_log = Instant::now();
+                            }
+                        }
                     }
                 }
             }

@@ -424,6 +424,31 @@ impl PeerForwardInternal {
     pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.publish_tracks_change.subscribe()
     }
+
+    /// Get the first video track for keyframe requests
+    #[cfg(feature = "recorder")]
+    pub(crate) async fn first_video_track(
+        &self,
+    ) -> Option<Arc<webrtc::track::track_remote::TrackRemote>> {
+        let publish_tracks = self.publish_tracks.read().await;
+        publish_tracks
+            .iter()
+            .find(|track| track.kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video)
+            .map(|track| track.track.clone())
+    }
+
+    /// Send RTCP message to publish peer
+    #[cfg(feature = "recorder")]
+    pub(crate) async fn send_rtcp_to_publish(
+        &self,
+        message: crate::forward::rtcp::RtcpMessage,
+        ssrc: u32,
+    ) -> Result<()> {
+        if let Err(_) = self.publish_rtcp_channel.send((message, ssrc)) {
+            return Err(crate::error::AppError::throw("Failed to send RTCP message"));
+        }
+        Ok(())
+    }
 }
 
 // subscribe

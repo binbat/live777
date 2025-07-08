@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::recorder::fmp4::{nalu_to_avcc, Fmp4Writer, Mp4Sample};
 use anyhow::Result;
@@ -70,6 +70,10 @@ pub struct Segmenter {
     // audio bitrate stats
     audio_total_bytes: u64,
     audio_total_ticks: u64,
+
+    // keyframe request tracking
+    last_keyframe_time: Option<Instant>,
+    keyframe_request_timeout: Duration,
 }
 
 impl Segmenter {
@@ -107,6 +111,9 @@ impl Segmenter {
 
             audio_total_bytes: 0,
             audio_total_ticks: 0,
+
+            last_keyframe_time: None,
+            keyframe_request_timeout: Duration::from_secs(10),
         })
     }
 
@@ -187,6 +194,11 @@ impl Segmenter {
             duration_ticks
         };
 
+        // Update keyframe tracking
+        if is_idr {
+            self.last_keyframe_time = Some(Instant::now());
+        }
+
         // -------- Segment boundary check *before* enqueuing the new sample --------
         // We want the very first IDR *after* reaching the nominal segment length to
         // start the next segment. Therefore, if this frame is an IDR **and** the
@@ -251,6 +263,14 @@ impl Segmenter {
         self.audio_total_bytes += size_bytes as u64;
         self.audio_total_ticks += duration_ticks as u64;
         Ok(())
+    }
+
+    /// Check if we need to request a keyframe due to timeout
+    pub fn should_request_keyframe(&self) -> bool {
+        match self.last_keyframe_time {
+            None => true, // No keyframe received yet, request one
+            Some(last_time) => last_time.elapsed() >= self.keyframe_request_timeout,
+        }
     }
 
     async fn init_writer(&mut self) -> Result<()> {
@@ -507,5 +527,38 @@ impl Segmenter {
         w.close().await?;
         debug!("[segmenter] stored file {}", path);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_keyframe_request_logic() {
+        // Create a mock operator (we won't actually use it for file operations in this test)
+        let builder = opendal::services::Memory::default();
+        let op = opendal::Operator::new(builder).unwrap().finish();
+
+        let mut segmenter =
+            Segmenter::new(op, "test_stream".to_string(), "test_prefix".to_string())
+                .await
+                .unwrap();
+
+        // Initially should request keyframe (no keyframe received yet)
+        assert!(segmenter.should_request_keyframe());
+
+        // Simulate receiving a keyframe
+        segmenter.last_keyframe_time = Some(Instant::now());
+
+        // Should not request keyframe immediately after receiving one
+        assert!(!segmenter.should_request_keyframe());
+
+        // Simulate timeout by setting an old timestamp
+        segmenter.last_keyframe_time = Some(Instant::now() - Duration::from_secs(10));
+
+        // Should request keyframe after timeout
+        assert!(segmenter.should_request_keyframe());
     }
 }
