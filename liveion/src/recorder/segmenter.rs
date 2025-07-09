@@ -1,12 +1,10 @@
 use std::time::{Duration, Instant};
 
-use crate::recorder::fmp4::{nalu_to_avcc, Fmp4Writer, Mp4Sample};
+use crate::recorder::codec::h264::H264Adapter;
+use crate::recorder::codec::CodecAdapter;
+use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
 use anyhow::Result;
 use bytes::Bytes;
-use h264_reader::{
-    nal::sps::SeqParameterSet,
-    rbsp::{decode_nal, BitReader},
-};
 use opendal::Operator;
 use tracing::{debug, info};
 
@@ -36,10 +34,6 @@ pub struct Segmenter {
 
     // audio samples buffered for current segment
     audio_samples: Vec<Mp4Sample>,
-
-    // codec config collection before init
-    sps: Option<Vec<u8>>,
-    pps: Option<Vec<u8>>,
 
     // video info
     video_width: u32,
@@ -74,6 +68,9 @@ pub struct Segmenter {
     // keyframe request tracking
     last_keyframe_time: Option<Instant>,
     keyframe_request_timeout: Duration,
+
+    // video adapter for H264
+    video_adapter: Option<H264Adapter>,
 }
 
 impl Segmenter {
@@ -95,8 +92,6 @@ impl Segmenter {
 
             audio_samples: Vec::new(),
 
-            sps: None,
-            pps: None,
             video_width: 0,
             video_height: 0,
             video_codec: String::new(),
@@ -114,6 +109,8 @@ impl Segmenter {
 
             last_keyframe_time: None,
             keyframe_request_timeout: Duration::from_secs(10),
+
+            video_adapter: Some(H264Adapter::new()),
         })
     }
 
@@ -126,65 +123,16 @@ impl Segmenter {
         duration_ticks: u32,
     ) -> Result<()> {
         // ------- Split frame content into multiple NALUs -------
-        let mut offset = 0usize;
-        let mut avcc_payload = Vec::<u8>::new();
-
-        let bytes = frame.as_ref();
-        while offset + 3 < bytes.len() {
-            // Find start code 0x000001 or 0x00000001
-            let (start_code_len, start_pos) = if bytes[offset..].starts_with(&[0, 0, 1]) {
-                (3, offset)
-            } else if bytes[offset..].starts_with(&[0, 0, 0, 1]) {
-                (4, offset)
+        let (avcc_payload, detected_idr, config_ready) =
+            if let Some(adapter) = self.video_adapter.as_mut() {
+                adapter.convert_frame(&frame)
             } else {
-                offset += 1;
-                continue;
+                // Fallback to legacy path (should not happen)
+                (frame.as_ref().to_vec(), false, false)
             };
 
-            // Locate the next start code to get the current NALU range
-            let mut next = start_pos + start_code_len;
-            while next + 3 < bytes.len()
-                && !bytes[next..].starts_with(&[0, 0, 1])
-                && !bytes[next..].starts_with(&[0, 0, 0, 1])
-            {
-                next += 1;
-            }
-
-            // If we reached near the end without finding another start code, include the trailing bytes
-            if next + 3 >= bytes.len() {
-                next = bytes.len();
-            }
-
-            let nalu = &bytes[start_pos..next];
-
-            // Strip the start code and get the NALU type
-            let header_idx = if nalu.starts_with(&[0, 0, 0, 1]) {
-                4
-            } else {
-                3
-            };
-            if nalu.len() <= header_idx {
-                offset = next;
-                continue;
-            }
-            let nal_type = nalu[header_idx] & 0x1F;
-
-            // Collect SPS/PPS
-            match nal_type {
-                7 => self.sps = Some(nalu[header_idx..].to_vec()),
-                8 => self.pps = Some(nalu[header_idx..].to_vec()),
-                _ => {}
-            }
-
-            // Convert to AVCC and append to frame payload
-            avcc_payload.extend_from_slice(&nalu_to_avcc(&Bytes::copy_from_slice(nalu)));
-
-            // Detect IDR frame automatically if any NALU type is 5 (IDR slice)
-            if nal_type == 5 {
-                is_idr = true;
-            }
-
-            offset = next;
+        if detected_idr {
+            is_idr = true;
         }
 
         // Use provided duration, fallback to 3000 ticks if it looks invalid (e.g. 0)
@@ -216,7 +164,7 @@ impl Segmenter {
             duration: dur,
             rendering_offset: 0,
             is_sync: is_idr,
-            bytes: avcc_payload.into(),
+            bytes: Bytes::from(avcc_payload),
         };
         self.samples.push(sample);
         self.current_pts += dur as u64;
@@ -232,7 +180,24 @@ impl Segmenter {
         }
 
         // Now that we (likely) have frame rate, generate init segment if not yet written
-        if self.video_track_id.is_none() && self.sps.is_some() && self.pps.is_some() {
+        if self.video_track_id.is_none() && config_ready {
+            if let Some(adapter) = self.video_adapter.as_ref() {
+                if let Some(cfg) = adapter.codec_config() {
+                    if cfg.len() >= 1 {
+                        // self.sps = Some(cfg[0].clone()); // Removed
+                    }
+                    if cfg.len() >= 2 {
+                        // self.pps = Some(cfg[1].clone()); // Removed
+                    }
+                    // Update codec string for manifest
+                    if self.video_codec.is_empty() {
+                        if let Some(cs) = adapter.codec_string() {
+                            self.video_codec = cs;
+                        }
+                    }
+                }
+            }
+
             self.init_writer().await?;
             // init_writer will call open_new_segment(), clear samples, so ensure it's called before samples are enqueued
         }
@@ -274,37 +239,19 @@ impl Segmenter {
     }
 
     async fn init_writer(&mut self) -> Result<()> {
-        // Parse SPS to get width/height if possible
+        // Get video width/height from adapter
         let (mut width, mut height) = (0u32, 0u32);
-        if let Ok(rbsp) = decode_nal(&self.sps.clone().unwrap()) {
-            if let Ok(sps) = SeqParameterSet::from_bits(BitReader::new(&rbsp[..])) {
-                if let Ok((w, h)) = sps.pixel_dimensions() {
-                    width = w;
-                    height = h;
-                    info!(
-                        "[segmenter] {} SPS parsed width={} height={}",
-                        self.stream, width, height
-                    );
-                }
-            }
+        if let Some(adapter) = self.video_adapter.as_ref() {
+            width = adapter.width();
+            height = adapter.height();
         }
 
         // Parse profile/level and construct codec string avc1.PPCCLL
         if self.video_codec.is_empty() {
-            if let Some(sps_bytes) = &self.sps {
-                if sps_bytes.len() >= 4 {
-                    let profile_idc = sps_bytes[1];
-                    let constraints = sps_bytes[2];
-                    let level_idc = sps_bytes[3];
-                    self.video_codec = format!(
-                        "avc1.{:02x}{:02x}{:02x}",
-                        profile_idc, constraints, level_idc
-                    );
-                } else {
-                    self.video_codec = "avc1".to_string();
+            if let Some(adapter) = self.video_adapter.as_ref() {
+                if let Some(cs) = adapter.codec_string() {
+                    self.video_codec = cs;
                 }
-            } else {
-                self.video_codec = "avc1".to_string();
             }
         }
 
@@ -314,13 +261,19 @@ impl Segmenter {
 
         // Build init segment via our new fMP4 writer (track_id fixed to 1)
         let track_id = 1u32;
+        let codec_config = if let Some(adapter) = self.video_adapter.as_ref() {
+            adapter.codec_config().unwrap_or_default()
+        } else {
+            vec![]
+        };
+
         let fmp4_writer = Fmp4Writer::new(
             self.timescale,
             track_id,
             width,
             height,
             self.video_codec.clone(),
-            vec![self.sps.clone().unwrap(), self.pps.clone().unwrap()],
+            codec_config,
         );
 
         let init_bytes = fmp4_writer.build_init_segment();

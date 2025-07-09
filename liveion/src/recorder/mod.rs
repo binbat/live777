@@ -17,6 +17,7 @@ mod rtp_opus;
 mod segmenter;
 mod task;
 use task::RecordingTask;
+pub mod codec;
 mod fmp4;
 
 static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =

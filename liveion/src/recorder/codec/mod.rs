@@ -1,0 +1,62 @@
+pub mod h264;
+pub mod vp8;
+
+pub use h264::H264Adapter;
+pub use vp8::Vp8Adapter;
+
+use bytes::Bytes;
+
+/// Track category for a given adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackKind {
+    Video,
+    Audio,
+}
+
+/// Event emitted by the adapter while parsing a frame
+pub enum CodecEvent {
+    /// Codec config (SPS/PPS, vpcC, etc.) is complete, ready to write init segment
+    ConfigUpdated,
+    /// This frame is a keyframe
+    KeyFrame,
+    /// Regular frame, no special events
+    None,
+}
+
+/// Unified codec adapter interface that all specific codec implementations must implement.
+/// Design goals:
+/// 1. Eliminate Segmenter/Fmp4Writer dependencies on specific codec details;
+/// 2. Facilitate future support for HEVC/VP9/AV1 and other codecs;
+/// 3. Maintain zero dependencies, pure Rust implementation.
+pub trait CodecAdapter {
+    /// Track type (audio/video)
+    fn kind(&self) -> TrackKind;
+
+    /// Default timescale, H264 commonly uses 90_000.
+    fn timescale(&self) -> u32;
+
+    /// Whether initialization config has been collected (SPS/PPS, vpcC, etc.).
+    fn ready(&self) -> bool;
+
+    /// Convert a raw access unit frame to BMFF 4-byte length prefix format, returns:
+    /// - Vec<u8>  converted payload
+    /// - bool     whether this frame is a keyframe
+    /// - bool     whether this parsing caused codec config to be complete (first time collecting complete SPS/PPS, etc.)
+    fn convert_frame(&mut self, frame: &Bytes) -> (Vec<u8>, bool, bool);
+
+    /// Return codec config blob (e.g., [sps, pps]).
+    fn codec_config(&self) -> Option<Vec<Vec<u8>>>;
+
+    /// Return codec string like "avc1.42E01E" or "vp08.00.41.08".
+    fn codec_string(&self) -> Option<String>;
+
+    /// Video width, if applicable
+    fn width(&self) -> u32 {
+        0
+    }
+
+    /// Video height, if applicable
+    fn height(&self) -> u32 {
+        0
+    }
+}
