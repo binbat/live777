@@ -27,6 +27,16 @@ impl OpusRtpParser {
     }
 }
 
+// Implement unified RTP parser trait (always returns Some because each RTP packet is a full Opus sample)
+impl crate::recorder::codec::RtpParser for OpusRtpParser {
+    type Output = (BytesMut, u32);
+
+    fn push_packet(&mut self, pkt: Packet) -> Result<Option<Self::Output>> {
+        // Re-use the existing pass-through logic
+        OpusRtpParser::push_packet(self, pkt).map(|v| Some(v))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

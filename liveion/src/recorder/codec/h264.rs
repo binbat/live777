@@ -1,6 +1,10 @@
 use super::{CodecAdapter, TrackKind};
 use crate::recorder::fmp4::nalu_to_avcc;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use bytes::BytesMut;
+use webrtc::rtp::packet::Packet;
+use webrtc::rtp::{codecs::h264::H264Packet, packetizer::Depacketizer};
 
 /// Simple H264 Annex-B parser that splits a frame into NALUs and converts to AVCC.
 pub struct H264Adapter {
@@ -164,5 +168,95 @@ impl CodecAdapter for H264Adapter {
 
     fn height(&self) -> u32 {
         self.height
+    }
+}
+
+/// Assemble WebRTC RTP (H264) packets into a complete Annex-B formatted frame.
+pub struct H264RtpParser {
+    depacketizer: H264Packet,
+    buffer: BytesMut, // Current frame buffer (Annex-B with 0x00000001 start code)
+    idr: bool,        // Whether the current frame contains an IDR
+}
+
+impl H264RtpParser {
+    pub fn new() -> Self {
+        Self {
+            depacketizer: H264Packet::default(),
+            buffer: BytesMut::new(),
+            idr: false,
+        }
+    }
+
+    /// Push a RTP packet. If it returns `Some((frame, is_idr))` it means a frame has been assembled.
+    pub fn push_packet(&mut self, pkt: Packet) -> Result<Option<(BytesMut, bool)>> {
+        // Use webrtc-rs depacketizer to convert RTP payload into a complete NALU
+        let nalu = self
+            .depacketizer
+            .depacketize(&pkt.payload)
+            .map_err(|e| anyhow!(e))?;
+
+        // Prepend Annex-B start code and append NALU to current frame buffer
+        self.push_annexb_prefix();
+        self.buffer.extend_from_slice(&nalu);
+
+        // Detect IDR (NALU type 5)
+        if !nalu.is_empty() && (nalu[0] & 0x1F) == 5 {
+            self.idr = true;
+        }
+
+        // Frame completes when marker bit is set
+        if pkt.header.marker {
+            let mut out = BytesMut::new();
+            std::mem::swap(&mut out, &mut self.buffer);
+            let idr = self.idr;
+            self.idr = false;
+            Ok(Some((out, idr)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[inline]
+    fn push_annexb_prefix(&mut self) {
+        self.buffer.extend_from_slice(&[0, 0, 0, 1]);
+    }
+
+    #[inline]
+    fn push_annexb_nalu(&mut self, nalu: &[u8]) {
+        self.push_annexb_prefix();
+        self.buffer.extend_from_slice(nalu);
+    }
+}
+
+// Implement unified RTP parser trait
+impl crate::recorder::codec::RtpParser for H264RtpParser {
+    type Output = (BytesMut, bool);
+
+    fn push_packet(&mut self, pkt: Packet) -> Result<Option<Self::Output>> {
+        H264RtpParser::push_packet(self, pkt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use webrtc::rtp::packet::Packet;
+
+    #[test]
+    fn test_single_nalu_idr_detection() {
+        // Construct a minimal RTP packet carrying a single IDR NALU (type 5)
+        let mut pkt = Packet::default();
+        pkt.header.marker = true;
+        pkt.header.timestamp = 0;
+        pkt.payload = Bytes::from_static(&[0x65, 0xAA, 0xBB, 0xCC]); // 0x65 => nal_ref_idc=3, nal_type=5 (IDR)
+
+        let mut parser = H264RtpParser::new();
+        let res = parser.push_packet(pkt).unwrap();
+        assert!(res.is_some(), "Parser should output a frame on marker");
+        let (frame, is_idr) = res.unwrap();
+        assert!(is_idr, "Frame should be detected as IDR");
+        // Frame must start with Annex-B start code
+        assert!(frame.starts_with(&[0, 0, 0, 1]));
     }
 }

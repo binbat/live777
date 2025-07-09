@@ -1,10 +1,15 @@
 pub mod h264;
+pub mod opus;
 pub mod vp8;
 
 pub use h264::H264Adapter;
+pub use h264::H264RtpParser;
+pub use opus::OpusRtpParser;
 pub use vp8::Vp8Adapter;
 
+use anyhow::Result;
 use bytes::Bytes;
+use webrtc::rtp::packet::Packet;
 
 /// Track category for a given adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,4 +64,15 @@ pub trait CodecAdapter {
     fn height(&self) -> u32 {
         0
     }
+}
+
+/// Unified RTP parser trait so that different codecs (H264/Opus/…) share the same façade.
+///
+/// Associated type `Output` represents the parsed unit – for video it could be
+/// `(BytesMut, bool)` (frame + is_idr), for audio `(BytesMut, u32)` (payload + timestamp).
+/// The method returns `Ok(Some(x))` when a full unit is ready, or `Ok(None)` when the
+/// parser needs more RTP packets.
+pub trait RtpParser {
+    type Output;
+    fn push_packet(&mut self, pkt: Packet) -> Result<Option<Self::Output>>;
 }

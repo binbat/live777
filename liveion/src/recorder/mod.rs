@@ -12,8 +12,6 @@ use crate::stream::manager::Manager;
 #[cfg(feature = "recorder")]
 use crate::config::RecorderConfig;
 
-mod rtp_h264;
-mod rtp_opus;
 mod segmenter;
 mod task;
 use task::RecordingTask;

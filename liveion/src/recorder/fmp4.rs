@@ -592,19 +592,11 @@ fn _build_fragment_internal(
 
 // Helpers for big-endian writing & padding -------------------------------
 #[inline]
-fn be_u8(buf: &mut Vec<u8>, v: u8) {
-    buf.push(v);
-}
-#[inline]
 fn be_u16(buf: &mut Vec<u8>, v: u16) {
     buf.extend_from_slice(&v.to_be_bytes());
 }
 #[inline]
 fn be_u32(buf: &mut Vec<u8>, v: u32) {
-    buf.extend_from_slice(&v.to_be_bytes());
-}
-#[inline]
-fn be_u64(buf: &mut Vec<u8>, v: u64) {
     buf.extend_from_slice(&v.to_be_bytes());
 }
 #[inline]

@@ -34,6 +34,6 @@ impl CodecAdapter for Vp8Adapter {
     }
 
     fn codec_string(&self) -> Option<String> {
-        Some("vp08".to_string())
+        Some("vp8".to_string())
     }
 }
