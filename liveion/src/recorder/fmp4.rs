@@ -13,7 +13,6 @@ use bytes::Bytes;
 pub struct Mp4Sample {
     pub start_time: u64,
     pub duration: u32,
-    pub rendering_offset: i32,
     pub is_sync: bool,
     pub bytes: Bytes,
 }

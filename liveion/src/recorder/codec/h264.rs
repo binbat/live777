@@ -220,12 +220,6 @@ impl H264RtpParser {
     fn push_annexb_prefix(&mut self) {
         self.buffer.extend_from_slice(&[0, 0, 0, 1]);
     }
-
-    #[inline]
-    fn push_annexb_nalu(&mut self, nalu: &[u8]) {
-        self.push_annexb_prefix();
-        self.buffer.extend_from_slice(nalu);
-    }
 }
 
 // Implement unified RTP parser trait

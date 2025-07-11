@@ -162,7 +162,6 @@ impl Segmenter {
         let sample = Mp4Sample {
             start_time: self.current_pts,
             duration: dur,
-            rendering_offset: 0,
             is_sync: is_idr,
             bytes: Bytes::from(avcc_payload),
         };
@@ -217,7 +216,6 @@ impl Segmenter {
         let sample = Mp4Sample {
             start_time: self.audio_current_pts,
             duration: duration_ticks,
-            rendering_offset: 0,
             is_sync: true, // audio samples are always sync
             bytes: payload,
         };
