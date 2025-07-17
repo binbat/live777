@@ -17,7 +17,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 lru_time_cache = "0.11.11"
-kcp = "0.5.3"
+kcp = "0.6"
 rand = "0.8.5"
 rumqttc = { version = "0.24.0", features = ["url"] }
 socks5-server = "0.10.1"
