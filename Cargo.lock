@@ -1677,7 +1677,7 @@ checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 
 [[package]]
 name = "live777"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "api",
  "clap",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "liveion"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "api",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "liveman"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "api",
@@ -1762,7 +1762,7 @@ dependencies = [
 
 [[package]]
 name = "livetwo"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "net4mqtt"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "kcp",
