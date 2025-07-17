@@ -43,17 +43,16 @@ pub fn build(
     dst: &str,
 ) -> String {
     format!(
-        "{}/{}/{}/{}/{}/{}/{}",
-        prefix, agent_id, local_id, label, protocol, src, dst
+        "{prefix}/{agent_id}/{local_id}/{label}/{protocol}/{src}/{dst}"
     )
 }
 
 pub fn build_sub(prefix: &str, agent_id: &str, local_id: &str, label: &str) -> String {
-    format!("{}/{}/{}/{}/{}", prefix, agent_id, local_id, label, ALL)
+    format!("{prefix}/{agent_id}/{local_id}/{label}/{ALL}")
 }
 
 pub fn build_pub_x(prefix: &str, agent_id: &str, local_id: &str, label: &str) -> String {
-    format!("{}/{}/{}/{}/{}", prefix, agent_id, local_id, label, NIL)
+    format!("{prefix}/{agent_id}/{local_id}/{label}/{NIL}")
 }
 
 pub fn parse(topic: &str) -> (&str, &str, &str, &str, &str, &str, &str) {

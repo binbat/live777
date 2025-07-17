@@ -665,13 +665,13 @@ fn find_control_attribute(track: &sdp_types::Media, base_url: &str, track_id: &s
                 if value.starts_with("rtsp://") {
                     Some(value)
                 } else {
-                    Some(format!("{}/{}", base_url, value))
+                    Some(format!("{base_url}/{value}"))
                 }
             } else {
                 None
             }
         })
-        .unwrap_or_else(|| format!("{}/trackID={}", base_url, track_id))
+        .unwrap_or_else(|| format!("{base_url}/trackID={track_id}"))
 }
 
 fn extract_codec_from_track(track: &sdp_types::Media) -> Option<Codec> {
@@ -716,7 +716,7 @@ pub async fn setup_rtsp_session(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("Invalid RTSP URL: no port specified"))?;
-    let addr = format!("{}:{}", target_host, port);
+    let addr = format!("{target_host}:{port}");
     let base_url = url.as_str().to_string();
 
     let stream = TcpStream::connect(&addr)
@@ -1033,15 +1033,15 @@ fn generate_digest_response(
     method: &str,
 ) -> String {
     let mut hasher = Md5::new();
-    hasher.update(format!("{}:{}:{}", username, realm, password));
+    hasher.update(format!("{username}:{realm}:{password}"));
     let ha1 = format!("{:x}", hasher.finalize());
 
     let mut hasher = Md5::new();
-    hasher.update(format!("{}:{}", method, uri));
+    hasher.update(format!("{method}:{uri}"));
     let ha2 = format!("{:x}", hasher.finalize());
 
     let mut hasher = Md5::new();
-    hasher.update(format!("{}:{}:{}", ha1, nonce, ha2));
+    hasher.update(format!("{ha1}:{nonce}:{ha2}"));
     format!("{:x}", hasher.finalize())
 }
 
@@ -1064,9 +1064,7 @@ mod tests {
             let _ = String::from_utf8_lossy(&buffer[..n]);
 
             let response = format!(
-                "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
-                content_length,
-                sdp_content
+                "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {content_length}\r\n\r\n{sdp_content}"
             );
 
             server.write_all(response.as_bytes()).await.unwrap();
@@ -1116,9 +1114,7 @@ mod tests {
             let _ = String::from_utf8_lossy(&buffer[..n]);
 
             let ok_response = format!(
-                "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
-                content_length,
-                sdp_content
+                "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {content_length}\r\n\r\n{sdp_content}"
             );
             server.write_all(ok_response.as_bytes()).await.unwrap();
             server.flush().await.unwrap();

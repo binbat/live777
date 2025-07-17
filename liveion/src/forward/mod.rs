@@ -31,7 +31,7 @@ mod track;
 
 pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
     let digest = md5::compute(peer.get_stats_id());
-    format!("{:x}", digest)
+    format!("{digest:x}")
 }
 
 #[derive(Clone)]
@@ -378,8 +378,7 @@ async fn peer_complete(
 
 fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
     let content = format!(
-        "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{}",
-        content
+        "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{content}"
     );
     let mut reader = Cursor::new(content);
     let session_desc = SessionDescription::unmarshal(&mut reader)?;

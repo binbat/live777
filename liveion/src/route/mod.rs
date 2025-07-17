@@ -27,7 +27,7 @@ fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
                 credential = string_encoder(&credential);
             }
             server.urls.into_iter().map(move |url| {
-                let mut link = format!("<{}>; rel=\"ice-server\"", url);
+                let mut link = format!("<{url}>; rel=\"ice-server\"");
                 if !username.is_empty() {
                     link = format!(
                         "{}; username=\"{}\"; credential=\"{}\"; credential-type=\"{}\"",

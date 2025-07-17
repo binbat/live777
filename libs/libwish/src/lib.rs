@@ -23,7 +23,7 @@ impl Client {
         if let Some(auth_token) = token {
             header_map.insert(
                 header::AUTHORIZATION,
-                format!("Bearer {}", auth_token).parse().unwrap(),
+                format!("Bearer {auth_token}").parse().unwrap(),
             );
             Some(header_map)
         } else {
@@ -202,6 +202,6 @@ mod tests {
             RTCIceCredentialType::Password
         );
 
-        println!("{:?}", ice_servers);
+        println!("{ice_servers:?}");
     }
 }

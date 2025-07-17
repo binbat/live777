@@ -213,7 +213,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     ),
                     listener,
                     None,
-                    (&id.to_string(), &format!("local-{}", id)),
+                    (&id.to_string(), &format!("local-{id}")),
                     None,
                     cfg.kcp,
                 ))
@@ -232,7 +232,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     ),
                     sock,
                     None,
-                    (&id.to_string(), &format!("local-{}", id)),
+                    (&id.to_string(), &format!("local-{id}")),
                     None,
                 ))
             });
@@ -252,7 +252,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
                     id
                 ),
                 listener,
-                (&id.to_string(), &format!("socks-{}", id)),
+                (&id.to_string(), &format!("socks-{id}")),
                 Some(DOMAIN_SUFFIX.to_string()),
                 None,
                 cfg.kcp,
@@ -535,12 +535,12 @@ async fn test_tcp_echo_restart() {
         let mut socket = TcpStream::connect(addrs[0]).await.unwrap();
 
         let mut buf = [0; MAX_BUFFER_SIZE];
-        let test_msg = format!("hello, world: {}", i);
+        let test_msg = format!("hello, world: {i}");
         socket.write_all(test_msg.as_bytes()).await.unwrap();
         let len = timeout_await!(socket.read(&mut buf)).unwrap();
         assert_eq!(&buf[..len], test_msg.as_bytes());
 
-        let test_msg2 = format!("the end: {}", i);
+        let test_msg2 = format!("the end: {i}");
         socket.write_all(test_msg2.as_bytes()).await.unwrap();
         let len = timeout_await!(socket.read(&mut buf)).unwrap();
         assert_eq!(&buf[..len], test_msg2.as_bytes());
@@ -606,12 +606,12 @@ async fn test_kcp_echo_restart() {
         let mut socket = TcpStream::connect(addrs[0]).await.unwrap();
 
         let mut buf = [0; MAX_BUFFER_SIZE];
-        let test_msg = format!("hello, world: {}", i);
+        let test_msg = format!("hello, world: {i}");
         socket.write_all(test_msg.as_bytes()).await.unwrap();
         let len = timeout_await!(socket.read(&mut buf)).unwrap();
         assert_eq!(&buf[..len], test_msg.as_bytes());
 
-        let test_msg2 = format!("the end: {}", i);
+        let test_msg2 = format!("the end: {i}");
         socket.write_all(test_msg2.as_bytes()).await.unwrap();
         let len = timeout_await!(socket.read(&mut buf)).unwrap();
         assert_eq!(&buf[..len], test_msg2.as_bytes());
@@ -647,7 +647,7 @@ async fn test_socks_simple() {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(1))
         .timeout(Duration::from_secs(1))
-        .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
+        .proxy(reqwest::Proxy::http(format!("socks5h://{local_addr}")).unwrap())
         .build()
         .unwrap();
 
@@ -667,7 +667,7 @@ async fn test_socks_simple() {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(1))
         .timeout(Duration::from_secs(1))
-        .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
+        .proxy(reqwest::Proxy::http(format!("socks5h://{local_addr}")).unwrap())
         .build()
         .unwrap();
 
@@ -715,7 +715,7 @@ async fn test_socks_restart() {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(1))
             .timeout(Duration::from_secs(1))
-            .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
+            .proxy(reqwest::Proxy::http(format!("socks5h://{local_addr}")).unwrap())
             .build()
             .unwrap();
 
@@ -737,7 +737,7 @@ async fn test_socks_restart() {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(1))
             .timeout(Duration::from_secs(1))
-            .proxy(reqwest::Proxy::http(format!("socks5h://{}", local_addr)).unwrap())
+            .proxy(reqwest::Proxy::http(format!("socks5h://{local_addr}")).unwrap())
             .build()
             .unwrap();
 
@@ -807,7 +807,7 @@ async fn test_socks_multiple_server() {
             .timeout(Duration::from_secs(1))
             .proxy(
                 // References: https://github.com/seanmonstar/reqwest/issues/899
-                reqwest::Proxy::all(format!("socks5h://{}", local_addr)).unwrap(),
+                reqwest::Proxy::all(format!("socks5h://{local_addr}")).unwrap(),
             )
             .build()
             .unwrap();

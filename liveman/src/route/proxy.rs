@@ -55,7 +55,7 @@ async fn api_whip(
     Path((alias, stream)): Path<(String, String)>,
     mut req: Request,
 ) -> Result<Response> {
-    let uri = format!("/whip/{}", stream);
+    let uri = format!("/whip/{stream}");
     *req.uri_mut() = Uri::try_from(uri).unwrap();
 
     match state.storage.get_map_server().get(&alias) {
@@ -69,7 +69,7 @@ async fn api_whep(
     Path((alias, stream)): Path<(String, String)>,
     mut req: Request,
 ) -> Result<Response> {
-    let uri = format!("/whep/{}", stream);
+    let uri = format!("/whep/{stream}");
     *req.uri_mut() = Uri::try_from(uri).unwrap();
 
     match state.storage.get_map_server().get(&alias) {

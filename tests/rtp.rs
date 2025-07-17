@@ -342,7 +342,7 @@ async fn helper_livetwo_rtp(
 
     // Wrap IPv6 addresses in brackets for a valid URI host segment.
     let ip_str = match ip {
-        std::net::IpAddr::V6(_) => format!("[{}]", ip),
+        std::net::IpAddr::V6(_) => format!("[{ip}]"),
         _ => ip.to_string(),
     };
 
@@ -354,11 +354,11 @@ async fn helper_livetwo_rtp(
             whep_port + 2
         )
     } else if detect.video.is_some() {
-        format!("rtp://{}?video={}", ip_str, whep_port)
+        format!("rtp://{ip_str}?video={whep_port}")
     } else if detect.audio.is_some() {
-        format!("rtp://{}?audio={}", ip_str, whep_port)
+        format!("rtp://{ip_str}?audio={whep_port}")
     } else {
-        format!("rtp://{}", ip_str)
+        format!("rtp://{ip_str}")
     };
 
     tokio::spawn(livetwo::whep::from(

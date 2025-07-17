@@ -526,7 +526,7 @@ pub fn filter_sdp(
     let mut reader = Cursor::new(webrtc_sdp.as_bytes());
     let mut session = match SessionDescription::unmarshal(&mut reader) {
         Ok(sdp) => sdp,
-        Err(e) => return Err(format!("Failed to parse SDP: {:?}", e)),
+        Err(e) => return Err(format!("Failed to parse SDP: {e:?}")),
     };
 
     session.media_descriptions.retain_mut(|media| {
