@@ -57,6 +57,11 @@ repository = "https://github.com/binbat/live777"
 [workspace.dependencies]
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "ae93e81" }
 
+axum = "0.8"
+axum-extra = "0.10"
+tower-http = "0.6"
+rust-embed = "8.7"
+
 anyhow = "1.0"
 clap = "4.5"
 http = "1.1"

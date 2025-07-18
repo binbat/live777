@@ -15,9 +15,9 @@ use tokio_stream::StreamExt;
 pub fn route() -> Router<AppState> {
     Router::new()
         .route(&api::path::streams(""), get(index))
-        .route(&api::path::streams(":stream"), get(show))
-        .route(&api::path::streams(":stream"), post(create))
-        .route(&api::path::streams(":stream"), delete(destroy))
+        .route(&api::path::streams("{stream}"), get(show))
+        .route(&api::path::streams("{stream}"), post(create))
+        .route(&api::path::streams("{stream}"), delete(destroy))
         .route(api::path::streams_sse(), get(sse))
 }
 

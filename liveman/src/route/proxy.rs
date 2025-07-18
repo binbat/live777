@@ -25,29 +25,29 @@ pub struct QueryExtract {
 
 pub fn route() -> Router<AppState> {
     Router::new()
-        .route(&api::path::whip(":stream"), post(whip))
-        .route(&api::path::whep(":stream"), post(whep))
+        .route(&api::path::whip("{stream}"), post(whip))
+        .route(&api::path::whep("{stream}"), post(whep))
         .route(
-            &api::path::session(":stream", ":session"),
+            &api::path::session("{stream}", "{session}"),
             post(session).patch(session).delete(session),
         )
         .route(
-            &api::path::session_layer(":stream", ":session"),
+            &api::path::session_layer("{stream}", "{session}"),
             get(session).post(session).delete(session),
         )
         .route(
-            &api::path::whip_with_node(":stream", ":alias"),
+            &api::path::whip_with_node("{stream}", "{alias}"),
             post(api_whip),
         )
         .route(
-            &api::path::whep_with_node(":stream", ":alias"),
+            &api::path::whep_with_node("{stream}", "{alias}"),
             post(api_whep),
         )
         .route("/api/nodes/", get(node::index))
         .route("/api/streams/", get(stream::index))
-        .route("/api/streams/:stream", get(stream::show))
-        .route("/api/streams/:stream", post(stream::create))
-        .route("/api/streams/:stream", delete(stream::destroy))
+        .route("/api/streams/{stream}", get(stream::show))
+        .route("/api/streams/{stream}", post(stream::create))
+        .route("/api/streams/{stream}", delete(stream::destroy))
 }
 
 async fn api_whip(

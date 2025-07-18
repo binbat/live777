@@ -377,9 +377,7 @@ async fn peer_complete(
 }
 
 fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
-    let content = format!(
-        "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{content}"
-    );
+    let content = format!("v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{content}");
     let mut reader = Cursor::new(content);
     let session_desc = SessionDescription::unmarshal(&mut reader)?;
     let mut ice_candidates = Vec::new();

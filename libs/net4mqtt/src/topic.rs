@@ -42,9 +42,7 @@ pub fn build(
     src: &str,
     dst: &str,
 ) -> String {
-    format!(
-        "{prefix}/{agent_id}/{local_id}/{label}/{protocol}/{src}/{dst}"
-    )
+    format!("{prefix}/{agent_id}/{local_id}/{label}/{protocol}/{src}/{dst}")
 }
 
 pub fn build_sub(prefix: &str, agent_id: &str, local_id: &str, label: &str) -> String {
