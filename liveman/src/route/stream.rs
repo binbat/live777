@@ -38,7 +38,7 @@ pub async fn index(
             if !query_extract.nodes.is_empty() && !query_extract.nodes.contains(server_alias) {
                 continue;
             }
-            let alias = format!("{}:{}", server_alias, stream_id);
+            let alias = format!("{server_alias}:{stream_id}");
             match map_server_stream.get(&alias) {
                 Some(s) => {
                     let new_stream = match result_streams.get(&stream_id) {

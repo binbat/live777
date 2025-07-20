@@ -495,7 +495,7 @@ async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
 }
 
 pub fn stream_id(stream: &str) -> String {
-    format!("test-cycle-{}", stream)
+    format!("test-cycle-{stream}")
 }
 
 async fn helper_livetwo_cycle_rtsp(

@@ -153,7 +153,7 @@ pub async fn setup_peer_connection_handlers(
 }
 
 pub async fn rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection>) {
-    let rtcp_listener = match UdpSocket::bind(format!("{}:{}", host, rtcp_port)).await {
+    let rtcp_listener = match UdpSocket::bind(format!("{host}:{rtcp_port}")).await {
         Ok(socket) => {
             info!("RTCP listener bound to: {}", socket.local_addr().unwrap());
             socket
@@ -210,7 +210,7 @@ pub async fn rtp_send(
                 return;
             }
         };
-        let recv_addr = format!("{}:{}", target_host, port);
+        let recv_addr = format!("{target_host}:{port}");
         info!("RTP sender ready to send to {}", recv_addr);
 
         while let Some(data) = receiver.recv().await {

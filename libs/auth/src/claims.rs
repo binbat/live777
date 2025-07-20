@@ -74,36 +74,36 @@ mod tests {
         assert!(access.r);
         assert!(access.w);
         assert!(access.x);
-        assert_eq!(format!("{}", access), "rwx");
+        assert_eq!(format!("{access}"), "rwx");
 
         access = Access::from(6);
         assert!(access.r);
         assert!(access.w);
         assert!(!access.x);
-        assert_eq!(format!("{}", access), "rw-");
+        assert_eq!(format!("{access}"), "rw-");
 
         access = Access::from(5);
         assert!(access.r);
         assert!(!access.w);
         assert!(access.x);
-        assert_eq!(format!("{}", access), "r-x");
+        assert_eq!(format!("{access}"), "r-x");
 
         access = Access::from(4);
         assert!(access.r);
         assert!(!access.w);
         assert!(!access.x);
-        assert_eq!(format!("{}", access), "r--");
+        assert_eq!(format!("{access}"), "r--");
 
         access = Access::from(1);
         assert!(!access.r);
         assert!(!access.w);
         assert!(access.x);
-        assert_eq!(format!("{}", access), "--x");
+        assert_eq!(format!("{access}"), "--x");
 
         access = Access::from(0);
         assert!(!access.r);
         assert!(!access.w);
         assert!(!access.x);
-        assert_eq!(format!("{}", access), "---");
+        assert_eq!(format!("{access}"), "---");
     }
 }

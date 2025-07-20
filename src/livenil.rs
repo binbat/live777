@@ -29,7 +29,7 @@ async fn main() {
     let args = Args::parse();
     let mut cfg: liveman::config::Config = utils::load(
         NAME.to_string(),
-        args.config.clone().map(|s| format!("{}/liveman.toml", s)),
+        args.config.clone().map(|s| format!("{s}/liveman.toml")),
     );
     cfg.validate().unwrap();
 
@@ -68,7 +68,7 @@ async fn main() {
             .into_iter()
             .map(|(alias, addr)| liveman::config::Node {
                 alias: alias.to_string(),
-                url: format!("http://{}", addr),
+                url: format!("http://{addr}"),
                 ..Default::default()
             }),
     );

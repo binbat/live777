@@ -1,19 +1,10 @@
-use rand::Rng;
 use url::Url;
 
 #[inline]
 fn generate_random_string(length: usize) -> String {
-    let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
+    use rand::distr::{Alphanumeric, SampleString};
 
-    let random_string: String = (0..length)
-        .map(|_| {
-            let idx = rng.gen_range(0..charset.len());
-            charset[idx] as char
-        })
-        .collect();
-
-    random_string
+    Alphanumeric.sample_string(&mut rand::rng(), length)
 }
 
 #[inline]

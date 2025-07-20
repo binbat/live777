@@ -3,15 +3,13 @@ use std::{future::Future, sync::Arc};
 use axum::{extract::Request, middleware, response::IntoResponse, routing::get, Router};
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
-use tower_http::{
-    cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
-};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info_span, Level};
 
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};
-use auth::{access::access_middleware, ManyValidate};
-use axum::body::Body;
+use api::path;
+use auth::{access::access_middleware, validate_middleware, AuthState};
 use error::AppError;
 
 use stream::manager::Manager;
@@ -50,11 +48,6 @@ where
     {
         crate::recorder::init(app_state.stream_manager.clone(), cfg.recorder.clone()).await;
     }
-
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::<Body>::new(
-        cfg.auth.secret,
-        cfg.auth.tokens,
-    ));
     let app = Router::new()
         .merge(
             whip::route()
@@ -64,9 +57,12 @@ where
                 .merge(crate::route::stream::route())
                 .merge(crate::route::strategy::route())
                 .layer(middleware::from_fn(access_middleware))
-                .layer(auth_layer),
+                .layer(middleware::from_fn_with_state(
+                    AuthState::new(cfg.auth.secret, cfg.auth.tokens),
+                    validate_middleware,
+                )),
         )
-        .route(api::path::METRICS, get(metrics))
+        .route(path::METRICS, get(metrics))
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {
             CorsLayer::permissive()
