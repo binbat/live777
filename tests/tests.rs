@@ -171,7 +171,7 @@ a=rtpmap:96 VP8/90000
         .unwrap()
         .to_string();
     tokio::spawn(livetwo::whep::from(
-        format!("rtp://{}", ip),
+        format!("rtp://{ip}"),
         format!("http://{addr}{}", api::path::whep("-")),
         Some(tmp_path.clone()),
         None,

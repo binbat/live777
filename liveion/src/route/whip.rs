@@ -10,7 +10,7 @@ use crate::route::link_header;
 use crate::AppState;
 
 pub fn route() -> Router<AppState> {
-    Router::new().route(&api::path::whip(":stream"), post(whip))
+    Router::new().route(&api::path::whip("{stream}"), post(whip))
 }
 
 async fn whip(

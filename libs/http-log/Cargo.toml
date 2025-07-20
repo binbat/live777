@@ -6,7 +6,7 @@ edition.workspace = true
 crate-type = ["lib"]
 
 [dependencies]
+axum = { workspace = true }
 tracing = { workspace = true }
 
-axum = "0.7.4"
 http-body-util = "0.1.0"

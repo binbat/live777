@@ -1,17 +1,15 @@
 use std::{future::Future, time::Duration};
 
-use crate::admin::{authorize, token};
-use crate::config::Config;
-use crate::store::{Node, NodeKind, Storage};
-use auth::{access::access_middleware, ManyValidate};
-use axum::body::Body;
+use auth::{access::access_middleware, validate_middleware, AuthState};
 use axum::{extract::Request, middleware, response::IntoResponse, routing::post, Router};
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
-use tower_http::{
-    cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
-};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info, info_span};
+
+use crate::admin::{authorize, token};
+use crate::config::Config;
+use crate::store::{Node, NodeKind, Storage};
 
 #[cfg(feature = "webui")]
 #[derive(rust_embed::RustEmbed)]
@@ -145,16 +143,15 @@ where
         storage: store,
     };
 
-    let auth_layer = ValidateRequestHeaderLayer::custom(ManyValidate::<Body>::new(
-        cfg.auth.secret,
-        cfg.auth.tokens,
-    ));
     let app = Router::new()
         .merge(
             route::proxy::route()
                 .route("/api/token", post(token))
                 .layer(middleware::from_fn(access_middleware))
-                .layer(auth_layer),
+                .layer(middleware::from_fn_with_state(
+                    AuthState::new(cfg.auth.secret, cfg.auth.tokens),
+                    validate_middleware,
+                )),
         )
         .layer(if cfg.http.cors {
             CorsLayer::permissive()

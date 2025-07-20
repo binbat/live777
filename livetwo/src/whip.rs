@@ -284,7 +284,7 @@ async fn setup_rtp_listeners(
             "Creating video RTP listener: {}:{}",
             listen_host, video_port
         );
-        video_listener = Some(UdpSocket::bind(format!("{}:{}", listen_host, video_port)).await?);
+        video_listener = Some(UdpSocket::bind(format!("{listen_host}:{video_port}")).await?);
     }
 
     let mut audio_listener = None;
@@ -297,7 +297,7 @@ async fn setup_rtp_listeners(
             "Creating audio RTP listener: {}:{}",
             listen_host, audio_port
         );
-        audio_listener = Some(UdpSocket::bind(format!("{}:{}", listen_host, audio_port)).await?);
+        audio_listener = Some(UdpSocket::bind(format!("{listen_host}:{audio_port}")).await?);
     }
 
     Ok((video_listener, audio_listener))
@@ -683,7 +683,7 @@ async fn read_rtcp(
     bind_host: String,
     port: u16,
 ) -> Result<()> {
-    let udp_socket = UdpSocket::bind(format!("{}:0", host)).await?;
+    let udp_socket = UdpSocket::bind(format!("{host}:0")).await?;
     info!(
         "UDP socket for RTCP bound to: {}",
         udp_socket.local_addr().unwrap()
@@ -701,7 +701,7 @@ async fn read_rtcp(
                     }
                     if !buf.is_empty() {
                         if let Err(err) = udp_socket
-                            .send_to(&buf, format!("{}:{}", bind_host, port))
+                            .send_to(&buf, format!("{bind_host}:{port}"))
                             .await
                         {
                             warn!("Failed to forward RTCP packet: {}", err);
@@ -797,7 +797,7 @@ async fn setup_video_track(
     video_codec: RTCRtpCodecCapability,
     input: String,
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
-    let video_track_id = format!("{}-video", input);
+    let video_track_id = format!("{input}-video");
     let video_track = Arc::new(TrackLocalStaticRTP::new(
         video_codec.clone(),
         video_track_id.to_owned(),
@@ -838,7 +838,7 @@ async fn setup_audio_track(
     audio_codec: RTCRtpCodecCapability,
     input: String,
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
-    let audio_track_id = format!("{}-audio", input);
+    let audio_track_id = format!("{input}-audio");
     let audio_track = Arc::new(TrackLocalStaticRTP::new(
         audio_codec.clone(),
         audio_track_id.to_owned(),

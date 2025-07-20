@@ -48,7 +48,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.3"
+version = "0.8.0"
 edition = "2021"
 license = "MPL-2.0"
 authors = ["BinBat Ltd <hey@binbat.com>"]
@@ -56,6 +56,11 @@ repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "ae93e81" }
+
+axum = "0.8"
+axum-extra = "0.10"
+tower-http = "0.6"
+rust-embed = "8.7"
 
 anyhow = "1.0"
 clap = "4.5"
@@ -91,7 +96,7 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 serde = { workspace = true }
 
-toml = "0.8.19"
+toml = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]

@@ -7,7 +7,7 @@ use crate::result::Result;
 use crate::AppState;
 
 pub fn route() -> Router<AppState> {
-    Router::new().route(&api::path::cascade(":stream"), post(cascade))
+    Router::new().route(&api::path::cascade("{stream}"), post(cascade))
 }
 
 async fn cascade(

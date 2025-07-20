@@ -1,9 +1,15 @@
+use std::collections::HashSet;
+
 use anyhow::{anyhow, Error};
 use headers::authorization::{Bearer, Credentials};
-use http::{header, Request, Response, StatusCode};
+use http::{header, StatusCode};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use std::{collections::HashSet, marker::PhantomData};
-use tower_http::validate_request::ValidateRequest;
+
+use axum::{
+    extract::{Request, State},
+    middleware::Next,
+    response::Response,
+};
 
 use crate::claims::Claims;
 
@@ -28,76 +34,66 @@ impl Keys {
     }
 }
 
-pub struct ManyValidate<ResBody> {
+#[derive(Clone)]
+pub struct AuthState {
     tokens: HashSet<String>,
     decoding: DecodingKey,
-    _ty: PhantomData<ResBody>,
 }
 
-impl<ResBody> ManyValidate<ResBody> {
+impl AuthState {
     pub fn new(secret: String, tokens: Vec<String>) -> Self {
         Self {
             tokens: tokens.into_iter().collect(),
             decoding: DecodingKey::from_secret(secret.as_bytes()),
-            _ty: PhantomData,
         }
     }
 }
 
-impl<ResBody> Clone for ManyValidate<ResBody> {
-    fn clone(&self) -> Self {
-        Self {
-            tokens: self.tokens.clone(),
-            decoding: self.decoding.clone(),
-            _ty: PhantomData,
-        }
-    }
-}
-
-impl<B: Default> ValidateRequest<B> for ManyValidate<B> {
-    type ResponseBody = B;
-
-    fn validate(&mut self, request: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>> {
-        if self.tokens.is_empty() {
+pub async fn validate_middleware(
+    State(state): State<AuthState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let mut closure = || {
+        if state.tokens.is_empty() {
             request.extensions_mut().insert(Claims {
                 id: ANY_ID.to_string(),
                 exp: 0,
                 mode: 7,
             });
-            return Ok(());
+            return true;
         }
 
-        match request.headers().get(header::AUTHORIZATION) {
-            Some(auth_header) => match Bearer::decode(auth_header) {
-                Some(bearer) if self.tokens.contains(bearer.token()) => {
+        if let Some(auth_header) = request.headers().get(header::AUTHORIZATION) {
+            match Bearer::decode(auth_header) {
+                Some(bearer) if state.tokens.contains(bearer.token()) => {
                     request.extensions_mut().insert(Claims {
                         id: ANY_ID.to_string(),
                         exp: 0,
                         mode: 7,
                     });
-                    Ok(())
+                    return true;
                 }
                 Some(bearer) => {
-                    match decode::<Claims>(bearer.token(), &self.decoding, &Validation::default()) {
-                        Ok(token_data) => {
-                            request.extensions_mut().insert(token_data.claims);
-                            Ok(())
-                        }
-                        _ => Err(Response::builder()
-                            .status(StatusCode::UNAUTHORIZED)
-                            .body(B::default())
-                            .unwrap()),
+                    if let Ok(token_data) =
+                        decode::<Claims>(bearer.token(), &state.decoding, &Validation::default())
+                    {
+                        request.extensions_mut().insert(token_data.claims);
+                        return true;
                     }
                 }
-                _ => Err(Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body(B::default())
-                    .unwrap()),
-            },
-            _ => Err(Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .body(B::default())
-                .unwrap()),
-        }
+                _ => (),
+            }
+        };
+        false
+    };
+
+    if closure() {
+        next.run(request).await
+    } else {
+        Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(axum::body::Body::default())
+            .unwrap()
     }
 }
