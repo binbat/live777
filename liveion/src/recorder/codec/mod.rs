@@ -4,7 +4,6 @@ pub mod opus;
 pub use h264::{H264Adapter, H264RtpParser};
 pub use opus::OpusRtpParser;
 
-
 use anyhow::Result;
 use bytes::Bytes;
 use webrtc::rtp::packet::Packet;
