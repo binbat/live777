@@ -19,7 +19,7 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::streams("{stream}"), post(create))
         .route(&api::path::streams("{stream}"), delete(destroy))
         .route(api::path::streams_sse(), get(sse))
-        .route(&api::path::record(":stream"), post(record_stream))
+        .route(&api::path::record("{stream}"), post(record_stream))
 }
 
 async fn index(
