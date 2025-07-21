@@ -16,6 +16,12 @@ pub struct H264Adapter {
     height: u32,
 }
 
+impl Default for H264Adapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl H264Adapter {
     pub fn new() -> Self {
         Self {
@@ -39,8 +45,7 @@ impl H264Adapter {
                 let constraints = sps[2];
                 let level_idc = sps[3];
                 self.codec_string = Some(format!(
-                    "avc1.{:02x}{:02x}{:02x}",
-                    profile_idc, constraints, level_idc
+                    "avc1.{profile_idc:02x}{constraints:02x}{level_idc:02x}"
                 ));
             } else {
                 self.codec_string = Some("avc1".to_string());
@@ -176,6 +181,12 @@ pub struct H264RtpParser {
     depacketizer: H264Packet,
     buffer: BytesMut, // Current frame buffer (Annex-B with 0x00000001 start code)
     idr: bool,        // Whether the current frame contains an IDR
+}
+
+impl Default for H264RtpParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl H264RtpParser {

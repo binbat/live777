@@ -33,7 +33,7 @@ impl crate::recorder::codec::RtpParser for OpusRtpParser {
 
     fn push_packet(&mut self, pkt: Packet) -> Result<Option<Self::Output>> {
         // Re-use the existing pass-through logic
-        OpusRtpParser::push_packet(self, pkt).map(|v| Some(v))
+        OpusRtpParser::push_packet(self, pkt).map(Some)
     }
 }
 

@@ -444,7 +444,7 @@ impl PeerForwardInternal {
         message: crate::forward::rtcp::RtcpMessage,
         ssrc: u32,
     ) -> Result<()> {
-        if let Err(_) = self.publish_rtcp_channel.send((message, ssrc)) {
+        if self.publish_rtcp_channel.send((message, ssrc)).is_err() {
             return Err(crate::error::AppError::throw("Failed to send RTCP message"));
         }
         Ok(())

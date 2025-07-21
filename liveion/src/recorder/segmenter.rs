@@ -182,7 +182,7 @@ impl Segmenter {
         if self.video_track_id.is_none() && config_ready {
             if let Some(adapter) = self.video_adapter.as_ref() {
                 if let Some(cfg) = adapter.codec_config() {
-                    if cfg.len() >= 1 {
+                    if !cfg.is_empty() {
                         // self.sps = Some(cfg[0].clone()); // Removed
                     }
                     if cfg.len() >= 2 {
@@ -377,7 +377,7 @@ impl Segmenter {
 
         // Represent duration in ISO8601 PT format with second-level precision
         let total_duration_secs = total_duration_ticks as f64 / self.timescale as f64;
-        let media_presentation_duration = format!("PT{:.3}S", total_duration_secs);
+        let media_presentation_duration = format!("PT{total_duration_secs:.3}S");
         let max_segment_duration = format!("PT{}S", self.duration_per_seg.as_secs());
         let min_buffer_time = if self.duration_per_seg.as_secs() * 3 > 0 {
             format!("PT{}S", self.duration_per_seg.as_secs() * 3)

@@ -251,7 +251,7 @@ impl Fmp4Writer {
         payload.extend_from_slice(&0u16.to_be_bytes());
 
         // samplerate 32-bit fixed (sampleRate<<16)
-        let fixed_rate = (self.sample_rate as u32) << 16;
+        let fixed_rate = self.sample_rate << 16;
         payload.extend_from_slice(&fixed_rate.to_be_bytes());
 
         // Minimal dOps box
@@ -333,8 +333,8 @@ fn build_tkhd(track_id: u32, width: u32, height: u32) -> Vec<u8> {
     be_u32(&mut payload, 0x4000_0000);
 
     // width/height 16.16 fixed
-    be_u32(&mut payload, (width << 16) as u32);
-    be_u32(&mut payload, (height << 16) as u32);
+    be_u32(&mut payload, width << 16);
+    be_u32(&mut payload, height << 16);
 
     make_box(b"tkhd", &payload)
 }
@@ -423,18 +423,14 @@ fn build_avcc(config_blobs: &[Vec<u8>]) -> Vec<u8> {
     let sps = &config_blobs[0];
     let pps_list = &config_blobs[1..];
 
-    let mut payload = Vec::new();
-    // configurationVersion, AVCProfileIndication, profile_compatibility, AVCLevelIndication
-    payload.push(1u8);
-    payload.push(*sps.get(1).unwrap_or(&0)); // profile
-    payload.push(*sps.get(2).unwrap_or(&0)); // compatibility
-    payload.push(*sps.get(3).unwrap_or(&0)); // level
-
-    // 6 bits reserved (all on) + 2 bits lengthSizeMinusOne (3 for 4-byte lengths)
-    payload.push(0xFFu8);
-
-    // 3 bits reserved + 5 bits numOfSequenceParameterSets (usually 1)
-    payload.push(0xE0u8 | 1);
+    let mut payload = vec![
+        1u8,                       // configurationVersion
+        *sps.get(1).unwrap_or(&0), // profile
+        *sps.get(2).unwrap_or(&0), // compatibility
+        *sps.get(3).unwrap_or(&0), // level
+        0xFFu8, // 6 bits reserved (all on) + 2 bits lengthSizeMinusOne (3 for 4-byte lengths)
+        0xE0u8 | 1, // 3 bits reserved + 5 bits numOfSequenceParameterSets (usually 1)
+    ];
 
     // SPS
     payload.extend_from_slice(&(sps.len() as u16).to_be_bytes());
@@ -486,8 +482,8 @@ fn make_box(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 /// * `seq_number`   – monotonically increasing sequence number (starts at 1)
 /// * `base_time`    – decode timestamp (DTS) of the first sample in this fragment
 /// * `samples`      – list of media samples already converted to length-prefixed
-///                     AVCC format (for AVC) or other 4-byte-length-prefixed
-///                     RAW format the decoder expects.
+///   AVCC format (for AVC) or other 4-byte-length-prefixed
+///   RAW format the decoder expects.
 fn _build_fragment_internal(
     track_id: u32,
     seq_number: u32,
@@ -600,7 +596,7 @@ fn be_u32(buf: &mut Vec<u8>, v: u32) {
 }
 #[inline]
 fn zeroes(buf: &mut Vec<u8>, n: usize) {
-    buf.extend(std::iter::repeat(0u8).take(n));
+    buf.extend(std::iter::repeat_n(0u8, n));
 }
 
 /// Convert an Annex-B NALU (with or without start code) to a 4-byte-length-prefixed AVCC buffer.
