@@ -13,7 +13,18 @@ urls = [
 ]
 
 [recorder]
+# Local filesystem (default)
 #root = "file://./records"
+
+# AWS S3 with explicit credentials
+#root = "s3://my-live777-bucket/recordings?region=us-east-1&access_key_id=AKIAIOSFODNN7EXAMPLE&secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+# AWS S3 with IAM role (recommended for EC2/ECS)
+#root = "s3://my-live777-bucket/recordings?region=us-east-1"
+
+# S3-compatible service (MinIO, Alibaba Cloud OSS, etc.)
+#root = "s3://my-live777-bucket/recordings?region=us-east-1&endpoint=https://oss-cn-hangzhou.aliyuncs.com&access_key_id=your-access-key&secret_access_key=your-secret-key"
+
 #auto_streams = []    
 
 # [[ice_servers]]

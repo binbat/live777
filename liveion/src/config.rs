@@ -209,7 +209,9 @@ pub struct RecorderConfig {
     #[serde(default)]
     pub auto_streams: Vec<String>,
 
-    /// OpenDAL Scheme
+    /// Storage URI. Supports:
+    /// - Local filesystem: file:///path/to/records
+    /// - S3: s3://bucket-name/path/prefix?region=us-east-1&access_key_id=xxx&secret_access_key=yyy&endpoint=xxx
     #[serde(default = "default_recorder_root")]
     pub root: String,
 }
