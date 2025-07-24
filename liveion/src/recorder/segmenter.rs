@@ -6,7 +6,7 @@ use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
 use anyhow::Result;
 use bytes::Bytes;
 use opendal::Operator;
-use tracing::{debug, info};
+use tracing::info;
 
 /// Default duration of each segment in seconds
 const DEFAULT_SEG_DURATION: u64 = 10;
@@ -278,7 +278,14 @@ impl Segmenter {
         self.video_track_id = Some(track_id);
         self.fmp4_writer = Some(fmp4_writer);
 
-        self.store_file("init.m4s", init_bytes).await?;
+        self.store_file("init.m4s", init_bytes).await.map_err(|e| {
+            tracing::error!(
+                "[segmenter] failed to store init.m4s for stream {}: {}",
+                self.stream,
+                e
+            );
+            e
+        })?;
         info!("[segmenter] {} init.m4s written", self.stream);
 
         // Generate or update the MPD manifest
@@ -305,10 +312,20 @@ impl Segmenter {
         );
 
         let init_bytes = writer.build_init_segment();
-        self.audio_writer = Some(writer);
+        self.store_file("audio_init.m4s", init_bytes)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "[segmenter] failed to store audio_init.m4s for stream {}: {}",
+                    self.stream,
+                    e
+                );
+                e
+            })?;
         self.audio_track_id = Some(track_id);
+        self.audio_writer = Some(writer);
 
-        self.store_file("audio_init.m4s", init_bytes).await?;
+        tracing::info!("[segmenter] {} audio_init.m4s written", self.stream);
         Ok(())
     }
 
@@ -335,7 +352,15 @@ impl Segmenter {
 
         let fragment = writer.build_fragment(self.seg_index, base_time, &self.samples);
         let filename = format!("seg_{:04}.m4s", self.seg_index);
-        self.store_file(&filename, fragment).await?;
+        self.store_file(&filename, fragment).await.map_err(|e| {
+            tracing::error!(
+                "[segmenter] failed to store video segment {} for stream {}: {}",
+                filename,
+                self.stream,
+                e
+            );
+            e
+        })?;
         info!("[segmenter] {} {} written", self.stream, filename);
 
         // Write audio fragment if any samples are available
@@ -353,7 +378,17 @@ impl Segmenter {
             let fragment_a =
                 writer.build_fragment(self.seg_index, audio_base_time, &self.audio_samples);
             let filename_a = format!("audio_seg_{:04}.m4s", self.seg_index);
-            self.store_file(&filename_a, fragment_a).await?;
+            self.store_file(&filename_a, fragment_a)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "[segmenter] failed to store audio segment {} for stream {}: {}",
+                        filename_a,
+                        self.stream,
+                        e
+                    );
+                    e
+                })?;
             self.audio_samples.clear();
         }
 
@@ -468,16 +503,69 @@ impl Segmenter {
             audio_section = audio_section,
         );
 
-        self.store_file("manifest.mpd", mpd_body.into_bytes()).await
+        self.store_file("manifest.mpd", mpd_body.into_bytes())
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "[segmenter] failed to store manifest.mpd for stream {}: {}",
+                    self.stream,
+                    e
+                );
+                e
+            })
     }
 
     async fn store_file(&self, name: &str, data: Vec<u8>) -> Result<()> {
         let path = format!("{}/{}", self.path_prefix, name);
-        let mut w = self.op.writer_with(&path).await?;
-        w.write(data).await?;
-        w.close().await?;
-        debug!("[segmenter] stored file {}", path);
-        Ok(())
+        let data_size = data.len();
+
+        tracing::debug!(
+            "[segmenter] storing file {} ({} bytes) for stream {}",
+            path,
+            data_size,
+            self.stream
+        );
+
+        match self.op.writer_with(&path).await {
+            Ok(mut w) => {
+                match w.write(data).await {
+                    Ok(_) => {
+                        match w.close().await {
+                            Ok(_) => {
+                                tracing::debug!(
+                                    "[segmenter] successfully stored file {} for stream {}",
+                                    path,
+                                    self.stream
+                                );
+                                Ok(())
+                            }
+                            Err(e) => {
+                                tracing::warn!("[segmenter] failed to close writer for file {} (stream {}): {}", path, self.stream, e);
+                                Err(e.into())
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[segmenter] failed to write data to file {} (stream {}): {}",
+                            path,
+                            self.stream,
+                            e
+                        );
+                        Err(e.into())
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[segmenter] failed to create writer for file {} (stream {}): {}",
+                    path,
+                    self.stream,
+                    e
+                );
+                Err(e.into())
+            }
+        }
     }
 }
 

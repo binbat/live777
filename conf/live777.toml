@@ -13,19 +13,37 @@ urls = [
 ]
 
 [recorder]
+# Stream name patterns for auto-recording, supports wildcards
+auto_streams = ["*"]  # Record all streams
+
+# Storage backend configuration
+[recorder.storage]
 # Local filesystem (default)
-#root = "file://./records"
+type = "fs"
+root = "./records"
 
 # AWS S3 with explicit credentials
-#root = "s3://my-live777-bucket/recordings?region=us-east-1&access_key_id=AKIAIOSFODNN7EXAMPLE&secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+#type = "s3"
+#bucket = "my-live777-bucket"
+#root = "/recordings"
+#region = "us-east-1"
+#access_key_id = "AKIAIOSFODNN7EXAMPLE"
+#secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
 # AWS S3 with IAM role (recommended for EC2/ECS)
-#root = "s3://my-live777-bucket/recordings?region=us-east-1"
+#type = "s3"
+#bucket = "my-live777-bucket"
+#root = "/recordings"
+#region = "us-east-1"
 
-# S3-compatible service (MinIO, Alibaba Cloud OSS, etc.)
-#root = "s3://my-live777-bucket/recordings?region=us-east-1&endpoint=https://oss-cn-hangzhou.aliyuncs.com&access_key_id=your-access-key&secret_access_key=your-secret-key"
-
-#auto_streams = []    
+# Alibaba Cloud OSS
+#type = "oss"
+#bucket = "my-oss-bucket"
+#root = "/recordings"
+#region = "oss-cn-hangzhou"
+#endpoint = "https://oss-cn-hangzhou.aliyuncs.com"
+#access_key_id = "your-access-key"
+#access_key_secret = "your-access-secret"    
 
 # [[ice_servers]]
 # urls = [ "turn:turn.22333.fun", "turn:cn.22333.fun" ]

@@ -26,10 +26,22 @@ impl RecordingTask {
         // Get storage Operator
         let op = {
             let guard = STORAGE.read().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or(anyhow!("storage operator not initialized"))?
+            match guard.as_ref() {
+                Some(op) => {
+                    tracing::debug!(
+                        "[recorder] obtained storage operator for stream {}",
+                        stream_name
+                    );
+                    op.clone()
+                }
+                None => {
+                    let err_msg = format!(
+                        "storage operator not initialized for stream {stream_name}"
+                    );
+                    tracing::error!("[recorder] {}", err_msg);
+                    return Err(anyhow!(err_msg));
+                }
+            }
         };
 
         // Generate directory prefix /<stream>/<yyyy>/<MM>/<DD>
@@ -42,8 +54,32 @@ impl RecordingTask {
             now.day()
         );
 
+        tracing::info!(
+            "[recorder] initializing recording for stream {} with path prefix: {}",
+            stream_name,
+            path_prefix
+        );
+
         // Initialize Segmenter
-        let mut segmenter = Segmenter::new(op, stream_name.clone(), path_prefix).await?;
+        let mut segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await
+        {
+            Ok(seg) => {
+                tracing::debug!(
+                    "[recorder] segmenter initialized for stream {} at path {}",
+                    stream_name,
+                    path_prefix
+                );
+                seg
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[recorder] failed to initialize segmenter for stream {}: {}",
+                    stream_name,
+                    e
+                );
+                return Err(e);
+            }
+        };
 
         // Obtain PeerForward from Manager
         let peer_forward_opt = manager.get_forward(&stream_name).await;
@@ -154,7 +190,9 @@ impl RecordingTask {
                             };
 
                             prev_ts_video = Some(pkt_ts);
-                            let _ = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await;
+                            if let Err(e) = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await {
+                                tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                            }
                             frame_cnt_video += 1;
                         }
                     },
@@ -173,7 +211,9 @@ impl RecordingTask {
                                     960 // Opus 48kHz with 20ms frame size
                                 };
                                 prev_ts_audio = Some(pkt_ts);
-                                let _ = segmenter.push_opus(Bytes::from(payload), duration_ticks).await;
+                                if let Err(e) = segmenter.push_opus(Bytes::from(payload), duration_ticks).await {
+                                    tracing::warn!("[recorder] {} failed to process Opus frame (storage error?): {}", stream_name_cloned, e);
+                                }
                                 frame_cnt_audio += 1;
                             }
                             Err(_) => {

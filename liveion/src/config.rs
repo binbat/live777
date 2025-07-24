@@ -203,30 +203,94 @@ impl Config {
 }
 
 #[cfg(feature = "recorder")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RecorderConfig {
     /// List of stream names to automatically record
     #[serde(default)]
     pub auto_streams: Vec<String>,
 
-    /// Storage URI. Supports:
-    /// - Local filesystem: file:///path/to/records
-    /// - S3: s3://bucket-name/path/prefix?region=us-east-1&access_key_id=xxx&secret_access_key=yyy&endpoint=xxx
-    #[serde(default = "default_recorder_root")]
-    pub root: String,
+    /// Storage backend configuration
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 #[cfg(feature = "recorder")]
-impl Default for RecorderConfig {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum StorageConfig {
+    /// Local filesystem storage
+    Fs {
+        /// Root path for recordings
+        #[serde(default = "default_fs_root")]
+        root: String,
+    },
+    /// AWS S3 compatible storage
+    S3 {
+        /// S3 bucket name
+        bucket: String,
+        /// Root path within bucket
+        #[serde(default = "default_s3_root")]
+        root: String,
+        /// AWS region
+        #[serde(default)]
+        region: Option<String>,
+        /// Custom endpoint for S3-compatible services
+        #[serde(default)]
+        endpoint: Option<String>,
+        /// Access key ID
+        #[serde(default)]
+        access_key_id: Option<String>,
+        /// Secret access key
+        #[serde(default)]
+        secret_access_key: Option<String>,
+        /// Session token for temporary credentials
+        #[serde(default)]
+        session_token: Option<String>,
+        /// Disable config/credential auto-loading
+        #[serde(default)]
+        disable_config_load: bool,
+        /// Enable virtual host style addressing
+        #[serde(default)]
+        enable_virtual_host_style: bool,
+    },
+    /// Alibaba Cloud OSS storage
+    Oss {
+        /// OSS bucket name
+        bucket: String,
+        /// Root path within bucket
+        #[serde(default = "default_s3_root")]
+        root: String,
+        /// OSS region
+        region: String,
+        /// OSS endpoint
+        endpoint: String,
+        /// Access key ID
+        #[serde(default)]
+        access_key_id: Option<String>,
+        /// Access key secret
+        #[serde(default)]
+        access_key_secret: Option<String>,
+        /// Security token for STS
+        #[serde(default)]
+        security_token: Option<String>,
+    },
+}
+
+#[cfg(feature = "recorder")]
+impl Default for StorageConfig {
     fn default() -> Self {
-        Self {
-            auto_streams: Vec::new(),
-            root: default_recorder_root(),
+        Self::Fs {
+            root: default_fs_root(),
         }
     }
 }
 
 #[cfg(feature = "recorder")]
-fn default_recorder_root() -> String {
-    "file://./records".to_string()
+fn default_fs_root() -> String {
+    "./records".to_string()
+}
+
+#[cfg(feature = "recorder")]
+fn default_s3_root() -> String {
+    "/".to_string()
 }
