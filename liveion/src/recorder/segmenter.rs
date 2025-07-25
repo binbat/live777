@@ -526,46 +526,33 @@ impl Segmenter {
             self.stream
         );
 
-        match self.op.writer_with(&path).await {
-            Ok(mut w) => {
-                match w.write(data).await {
-                    Ok(_) => {
-                        match w.close().await {
-                            Ok(_) => {
-                                tracing::debug!(
-                                    "[segmenter] successfully stored file {} for stream {}",
-                                    path,
-                                    self.stream
-                                );
-                                Ok(())
-                            }
-                            Err(e) => {
-                                tracing::warn!("[segmenter] failed to close writer for file {} (stream {}): {}", path, self.stream, e);
-                                Err(e.into())
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "[segmenter] failed to write data to file {} (stream {}): {}",
-                            path,
-                            self.stream,
-                            e
-                        );
-                        Err(e.into())
-                    }
-                }
-            }
-            Err(e) => {
+        // Clone what we need for the background task.
+        let op_clone = self.op.clone();
+        let stream_clone = self.stream.clone();
+        let path_clone = path.clone();
+
+        // Spawn the actual write in a detached task so that slow/object‐storage latency does
+        // not block the real‐time RTP processing loop. Any error will be logged.
+        tokio::spawn(async move {
+            if let Err(e) = op_clone.write(&path_clone, data).await {
                 tracing::warn!(
-                    "[segmenter] failed to create writer for file {} (stream {}): {}",
-                    path,
-                    self.stream,
+                    "[segmenter] failed to write file {} (stream {}): {}",
+                    path_clone,
+                    stream_clone,
                     e
                 );
-                Err(e.into())
+            } else {
+                tracing::debug!(
+                    "[segmenter] successfully stored file {} for stream {}",
+                    path_clone,
+                    stream_clone
+                );
             }
-        }
+        });
+
+        // Return immediately. The caller does not need to wait for persistence; worst-case we
+        // lose one fragment, which is acceptable for live streaming.
+        Ok(())
     }
 }
 
