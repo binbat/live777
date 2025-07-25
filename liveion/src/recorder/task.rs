@@ -35,9 +35,8 @@ impl RecordingTask {
                     op.clone()
                 }
                 None => {
-                    let err_msg = format!(
-                        "storage operator not initialized for stream {stream_name}"
-                    );
+                    let err_msg =
+                        format!("storage operator not initialized for stream {stream_name}");
                     tracing::error!("[recorder] {}", err_msg);
                     return Err(anyhow!(err_msg));
                 }
