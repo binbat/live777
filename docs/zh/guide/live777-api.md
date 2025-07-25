@@ -170,3 +170,16 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## 录制
+
+### 开始录制流
+
+`POST` `/api/streams/:streamId/record`
+
+开始录制指定的流。流必须处于活跃状态（有发布者）才能开始录制。
+
+Request: 无需请求体
+
+Response: [204] - 录制启动成功
+
+参考： [Recorder](recorder)

@@ -170,3 +170,17 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Recorder
+
+### Start Recording a Stream
+
+`POST` `/api/streams/:streamId/record`
+
+Starts recording the specified stream. The stream must be active (have a publisher) for recording to begin.
+
+Request: No body required
+
+Response: [204] - Recording started successfully
+
+Reference: [Recorder](recorder)
+
