@@ -2,7 +2,43 @@
 
 Live777 Cluster manager.
 
-If I have so many servers (live777 core cluster), I need this manage them all.
+If I have so many servers (live777 core cluster), I need this manage them all. Liveman also provides centralized recording metadata management and playback services for the entire cluster.
+
+## Database Configuration
+
+Liveman now supports PostgreSQL for storing recording metadata. This enables persistent storage of segment information across the cluster.
+
+```toml
+[database]
+# PostgreSQL connection URL
+# Default: postgresql://localhost/live777
+# Environment variable: DATABASE_URL
+url = "postgresql://user:password@localhost:5432/live777"
+
+# Maximum number of database connections
+# Default: 10
+max_connections = 10
+
+# Connection timeout in seconds
+# Default: 30
+connect_timeout = 30
+```
+
+## Recording System
+
+The recording system stores segment metadata in the database while keeping the actual media files in storage (filesystem, S3, etc.).
+
+### Segment Metadata Schema
+
+Each recorded segment contains:
+- **ID**: Unique identifier (UUID)
+- **Node Alias**: Which Live777 node recorded it
+- **Stream**: Stream identifier
+- **Timestamps**: Start/end timestamps (microseconds)
+- **Duration**: Segment duration in milliseconds
+- **Path**: Storage path to the media file
+- **Keyframe**: Whether segment starts with keyframe
+- **Created At**: When metadata was stored
 
 ## Authentication
 

@@ -52,6 +52,19 @@
 # listen = "127.0.0.1:1077"
 # domain = "net4mqtt.local"
 
+# Database configuration for recording metadata storage
+# [database]
+# PostgreSQL connection URL
+# Default: postgresql://localhost/live777
+# Env: DATABASE_URL
+# url = "postgresql://user:password@localhost:5432/live777"
+# Maximum number of database connections
+# Default: 10
+# max_connections = 10
+# Connection timeout in seconds
+# Default: 30
+# connect_timeout = 30
+
 # [[nodes]]
 # Globally unique id
 # alias = "static-0"

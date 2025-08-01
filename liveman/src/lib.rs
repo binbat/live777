@@ -9,6 +9,7 @@ use tracing::{error, info, info_span};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
+use crate::service::database::DatabaseService;
 use crate::store::{Node, NodeKind, Storage};
 
 #[cfg(feature = "webui")]
@@ -18,9 +19,12 @@ struct Assets;
 
 mod admin;
 pub mod config;
+pub mod entity;
 mod error;
+pub mod migration;
 mod result;
 mod route;
+pub mod service;
 mod store;
 mod tick;
 
@@ -29,6 +33,12 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     info!("Server listening on {}", listener.local_addr().unwrap());
+    
+    // Initialize database connection
+    let database_service = DatabaseService::new(&cfg.database)
+        .await
+        .expect("Failed to initialize database connection");
+    
     let client_req = reqwest::Client::builder();
     let client_mem = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(500))
@@ -141,6 +151,7 @@ where
         config: cfg.clone(),
         client: client_req.build().unwrap(),
         storage: store,
+        database: database_service,
     };
 
     let app = Router::new()
@@ -211,4 +222,5 @@ struct AppState {
     config: Config,
     client: reqwest::Client,
     storage: Storage,
+    database: DatabaseService,
 }
