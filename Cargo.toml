@@ -42,6 +42,7 @@ members = [
     "libs/libwish",
     "libs/signal",
     "libs/net4mqtt",
+    "libs/storage",
     "liveion",
     "liveman",
     "livetwo",
@@ -91,6 +92,8 @@ livetwo = { path = "livetwo" }
 net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
 
+storage = { path = "libs/storage" }
+
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
@@ -102,5 +105,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 webui = ["liveion/webui", "liveman/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
-recorder = ["liveion/recorder"]
+recorder = ["liveion/recorder", "liveman/recorder"]
 

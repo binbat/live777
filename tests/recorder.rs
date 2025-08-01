@@ -1,49 +1,5 @@
-use liveion::config::{RecorderConfig, StorageConfig};
-use liveion::recorder::create_storage_operator;
-
-#[tokio::test]
-async fn test_fs_storage_config() {
-    let config = StorageConfig::Fs {
-        root: "./test_records".to_string(),
-    };
-
-    let result = create_storage_operator(&config);
-    assert!(result.is_ok(), "Failed to create FS storage operator");
-}
-
-#[tokio::test]
-async fn test_s3_storage_config() {
-    let config = StorageConfig::S3 {
-        bucket: "test-bucket".to_string(),
-        root: "/test".to_string(),
-        region: Some("us-east-1".to_string()),
-        endpoint: Some("http://localhost:9000".to_string()),
-        access_key_id: Some("minioadmin".to_string()),
-        secret_access_key: Some("minioadmin".to_string()),
-        session_token: None,
-        disable_config_load: true,
-        enable_virtual_host_style: false,
-    };
-
-    let result = create_storage_operator(&config);
-    assert!(result.is_ok(), "Failed to create S3 storage operator");
-}
-
-#[tokio::test]
-async fn test_oss_storage_config() {
-    let config = StorageConfig::Oss {
-        bucket: "test-bucket".to_string(),
-        root: "/test".to_string(),
-        region: "oss-cn-hangzhou".to_string(),
-        endpoint: "https://oss-cn-hangzhou.aliyuncs.com".to_string(),
-        access_key_id: Some("test-key".to_string()),
-        access_key_secret: Some("test-secret".to_string()),
-        security_token: None,
-    };
-
-    let result = create_storage_operator(&config);
-    assert!(result.is_ok(), "Failed to create OSS storage operator");
-}
+use liveion::config::RecorderConfig;
+use storage::StorageConfig;
 
 #[test]
 fn test_recorder_config_serialization() {
@@ -75,20 +31,20 @@ fn test_recorder_config_serialization() {
 }
 
 #[test]
-fn test_default_config() {
+fn test_default_recorder_config() {
     let config = RecorderConfig::default();
     assert!(config.auto_streams.is_empty());
 
     match config.storage {
         StorageConfig::Fs { root } => {
-            assert_eq!(root, "./records");
+            assert_eq!(root, "./storage");
         }
         _ => panic!("Default storage should be FS"),
     }
 }
 
 #[test]
-fn test_toml_config_parsing() {
+fn test_recorder_toml_config_parsing() {
     let toml_str = r#"
 auto_streams = ["*"]
 
@@ -123,7 +79,7 @@ enable_virtual_host_style = true
 }
 
 #[test]
-fn test_oss_config_parsing() {
+fn test_recorder_oss_config_parsing() {
     let toml_str = r#"
 auto_streams = []
 

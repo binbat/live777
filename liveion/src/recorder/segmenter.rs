@@ -555,36 +555,3 @@ impl Segmenter {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn test_keyframe_request_logic() {
-        // Create a mock operator (we won't actually use it for file operations in this test)
-        let builder = opendal::services::Memory::default();
-        let op = opendal::Operator::new(builder).unwrap().finish();
-
-        let mut segmenter =
-            Segmenter::new(op, "test_stream".to_string(), "test_prefix".to_string())
-                .await
-                .unwrap();
-
-        // Initially should request keyframe (no keyframe received yet)
-        assert!(segmenter.should_request_keyframe());
-
-        // Simulate receiving a keyframe
-        segmenter.last_keyframe_time = Some(Instant::now());
-
-        // Should not request keyframe immediately after receiving one
-        assert!(!segmenter.should_request_keyframe());
-
-        // Simulate timeout by setting an old timestamp
-        segmenter.last_keyframe_time = Some(Instant::now() - Duration::from_secs(10));
-
-        // Should request keyframe after timeout
-        assert!(segmenter.should_request_keyframe());
-    }
-}

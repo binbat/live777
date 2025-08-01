@@ -11,6 +11,7 @@ crate-type = ["lib"]
 
 [dependencies]
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
+storage = { path = "../libs/storage", optional = true }
 
 api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
@@ -42,4 +43,5 @@ url = "2.5"
 [features]
 webui = ["dep:rust-embed"]
 net4mqtt = ["dep:net4mqtt"]
+recorder = ["dep:storage"]
 
