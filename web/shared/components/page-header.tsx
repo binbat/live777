@@ -1,11 +1,17 @@
 import { useContext } from 'preact/hooks';
-import { Button, Dropdown, Navbar } from 'react-daisyui';
+import { Button, Dropdown, Navbar, Tabs } from 'react-daisyui';
 import { ChevronDownIcon } from '@heroicons/react/24/solid';
+import { Monitor, Calendar } from 'lucide-react';
 
 import Logo from '/logo.svg';
 import { TokenContext } from '../context';
 
-export function PageHeader() {
+interface PageHeaderProps {
+    currentView?: string;
+    onNavigate?: (view: string) => void;
+}
+
+export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
     const tokenContext = useContext(TokenContext);
 
     const handleOpenDebuggerPage = () => {
@@ -36,6 +42,29 @@ export function PageHeader() {
                     />
                     <span class="text-xl font-bold">Live777</span>
                 </div>
+
+                {/* Navigation Tabs */}
+                {onNavigate && (
+                    <div className="flex-1 flex justify-center">
+                        <Tabs variant="boxed" size="sm">
+                            <Tabs.Tab 
+                                active={currentView === 'streams'}
+                                onClick={() => onNavigate('streams')}
+                            >
+                                <Monitor className="w-4 h-4 mr-2" />
+                                Streams
+                            </Tabs.Tab>
+                            <Tabs.Tab 
+                                active={currentView === 'recordings'}
+                                onClick={() => onNavigate('recordings')}
+                            >
+                                <Calendar className="w-4 h-4 mr-2" />
+                                Recordings
+                            </Tabs.Tab>
+                        </Tabs>
+                    </div>
+                )}
+
                 <Dropdown end>
                     <Button
                         tag="label"

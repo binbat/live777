@@ -78,3 +78,47 @@ export interface StreamTokenResponse {
 export function createStreamToken(req: CreateStreamTokenRequest) {
     return w.url('/api/token').post(req).json<StreamTokenResponse>();
 }
+
+// Recording & Playback APIs
+export interface RecordingStreamsResponse {
+    streams: string[];
+}
+
+export function getRecordingStreams() {
+    return w.url('/api/record/streams').get().json<RecordingStreamsResponse>();
+}
+
+export interface Segment {
+    id: string;
+    start_ts: number;
+    end_ts: number;
+    duration_ms: number;
+    path: string;
+    is_keyframe: boolean;
+    created_at: string;
+}
+
+export interface TimelineResponse {
+    stream: string;
+    total_count: number;
+    segments: Segment[];
+}
+
+export interface TimelineQuery {
+    start_ts?: number;
+    end_ts?: number;
+    limit?: number;
+    offset?: number;
+}
+
+export function getTimeline(stream: string, query?: TimelineQuery) {
+    return w.url(`/api/record/${stream}/timeline`).query(query).get().json<TimelineResponse>();
+}
+
+export function getMPD(stream: string, query?: { start_ts?: number; end_ts?: number }) {
+    return w.url(`/api/record/${stream}/mpd`).query(query).get().text();
+}
+
+export function getSegmentUrl(path: string) {
+    return `/api/record/object/${encodeURIComponent(path)}`;
+}

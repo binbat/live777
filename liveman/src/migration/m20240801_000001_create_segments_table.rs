@@ -6,6 +6,7 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Create the table first
         manager
             .create_table(
                 Table::create()
@@ -30,21 +31,34 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(Expr::current_timestamp()),
                     )
-                    .index(
-                        Index::create()
-                            .name("idx_segments_stream_time")
-                            .col(Segments::Stream)
-                            .col(Segments::StartTs)
-                            .col(Segments::EndTs),
-                    )
-                    .index(
-                        Index::create()
-                            .name("idx_segments_node_alias")
-                            .col(Segments::NodeAlias),
-                    )
                     .to_owned(),
             )
-            .await
+            .await?;
+
+        // Create indices separately
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_segments_stream_time")
+                    .table(Segments::Table)
+                    .col(Segments::Stream)
+                    .col(Segments::StartTs)
+                    .col(Segments::EndTs)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_segments_node_alias")
+                    .table(Segments::Table)
+                    .col(Segments::NodeAlias)
+                    .to_owned(),
+            )
+            .await?;
+
+        Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {

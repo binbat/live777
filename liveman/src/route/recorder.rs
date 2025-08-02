@@ -31,9 +31,9 @@ pub fn route() -> Router<AppState> {
     Router::new()
         .route("/api/segments/report", post(report_segments))
         .route("/api/record/streams", get(get_streams))
-        .route("/api/record/:stream/timeline", get(get_timeline))
-        .route("/api/record/:stream/mpd", get(get_mpd))
-        .route("/api/record/object/*path", get(get_segment))
+        .route("/api/record/{stream}/timeline", get(get_timeline))
+        .route("/api/record/{stream}/mpd", get(get_mpd))
+        .route("/api/record/object/{*path}", get(get_segment))
 }
 
 async fn report_segments(

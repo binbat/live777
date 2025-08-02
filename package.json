@@ -23,6 +23,8 @@
     "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
     "@nuintun/qrcode": "^4.1.18",
     "@heroicons/react": "^2.2.0",
+    "dashjs": "^4.7.4",
+    "lucide-react": "^0.460.0",
     "preact": "^10.26.9",
     "react-daisyui": "^5.0.5",
     "typescript-event-target": "^1.1.1",
