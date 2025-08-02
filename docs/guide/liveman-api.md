@@ -22,7 +22,9 @@ Response: [204]
 
 Response: [204]
 
-## Recording APIs
+## Recording & Playback
+
+Recording and playback related APIs (requires `recorder` feature enabled)
 
 ### Report Segment Metadata
 
@@ -126,10 +128,10 @@ Response: [200] Binary media data or [302] redirect to storage URL
 
 Response: [200]
 
-- `alias`: String, Alias must unique
-- `url`: String, Node API URL
-- `pub_max`: Int16, max publish count
-- `sub_max`: Int16, max subscribe count
+- `alias`: String, Alias must be unique
+- `url`: String, Node API URL  
+- `pub_max`: Int16, Maximum publish count
+- `sub_max`: Int16, Maximum subscribe count
 - `status`: StringEnum("running" | "stopped"), Node status
 
 For Example:

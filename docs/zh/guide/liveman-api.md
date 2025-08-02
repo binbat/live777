@@ -67,67 +67,56 @@ Response: [204]
 
 ### 时间轴查询
 
-`GET` `/api/record/:streamId/timeline`
+`GET` `/api/record/{stream}/timeline?start_ts=1721827200000000&end_ts=1721827300000000&limit=100&offset=0`
 
 **查询参数**:
-- `start_ts`: 开始时间戳（可选）
-- `end_ts`: 结束时间戳（可选）
-- `limit`: 限制数量（可选）
-- `offset`: 偏移量（可选）
+- `start_ts` (可选): 开始时间戳，以微秒为单位
+- `end_ts` (可选): 结束时间戳，以微秒为单位
+- `limit` (可选): 返回的最大分片数量
+- `offset` (可选): 跳过的分片数量
 
 **响应**: [200]
 ```json
 {
   "stream": "camera01",
-  "segments": [
-    {
-      "id": "01234567-89ab-cdef-0123-456789abcdef",
-      "start_ts": 1721827200000000,
-      "end_ts": 1721827201000000,
-      "duration_ms": 1000,
-      "path": "camera01/2024/01/01/segment_00042.m4s",
-      "is_keyframe": true,
-      "created_at": "2024-07-24T10:00:00Z"
-    }
-  ],
-  "total_count": 1
+  "total_count": 150,
+  "segments": [{
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "start_ts": 1721827200000000,
+    "end_ts": 1721827201000000,
+    "duration_ms": 1000,
+    "path": "camera01/2024/01/01/segment_00042.m4s", 
+    "is_keyframe": true,
+    "created_at": "2024-01-01T12:00:00Z"
+  }]
 }
 ```
 
 ### MPEG-DASH 清单
 
-`GET` `/api/record/:streamId/mpd`
+`GET` `/api/record/{stream}/mpd?start_ts=1721827200000000&end_ts=1721827300000000`
 
 **查询参数**:
 - `start_ts`: 开始时间戳（可选）
 - `end_ts`: 结束时间戳（可选）
 
-**响应**: [200] Content-Type: `application/dash+xml`
+**响应**: [200] `application/dash+xml`
 ```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT60.000S">
-  <Period>
-    <AdaptationSet mimeType="video/mp4" codecs="avc1.42c01e">
-      <Representation id="video" bandwidth="1000000">
-        <SegmentList>
-          <SegmentURL media="/api/record/object/camera01/2024/01/01/segment_00042.m4s"/>
-        </SegmentList>
-      </Representation>
-    </AdaptationSet>
-  </Period>
+<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" ...>
+  <!-- MPEG-DASH manifest content -->
 </MPD>
 ```
 
-### 分片文件代理
+### 获取分片文件
 
-`GET` `/api/record/object/*path`
+代理访问录制的分片文件。
 
-直接代理访问存储在后端的录制分片文件。
+`GET` `/api/record/object/{path}`
 
-**响应**: [200] 二进制文件内容，Content-Type 根据文件扩展名自动确定：
-- `.m4s` → `video/mp4`
-- `.mp4` → `video/mp4` 
-- `.mpd` → `application/dash+xml`
+路径参数: 分片文件的存储路径（URL编码）
+
+**响应**: [200] 二进制媒体数据 或 [302] 重定向到存储URL
 
 ## Node
 
@@ -171,9 +160,9 @@ Response: [200]
 
 ## Stream
 
-### Get all Stream
+### 获取所有流
 
-**API 说明：获取所有节点合并后的流列表​​**
+**此API将合并所有节点的流**
 
 `GET` `/api/streams/`
 
@@ -275,9 +264,9 @@ Response: [200]
 ]
 ```
 
-### Get a Stream Details
+### 获取流详情
 
-**​API 说明：获取指定流在所有节点上的信息​​**
+**此API将返回指定流在所有节点上的信息**
 
 `GET` `/api/streams/:streamId`
 
