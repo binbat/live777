@@ -19,6 +19,7 @@ struct Assets;
 
 mod admin;
 pub mod config;
+pub mod dto;
 pub mod entity;
 mod error;
 pub mod migration;

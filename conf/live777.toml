@@ -45,6 +45,17 @@ root = "./records"
 #access_key_id = "your-access-key"
 #access_key_secret = "your-access-secret"    
 
+# Liveman metadata reporting configuration
+# [recorder.liveman]
+# URL of the Liveman server for reporting segment metadata
+# url = "http://liveman.example.com:8888"
+# Node alias to identify this Live777 instance
+# node_alias = "live777-node-001"
+# Number of retry attempts for failed reports (default: 3)
+# retry_attempts = 3
+# Timeout in seconds for each report request (default: 10)
+# report_timeout = 10
+
 # [[ice_servers]]
 # urls = [ "turn:turn.22333.fun", "turn:cn.22333.fun" ]
 # username = "live777"

@@ -16,6 +16,7 @@ fn test_recorder_config_serialization() {
             disable_config_load: false,
             enable_virtual_host_style: true,
         },
+        liveman: None,
     };
 
     let serialized = toml::to_string(&config).expect("Failed to serialize config");
@@ -34,6 +35,7 @@ fn test_recorder_config_serialization() {
 fn test_default_recorder_config() {
     let config = RecorderConfig::default();
     assert!(config.auto_streams.is_empty());
+    assert!(config.liveman.is_none());
 
     match config.storage {
         StorageConfig::Fs { root } => {

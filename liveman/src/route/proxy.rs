@@ -13,6 +13,7 @@ use api::response::Stream;
 
 use crate::route::cascade;
 use crate::route::node;
+use crate::route::recorder;
 use crate::route::stream;
 use crate::store::Server;
 use crate::{error::AppError, result::Result, AppState};
@@ -48,6 +49,7 @@ pub fn route() -> Router<AppState> {
         .route("/api/streams/{stream}", get(stream::show))
         .route("/api/streams/{stream}", post(stream::create))
         .route("/api/streams/{stream}", delete(stream::destroy))
+        .merge(recorder::route())
 }
 
 async fn api_whip(

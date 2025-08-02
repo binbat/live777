@@ -212,4 +212,36 @@ pub struct RecorderConfig {
     /// Storage backend configuration
     #[serde(default)]
     pub storage: storage::StorageConfig,
+
+    /// Liveman reporting configuration  
+    #[serde(default)]
+    pub liveman: Option<LivemanConfig>,
+}
+
+#[cfg(feature = "recorder")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LivemanConfig {
+    /// URL of the Liveman server for reporting segment metadata
+    pub url: String,
+    
+    /// Node alias to identify this Live777 instance
+    pub node_alias: String,
+    
+    /// Number of retry attempts for failed reports
+    #[serde(default = "default_retry_attempts")]
+    pub retry_attempts: u32,
+    
+    /// Timeout in seconds for each report request
+    #[serde(default = "default_report_timeout")]
+    pub report_timeout: u64,
+}
+
+#[cfg(feature = "recorder")]
+fn default_retry_attempts() -> u32 {
+    3
+}
+
+#[cfg(feature = "recorder")]
+fn default_report_timeout() -> u64 {
+    10
 }

@@ -9,6 +9,38 @@ liveion 的 Recorder 是一个可选功能，用于将实时流自动录制为 M
 | `Fragmented MP4`   | `H264` | `Opus` |
 | `WebM`   |   |  |
 
+## Liveman 集成 {#liveman}
+
+录制器可以与 [Liveman](/zh/guide/liveman) 集成，为整个 Live777 集群提供集中化的元数据管理和回放服务。
+
+### 元数据上报
+
+当启用 Liveman 集成时，录制器会自动向 Liveman 服务器上报分片元数据，包括：
+
+- 流标识符和节点别名
+- 分片时间戳（开始/结束时间，以微秒为单位）
+- 分片时长和文件路径
+- 关键帧信息
+
+这使得集群范围内的录制管理和基于时间轴的回放成为可能。
+
+### 配置
+
+```toml
+[recorder.liveman]
+# Liveman 服务器的 URL，用于上报分片元数据
+url = "http://liveman.example.com:8888"
+# 节点别名，用于标识此 Live777 实例
+node_alias = "live777-node-001"
+# 上报失败时的重试次数（默认：3）
+retry_attempts = 3
+# 每次上报请求的超时时间，以秒为单位（默认：10）
+report_timeout = 10
+```
+::tips
+Liveman 配置是可选的。如果未配置，录制器将以纯本地模式运行。
+::
+
 ## 配置说明 {#config}
 
 在 `live777.toml` 中配置录制参数：
@@ -23,6 +55,11 @@ auto_streams = ["*"]  # 录制所有流
 [recorder.storage]
 type = "fs"  # 存储类型: "fs", "s3", 或 "oss"
 root = "./records"  # 录制文件根路径
+
+# 可选：Liveman 集成用于元数据上报
+[recorder.liveman]
+url = "http://liveman.example.com:8888"
+node_alias = "live777-node-001"
 ```
 
 ## 存储后端 {#storage}

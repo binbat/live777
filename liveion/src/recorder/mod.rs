@@ -8,6 +8,7 @@ use opendal::Operator;
 #[cfg(feature = "recorder")]
 use storage::init_operator;
 
+use crate::config::LivemanConfig;
 use crate::hook::{Event, StreamEventType};
 use crate::stream::manager::Manager;
 
@@ -25,10 +26,24 @@ static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =
 
 static STORAGE: Lazy<RwLock<Option<Operator>>> = Lazy::new(|| RwLock::new(None));
 
+static LIVEMAN_CONFIG: Lazy<RwLock<Option<LivemanConfig>>> = Lazy::new(|| RwLock::new(None));
+
 /// Initialize recorder event listener.
 #[cfg(feature = "recorder")]
 pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
     let manager_clone = manager.clone();
+
+    // Store Liveman configuration globally
+    {
+        let mut liveman_config_writer = LIVEMAN_CONFIG.write().await;
+        *liveman_config_writer = cfg.liveman.clone();
+        if cfg.liveman.is_some() {
+            tracing::info!(
+                "[recorder] Liveman reporting enabled for node: {}",
+                cfg.liveman.as_ref().unwrap().node_alias
+            );
+        }
+    }
 
     // Initialize storage Operator
     {
