@@ -40,6 +40,26 @@ where
         .await
         .expect("Failed to initialize database connection");
     
+    // Initialize file storage operator if recorder feature is enabled
+    #[cfg(feature = "recorder")]
+    let file_storage = if cfg!(feature = "recorder") {
+        match storage::init_operator(&cfg.recorder.storage).await {
+            Ok(operator) => {
+                info!("File storage initialized successfully");
+                Some(operator)
+            }
+            Err(e) => {
+                error!("Failed to initialize file storage: {}, continuing without file storage", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    
+    #[cfg(not(feature = "recorder"))]
+    let file_storage: Option<()> = None;
+    
     let client_req = reqwest::Client::builder();
     let client_mem = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(500))
@@ -153,6 +173,7 @@ where
         client: client_req.build().unwrap(),
         storage: store,
         database: database_service,
+        file_storage,
     };
 
     let app = Router::new()
@@ -224,4 +245,8 @@ struct AppState {
     client: reqwest::Client,
     storage: Storage,
     database: DatabaseService,
+    #[cfg(feature = "recorder")]
+    file_storage: Option<opendal::Operator>,
+    #[cfg(not(feature = "recorder"))]
+    file_storage: Option<()>,
 }

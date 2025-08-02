@@ -2280,6 +2280,7 @@ dependencies = [
  "http-log",
  "mime_guess",
  "net4mqtt",
+ "opendal",
  "reqwest",
  "rust-embed",
  "sea-orm",

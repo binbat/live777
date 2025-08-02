@@ -51,8 +51,11 @@ sea-orm = { version = "1.1", features = [
 ] }
 sea-orm-migration = "1.0"
 
+# Optional OpenDAL for segment file access when recorder feature is enabled
+opendal = { version = "0.54.0", optional = true }
+
 [features]
 webui = ["dep:rust-embed"]
 net4mqtt = ["dep:net4mqtt"]
-recorder = ["dep:storage"]
+recorder = ["dep:storage", "dep:opendal"]
 

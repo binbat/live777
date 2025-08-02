@@ -38,7 +38,9 @@ retry_attempts = 3
 report_timeout = 10
 ```
 
-**Note**: Liveman configuration is optional. If not configured, the recorder operates in local-only mode.
+::: tip
+Liveman configuration is optional. If not configured, the recorder operates in local-only mode.
+:::
 
 ## Configuration {#config}
 

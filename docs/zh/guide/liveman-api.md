@@ -22,6 +22,113 @@ Response: [204]
 
 Response: [204]
 
+## Recording & Playback
+
+录制和回放相关API（需要启用 `recorder` 特性）
+
+### 分片元数据上报
+
+`POST` `/api/segments/report`
+
+**请求体**:
+```json
+{
+  "node_alias": "live777-node-001",
+  "stream": "camera01",
+  "segments": [{
+    "start_ts": 1721827200000000,
+    "end_ts": 1721827201000000,
+    "duration_ms": 1000,
+    "path": "camera01/2024/01/01/segment_00042.m4s",
+    "is_keyframe": true
+  }]
+}
+```
+
+**响应**: [200]
+```json
+{
+  "success": true,
+  "message": "Segments processed successfully",
+  "processed_count": 1
+}
+```
+
+### 录制流列表
+
+`GET` `/api/record/streams`
+
+**响应**: [200]
+```json
+{
+  "streams": ["camera01", "camera02", "meeting-room"]
+}
+```
+
+### 时间轴查询
+
+`GET` `/api/record/:streamId/timeline`
+
+**查询参数**:
+- `start_ts`: 开始时间戳（可选）
+- `end_ts`: 结束时间戳（可选）
+- `limit`: 限制数量（可选）
+- `offset`: 偏移量（可选）
+
+**响应**: [200]
+```json
+{
+  "stream": "camera01",
+  "segments": [
+    {
+      "id": "01234567-89ab-cdef-0123-456789abcdef",
+      "start_ts": 1721827200000000,
+      "end_ts": 1721827201000000,
+      "duration_ms": 1000,
+      "path": "camera01/2024/01/01/segment_00042.m4s",
+      "is_keyframe": true,
+      "created_at": "2024-07-24T10:00:00Z"
+    }
+  ],
+  "total_count": 1
+}
+```
+
+### MPEG-DASH 清单
+
+`GET` `/api/record/:streamId/mpd`
+
+**查询参数**:
+- `start_ts`: 开始时间戳（可选）
+- `end_ts`: 结束时间戳（可选）
+
+**响应**: [200] Content-Type: `application/dash+xml`
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT60.000S">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" codecs="avc1.42c01e">
+      <Representation id="video" bandwidth="1000000">
+        <SegmentList>
+          <SegmentURL media="/api/record/object/camera01/2024/01/01/segment_00042.m4s"/>
+        </SegmentList>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>
+```
+
+### 分片文件代理
+
+`GET` `/api/record/object/*path`
+
+直接代理访问存储在后端的录制分片文件。
+
+**响应**: [200] 二进制文件内容，Content-Type 根据文件扩展名自动确定：
+- `.m4s` → `video/mp4`
+- `.mp4` → `video/mp4` 
+- `.mpd` → `application/dash+xml`
+
 ## Node
 
 `GET` `/api/nodes/`

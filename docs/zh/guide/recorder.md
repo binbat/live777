@@ -37,9 +37,9 @@ retry_attempts = 3
 # 每次上报请求的超时时间，以秒为单位（默认：10）
 report_timeout = 10
 ```
-::tips
+::: tip 注意
 Liveman 配置是可选的。如果未配置，录制器将以纯本地模式运行。
-::
+:::
 
 ## 配置说明 {#config}
 

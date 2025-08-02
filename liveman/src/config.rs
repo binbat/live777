@@ -23,6 +23,13 @@ pub struct Config {
 
     #[serde(default)]
     pub database: Database,
+
+    #[serde(default)]
+    pub playback: Playback,
+
+    #[cfg(feature = "recorder")]
+    #[serde(default)]
+    pub recorder: Recorder,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -250,4 +257,39 @@ fn default_database_max_connections() -> u32 {
 
 fn default_database_connect_timeout() -> u64 {
     30
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Playback {
+    /// Whether to use signed redirects or direct proxy for segment access
+    #[serde(default = "default_signed_redirect")]
+    pub signed_redirect: bool,
+    
+    /// TTL in seconds for signed URLs (only used if signed_redirect is true)
+    #[serde(default = "default_signed_ttl_seconds")]
+    pub signed_ttl_seconds: u64,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            signed_redirect: default_signed_redirect(),
+            signed_ttl_seconds: default_signed_ttl_seconds(),
+        }
+    }
+}
+
+fn default_signed_redirect() -> bool {
+    false
+}
+
+fn default_signed_ttl_seconds() -> u64 {
+    60
+}
+
+#[cfg(feature = "recorder")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Recorder {
+    #[serde(default)]
+    pub storage: storage::StorageConfig,
 }
