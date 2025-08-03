@@ -2,16 +2,17 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use serde::Deserialize;
-use tracing::{error, info};
 use std::collections::BTreeMap;
+use tracing::{error, info};
 
-use crate::dto::recorder::{SegmentReportRequest, SegmentReportResponse, StreamsListResponse, TimelineResponse, TimelineSegment};
-use crate::service::segments::{SegmentData, SegmentsService, TimelineQueryParams};
+// Import shared API types
+use crate::service::segments::{SegmentsService, TimelineQueryParams};
 use crate::{error::AppError, result::Result, AppState};
+use api::recorder::{StreamsListResponse, TimelineResponse, TimelineSegment};
 
 #[derive(Deserialize)]
 struct TimelineQuery {
@@ -29,75 +30,10 @@ struct MpdQuery {
 
 pub fn route() -> Router<AppState> {
     Router::new()
-        .route("/api/segments/report", post(report_segments))
         .route("/api/record/streams", get(get_streams))
         .route("/api/record/{stream}/timeline", get(get_timeline))
         .route("/api/record/{stream}/mpd", get(get_mpd))
         .route("/api/record/object/{*path}", get(get_segment))
-}
-
-async fn report_segments(
-    State(state): State<AppState>,
-    Json(request): Json<SegmentReportRequest>,
-) -> Result<Json<SegmentReportResponse>> {
-    info!(
-        "Received segment report from node '{}' for stream '{}' with {} segments",
-        request.node_alias,
-        request.stream,
-        request.segments.len()
-    );
-
-    if request.segments.is_empty() {
-        return Ok(Json(SegmentReportResponse {
-            success: false,
-            message: "No segments provided".to_string(),
-            processed_count: 0,
-        }));
-    }
-
-    // Convert DTO segments to service format
-    let service_request = crate::service::segments::SegmentReportRequest {
-        node_alias: request.node_alias.clone(),
-        stream: request.stream.clone(),
-        segments: request
-            .segments
-            .into_iter()
-            .map(|seg| SegmentData {
-                node_alias: request.node_alias.clone(),
-                stream: request.stream.clone(),
-                start_ts: seg.start_ts,
-                end_ts: seg.end_ts,
-                duration_ms: seg.duration_ms,
-                path: seg.path,
-                is_keyframe: seg.is_keyframe,
-            })
-            .collect(),
-    };
-
-    match SegmentsService::create_segments(state.database.get_connection(), service_request).await {
-        Ok(created_segments) => {
-            info!(
-                "Successfully stored {} segments for stream '{}' from node '{}'",
-                created_segments.len(),
-                request.stream,
-                request.node_alias
-            );
-
-            Ok(Json(SegmentReportResponse {
-                success: true,
-                message: "Segments processed successfully".to_string(),
-                processed_count: created_segments.len(),
-            }))
-        }
-        Err(e) => {
-            error!(
-                "Failed to store segments for stream '{}' from node '{}': {}",
-                request.stream, request.node_alias, e
-            );
-
-            Err(AppError::DatabaseError(e.to_string()))
-        }
-    }
 }
 
 async fn get_streams(State(state): State<AppState>) -> Result<Json<StreamsListResponse>> {
@@ -142,7 +78,7 @@ async fn get_timeline(
                 .collect();
 
             let total_count = timeline_segments.len() as u64;
-            
+
             info!(
                 "Retrieved {} timeline segments for stream '{}'",
                 total_count, stream
@@ -181,14 +117,19 @@ async fn get_mpd(
             }
 
             let mpd_xml = generate_mpd_xml(&stream, &segments, &state.config.playback)?;
-            
-            info!("Generated MPD for stream '{}' with {} segments", stream, segments.len());
-            
+
+            info!(
+                "Generated MPD for stream '{}' with {} segments",
+                stream,
+                segments.len()
+            );
+
             Ok((
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, "application/dash+xml")],
                 mpd_xml,
-            ).into_response())
+            )
+                .into_response())
         }
         Err(e) => {
             error!("Failed to retrieve segments for MPD generation: {}", e);
@@ -197,17 +138,14 @@ async fn get_mpd(
     }
 }
 
-async fn get_segment(
-    State(state): State<AppState>,
-    Path(path): Path<String>,
-) -> Result<Response> {
+async fn get_segment(State(state): State<AppState>, Path(path): Path<String>) -> Result<Response> {
     #[cfg(feature = "recorder")]
     {
         if let Some(ref operator) = state.file_storage {
             match operator.read(&path).await {
                 Ok(bytes) => {
                     info!("Successfully served segment: {}", path);
-                    
+
                     // Determine content type based on file extension
                     let content_type = if path.ends_with(".m4s") || path.ends_with(".mp4") {
                         "video/mp4"
@@ -221,7 +159,8 @@ async fn get_segment(
                         StatusCode::OK,
                         [(header::CONTENT_TYPE, content_type)],
                         bytes.to_vec(),
-                    ).into_response())
+                    )
+                        .into_response())
                 }
                 Err(e) => {
                     error!("Failed to read segment file '{}': {}", path, e);
@@ -230,10 +169,14 @@ async fn get_segment(
             }
         } else {
             error!("File storage not configured for segment access");
-            Ok((StatusCode::SERVICE_UNAVAILABLE, "File storage not available").into_response())
+            Ok((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "File storage not available",
+            )
+                .into_response())
         }
     }
-    
+
     #[cfg(not(feature = "recorder"))]
     {
         // Avoid unused variable warnings
@@ -258,8 +201,9 @@ fn generate_mpd_xml(
     let total_duration = (max_timestamp - min_timestamp) as f64 / 1_000_000.0; // Convert microseconds to seconds
 
     // Group segments by path prefix to identify different representations
-    let mut representations: BTreeMap<String, Vec<&crate::entity::segments::Model>> = BTreeMap::new();
-    
+    let mut representations: BTreeMap<String, Vec<&crate::entity::segments::Model>> =
+        BTreeMap::new();
+
     for segment in segments {
         // Extract representation ID from path (e.g., "camera01/2024/01/01/seg_0001.m4s" -> "video")
         // For now, we'll assume all segments are video. In a real implementation,
@@ -269,7 +213,7 @@ fn generate_mpd_xml(
         } else {
             "video".to_string()
         };
-        
+
         representations.entry(repr_id).or_default().push(segment);
     }
 
@@ -277,11 +221,13 @@ fn generate_mpd_xml(
     let mut mpd = String::new();
     mpd.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     mpd.push('\n');
-    mpd.push_str(r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration=""#);
+    mpd.push_str(
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration=""#,
+    );
     mpd.push_str(&format!("PT{total_duration:.3}S"));
     mpd.push_str(r#"">"#);
     mpd.push('\n');
-    
+
     // Period
     mpd.push_str(r#"  <Period>"#);
     mpd.push('\n');
@@ -289,7 +235,7 @@ fn generate_mpd_xml(
     // Generate AdaptationSets for each representation
     for (repr_id, repr_segments) in representations {
         let is_video = repr_id == "video";
-        
+
         if is_video {
             mpd.push_str(r#"    <AdaptationSet mimeType="video/mp4" codecs="avc1.42c01e">"#);
         } else {
@@ -298,7 +244,9 @@ fn generate_mpd_xml(
         mpd.push('\n');
 
         // Representation
-        mpd.push_str(&format!(r#"      <Representation id="{repr_id}" bandwidth="1000000">"#));
+        mpd.push_str(&format!(
+            r#"      <Representation id="{repr_id}" bandwidth="1000000">"#
+        ));
         mpd.push('\n');
 
         // SegmentList
@@ -309,7 +257,8 @@ fn generate_mpd_xml(
         for segment in repr_segments {
             let segment_url = if playback_config.signed_redirect {
                 // Generate signed URL (placeholder for now)
-                format!("/api/record/object/{}?expires={}", 
+                format!(
+                    "/api/record/object/{}?expires={}",
                     segment.path,
                     chrono::Utc::now().timestamp() + playback_config.signed_ttl_seconds as i64
                 )
@@ -317,9 +266,7 @@ fn generate_mpd_xml(
                 format!("/api/record/object/{}", segment.path)
             };
 
-            mpd.push_str(&format!(
-                r#"          <SegmentURL media="{segment_url}"/>"#
-            ));
+            mpd.push_str(&format!(r#"          <SegmentURL media="{segment_url}"/>"#));
             mpd.push('\n');
         }
 

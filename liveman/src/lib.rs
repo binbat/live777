@@ -19,10 +19,10 @@ struct Assets;
 
 mod admin;
 pub mod config;
-pub mod dto;
 pub mod entity;
 mod error;
 pub mod migration;
+mod puller;
 mod result;
 mod route;
 pub mod service;
@@ -34,12 +34,12 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     info!("Server listening on {}", listener.local_addr().unwrap());
-    
+
     // Initialize database connection
     let database_service = DatabaseService::new(&cfg.database)
         .await
         .expect("Failed to initialize database connection");
-    
+
     // Initialize file storage operator if recorder feature is enabled
     #[cfg(feature = "recorder")]
     let file_storage = if cfg!(feature = "recorder") {
@@ -49,17 +49,20 @@ where
                 Some(operator)
             }
             Err(e) => {
-                error!("Failed to initialize file storage: {}, continuing without file storage", e);
+                error!(
+                    "Failed to initialize file storage: {}, continuing without file storage",
+                    e
+                );
                 None
             }
         }
     } else {
         None
     };
-    
+
     #[cfg(not(feature = "recorder"))]
     let file_storage: Option<()> = None;
-    
+
     let client_req = reqwest::Client::builder();
     let client_mem = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(500))
@@ -213,6 +216,14 @@ where
         .fallback(static_handler);
 
     tokio::spawn(tick::cascade_check(app_state.clone()));
+
+    // Start segment puller for recording metadata
+    #[cfg(feature = "recorder")]
+    {
+        let pull_config = puller::PullConfig::default();
+        tokio::spawn(puller::start_segment_puller(app_state.clone(), pull_config));
+    }
+
     axum::serve(listener, app)
         .with_graceful_shutdown(signal)
         .await

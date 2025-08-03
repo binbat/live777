@@ -8,7 +8,6 @@ use opendal::Operator;
 #[cfg(feature = "recorder")]
 use storage::init_operator;
 
-use crate::config::LivemanConfig;
 use crate::hook::{Event, StreamEventType};
 use crate::stream::manager::Manager;
 
@@ -21,28 +20,32 @@ use task::RecordingTask;
 pub mod codec;
 mod fmp4;
 
+// Segment metadata storage for pull API
+use api::recorder::SegmentMetadata;
+use std::collections::BTreeMap;
+
 static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 static STORAGE: Lazy<RwLock<Option<Operator>>> = Lazy::new(|| RwLock::new(None));
 
-static LIVEMAN_CONFIG: Lazy<RwLock<Option<LivemanConfig>>> = Lazy::new(|| RwLock::new(None));
+// Store segment metadata for pull API - organized by stream
+static SEGMENT_METADATA: Lazy<RwLock<HashMap<String, BTreeMap<i64, SegmentMetadata>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+// Node alias for identification
+static NODE_ALIAS: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
 
 /// Initialize recorder event listener.
 #[cfg(feature = "recorder")]
 pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
     let manager_clone = manager.clone();
 
-    // Store Liveman configuration globally
-    {
-        let mut liveman_config_writer = LIVEMAN_CONFIG.write().await;
-        *liveman_config_writer = cfg.liveman.clone();
-        if cfg.liveman.is_some() {
-            tracing::info!(
-                "[recorder] Liveman reporting enabled for node: {}",
-                cfg.liveman.as_ref().unwrap().node_alias
-            );
-        }
+    // Store node alias globally if provided
+    if let Some(ref node_alias) = cfg.node_alias {
+        let mut node_alias_writer = NODE_ALIAS.write().await;
+        *node_alias_writer = Some(node_alias.clone());
+        tracing::info!("[recorder] Node alias set to: {}", node_alias);
     }
 
     // Initialize storage Operator
@@ -120,4 +123,83 @@ fn should_record(patterns: &[String], stream: &str) -> bool {
         }
     }
     false
+}
+
+/// Add segment metadata for pull API
+pub async fn add_segment_metadata(stream: &str, metadata: SegmentMetadata) {
+    let mut segments = SEGMENT_METADATA.write().await;
+    let stream_segments = segments
+        .entry(stream.to_string())
+        .or_insert_with(BTreeMap::new);
+    stream_segments.insert(metadata.start_ts, metadata);
+
+    if stream_segments.len() > 1000 {
+        let keys_to_remove: Vec<_> = stream_segments
+            .keys()
+            .take(stream_segments.len() - 1000)
+            .cloned()
+            .collect();
+        for key in keys_to_remove {
+            stream_segments.remove(&key);
+        }
+    }
+}
+
+/// Pull segments for Liveman
+pub async fn pull_segments(
+    stream_filter: Option<&str>,
+    since_ts: Option<i64>,
+    limit: u32,
+) -> api::recorder::PullSegmentsResponse {
+    let segments = SEGMENT_METADATA.read().await;
+    let node_alias = NODE_ALIAS
+        .read()
+        .await
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut all_segments = Vec::new();
+    let mut last_ts = None;
+
+    for (stream_name, stream_segments) in segments.iter() {
+        // Apply stream filter if provided
+        if let Some(filter) = stream_filter {
+            if stream_name != filter {
+                continue;
+            }
+        }
+
+        // Filter by timestamp and collect segments
+        let filtered_segments: Vec<_> = stream_segments
+            .range(since_ts.unwrap_or(0)..)
+            .take(limit as usize)
+            .map(|(_, segment)| segment.clone())
+            .collect();
+
+        if !filtered_segments.is_empty() {
+            if let Some(last_segment) = filtered_segments.last() {
+                last_ts = Some(last_segment.start_ts.max(last_ts.unwrap_or(0)));
+            }
+            all_segments.extend(filtered_segments);
+        }
+    }
+
+    // Sort by timestamp and apply final limit
+    all_segments.sort_by_key(|s| s.start_ts);
+    if all_segments.len() > limit as usize {
+        all_segments.truncate(limit as usize);
+    }
+
+    let total_count = all_segments.len() as u32;
+    let has_more = total_count == limit;
+    let stream_name = stream_filter.unwrap_or("").to_string();
+
+    api::recorder::PullSegmentsResponse {
+        node_alias,
+        stream: stream_name,
+        segments: all_segments,
+        last_ts,
+        total_count,
+        has_more,
+    }
 }

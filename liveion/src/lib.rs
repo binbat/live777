@@ -48,20 +48,24 @@ where
     {
         crate::recorder::init(app_state.stream_manager.clone(), cfg.recorder.clone()).await;
     }
-    let app = Router::new()
-        .merge(
-            whip::route()
-                .merge(whep::route())
-                .merge(session::route())
-                .merge(admin::route())
-                .merge(crate::route::stream::route())
-                .merge(crate::route::strategy::route())
-                .layer(middleware::from_fn(access_middleware))
-                .layer(middleware::from_fn_with_state(
-                    AuthState::new(cfg.auth.secret, cfg.auth.tokens),
-                    validate_middleware,
-                )),
-        )
+    let app = Router::new().merge(
+        whip::route()
+            .merge(whep::route())
+            .merge(session::route())
+            .merge(admin::route())
+            .merge(crate::route::stream::route())
+            .merge(crate::route::strategy::route())
+            .layer(middleware::from_fn(access_middleware))
+            .layer(middleware::from_fn_with_state(
+                AuthState::new(cfg.auth.secret, cfg.auth.tokens),
+                validate_middleware,
+            )),
+    );
+
+    #[cfg(feature = "recorder")]
+    let app = app.merge(crate::route::segments::router());
+
+    let app = app
         .route(path::METRICS, get(metrics))
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {

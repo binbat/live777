@@ -12,12 +12,7 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(Segments::Table)
                     .if_not_exists()
-                    .col(
-                        ColumnDef::new(Segments::Id)
-                            .uuid()
-                            .not_null()
-                            .primary_key(),
-                    )
+                    .col(ColumnDef::new(Segments::Id).uuid().not_null().primary_key())
                     .col(ColumnDef::new(Segments::NodeAlias).string().not_null())
                     .col(ColumnDef::new(Segments::Stream).string().not_null())
                     .col(ColumnDef::new(Segments::StartTs).big_integer().not_null())

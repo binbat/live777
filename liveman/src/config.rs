@@ -264,7 +264,7 @@ pub struct Playback {
     /// Whether to use signed redirects or direct proxy for segment access
     #[serde(default = "default_signed_redirect")]
     pub signed_redirect: bool,
-    
+
     /// TTL in seconds for signed URLs (only used if signed_redirect is true)
     #[serde(default = "default_signed_ttl_seconds")]
     pub signed_ttl_seconds: u64,

@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use crate::recorder::codec::h264::H264RtpParser;
 use crate::recorder::codec::opus::OpusRtpParser;
 use crate::recorder::segmenter::Segmenter;
-use crate::recorder::{LIVEMAN_CONFIG, STORAGE};
 use crate::stream::manager::Manager;
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
@@ -25,7 +24,7 @@ impl RecordingTask {
 
         // Get storage Operator
         let op = {
-            let guard = STORAGE.read().await;
+            let guard = crate::recorder::STORAGE.read().await;
             match guard.as_ref() {
                 Some(op) => {
                     tracing::debug!(
@@ -59,14 +58,8 @@ impl RecordingTask {
             path_prefix
         );
 
-        // Get Liveman configuration
-        let liveman_config = {
-            let guard = LIVEMAN_CONFIG.read().await;
-            guard.clone()
-        };
-
         // Initialize Segmenter
-        let mut segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone(), liveman_config).await
+        let mut segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await
         {
             Ok(seg) => {
                 tracing::debug!(

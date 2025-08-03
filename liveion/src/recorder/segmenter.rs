@@ -1,14 +1,12 @@
 use std::time::{Duration, Instant};
 
-use crate::config::LivemanConfig;
 use crate::recorder::codec::h264::H264Adapter;
 use crate::recorder::codec::CodecAdapter;
 use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
 use anyhow::Result;
 use bytes::Bytes;
 use opendal::Operator;
-use serde_json::json;
-use tracing::{error, info, warn};
+use tracing::info;
 
 /// Default duration of each segment in seconds
 const DEFAULT_SEG_DURATION: u64 = 10;
@@ -73,25 +71,10 @@ pub struct Segmenter {
 
     // video adapter for H264
     video_adapter: Option<H264Adapter>,
-
-    // Liveman reporting configuration and client
-    liveman_config: Option<LivemanConfig>,
-    http_client: Option<reqwest::Client>,
 }
 
 impl Segmenter {
-    pub async fn new(
-        op: Operator, 
-        stream: String, 
-        root_prefix: String,
-        liveman_config: Option<LivemanConfig>
-    ) -> Result<Self> {
-        let http_client = if liveman_config.is_some() {
-            Some(reqwest::Client::new())
-        } else {
-            None
-        };
-
+    pub async fn new(op: Operator, stream: String, root_prefix: String) -> Result<Self> {
         Ok(Self {
             op,
             stream: stream.clone(),
@@ -128,9 +111,6 @@ impl Segmenter {
             keyframe_request_timeout: Duration::from_secs(10),
 
             video_adapter: Some(H264Adapter::new()),
-
-            liveman_config,
-            http_client,
         })
     }
 
@@ -412,8 +392,8 @@ impl Segmenter {
             self.audio_samples.clear();
         }
 
-        // Report segment metadata to Liveman if configured
-        self.report_segment_metadata(&filename, base_time).await;
+        // Store segment metadata for pull API
+        self.store_segment_metadata(&filename, base_time).await;
 
         // Clear the cache and start the next segment
         self.open_new_segment().await?;
@@ -578,16 +558,8 @@ impl Segmenter {
         Ok(())
     }
 
-    /// Report segment metadata to Liveman server
-    async fn report_segment_metadata(&self, filename: &str, base_time: u64) {
-        let Some(ref config) = self.liveman_config else {
-            return; // No Liveman configuration, skip reporting
-        };
-
-        let Some(ref client) = self.http_client else {
-            return; // No HTTP client available
-        };
-
+    /// Store segment metadata for pull API
+    async fn store_segment_metadata(&self, filename: &str, base_time: u64) {
         // Calculate timestamps (convert from timescale units to microseconds)
         let start_ts = (base_time * 1_000_000) / self.timescale as u64;
         let end_ts = (self.current_pts * 1_000_000) / self.timescale as u64;
@@ -599,78 +571,15 @@ impl Segmenter {
         // Check if this segment starts with a keyframe
         let is_keyframe = self.samples.first().map(|s| s.is_sync).unwrap_or(false);
 
-        let payload = json!({
-            "node_alias": config.node_alias,
-            "stream": self.stream,
-            "segments": [{
-                "start_ts": start_ts as i64,
-                "end_ts": end_ts as i64,
-                "duration_ms": duration_ms as i32,
-                "path": segment_path,
-                "is_keyframe": is_keyframe
-            }]
-        });
+        let metadata = api::recorder::SegmentMetadata {
+            start_ts: start_ts as i64,
+            end_ts: end_ts as i64,
+            duration_ms: duration_ms as i32,
+            path: segment_path,
+            is_keyframe,
+        };
 
-        let url = format!("{}/api/segments/report", config.url);
-        
-        // Clone necessary data for the async task
-        let client_clone = client.clone();
-        let stream_clone = self.stream.clone();
-        let retry_attempts = config.retry_attempts;
-        let timeout = Duration::from_secs(config.report_timeout);
-
-        // Spawn async task to avoid blocking the segmenter
-        tokio::spawn(async move {
-            let mut attempts = 0;
-            while attempts <= retry_attempts {
-                match client_clone
-                    .post(&url)
-                    .json(&payload)
-                    .timeout(timeout)
-                    .send()
-                    .await
-                {
-                    Ok(response) => {
-                        if response.status().is_success() {
-                            info!(
-                                "[segmenter] successfully reported segment metadata for stream {} to Liveman",
-                                stream_clone
-                            );
-                            return;
-                        } else {
-                            warn!(
-                                "[segmenter] Liveman returned error status {} for stream {}, attempt {}/{}",
-                                response.status(),
-                                stream_clone,
-                                attempts + 1,
-                                retry_attempts + 1
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[segmenter] failed to report segment metadata for stream {} to Liveman: {}, attempt {}/{}",
-                            stream_clone,
-                            e,
-                            attempts + 1,
-                            retry_attempts + 1
-                        );
-                    }
-                }
-
-                attempts += 1;
-                if attempts <= retry_attempts {
-                    // Wait before retry (exponential backoff)
-                    let backoff_ms = 1000 * (2_u64.pow(attempts.min(3))); 
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                }
-            }
-
-            error!(
-                "[segmenter] failed to report segment metadata for stream {} after {} attempts",
-                stream_clone,
-                retry_attempts + 1
-            );
-        });
+        // Store metadata in memory for pull API
+        crate::recorder::add_segment_metadata(&self.stream, metadata).await;
     }
 }

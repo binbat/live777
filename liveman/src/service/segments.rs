@@ -9,23 +9,8 @@ use uuid::Uuid;
 
 use crate::entity::segments::{self, Entity as Segments};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SegmentData {
-    pub node_alias: String,
-    pub stream: String,
-    pub start_ts: i64,
-    pub end_ts: i64,
-    pub duration_ms: i32,
-    pub path: String,
-    pub is_keyframe: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SegmentReportRequest {
-    pub node_alias: String,
-    pub stream: String,
-    pub segments: Vec<SegmentData>,
-}
+// Import shared API types
+use api::recorder::SegmentMetadata;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TimelineQueryParams {
@@ -39,22 +24,25 @@ pub struct TimelineQueryParams {
 pub struct SegmentsService;
 
 impl SegmentsService {
-    pub async fn create_segments(
+    /// Create segments from pulled data (used by puller)
+    pub async fn create_segments_from_pull(
         db: &DatabaseConnection,
-        request: SegmentReportRequest,
+        node_alias: String,
+        stream: String,
+        segments: Vec<SegmentMetadata>,
     ) -> Result<Vec<segments::Model>> {
         let mut created_segments = Vec::new();
 
-        for segment_data in request.segments {
+        for segment_metadata in segments {
             let segment_model = segments::ActiveModel {
                 id: Set(Uuid::new_v4()),
-                node_alias: Set(request.node_alias.clone()),
-                stream: Set(request.stream.clone()),
-                start_ts: Set(segment_data.start_ts),
-                end_ts: Set(segment_data.end_ts),
-                duration_ms: Set(segment_data.duration_ms),
-                path: Set(segment_data.path),
-                is_keyframe: Set(segment_data.is_keyframe),
+                node_alias: Set(node_alias.clone()),
+                stream: Set(stream.clone()),
+                start_ts: Set(segment_metadata.start_ts),
+                end_ts: Set(segment_metadata.end_ts),
+                duration_ms: Set(segment_metadata.duration_ms),
+                path: Set(segment_metadata.path),
+                is_keyframe: Set(segment_metadata.is_keyframe),
                 created_at: Set(chrono::DateTime::<chrono::FixedOffset>::from(Utc::now())),
             };
 
@@ -131,10 +119,7 @@ impl SegmentsService {
         Ok(result.rows_affected)
     }
 
-    pub async fn get_segment_count_by_stream(
-        db: &DatabaseConnection,
-        stream: &str,
-    ) -> Result<u64> {
+    pub async fn get_segment_count_by_stream(db: &DatabaseConnection, stream: &str) -> Result<u64> {
         let count = Segments::find()
             .filter(segments::Column::Stream.eq(stream))
             .count(db)

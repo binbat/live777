@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sea_orm::{Database, DatabaseConnection, ConnectOptions};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use std::time::Duration;
 use tracing::info;
 
@@ -25,9 +25,9 @@ impl DatabaseService {
 
         info!("Running database migrations...");
         Migrator::up(&connection, None).await?;
-        
+
         info!("Database connection established and migrations completed");
-        
+
         Ok(Self { connection })
     }
 
