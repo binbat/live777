@@ -72,6 +72,15 @@ pub struct PullRecordingsResponse {
     pub last_ts: Option<i64>,
 }
 
+/// Response containing recording sessions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingSessionResponse {
+    /// Recording sessions
+    pub sessions: Vec<RecordingSession>,
+    /// Total count
+    pub total_count: u64,
+}
+
 /// Timeline segment for playback API (kept for backward compatibility)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TimelineSegment {
