@@ -1,16 +1,12 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, QuerySelect, Set,
+    ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect,
 };
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::entity::segments::{self, Entity as Segments};
-
-// Import shared API types
-use api::recorder::SegmentMetadata;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TimelineQueryParams {
@@ -24,34 +20,6 @@ pub struct TimelineQueryParams {
 pub struct SegmentsService;
 
 impl SegmentsService {
-    /// Create segments from pulled data (used by puller)
-    pub async fn create_segments_from_pull(
-        db: &DatabaseConnection,
-        node_alias: String,
-        stream: String,
-        segments: Vec<SegmentMetadata>,
-    ) -> Result<Vec<segments::Model>> {
-        let mut created_segments = Vec::new();
-
-        for segment_metadata in segments {
-            let segment_model = segments::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                node_alias: Set(node_alias.clone()),
-                stream: Set(stream.clone()),
-                start_ts: Set(segment_metadata.start_ts),
-                end_ts: Set(segment_metadata.end_ts),
-                duration_ms: Set(segment_metadata.duration_ms),
-                path: Set(segment_metadata.path),
-                is_keyframe: Set(segment_metadata.is_keyframe),
-                created_at: Set(chrono::DateTime::<chrono::FixedOffset>::from(Utc::now())),
-            };
-
-            let inserted = segment_model.insert(db).await?;
-            created_segments.push(inserted);
-        }
-
-        Ok(created_segments)
-    }
 
     pub async fn get_timeline(
         db: &DatabaseConnection,

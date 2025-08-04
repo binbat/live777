@@ -196,7 +196,12 @@ impl RecordingTask {
                     },
 
                     // Handle audio RTP packets when an audio receiver exists.
-                    result = audio_rx_opt.as_mut().unwrap().recv(), if audio_rx_opt.is_some() => {
+                    result = async {
+                        match audio_rx_opt.as_mut() {
+                            Some(rx) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if audio_rx_opt.is_some() => {
                         match result {
                             Ok(packet) => {
                                 let (payload, pkt_ts) = match parser_audio.push_packet((*packet).clone()) {

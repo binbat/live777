@@ -11,7 +11,7 @@ The Recorder in liveion is an optional feature that automatically records live s
 
 ## Liveman Integration {#liveman}
 
-The recorder integrates with [Liveman](/guide/liveman) to provide centralized metadata management and playback services across the entire Live777 cluster.
+The recorder can integrate with [Liveman](/guide/liveman) to provide centralized metadata management and playback services across the entire Live777 cluster.
 
 ### Metadata Management
 

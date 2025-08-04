@@ -5,19 +5,19 @@ use anyhow::Result;
 use tokio::time;
 use tracing::{debug, error, info};
 
-use crate::service::segments::SegmentsService;
+use crate::service::recording_sessions::RecordingSessionsService;
 use crate::store::Server;
 use crate::AppState;
-use api::recorder::PullSegmentsRequest;
+use api::recorder::PullRecordingsRequest;
 
-/// Configuration for segment pulling
+/// Configuration for recording session pulling
 #[derive(Debug, Clone)]
 pub struct PullConfig {
     /// Interval between pulls in seconds
     pub pull_interval: u64,
-    /// Maximum segments to pull per request
+    /// Maximum sessions to pull per request
     pub pull_limit: u32,
-    /// Whether to enable segment pulling
+    /// Whether to enable session pulling
     pub enabled: bool,
 }
 
@@ -31,18 +31,18 @@ impl Default for PullConfig {
     }
 }
 
-/// Track last pulled timestamp for each node-stream combination
+/// Track last pulled timestamp for each node
 type LastPulledMap = HashMap<String, i64>;
 
-/// Start the segment pulling background task
-pub async fn start_segment_puller(mut state: AppState, config: PullConfig) {
+/// Start the recording session pulling background task
+pub async fn start_recording_puller(mut state: AppState, config: PullConfig) {
     if !config.enabled {
-        info!("[segment-puller] Segment pulling is disabled");
+        info!("[recording-puller] Recording session pulling is disabled");
         return;
     }
 
     info!(
-        "[segment-puller] Starting segment puller with interval: {}s, limit: {}",
+        "[recording-puller] Starting recording session puller with interval: {}s, limit: {}",
         config.pull_interval, config.pull_limit
     );
 
@@ -52,24 +52,24 @@ pub async fn start_segment_puller(mut state: AppState, config: PullConfig) {
     loop {
         interval.tick().await;
 
-        debug!("[segment-puller] Starting pull cycle");
+        debug!("[recording-puller] Starting pull cycle");
 
         let nodes = state.storage.nodes().await;
         if nodes.is_empty() {
-            debug!("[segment-puller] No nodes available, skipping pull cycle");
+            debug!("[recording-puller] No nodes available, skipping pull cycle");
             continue;
         }
 
         for node in nodes {
             if let Err(e) = pull_from_node(&state, &node, &config, &mut last_pulled).await {
                 error!(
-                    "[segment-puller] Failed to pull segments from node {}: {}",
+                    "[recording-puller] Failed to pull recording sessions from node {}: {}",
                     node.alias, e
                 );
             }
         }
 
-        debug!("[segment-puller] Pull cycle completed");
+        debug!("[recording-puller] Pull cycle completed");
     }
 }
 
@@ -83,19 +83,19 @@ async fn pull_from_node(
     let since_ts = last_pulled.get(&node_key).copied();
 
     debug!(
-        "[segment-puller] Pulling segments from node {} since timestamp {:?}",
+        "[recording-puller] Pulling recording sessions from node {} since timestamp {:?}",
         node.alias, since_ts
     );
 
     // Build pull request
-    let request = PullSegmentsRequest {
+    let request = PullRecordingsRequest {
         stream: None, // Pull all streams
         since_ts,
         limit: config.pull_limit,
     };
 
     // Make HTTP request to the Live777 node
-    let url = format!("{}{}", node.url, api::path::segments_pull());
+    let url = format!("{}{}", node.url, api::path::recordings_pull());
     let response = state.client.get(&url).query(&request).send().await?;
 
     if !response.status().is_success() {
@@ -109,36 +109,34 @@ async fn pull_from_node(
         ));
     }
 
-    let pull_response: api::recorder::PullSegmentsResponse = response.json().await?;
+    let pull_response: api::recorder::PullRecordingsResponse = response.json().await?;
 
-    if pull_response.segments.is_empty() {
-        debug!("[segment-puller] No new segments from node {}", node.alias);
+    if pull_response.sessions.is_empty() {
+        debug!(
+            "[recording-puller] No new recording sessions from node {}",
+            node.alias
+        );
         return Ok(());
     }
 
     info!(
-        "[segment-puller] Pulled {} segments from node {} for stream '{}'",
-        pull_response.segments.len(),
-        node.alias,
-        pull_response.stream
+        "[recording-puller] Pulled {} recording sessions from node {}",
+        pull_response.sessions.len(),
+        node.alias
     );
 
-    // Convert to internal format and store
-    let segments = pull_response.segments;
-
-    // Store segments in database
-    match SegmentsService::create_segments_from_pull(
+    // Store sessions in database
+    match RecordingSessionsService::create_sessions_from_pull(
         state.database.get_connection(),
         node.alias.clone(),
-        pull_response.stream.clone(),
-        segments,
+        pull_response.sessions,
     )
     .await
     {
-        Ok(created_segments) => {
+        Ok(created_sessions) => {
             info!(
-                "[segment-puller] Successfully stored {} segments from node {}",
-                created_segments.len(),
+                "[recording-puller] Successfully stored {} recording sessions from node {}",
+                created_sessions.len(),
                 node.alias
             );
 
@@ -149,7 +147,7 @@ async fn pull_from_node(
         }
         Err(e) => {
             error!(
-                "[segment-puller] Failed to store segments from node {}: {}",
+                "[recording-puller] Failed to store recording sessions from node {}: {}",
                 node.alias, e
             );
         }

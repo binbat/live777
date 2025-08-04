@@ -392,9 +392,6 @@ impl Segmenter {
             self.audio_samples.clear();
         }
 
-        // Store segment metadata for pull API
-        self.store_segment_metadata(&filename, base_time).await;
-
         // Clear the cache and start the next segment
         self.open_new_segment().await?;
 
@@ -558,28 +555,4 @@ impl Segmenter {
         Ok(())
     }
 
-    /// Store segment metadata for pull API
-    async fn store_segment_metadata(&self, filename: &str, base_time: u64) {
-        // Calculate timestamps (convert from timescale units to microseconds)
-        let start_ts = (base_time * 1_000_000) / self.timescale as u64;
-        let end_ts = (self.current_pts * 1_000_000) / self.timescale as u64;
-        let duration_ms = ((self.current_pts - base_time) * 1000) / self.timescale as u64;
-
-        // Build segment path
-        let segment_path = format!("{}/{}", self.path_prefix, filename);
-
-        // Check if this segment starts with a keyframe
-        let is_keyframe = self.samples.first().map(|s| s.is_sync).unwrap_or(false);
-
-        let metadata = api::recorder::SegmentMetadata {
-            start_ts: start_ts as i64,
-            end_ts: end_ts as i64,
-            duration_ms: duration_ms as i32,
-            path: segment_path,
-            is_keyframe,
-        };
-
-        // Store metadata in memory for pull API
-        crate::recorder::add_segment_metadata(&self.stream, metadata).await;
-    }
 }

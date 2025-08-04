@@ -7,19 +7,19 @@ use axum::{
 };
 
 use crate::route::AppState;
-use api::recorder::{PullSegmentsRequest, PullSegmentsResponse};
+use api::recorder::{PullRecordingsRequest, PullRecordingsResponse};
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(api::path::segments_pull(), get(pull_segments))
+    Router::new().route(api::path::recordings_pull(), get(pull_recordings))
 }
 
-/// Pull segments endpoint for Liveman
-async fn pull_segments(
-    Query(req): Query<PullSegmentsRequest>,
+/// Pull recording sessions endpoint for Liveman
+async fn pull_recordings(
+    Query(req): Query<PullRecordingsRequest>,
     State(_state): State<AppState>,
-) -> Result<Json<PullSegmentsResponse>, StatusCode> {
+) -> Result<Json<PullRecordingsResponse>, StatusCode> {
     let response =
-        crate::recorder::pull_segments(req.stream.as_deref(), req.since_ts, req.limit).await;
+        crate::recorder::pull_recordings(req.stream.as_deref(), req.since_ts, req.limit).await;
 
     Ok(Json(response))
 }

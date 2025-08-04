@@ -43,6 +43,10 @@ pub fn record(stream: &str) -> String {
 }
 
 // Recording API paths
+pub fn recordings_pull() -> &'static str {
+    "/api/records/pull"
+}
+
 pub fn segments_pull() -> &'static str {
-    "/api/segments/pull"
+    "/api/records/segments/pull"
 }
