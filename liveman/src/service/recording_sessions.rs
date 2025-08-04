@@ -9,7 +9,6 @@ use uuid::Uuid;
 
 use crate::entity::recording_sessions::{self, Entity as RecordingSessions};
 
-// Import shared API types
 use api::recorder::RecordingSession;
 
 #[derive(Debug, Serialize, Deserialize)]

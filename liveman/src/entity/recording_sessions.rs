@@ -12,7 +12,7 @@ pub struct Model {
     pub end_ts: Option<i64>,
     pub duration_ms: Option<i32>,
     pub mpd_path: String,
-    pub status: String, // Active, Completed, Failed
+    pub status: String,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

@@ -35,23 +35,28 @@ export function Liveman() {
     // View state management
     const [currentView, setCurrentView] = useState<'streams' | 'recordings' | 'playback'>('streams');
     const [playbackStream, setPlaybackStream] = useState<string>('');
+    const [playbackSessionId, setPlaybackSessionId] = useState<string>('');
 
     // Initialize view from URL params
     useEffect(() => {
         const params = new URLSearchParams(location.search);
         const view = params.get('view') as 'streams' | 'recordings' | 'playback';
         const stream = params.get('stream');
+        const sessionId = params.get('sessionId');
         
         if (view) setCurrentView(view);
         if (stream) setPlaybackStream(stream);
+        if (sessionId) setPlaybackSessionId(sessionId);
 
         const handlePopState = () => {
             const newParams = new URLSearchParams(location.search);
             const newView = newParams.get('view') as 'streams' | 'recordings' | 'playback' || 'streams';
             const newStream = newParams.get('stream') || '';
+            const newSessionId = newParams.get('sessionId') || '';
             
             setCurrentView(newView);
             setPlaybackStream(newStream);
+            setPlaybackSessionId(newSessionId);
         };
 
         window.addEventListener('popstate', handlePopState);
@@ -104,6 +109,7 @@ export function Liveman() {
                 return (
                     <PlaybackPage 
                         streamId={playbackStream} 
+                        sessionId={playbackSessionId}
                         onBack={() => navigateToView('recordings')} 
                     />
                 );

@@ -8,7 +8,6 @@ use axum::{
 use serde::Deserialize;
 use tracing::{error, info};
 
-// Import recording sessions service
 use crate::service::recording_sessions::{RecordingSessionsService, RecordingQueryParams};
 use crate::{error::AppError, result::Result, AppState};
 use api::recorder::{StreamsListResponse, RecordingSessionResponse};
@@ -62,6 +61,7 @@ async fn get_sessions(
             let sessions_response: Vec<api::recorder::RecordingSession> = sessions
                 .into_iter()
                 .map(|session| api::recorder::RecordingSession {
+                    id: Some(session.id.to_string()),
                     stream: session.stream,
                     start_ts: session.start_ts,
                     end_ts: session.end_ts,

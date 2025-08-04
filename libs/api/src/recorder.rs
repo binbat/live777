@@ -4,6 +4,8 @@ use std::str::FromStr;
 /// Recording session information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingSession {
+    /// Session UUID (optional for backward compatibility)
+    pub id: Option<String>,
     /// Stream name
     pub stream: String,
     /// Recording start timestamp (microseconds since epoch)
@@ -78,26 +80,6 @@ pub struct RecordingSessionResponse {
     /// Recording sessions
     pub sessions: Vec<RecordingSession>,
     /// Total count
-    pub total_count: u64,
-}
-
-/// Timeline segment for playback API (kept for backward compatibility)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TimelineSegment {
-    pub id: String,
-    pub start_ts: i64,
-    pub end_ts: i64,
-    pub duration_ms: i32,
-    pub path: String,
-    pub is_keyframe: bool,
-    pub created_at: String,
-}
-
-/// Timeline response for playback API (kept for backward compatibility)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TimelineResponse {
-    pub stream: String,
-    pub segments: Vec<TimelineSegment>,
     pub total_count: u64,
 }
 

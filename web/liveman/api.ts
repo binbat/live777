@@ -88,35 +88,36 @@ export function getRecordingStreams() {
     return w.url('/api/record/streams').get().json<RecordingStreamsResponse>();
 }
 
-export interface Segment {
-    id: string;
-    start_ts: number;
-    end_ts: number;
-    duration_ms: number;
-    path: string;
-    is_keyframe: boolean;
-    created_at: string;
-}
-
-export interface TimelineResponse {
+export interface RecordingSession {
+    id?: string;
     stream: string;
-    total_count: number;
-    segments: Segment[];
+    start_ts: number;
+    end_ts: number | null;
+    duration_ms: number | null;
+    mpd_path: string;
+    status: 'Active' | 'Completed' | 'Failed';
 }
 
-export interface TimelineQuery {
+export interface RecordingSessionsResponse {
+    sessions: RecordingSession[];
+    total_count: number;
+}
+
+export interface RecordingSessionQuery {
+    stream?: string;
+    status?: string;
     start_ts?: number;
     end_ts?: number;
     limit?: number;
     offset?: number;
 }
 
-export function getTimeline(stream: string, query?: TimelineQuery) {
-    return w.url(`/api/record/${stream}/timeline`).query(query).get().json<TimelineResponse>();
+export function getRecordingSessions(query?: RecordingSessionQuery) {
+    return w.url('/api/record/sessions').query(query).get().json<RecordingSessionsResponse>();
 }
 
-export function getMPD(stream: string, query?: { start_ts?: number; end_ts?: number }) {
-    return w.url(`/api/record/${stream}/mpd`).query(query).get().text();
+export function getSessionMPD(sessionId: string) {
+    return w.url(`/api/record/sessions/${sessionId}/mpd`).get().text();
 }
 
 export function getSegmentUrl(path: string) {

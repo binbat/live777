@@ -1,53 +1,62 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { Button, Card, Loading, Range, Input, Collapse } from 'react-daisyui';
-import { ArrowLeft, Play, Pause, SkipBack, SkipForward, Clock, Calendar, List } from 'lucide-react';
+import { Button, Card, Loading, Range } from 'react-daisyui';
+import { ArrowLeft, Play, Pause, SkipBack, SkipForward, Clock, Calendar } from 'lucide-react';
 
 import * as livemanApi from '../api';
-import { TimelineViewer } from './timeline-viewer';
 
 interface PlaybackPageProps {
     streamId: string;
+    sessionId?: string;
     onBack: () => void;
 }
 
-export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
+export function PlaybackPage({ streamId, sessionId, onBack }: PlaybackPageProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
-    const [timeline, setTimeline] = useState<livemanApi.TimelineResponse | null>(null);
+    const [session, setSession] = useState<livemanApi.RecordingSession | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>('');
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [selectedRange, setSelectedRange] = useState<{ start?: number; end?: number }>({});
-    const [selectedSegment, setSelectedSegment] = useState<string>('');
 
-    // Load timeline data
-    const fetchTimeline = useCallback(async () => {
+    // Load session data
+    const fetchSession = useCallback(async () => {
         try {
             setLoading(true);
             setError('');
-            const response = await livemanApi.getTimeline(streamId, { limit: 1000 });
-            setTimeline(response);
             
-            if (response.segments.length > 0) {
-                const firstSegment = response.segments[0];
-                const lastSegment = response.segments[response.segments.length - 1];
-                setSelectedRange({
-                    start: firstSegment.start_ts,
-                    end: lastSegment.end_ts
+            if (sessionId) {
+                // Find session by ID
+                const response = await livemanApi.getRecordingSessions();
+                const foundSession = response.sessions.find(s => s.id === sessionId);
+                if (foundSession) {
+                    setSession(foundSession);
+                } else {
+                    setError('Recording session not found');
+                }
+            } else {
+                // Find latest session for this stream (fallback)
+                const response = await livemanApi.getRecordingSessions({ 
+                    stream: streamId,
+                    limit: 1 
                 });
+                if (response.sessions.length > 0) {
+                    setSession(response.sessions[0]);
+                } else {
+                    setError('No recording sessions found for this stream');
+                }
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to load timeline');
+            setError(err instanceof Error ? err.message : 'Failed to load recording session');
         } finally {
             setLoading(false);
         }
-    }, [streamId]);
+    }, [streamId, sessionId]);
 
     // Initialize DASH player
     const initializePlayer = useCallback(async () => {
         const video = videoRef.current;
-        if (!video || !selectedRange.start || !selectedRange.end) return;
+        if (!video || !session?.id) return;
 
         try {
             // Import dash.js dynamically
@@ -55,7 +64,7 @@ export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
             const player = dashjs.MediaPlayer().create();
             
             // Get MPD manifest URL
-            const mpdUrl = `/api/record/${streamId}/mpd?start_ts=${selectedRange.start}&end_ts=${selectedRange.end}`;
+            const mpdUrl = `/api/record/sessions/${session.id}/mpd`;
             
             player.initialize(video, mpdUrl, false);
             
@@ -79,17 +88,17 @@ export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
             setError('Failed to initialize video player');
             console.error('Player initialization error:', err);
         }
-    }, [streamId, selectedRange]);
+    }, [session]);
 
     useEffect(() => {
-        fetchTimeline();
-    }, [fetchTimeline]);
+        fetchSession();
+    }, [fetchSession]);
 
     useEffect(() => {
-        if (timeline && selectedRange.start && selectedRange.end) {
+        if (session) {
             initializePlayer();
         }
-    }, [timeline, selectedRange, initializePlayer]);
+    }, [session, initializePlayer]);
 
     const handlePlayPause = () => {
         const video = videoRef.current;
@@ -119,18 +128,6 @@ export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
         video.currentTime = Math.max(0, Math.min(duration, video.currentTime + seconds));
     };
 
-    const handleSegmentClick = (segment: livemanApi.Segment) => {
-        setSelectedSegment(segment.id);
-        // Calculate the time offset within the selected range
-        if (selectedRange.start) {
-            const segmentOffset = (segment.start_ts - selectedRange.start) / 1000000; // Convert to seconds
-            const video = videoRef.current;
-            if (video && segmentOffset >= 0) {
-                video.currentTime = segmentOffset;
-            }
-        }
-    };
-
     const formatTime = (timeInSeconds: number): string => {
         const hours = Math.floor(timeInSeconds / 3600);
         const minutes = Math.floor((timeInSeconds % 3600) / 60);
@@ -144,6 +141,21 @@ export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
 
     const formatTimestamp = (timestamp: number): string => {
         return new Date(timestamp / 1000).toLocaleString();
+    };
+
+    const formatDuration = (durationMs: number | null): string => {
+        if (!durationMs) return 'N/A';
+        const seconds = Math.floor(durationMs / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        
+        if (hours > 0) {
+            return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+        } else if (minutes > 0) {
+            return `${minutes}m ${seconds % 60}s`;
+        } else {
+            return `${seconds}s`;
+        }
     };
 
     if (loading) {
@@ -161,7 +173,9 @@ export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
                     <ArrowLeft className="w-4 h-4" />
                     Back to Recordings
                 </Button>
-                <h2 className="text-2xl font-bold">Playback: {streamId}</h2>
+                <h2 className="text-2xl font-bold">
+                    {session?.status === 'Active' ? 'Live Playback' : 'Recording Playback'}: {streamId}
+                </h2>
             </div>
 
             {error && (
@@ -170,7 +184,7 @@ export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
                 </div>
             )}
 
-            {timeline && (
+            {session && (
                 <div className="space-y-4">
                     {/* Video Player */}
                     <Card className="p-4">
@@ -217,95 +231,40 @@ export function PlaybackPage({ streamId, onBack }: PlaybackPageProps) {
                         </div>
                     </Card>
 
-                    {/* Timeline Viewer */}
-                    <Card className="p-4">
-                        <Collapse className="border rounded-lg">
-                            <Collapse.Title className="text-lg font-medium">
-                                <List className="w-5 h-5 mr-2" />
-                                Timeline Segments ({timeline.segments.length})
-                            </Collapse.Title>
-                            <Collapse.Content>
-                                <TimelineViewer
-                                    segments={timeline.segments}
-                                    onSegmentClick={handleSegmentClick}
-                                    selectedSegmentId={selectedSegment}
-                                    containerHeight={300}
-                                />
-                            </Collapse.Content>
-                        </Collapse>
-                    </Card>
-
-                    {/* Timeline Information */}
+                    {/* Session Information */}
                     <Card className="p-4">
                         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                            <Clock className="w-5 h-5" />
-                            Timeline Information
+                            <Calendar className="w-5 h-5" />
+                            Session Information
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="stat">
-                                <div className="stat-title">Total Segments</div>
-                                <div className="stat-value text-2xl">{timeline.total_count}</div>
+                                <div className="stat-title">Status</div>
+                                <div className="stat-value text-2xl">{session.status}</div>
                             </div>
                             <div className="stat">
                                 <div className="stat-title">Start Time</div>
                                 <div className="stat-value text-sm">
-                                    {timeline.segments.length > 0 && formatTimestamp(timeline.segments[0].start_ts)}
+                                    {formatTimestamp(session.start_ts)}
                                 </div>
                             </div>
                             <div className="stat">
-                                <div className="stat-title">End Time</div>
+                                <div className="stat-title">Duration</div>
                                 <div className="stat-value text-sm">
-                                    {timeline.segments.length > 0 && formatTimestamp(timeline.segments[timeline.segments.length - 1].end_ts)}
+                                    {formatDuration(session.duration_ms)}
                                 </div>
                             </div>
                         </div>
-                    </Card>
-
-                    {/* Time Range Selection */}
-                    <Card className="p-4">
-                        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                            <Calendar className="w-5 h-5" />
-                            Time Range Selection
-                        </h3>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label className="label">
-                                    <span className="label-text">Start Time</span>
-                                </label>
-                                <Input
-                                    type="datetime-local"
-                                    value={selectedRange.start ? new Date(selectedRange.start / 1000).toISOString().slice(0, 16) : ''}
-                                    onChange={(e) => {
-                                        const target = e.target as HTMLInputElement;
-                                        const timestamp = new Date(target.value).getTime() * 1000;
-                                        setSelectedRange(prev => ({ ...prev, start: timestamp }));
-                                    }}
-                                />
+                        {session.end_ts && (
+                            <div className="mt-4">
+                                <div className="stat">
+                                    <div className="stat-title">End Time</div>
+                                    <div className="stat-value text-sm">
+                                        {formatTimestamp(session.end_ts)}
+                                    </div>
+                                </div>
                             </div>
-                            <div>
-                                <label className="label">
-                                    <span className="label-text">End Time</span>
-                                </label>
-                                <Input
-                                    type="datetime-local"
-                                    value={selectedRange.end ? new Date(selectedRange.end / 1000).toISOString().slice(0, 16) : ''}
-                                    onChange={(e) => {
-                                        const target = e.target as HTMLInputElement;
-                                        const timestamp = new Date(target.value).getTime() * 1000;
-                                        setSelectedRange(prev => ({ ...prev, end: timestamp }));
-                                    }}
-                                />
-                            </div>
-                        </div>
-                        <div className="mt-4">
-                            <Button 
-                                color="primary" 
-                                onClick={initializePlayer}
-                                disabled={!selectedRange.start || !selectedRange.end}
-                            >
-                                Load Time Range
-                            </Button>
-                        </div>
+                        )}
                     </Card>
                 </div>
             )}
