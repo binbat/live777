@@ -11,35 +11,29 @@ The Recorder in liveion is an optional feature that automatically records live s
 
 ## Liveman Integration {#liveman}
 
-The recorder can integrate with [Liveman](/guide/liveman) to provide centralized metadata management and playback services across the entire Live777 cluster.
+The recorder integrates with [Liveman](/guide/liveman) to provide centralized metadata management and playback services across the entire Live777 cluster.
 
-### Metadata Reporting
+### Metadata Management
 
-When Liveman integration is enabled, the recorder automatically reports segment metadata to the Liveman server, including:
+The recorder stores segment metadata in memory, which Liveman can pull periodically using the pull API, including:
 
 - Stream identifier and node alias
 - Segment timestamps (start/end in microseconds)
 - Segment duration and file path
 - Keyframe information
 
-This enables cluster-wide recording management and timeline-based playback.
+This enables cluster-wide recording management and timeline-based playback through a pull-based architecture.
 
 ### Configuration
 
 ```toml
-[recorder.liveman]
-# URL of the Liveman server for reporting segment metadata
-url = "http://liveman.example.com:8888"
-# Node alias to identify this Live777 instance
+[recorder]
+# Optional: Node alias to identify this Live777 instance in the cluster
 node_alias = "live777-node-001"
-# Number of retry attempts for failed reports (default: 3)
-retry_attempts = 3
-# Timeout in seconds for each report request (default: 10)
-report_timeout = 10
 ```
 
 ::: tip
-Liveman configuration is optional. If not configured, the recorder operates in local-only mode.
+The node_alias is optional but recommended for multi-node deployments to help Liveman identify the source of recording metadata.
 :::
 
 ## Configuration {#config}
@@ -52,15 +46,13 @@ Configure recording parameters in `live777.toml`:
 auto_streams = ["*"]  # Record all streams
 # auto_streams = ["room1", "room2", "web-*"]  # Record specific streams
 
+# Optional: Node alias for multi-node deployments
+node_alias = "live777-node-001"
+
 # Storage backend configuration
 [recorder.storage]
 type = "fs"  # Storage type: "fs", "s3", or "oss"
 root = "./records"  # Root path for recordings
-
-# Optional: Liveman integration for metadata reporting
-[recorder.liveman]
-url = "http://liveman.example.com:8888"
-node_alias = "live777-node-001"
 ```
 
 ## Storage Backends {#storage}

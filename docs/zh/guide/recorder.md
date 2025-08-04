@@ -11,34 +11,29 @@ liveion 的 Recorder 是一个可选功能，用于将实时流自动录制为 M
 
 ## Liveman 集成 {#liveman}
 
-录制器可以与 [Liveman](/zh/guide/liveman) 集成，为整个 Live777 集群提供集中化的元数据管理和回放服务。
+录制器与 [Liveman](/zh/guide/liveman) 集成，为整个 Live777 集群提供集中化的元数据管理和回放服务。
 
-### 元数据上报
+### 元数据管理
 
-当启用 Liveman 集成时，录制器会自动向 Liveman 服务器上报分片元数据，包括：
+录制器将分片元数据存储在内存中，Liveman 可以通过拉取 API 定期获取这些数据，包括：
 
 - 流标识符和节点别名
 - 分片时间戳（开始/结束时间，以微秒为单位）
 - 分片时长和文件路径
 - 关键帧信息
 
-这使得集群范围内的录制管理和基于时间轴的回放成为可能。
+这通过拉取式架构实现了集群范围内的录制管理和基于时间轴的回放。
 
 ### 配置
 
 ```toml
-[recorder.liveman]
-# Liveman 服务器的 URL，用于上报分片元数据
-url = "http://liveman.example.com:8888"
-# 节点别名，用于标识此 Live777 实例
+[recorder]
+# 可选：节点别名，用于在集群中标识此 Live777 实例
 node_alias = "live777-node-001"
-# 上报失败时的重试次数（默认：3）
-retry_attempts = 3
-# 每次上报请求的超时时间，以秒为单位（默认：10）
-report_timeout = 10
 ```
+
 ::: tip 注意
-Liveman 配置是可选的。如果未配置，录制器将以纯本地模式运行。
+node_alias 是可选的，但在多节点部署中建议配置，以帮助 Liveman 识别录制元数据的来源。
 :::
 
 ## 配置说明 {#config}
@@ -51,15 +46,13 @@ Liveman 配置是可选的。如果未配置，录制器将以纯本地模式运
 auto_streams = ["*"]  # 录制所有流
 # auto_streams = ["room1", "room2", "web-*"]  # 录制指定流
 
+# 可选：多节点部署的节点别名
+node_alias = "live777-node-001"
+
 # 存储后端配置
 [recorder.storage]
 type = "fs"  # 存储类型: "fs", "s3", 或 "oss"
 root = "./records"  # 录制文件根路径
-
-# 可选：Liveman 集成用于元数据上报
-[recorder.liveman]
-url = "http://liveman.example.com:8888"
-node_alias = "live777-node-001"
 ```
 
 ## 存储后端 {#storage}
