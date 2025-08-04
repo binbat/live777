@@ -554,5 +554,4 @@ impl Segmenter {
         // lose one fragment, which is acceptable for live streaming.
         Ok(())
     }
-
 }

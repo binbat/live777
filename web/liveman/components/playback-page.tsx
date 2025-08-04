@@ -24,7 +24,7 @@ export function PlaybackPage({ streamId, sessionId, onBack }: PlaybackPageProps)
         try {
             setLoading(true);
             setError('');
-            
+
             if (sessionId) {
                 // Find session by ID
                 const response = await livemanApi.getRecordingSessions();
@@ -36,9 +36,9 @@ export function PlaybackPage({ streamId, sessionId, onBack }: PlaybackPageProps)
                 }
             } else {
                 // Find latest session for this stream (fallback)
-                const response = await livemanApi.getRecordingSessions({ 
+                const response = await livemanApi.getRecordingSessions({
                     stream: streamId,
-                    limit: 1 
+                    limit: 1
                 });
                 if (response.sessions.length > 0) {
                     setSession(response.sessions[0]);
@@ -53,7 +53,7 @@ export function PlaybackPage({ streamId, sessionId, onBack }: PlaybackPageProps)
         }
     }, [streamId, sessionId]);
 
-    // Initialize DASH player
+    // Initialize DASH player  
     const initializePlayer = useCallback(async () => {
         const video = videoRef.current;
         if (!video || !session?.id) return;
@@ -62,26 +62,34 @@ export function PlaybackPage({ streamId, sessionId, onBack }: PlaybackPageProps)
             // Import dash.js dynamically
             const dashjs = await import('dashjs');
             const player = dashjs.MediaPlayer().create();
-            
+
             // Get MPD manifest URL
             const mpdUrl = `/api/record/sessions/${session.id}/mpd`;
-            
+
             player.initialize(video, mpdUrl, false);
-            
+
             player.on(dashjs.MediaPlayer.events.PLAYBACK_STARTED, () => {
                 setIsPlaying(true);
             });
-            
+
             player.on(dashjs.MediaPlayer.events.PLAYBACK_PAUSED, () => {
                 setIsPlaying(false);
             });
-            
+
             player.on(dashjs.MediaPlayer.events.PLAYBACK_TIME_UPDATED, () => {
                 setCurrentTime(video.currentTime);
             });
 
             player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => {
                 setDuration(video.duration || 0);
+            });
+
+            // Add error handling for debugging
+            player.on(dashjs.MediaPlayer.events.ERROR, (e: any) => {
+                console.error('DASH player error:', e);
+                if (e.error && e.error.message) {
+                    console.error('Error details:', e.error.message);
+                }
             });
 
         } catch (err) {
@@ -132,7 +140,7 @@ export function PlaybackPage({ streamId, sessionId, onBack }: PlaybackPageProps)
         const hours = Math.floor(timeInSeconds / 3600);
         const minutes = Math.floor((timeInSeconds % 3600) / 60);
         const seconds = Math.floor(timeInSeconds % 60);
-        
+
         if (hours > 0) {
             return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
         }
@@ -148,7 +156,7 @@ export function PlaybackPage({ streamId, sessionId, onBack }: PlaybackPageProps)
         const seconds = Math.floor(durationMs / 1000);
         const minutes = Math.floor(seconds / 60);
         const hours = Math.floor(minutes / 60);
-        
+
         if (hours > 0) {
             return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
         } else if (minutes > 0) {

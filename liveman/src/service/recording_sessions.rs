@@ -47,7 +47,8 @@ impl RecordingSessionsService {
                 active_model.end_ts = Set(session.end_ts);
                 active_model.duration_ms = Set(session.duration_ms);
                 active_model.status = Set(session.status.to_string());
-                active_model.updated_at = Set(chrono::DateTime::<chrono::FixedOffset>::from(Utc::now()));
+                active_model.updated_at =
+                    Set(chrono::DateTime::<chrono::FixedOffset>::from(Utc::now()));
 
                 let updated = active_model.update(db).await?;
                 created_sessions.push(updated);

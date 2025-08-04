@@ -1,9 +1,9 @@
+use chrono::Utc;
 use glob::Pattern;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::Utc;
 
 use opendal::Operator;
 #[cfg(feature = "recorder")]
@@ -22,7 +22,7 @@ pub mod codec;
 mod fmp4;
 
 // Recording session storage for pull API
-use api::recorder::{RecordingSession, RecordingStatus, SegmentInfo};
+use api::recorder::{RecordingSession, RecordingStatus};
 use std::collections::BTreeMap;
 
 static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =
@@ -32,10 +32,6 @@ static STORAGE: Lazy<RwLock<Option<Operator>>> = Lazy::new(|| RwLock::new(None))
 
 // Store recording sessions for pull API - organized by stream
 static RECORDING_SESSIONS: Lazy<RwLock<HashMap<String, BTreeMap<i64, RecordingSession>>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
-
-// Store segments for pull API - organized by stream  
-static SEGMENTS: Lazy<RwLock<HashMap<String, BTreeMap<i64, SegmentInfo>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// Initialize recorder event listener.
@@ -107,10 +103,10 @@ pub async fn start(manager: Arc<Manager>, stream: String) -> anyhow::Result<()> 
 
     let task = RecordingTask::spawn(manager, &stream).await?;
     map.insert(stream.clone(), task);
-    
+
     // Create new recording session
     start_recording_session(&stream).await;
-    
+
     tracing::info!("[recorder] spawn recording task for {}", stream);
     Ok(())
 }
@@ -130,12 +126,13 @@ fn should_record(patterns: &[String], stream: &str) -> bool {
 pub async fn start_recording_session(stream: &str) {
     let now = Utc::now();
     let start_ts = now.timestamp_micros();
-    
+
     // Generate MPD path based on stream and date
     let date_path = now.format("%Y/%m/%d").to_string();
     let mpd_path = format!("{stream}/{date_path}/manifest.mpd");
-    
+
     let session = RecordingSession {
+        id: None,
         stream: stream.to_string(),
         start_ts,
         end_ts: None,
@@ -143,13 +140,13 @@ pub async fn start_recording_session(stream: &str) {
         mpd_path,
         status: RecordingStatus::Active,
     };
-    
+
     let mut sessions = RECORDING_SESSIONS.write().await;
     let stream_sessions = sessions
         .entry(stream.to_string())
         .or_insert_with(BTreeMap::new);
     stream_sessions.insert(start_ts, session);
-    
+
     // Keep only last 100 sessions per stream to prevent memory bloat
     if stream_sessions.len() > 100 {
         let keys_to_remove: Vec<_> = stream_sessions
@@ -161,14 +158,17 @@ pub async fn start_recording_session(stream: &str) {
             stream_sessions.remove(&key);
         }
     }
-    
-    tracing::info!("[recorder] Started recording session for stream: {}", stream);
+
+    tracing::info!(
+        "[recorder] Started recording session for stream: {}",
+        stream
+    );
 }
 
 /// Complete the most recent recording session for a stream
 pub async fn complete_recording_session(stream: &str) {
     let mut sessions = RECORDING_SESSIONS.write().await;
-    
+
     if let Some(stream_sessions) = sessions.get_mut(stream) {
         // Find the most recent active session
         if let Some((_, session)) = stream_sessions
@@ -179,12 +179,16 @@ pub async fn complete_recording_session(stream: &str) {
             let now = Utc::now();
             let end_ts = now.timestamp_micros();
             let duration_ms = ((end_ts - session.start_ts) / 1000) as i32;
-            
+
             session.end_ts = Some(end_ts);
             session.duration_ms = Some(duration_ms);
             session.status = RecordingStatus::Completed;
-            
-            tracing::info!("[recorder] Completed recording session for stream: {} (duration: {}ms)", stream, duration_ms);
+
+            tracing::info!(
+                "[recorder] Completed recording session for stream: {} (duration: {}ms)",
+                stream,
+                duration_ms
+            );
         }
     }
 }
@@ -196,10 +200,10 @@ pub async fn pull_recordings(
     limit: u32,
 ) -> api::recorder::PullRecordingsResponse {
     let sessions = RECORDING_SESSIONS.read().await;
-    
+
     let mut all_sessions = Vec::new();
     let mut last_ts = None;
-    
+
     for (stream_name, stream_sessions) in sessions.iter() {
         // Apply stream filter if provided
         if let Some(filter) = stream_filter {
@@ -207,7 +211,7 @@ pub async fn pull_recordings(
                 continue;
             }
         }
-        
+
         // Filter by timestamp and collect sessions
         let filtered_sessions: Vec<_> = stream_sessions
             .range(since_ts.unwrap_or(0)..)
@@ -219,16 +223,16 @@ pub async fn pull_recordings(
                 session.clone()
             })
             .collect();
-        
+
         all_sessions.extend(filtered_sessions);
     }
-    
+
     // Sort by start timestamp and apply final limit
     all_sessions.sort_by_key(|s| s.start_ts);
     if all_sessions.len() > limit as usize {
         all_sessions.truncate(limit as usize);
     }
-    
+
     api::recorder::PullRecordingsResponse {
         sessions: all_sessions,
         last_ts,

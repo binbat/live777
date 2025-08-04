@@ -66,3 +66,7 @@ export function getStreams() {
 export function cascade(streamId: string, params: Cascade) {
     return w.url(`/api/cascade/${streamId}`).post(params).res();
 }
+
+export function startRecording(streamId: string) {
+    return w.url(`/api/record/${streamId}`).post().res();
+}

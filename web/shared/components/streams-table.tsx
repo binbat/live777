@@ -4,7 +4,7 @@ import { type ReactNode } from 'preact/compat';
 import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
-import { type Stream, getStreams, deleteStream } from '../api';
+import { type Stream, getStreams, deleteStream, startRecording } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 import { TokenContext } from '../context';
@@ -130,6 +130,15 @@ export function StreamsTable(props: StreamTableProps) {
         await streams.updateData();
     };
 
+    const handleStartRecording = async (id: string) => {
+        try {
+            await startRecording(id);
+            console.log(`Recording started for stream: ${id}`);
+        } catch (error) {
+            console.error(`Failed to start recording for stream ${id}:`, error);
+        }
+    };
+
     return (
         <>
             <div className="flex items-center gap-2 px-4 h-12">
@@ -188,6 +197,7 @@ export function StreamsTable(props: StreamTableProps) {
                                 }
                                 <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
                                 <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
+                                <Button size="sm" color="info" onClick={() => handleStartRecording(i.id)}>Record</Button>
                                 {props.renderExtraActions?.(i)}
                                 <Button size="sm" color="error" onClick={() => handleDestroyStream(i.id)}>Destroy</Button>
                             </div>

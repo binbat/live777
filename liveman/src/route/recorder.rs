@@ -8,9 +8,9 @@ use axum::{
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::service::recording_sessions::{RecordingSessionsService, RecordingQueryParams};
+use crate::service::recording_sessions::{RecordingQueryParams, RecordingSessionsService};
 use crate::{error::AppError, result::Result, AppState};
-use api::recorder::{StreamsListResponse, RecordingSessionResponse};
+use api::recorder::{RecordingSessionResponse, StreamsListResponse};
 
 #[derive(Deserialize)]
 struct RecordingQuery {
@@ -26,7 +26,7 @@ pub fn route() -> Router<AppState> {
     Router::new()
         .route("/api/record/streams", get(get_streams))
         .route("/api/record/sessions", get(get_sessions))
-        .route("/api/record/sessions/:id/mpd", get(get_session_mpd))
+        .route("/api/record/sessions/{id}/mpd", get(get_session_mpd))
         .route("/api/record/object/{*path}", get(get_segment))
 }
 
@@ -67,7 +67,10 @@ async fn get_sessions(
                     end_ts: session.end_ts,
                     duration_ms: session.duration_ms,
                     mpd_path: session.mpd_path,
-                    status: session.status.parse().unwrap_or(api::recorder::RecordingStatus::Active),
+                    status: session
+                        .status
+                        .parse()
+                        .unwrap_or(api::recorder::RecordingStatus::Active),
                 })
                 .collect();
 
@@ -91,24 +94,54 @@ async fn get_session_mpd(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Response> {
-    let session_uuid = session_id.parse().map_err(|_| {
-        AppError::RequestProxyError
-    })?;
+    let session_uuid = session_id
+        .parse()
+        .map_err(|_| AppError::RequestProxyError)?;
 
-    match RecordingSessionsService::get_recording_by_id(state.database.get_connection(), session_uuid).await {
+    match RecordingSessionsService::get_recording_by_id(
+        state.database.get_connection(),
+        session_uuid,
+    )
+    .await
+    {
         Ok(Some(session)) => {
             let _mpd_path = &session.mpd_path;
-            
+
             #[cfg(feature = "recorder")]
             {
                 if let Some(ref operator) = state.file_storage {
                     match operator.read(&session.mpd_path).await {
                         Ok(bytes) => {
-                            info!("Successfully served MPD: {}", session.mpd_path);
+                            let mut mpd_content =
+                                String::from_utf8_lossy(&bytes.to_vec()).to_string();
+
+                            // Extract directory path from mpd_path
+                            let mpd_dir = session
+                                .mpd_path
+                                .rsplit('/')
+                                .skip(1)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .collect::<Vec<_>>()
+                                .join("/");
+                            let base_url = format!("/api/record/object/{}/", mpd_dir);
+
+                            // Add BaseURL element to MPD if not already present
+                            if !mpd_content.contains("<BaseURL>") {
+                                // Find the first Period element and insert BaseURL before it
+                                if let Some(period_pos) = mpd_content.find("<Period") {
+                                    let base_url_element =
+                                        format!("    <BaseURL>{}</BaseURL>\n    ", base_url);
+                                    mpd_content.insert_str(period_pos, &base_url_element);
+                                }
+                            }
+
+                            info!("Successfully served MPD with BaseURL: {}", session.mpd_path);
                             Ok((
                                 StatusCode::OK,
                                 [("content-type", "application/dash+xml")],
-                                bytes.to_vec(),
+                                mpd_content.into_bytes(),
                             )
                                 .into_response())
                         }
@@ -133,9 +166,7 @@ async fn get_session_mpd(
                 Ok((StatusCode::NOT_IMPLEMENTED, "Recorder feature not enabled").into_response())
             }
         }
-        Ok(None) => {
-            Ok((StatusCode::NOT_FOUND, "Recording session not found").into_response())
-        }
+        Ok(None) => Ok((StatusCode::NOT_FOUND, "Recording session not found").into_response()),
         Err(e) => {
             error!("Failed to retrieve recording session: {}", e);
             Err(AppError::DatabaseError(e.to_string()))

@@ -12,14 +12,48 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(RecordingSessions::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(RecordingSessions::Id).uuid().not_null().primary_key())
-                    .col(ColumnDef::new(RecordingSessions::Stream).string().not_null())
-                    .col(ColumnDef::new(RecordingSessions::NodeAlias).string().not_null())
-                    .col(ColumnDef::new(RecordingSessions::StartTs).big_integer().not_null())
-                    .col(ColumnDef::new(RecordingSessions::EndTs).big_integer().null())
-                    .col(ColumnDef::new(RecordingSessions::DurationMs).integer().null())
-                    .col(ColumnDef::new(RecordingSessions::MpdPath).string().not_null())
-                    .col(ColumnDef::new(RecordingSessions::Status).string().not_null().default("Active"))
+                    .col(
+                        ColumnDef::new(RecordingSessions::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(RecordingSessions::Stream)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(RecordingSessions::NodeAlias)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(RecordingSessions::StartTs)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(RecordingSessions::EndTs)
+                            .big_integer()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(RecordingSessions::DurationMs)
+                            .integer()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(RecordingSessions::MpdPath)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(RecordingSessions::Status)
+                            .string()
+                            .not_null()
+                            .default("Active"),
+                    )
                     .col(
                         ColumnDef::new(RecordingSessions::CreatedAt)
                             .timestamp_with_time_zone()
