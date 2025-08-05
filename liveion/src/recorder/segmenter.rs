@@ -11,12 +11,20 @@ use tracing::info;
 /// Default duration of each segment in seconds
 const DEFAULT_SEG_DURATION: u64 = 10;
 
+/// Represents a completed segment with its actual duration
+#[derive(Debug, Clone)]
+struct SegmentInfo {
+    start_time: u64,    // Start time in timescale units
+    duration: u64,      // Actual duration in timescale units
+}
+
 pub struct Segmenter {
     op: Operator,
     stream: String,
     path_prefix: String,
     timescale: u32,
-    duration_per_seg: Duration,
+    // Target segment duration for keyframe boundary detection
+    target_seg_duration: Duration,
     // Length of each segment (in timescale units) for fast comparison
     seg_duration_ticks: u64,
 
@@ -71,6 +79,12 @@ pub struct Segmenter {
 
     // video adapter for H264
     video_adapter: Option<H264Adapter>,
+
+    /// List of completed segments with their actual durations
+    segments: Vec<SegmentInfo>,
+    
+    /// Audio segments with their actual durations
+    audio_segments: Vec<SegmentInfo>,
 }
 
 impl Segmenter {
@@ -80,7 +94,7 @@ impl Segmenter {
             stream: stream.clone(),
             path_prefix: root_prefix,
             timescale: 90_000,
-            duration_per_seg: Duration::from_secs(DEFAULT_SEG_DURATION),
+            target_seg_duration: Duration::from_secs(DEFAULT_SEG_DURATION),
             seg_duration_ticks: 90_000u64 * DEFAULT_SEG_DURATION,
             seg_index: 0,
             seg_start_dts: 0,
@@ -111,6 +125,8 @@ impl Segmenter {
             keyframe_request_timeout: Duration::from_secs(10),
 
             video_adapter: Some(H264Adapter::new()),
+            segments: Vec::new(),
+            audio_segments: Vec::new(),
         })
     }
 
@@ -344,6 +360,8 @@ impl Segmenter {
         }
 
         let base_time = self.seg_start_dts;
+        let segment_end_time = self.current_pts;
+        let actual_duration = segment_end_time - base_time;
 
         let writer = self
             .fmp4_writer
@@ -362,6 +380,12 @@ impl Segmenter {
             e
         })?;
         info!("[segmenter] {} {} written", self.stream, filename);
+
+        // Record the completed segment with its actual duration
+        self.segments.push(SegmentInfo {
+            start_time: base_time,
+            duration: actual_duration,
+        });
 
         // Write audio fragment if any samples are available
         if let (Some(writer), true) = (self.audio_writer.as_ref(), !self.audio_samples.is_empty()) {
@@ -389,6 +413,20 @@ impl Segmenter {
                     );
                     e
                 })?;
+
+            // Record the audio segment - calculate duration based on audio samples
+            let audio_duration = if let (Some(first), Some(last)) = 
+                (self.audio_samples.first(), self.audio_samples.last()) {
+                last.start_time + last.duration as u64 - first.start_time
+            } else {
+                0
+            };
+            
+            self.audio_segments.push(SegmentInfo {
+                start_time: audio_base_time,
+                duration: audio_duration,
+            });
+
             self.audio_samples.clear();
         }
 
@@ -401,21 +439,21 @@ impl Segmenter {
     }
 
     async fn write_manifest(&self) -> Result<()> {
-        // Compute total media duration (completed segments) in seconds
-        let seg_count = if self.seg_index > 0 {
-            self.seg_index - 1
-        } else {
-            0
-        } as u64;
-        let seg_duration_ticks = (self.timescale as u64) * self.duration_per_seg.as_secs();
-        let total_duration_ticks = seg_duration_ticks * seg_count;
-
-        // Represent duration in ISO8601 PT format with second-level precision
+        // Calculate total duration from actual segments
+        let total_duration_ticks: u64 = self.segments.iter().map(|s| s.duration).sum();
         let total_duration_secs = total_duration_ticks as f64 / self.timescale as f64;
         let media_presentation_duration = format!("PT{total_duration_secs:.3}S");
-        let max_segment_duration = format!("PT{}S", self.duration_per_seg.as_secs());
-        let min_buffer_time = if self.duration_per_seg.as_secs() * 3 > 0 {
-            format!("PT{}S", self.duration_per_seg.as_secs() * 3)
+        
+        // Use the maximum actual segment duration for maxSegmentDuration
+        let max_actual_duration = self.segments.iter()
+            .map(|s| s.duration)
+            .max()
+            .unwrap_or(self.seg_duration_ticks);
+        let max_segment_duration_secs = max_actual_duration as f64 / self.timescale as f64;
+        let max_segment_duration = format!("PT{max_segment_duration_secs:.3}S");
+        
+        let min_buffer_time = if max_segment_duration_secs * 3.0 > 0.0 {
+            format!("PT{:.3}S", max_segment_duration_secs * 3.0)
         } else {
             "PT1S".to_string()
         };
@@ -427,6 +465,9 @@ impl Segmenter {
             0
         };
 
+        // Generate SegmentTimeline for video
+        let video_segment_timeline = self.generate_segment_timeline(&self.segments);
+
         // Audio params if available
         let audio_section = if let Some(ref a_writer) = self.audio_writer {
             let audio_bandwidth = if self.audio_total_ticks > 0 {
@@ -434,14 +475,17 @@ impl Segmenter {
             } else {
                 0
             };
-            let audio_seg_duration = a_writer.timescale as u64 * self.duration_per_seg.as_secs();
+            
+            // Generate SegmentTimeline for audio
+            let audio_segment_timeline = self.generate_segment_timeline(&self.audio_segments);
+            
             format!(
-                "        <AdaptationSet id=\"1\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"1\" mimeType=\"audio/mp4\" codecs=\"{}\" bandwidth=\"{}\" audioSamplingRate=\"{}\" >\n                <SegmentTemplate timescale=\"{}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" duration=\"{}\" startNumber=\"1\" />\n            </Representation>\n        </AdaptationSet>\n",
+                "        <AdaptationSet id=\"1\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"1\" mimeType=\"audio/mp4\" codecs=\"{}\" bandwidth=\"{}\" audioSamplingRate=\"{}\" >\n                <SegmentTemplate timescale=\"{}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
                 a_writer.codec_string,
                 audio_bandwidth,
                 a_writer.sample_rate,
                 a_writer.timescale,
-                audio_seg_duration
+                audio_segment_timeline
             )
         } else {
             String::new()
@@ -473,10 +517,7 @@ impl Segmenter {
             "1:1".to_string()
         };
 
-        // Duration of each segment in timescale units
-        let seg_duration_ticks = self.timescale as u64 * self.duration_per_seg.as_secs();
-
-        // Build MPD with fixed-duration SegmentTemplate (no SegmentTimeline)
+        // Build MPD with SegmentTimeline instead of fixed duration
         let mpd_body = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
@@ -488,18 +529,18 @@ impl Segmenter {
      mediaPresentationDuration=\"{media_duration}\"\n\
      maxSegmentDuration=\"{max_seg_dur}\"\n\
      minBufferTime=\"{min_buf}\">\n\
-    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" duration=\"{seg_duration}\" startNumber=\"1\" />\n            </Representation>\n        </AdaptationSet>\n        {audio_section}\n    </Period>\n</MPD>\n",
+    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n{video_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n        {audio_section}\n    </Period>\n</MPD>\n",
             media_duration = media_presentation_duration,
             max_seg_dur = max_segment_duration,
             min_buf = min_buffer_time,
             width = self.video_width,
             height = self.video_height,
             timescale = self.timescale,
-            seg_duration = seg_duration_ticks,
             codec = self.video_codec,
             fps = fps_val,
             bandwidth = video_bandwidth,
             par = par_str,
+            video_timeline = video_segment_timeline,
             audio_section = audio_section,
         );
 
@@ -513,6 +554,27 @@ impl Segmenter {
                 );
                 e
             })
+    }
+
+    /// Generate SegmentTimeline XML from segment info
+    fn generate_segment_timeline(&self, segments: &[SegmentInfo]) -> String {
+        if segments.is_empty() {
+            return "                    <SegmentTimeline></SegmentTimeline>".to_string();
+        }
+
+        let mut timeline = String::from("                    <SegmentTimeline>\n");
+        
+        // Simply output each segment without grouping for now to avoid timeline gaps
+        // DASH players are very sensitive to timeline accuracy
+        for segment in segments {
+            timeline.push_str(&format!(
+                "                        <S t=\"{}\" d=\"{}\" />\n",
+                segment.start_time, segment.duration
+            ));
+        }
+        
+        timeline.push_str("                    </SegmentTimeline>");
+        timeline
     }
 
     async fn store_file(&self, name: &str, data: Vec<u8>) -> Result<()> {
