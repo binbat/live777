@@ -57,7 +57,7 @@ impl Default for Database {
 }
 
 fn default_database_url() -> String {
-    std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgresql://localhost/live777".to_string())
+    std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://./liveman.db".to_string())
 }
 
 fn default_database_max_connections() -> u32 {

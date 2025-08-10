@@ -10,6 +10,10 @@ live777.toml
 gateway.toml
 liveman.toml
 
+liveman.db
+records
+storage
+
 # Vitepress
 docs/.vitepress/cache
 

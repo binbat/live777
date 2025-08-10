@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useContext, useEffect, useState } from 'preact/hooks';
 import { Badge, Button, Card, Loading } from 'react-daisyui';
 import { RefreshCw, Calendar } from 'lucide-react';
 import * as livemanApi from '../api';
+import { TokenContext } from '@/shared/context';
 
 export function RecordingsPage() {
+    const tokenContext = useContext(TokenContext);
     const [streams, setStreams] = useState<string[]>([]);
     const [selectedStream, setSelectedStream] = useState<string>('');
     const [indexEntries, setIndexEntries] = useState<livemanApi.RecordingIndexEntry[]>([]);
@@ -58,15 +60,16 @@ export function RecordingsPage() {
 
     const selectStream = (s: string) => setSelectedStream(s);
     const playMpd = (mpd: string) => {
-        const url = new URL(window.location.href);
-        url.searchParams.set('view', 'recordings');
-        // 直接打开播放 modal（在此页内实现 modal 播放器亦可后续追加）
-        url.searchParams.set('stream', selectedStream);
-        url.searchParams.set('mpd', mpd);
-        window.history.pushState({}, '', url.toString());
-        window.dispatchEvent(new PopStateEvent('popstate'));
-        // 简化：直接新开标签访问 MPD 以便快速验证
-        window.open(livemanApi.getSegmentUrl(mpd), '_blank');
+        const params = new URLSearchParams();
+        params.set('mpd', mpd);
+        params.set('autoplay', '1');
+        params.set('controls', '1');
+        params.set('muted', '1');
+        if (tokenContext.token) {
+            params.set('token', tokenContext.token);
+        }
+        const url = new URL(`/tools/dash.html?${params.toString()}`, location.origin);
+        window.open(url.toString(), '_blank');
     };
 
     if (loading && streams.length === 0) {

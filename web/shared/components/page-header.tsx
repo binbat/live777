@@ -32,6 +32,16 @@ export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
         window.open(url);
     };
 
+    const handleOpenDashPage = () => {
+        const params = new URLSearchParams();
+        params.set('mpd', '');
+        params.set('autoplay', '1');
+        params.set('controls', '1');
+        params.set('muted', '1');
+        const url = new URL(`/tools/dash.html?${params.toString()}`, location.origin);
+        window.open(url);
+    };
+
     return (
         <Navbar className="bg-base-300 px-0">
             <div className="flex grow max-w-screen-xl px-4 mx-auto">
@@ -47,14 +57,14 @@ export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
                 {onNavigate && (
                     <div className="flex-1 flex justify-center">
                         <Tabs variant="boxed" size="sm">
-                            <Tabs.Tab 
+                            <Tabs.Tab
                                 active={currentView === 'streams'}
                                 onClick={() => onNavigate('streams')}
                             >
                                 <Monitor className="w-4 h-4 mr-2" />
                                 Streams
                             </Tabs.Tab>
-                            <Tabs.Tab 
+                            <Tabs.Tab
                                 active={currentView === 'recordings'}
                                 onClick={() => onNavigate('recordings')}
                             >
@@ -75,6 +85,7 @@ export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
                     <Dropdown.Menu className="bg-base-300 mt-4 z-10">
                         <Dropdown.Item onClick={handleOpenDebuggerPage}>Debugger</Dropdown.Item>
                         <Dropdown.Item onClick={handleOpenPlayerPage}>Player</Dropdown.Item>
+                        <Dropdown.Item onClick={handleOpenDashPage}>DASH Player</Dropdown.Item>
                     </Dropdown.Menu>
                 </Dropdown>
             </div>

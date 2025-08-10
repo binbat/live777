@@ -32,16 +32,20 @@ impl MigrationTrait for Migration {
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
-                    .index(
-                        Index::create()
-                            .name("idx_recordings_stream_date")
-                            .table(Recordings::Table)
-                            .col(Recordings::Stream)
-                            .col(Recordings::Year)
-                            .col(Recordings::Month)
-                            .col(Recordings::Day)
-                            .unique(),
-                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_recordings_stream_date")
+                    .table(Recordings::Table)
+                    .col(Recordings::Stream)
+                    .col(Recordings::Year)
+                    .col(Recordings::Month)
+                    .col(Recordings::Day)
+                    .unique()
                     .to_owned(),
             )
             .await

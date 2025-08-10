@@ -264,6 +264,8 @@ impl RecordingTask {
     }
 
     pub fn stop(self) {
-        self.handle.abort();
+        let RecordingTask { stream, handle } = self;
+        tracing::info!("[recorder] stopping recording for stream {}", stream);
+        handle.abort();
     }
 }

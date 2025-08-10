@@ -45,7 +45,7 @@ glob = "0.3"
 
 # Database dependencies
 sea-orm = { version = "1.1", features = [
-    "sqlx-postgres",
+    "sqlx-sqlite",
     "runtime-tokio-rustls",
     "macros",
     "with-chrono",
