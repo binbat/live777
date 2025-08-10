@@ -178,9 +178,27 @@ Request:
 
 Starts recording the specified stream. The stream must be active (have a publisher) for recording to begin.
 
-Request: No body required
+Request Body (optional):
 
-Response: [204] - Recording started successfully
+```json
+{ "base_dir": "optional/path/prefix" }
+```
+
+Response: [200]
+
+```json
+{ "id": "6b2f3c1a-...", "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+```
+
+### Recording Status (by id)
+
+`GET` `/api/streams/:streamId/record/status`
+
+Response: [200]
+
+```json
+{ "recording": true }
+```
 
 Reference: [Recorder](recorder)
 

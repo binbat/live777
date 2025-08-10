@@ -42,11 +42,6 @@ pub fn record(stream: &str) -> String {
     format!("/api/streams/{stream}/record")
 }
 
-// Recording API paths
-pub fn recordings_pull() -> &'static str {
-    "/api/records/pull"
-}
-
-pub fn segments_pull() -> &'static str {
-    "/api/records/segments/pull"
+pub fn record_status(stream: &str) -> String {
+    format!("/api/streams/{stream}/record/status")
 }

@@ -121,3 +121,18 @@ pub struct PullSegmentsResponse {
     /// Timestamp of the newest segment (for next pull)
     pub last_ts: Option<i64>,
 }
+
+/// Request body to start recording a stream (Live777 node)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StartRecordRequest {
+    /// Optional base directory for storing recordings, e.g. "web-0/2025/05/05"
+    pub base_dir: Option<String>,
+}
+
+/// Response body after starting recording
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartRecordResponse {
+    pub id: String,
+    /// Absolute path (within storage) to the MPD manifest for this session
+    pub mpd_path: String,
+}

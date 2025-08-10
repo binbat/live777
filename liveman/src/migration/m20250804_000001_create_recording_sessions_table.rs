@@ -70,7 +70,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create indices
         manager
             .create_index(
                 Index::create()

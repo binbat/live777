@@ -70,6 +70,7 @@ http-body = "1.0"
 serde = "1"
 tokio = "1.36"
 tracing = "0.1"
+uuid = { version = "1", features = ["v4", "fast-rng"] }
 
 [dev-dependencies]
 http = { workspace = true }
@@ -80,7 +81,7 @@ cli = { path = "libs/cli" }
 reqwest = { version = "0.12", features = [
     "rustls-tls",
     "socks",
-    "json"
+    "json",
 ], default-features = false }
 
 tempfile = "3"
@@ -106,4 +107,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webui = ["liveion/webui", "liveman/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]
-

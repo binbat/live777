@@ -22,7 +22,6 @@ pub mod config;
 pub mod entity;
 mod error;
 pub mod migration;
-mod puller;
 mod result;
 mod route;
 pub mod service;
@@ -217,15 +216,7 @@ where
 
     tokio::spawn(tick::cascade_check(app_state.clone()));
 
-    // Start recording session puller for recording metadata
-    #[cfg(feature = "recorder")]
-    {
-        let pull_config = puller::PullConfig::default();
-        tokio::spawn(puller::start_recording_puller(
-            app_state.clone(),
-            pull_config,
-        ));
-    }
+    tokio::spawn(tick::auto_record_check(app_state.clone()));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(signal)

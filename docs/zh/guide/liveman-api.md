@@ -24,81 +24,15 @@ Response: [204]
 
 ## Recording & Playback
 
-录制和回放相关API（需要启用 `recorder` 特性）
+录制与回放相关 API（代理与列表）
 
-### 分片元数据上报
+### 代理获取分片文件
 
-`POST` `/api/segments/report`
+`GET` `/api/record/object/{path}`
 
-**请求体**:
-```json
-{
-  "node_alias": "live777-node-001",
-  "stream": "camera01",
-  "segments": [{
-    "start_ts": 1721827200000000,
-    "end_ts": 1721827201000000,
-    "duration_ms": 1000,
-    "path": "camera01/2024/01/01/segment_00042.m4s",
-    "is_keyframe": true
-  }]
-}
-```
+- `path`: 录制对象在存储中的 URL 编码路径（如 `camera01/2025/07/24/manifest.mpd`）
 
-**响应**: [200]
-```json
-{
-  "success": true,
-  "message": "Segments processed successfully",
-  "processed_count": 1
-}
-```
-
-### 录制流列表
-
-`GET` `/api/record/streams`
-
-**响应**: [200]
-```json
-{
-  "streams": ["camera01", "camera02", "meeting-room"]
-}
-```
-
-### 时间轴查询
-
-`GET` `/api/record/{stream}/timeline?start_ts=1721827200000000&end_ts=1721827300000000&limit=100&offset=0`
-
-**查询参数**:
-- `start_ts` (可选): 开始时间戳，以微秒为单位
-- `end_ts` (可选): 结束时间戳，以微秒为单位
-- `limit` (可选): 返回的最大分片数量
-- `offset` (可选): 跳过的分片数量
-
-**响应**: [200]
-```json
-{
-  "stream": "camera01",
-  "total_count": 150,
-  "segments": [{
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "start_ts": 1721827200000000,
-    "end_ts": 1721827201000000,
-    "duration_ms": 1000,
-    "path": "camera01/2024/01/01/segment_00042.m4s", 
-    "is_keyframe": true,
-    "created_at": "2024-01-01T12:00:00Z"
-  }]
-}
-```
-
-### MPEG-DASH 清单
-
-`GET` `/api/record/{stream}/mpd?start_ts=1721827200000000&end_ts=1721827300000000`
-
-**查询参数**:
-- `start_ts`: 开始时间戳（可选）
-- `end_ts`: 结束时间戳（可选）
+**响应**: [200] 二进制媒体数据，Content-Type 通过文件扩展名推断（例如 `.mpd` 为 `application/dash+xml`，`.m4s`/`.mp4` 为 `video/mp4`）。
 
 **响应**: [200] `application/dash+xml`
 ```xml

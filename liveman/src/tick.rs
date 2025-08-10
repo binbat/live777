@@ -1,9 +1,12 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
+use glob::Pattern;
+use http::header;
 use tracing::{error, info};
 use url::Url;
 
+use crate::service::recording_sessions::RecordingSessionsService;
 use crate::{error::AppError, result::Result, route::utils::session_delete, AppState};
 
 pub async fn cascade_check(state: AppState) {
@@ -103,4 +106,119 @@ fn parse_node_and_stream(url: String) -> Result<(String, String)> {
             )))?
             .to_string(),
     ))
+}
+
+/// Liveman Auto Record Check
+pub async fn auto_record_check(state: AppState) {
+    if !state.config.auto_record.enabled {
+        return;
+    }
+    loop {
+        let timeout = tokio::time::sleep(Duration::from_millis(state.config.auto_record.tick_ms));
+        tokio::pin!(timeout);
+        let _ = timeout.as_mut().await;
+        let _ = do_auto_record_check(state.clone()).await;
+    }
+}
+
+async fn do_auto_record_check(mut state: AppState) -> Result<()> {
+    let patterns = state.config.auto_record.auto_streams.clone();
+    if patterns.is_empty() {
+        return Ok(());
+    }
+
+    let streams = state.storage.stream_all().await;
+    let base_prefix = state.config.auto_record.base_prefix.clone();
+
+    for (stream_id, nodes) in streams.into_iter() {
+        if !should_record(&patterns, &stream_id) {
+            continue;
+        }
+        if let Some(first_node_alias) = nodes.first() {
+            let node = state
+                .storage
+                .get_map_server()
+                .get(first_node_alias)
+                .cloned();
+            if let Some(server) = node {
+                let status_url = format!("{}{}", server.url, api::path::record_status(&stream_id));
+                let is_recording = match state
+                    .client
+                    .get(status_url)
+                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => match resp.json::<serde_json::Value>().await {
+                        Ok(v) => v
+                            .get("recording")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false),
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                };
+
+                if !is_recording {
+                    let now = chrono::Utc::now();
+                    let date_path = now.format("%Y/%m/%d").to_string();
+                    let base_dir = if base_prefix.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{base_prefix}/{date_path}"))
+                    };
+                    let body = api::recorder::StartRecordRequest { base_dir };
+                    let start_url = format!("{}{}", server.url, api::path::record(&stream_id));
+                    let resp = state
+                        .client
+                        .post(start_url)
+                        .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                        .json(&body)
+                        .send()
+                        .await;
+
+                    if let Ok(r) = resp {
+                        if r.status().is_success() {
+                            // Prefer server-returned mpd_path
+                            let mpd_path =
+                                match r.json::<api::recorder::StartRecordResponse>().await {
+                                    Ok(v) => v.mpd_path,
+                                    Err(_) => {
+                                        // Fallback to local inference
+                                        if let Some(prefix) = &body.base_dir {
+                                            format!("{}/manifest.mpd", prefix)
+                                        } else {
+                                            format!(
+                                                "{}/{}",
+                                                stream_id,
+                                                format!("{}/manifest.mpd", date_path)
+                                            )
+                                        }
+                                    }
+                                };
+                            let _ = RecordingSessionsService::insert_on_start(
+                                state.database.get_connection(),
+                                server.alias.clone(),
+                                stream_id.clone(),
+                                mpd_path,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn should_record(patterns: &[String], stream: &str) -> bool {
+    for p in patterns {
+        if let Ok(pat) = Pattern::new(p) {
+            if pat.matches(stream) {
+                return true;
+            }
+        }
+    }
+    false
 }

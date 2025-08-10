@@ -11,18 +11,11 @@ liveion 的 Recorder 是一个可选功能，用于将实时流自动录制为 M
 
 ## Liveman 集成 {#liveman}
 
-录制器可以与 [Liveman](/zh/guide/liveman) 集成，为整个 Live777 集群提供集中化的元数据管理和回放服务。
+与 [Liveman](/zh/guide/liveman) 集成以实现集中式回放和代理访问：
 
-### 元数据管理
-
-录制器将分片元数据存储在内存中，Liveman 可以通过拉取 API 定期获取这些数据，包括：
-
-- 流标识符和节点别名
-- 分片时间戳（开始/结束时间，以微秒为单位）
-- 分片时长和文件路径
-- 关键帧信息
-
-这使得集群范围内的录制管理和基于时间轴的回放成为可能。
+- 启动录制时由 Live777 直接返回 `mpd_path`
+- Liveman 使用该 `mpd_path` 进行回放
+- 媒体文件可通过 Liveman 代理获取：`GET /api/record/object/{path}`
 
 ### 配置
 
@@ -64,6 +57,23 @@ root = "./records"  # 录制文件根路径
 type = "fs"
 root = "/var/lib/live777/recordings"
 ```
+
+## 启动/状态 API {#api}
+
+需要启用 `recorder` 特性。
+
+- 启动录制: `POST` `/api/streams/:streamId/record`
+  - 请求体（可选）: `{ "base_dir": "optional/path/prefix" }`
+  - 响应: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
+- 录制状态: `GET` `/api/streams/:streamId/record/status`
+  - 响应: `{ "recording": true }`
+
+
+## MPD 路径规则 {#mpd}
+
+- 默认目录结构： `/:streamId/YYYY/MM/DD/`
+- 默认 MPD 位置： `/:streamId/YYYY/MM/DD/manifest.mpd`
+- 当提供 `base_dir` 时，MPD 位于 `/{base_dir}/manifest.mpd`
 
 ### AWS S3
 

@@ -4,7 +4,6 @@ use std::time::Duration;
 use tracing::info;
 
 use crate::config::Database as DatabaseConfig;
-use crate::migration::{Migrator, MigratorTrait};
 
 #[derive(Clone)]
 pub struct DatabaseService {
@@ -22,9 +21,6 @@ impl DatabaseService {
 
         info!("Connecting to database: {}", config.url);
         let connection = Database::connect(opt).await?;
-
-        info!("Running database migrations...");
-        Migrator::up(&connection, None).await?;
 
         info!("Database connection established and migrations completed");
 

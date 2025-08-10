@@ -24,85 +24,16 @@ Response: [204]
 
 ## Recording & Playback
 
-Recording and playback related APIs (requires `recorder` feature enabled)
+Recording and playback related APIs (proxy and listing)
 
-### Report Segment Metadata
+### Get Segment File via Proxy
 
-Live777 nodes use this API to report recorded segment metadata to Liveman.
+`GET` `/api/record/object/{path}`
 
-`POST` `/api/segments/report`
+- `path`: URL-encoded storage path of the recorded object (e.g. `camera01/2025/07/24/manifest.mpd`)
 
-Request Body:
-```json
-{
-  "node_alias": "live777-001",
-  "stream": "camera01", 
-  "segments": [{
-    "start_ts": 1721827200000000,
-    "end_ts": 1721827201000000, 
-    "duration_ms": 1000,
-    "path": "camera01/2024/01/01/segment_00042.m4s",
-    "is_keyframe": true
-  }]
-}
-```
+Response: [200] Binary media data, content-type inferred by extension (e.g. `application/dash+xml` for `.mpd`, `video/mp4` for `.m4s`/`.mp4`).
 
-Response: [200]
-```json
-{
-  "success": true,
-  "message": "Segments processed successfully",
-  "processed_count": 1
-}
-```
-
-### Get Recording Streams
-
-Get list of all streams that have recordings.
-
-`GET` `/api/record/streams`
-
-Response: [200]
-```json
-{
-  "streams": ["camera01", "camera02", "stream123"]
-}
-```
-
-### Get Timeline Data
-
-Get timeline data for a specific stream within a time range.
-
-`GET` `/api/record/{stream}/timeline?start_ts=1721827200000000&end_ts=1721827300000000&limit=100&offset=0`
-
-Query Parameters:
-- `start_ts` (optional): Start timestamp in microseconds
-- `end_ts` (optional): End timestamp in microseconds  
-- `limit` (optional): Maximum number of segments to return
-- `offset` (optional): Number of segments to skip
-
-Response: [200]
-```json
-{
-  "stream": "camera01",
-  "total_count": 150,
-  "segments": [{
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "start_ts": 1721827200000000,
-    "end_ts": 1721827201000000,
-    "duration_ms": 1000,
-    "path": "camera01/2024/01/01/segment_00042.m4s", 
-    "is_keyframe": true,
-    "created_at": "2024-01-01T12:00:00Z"
-  }]
-}
-```
-
-### Get MPEG-DASH Manifest
-
-Generate MPEG-DASH manifest for a stream within a time range.
-
-`GET` `/api/record/{stream}/mpd?start_ts=1721827200000000&end_ts=1721827300000000`
 
 Response: [200] `application/dash+xml`
 ```xml

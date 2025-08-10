@@ -176,10 +176,32 @@ Request:
 
 `POST` `/api/streams/:streamId/record`
 
-开始录制指定的流。流必须处于活跃状态（有发布者）才能开始录制。
+开始录制指定的流。流必须处于活跃状态（有发布者）才能开始录制。需要启用 `recorder` 特性。
 
-Request: 无需请求体
+请求体（可选）：
 
-Response: [204] - 录制启动成功
+```json
+{
+  "base_dir": "optional/path/prefix"
+}
+```
+
+- `base_dir`（可选）：覆盖默认的目录前缀。如果不设置，录制文件默认按 `/:streamId/YYYY/MM/DD/` 组织。
+
+响应: [200]
+
+```json
+{ "id": "6b2f3c1a-...", "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+```
+
+### 录制状态
+
+`GET` `/api/streams/:streamId/record/status`
+
+响应: [200]
+
+```json
+{ "recording": true }
+```
 
 参考： [Recorder](recorder)

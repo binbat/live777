@@ -7,7 +7,6 @@ pub enum AppError {
     RequestProxyError,
     ResourceNotFound,
     ResourceAlreadyExists,
-    DatabaseError(String),
     InternalServerError(anyhow::Error),
 }
 
@@ -31,11 +30,6 @@ impl IntoResponse for AppError {
             AppError::ResourceAlreadyExists => {
                 (StatusCode::CONFLICT, "resource already exists".to_string()).into_response()
             }
-            AppError::DatabaseError(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("database error: {msg}"),
-            )
-                .into_response(),
         }
     }
 }

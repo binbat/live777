@@ -14,8 +14,8 @@ const DEFAULT_SEG_DURATION: u64 = 10;
 /// Represents a completed segment with its actual duration
 #[derive(Debug, Clone)]
 struct SegmentInfo {
-    start_time: u64,    // Start time in timescale units
-    duration: u64,      // Actual duration in timescale units
+    start_time: u64, // Start time in timescale units
+    duration: u64,   // Actual duration in timescale units
 }
 
 pub struct Segmenter {
@@ -23,8 +23,6 @@ pub struct Segmenter {
     stream: String,
     path_prefix: String,
     timescale: u32,
-    // Target segment duration for keyframe boundary detection
-    target_seg_duration: Duration,
     // Length of each segment (in timescale units) for fast comparison
     seg_duration_ticks: u64,
 
@@ -82,7 +80,7 @@ pub struct Segmenter {
 
     /// List of completed segments with their actual durations
     segments: Vec<SegmentInfo>,
-    
+
     /// Audio segments with their actual durations
     audio_segments: Vec<SegmentInfo>,
 }
@@ -94,7 +92,6 @@ impl Segmenter {
             stream: stream.clone(),
             path_prefix: root_prefix,
             timescale: 90_000,
-            target_seg_duration: Duration::from_secs(DEFAULT_SEG_DURATION),
             seg_duration_ticks: 90_000u64 * DEFAULT_SEG_DURATION,
             seg_index: 0,
             seg_start_dts: 0,
@@ -415,13 +412,14 @@ impl Segmenter {
                 })?;
 
             // Record the audio segment - calculate duration based on audio samples
-            let audio_duration = if let (Some(first), Some(last)) = 
-                (self.audio_samples.first(), self.audio_samples.last()) {
+            let audio_duration = if let (Some(first), Some(last)) =
+                (self.audio_samples.first(), self.audio_samples.last())
+            {
                 last.start_time + last.duration as u64 - first.start_time
             } else {
                 0
             };
-            
+
             self.audio_segments.push(SegmentInfo {
                 start_time: audio_base_time,
                 duration: audio_duration,
@@ -443,15 +441,17 @@ impl Segmenter {
         let total_duration_ticks: u64 = self.segments.iter().map(|s| s.duration).sum();
         let total_duration_secs = total_duration_ticks as f64 / self.timescale as f64;
         let media_presentation_duration = format!("PT{total_duration_secs:.3}S");
-        
+
         // Use the maximum actual segment duration for maxSegmentDuration
-        let max_actual_duration = self.segments.iter()
+        let max_actual_duration = self
+            .segments
+            .iter()
             .map(|s| s.duration)
             .max()
             .unwrap_or(self.seg_duration_ticks);
         let max_segment_duration_secs = max_actual_duration as f64 / self.timescale as f64;
         let max_segment_duration = format!("PT{max_segment_duration_secs:.3}S");
-        
+
         let min_buffer_time = if max_segment_duration_secs * 3.0 > 0.0 {
             format!("PT{:.3}S", max_segment_duration_secs * 3.0)
         } else {
@@ -475,10 +475,10 @@ impl Segmenter {
             } else {
                 0
             };
-            
+
             // Generate SegmentTimeline for audio
             let audio_segment_timeline = self.generate_segment_timeline(&self.audio_segments);
-            
+
             format!(
                 "        <AdaptationSet id=\"1\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"1\" mimeType=\"audio/mp4\" codecs=\"{}\" bandwidth=\"{}\" audioSamplingRate=\"{}\" >\n                <SegmentTemplate timescale=\"{}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
                 a_writer.codec_string,
@@ -563,7 +563,7 @@ impl Segmenter {
         }
 
         let mut timeline = String::from("                    <SegmentTimeline>\n");
-        
+
         // Simply output each segment without grouping for now to avoid timeline gaps
         // DASH players are very sensitive to timeline accuracy
         for segment in segments {
@@ -572,7 +572,7 @@ impl Segmenter {
                 segment.start_time, segment.duration
             ));
         }
-        
+
         timeline.push_str("                    </SegmentTimeline>");
         timeline
     }

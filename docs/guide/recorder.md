@@ -11,18 +11,11 @@ The Recorder in liveion is an optional feature that automatically records live s
 
 ## Liveman Integration {#liveman}
 
-The recorder can integrate with [Liveman](/guide/liveman) to provide centralized metadata management and playback services across the entire Live777 cluster.
+Integrates with [Liveman](/guide/liveman) for centralized playback and proxy access:
 
-### Metadata Management
-
-The recorder stores segment metadata in memory, which Liveman can pull periodically using the pull API, including:
-
-- Stream identifier and node alias
-- Segment timestamps (start/end in microseconds)
-- Segment duration and file path
-- Keyframe information
-
-This enables cluster-wide recording management and timeline-based playback through a pull-based architecture.
+- When starting a recording, Live777 returns `mpd_path` directly
+- Liveman can use this `mpd_path` to play back recordings
+- Media files can be proxied via Liveman: `GET /api/record/object/{path}`
 
 ### Configuration
 
@@ -64,6 +57,22 @@ root = "./records"  # Root path for recordings
 type = "fs"
 root = "/var/lib/live777/recordings"
 ```
+
+## Start/Status API {#api}
+
+Requires `recorder` feature.
+
+- Start recording: `POST` `/api/streams/:streamId/record`
+  - Body (optional): `{ "base_dir": "optional/path/prefix" }`
+  - Response: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
+- Recording status: `GET` `/api/streams/:streamId/record/status`
+  - Response: `{ "recording": true }`
+
+## MPD Path Conventions {#mpd}
+
+- Default directory structure: `/:streamId/YYYY/MM/DD/`
+- Default MPD location: `/:streamId/YYYY/MM/DD/manifest.mpd`
+- When `base_dir` provided, MPD is at `/{base_dir}/manifest.mpd`
 
 ### AWS S3
 

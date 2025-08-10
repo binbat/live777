@@ -27,6 +27,10 @@ pub struct Config {
     #[serde(default)]
     pub playback: Playback,
 
+    /// Auto recording configuration (Liveman-driven)
+    #[serde(default)]
+    pub auto_record: AutoRecord,
+
     #[cfg(feature = "recorder")]
     #[serde(default)]
     pub recorder: Recorder,
@@ -292,4 +296,31 @@ fn default_signed_ttl_seconds() -> u64 {
 pub struct Recorder {
     #[serde(default)]
     pub storage: storage::StorageConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoRecord {
+    #[serde(default)]
+    pub auto_streams: Vec<String>,
+    #[serde(default)]
+    pub base_prefix: String,
+    #[serde(default = "default_auto_record_tick")]
+    pub tick_ms: u64,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for AutoRecord {
+    fn default() -> Self {
+        Self {
+            auto_streams: vec![],
+            base_prefix: String::new(),
+            tick_ms: 5_000,
+            enabled: false,
+        }
+    }
+}
+
+fn default_auto_record_tick() -> u64 {
+    5_000
 }

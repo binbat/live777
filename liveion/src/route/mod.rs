@@ -10,9 +10,6 @@ pub mod stream;
 pub mod whep;
 pub mod whip;
 
-#[cfg(feature = "recorder")]
-pub mod segments;
-
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,

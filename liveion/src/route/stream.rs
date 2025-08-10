@@ -8,6 +8,7 @@ use axum::response::{Response, Sse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_extra::extract::Query;
+use chrono::Utc;
 use http::StatusCode;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -20,6 +21,7 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::streams("{stream}"), delete(destroy))
         .route(api::path::streams_sse(), get(sse))
         .route(&api::path::record("{stream}"), post(record_stream))
+        .route(&api::path::record_status("{stream}"), get(record_status))
 }
 
 async fn index(
@@ -107,11 +109,28 @@ async fn sse(
 async fn record_stream(
     State(state): State<AppState>,
     Path(stream): Path<String>,
+    Json(body): Json<api::recorder::StartRecordRequest>,
 ) -> crate::result::Result<Response<String>> {
-    crate::recorder::start(state.stream_manager.clone(), stream).await?;
+    let base_dir = body.base_dir.clone();
+    crate::recorder::start(
+        state.stream_manager.clone(),
+        stream.clone(),
+        base_dir.clone(),
+    )
+    .await?;
+    let date_path = Utc::now().format("%Y/%m/%d").to_string();
+    let mpd_path = if let Some(prefix) = base_dir {
+        format!("{}/manifest.mpd", prefix)
+    } else {
+        format!("{}/{}/manifest.mpd", stream, date_path)
+    };
+    let resp = api::recorder::StartRecordResponse {
+        id: stream.clone(),
+        mpd_path,
+    };
     Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .body("".to_string())?)
+        .status(StatusCode::OK)
+        .body(serde_json::to_string(&resp).unwrap())?)
 }
 
 #[cfg(not(feature = "recorder"))]
@@ -119,5 +138,22 @@ async fn record_stream(
     _state: State<AppState>,
     Path(_stream): Path<String>,
 ) -> crate::result::Result<Response<String>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn record_status(
+    State(_state): State<AppState>,
+    Path(stream): Path<String>,
+) -> crate::result::Result<Json<serde_json::Value>> {
+    let recording = crate::recorder::is_recording(&stream).await;
+    Ok(Json(serde_json::json!({ "recording": recording })))
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn record_status(
+    _state: State<AppState>,
+    _path: Path<String>,
+) -> crate::result::Result<Json<serde_json::Value>> {
     Err(AppError::Throw("feature recorder not enabled".into()))
 }

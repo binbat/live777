@@ -19,7 +19,11 @@ pub struct RecordingTask {
 }
 
 impl RecordingTask {
-    pub async fn spawn(manager: Arc<Manager>, stream: &str) -> Result<Self> {
+    pub async fn spawn(
+        manager: Arc<Manager>,
+        stream: &str,
+        path_prefix_override: Option<String>,
+    ) -> Result<Self> {
         let stream_name = stream.to_string();
 
         // Get storage Operator
@@ -42,15 +46,19 @@ impl RecordingTask {
             }
         };
 
-        // Generate directory prefix /<stream>/<yyyy>/<MM>/<DD>
-        let now = Utc::now();
-        let path_prefix = format!(
-            "{}/{:04}/{:02}/{:02}",
-            stream_name,
-            now.year(),
-            now.month(),
-            now.day()
-        );
+        // Directory prefix, allow override; default to /<stream>/<yyyy>/<MM>/<DD>
+        let path_prefix = if let Some(p) = path_prefix_override {
+            p
+        } else {
+            let now = Utc::now();
+            format!(
+                "{}/{:04}/{:02}/{:02}",
+                stream_name,
+                now.year(),
+                now.month(),
+                now.day()
+            )
+        };
 
         tracing::info!(
             "[recorder] initializing recording for stream {} with path prefix: {}",

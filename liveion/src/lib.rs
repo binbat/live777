@@ -63,7 +63,7 @@ where
     );
 
     #[cfg(feature = "recorder")]
-    let app = app.merge(crate::route::segments::router());
+    let app = app;
 
     let app = app
         .route(path::METRICS, get(metrics))
