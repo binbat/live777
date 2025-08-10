@@ -34,7 +34,7 @@ where
 {
     info!("Server listening on {}", listener.local_addr().unwrap());
 
-    // Initialize database connection
+    // Initialize database connection (recordings index)
     let database_service = DatabaseService::new(&cfg.database)
         .await
         .expect("Failed to initialize database connection");

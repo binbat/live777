@@ -1,6 +1,6 @@
 pub use sea_orm_migration::prelude::*;
 
-mod m20250804_000001_create_recording_sessions_table;
+mod m20250810_000001_create_recordings_index_table;
 
 pub struct Migrator;
 
@@ -8,7 +8,7 @@ pub struct Migrator;
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![Box::new(
-            m20250804_000001_create_recording_sessions_table::Migration,
+            m20250810_000001_create_recordings_index_table::Migration,
         )]
     }
 }

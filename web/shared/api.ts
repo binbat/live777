@@ -68,5 +68,10 @@ export function cascade(streamId: string, params: Cascade) {
 }
 
 export function startRecording(streamId: string) {
-    return w.url(`/api/record/${streamId}`).post().res();
+    return w.url(`/api/record/start/${encodeURIComponent(streamId)}`).post().json<{ started: boolean; mpd_path: string }>();
+}
+
+export async function getRecordingStatus(streamId: string): Promise<boolean> {
+    const { recording } = await w.url(`/api/record/status/${encodeURIComponent(streamId)}`).get().json<{ recording: boolean }>();
+    return recording;
 }

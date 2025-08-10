@@ -4,7 +4,7 @@ import { type ReactNode } from 'preact/compat';
 import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
-import { type Stream, getStreams, deleteStream, startRecording } from '../api';
+import { type Stream, getStreams, deleteStream, startRecording, getRecordingStatus } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 import { TokenContext } from '../context';
@@ -130,13 +130,66 @@ export function StreamsTable(props: StreamTableProps) {
         await streams.updateData();
     };
 
-    const handleStartRecording = async (id: string) => {
+    const [recordingStates, setRecordingStates] = useState<Record<string, boolean>>({});
+    const [recordDialogOpen, setRecordDialogOpen] = useState(false);
+    const [recordDialogStreamId, setRecordDialogStreamId] = useState('');
+    const [recordBusy, setRecordBusy] = useState(false);
+    const [recordError, setRecordError] = useState('');
+    const [recordMpd, setRecordMpd] = useState('');
+
+    useEffect(() => {
+        // refresh recording status for visible streams
+        (async () => {
+            const states: Record<string, boolean> = {};
+            for (const s of streams.data) {
+                try {
+                    states[s.id] = await getRecordingStatus(s.id);
+                } catch {
+                    states[s.id] = false;
+                }
+            }
+            setRecordingStates(states);
+        })();
+    }, [streams.data]);
+
+    const openRecordDialog = (id: string) => {
+        setRecordDialogStreamId(id);
+        setRecordError('');
+        setRecordMpd('');
+        setRecordDialogOpen(true);
+    };
+
+    const closeRecordDialog = () => {
+        setRecordDialogOpen(false);
+        setRecordBusy(false);
+        setRecordError('');
+        setRecordMpd('');
+    };
+
+    const handleConfirmRecord = async () => {
+        if (!recordDialogStreamId) return;
         try {
-            await startRecording(id);
-            console.log(`Recording started for stream: ${id}`);
-        } catch (error) {
-            console.error(`Failed to start recording for stream ${id}:`, error);
+            setRecordBusy(true);
+            setRecordError('');
+            const res = await startRecording(recordDialogStreamId);
+            setRecordingStates({ ...recordingStates, [recordDialogStreamId]: true });
+            setRecordMpd(res.mpd_path);
+        } catch (error: any) {
+            setRecordError(error?.message || 'Failed to start recording');
+        } finally {
+            setRecordBusy(false);
         }
+    };
+
+    const handlePlayNow = () => {
+        if (!recordDialogStreamId || !recordMpd) return;
+        const url = new URL(window.location.href);
+        url.searchParams.set('view', 'playback');
+        url.searchParams.set('stream', recordDialogStreamId);
+        url.searchParams.set('mpd', recordMpd);
+        window.history.pushState({}, '', url.toString());
+        window.dispatchEvent(new PopStateEvent('popstate'));
+        closeRecordDialog();
     };
 
     return (
@@ -197,7 +250,9 @@ export function StreamsTable(props: StreamTableProps) {
                                 }
                                 <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
                                 <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
-                                <Button size="sm" color="info" onClick={() => handleStartRecording(i.id)}>Record</Button>
+                                <Button size="sm" color={recordingStates[i.id] ? 'success' : 'info'} onClick={() => openRecordDialog(i.id)}>
+                                    {recordingStates[i.id] ? 'Recording' : 'Record'}
+                                </Button>
                                 {props.renderExtraActions?.(i)}
                                 <Button size="sm" color="error" onClick={() => handleDestroyStream(i.id)}>Destroy</Button>
                             </div>
@@ -205,6 +260,40 @@ export function StreamsTable(props: StreamTableProps) {
                     ) : <tr><td colspan={6} className="text-center">N/A</td></tr>}
                 </Table.Body>
             </Table>
+
+            {recordDialogOpen && (
+                <div className="modal modal-open">
+                    <div className="modal-box">
+                        <h3 className="font-bold text-lg">Start Recording</h3>
+                        <p className="py-2 text-sm opacity-80">Stream: <span className="font-mono">{recordDialogStreamId}</span></p>
+                        {recordError && (
+                            <div className="alert alert-error my-2">
+                                <span>{recordError}</span>
+                            </div>
+                        )}
+                        {recordMpd && (
+                            <div className="alert alert-success my-2">
+                                <span>Recording started. MPD: <span className="font-mono break-all">{recordMpd}</span></span>
+                            </div>
+                        )}
+                        <div className="modal-action">
+                            {!recordMpd ? (
+                                <>
+                                    <Button color="primary" onClick={handleConfirmRecord} disabled={recordBusy}>
+                                        {recordBusy ? 'Starting…' : 'Start'}
+                                    </Button>
+                                    <Button color="ghost" onClick={closeRecordDialog}>Cancel</Button>
+                                </>
+                            ) : (
+                                <>
+                                    <Button color="success" onClick={handlePlayNow}>Play now</Button>
+                                    <Button color="ghost" onClick={closeRecordDialog}>Close</Button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="flex gap-2 p-4">
                 <Button

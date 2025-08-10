@@ -11,7 +11,6 @@ import { type LoginProps, Login } from './components/login';
 import { NodesTable } from './components/nodes-table';
 import { type IStreamTokenDialog, StreamTokenDialog } from './components/dialog-token';
 import { RecordingsPage } from './components/recordings-page';
-import { PlaybackPage } from './components/playback-page';
 
 const TOKEN_KEY = 'liveman_auth_token';
 const savedToken = localStorage.getItem(TOKEN_KEY) ?? '';
@@ -33,47 +32,33 @@ export function Liveman() {
     };
 
     // View state management
-    const [currentView, setCurrentView] = useState<'streams' | 'recordings' | 'playback'>('streams');
-    const [playbackStream, setPlaybackStream] = useState<string>('');
-    const [playbackSessionId, setPlaybackSessionId] = useState<string>('');
+    const [currentView, setCurrentView] = useState<'streams' | 'recordings'>('streams');
 
     // Initialize view from URL params
     useEffect(() => {
         const params = new URLSearchParams(location.search);
-        const view = params.get('view') as 'streams' | 'recordings' | 'playback';
-        const stream = params.get('stream');
-        const sessionId = params.get('sessionId');
-        
+        const view = params.get('view') as 'streams' | 'recordings';
+
         if (view) setCurrentView(view);
-        if (stream) setPlaybackStream(stream);
-        if (sessionId) setPlaybackSessionId(sessionId);
+
 
         const handlePopState = () => {
             const newParams = new URLSearchParams(location.search);
-            const newView = newParams.get('view') as 'streams' | 'recordings' | 'playback' || 'streams';
-            const newStream = newParams.get('stream') || '';
-            const newSessionId = newParams.get('sessionId') || '';
-            
+            const newView = newParams.get('view') as 'streams' | 'recordings' || 'streams';
+
             setCurrentView(newView);
-            setPlaybackStream(newStream);
-            setPlaybackSessionId(newSessionId);
+
         };
 
         window.addEventListener('popstate', handlePopState);
         return () => window.removeEventListener('popstate', handlePopState);
     }, []);
 
-    const navigateToView = (view: 'streams' | 'recordings' | 'playback', stream?: string) => {
+    const navigateToView = (view: 'streams' | 'recordings') => {
         const url = new URL(window.location.href);
         url.searchParams.set('view', view);
-        if (stream) {
-            url.searchParams.set('stream', stream);
-        } else {
-            url.searchParams.delete('stream');
-        }
         window.history.pushState({}, '', url.toString());
         setCurrentView(view);
-        if (stream) setPlaybackStream(stream);
     };
 
     const [filterNodes, setFilterNodes] = useState<string[]>(initialNodes);
@@ -105,14 +90,6 @@ export function Liveman() {
         switch (currentView) {
             case 'recordings':
                 return <RecordingsPage />;
-            case 'playback':
-                return (
-                    <PlaybackPage 
-                        streamId={playbackStream} 
-                        sessionId={playbackSessionId}
-                        onBack={() => navigateToView('recordings')} 
-                    />
-                );
             default:
                 return (
                     <>
@@ -132,10 +109,10 @@ export function Liveman() {
 
     return (
         <>
-            <PageLayout 
+            <PageLayout
                 token={token}
                 currentView={currentView}
-                onNavigate={navigateToView}
+                onNavigate={(v: any) => navigateToView(v as 'streams' | 'recordings')}
             >
                 {renderCurrentView()}
             </PageLayout>

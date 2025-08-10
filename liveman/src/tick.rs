@@ -6,7 +6,7 @@ use http::header;
 use tracing::{error, info};
 use url::Url;
 
-use crate::service::recording_sessions::RecordingSessionsService;
+use crate::service::recordings_index::RecordingsIndexService;
 use crate::{error::AppError, result::Result, route::utils::session_delete, AppState};
 
 pub async fn cascade_check(state: AppState) {
@@ -179,30 +179,35 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
 
                     if let Ok(r) = resp {
                         if r.status().is_success() {
-                            // Prefer server-returned mpd_path
+                            // Prefer server-returned mpd_path, fallback to deterministic path
                             let mpd_path =
                                 match r.json::<api::recorder::StartRecordResponse>().await {
                                     Ok(v) => v.mpd_path,
                                     Err(_) => {
-                                        // Fallback to local inference
                                         if let Some(prefix) = &body.base_dir {
                                             format!("{}/manifest.mpd", prefix)
                                         } else {
-                                            format!(
-                                                "{}/{}",
-                                                stream_id,
-                                                format!("{}/manifest.mpd", date_path)
-                                            )
+                                            format!("{}/{}/manifest.mpd", stream_id, date_path)
                                         }
                                     }
                                 };
-                            let _ = RecordingSessionsService::insert_on_start(
-                                state.database.get_connection(),
-                                server.alias.clone(),
-                                stream_id.clone(),
-                                mpd_path,
-                            )
-                            .await;
+
+                            // extract yyyy/MM/dd from date_path
+                            let parts: Vec<&str> = date_path.split('/').collect();
+                            if parts.len() == 3 {
+                                let year = parts[0].parse::<i32>().unwrap_or(0);
+                                let month = parts[1].parse::<i32>().unwrap_or(0);
+                                let day = parts[2].parse::<i32>().unwrap_or(0);
+                                let _ = RecordingsIndexService::upsert(
+                                    state.database.get_connection(),
+                                    &stream_id,
+                                    year,
+                                    month,
+                                    day,
+                                    &mpd_path,
+                                )
+                                .await;
+                            }
                         }
                     }
                 }

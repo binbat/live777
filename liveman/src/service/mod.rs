@@ -1,2 +1,2 @@
 pub mod database;
-pub mod recording_sessions;
+pub mod recordings_index;

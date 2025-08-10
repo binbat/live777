@@ -1,1 +1,1 @@
-pub mod recording_sessions;
+pub mod recordings;

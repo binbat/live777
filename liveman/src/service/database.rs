@@ -3,6 +3,9 @@ use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use std::time::Duration;
 use tracing::info;
 
+use crate::migration::Migrator;
+use sea_orm_migration::MigratorTrait;
+
 use crate::config::Database as DatabaseConfig;
 
 #[derive(Clone)]
@@ -21,6 +24,9 @@ impl DatabaseService {
 
         info!("Connecting to database: {}", config.url);
         let connection = Database::connect(opt).await?;
+
+        // Run migrations to ensure tables exist
+        Migrator::up(&connection, None).await?;
 
         info!("Database connection established and migrations completed");
 

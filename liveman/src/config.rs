@@ -21,6 +21,7 @@ pub struct Config {
     #[serde(default)]
     pub nodes: Vec<Node>,
 
+    // Database for recording index (stream-date to mpd_path mapping)
     #[serde(default)]
     pub database: Database,
 
@@ -34,6 +35,37 @@ pub struct Config {
     #[cfg(feature = "recorder")]
     #[serde(default)]
     pub recorder: Recorder,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Database {
+    #[serde(default = "default_database_url")]
+    pub url: String,
+    #[serde(default = "default_database_max_connections")]
+    pub max_connections: u32,
+    #[serde(default = "default_database_connect_timeout")]
+    pub connect_timeout: u64,
+}
+
+impl Default for Database {
+    fn default() -> Self {
+        Self {
+            url: default_database_url(),
+            max_connections: default_database_max_connections(),
+            connect_timeout: default_database_connect_timeout(),
+        }
+    }
+}
+
+fn default_database_url() -> String {
+    std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgresql://localhost/live777".to_string())
+}
+
+fn default_database_max_connections() -> u32 {
+    10
+}
+
+fn default_database_connect_timeout() -> u64 {
+    30
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -229,38 +261,6 @@ impl Config {
 
 fn default_reforward_maximum_idle_time() -> u64 {
     60 * 1000
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Database {
-    #[serde(default = "default_database_url")]
-    pub url: String,
-    #[serde(default = "default_database_max_connections")]
-    pub max_connections: u32,
-    #[serde(default = "default_database_connect_timeout")]
-    pub connect_timeout: u64,
-}
-
-impl Default for Database {
-    fn default() -> Self {
-        Self {
-            url: default_database_url(),
-            max_connections: default_database_max_connections(),
-            connect_timeout: default_database_connect_timeout(),
-        }
-    }
-}
-
-fn default_database_url() -> String {
-    env::var("DATABASE_URL").unwrap_or_else(|_| "postgresql://localhost/live777".to_string())
-}
-
-fn default_database_max_connections() -> u32 {
-    10
-}
-
-fn default_database_connect_timeout() -> u64 {
-    30
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

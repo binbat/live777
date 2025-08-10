@@ -1,127 +1,75 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
-import { Badge, Button, Card, Loading, Select } from 'react-daisyui';
-import { RefreshCw, Play, Calendar, Clock, Circle, CheckCircle, XCircle } from 'lucide-react';
-
-import { useRefreshTimer } from '@/shared/hooks/use-refresh-timer';
+import { Badge, Button, Card, Loading } from 'react-daisyui';
+import { RefreshCw, Calendar } from 'lucide-react';
 import * as livemanApi from '../api';
 
 export function RecordingsPage() {
-    const [sessions, setSessions] = useState<livemanApi.RecordingSession[]>([]);
     const [streams, setStreams] = useState<string[]>([]);
-    const [selectedStream, setSelectedStream] = useState<string>('all');
-    const [selectedStatus, setSelectedStatus] = useState<string>('all');
+    const [selectedStream, setSelectedStream] = useState<string>('');
+    const [indexEntries, setIndexEntries] = useState<livemanApi.RecordingIndexEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>('');
 
-    const fetchSessions = useCallback(async () => {
+    const fetchStreams = useCallback(async () => {
         try {
             setLoading(true);
             setError('');
-            
-            const query: livemanApi.RecordingSessionQuery = {};
-            if (selectedStream && selectedStream !== 'all') {
-                query.stream = selectedStream;
+            const res = await livemanApi.getRecordingIndexStreams();
+            setStreams(res);
+            if (!selectedStream && res.length > 0) {
+                setSelectedStream(res[0]);
             }
-            if (selectedStatus && selectedStatus !== 'all') {
-                query.status = selectedStatus;
-            }
-            
-            const response = await livemanApi.getRecordingSessions(query);
-            setSessions(response.sessions);
-            
-            // Extract unique streams
-            const uniqueStreams = [...new Set(response.sessions.map(s => s.stream))];
-            setStreams(uniqueStreams);
-            
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to fetch recording sessions');
-            setSessions([]);
+        } catch (e) {
+            setError('Failed to fetch streams');
         } finally {
             setLoading(false);
         }
-    }, [selectedStream, selectedStatus]);
+    }, [selectedStream]);
+
+    const fetchIndex = useCallback(async () => {
+        if (!selectedStream) {
+            setIndexEntries([]);
+            return;
+        }
+        try {
+            setLoading(true);
+            setError('');
+            const res = await livemanApi.getRecordingIndexByStream(selectedStream);
+            res.sort((a, b) => {
+                if (a.year !== b.year) return b.year - a.year;
+                if (a.month !== b.month) return b.month - a.month;
+                return b.day - a.day;
+            });
+            setIndexEntries(res);
+        } catch (e) {
+            setError('Failed to fetch recording index');
+        } finally {
+            setLoading(false);
+        }
+    }, [selectedStream]);
 
     useEffect(() => {
-        fetchSessions();
-    }, [fetchSessions]);
+        fetchStreams();
+    }, [fetchStreams]);
 
-    const { isRefreshing } = useRefreshTimer({
-        callback: fetchSessions,
-        interval: 30000, // 30 seconds
-        immediate: false
-    });
+    useEffect(() => {
+        fetchIndex();
+    }, [fetchIndex]);
 
-    const handleStreamChange = (event: Event) => {
-        const target = event.target as HTMLSelectElement;
-        setSelectedStream(target.value);
-    };
-
-    const handleStatusChange = (event: Event) => {
-        const target = event.target as HTMLSelectElement;
-        setSelectedStatus(target.value);
-    };
-
-    const handlePlayback = (session: livemanApi.RecordingSession) => {
-        // Navigate to playback view
+    const selectStream = (s: string) => setSelectedStream(s);
+    const playMpd = (mpd: string) => {
         const url = new URL(window.location.href);
-        url.searchParams.set('view', 'playback');
-        url.searchParams.set('stream', session.stream);
-        if (session.id) {
-            url.searchParams.set('sessionId', session.id);
-        } else {
-            // Fallback for backward compatibility
-            url.searchParams.set('session', session.start_ts.toString());
-        }
+        url.searchParams.set('view', 'recordings');
+        // 直接打开播放 modal（在此页内实现 modal 播放器亦可后续追加）
+        url.searchParams.set('stream', selectedStream);
+        url.searchParams.set('mpd', mpd);
         window.history.pushState({}, '', url.toString());
         window.dispatchEvent(new PopStateEvent('popstate'));
+        // 简化：直接新开标签访问 MPD 以便快速验证
+        window.open(livemanApi.getSegmentUrl(mpd), '_blank');
     };
 
-    const getStatusIcon = (status: string) => {
-        switch (status) {
-            case 'Active':
-                return <Circle className="w-4 h-4 text-orange-500 fill-current" />;
-            case 'Completed':
-                return <CheckCircle className="w-4 h-4 text-green-500" />;
-            case 'Failed':
-                return <XCircle className="w-4 h-4 text-red-500" />;
-            default:
-                return <Circle className="w-4 h-4 text-gray-500" />;
-        }
-    };
-
-    const getStatusColor = (status: string) => {
-        switch (status) {
-            case 'Active':
-                return 'warning';
-            case 'Completed':
-                return 'success';
-            case 'Failed':
-                return 'error';
-            default:
-                return 'neutral';
-        }
-    };
-
-    const formatTimestamp = (timestamp: number): string => {
-        return new Date(timestamp / 1000).toLocaleString();
-    };
-
-    const formatDuration = (durationMs: number | null): string => {
-        if (!durationMs) return 'N/A';
-        const seconds = Math.floor(durationMs / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        
-        if (hours > 0) {
-            return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-        } else if (minutes > 0) {
-            return `${minutes}m ${seconds % 60}s`;
-        } else {
-            return `${seconds}s`;
-        }
-    };
-
-    if (loading && sessions.length === 0) {
+    if (loading && streams.length === 0) {
         return (
             <div className="flex justify-center items-center h-64">
                 <Loading variant="spinner" size="lg" />
@@ -135,58 +83,24 @@ export function RecordingsPage() {
                 <div className="flex items-center gap-4">
                     <h2 className="text-2xl font-bold flex items-center gap-2">
                         <Calendar className="w-6 h-6" />
-                        Recording Sessions
+                        Recordings
                     </h2>
                     <Badge color="info" variant="outline">
-                        {sessions.length} sessions
+                        {indexEntries.length} entries
                     </Badge>
                 </div>
-                <Button
-                    size="sm"
-                    color="ghost"
-                    onClick={fetchSessions}
-                    disabled={isRefreshing}
-                >
-                    <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <Button size="sm" color="ghost" onClick={() => { fetchStreams(); fetchIndex(); }}>
+                    <RefreshCw className="w-4 h-4" />
                     Refresh
                 </Button>
             </div>
 
-            {/* Filters */}
-            <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                    <label className="label">
-                        <span className="label-text font-medium">Stream:</span>
-                    </label>
-                    <Select
-                        value={selectedStream}
-                        onChange={handleStreamChange}
-                        className="w-48"
-                    >
-                        <option value="all">All Streams</option>
-                        {streams.map(stream => (
-                            <option key={stream} value={stream}>
-                                {stream}
-                            </option>
-                        ))}
-                    </Select>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                    <label className="label">
-                        <span className="label-text font-medium">Status:</span>
-                    </label>
-                    <Select
-                        value={selectedStatus}
-                        onChange={handleStatusChange}
-                        className="w-36"
-                    >
-                        <option value="all">All</option>
-                        <option value="Active">Active</option>
-                        <option value="Completed">Completed</option>
-                        <option value="Failed">Failed</option>
-                    </Select>
-                </div>
+            <div className="flex flex-wrap gap-2">
+                {streams.map((s) => (
+                    <Button key={s} size="sm" color={s === selectedStream ? 'primary' : 'ghost'} onClick={() => selectStream(s)}>
+                        {s}
+                    </Button>
+                ))}
             </div>
 
             {error && (
@@ -195,60 +109,30 @@ export function RecordingsPage() {
                 </div>
             )}
 
-            {sessions.length === 0 ? (
+            {selectedStream && indexEntries.length === 0 ? (
                 <Card className="p-8">
                     <div className="text-center text-gray-500">
                         <Calendar className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                        <p className="text-lg mb-2">No recording sessions found</p>
-                        <p className="text-sm">Start recording streams to see sessions here</p>
+                        <p className="text-lg mb-2">No recordings</p>
+                        <p className="text-sm">Start recording streams to see them here</p>
                     </div>
                 </Card>
             ) : (
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                    {sessions.map(session => (
-                        <Card key={session.id || `${session.stream}-${session.start_ts}`} className="p-4">
+                    {indexEntries.map((e) => (
+                        <Card key={`${e.year}-${e.month}-${e.day}-${e.mpd_path}`} className="p-4">
                             <div className="flex items-center justify-between mb-3">
-                                <h3 className="font-semibold text-lg truncate" title={session.stream}>
-                                    {session.stream}
+                                <h3 className="font-semibold text-lg truncate">
+                                    {selectedStream}
                                 </h3>
-                                <Badge 
-                                    color={getStatusColor(session.status)} 
-                                    variant="outline" 
-                                    size="sm"
-                                    className="flex items-center gap-1"
-                                >
-                                    {getStatusIcon(session.status)}
-                                    {session.status}
+                                <Badge color="success" variant="outline" size="sm">
+                                    {`${e.year}-${String(e.month).padStart(2, '0')}-${String(e.day).padStart(2, '0')}`}
                                 </Badge>
                             </div>
-                            
-                            <div className="space-y-2 text-sm text-gray-600 mb-4">
-                                <div className="flex items-center gap-2">
-                                    <Clock className="w-4 h-4" />
-                                    <span>Started: {formatTimestamp(session.start_ts)}</span>
-                                </div>
-                                {session.end_ts && (
-                                    <div className="flex items-center gap-2">
-                                        <Clock className="w-4 h-4" />
-                                        <span>Ended: {formatTimestamp(session.end_ts)}</span>
-                                    </div>
-                                )}
-                                <div className="flex items-center gap-2">
-                                    <Clock className="w-4 h-4" />
-                                    <span>Duration: {formatDuration(session.duration_ms)}</span>
-                                </div>
+                            <div className="flex gap-2">
+                                <Button size="sm" color="primary" className="flex-1" onClick={() => playMpd(e.mpd_path)}>Play</Button>
+                                <Button size="sm" color="ghost" onClick={() => window.open(livemanApi.getSegmentUrl(e.mpd_path), '_blank')}>Open MPD</Button>
                             </div>
-                            
-                            <Button
-                                size="sm"
-                                color="primary"
-                                className="w-full"
-                                onClick={() => handlePlayback(session)}
-                                disabled={session.status === 'Failed'}
-                            >
-                                <Play className="w-4 h-4 mr-2" />
-                                {session.status === 'Active' ? 'Watch Live' : 'Play Recording'}
-                            </Button>
                         </Card>
                     ))}
                 </div>

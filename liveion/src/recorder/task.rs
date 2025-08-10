@@ -13,7 +13,6 @@ use webrtc::api::media_engine::MIME_TYPE_H264;
 
 #[derive(Debug)]
 pub struct RecordingTask {
-    #[allow(dead_code)]
     pub stream: String,
     handle: JoinHandle<()>,
 }

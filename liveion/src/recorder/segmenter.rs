@@ -196,10 +196,10 @@ impl Segmenter {
             if let Some(adapter) = self.video_adapter.as_ref() {
                 if let Some(cfg) = adapter.codec_config() {
                     if !cfg.is_empty() {
-                        // self.sps = Some(cfg[0].clone()); // Removed
+                        // self.sps = Some(cfg[0].clone());
                     }
                     if cfg.len() >= 2 {
-                        // self.pps = Some(cfg[1].clone()); // Removed
+                        // self.pps = Some(cfg[1].clone());
                     }
                     // Update codec string for manifest
                     if self.video_codec.is_empty() {
