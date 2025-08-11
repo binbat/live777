@@ -33,12 +33,7 @@ export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
     };
 
     const handleOpenDashPage = () => {
-        const params = new URLSearchParams();
-        params.set('mpd', '');
-        params.set('autoplay', '1');
-        params.set('controls', '1');
-        params.set('muted', '1');
-        const url = new URL(`/tools/dash.html?${params.toString()}`, location.origin);
+        const url = new URL('/tools/dash.html', location.origin);
         window.open(url);
     };
 

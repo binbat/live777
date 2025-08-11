@@ -7,17 +7,16 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use http::header;
-// no serde structures used here
 use tracing::{error, info};
 
 use crate::{result::Result, AppState};
-// removed: legacy StreamsListResponse
 
 pub fn route() -> Router<AppState> {
     Router::new()
         .route("/api/record/index/streams", get(list_index_streams))
         .route("/api/record/index/{stream}", get(list_index_by_stream))
         .route("/api/record/start/{stream}", post(start_record))
+        .route("/api/record/stop/{stream}", post(stop_record))
         .route("/api/record/status/{stream}", get(get_record_status))
         .route("/api/record/object/{*path}", get(get_segment))
 }
@@ -241,4 +240,52 @@ async fn get_record_status(
         }
     }
     Ok(Json(RecordStatusResponse { recording }))
+}
+
+async fn stop_record(
+    State(mut state): State<AppState>,
+    Path(stream): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    let streams = state.storage.stream_all().await;
+    let map_server = state.storage.get_map_server();
+    let mut any_stopped = false;
+    if let Some(nodes) = streams.get(&stream) {
+        for alias in nodes {
+            if let Some(server) = map_server.get(alias) {
+                // check status first
+                let status_url = format!("{}{}", server.url, api::path::record_status(&stream));
+                let is_recording = match state
+                    .client
+                    .get(&status_url)
+                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => match resp.json::<serde_json::Value>().await {
+                        Ok(v) => v
+                            .get("recording")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false),
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                };
+                if is_recording {
+                    let stop_url = format!("{}{}", server.url, api::path::record_stop(&stream));
+                    if let Ok(resp) = state
+                        .client
+                        .post(stop_url)
+                        .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                        .send()
+                        .await
+                    {
+                        if resp.status().is_success() {
+                            any_stopped = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(Json(serde_json::json!({ "stopped": any_stopped })))
 }

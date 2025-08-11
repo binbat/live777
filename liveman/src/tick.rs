@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
+use chrono::{FixedOffset, TimeZone};
 use glob::Pattern;
 use http::header;
 use tracing::{error, info};
@@ -226,4 +227,150 @@ fn should_record(patterns: &[String], stream: &str) -> bool {
         }
     }
     false
+}
+
+/// Daily rotation at local midnight: stop current recordings and start new ones under new date path
+pub async fn auto_record_rotate_daily(state: AppState) {
+    if !state.config.auto_record.enabled || !state.config.auto_record.rotate_daily {
+        return;
+    }
+    // Prepare timezone offset
+    let offset_minutes = state.config.auto_record.rotate_tz_offset_minutes;
+    let tz =
+        FixedOffset::east_opt(offset_minutes * 60).unwrap_or(FixedOffset::east_opt(0).unwrap());
+
+    loop {
+        // Compute sleep duration until next local midnight
+        let now_utc = Utc::now();
+        let now_local = now_utc.with_timezone(&tz);
+        let next_local_midnight = now_local
+            .date_naive()
+            .succ_opt()
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let target_local_dt = tz.from_local_datetime(&next_local_midnight).unwrap();
+        let wait_duration = (target_local_dt - now_local)
+            .to_std()
+            .unwrap_or(std::time::Duration::from_secs(60));
+
+        let timeout = tokio::time::sleep(wait_duration);
+        tokio::pin!(timeout);
+        let _ = timeout.as_mut().await;
+
+        let _ = do_auto_record_rotate(state.clone()).await;
+    }
+}
+
+async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
+    let patterns = state.config.auto_record.auto_streams.clone();
+    if patterns.is_empty() {
+        return Ok(());
+    }
+
+    let streams = state.storage.stream_all().await; // HashMap<stream, Vec<alias>>
+    let base_prefix = state.config.auto_record.base_prefix.clone();
+    let map_server = state.storage.get_map_server();
+
+    // Build new date path prefix for today (UTC)
+    let date_path = chrono::Utc::now().format("%Y/%m/%d").to_string();
+    let base_dir = if base_prefix.is_empty() {
+        None
+    } else {
+        Some(format!("{base_prefix}/{date_path}"))
+    };
+
+    for (stream_id, aliases) in streams.iter() {
+        if !should_record(&patterns, stream_id) {
+            continue;
+        }
+
+        // Stop recording on all nodes where it's active
+        for alias in aliases {
+            if let Some(server) = map_server.get(alias) {
+                let status_url = format!("{}{}", server.url, api::path::record_status(stream_id));
+                let is_recording = match state
+                    .client
+                    .get(status_url)
+                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => match resp.json::<serde_json::Value>().await {
+                        Ok(v) => v
+                            .get("recording")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false),
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                };
+
+                if is_recording {
+                    let stop_url = format!("{}{}", server.url, api::path::record_stop(stream_id));
+                    let _ = state
+                        .client
+                        .post(stop_url)
+                        .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                        .send()
+                        .await;
+                }
+            }
+        }
+
+        // Start new recording on the preferred node (first alias or any available)
+        let target_server = if let Some(first_alias) = aliases.first() {
+            map_server.get(first_alias).cloned()
+        } else {
+            state.storage.get_cluster().first().cloned()
+        };
+
+        if let Some(server) = target_server {
+            let url = format!("{}{}", server.url, api::path::record(stream_id));
+            let body = api::recorder::StartRecordRequest {
+                base_dir: base_dir.clone(),
+            };
+            let resp = state
+                .client
+                .post(url)
+                .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                .json(&body)
+                .send()
+                .await;
+
+            if let Ok(r) = resp {
+                if r.status().is_success() {
+                    let mpd_path = match r.json::<api::recorder::StartRecordResponse>().await {
+                        Ok(v) => v.mpd_path,
+                        Err(_) => {
+                            if let Some(prefix) = &body.base_dir {
+                                format!("{}/manifest.mpd", prefix)
+                            } else {
+                                format!("{}/{}/manifest.mpd", stream_id, date_path)
+                            }
+                        }
+                    };
+
+                    // Upsert index
+                    if let [y, m, d] = date_path.split('/').collect::<Vec<_>>()[..] {
+                        if let (Ok(yy), Ok(mm), Ok(dd)) =
+                            (y.parse::<i32>(), m.parse::<i32>(), d.parse::<i32>())
+                        {
+                            let _ = RecordingsIndexService::upsert(
+                                state.database.get_connection(),
+                                stream_id,
+                                yy,
+                                mm,
+                                dd,
+                                &mpd_path,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

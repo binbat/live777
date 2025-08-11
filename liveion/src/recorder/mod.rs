@@ -120,3 +120,15 @@ fn should_record(patterns: &[String], stream: &str) -> bool {
     }
     false
 }
+
+/// Stop recording for a given stream if running
+pub async fn stop(stream: String) -> anyhow::Result<()> {
+    let mut map = TASKS.write().await;
+    if let Some(task) = map.remove(&stream) {
+        task.stop();
+        tracing::info!("[recorder] stopped recording task for {}", stream);
+    } else {
+        tracing::info!("[recorder] no recording task found for {}", stream);
+    }
+    Ok(())
+}

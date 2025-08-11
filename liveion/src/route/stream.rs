@@ -8,6 +8,7 @@ use axum::response::{Response, Sse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_extra::extract::Query;
+#[cfg(feature = "recorder")]
 use chrono::Utc;
 use http::StatusCode;
 use tokio_stream::wrappers::ReceiverStream;
@@ -22,6 +23,7 @@ pub fn route() -> Router<AppState> {
         .route(api::path::streams_sse(), get(sse))
         .route(&api::path::record("{stream}"), post(record_stream))
         .route(&api::path::record_status("{stream}"), get(record_status))
+        .route(&api::path::record_stop("{stream}"), post(stop_record))
 }
 
 async fn index(
@@ -155,5 +157,24 @@ async fn record_status(
     _state: State<AppState>,
     _path: Path<String>,
 ) -> crate::result::Result<Json<serde_json::Value>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn stop_record(
+    State(_state): State<AppState>,
+    Path(stream): Path<String>,
+) -> crate::result::Result<Response<String>> {
+    crate::recorder::stop(stream.clone()).await?;
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .body("".to_string())?)
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn stop_record(
+    _state: State<AppState>,
+    Path(_stream): Path<String>,
+) -> crate::result::Result<Response<String>> {
     Err(AppError::Throw("feature recorder not enabled".into()))
 }

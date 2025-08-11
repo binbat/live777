@@ -20,6 +20,7 @@ export function DashPlayer() {
     const refPlayer = useRef<dashjs.MediaPlayerClass | null>(null);
     const refRaf = useRef<number | null>(null);
     const refDragging = useRef(false);
+    const refProgressBar = useRef<HTMLDivElement>(null);
 
     const [mpd, setMpd] = useState('');
     const [token, setToken] = useState('');
@@ -71,7 +72,11 @@ export function DashPlayer() {
         player.updateSettings({
             streaming: {
                 abr: { autoSwitchBitrate: { video: true, audio: true } },
-            }
+            },
+            debug: {
+                // Reduce console noise from dash.js internals (e.g. pending play exception)
+                logLevel: (dashjs as any).Debug?.LOG_LEVEL_ERROR ?? 3,
+            },
         });
 
         player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => {
@@ -94,6 +99,20 @@ export function DashPlayer() {
             refPlayer.current = null;
         };
     }, [mpd, token, autoplay]);
+
+    // Retry autoplay when tab becomes visible (some browsers pause background video to save power)
+    useEffect(() => {
+        const onVisibility = () => {
+            if (!autoplay) return;
+            const v = refVideo.current;
+            if (!v) return;
+            if (!document.hidden && v.paused) {
+                v.play().catch(() => { /* ignore */ });
+            }
+        };
+        document.addEventListener('visibilitychange', onVisibility);
+        return () => document.removeEventListener('visibilitychange', onVisibility);
+    }, [autoplay]);
 
     // Sync video element states
     useEffect(() => {
@@ -184,7 +203,11 @@ export function DashPlayer() {
 
     // Progress bar interactions
     const onScrubMouse = (e: MouseEvent) => {
-        const bar = e.currentTarget as HTMLElement;
+        // When dragging, the event target is window; fall back to progress bar ref
+        const bar: HTMLElement | null = refDragging.current
+            ? (refProgressBar.current as unknown as HTMLElement | null)
+            : (e.currentTarget as HTMLElement | null);
+        if (!bar || typeof (bar as any).getBoundingClientRect !== 'function') return;
         const rect = bar.getBoundingClientRect();
         const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
         const pct = x / rect.width;
@@ -255,6 +278,7 @@ export function DashPlayer() {
                     {/* Progress bar */}
                     <div
                         className="progress-bar"
+                        ref={refProgressBar}
                         onMouseDown={(e) => onScrubDown(e as any)}
                         onMouseMove={(e) => onScrubMouse(e as any)}
                         onMouseLeave={() => setHoverPct(null)}

@@ -75,3 +75,7 @@ export async function getRecordingStatus(streamId: string): Promise<boolean> {
     const { recording } = await w.url(`/api/record/status/${encodeURIComponent(streamId)}`).get().json<{ recording: boolean }>();
     return recording;
 }
+
+export async function stopRecording(streamId: string): Promise<{ stopped: boolean }> {
+    return w.url(`/api/record/stop/${encodeURIComponent(streamId)}`).post().json<{ stopped: boolean }>();
+}

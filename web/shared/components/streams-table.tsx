@@ -4,7 +4,7 @@ import { type ReactNode } from 'preact/compat';
 import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
-import { type Stream, getStreams, deleteStream, startRecording, getRecordingStatus } from '../api';
+import { type Stream, getStreams, deleteStream, startRecording, getRecordingStatus, stopRecording } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 import { TokenContext } from '../context';
@@ -152,7 +152,15 @@ export function StreamsTable(props: StreamTableProps) {
         })();
     }, [streams.data]);
 
+    const [confirmStopOpen, setConfirmStopOpen] = useState(false);
+    const [confirmStopBusy, setConfirmStopBusy] = useState(false);
+
     const openRecordDialog = (id: string) => {
+        if (recordingStates[id]) {
+            setRecordDialogStreamId(id);
+            setConfirmStopOpen(true);
+            return;
+        }
         setRecordDialogStreamId(id);
         setRecordError('');
         setRecordMpd('');
@@ -183,12 +191,11 @@ export function StreamsTable(props: StreamTableProps) {
 
     const handlePlayNow = () => {
         if (!recordDialogStreamId || !recordMpd) return;
-        const url = new URL(window.location.href);
-        url.searchParams.set('view', 'playback');
-        url.searchParams.set('stream', recordDialogStreamId);
-        url.searchParams.set('mpd', recordMpd);
-        window.history.pushState({}, '', url.toString());
-        window.dispatchEvent(new PopStateEvent('popstate'));
+        const params = new URLSearchParams();
+        params.set('mpd', recordMpd);
+        if (tokenContext.token) params.set('token', tokenContext.token);
+        const url = new URL(`/tools/dash.html?${params.toString()}`, location.origin);
+        window.open(url.toString(), '_blank');
         closeRecordDialog();
     };
 
@@ -290,6 +297,29 @@ export function StreamsTable(props: StreamTableProps) {
                                     <Button color="ghost" onClick={closeRecordDialog}>Close</Button>
                                 </>
                             )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmStopOpen && (
+                <div className="modal modal-open">
+                    <div className="modal-box">
+                        <h3 className="font-bold text-lg">Stop Recording</h3>
+                        <p className="py-2 text-sm opacity-80">Are you sure you want to stop recording for stream <span className="font-mono">{recordDialogStreamId}</span>?</p>
+                        <div className="modal-action">
+                            <Button color="error" onClick={async () => {
+                                setConfirmStopBusy(true);
+                                try {
+                                    await stopRecording(recordDialogStreamId);
+                                    setRecordingStates({ ...recordingStates, [recordDialogStreamId]: false });
+                                } finally {
+                                    setConfirmStopBusy(false);
+                                    setConfirmStopOpen(false);
+                                    setRecordDialogStreamId('');
+                                }
+                            }} disabled={confirmStopBusy}>{confirmStopBusy ? 'Stopping…' : 'Confirm'}</Button>
+                            <Button color="ghost" onClick={() => { setConfirmStopOpen(false); setRecordDialogStreamId(''); }}>Cancel</Button>
                         </div>
                     </div>
                 </div>

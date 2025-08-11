@@ -45,3 +45,7 @@ pub fn record(stream: &str) -> String {
 pub fn record_status(stream: &str) -> String {
     format!("/api/streams/{stream}/record/status")
 }
+
+pub fn record_stop(stream: &str) -> String {
+    format!("/api/streams/{stream}/record/stop")
+}

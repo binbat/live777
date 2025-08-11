@@ -308,6 +308,12 @@ pub struct AutoRecord {
     pub tick_ms: u64,
     #[serde(default)]
     pub enabled: bool,
+    /// Rotate recordings at local midnight (based on rotate_tz_offset_minutes)
+    #[serde(default)]
+    pub rotate_daily: bool,
+    /// Timezone offset in minutes from UTC for daily rotation scheduling (e.g., +480 for UTC+8)
+    #[serde(default)]
+    pub rotate_tz_offset_minutes: i32,
 }
 
 impl Default for AutoRecord {
@@ -317,6 +323,8 @@ impl Default for AutoRecord {
             base_prefix: String::new(),
             tick_ms: 5_000,
             enabled: false,
+            rotate_daily: true,
+            rotate_tz_offset_minutes: 0,
         }
     }
 }
