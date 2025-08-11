@@ -112,7 +112,7 @@ export function Liveman() {
             <PageLayout
                 token={token}
                 currentView={currentView}
-                onNavigate={(v: any) => navigateToView(v as 'streams' | 'recordings')}
+                onNavigate={(v: string) => navigateToView(v as 'streams' | 'recordings')}
             >
                 {renderCurrentView()}
             </PageLayout>

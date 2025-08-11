@@ -182,8 +182,9 @@ export function StreamsTable(props: StreamTableProps) {
             const res = await startRecording(recordDialogStreamId);
             setRecordingStates({ ...recordingStates, [recordDialogStreamId]: true });
             setRecordMpd(res.mpd_path);
-        } catch (error: any) {
-            setRecordError(error?.message || 'Failed to start recording');
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : 'Failed to start recording';
+            setRecordError(message);
         } finally {
             setRecordBusy(false);
         }

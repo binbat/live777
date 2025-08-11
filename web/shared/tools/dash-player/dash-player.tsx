@@ -74,8 +74,7 @@ export function DashPlayer() {
                 abr: { autoSwitchBitrate: { video: true, audio: true } },
             },
             debug: {
-                // Reduce console noise from dash.js internals (e.g. pending play exception)
-                logLevel: (dashjs as any).Debug?.LOG_LEVEL_ERROR ?? 3,
+                logLevel: 3,
             },
         });
 
@@ -180,13 +179,21 @@ export function DashPlayer() {
     const togglePip = async () => {
         const v = refVideo.current;
         if (!v) return;
-        // @ts-ignore
-        if (document.pictureInPictureElement) {
-            // @ts-ignore
-            await document.exitPictureInPicture().catch(() => { });
-        } else if (document.pictureInPictureEnabled && !v.disablePictureInPicture) {
-            // @ts-ignore
-            await v.requestPictureInPicture().catch(() => { });
+        type DocumentPiP = Document & {
+            pictureInPictureElement?: Element | null;
+            pictureInPictureEnabled?: boolean;
+            exitPictureInPicture?: () => Promise<void>;
+        };
+        type HTMLVideoPiP = HTMLVideoElement & {
+            disablePictureInPicture?: boolean;
+            requestPictureInPicture?: () => Promise<void>;
+        };
+        const d = document as DocumentPiP;
+        const vv = v as HTMLVideoPiP;
+        if (d.pictureInPictureElement) {
+            await d.exitPictureInPicture?.().catch(() => { });
+        } else if (d.pictureInPictureEnabled && !vv.disablePictureInPicture) {
+            await vv.requestPictureInPicture?.().catch(() => { });
         }
     };
 
@@ -207,7 +214,7 @@ export function DashPlayer() {
         const bar: HTMLElement | null = refDragging.current
             ? (refProgressBar.current as unknown as HTMLElement | null)
             : (e.currentTarget as HTMLElement | null);
-        if (!bar || typeof (bar as any).getBoundingClientRect !== 'function') return;
+        if (!bar || typeof bar.getBoundingClientRect !== 'function') return;
         const rect = bar.getBoundingClientRect();
         const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
         const pct = x / rect.width;
@@ -218,15 +225,17 @@ export function DashPlayer() {
             seekTo(pct * d);
         }
     };
+    const onScrubMouseListener: EventListener = (ev) => onScrubMouse(ev as unknown as MouseEvent);
+    const onScrubUpListener: EventListener = () => onScrubUp();
     const onScrubDown = (e: MouseEvent) => {
         refDragging.current = true;
         onScrubMouse(e);
-        window.addEventListener('mousemove', onScrubMouse as any);
-        window.addEventListener('mouseup', onScrubUp as any, { once: true });
+        window.addEventListener('mousemove', onScrubMouseListener);
+        window.addEventListener('mouseup', onScrubUpListener, { once: true });
     };
     const onScrubUp = () => {
         refDragging.current = false;
-        window.removeEventListener('mousemove', onScrubMouse as any);
+        window.removeEventListener('mousemove', onScrubMouseListener);
     };
 
     // Keyboard shortcuts
@@ -279,8 +288,8 @@ export function DashPlayer() {
                     <div
                         className="progress-bar"
                         ref={refProgressBar}
-                        onMouseDown={(e) => onScrubDown(e as any)}
-                        onMouseMove={(e) => onScrubMouse(e as any)}
+                        onMouseDown={(e) => onScrubDown(e as unknown as MouseEvent)}
+                        onMouseMove={(e) => onScrubMouse(e as unknown as MouseEvent)}
                         onMouseLeave={() => setHoverPct(null)}
                     >
                         <div className="progress-buffer" style={{ width: `${bufPct}%` }} />
@@ -312,7 +321,7 @@ export function DashPlayer() {
                             </div>
                             <div className="menu">
                                 <label>Quality</label>
-                                <select value={qualityIndex as any} onChange={e => {
+                                <select value={qualityIndex as number | 'auto'} onChange={e => {
                                     const val = (e.target as HTMLSelectElement).value;
                                     if (val === 'auto') setAutoQuality(true);
                                     else setManualQuality(Number(val));
