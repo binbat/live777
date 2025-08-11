@@ -175,9 +175,9 @@ async fn start_record(
         Ok(v) => v.mpd_path,
         Err(_) => {
             if let Some(prefix) = &body.base_dir {
-                format!("{}/manifest.mpd", prefix)
+                format!("{prefix}/manifest.mpd")
             } else {
-                format!("{}/{}/manifest.mpd", stream, date_path)
+                format!("{stream}/{date_path}/manifest.mpd")
             }
         }
     };

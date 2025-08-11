@@ -122,9 +122,9 @@ async fn record_stream(
     .await?;
     let date_path = Utc::now().format("%Y/%m/%d").to_string();
     let mpd_path = if let Some(prefix) = base_dir {
-        format!("{}/manifest.mpd", prefix)
+        format!("{prefix}/manifest.mpd")
     } else {
-        format!("{}/{}/manifest.mpd", stream, date_path)
+        format!("{stream}/{date_path}/manifest.mpd")
     };
     let resp = api::recorder::StartRecordResponse {
         id: stream.clone(),

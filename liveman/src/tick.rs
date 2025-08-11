@@ -186,9 +186,9 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                                     Ok(v) => v.mpd_path,
                                     Err(_) => {
                                         if let Some(prefix) = &body.base_dir {
-                                            format!("{}/manifest.mpd", prefix)
+                                            format!("{prefix}/manifest.mpd")
                                         } else {
-                                            format!("{}/{}/manifest.mpd", stream_id, date_path)
+                                            format!("{stream_id}/{date_path}/manifest.mpd")
                                         }
                                     }
                                 };
@@ -344,9 +344,9 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
                         Ok(v) => v.mpd_path,
                         Err(_) => {
                             if let Some(prefix) = &body.base_dir {
-                                format!("{}/manifest.mpd", prefix)
+                                format!("{prefix}/manifest.mpd")
                             } else {
-                                format!("{}/{}/manifest.mpd", stream_id, date_path)
+                                format!("{stream_id}/{date_path}/manifest.mpd")
                             }
                         }
                     };
