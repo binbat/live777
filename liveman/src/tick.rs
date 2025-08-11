@@ -112,6 +112,7 @@ fn parse_node_and_stream(url: String) -> Result<(String, String)> {
 /// Liveman Auto Record Check
 pub async fn auto_record_check(state: AppState) {
     if !state.config.auto_record.enabled {
+        info!("auto_record is disabled, skip auto_record_check loop");
         return;
     }
     loop {
@@ -150,13 +151,27 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                     .send()
                     .await
                 {
-                    Ok(resp) => match resp.json::<serde_json::Value>().await {
-                        Ok(v) => v
-                            .get("recording")
-                            .and_then(|b| b.as_bool())
-                            .unwrap_or(false),
-                        Err(_) => false,
-                    },
+                    Ok(resp) => {
+                        if !resp.status().is_success() {
+                            error!(
+                                stream = %stream_id,
+                                status = %resp.status(),
+                                "record status request failed"
+                            );
+                            false
+                        } else {
+                            match resp.json::<serde_json::Value>().await {
+                                Ok(v) => v
+                                    .get("recording")
+                                    .and_then(|b| b.as_bool())
+                                    .unwrap_or(false),
+                                Err(e) => {
+                                    error!(stream = %stream_id, error = ?e, "parse record status failed");
+                                    false
+                                }
+                            }
+                        }
+                    }
                     Err(_) => false,
                 };
 
@@ -209,6 +224,15 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                                 )
                                 .await;
                             }
+                        } else {
+                            let status = r.status();
+                            let text = r.text().await.unwrap_or_default();
+                            error!(
+                                stream = %stream_id,
+                                %status,
+                                body = %text,
+                                "record start failed"
+                            );
                         }
                     }
                 }
