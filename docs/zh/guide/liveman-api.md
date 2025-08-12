@@ -24,7 +24,27 @@ Response: [204]
 
 ## Recording & Playback
 
-录制与回放相关 API（代理与列表）
+录制与回放相关 API（索引列表与代理）
+
+### 列出存在录制索引的流
+
+`GET` `/api/record/index/streams`
+
+响应: [200] `application/json`
+```json
+["camera01", "roomA", "web-0001"]
+```
+
+### 根据流列出录制索引
+
+`GET` `/api/record/index/{stream}`
+
+响应: [200] `application/json`
+```json
+[
+  { "year": 2025, "month": 7, "day": 24, "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+]
+```
 
 ### 代理获取分片文件
 

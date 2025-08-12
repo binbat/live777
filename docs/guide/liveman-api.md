@@ -24,7 +24,27 @@ Response: [204]
 
 ## Recording & Playback
 
-Recording and playback related APIs (proxy and listing)
+Recording and playback related APIs (proxy and index listing)
+
+### List Streams with Recording Index
+
+`GET` `/api/record/index/streams`
+
+Response: [200] `application/json`
+```json
+["camera01", "roomA", "web-0001"]
+```
+
+### List Index by Stream
+
+`GET` `/api/record/index/{stream}`
+
+Response: [200] `application/json`
+```json
+[
+  { "year": 2025, "month": 7, "day": 24, "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+]
+```
 
 ### Get Segment File via Proxy
 

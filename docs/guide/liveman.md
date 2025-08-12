@@ -2,18 +2,21 @@
 
 Live777 Cluster manager.
 
-If I have so many servers (live777 core cluster), I need this manage them all. Liveman also provides centralized recording metadata management and playback services for the entire cluster.
+If I have so many servers (live777 core cluster), I need this manage them all. Liveman also provides centralized recording index management and playback proxy services for the entire cluster.
 
 ## Database Configuration
 
-Liveman now supports PostgreSQL for storing recording metadata. This enables persistent storage of segment information across the cluster.
+Liveman stores the recording index (mapping stream + date → mpd_path) in a database. Migrations run automatically at startup.
+
+- Default driver: SQLite (embedded)
+- Supported drivers: SQLite, PostgreSQL (via SeaORM `DATABASE_URL`)
 
 ```toml
 [database]
-# PostgreSQL connection URL
-# Default: postgresql://localhost/live777
+# Default database URL (SQLite)
 # Environment variable: DATABASE_URL
-url = "postgresql://user:password@localhost:5432/live777"
+# Default value if not set: sqlite://./liveman.db
+url = "sqlite://./liveman.db?mode=rwc"
 
 # Maximum number of database connections
 # Default: 10
@@ -24,21 +27,33 @@ max_connections = 10
 connect_timeout = 30
 ```
 
-## Recording System
+Example for PostgreSQL
 
-The recording system stores segment metadata in the database while keeping the actual media files in storage (filesystem, S3, etc.).
+```toml
+[database]
+url = "postgresql://user:password@localhost:5432/live777"
+max_connections = 10
+connect_timeout = 30
+```
 
-### Segment Metadata Schema
+## Recording Index and Storage
 
-Each recorded segment contains:
-- **ID**: Unique identifier (UUID)
-- **Node Alias**: Which Live777 node recorded it
-- **Stream**: Stream identifier
-- **Timestamps**: Start/end timestamps (microseconds)
-- **Duration**: Segment duration in milliseconds
-- **Path**: Storage path to the media file
-- **Keyframe**: Whether segment starts with keyframe
-- **Created At**: When metadata was stored
+The recording system stores the index (date-based manifest location) in the database while keeping the actual media files in storage (filesystem, S3, OSS, etc.).
+
+### Recording Index Schema
+
+Table: `recordings` (auto-created by migrations)
+
+- **id**: UUID, primary key
+- **stream**: String, stream identifier
+- **year**: Integer
+- **month**: Integer
+- **day**: Integer
+- **mpd_path**: String, path to the manifest within storage
+- **created_at**: Timestamp with time zone
+- **updated_at**: Timestamp with time zone
+
+Unique index: `(stream, year, month, day)`
 
 ## Authentication
 

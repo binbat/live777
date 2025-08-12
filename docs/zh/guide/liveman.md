@@ -2,18 +2,21 @@
 
 Live777 集群管理器.
 
-如果我有很多服务器（live777 核心集群），我需要统一管理它们。Liveman 还为整个集群提供集中式录制元数据管理和回放服务。
+如果我有很多服务器（live777 核心集群），我需要统一管理它们。Liveman 还为整个集群提供集中式录制索引管理和回放代理服务。
 
 ## 数据库配置
 
-Liveman 现在支持 PostgreSQL 来存储录制元数据。这使得分片信息能够在整个集群中持久化存储。
+Liveman 将录制索引（stream + 日期 → mpd_path 的映射）存储在数据库中。程序启动时会自动执行迁移。
+
+- 默认驱动：SQLite（嵌入式）
+- 支持驱动：SQLite、PostgreSQL（通过 SeaORM `DATABASE_URL`）
 
 ```toml
 [database]
-# PostgreSQL 连接 URL
-# 默认值: postgresql://localhost/live777
+# 默认数据库 URL（SQLite）
 # 环境变量: DATABASE_URL
-url = "postgresql://user:password@localhost:5432/live777"
+# 未设置时默认值: sqlite://./liveman.db
+url = "sqlite://./liveman.db?mode=rwc"
 
 # 最大数据库连接数
 # 默认值: 10
@@ -24,21 +27,33 @@ max_connections = 10
 connect_timeout = 30
 ```
 
-## 录制系统
+PostgreSQL 示例：
 
-录制系统将分片元数据存储在数据库中，而实际的媒体文件保存在存储系统中（文件系统、S3 等）。
+```toml
+[database]
+url = "postgresql://user:password@localhost:5432/live777"
+max_connections = 10
+connect_timeout = 30
+```
 
-### 分片元数据结构
+## 录制索引与存储
 
-每个录制的分片包含：
-- **ID**：唯一标识符（UUID）
-- **节点别名**：录制该分片的 Live777 节点
-- **流标识**：流的标识符
-- **时间戳**：开始/结束时间戳（微秒）
-- **时长**：分片时长（毫秒）
-- **路径**：媒体文件的存储路径
-- **关键帧**：分片是否以关键帧开始
-- **创建时间**：元数据存储的时间
+录制系统在数据库中存储日期索引（manifest 位置），而实际媒体文件保存在存储系统（文件系统、S3、OSS 等）。
+
+### 录制索引表结构
+
+表名：`recordings`（由迁移自动创建）
+
+- **id**：UUID，主键
+- **stream**：字符串，流标识
+- **year**：整型
+- **month**：整型
+- **day**：整型
+- **mpd_path**：字符串，manifest 在存储中的路径
+- **created_at**：带时区时间戳
+- **updated_at**：带时区时间戳
+
+唯一索引：`(stream, year, month, day)`
 
 ## 认证
 
