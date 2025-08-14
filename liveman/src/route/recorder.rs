@@ -25,15 +25,41 @@ async fn get_segment(State(state): State<AppState>, Path(path): Path<String>) ->
     #[cfg(feature = "recorder")]
     {
         if let Some(ref operator) = state.file_storage {
+            // Always proxy MPD manifest itself to keep relative segment URLs under our domain
+            let is_mpd = path.ends_with(".mpd");
+
+            // If enabled, try presigned redirect for non-MPD files (segments, init, etc.)
+            if !is_mpd && state.config.playback.signed_redirect {
+                use std::time::Duration as StdDuration;
+
+                let ttl = StdDuration::from_secs(state.config.playback.signed_ttl_seconds.max(1));
+                match operator.presign_read(&path, ttl).await {
+                    Ok(req) => {
+                        let uri = req.uri().to_string();
+                        return Ok((StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, uri)])
+                            .into_response());
+                    }
+                    Err(e) => {
+                        error!("Presign read failed for '{}': {}", path, e);
+                    }
+                }
+            }
+
+            // Fallback: proxy bytes directly from storage
             match operator.read(&path).await {
                 Ok(bytes) => {
                     info!("Successfully served segment: {}", path);
 
                     // Determine content type based on file extension
-                    let content_type = if path.ends_with(".m4s") || path.ends_with(".mp4") {
-                        "video/mp4"
-                    } else if path.ends_with(".mpd") {
+                    let content_type = if path.ends_with(".mpd") {
                         "application/dash+xml"
+                    } else if path.ends_with(".m4s") || path.ends_with(".mp4") {
+                        // Heuristic: audio segments and init named with "audio_" prefix
+                        if path.contains("audio_") {
+                            "audio/mp4"
+                        } else {
+                            "video/mp4"
+                        }
                     } else {
                         "application/octet-stream"
                     };
