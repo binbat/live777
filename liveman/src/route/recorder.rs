@@ -7,7 +7,6 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use http::header;
-use tracing::{error, info};
 
 use crate::{result::Result, AppState};
 
@@ -40,7 +39,7 @@ async fn get_segment(State(state): State<AppState>, Path(path): Path<String>) ->
                             .into_response());
                     }
                     Err(e) => {
-                        error!("Presign read failed for '{}': {}", path, e);
+                        tracing::error!("Presign read failed for '{}': {}", path, e);
                     }
                 }
             }
@@ -48,7 +47,7 @@ async fn get_segment(State(state): State<AppState>, Path(path): Path<String>) ->
             // Fallback: proxy bytes directly from storage
             match operator.read(&path).await {
                 Ok(bytes) => {
-                    info!("Successfully served segment: {}", path);
+                    tracing::info!("Successfully served segment: {}", path);
 
                     // Determine content type based on file extension
                     let content_type = if path.ends_with(".mpd") {
@@ -72,12 +71,12 @@ async fn get_segment(State(state): State<AppState>, Path(path): Path<String>) ->
                         .into_response())
                 }
                 Err(e) => {
-                    error!("Failed to read segment file '{}': {}", path, e);
+                    tracing::error!("Failed to read segment file '{}': {}", path, e);
                     Ok((StatusCode::NOT_FOUND, "Segment not found").into_response())
                 }
             }
         } else {
-            error!("File storage not configured for segment access");
+            tracing::error!("File storage not configured for segment access");
             Ok((
                 StatusCode::SERVICE_UNAVAILABLE,
                 "File storage not available",

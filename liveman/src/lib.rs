@@ -59,9 +59,6 @@ where
         None
     };
 
-    #[cfg(not(feature = "recorder"))]
-    let file_storage: Option<()> = None;
-
     let client_req = reqwest::Client::builder();
     let client_mem = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(500))
@@ -175,6 +172,7 @@ where
         client: client_req.build().unwrap(),
         storage: store,
         database: database_service,
+        #[cfg(feature = "recorder")]
         file_storage,
     };
 
@@ -254,6 +252,4 @@ struct AppState {
     database: DatabaseService,
     #[cfg(feature = "recorder")]
     file_storage: Option<opendal::Operator>,
-    #[cfg(not(feature = "recorder"))]
-    file_storage: Option<()>,
 }
