@@ -41,6 +41,7 @@ fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
 }
 
 fn string_encoder(s: &impl ToString) -> String {
-    let s = serde_json::to_string(&s.to_string()).unwrap();
+    let s =
+        serde_json::to_string(&s.to_string()).unwrap_or_else(|_| format!("\"{}\"", s.to_string()));
     s[1..s.len() - 1].to_string()
 }

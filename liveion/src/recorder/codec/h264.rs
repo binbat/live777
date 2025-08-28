@@ -199,7 +199,7 @@ impl H264RtpParser {
     }
 
     /// Push a RTP packet. If it returns `Some((frame, is_idr))` it means a frame has been assembled.
-    pub fn push_packet(&mut self, pkt: Packet) -> Result<Option<(BytesMut, bool)>> {
+    pub fn push_packet(&mut self, pkt: &Packet) -> Result<Option<(BytesMut, bool)>> {
         // Use webrtc-rs depacketizer to convert RTP payload into a complete NALU
         let nalu = self
             .depacketizer
@@ -237,7 +237,7 @@ impl H264RtpParser {
 impl crate::recorder::codec::RtpParser for H264RtpParser {
     type Output = (BytesMut, bool);
 
-    fn push_packet(&mut self, pkt: Packet) -> Result<Option<Self::Output>> {
+    fn push_packet(&mut self, pkt: &Packet) -> Result<Option<Self::Output>> {
         H264RtpParser::push_packet(self, pkt)
     }
 }
@@ -257,9 +257,9 @@ mod tests {
         pkt.payload = Bytes::from_static(&[0x65, 0xAA, 0xBB, 0xCC]); // 0x65 => nal_ref_idc=3, nal_type=5 (IDR)
 
         let mut parser = H264RtpParser::new();
-        let res = parser.push_packet(pkt).unwrap();
+        let res = parser.push_packet(&pkt).expect("Failed to push packet");
         assert!(res.is_some(), "Parser should output a frame on marker");
-        let (frame, is_idr) = res.unwrap();
+        let (frame, is_idr) = res.expect("Expected frame to be returned");
         assert!(is_idr, "Frame should be detected as IDR");
         // Frame must start with Annex-B start code
         assert!(frame.starts_with(&[0, 0, 0, 1]));

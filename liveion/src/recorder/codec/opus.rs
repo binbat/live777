@@ -22,7 +22,7 @@ impl OpusRtpParser {
     /// Push one RTP packet.
     ///
     /// Returns the raw payload as a BytesMut together with the original timestamp.
-    pub fn push_packet(&mut self, pkt: Packet) -> Result<(BytesMut, u32)> {
+    pub fn push_packet(&mut self, pkt: &Packet) -> Result<(BytesMut, u32)> {
         Ok((BytesMut::from(pkt.payload.as_ref()), pkt.header.timestamp))
     }
 }
@@ -31,7 +31,7 @@ impl OpusRtpParser {
 impl crate::recorder::codec::RtpParser for OpusRtpParser {
     type Output = (BytesMut, u32);
 
-    fn push_packet(&mut self, pkt: Packet) -> Result<Option<Self::Output>> {
+    fn push_packet(&mut self, pkt: &Packet) -> Result<Option<Self::Output>> {
         // Re-use the existing pass-through logic
         OpusRtpParser::push_packet(self, pkt).map(Some)
     }
@@ -50,7 +50,7 @@ mod tests {
         pkt.payload = Bytes::from_static(&[1, 2, 3, 4]);
 
         let mut parser = OpusRtpParser::new();
-        let (out, ts) = parser.push_packet(pkt).unwrap();
+        let (out, ts) = parser.push_packet(&pkt).expect("Failed to push packet");
         assert_eq!(ts, 960);
         assert_eq!(out.as_ref(), &[1, 2, 3, 4]);
     }

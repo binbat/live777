@@ -130,9 +130,13 @@ async fn record_stream(
         id: stream.clone(),
         mpd_path,
     };
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .body(serde_json::to_string(&resp).unwrap())?)
+    match serde_json::to_string(&resp) {
+        Ok(json_body) => Ok(Response::builder().status(StatusCode::OK).body(json_body)?),
+        Err(e) => Err(AppError::InternalServerError(anyhow::anyhow!(
+            "Failed to serialize response: {}",
+            e
+        ))),
+    }
 }
 
 #[cfg(not(feature = "recorder"))]

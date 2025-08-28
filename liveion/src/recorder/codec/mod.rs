@@ -71,5 +71,5 @@ pub trait CodecAdapter {
 /// parser needs more RTP packets.
 pub trait RtpParser {
     type Output;
-    fn push_packet(&mut self, pkt: Packet) -> Result<Option<Self::Output>>;
+    fn push_packet(&mut self, pkt: &Packet) -> Result<Option<Self::Output>>;
 }

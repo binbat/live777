@@ -187,7 +187,7 @@ impl RecordingTask {
                         }
 
                         let pkt_ts = packet.header.timestamp;
-                        if let Ok(Some((frame, is_idr))) = parser_video.push_packet((*packet).clone()) {
+                        if let Ok(Some((frame, is_idr))) = parser_video.push_packet(&packet) {
                             let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
                                 pkt_ts.wrapping_sub(prev)
                             } else {
@@ -211,7 +211,7 @@ impl RecordingTask {
                     }, if audio_rx_opt.is_some() => {
                         match result {
                             Ok(packet) => {
-                                let (payload, pkt_ts) = match parser_audio.push_packet((*packet).clone()) {
+                                let (payload, pkt_ts) = match parser_audio.push_packet(&packet) {
                                     Ok(v) => v,
                                     Err(_) => continue,
                                 };
