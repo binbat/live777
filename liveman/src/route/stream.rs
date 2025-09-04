@@ -5,6 +5,8 @@ use axum::{
     response::Response,
     Json,
 };
+// https://docs.rs/axum/latest/axum/extract/struct.Query.html
+// For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
 use http::{header, StatusCode};
 use tracing::warn;

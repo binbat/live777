@@ -7,6 +7,9 @@ use axum::response::sse::{Event, KeepAlive};
 use axum::response::{Response, Sse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+
+// https://docs.rs/axum/latest/axum/extract/struct.Query.html
+// For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
 use http::StatusCode;
 use tokio_stream::wrappers::ReceiverStream;
