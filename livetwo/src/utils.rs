@@ -8,7 +8,6 @@ use tracing::{debug, error, info, warn};
 use url::{Host, Url};
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
-    ice_transport::ice_credential_type::RTCIceCredentialType,
     ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
     peer_connection::{
@@ -117,7 +116,6 @@ pub async fn create_webrtc_api() -> Result<(APIBuilder, RTCConfiguration)> {
             urls: vec!["stun:stun.l.google.com:19302".to_string()],
             username: "".to_string(),
             credential: "".to_string(),
-            credential_type: RTCIceCredentialType::Unspecified,
         }],
         ..Default::default()
     };

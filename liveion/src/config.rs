@@ -1,11 +1,7 @@
 use std::{env, net::SocketAddr, str::FromStr};
 
 use serde::{Deserialize, Serialize};
-use webrtc::{
-    ice,
-    ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
-    Error,
-};
+use webrtc::{ice, ice_transport::ice_server::RTCIceServer, Error};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -94,7 +90,6 @@ fn default_ice_servers() -> Vec<IceServer> {
         urls: vec!["stun:stun.l.google.com:19302".to_string()],
         username: "".to_string(),
         credential: "".to_string(),
-        credential_type: "".to_string(),
     }]
 }
 
@@ -124,8 +119,6 @@ pub struct IceServer {
     pub username: String,
     #[serde(default)]
     pub credential: String,
-    #[serde(default)]
-    pub credential_type: String,
 }
 
 // from https://github.com/webrtc-rs/webrtc/blob/71157ba2153a891a8cfd819f3cf1441a7a0808d8/webrtc/src/ice_transport/ice_server.rs
@@ -151,22 +144,7 @@ impl IceServer {
                     return Err(Error::ErrNoTurnCredentials);
                 }
                 url.username.clone_from(&self.username);
-
-                match self.credential_type.as_str().into() {
-                    RTCIceCredentialType::Password => {
-                        // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.3)
-                        url.password.clone_from(&self.credential);
-                    }
-                    RTCIceCredentialType::Oauth => {
-                        // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.4)
-                        /*if _, ok: = s.Credential.(OAuthCredential); !ok {
-                                return nil,
-                                &rtcerr.InvalidAccessError{Err: ErrTurnCredentials
-                            }
-                        }*/
-                    }
-                    _ => return Err(Error::ErrTurnCredentials),
-                };
+                url.password.clone_from(&self.credential);
             }
 
             urls.push(url);
@@ -182,7 +160,6 @@ impl From<IceServer> for RTCIceServer {
             urls: val.urls,
             username: val.username,
             credential: val.credential,
-            credential_type: val.credential_type.as_str().into(),
         }
     }
 }

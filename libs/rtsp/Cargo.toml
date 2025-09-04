@@ -11,9 +11,11 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+webrtc = { workspace = true }
+sdp = { workspace = true }
+
+cli = { path = "../cli" }
+
 rtsp-types = "0.1.1"
-sdp = "0.8"
 sdp-types = "0.1.6"
 portpicker = "0.1.1"
-cli = { path = "../cli" }
-webrtc = { workspace = true }

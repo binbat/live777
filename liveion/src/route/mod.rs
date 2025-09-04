@@ -30,8 +30,8 @@ fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
                 let mut link = format!("<{url}>; rel=\"ice-server\"");
                 if !username.is_empty() {
                     link = format!(
-                        "{}; username=\"{}\"; credential=\"{}\"; credential-type=\"{}\"",
-                        link, username, credential, server.credential_type
+                        "{}; username=\"{}\"; credential=\"{}\"",
+                        link, username, credential
                     );
                 }
                 link

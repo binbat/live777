@@ -621,6 +621,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "chacha20"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3613f74bd2eac03dad61bd53dbe620703d4371614fe0bc3b9f04dd36fe4e818"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
+ "zeroize",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -643,6 +667,7 @@ checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
  "crypto-common",
  "inout",
+ "zeroize",
 ]
 
 [[package]]
@@ -1660,14 +1685,15 @@ dependencies = [
 
 [[package]]
 name = "interceptor"
-version = "0.12.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.14.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "async-trait",
  "bytes",
+ "futures",
  "log",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rtcp",
  "rtp",
  "thiserror 1.0.69",
@@ -1903,7 +1929,7 @@ dependencies = [
  "rtsp",
  "rtsp-types",
  "scopeguard",
- "sdp 0.8.0",
+ "sdp",
  "sdp-types",
  "signal",
  "tokio",
@@ -2525,6 +2551,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
+name = "poly1305"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8159bd90725d2df49889a078b54f4f79e87f1f8a8444194cdca81d38f5393abf"
+dependencies = [
+ "cpufeatures",
+ "opaque-debug",
+ "universal-hash",
+]
+
+[[package]]
 name = "polyval"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2930,8 +2967,8 @@ dependencies = [
 
 [[package]]
 name = "rtcp"
-version = "0.11.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.13.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "bytes",
  "thiserror 1.0.69",
@@ -2940,12 +2977,13 @@ dependencies = [
 
 [[package]]
 name = "rtp"
-version = "0.11.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.13.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "bytes",
+ "memchr",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "serde",
  "thiserror 1.0.69",
  "webrtc-util",
@@ -2959,7 +2997,7 @@ dependencies = [
  "cli",
  "portpicker",
  "rtsp-types",
- "sdp 0.8.0",
+ "sdp",
  "sdp-types",
  "tokio",
  "tracing",
@@ -3280,22 +3318,10 @@ dependencies = [
 
 [[package]]
 name = "sdp"
-version = "0.6.2"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
-dependencies = [
- "rand 0.8.5",
- "substring",
- "thiserror 1.0.69",
- "url",
-]
-
-[[package]]
-name = "sdp"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cd277015eada44a0bb810a4b84d3bf6e810573fa62fb442f457edf6a1087a69"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
- "rand 0.8.5",
+ "rand 0.9.1",
  "substring",
  "thiserror 1.0.69",
  "url",
@@ -3608,14 +3634,14 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stun"
-version = "0.6.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.8.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "crc",
  "lazy_static",
  "md-5",
- "rand 0.8.5",
+ "rand 0.9.1",
  "ring",
  "subtle",
  "thiserror 1.0.69",
@@ -4147,16 +4173,16 @@ dependencies = [
 
 [[package]]
 name = "turn"
-version = "0.8.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.10.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "async-trait",
- "base64 0.21.7",
+ "base64 0.22.1",
  "futures",
  "log",
  "md-5",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "ring",
  "stun",
  "thiserror 1.0.69",
@@ -4414,8 +4440,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc"
-version = "0.11.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.13.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -4426,14 +4452,14 @@ dependencies = [
  "lazy_static",
  "log",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rcgen",
  "regex",
  "ring",
  "rtcp",
  "rtp",
  "rustls 0.23.29",
- "sdp 0.6.2",
+ "sdp",
  "serde",
  "serde_json",
  "sha2",
@@ -4443,6 +4469,7 @@ dependencies = [
  "time",
  "tokio",
  "turn",
+ "unicase",
  "url",
  "waitgroup",
  "webrtc-data",
@@ -4457,8 +4484,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-data"
-version = "0.9.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.11.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "bytes",
  "log",
@@ -4471,8 +4498,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-dtls"
-version = "0.10.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.12.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4481,6 +4508,7 @@ dependencies = [
  "byteorder",
  "cbc",
  "ccm",
+ "chacha20poly1305",
  "der-parser 9.0.0",
  "hkdf",
  "hmac",
@@ -4488,7 +4516,7 @@ dependencies = [
  "p256",
  "p384",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rand_core 0.6.4",
  "rcgen",
  "ring",
@@ -4507,15 +4535,15 @@ dependencies = [
 
 [[package]]
 name = "webrtc-ice"
-version = "0.11.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.13.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "arc-swap",
  "async-trait",
  "crc",
  "log",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "serde",
  "serde_json",
  "stun",
@@ -4531,8 +4559,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-mdns"
-version = "0.7.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.9.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "log",
  "socket2",
@@ -4543,20 +4571,20 @@ dependencies = [
 
 [[package]]
 name = "webrtc-media"
-version = "0.8.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.10.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "byteorder",
  "bytes",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rtp",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "webrtc-sctp"
-version = "0.10.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.12.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -4564,7 +4592,7 @@ dependencies = [
  "crc",
  "log",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "thiserror 1.0.69",
  "tokio",
  "webrtc-util",
@@ -4572,8 +4600,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-srtp"
-version = "0.13.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.15.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "aead",
  "aes",
@@ -4594,8 +4622,8 @@ dependencies = [
 
 [[package]]
 name = "webrtc-util"
-version = "0.9.0"
-source = "git+https://github.com/webrtc-rs/webrtc?rev=ae93e81#ae93e81a493c004b0270603d539ad9a40b7b3064"
+version = "0.11.0"
+source = "git+https://github.com/webrtc-rs/webrtc?rev=4ac32c6#4ac32c665622851c12b9431e6e7f5aeca1fb2a77"
 dependencies = [
  "async-trait",
  "bitflags 1.3.2",
@@ -4606,7 +4634,7 @@ dependencies = [
  "log",
  "nix",
  "portable-atomic",
- "rand 0.8.5",
+ "rand 0.9.1",
  "thiserror 1.0.69",
  "tokio",
  "winapi",

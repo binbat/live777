@@ -55,7 +55,8 @@ authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
-webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "ae93e81" }
+webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "4ac32c6" }
+sdp = { git = "https://github.com/webrtc-rs/webrtc", rev = "4ac32c6" }
 
 axum = "0.8"
 axum-extra = "0.10"

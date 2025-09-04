@@ -17,7 +17,7 @@ use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
-    ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
+    ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
     peer_connection::{configuration::RTCConfiguration, RTCPeerConnection},
     rtp::packet::Packet,
@@ -762,7 +762,6 @@ async fn new_peer(
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 username: "".to_string(),
                 credential: "".to_string(),
-                credential_type: RTCIceCredentialType::Unspecified,
             }
         }],
         ..Default::default()
