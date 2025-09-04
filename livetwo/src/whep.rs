@@ -174,8 +174,7 @@ fn setup_rtp_handlers(
     interleaved_tx: Option<UnboundedSender<(u8, Vec<u8>)>>,
     interleaved_rx: Option<UnboundedReceiver<(u8, Vec<u8>)>>,
 ) {
-    if interleaved_tx.is_some() {
-        let tx = interleaved_tx.unwrap();
+    if let Some(tx) = interleaved_tx {
         if let Some(rtsp::TransportInfo::Tcp { rtp_channel, .. }) = &media_info.video_transport {
             let channel = *rtp_channel;
             let tx_clone = tx.clone();

@@ -345,9 +345,7 @@ async fn setup_rtp_handlers(
     let (peer, video_sender, audio_sender) =
         setup_webrtc(client, media_info, complete_tx, input).await?;
 
-    if interleaved_rx.is_some() {
-        let mut rx = interleaved_rx.unwrap();
-
+    if let Some(mut rx) = interleaved_rx {
         let video_rtp_channel = media_info.video_transport.as_ref().and_then(|t| {
             if let rtsp::TransportInfo::Tcp { rtp_channel, .. } = t {
                 Some(*rtp_channel)
