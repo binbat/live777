@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Error};
+use http::header;
 use reqwest::header::HeaderMap;
 use tracing::{debug, error, info, trace, warn};
 
@@ -66,7 +67,7 @@ pub async fn cascade_push(
     stream: String,
 ) -> Result<(), Error> {
     let mut headers = HeaderMap::new();
-    headers.append("Content-Type", "application/json".parse().unwrap());
+    headers.append(header::CONTENT_TYPE, "application/json".parse().unwrap());
     let url = format!("{}{}", server_src.url, &api::path::cascade(&stream));
     let body = serde_json::to_string(&Cascade {
         target_url: Some(format!(
@@ -124,7 +125,7 @@ pub async fn cascade_pull(
     stream: String,
 ) -> Result<(), Error> {
     let mut headers = HeaderMap::new();
-    headers.append("Content-Type", "application/json".parse().unwrap());
+    headers.append(header::CONTENT_TYPE, "application/json".parse().unwrap());
 
     let url = format!("{}{}", server_dst.url, &api::path::cascade(&stream));
 

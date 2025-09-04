@@ -112,7 +112,7 @@ async fn whip(
             match resp {
                 Ok(res) => {
                     if res.status().is_success() {
-                        match res.headers().get("Location") {
+                        match res.headers().get(header::LOCATION) {
                             Some(location) => {
                                 state
                                     .storage
@@ -177,7 +177,7 @@ async fn whep(
             match resp {
                 Ok(res) => {
                     if res.status().is_success() {
-                        match res.headers().get("Location") {
+                        match res.headers().get(header::LOCATION) {
                             Some(location) => state
                                 .storage
                                 .session_put(String::from(location.to_str().unwrap()), server.alias)
