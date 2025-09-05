@@ -10,17 +10,17 @@ repository.workspace = true
 portpicker = "0.1.1"
 rumqttd = "0.19.0"
 tokio-test = "0.4.4"
-reqwest = { version = "0.12.7", features = ["socks"] }
+reqwest = { workspace = true, features = ["socks"] }
 
 [dependencies]
 anyhow = { workspace = true }
+url = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
 lru_time_cache = "0.11.11"
 kcp = "0.6"
 rand = "0.9"
 rumqttc = { version = "0.24.0", features = ["url"] }
 socks5-server = "0.10.1"
-tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync"] }
-url = "2.5"
 

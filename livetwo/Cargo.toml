@@ -20,11 +20,11 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 webrtc = { workspace = true }
 sdp = { workspace = true }
+url = { workspace = true }
 
 bytes = "1.6.0"
 scopeguard = "1.2.0"
 md-5 = "0.10"
-url = "2.5.2"
 portpicker = "0.1.1"
 rtsp-types = "0.1.2"
 sdp-types = "0.1"
