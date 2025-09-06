@@ -20,6 +20,40 @@
 # username = "live777"
 # password = "live777"
 
+# [extra_ice]
+# When WHIP/WHEP use liveman proxy
+# liveman override upstream liveion http header link ice_servers
+# override_upstream_ice_servers = false
+
+# [[extra_ice.ice_servers]]
+# urls = [
+#     "stun:stun.22333.fun",
+#     "stun:cn.22333.fun",
+#     "stun:stun.l.google.com:19302",
+# ]
+
+# [[extra_ice.ice_servers]]
+# urls = [ "turn:turn.22333.fun", "turn:cn.22333.fun" ]
+# username = "live777"
+# credential = "live777"
+
+# [extra_ice.coturn]
+# Coturn must use: --use-auth-secret
+# The secret is: --static-auth-secret=live777
+# secret = "live777"
+# urls = [
+#     "stun:coturn.22333.fun:3478",
+#     "turn:coturn.22333.fun:3478?transport=udp",
+#     "turn:coturn.22333.fun:3478?transport=tcp",
+# ]
+# ttl = 3600
+
+# [extra_ice.cloudflare]
+# # https://developers.cloudflare.com/realtime/turn/generate-credentials/
+# key_id = ""
+# api_token = ""
+# ttl = 3600
+
 [log]
 # Env: `LOG_LEVEL`
 # Default: info

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, str::FromStr};
 
+use iceserver::IceServer;
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -13,6 +15,8 @@ pub struct Config {
     pub liveion: Vec<Node>,
     #[serde(default)]
     pub cascade: Cascade,
+    #[serde(default)]
+    pub extra_ice: ExtraIce,
 
     #[cfg(feature = "net4mqtt")]
     #[serde(default)]
@@ -30,6 +34,42 @@ pub struct Node {
     pub token: String,
     #[serde(default)]
     pub url: String,
+}
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+pub struct ExtraIce {
+    #[serde(default)]
+    pub override_upstream_ice_servers: bool,
+    #[serde(default)]
+    pub ice_servers: Vec<IceServer>,
+    #[serde(default)]
+    pub coturn: Option<Coturn>,
+    #[serde(default)]
+    pub cloudflare: Option<Cloudflare>,
+}
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+pub struct Coturn {
+    #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub secret: String,
+    #[serde(default = "default_extra_ttl")]
+    pub ttl: u64,
+}
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+pub struct Cloudflare {
+    #[serde(default)]
+    pub key_id: String,
+    #[serde(default)]
+    pub api_token: String,
+    #[serde(default = "default_extra_ttl")]
+    pub ttl: u64,
+}
+
+fn default_extra_ttl() -> u64 {
+    60 * 60
 }
 
 #[cfg(feature = "net4mqtt")]

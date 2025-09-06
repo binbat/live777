@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn, Span};
 
 use api::response::Stream;
+use iceserver::{cloudflare, coturn, format_iceserver, link_header};
 
 use crate::route::cascade;
 use crate::route::node;
@@ -80,6 +81,47 @@ async fn api_whep(
     }
 }
 
+async fn extra_ice(
+    headers: &mut reqwest::header::HeaderMap,
+    cfg: crate::config::ExtraIce,
+) -> Result<()> {
+    if cfg.override_upstream_ice_servers {
+        headers.remove(header::LINK);
+    }
+
+    if !cfg.ice_servers.is_empty() {
+        for link in link_header(cfg.ice_servers) {
+            headers.append(header::LINK, HeaderValue::from_str(&link)?);
+        }
+    }
+
+    if let Some(cfg) = cfg.coturn {
+        let (username, password) = coturn::generate_credentials(
+            cfg.secret,
+            coturn::generate_expiry_timestamp(cfg.ttl),
+            None,
+        );
+        let coturn_ice_server = format_iceserver(cfg.urls, username, password);
+        debug!("coturn ice server: {:?}", coturn_ice_server);
+
+        for link in link_header(vec![coturn_ice_server]) {
+            headers.append(header::LINK, HeaderValue::from_str(&link)?);
+        }
+    }
+
+    if let Some(cfg) = cfg.cloudflare {
+        let cloudflare_ice_servers =
+            cloudflare::request_iceserver(cfg.key_id, cfg.api_token, cfg.ttl).await?;
+        debug!("cloudflare ice server {:?}", cloudflare_ice_servers);
+
+        for link in link_header(cloudflare_ice_servers) {
+            headers.append(header::LINK, HeaderValue::from_str(&link)?);
+        }
+    }
+
+    Ok(())
+}
+
 async fn whip(
     State(mut state): State<AppState>,
     Path(stream): Path<String>,
@@ -110,7 +152,9 @@ async fn whip(
         Some(server) => {
             let resp = request_proxy(state.clone(), req, &server).await;
             match resp {
-                Ok(res) => {
+                Ok(mut res) => {
+                    extra_ice(res.headers_mut(), state.config.extra_ice).await?;
+
                     if res.status().is_success() {
                         match res.headers().get(header::LOCATION) {
                             Some(location) => {
@@ -175,7 +219,9 @@ async fn whep(
             debug!("{:?}", server);
             let resp = request_proxy(state.clone(), req, &server).await;
             match resp {
-                Ok(res) => {
+                Ok(mut res) => {
+                    extra_ice(res.headers_mut(), state.config.extra_ice).await?;
+
                     if res.status().is_success() {
                         match res.headers().get(header::LOCATION) {
                             Some(location) => state

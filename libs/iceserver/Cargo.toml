@@ -1,0 +1,24 @@
+[package]
+name = "iceserver"
+edition.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+serde = { workspace = true, features = ["serde_derive"] }
+serde_json = { workspace = true }
+webrtc = { workspace = true }
+
+hmac = { version = "0.12", optional = true }
+sha1 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+
+anyhow = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["rustls-tls", "json"], default-features = true, optional = true }
+
+[features]
+coturn = ["dep:hmac", "dep:sha1", "dep:base64"]
+cloudflare = ["dep:anyhow", "dep:http", "dep:reqwest"]
+

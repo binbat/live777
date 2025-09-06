@@ -8,9 +8,7 @@ crate-type = ["lib"]
 [dependencies]
 anyhow = { workspace = true }
 http = { workspace = true }
-reqwest = { workspace = true, features = [
-    "rustls-tls",
-], default-features = false }
+reqwest = { workspace = true, features = ["rustls-tls"] }
 url = { workspace = true }
 webrtc = { workspace = true }
 

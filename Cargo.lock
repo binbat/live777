@@ -1556,6 +1556,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "iceserver"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "hmac",
+ "http 1.3.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "webrtc",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1880,6 +1895,7 @@ dependencies = [
  "http-body 1.0.1",
  "http-log",
  "hyper 1.7.0",
+ "iceserver",
  "lazy_static",
  "libwish",
  "md5",
@@ -1912,6 +1928,7 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "http-log",
+ "iceserver",
  "mime_guess",
  "net4mqtt",
  "reqwest",

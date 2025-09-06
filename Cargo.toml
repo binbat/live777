@@ -39,6 +39,7 @@ members = [
     "libs/api",
     "libs/cli",
     "libs/http-log",
+    "libs/iceserver",
     "libs/libwish",
     "libs/signal",
     "libs/net4mqtt",
@@ -67,8 +68,9 @@ anyhow = "1.0"
 clap = "4.5"
 http = "1.1"
 http-body = "1.0"
-reqwest = "0.12"
-serde = "1"
+reqwest = { version = "0.12", default-features = false }
+serde = "1.0"
+serde_json = "1.0"
 tokio = "1.36"
 tracing = "0.1"
 url = "2.5"
@@ -79,11 +81,11 @@ serde_json = "1.0"
 
 api = { path = "libs/api" }
 cli = { path = "libs/cli" }
-reqwest = { version = "0.12", features = [
+reqwest = { workspace = true, features = [
     "rustls-tls",
     "socks",
     "json"
-], default-features = false }
+] }
 
 tempfile = "3"
 

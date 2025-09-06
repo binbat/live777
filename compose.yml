@@ -1,0 +1,18 @@
+
+services:
+  coturn:
+    image: coturn/coturn
+    # https://github.com/coturn/coturn/blob/master/README.turnserver#L77
+    # -n		Do not use configuration file, use only command line parameters.
+    #
+    # --use-auth-secret
+    command: -n --log-file=stdout --min-port=49100 --max-port=49200 --no-multicast-peers --no-tlsv1 --realm=live777 --use-auth-secret --static-auth-secret=live777 --verbose
+    # --lt-cred-mech
+    # command: -n --log-file=stdout --min-port=49160 --max-port=49200 --no-multicast-peers --no-tlsv1 --realm=live777 --lt-cred-mech --user=live777:live777 --verbose
+    ports:
+      - 3478:3478
+      - 3478:3478/udp
+      - 5349:5349
+      - 5349:5349/udp
+      - 49100-49200:49100-49200/udp
+

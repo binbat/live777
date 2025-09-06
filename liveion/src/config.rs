@@ -1,7 +1,7 @@
 use std::{env, net::SocketAddr, str::FromStr};
 
+use iceserver::{default_ice_servers, IceServer};
 use serde::{Deserialize, Serialize};
-use webrtc::{ice, ice_transport::ice_server::RTCIceServer, Error};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -85,14 +85,6 @@ impl Default for Http {
     }
 }
 
-fn default_ice_servers() -> Vec<IceServer> {
-    vec![IceServer {
-        urls: vec!["stun:stun.l.google.com:19302".to_string()],
-        username: "".to_string(),
-        credential: "".to_string(),
-    }]
-}
-
 impl Default for Log {
     fn default() -> Self {
         Self {
@@ -109,59 +101,6 @@ fn default_log_level() -> String {
             "info".to_string()
         }
     })
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct IceServer {
-    #[serde(default)]
-    pub urls: Vec<String>,
-    #[serde(default)]
-    pub username: String,
-    #[serde(default)]
-    pub credential: String,
-}
-
-// from https://github.com/webrtc-rs/webrtc/blob/71157ba2153a891a8cfd819f3cf1441a7a0808d8/webrtc/src/ice_transport/ice_server.rs
-impl IceServer {
-    pub(crate) fn parse_url(&self, url_str: &str) -> webrtc::error::Result<ice::url::Url> {
-        Ok(ice::url::Url::parse_url(url_str)?)
-    }
-
-    pub(crate) fn validate(&self) -> webrtc::error::Result<()> {
-        self.urls()?;
-        Ok(())
-    }
-
-    pub(crate) fn urls(&self) -> webrtc::error::Result<Vec<ice::url::Url>> {
-        let mut urls = vec![];
-
-        for url_str in &self.urls {
-            let mut url = self.parse_url(url_str)?;
-            if url.scheme == ice::url::SchemeType::Turn || url.scheme == ice::url::SchemeType::Turns
-            {
-                // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.2)
-                if self.username.is_empty() || self.credential.is_empty() {
-                    return Err(Error::ErrNoTurnCredentials);
-                }
-                url.username.clone_from(&self.username);
-                url.password.clone_from(&self.credential);
-            }
-
-            urls.push(url);
-        }
-
-        Ok(urls)
-    }
-}
-
-impl From<IceServer> for RTCIceServer {
-    fn from(val: IceServer) -> Self {
-        RTCIceServer {
-            urls: val.urls,
-            username: val.username,
-            credential: val.credential,
-        }
-    }
 }
 
 impl Config {
