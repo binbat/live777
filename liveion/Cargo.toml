@@ -37,7 +37,6 @@ webrtc = { workspace = true }
 
 async-trait = "0.1"
 chrono = "0.4"
-hyper = "1.2.0"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
 mime_guess = "2.0.4"
