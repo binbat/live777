@@ -50,7 +50,7 @@ members = [
 
 [workspace.package]
 version = "0.8.1"
-edition = "2021"
+edition = "2024"
 license = "MPL-2.0"
 authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
