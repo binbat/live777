@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use socks5_server::{
-    connection::connect::state::Ready,
+    Command, IncomingConnection,
     connection::connect::Connect,
+    connection::connect::state::Ready,
     connection::state::NeedAuthenticate,
     proto::{Address, Reply},
-    Command, IncomingConnection,
 };
 use tokio::io::AsyncWriteExt;
 

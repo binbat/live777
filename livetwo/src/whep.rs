@@ -1,33 +1,33 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cli::create_child;
 use scopeguard::defer;
 use sdp::description::common::{Address, ConnectionInformation};
-use sdp::{description::media::RangedPort, SessionDescription};
+use sdp::{SessionDescription, description::media::RangedPort};
 use std::{
     fs::File,
     io::{Cursor, Write},
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::Notify;
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::{net::TcpListener, sync::mpsc::UnboundedReceiver};
 use tracing::{debug, error, info, trace, warn};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::{
     peer_connection::RTCPeerConnection,
     rtp_transceiver::{
-        rtp_codec::RTPCodecType, rtp_transceiver_direction::RTCRtpTransceiverDirection,
-        RTCRtpTransceiverInit,
+        RTCRtpTransceiverInit, rtp_codec::RTPCodecType,
+        rtp_transceiver_direction::RTCRtpTransceiverDirection,
     },
     util::MarshalSize,
 };
 
 use libwish::Client;
 
-use crate::rtspclient::{setup_rtsp_session, RtspMode};
+use crate::rtspclient::{RtspMode, setup_rtsp_session};
 use crate::utils;
 use crate::{SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 

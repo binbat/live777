@@ -5,7 +5,7 @@ use tracing::{error, info};
 use crate::config::CascadeMode;
 use crate::route::utils::{cascade_pull, cascade_push, force_check_times, session_delete};
 use crate::store::Server;
-use crate::{result::Result, AppState};
+use crate::{AppState, result::Result};
 
 pub async fn cascade_new_node(
     mut state: AppState,

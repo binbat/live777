@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::net::{Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -7,12 +7,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, warn};
 use url::{Host, Url};
 use webrtc::{
-    api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
+    api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*},
     ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
     peer_connection::{
-        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        RTCPeerConnection,
+        RTCPeerConnection, configuration::RTCConfiguration,
+        peer_connection_state::RTCPeerConnectionState,
     },
     rtcp,
 };

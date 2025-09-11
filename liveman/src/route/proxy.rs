@@ -1,15 +1,15 @@
 use axum::{
+    Router,
     extract::{Path, Request, State},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
-    Router,
 };
 // https://docs.rs/axum/latest/axum/extract/struct.Query.html
 // For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
-use http::{header, HeaderValue, Uri};
+use http::{HeaderValue, Uri, header};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, warn, Span};
+use tracing::{Span, debug, error, warn};
 
 use api::response::Stream;
 use iceserver::{cloudflare, coturn, format_iceserver, link_header};
@@ -18,7 +18,7 @@ use crate::route::cascade;
 use crate::route::node;
 use crate::route::stream;
 use crate::store::Server;
-use crate::{error::AppError, result::Result, AppState};
+use crate::{AppState, error::AppError, result::Result};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct QueryExtract {

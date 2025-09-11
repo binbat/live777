@@ -1,7 +1,7 @@
 use anyhow::Result;
 use reqwest::{
-    header::{self, HeaderMap, HeaderValue},
     Body, Method, Response, StatusCode,
+    header::{self, HeaderMap, HeaderValue},
 };
 use std::str::FromStr;
 use url::Url;

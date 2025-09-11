@@ -4,7 +4,7 @@ use std::thread;
 use anyhow::{Error, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::time::{interval, sleep, timeout_at, Duration, Instant};
+use tokio::time::{Duration, Instant, interval, sleep, timeout_at};
 
 #[macro_export]
 macro_rules! timeout_await {

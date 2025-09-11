@@ -4,7 +4,7 @@ use chrono::Utc;
 use tracing::{error, info};
 use url::Url;
 
-use crate::{error::AppError, result::Result, route::utils::session_delete, AppState};
+use crate::{AppState, error::AppError, result::Result, route::utils::session_delete};
 
 pub async fn cascade_check(state: AppState) {
     loop {

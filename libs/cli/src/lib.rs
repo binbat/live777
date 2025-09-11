@@ -3,13 +3,13 @@ use std::{
     sync::Mutex,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::ValueEnum;
 use webrtc::{
     api::media_engine::*,
     rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
         RTCPFeedback,
+        rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
     },
 };
 

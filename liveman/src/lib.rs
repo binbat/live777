@@ -1,7 +1,7 @@
 use std::{future::Future, time::Duration};
 
-use auth::{access::access_middleware, validate_middleware, AuthState};
-use axum::{extract::Request, middleware, response::IntoResponse, routing::post, Router};
+use auth::{AuthState, access::access_middleware, validate_middleware};
+use axum::{Router, extract::Request, middleware, response::IntoResponse, routing::post};
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};

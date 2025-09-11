@@ -1,9 +1,9 @@
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 
 use api::strategy::Strategy;
 
-use crate::{result::Result, AppState};
+use crate::{AppState, result::Result};
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeState {

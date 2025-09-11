@@ -3,7 +3,7 @@
 /// Waits for a signal that requests a graceful shutdown, like SIGTERM or SIGINT.
 #[cfg(unix)]
 async fn wait_for_signal_impl() -> &'static str {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     // Infos here:
     // https://www.gnu.org/software/libc/manual/html_node/Termination-Signals.html

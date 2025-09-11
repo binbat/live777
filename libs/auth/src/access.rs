@@ -2,8 +2,8 @@ use axum::{extract::Request, http, middleware::Next, response::Response};
 use http::method::Method;
 
 use crate::{
-    claims::{Access, Claims},
     ANY_ID,
+    claims::{Access, Claims},
 };
 
 pub async fn access_middleware(request: Request, next: Next) -> Response {

@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 
-use crate::error::AppError;
 use crate::AppState;
+use crate::error::AppError;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive};
 use axum::response::{Response, Sse};
@@ -12,8 +12,8 @@ use axum::{Json, Router};
 // For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
 use http::StatusCode;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
 pub fn route() -> Router<AppState> {
     Router::new()

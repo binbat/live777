@@ -1,21 +1,21 @@
 use std::time::{Duration, SystemTime};
 
 use axum::{
+    Json,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, error};
 
 use auth::{
+    ANY_ID, Keys,
     claims::{Access, Claims},
-    Keys, ANY_ID,
 };
 
-use crate::{config::Account, AppState};
+use crate::{AppState, config::Account};
 
 const JWT_TOKEN_EXPIRES: Duration = Duration::from_secs(60 * 60 * 24);
 

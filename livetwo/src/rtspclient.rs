@@ -1,17 +1,16 @@
-use anyhow::{anyhow, Result};
-use cli::{codec_from_str, Codec};
+use anyhow::{Result, anyhow};
+use cli::{Codec, codec_from_str};
 use md5::{Digest, Md5};
 use portpicker::pick_unused_port;
 use rtsp_types::{
-    headers,
-    headers::{transport, HeaderValue, WWW_AUTHENTICATE},
-    Message, Method, Request, Response, StatusCode, Url, Version,
+    Message, Method, Request, Response, StatusCode, Url, Version, headers,
+    headers::{HeaderValue, WWW_AUTHENTICATE, transport},
 };
 use sdp_types::Session;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::TcpStream,
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     time::{self, Duration},
 };
 use tracing::{debug, error, info, trace, warn};

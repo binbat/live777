@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::{sync::Arc, time::Duration, vec};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cli::{codec_from_str, create_child};
 use libwish::Client;
 use scopeguard::defer;
@@ -11,25 +11,25 @@ use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tokio::{
     net::{TcpListener, UdpSocket},
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use webrtc::{
-    api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
+    api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*},
     ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
-    peer_connection::{configuration::RTCConfiguration, RTCPeerConnection},
+    peer_connection::{RTCPeerConnection, configuration::RTCConfiguration},
     rtp::packet::Packet,
     rtp_transceiver::{
         rtp_codec::RTCRtpCodecCapability, rtp_codec::RTPCodecType, rtp_sender::RTCRtpSender,
     },
-    track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter},
+    track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP},
     util::Unmarshal,
 };
 
 use crate::payload;
-use crate::rtspclient::{setup_rtsp_session, RtspMode};
+use crate::rtspclient::{RtspMode, setup_rtsp_session};
 use crate::utils;
 
 use crate::{PREFIX_LIB, SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
@@ -458,20 +458,29 @@ async fn setup_rtp_handlers(
                             let channel = rtcp_channel;
 
                             tokio::spawn(async move {
-                                info!("Starting video RTCP reader for sending to RTSP client on channel {}", channel);
+                                info!(
+                                    "Starting video RTCP reader for sending to RTSP client on channel {}",
+                                    channel
+                                );
 
                                 loop {
                                     match sender_clone.read_rtcp().await {
                                         Ok((packets, _)) => {
                                             for packet in packets {
-                                                debug!("Received video RTCP from WebRTC to forward to RTSP client: {:?}", packet);
+                                                debug!(
+                                                    "Received video RTCP from WebRTC to forward to RTSP client: {:?}",
+                                                    packet
+                                                );
 
                                                 if let Ok(data) = packet.marshal() {
                                                     let data_vec = data.to_vec();
                                                     if let Err(e) =
                                                         rtcp_tx_clone.send((channel, data_vec))
                                                     {
-                                                        error!("Failed to forward WebRTC video RTCP to RTSP client: {}", e);
+                                                        error!(
+                                                            "Failed to forward WebRTC video RTCP to RTSP client: {}",
+                                                            e
+                                                        );
                                                     }
                                                 }
                                             }
@@ -497,20 +506,29 @@ async fn setup_rtp_handlers(
                             let channel = rtcp_channel;
 
                             tokio::spawn(async move {
-                                info!("Starting audio RTCP reader for sending to RTSP client on channel {}", channel);
+                                info!(
+                                    "Starting audio RTCP reader for sending to RTSP client on channel {}",
+                                    channel
+                                );
 
                                 loop {
                                     match sender_clone.read_rtcp().await {
                                         Ok((packets, _)) => {
                                             for packet in packets {
-                                                debug!("Received audio RTCP from WebRTC to forward to RTSP client: {:?}", packet);
+                                                debug!(
+                                                    "Received audio RTCP from WebRTC to forward to RTSP client: {:?}",
+                                                    packet
+                                                );
 
                                                 if let Ok(data) = packet.marshal() {
                                                     let data_vec = data.to_vec();
                                                     if let Err(e) =
                                                         rtcp_tx_clone.send((channel, data_vec))
                                                     {
-                                                        error!("Failed to forward WebRTC audio RTCP to RTSP client: {}", e);
+                                                        error!(
+                                                            "Failed to forward WebRTC audio RTCP to RTSP client: {}",
+                                                            e
+                                                        );
                                                     }
                                                 }
                                             }

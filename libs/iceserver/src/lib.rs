@@ -5,7 +5,7 @@ pub mod cloudflare;
 pub mod coturn;
 
 use serde::{Deserialize, Serialize};
-use webrtc::{ice, ice_transport::ice_server::RTCIceServer, Error};
+use webrtc::{Error, ice, ice_transport::ice_server::RTCIceServer};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IceServer {

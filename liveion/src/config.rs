@@ -1,6 +1,6 @@
 use std::{env, net::SocketAddr, str::FromStr};
 
-use iceserver::{default_ice_servers, IceServer};
+use iceserver::{IceServer, default_ice_servers};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]

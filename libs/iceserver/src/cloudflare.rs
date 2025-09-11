@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use http::header;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

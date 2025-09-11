@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use headers::authorization::{Bearer, Credentials};
-use http::{header, StatusCode};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use http::{StatusCode, header};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 
 use axum::{
     extract::{Request, State},

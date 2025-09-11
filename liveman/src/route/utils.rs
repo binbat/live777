@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use http::header;
 use reqwest::header::HeaderMap;
 use tracing::{debug, error, info, trace, warn};

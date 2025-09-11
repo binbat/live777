@@ -1,14 +1,14 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use kcp::Kcp;
 use lru_time_cache::LruCache;
 use rumqttc::{AsyncClient, EventLoop, QoS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::select;
-use tokio::sync::mpsc::{unbounded_channel, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::{task, time};
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
@@ -593,7 +593,7 @@ fn mqtt_receive(raw: rumqttc::Event) -> Option<rumqttc::mqttbytes::v4::Publish> 
     }
 }
 
-use socks5_server::{auth::NoAuth, Server};
+use socks5_server::{Server, auth::NoAuth};
 
 use std::sync::Arc;
 

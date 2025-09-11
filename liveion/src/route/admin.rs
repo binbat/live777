@@ -2,9 +2,9 @@ use axum::extract::{Path, State};
 use axum::routing::post;
 use axum::{Json, Router};
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::result::Result;
-use crate::AppState;
 
 pub fn route() -> Router<AppState> {
     Router::new().route(&api::path::cascade("{stream}"), post(cascade))

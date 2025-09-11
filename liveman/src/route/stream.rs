@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 
 use axum::{
+    Json,
     extract::{Path, State},
     response::Response,
-    Json,
 };
 // https://docs.rs/axum/latest/axum/extract/struct.Query.html
 // For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
-use http::{header, StatusCode};
+use http::{StatusCode, header};
 use tracing::warn;
 
 use api::response::Stream;
 
-use crate::{error::AppError, result::Result, AppState};
+use crate::{AppState, error::AppError, result::Result};
 
 use super::proxy::QueryExtract;
 

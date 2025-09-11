@@ -3,7 +3,7 @@ mod tests {
     use std::sync::Arc;
 
     use webrtc::{
-        api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
+        api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*},
         ice_transport::ice_server::RTCIceServer,
         interceptor::registry::Registry,
         peer_connection::{
