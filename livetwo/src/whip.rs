@@ -60,10 +60,10 @@ pub async fn into(
         Default::default()
     };
     defer!({
-        if let Some(child) = child.as_ref() {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
-            }
+        if let Some(child) = child.as_ref()
+            && let Ok(mut child) = child.lock()
+        {
+            let _ = child.kill();
         }
     });
 
@@ -452,47 +452,47 @@ async fn setup_rtp_handlers(
             if let Some(rtcp_channel) = video_rtcp_channel {
                 for sender in &senders {
                     let sender_clone = sender.clone();
-                    if let Some(track) = sender.track().await {
-                        if track.kind() == RTPCodecType::Video {
-                            let rtcp_tx_clone = rtcp_tx.clone();
-                            let channel = rtcp_channel;
+                    if let Some(track) = sender.track().await
+                        && track.kind() == RTPCodecType::Video
+                    {
+                        let rtcp_tx_clone = rtcp_tx.clone();
+                        let channel = rtcp_channel;
 
-                            tokio::spawn(async move {
-                                info!(
-                                    "Starting video RTCP reader for sending to RTSP client on channel {}",
-                                    channel
-                                );
+                        tokio::spawn(async move {
+                            info!(
+                                "Starting video RTCP reader for sending to RTSP client on channel {}",
+                                channel
+                            );
 
-                                loop {
-                                    match sender_clone.read_rtcp().await {
-                                        Ok((packets, _)) => {
-                                            for packet in packets {
-                                                debug!(
-                                                    "Received video RTCP from WebRTC to forward to RTSP client: {:?}",
-                                                    packet
-                                                );
+                            loop {
+                                match sender_clone.read_rtcp().await {
+                                    Ok((packets, _)) => {
+                                        for packet in packets {
+                                            debug!(
+                                                "Received video RTCP from WebRTC to forward to RTSP client: {:?}",
+                                                packet
+                                            );
 
-                                                if let Ok(data) = packet.marshal() {
-                                                    let data_vec = data.to_vec();
-                                                    if let Err(e) =
-                                                        rtcp_tx_clone.send((channel, data_vec))
-                                                    {
-                                                        error!(
-                                                            "Failed to forward WebRTC video RTCP to RTSP client: {}",
-                                                            e
-                                                        );
-                                                    }
+                                            if let Ok(data) = packet.marshal() {
+                                                let data_vec = data.to_vec();
+                                                if let Err(e) =
+                                                    rtcp_tx_clone.send((channel, data_vec))
+                                                {
+                                                    error!(
+                                                        "Failed to forward WebRTC video RTCP to RTSP client: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
                                         }
-                                        Err(e) => {
-                                            warn!("Error reading video RTCP from WebRTC: {}", e);
-                                            break;
-                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Error reading video RTCP from WebRTC: {}", e);
+                                        break;
                                     }
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             }
@@ -500,47 +500,47 @@ async fn setup_rtp_handlers(
             if let Some(rtcp_channel) = audio_rtcp_channel {
                 for sender in &senders {
                     let sender_clone = sender.clone();
-                    if let Some(track) = sender.track().await {
-                        if track.kind() == RTPCodecType::Audio {
-                            let rtcp_tx_clone = rtcp_tx.clone();
-                            let channel = rtcp_channel;
+                    if let Some(track) = sender.track().await
+                        && track.kind() == RTPCodecType::Audio
+                    {
+                        let rtcp_tx_clone = rtcp_tx.clone();
+                        let channel = rtcp_channel;
 
-                            tokio::spawn(async move {
-                                info!(
-                                    "Starting audio RTCP reader for sending to RTSP client on channel {}",
-                                    channel
-                                );
+                        tokio::spawn(async move {
+                            info!(
+                                "Starting audio RTCP reader for sending to RTSP client on channel {}",
+                                channel
+                            );
 
-                                loop {
-                                    match sender_clone.read_rtcp().await {
-                                        Ok((packets, _)) => {
-                                            for packet in packets {
-                                                debug!(
-                                                    "Received audio RTCP from WebRTC to forward to RTSP client: {:?}",
-                                                    packet
-                                                );
+                            loop {
+                                match sender_clone.read_rtcp().await {
+                                    Ok((packets, _)) => {
+                                        for packet in packets {
+                                            debug!(
+                                                "Received audio RTCP from WebRTC to forward to RTSP client: {:?}",
+                                                packet
+                                            );
 
-                                                if let Ok(data) = packet.marshal() {
-                                                    let data_vec = data.to_vec();
-                                                    if let Err(e) =
-                                                        rtcp_tx_clone.send((channel, data_vec))
-                                                    {
-                                                        error!(
-                                                            "Failed to forward WebRTC audio RTCP to RTSP client: {}",
-                                                            e
-                                                        );
-                                                    }
+                                            if let Ok(data) = packet.marshal() {
+                                                let data_vec = data.to_vec();
+                                                if let Err(e) =
+                                                    rtcp_tx_clone.send((channel, data_vec))
+                                                {
+                                                    error!(
+                                                        "Failed to forward WebRTC audio RTCP to RTSP client: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
                                         }
-                                        Err(e) => {
-                                            warn!("Error reading audio RTCP from WebRTC: {}", e);
-                                            break;
-                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Error reading audio RTCP from WebRTC: {}", e);
+                                        break;
                                     }
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             }
@@ -596,25 +596,24 @@ async fn setup_rtp_handlers(
         rtcp_recv_port,
         ..
     }) = &media_info.video_transport
+        && rtcp_send_port.is_some()
+        && rtcp_recv_port.is_some()
+        && let Some(video_rtcp_port) = rtcp_recv_port
     {
-        if rtcp_send_port.is_some() && rtcp_recv_port.is_some() {
-            if let Some(video_rtcp_port) = rtcp_recv_port {
-                debug!(
-                    "Setting up video RTCP reader - port: {}, listen host: {}, target_host: {}",
-                    video_rtcp_port, listen_host, host
-                );
-                for sender in &senders {
-                    if let Some(track) = sender.track().await {
-                        if track.kind() == RTPCodecType::Video {
-                            tokio::spawn(read_rtcp(
-                                sender.clone(),
-                                listen_host.to_string(),
-                                host.to_string(),
-                                *video_rtcp_port,
-                            ));
-                        }
-                    }
-                }
+        debug!(
+            "Setting up video RTCP reader - port: {}, listen host: {}, target_host: {}",
+            video_rtcp_port, listen_host, host
+        );
+        for sender in &senders {
+            if let Some(track) = sender.track().await
+                && track.kind() == RTPCodecType::Video
+            {
+                tokio::spawn(read_rtcp(
+                    sender.clone(),
+                    listen_host.to_string(),
+                    host.to_string(),
+                    *video_rtcp_port,
+                ));
             }
         }
     }
@@ -624,25 +623,24 @@ async fn setup_rtp_handlers(
         rtcp_recv_port,
         ..
     }) = &media_info.audio_transport
+        && rtcp_send_port.is_some()
+        && rtcp_recv_port.is_some()
+        && let Some(audio_rtcp_port) = rtcp_recv_port
     {
-        if rtcp_send_port.is_some() && rtcp_recv_port.is_some() {
-            if let Some(audio_rtcp_port) = rtcp_recv_port {
-                debug!(
-                    "Setting up audio RTCP reader - port: {}, listen host: {}, target_host: {}",
-                    audio_rtcp_port, listen_host, host
-                );
-                for sender in &senders {
-                    if let Some(track) = sender.track().await {
-                        if track.kind() == RTPCodecType::Audio {
-                            tokio::spawn(read_rtcp(
-                                sender.clone(),
-                                listen_host.to_string(),
-                                host.to_string(),
-                                *audio_rtcp_port,
-                            ));
-                        }
-                    }
-                }
+        debug!(
+            "Setting up audio RTCP reader - port: {}, listen host: {}, target_host: {}",
+            audio_rtcp_port, listen_host, host
+        );
+        for sender in &senders {
+            if let Some(track) = sender.track().await
+                && track.kind() == RTPCodecType::Audio
+            {
+                tokio::spawn(read_rtcp(
+                    sender.clone(),
+                    listen_host.to_string(),
+                    host.to_string(),
+                    *audio_rtcp_port,
+                ));
             }
         }
     }
@@ -658,13 +656,12 @@ async fn wait_for_completion(
 ) -> Result<()> {
     match child.as_ref() {
         Some(child_mutex) => loop {
-            if let Ok(mut child) = child_mutex.lock() {
-                if let Ok(wait) = child.try_wait() {
-                    if wait.is_some() {
-                        let _ = complete_tx.send(());
-                        return Ok(());
-                    }
-                }
+            if let Ok(mut child) = child_mutex.lock()
+                && let Ok(wait) = child.try_wait()
+                && wait.is_some()
+            {
+                let _ = complete_tx.send(());
+                return Ok(());
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         },

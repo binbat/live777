@@ -473,13 +473,13 @@ async fn helper_livetwo_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == "-") {
-            if !r.publish.sessions.is_empty() {
-                let s = r.publish.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == "-")
+            && !r.publish.sessions.is_empty()
+        {
+            let s = r.publish.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         };
 
@@ -510,13 +510,13 @@ async fn helper_livetwo_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == "-") {
-            if !r.subscribe.sessions.is_empty() {
-                let s = r.subscribe.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == "-")
+            && !r.subscribe.sessions.is_empty()
+        {
+            let s = r.subscribe.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         };
 

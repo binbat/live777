@@ -563,13 +563,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_a) {
-            if !r.publish.sessions.is_empty() {
-                let s = r.publish.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_a)
+            && !r.publish.sessions.is_empty()
+        {
+            let s = r.publish.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -600,13 +600,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_a) {
-            if !r.subscribe.sessions.is_empty() {
-                let s = r.subscribe.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_a)
+            && !r.subscribe.sessions.is_empty()
+        {
+            let s = r.subscribe.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -641,13 +641,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_b) {
-            if !r.publish.sessions.is_empty() {
-                let s = r.publish.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_b)
+            && !r.publish.sessions.is_empty()
+        {
+            let s = r.publish.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -692,13 +692,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_b) {
-            if !r.subscribe.sessions.is_empty() {
-                let s = r.subscribe.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_b)
+            && !r.subscribe.sessions.is_empty()
+        {
+            let s = r.subscribe.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -731,13 +731,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_c) {
-            if !r.subscribe.sessions.is_empty() {
-                let s = r.subscribe.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_c)
+            && !r.subscribe.sessions.is_empty()
+        {
+            let s = r.subscribe.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 

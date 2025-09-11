@@ -393,15 +393,15 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
             .ok_or_else(|| anyhow::anyhow!("no mid"))?;
         let mline_index = mid.parse::<u16>()?;
         for attr in attributes {
-            if attr.is_ice_candidate() {
-                if let Some(value) = attr.value {
-                    ice_candidates.push(RTCIceCandidateInit {
-                        candidate: value,
-                        sdp_mid: Some(mid.clone()),
-                        sdp_mline_index: Some(mline_index),
-                        username_fragment: None,
-                    });
-                }
+            if attr.is_ice_candidate()
+                && let Some(value) = attr.value
+            {
+                ice_candidates.push(RTCIceCandidateInit {
+                    candidate: value,
+                    sdp_mid: Some(mid.clone()),
+                    sdp_mline_index: Some(mline_index),
+                    username_fragment: None,
+                });
             }
         }
     }

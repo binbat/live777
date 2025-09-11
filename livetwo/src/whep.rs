@@ -98,22 +98,21 @@ pub async fn from(
         };
         info!("Child process created");
         defer!({
-            if let Some(child) = child.as_ref() {
-                if let Ok(mut child) = child.lock() {
-                    let _ = child.kill();
-                }
+            if let Some(child) = child.as_ref()
+                && let Ok(mut child) = child.lock()
+            {
+                let _ = child.kill();
             }
         });
         let wait_child = child.clone();
         match wait_child.as_ref() {
             Some(child) => loop {
-                if let Ok(mut child) = child.lock() {
-                    if let Ok(wait) = child.try_wait() {
-                        if wait.is_some() {
-                            let _ = complete_tx_for_child.send(());
-                            return;
-                        }
-                    }
+                if let Ok(mut child) = child.lock()
+                    && let Ok(wait) = child.try_wait()
+                    && wait.is_some()
+                {
+                    let _ = complete_tx_for_child.send(());
+                    return;
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             },
@@ -226,37 +225,37 @@ fn setup_rtp_handlers(
 
                 let senders = peer_clone.get_senders().await;
                 for sender in senders {
-                    if let Some(track) = sender.track().await {
-                        if track.kind() == RTPCodecType::Video {
-                            let tx_clone = tx_clone.clone();
+                    if let Some(track) = sender.track().await
+                        && track.kind() == RTPCodecType::Video
+                    {
+                        let tx_clone = tx_clone.clone();
 
-                            tokio::spawn(async move {
-                                loop {
-                                    match sender.read_rtcp().await {
-                                        Ok((packets, _)) => {
-                                            for packet in packets {
-                                                if let Ok(data) = packet.marshal() {
-                                                    trace!(
-                                                        "Sending video RTCP data ({} bytes)",
-                                                        data.len()
-                                                    );
-                                                    if let Err(e) =
-                                                        tx_clone.send((channel, data.to_vec()))
-                                                    {
-                                                        error!("Failed to send video RTCP: {}", e);
-                                                        return;
-                                                    }
+                        tokio::spawn(async move {
+                            loop {
+                                match sender.read_rtcp().await {
+                                    Ok((packets, _)) => {
+                                        for packet in packets {
+                                            if let Ok(data) = packet.marshal() {
+                                                trace!(
+                                                    "Sending video RTCP data ({} bytes)",
+                                                    data.len()
+                                                );
+                                                if let Err(e) =
+                                                    tx_clone.send((channel, data.to_vec()))
+                                                {
+                                                    error!("Failed to send video RTCP: {}", e);
+                                                    return;
                                                 }
                                             }
                                         }
-                                        Err(e) => {
-                                            warn!("Error reading video RTCP: {}", e);
-                                            break;
-                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Error reading video RTCP: {}", e);
+                                        break;
                                     }
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             });
@@ -272,37 +271,37 @@ fn setup_rtp_handlers(
 
                 let senders = peer_clone.get_senders().await;
                 for sender in senders {
-                    if let Some(track) = sender.track().await {
-                        if track.kind() == RTPCodecType::Audio {
-                            let tx_clone = tx_clone.clone();
+                    if let Some(track) = sender.track().await
+                        && track.kind() == RTPCodecType::Audio
+                    {
+                        let tx_clone = tx_clone.clone();
 
-                            tokio::spawn(async move {
-                                loop {
-                                    match sender.read_rtcp().await {
-                                        Ok((packets, _)) => {
-                                            for packet in packets {
-                                                if let Ok(data) = packet.marshal() {
-                                                    trace!(
-                                                        "Sending audio RTCP data ({} bytes)",
-                                                        data.len()
-                                                    );
-                                                    if let Err(e) =
-                                                        tx_clone.send((channel, data.to_vec()))
-                                                    {
-                                                        error!("Failed to send audio RTCP: {}", e);
-                                                        return;
-                                                    }
+                        tokio::spawn(async move {
+                            loop {
+                                match sender.read_rtcp().await {
+                                    Ok((packets, _)) => {
+                                        for packet in packets {
+                                            if let Ok(data) = packet.marshal() {
+                                                trace!(
+                                                    "Sending audio RTCP data ({} bytes)",
+                                                    data.len()
+                                                );
+                                                if let Err(e) =
+                                                    tx_clone.send((channel, data.to_vec()))
+                                                {
+                                                    error!("Failed to send audio RTCP: {}", e);
+                                                    return;
                                                 }
                                             }
                                         }
-                                        Err(e) => {
-                                            warn!("Error reading audio RTCP: {}", e);
-                                            break;
-                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Error reading audio RTCP: {}", e);
+                                        break;
                                     }
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             });
@@ -610,17 +609,16 @@ async fn rtp_mode(
                     range: None,
                 };
             }
-        } else if media.media_name.media == "audio" {
-            if let Some(rtsp::TransportInfo::Udp {
+        } else if media.media_name.media == "audio"
+            && let Some(rtsp::TransportInfo::Udp {
                 rtp_send_port: Some(port),
                 ..
             }) = &media_info.audio_transport
-            {
-                media.media_name.port = RangedPort {
-                    value: *port as isize,
-                    range: None,
-                };
-            }
+        {
+            media.media_name.port = RangedPort {
+                value: *port as isize,
+                range: None,
+            };
         }
     }
 

@@ -252,12 +252,12 @@ where
         let mut describe_response = self.read_response().await?;
         self.cseq += 1;
 
-        if describe_response.status() == StatusCode::Unauthorized {
-            if let Some(auth_header) = describe_response.header(&WWW_AUTHENTICATE).cloned() {
-                describe_response = self
-                    .handle_unauthorized(Method::Describe, &auth_header)
-                    .await?;
-            }
+        if describe_response.status() == StatusCode::Unauthorized
+            && let Some(auth_header) = describe_response.header(&WWW_AUTHENTICATE).cloned()
+        {
+            describe_response = self
+                .handle_unauthorized(Method::Describe, &auth_header)
+                .await?;
         }
 
         let sdp_content = String::from_utf8_lossy(describe_response.body()).to_string();

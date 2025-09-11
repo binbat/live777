@@ -299,12 +299,12 @@ impl SubscribeRTCPeerConnection {
                         if let Some(msg) = RtcpMessage::from_rtcp_packet(packet) {
                             let publish_tracks = publish_tracks.read().await;
                             for publish_track in publish_tracks.iter() {
-                                if publish_track.kind == kind && &publish_track.rid == publish_rid {
-                                    if let Err(_err) =
+                                if publish_track.kind == kind
+                                    && &publish_track.rid == publish_rid
+                                    && let Err(_err) =
                                         publish_rtcp_sender.send((msg, publish_track.track.ssrc()))
-                                    {
-                                        return;
-                                    }
+                                {
+                                    return;
                                 }
                             }
                         }
