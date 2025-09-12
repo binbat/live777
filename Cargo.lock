@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "api"
-version = "0.0.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_html_form",
@@ -311,7 +311,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth"
-version = "0.0.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "api",
@@ -706,7 +706,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "cli"
-version = "0.0.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "http-log"
-version = "0.0.0"
+version = "0.8.1"
 dependencies = [
  "axum 0.8.4",
  "http-body-util",
@@ -1497,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "iceserver"
-version = "0.0.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1767,7 +1767,7 @@ checksum = "6a82ae493e598baaea5209805c49bbf2ea7de956d50d7da0da1164f9c6d28543"
 
 [[package]]
 name = "libwish"
-version = "0.0.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "http 1.3.1",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "rtsp"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "cli",
@@ -3381,7 +3381,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signal"
-version = "0.0.0"
+version = "0.8.1"
 dependencies = [
  "tokio",
 ]

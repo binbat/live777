@@ -4,7 +4,7 @@ description = "net (TCP/UDP) over mqtt tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-repository.workspace = true
+authors.workspace = true
 
 [dev-dependencies]
 portpicker = "0.1.1"
