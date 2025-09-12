@@ -56,6 +56,8 @@ jobs:
         run: cargo build --all-targets --all-features --release --verbose
       - name: Setup ffmpeg
         uses: AnimMouse/setup-ffmpeg@v1
+        with:
+          version: 7.1
       - name: Show version information
         run: |
           ffmpeg -version
