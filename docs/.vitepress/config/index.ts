@@ -30,7 +30,10 @@ export default defineConfig({
         socialLinks: [
             { icon: 'github', link: 'https://github.com/binbat/live777' }
         ],
-
+        editLink: {
+            pattern: 'https://github.com/binbat/live777/edit/main/docs/:path',
+            text: 'Edit this page on GitHub'
+        },
         footer: {
             message: 'Released under the MPL-2.0 License.',
             copyright: 'Copyright © 2023-present BinBat LTD'
