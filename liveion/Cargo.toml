@@ -22,6 +22,7 @@ axum = { workspace = true, features = ["multipart", "tracing"] }
 axum-extra = { workspace = true, features = ["query"] }
 tower-http = { workspace = true, features = ["trace", "cors"] }
 rust-embed = { workspace = true, features = ["axum-ex"], optional = true }
+mime_guess = { workspace = true, optional = true }
 anyhow = { workspace = true, features = ["backtrace"] }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
@@ -29,7 +30,7 @@ http-body = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true }
 tokio-stream = "0.1.15"
 async-stream = "0.3.5"
 tracing = { workspace = true }
@@ -39,9 +40,8 @@ async-trait = "0.1"
 chrono = "0.4"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
-mime_guess = "2.0.4"
 prometheus = "0.14"
 
 [features]
-webui = ["dep:rust-embed"]
+webui = ["dep:rust-embed", "dep:mime_guess"]
 net4mqtt = ["dep:net4mqtt"]

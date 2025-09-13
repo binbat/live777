@@ -63,6 +63,7 @@ axum = "0.8"
 axum-extra = "0.10"
 tower-http = "0.6"
 rust-embed = "8.7"
+mime_guess = "2.0"
 
 anyhow = "1.0"
 clap = "4.5"
@@ -92,7 +93,7 @@ net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
 
 clap = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["process"] }
 tracing = { workspace = true }
 serde = { workspace = true }
 

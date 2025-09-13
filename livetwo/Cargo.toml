@@ -16,7 +16,7 @@ libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
 
 anyhow = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 webrtc = { workspace = true }
 sdp = { workspace = true }
