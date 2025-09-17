@@ -4,7 +4,7 @@ use std::thread;
 use anyhow::{Error, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::time::{Duration, Instant, interval, sleep, timeout_at};
+use tokio::time::{Duration, Instant, sleep, timeout_at};
 
 #[macro_export]
 macro_rules! timeout_await {
@@ -24,20 +24,6 @@ use crate::broker;
 use crate::kxdns;
 
 const MAX_BUFFER_SIZE: usize = 4096;
-
-async fn check_port_availability(addr: SocketAddr) -> bool {
-    TcpStream::connect(addr).await.is_ok()
-}
-
-async fn wait_for_port_availabilty(addr: SocketAddr) -> bool {
-    let mut interval = interval(Duration::from_millis(1));
-    loop {
-        if check_port_availability(addr).await {
-            return true;
-        }
-        interval.tick().await;
-    }
-}
 
 async fn up_echo_udp_server(sock: UdpSocket) -> Result<(), Error> {
     let mut buf = [0; MAX_BUFFER_SIZE];
@@ -104,7 +90,7 @@ async fn up_add_tcp_server(listener: TcpListener) -> Result<(), Error> {
     }
 }
 
-async fn handle_request(body: &str, mut socket: tokio::net::TcpStream) -> Result<(), Error> {
+async fn handle_request(body: &str, mut socket: TcpStream) -> Result<(), Error> {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -178,7 +164,7 @@ async fn helper_cluster_up(cfg: Config) -> Vec<SocketAddr> {
 
     let broker_addr = SocketAddr::new(mqtt_broker_host, cfg.broker);
     thread::spawn(move || broker::up_mqtt_broker(broker_addr));
-    wait_for_port_availabilty(broker_addr).await;
+    broker::wait_for_port_availabilty(broker_addr).await;
 
     for id in 0..cfg.agent {
         thread::spawn(move || {

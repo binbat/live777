@@ -40,3 +40,19 @@ fn get_mqtt_broker_config(listen: SocketAddr) -> Config {
 pub fn up_mqtt_broker(listen: SocketAddr) {
     Broker::new(get_mqtt_broker_config(listen)).start().unwrap();
 }
+
+async fn check_port_availability(addr: SocketAddr) -> bool {
+    tokio::net::TcpStream::connect(addr).await.is_ok()
+}
+
+pub async fn wait_for_port_availabilty(addr: SocketAddr) -> bool {
+    use tokio::time::{Duration, interval};
+
+    let mut interval = interval(Duration::from_millis(1));
+    loop {
+        if check_port_availability(addr).await {
+            return true;
+        }
+        interval.tick().await;
+    }
+}
