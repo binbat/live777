@@ -1,7 +1,7 @@
 use webrtc::{
     rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
         PayloadType, RTCPFeedback,
+        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
     },
     sdp::{Error, MediaDescription, SessionDescription},
 };

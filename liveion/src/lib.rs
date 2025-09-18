@@ -1,10 +1,10 @@
 use std::{future::Future, sync::Arc};
 
-use axum::{extract::Request, middleware, response::IntoResponse, routing::get, Router};
+use axum::{Router, extract::Request, middleware, response::IntoResponse, routing::get};
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{error, info_span, Level};
+use tracing::{Level, error, info_span};
 
 use crate::config::Config;
 use crate::route::{admin, session, whep, whip, AppState};

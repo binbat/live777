@@ -2,7 +2,7 @@ use std::{str::FromStr, time::Duration};
 
 use api::event::{EventBody, NodeMetrics};
 use async_trait::async_trait;
-use reqwest::{header::HeaderMap, Client, Method};
+use reqwest::{Client, Method, header::HeaderMap};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 

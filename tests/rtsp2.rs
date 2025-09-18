@@ -64,8 +64,9 @@ async fn test_livetwo_cycle_rtsp_h264() {
 
     let width = 640;
     let height = 480;
-    let prefix =
-        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1");
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1"
+    );
 
     helper_livetwo_cycle_rtsp(
         ip,
@@ -96,8 +97,9 @@ async fn test_livetwo_cycle_rtsp_h264_tcp() {
 
     let width = 640;
     let height = 480;
-    let prefix =
-        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1 -rtsp_transport tcp");
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1 -rtsp_transport tcp"
+    );
 
     helper_livetwo_cycle_rtsp(
         ip,
@@ -160,8 +162,9 @@ async fn test_livetwo_cycle_rtsp_vp8_tcp() {
 
     let width = 640;
     let height = 480;
-    let prefix =
-        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx -rtsp_transport tcp");
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx -rtsp_transport tcp"
+    );
 
     helper_livetwo_cycle_rtsp(
         ip,
@@ -224,8 +227,9 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
 
     let width = 640;
     let height = 480;
-    let prefix =
-        format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx -rtsp_transport tcp");
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libvpx -rtsp_transport tcp"
+    );
 
     helper_livetwo_cycle_rtsp(
         ip,
@@ -442,7 +446,9 @@ async fn test_livetwo_cycle_rtsp_vp8_opus() {
 
     let width = 640;
     let height = 480;
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vcodec libvpx");
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vcodec libvpx"
+    );
 
     helper_livetwo_cycle_rtsp(
         ip,
@@ -473,7 +479,9 @@ async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
 
     let width = 640;
     let height = 480;
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vcodec libvpx -rtsp_transport tcp");
+    let prefix = format!(
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 -acodec libopus -vcodec libvpx -rtsp_transport tcp"
+    );
 
     helper_livetwo_cycle_rtsp(
         ip,
@@ -555,13 +563,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_a) {
-            if !r.publish.sessions.is_empty() {
-                let s = r.publish.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_a)
+            && !r.publish.sessions.is_empty()
+        {
+            let s = r.publish.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -592,13 +600,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_a) {
-            if !r.subscribe.sessions.is_empty() {
-                let s = r.subscribe.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_a)
+            && !r.subscribe.sessions.is_empty()
+        {
+            let s = r.subscribe.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -633,13 +641,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_b) {
-            if !r.publish.sessions.is_empty() {
-                let s = r.publish.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_b)
+            && !r.publish.sessions.is_empty()
+        {
+            let s = r.publish.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -684,13 +692,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_b) {
-            if !r.subscribe.sessions.is_empty() {
-                let s = r.subscribe.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_b)
+            && !r.subscribe.sessions.is_empty()
+        {
+            let s = r.subscribe.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 
@@ -723,13 +731,13 @@ async fn helper_livetwo_cycle_rtsp(
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_c) {
-            if !r.subscribe.sessions.is_empty() {
-                let s = r.subscribe.sessions[0].clone();
-                if s.state == api::response::RTCPeerConnectionState::Connected {
-                    result = Some(s);
-                    break;
-                }
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_c)
+            && !r.subscribe.sessions.is_empty()
+        {
+            let s = r.subscribe.sessions[0].clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
             }
         }
 

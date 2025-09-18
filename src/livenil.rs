@@ -38,6 +38,8 @@ async fn main() {
         cfg.log.level, cfg.log.level, cfg.log.level, cfg.log.level
     ));
 
+    debug!("config : {:?}", cfg);
+
     let mut dir_entries = tokio::fs::read_dir(args.config.unwrap()).await.unwrap();
     let mut results = Vec::new();
     while let Some(entry) = dir_entries.next_entry().await.unwrap() {

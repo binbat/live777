@@ -17,10 +17,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use crate::forward::message::Layer;
 use crate::forward::PeerForward;
+use crate::forward::message::Layer;
 use crate::stream::config::ManagerConfig;
-use crate::{metrics, new_broadcast_channel, AppError};
+use crate::{AppError, metrics, new_broadcast_channel};
 
 #[derive(Clone)]
 pub struct Manager {

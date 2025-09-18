@@ -1,18 +1,19 @@
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
 
     use webrtc::{
-        api::{interceptor_registry::register_default_interceptors, media_engine::*, APIBuilder},
+        api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*},
         ice_transport::ice_server::RTCIceServer,
         interceptor::registry::Registry,
-        peer_connection::configuration::RTCConfiguration,
+        peer_connection::{
+            configuration::RTCConfiguration,
+            policy::{
+                bundle_policy::RTCBundlePolicy, ice_transport_policy::RTCIceTransportPolicy,
+                rtcp_mux_policy::RTCRtcpMuxPolicy,
+            },
+        },
     };
-
-    use std::sync::Arc;
-    use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
-    use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
-    use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
-    use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
 
     #[tokio::test]
     async fn test_set_get_configuration() {
@@ -35,7 +36,6 @@ mod tests {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 username: "".to_string(),
                 credential: "".to_string(),
-                credential_type: RTCIceCredentialType::Unspecified,
             }],
             ..Default::default()
         };
@@ -53,9 +53,8 @@ mod tests {
                     "turn:turn.22333.fun".to_string(),
                     "turn:cn.22333.fun".to_string(),
                 ],
-                username: "live777".to_string(),
-                credential: "live777".to_string(),
-                credential_type: RTCIceCredentialType::Password,
+                username: "live777_username".to_string(),
+                credential: "live777_password".to_string(),
             }],
             ..Default::default()
         };
@@ -75,12 +74,8 @@ mod tests {
                 "turn:cn.22333.fun".to_string()
             ]
         );
-        assert_eq!(updated_config.ice_servers[0].username, "live777");
-        assert_eq!(updated_config.ice_servers[0].credential, "live777");
-        assert_eq!(
-            updated_config.ice_servers[0].credential_type,
-            RTCIceCredentialType::Password
-        );
+        assert_eq!(updated_config.ice_servers[0].username, "live777_username");
+        assert_eq!(updated_config.ice_servers[0].credential, "live777_password");
         assert_eq!(
             updated_config.ice_transport_policy,
             RTCIceTransportPolicy::Unspecified

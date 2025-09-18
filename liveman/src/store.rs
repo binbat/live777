@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use http::header;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};

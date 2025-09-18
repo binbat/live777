@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::{ArgAction, Parser, Subcommand};
 use tokio::net::{TcpListener, UdpSocket};
-use tracing::{debug, info, trace, Level};
+use tracing::{Level, debug, info, trace};
 
 use net4mqtt::proxy;
 

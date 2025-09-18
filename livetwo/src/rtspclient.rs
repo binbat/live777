@@ -1,17 +1,16 @@
-use anyhow::{anyhow, Result};
-use cli::{codec_from_str, Codec};
+use anyhow::{Result, anyhow};
+use cli::{Codec, codec_from_str};
 use md5::{Digest, Md5};
 use portpicker::pick_unused_port;
 use rtsp_types::{
-    headers,
-    headers::{transport, HeaderValue, WWW_AUTHENTICATE},
-    Message, Method, Request, Response, StatusCode, Url, Version,
+    Message, Method, Request, Response, StatusCode, Url, Version, headers,
+    headers::{HeaderValue, WWW_AUTHENTICATE, transport},
 };
 use sdp_types::Session;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::TcpStream,
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     time::{self, Duration},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -253,12 +252,12 @@ where
         let mut describe_response = self.read_response().await?;
         self.cseq += 1;
 
-        if describe_response.status() == StatusCode::Unauthorized {
-            if let Some(auth_header) = describe_response.header(&WWW_AUTHENTICATE).cloned() {
-                describe_response = self
-                    .handle_unauthorized(Method::Describe, &auth_header)
-                    .await?;
-            }
+        if describe_response.status() == StatusCode::Unauthorized
+            && let Some(auth_header) = describe_response.header(&WWW_AUTHENTICATE).cloned()
+        {
+            describe_response = self
+                .handle_unauthorized(Method::Describe, &auth_header)
+                .await?;
         }
 
         let sdp_content = String::from_utf8_lossy(describe_response.body()).to_string();

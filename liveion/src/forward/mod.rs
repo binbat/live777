@@ -1,13 +1,13 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 use tracing::{error, info};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::sdp::SessionDescription;
 
@@ -16,7 +16,7 @@ use libwish::Client;
 use crate::forward::internal::PeerForwardInternal;
 use crate::forward::message::{ForwardInfo, Layer};
 use crate::result::Result;
-use crate::{constant, AppError};
+use crate::{AppError, constant};
 
 use self::media::MediaInfo;
 use self::message::{CascadeInfo, ForwardEvent};
@@ -445,15 +445,15 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
             .ok_or_else(|| anyhow::anyhow!("no mid"))?;
         let mline_index = mid.parse::<u16>()?;
         for attr in attributes {
-            if attr.is_ice_candidate() {
-                if let Some(value) = attr.value {
-                    ice_candidates.push(RTCIceCandidateInit {
-                        candidate: value,
-                        sdp_mid: Some(mid.clone()),
-                        sdp_mline_index: Some(mline_index),
-                        username_fragment: None,
-                    });
-                }
+            if attr.is_ice_candidate()
+                && let Some(value) = attr.value
+            {
+                ice_candidates.push(RTCIceCandidateInit {
+                    candidate: value,
+                    sdp_mid: Some(mid.clone()),
+                    sdp_mline_index: Some(mline_index),
+                    username_fragment: None,
+                });
             }
         }
     }

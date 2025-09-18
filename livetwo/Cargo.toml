@@ -4,7 +4,7 @@ description = "WHIP/WHEP convert RTP/RTSP tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-repository.workspace = true
+authors.workspace = true
 
 [lib]
 crate-type = ["lib"]
@@ -16,15 +16,15 @@ libwish = { path = "../libs/libwish" }
 signal = { path = "../libs/signal" }
 
 anyhow = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 webrtc = { workspace = true }
+sdp = { workspace = true }
+url = { workspace = true }
 
 bytes = "1.6.0"
 scopeguard = "1.2.0"
 md-5 = "0.10"
-url = "2.5.2"
 portpicker = "0.1.1"
 rtsp-types = "0.1.2"
 sdp-types = "0.1"
-sdp = "0.8.0"

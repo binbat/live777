@@ -59,5 +59,10 @@ export const zh: LocaleConfig = {
                 ]
             },
         },
+
+        editLink: {
+            pattern: 'https://github.com/binbat/live777/edit/main/docs/:path',
+            text: '在 GitHub 上编辑此页面'
+        },
     }
 };

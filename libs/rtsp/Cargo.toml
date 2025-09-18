@@ -1,7 +1,9 @@
 [package]
 name = "rtsp"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [lib]
 crate-type = ["lib"]
@@ -11,9 +13,11 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+webrtc = { workspace = true }
+sdp = { workspace = true }
+
+cli = { path = "../cli" }
+
 rtsp-types = "0.1.1"
-sdp = "0.8"
 sdp-types = "0.1.6"
 portpicker = "0.1.1"
-cli = { path = "../cli" }
-webrtc = { workspace = true }

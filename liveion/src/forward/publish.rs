@@ -1,6 +1,6 @@
 use std::sync::{Arc, Weak};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
 use tokio::sync::broadcast;
 use tracing::debug;

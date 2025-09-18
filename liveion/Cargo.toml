@@ -4,7 +4,7 @@ description = "A very simple, high performance, edge WebRTC SFU"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-repository.workspace = true
+authors.workspace = true
 
 [lib]
 crate-type = ["lib"]
@@ -13,6 +13,7 @@ crate-type = ["lib"]
 api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
 http-log = { path = "../libs/http-log" }
+iceserver = { path = "../libs/iceserver" }
 libwish = { path = "../libs/libwish" }
 storage = { path = "../libs/storage", optional = true }
 
@@ -22,12 +23,15 @@ axum = { workspace = true, features = ["multipart", "tracing"] }
 axum-extra = { workspace = true, features = ["query"] }
 tower-http = { workspace = true, features = ["trace", "cors"] }
 rust-embed = { workspace = true, features = ["axum-ex"], optional = true }
+mime_guess = { workspace = true, optional = true }
 anyhow = { workspace = true, features = ["backtrace"] }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
 http-body = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
-tokio = { workspace = true, features = ["full"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
 tokio-stream = "0.1.15"
 async-stream = "0.3.5"
 tracing = { workspace = true }
@@ -36,17 +40,9 @@ uuid = { workspace = true }
 
 async-trait = "0.1"
 chrono = "0.4"
-hyper = "1.2.0"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
-mime_guess = "2.0.4"
 prometheus = "0.14"
-serde_json = "1.0.114"
-reqwest = { version = "0.12", features = [
-    "rustls-tls",
-    "json",
-], default-features = false }
-
 once_cell = "1.19"
 bytes = { version = "1.6.0", optional = true }
 byteorder = { version = "1.5", optional = true }
@@ -58,7 +54,7 @@ glob = "0.3"
 url = { version = "2.5", optional = true }
 
 [features]
-webui = ["dep:rust-embed"]
+webui = ["dep:rust-embed", "dep:mime_guess"]
 net4mqtt = ["dep:net4mqtt"]
 recorder = [
     "dep:storage",

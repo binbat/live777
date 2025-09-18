@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Error, Result};
-use cli::{codec_from_str, Codec};
+use anyhow::{Error, Result, anyhow};
+use cli::{Codec, codec_from_str};
 use portpicker::pick_unused_port;
 use rtsp_types::ParseError;
-use rtsp_types::{headers, headers::transport, Message, Method, Request, Response, StatusCode};
-use sdp::{description::common::Attribute, SessionDescription};
+use rtsp_types::{Message, Method, Request, Response, StatusCode, headers, headers::transport};
+use sdp::{SessionDescription, description::common::Attribute};
 use sdp_types::Session;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use tokio::io::BufReader;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 
 use tracing::{debug, error, warn};
@@ -181,7 +181,10 @@ impl Handler {
                             });
 
                         if media.media == "audio" && media_control.as_deref() == url_id.as_deref() {
-                            debug!("Setting up audio stream with TCP transport, interleaved channels: {:?}", interleaved);
+                            debug!(
+                                "Setting up audio stream with TCP transport, interleaved channels: {:?}",
+                                interleaved
+                            );
 
                             self.media_info.audio_transport = Some(TransportInfo::Tcp {
                                 rtp_channel: interleaved.0,
@@ -209,7 +212,10 @@ impl Handler {
                         } else if media.media == "video"
                             && media_control.as_deref() == url_id.as_deref()
                         {
-                            debug!("Setting up video stream with TCP transport, interleaved channels: {:?}", interleaved);
+                            debug!(
+                                "Setting up video stream with TCP transport, interleaved channels: {:?}",
+                                interleaved
+                            );
 
                             self.media_info.video_transport = Some(TransportInfo::Tcp {
                                 rtp_channel: interleaved.0,

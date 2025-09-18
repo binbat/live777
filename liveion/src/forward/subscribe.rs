@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, info};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 use crate::error::AppError;
 use crate::forward::message::SessionInfo;
@@ -299,12 +299,12 @@ impl SubscribeRTCPeerConnection {
                         if let Some(msg) = RtcpMessage::from_rtcp_packet(packet) {
                             let publish_tracks = publish_tracks.read().await;
                             for publish_track in publish_tracks.iter() {
-                                if publish_track.kind == kind && &publish_track.rid == publish_rid {
-                                    if let Err(_err) =
+                                if publish_track.kind == kind
+                                    && &publish_track.rid == publish_rid
+                                    && let Err(_err) =
                                         publish_rtcp_sender.send((msg, publish_track.track.ssrc()))
-                                    {
-                                        return;
-                                    }
+                                {
+                                    return;
                                 }
                             }
                         }
