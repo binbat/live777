@@ -12,7 +12,6 @@ liveman.toml
 
 liveman.db
 records
-storage
 
 # Vitepress
 docs/.vitepress/cache

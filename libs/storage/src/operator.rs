@@ -1,7 +1,7 @@
 use crate::config::StorageConfig;
 use anyhow::Result;
-use opendal::services;
 use opendal::Operator;
+use opendal::services;
 
 /// Create storage operator based on storage configuration
 pub fn create_operator(config: &StorageConfig) -> Result<Operator> {

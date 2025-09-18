@@ -8,7 +8,7 @@ use tracing::{error, info};
 use url::Url;
 
 use crate::service::recordings_index::RecordingsIndexService;
-use crate::{error::AppError, result::Result, route::utils::session_delete, AppState};
+use crate::{AppState, error::AppError, result::Result, route::utils::session_delete};
 
 pub async fn cascade_check(state: AppState) {
     loop {
@@ -238,10 +238,10 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
 
 fn should_record(patterns: &[String], stream: &str) -> bool {
     for p in patterns {
-        if let Ok(pat) = Pattern::new(p) {
-            if pat.matches(stream) {
-                return true;
-            }
+        if let Ok(pat) = Pattern::new(p)
+            && pat.matches(stream)
+        {
+            return true;
         }
     }
     false
@@ -356,35 +356,34 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
                 .send()
                 .await;
 
-            if let Ok(r) = resp {
-                if r.status().is_success() {
-                    let mpd_path = match r.json::<api::recorder::StartRecordResponse>().await {
-                        Ok(v) => v.mpd_path,
-                        Err(_) => {
-                            if let Some(prefix) = &body.base_dir {
-                                format!("{prefix}/manifest.mpd")
-                            } else {
-                                format!("{stream_id}/{date_path}/manifest.mpd")
-                            }
-                        }
-                    };
-
-                    // Upsert index
-                    if let [y, m, d] = date_path.split('/').collect::<Vec<_>>()[..] {
-                        if let (Ok(yy), Ok(mm), Ok(dd)) =
-                            (y.parse::<i32>(), m.parse::<i32>(), d.parse::<i32>())
-                        {
-                            let _ = RecordingsIndexService::upsert(
-                                state.database.get_connection(),
-                                stream_id,
-                                yy,
-                                mm,
-                                dd,
-                                &mpd_path,
-                            )
-                            .await;
+            if let Ok(r) = resp
+                && r.status().is_success()
+            {
+                let mpd_path = match r.json::<api::recorder::StartRecordResponse>().await {
+                    Ok(v) => v.mpd_path,
+                    Err(_) => {
+                        if let Some(prefix) = &body.base_dir {
+                            format!("{prefix}/manifest.mpd")
+                        } else {
+                            format!("{stream_id}/{date_path}/manifest.mpd")
                         }
                     }
+                };
+
+                // Upsert index
+                if let [y, m, d] = date_path.split('/').collect::<Vec<_>>()[..]
+                    && let (Ok(yy), Ok(mm), Ok(dd)) =
+                        (y.parse::<i32>(), m.parse::<i32>(), d.parse::<i32>())
+                {
+                    let _ = RecordingsIndexService::upsert(
+                        state.database.get_connection(),
+                        stream_id,
+                        yy,
+                        mm,
+                        dd,
+                        &mpd_path,
+                    )
+                    .await;
                 }
             }
         }

@@ -1,4 +1,4 @@
-use crate::{create_operator, StorageConfig};
+use crate::{StorageConfig, create_operator};
 
 #[tokio::test]
 async fn test_fs_storage_config() {

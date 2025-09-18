@@ -1,14 +1,14 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
-    Router,
 };
 use axum_extra::extract::Query;
 use http::header;
 
-use crate::{result::Result, AppState};
+use crate::{AppState, result::Result};
 
 pub fn route() -> Router<AppState> {
     Router::new()
@@ -208,18 +208,18 @@ async fn start_record(
     };
 
     // Parse date from date_path and upsert index
-    if let [y, m, d] = date_path.split('/').collect::<Vec<_>>()[..] {
-        if let (Ok(yy), Ok(mm), Ok(dd)) = (y.parse::<i32>(), m.parse::<i32>(), d.parse::<i32>()) {
-            let _ = crate::service::recordings_index::RecordingsIndexService::upsert(
-                state.database.get_connection(),
-                &stream,
-                yy,
-                mm,
-                dd,
-                &mpd_path,
-            )
-            .await;
-        }
+    if let [y, m, d] = date_path.split('/').collect::<Vec<_>>()[..]
+        && let (Ok(yy), Ok(mm), Ok(dd)) = (y.parse::<i32>(), m.parse::<i32>(), d.parse::<i32>())
+    {
+        let _ = crate::service::recordings_index::RecordingsIndexService::upsert(
+            state.database.get_connection(),
+            &stream,
+            yy,
+            mm,
+            dd,
+            &mpd_path,
+        )
+        .await;
     }
 
     Ok(Json(StartRecordResponse {
@@ -250,16 +250,13 @@ async fn get_record_status(
                     .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                     .send()
                     .await
+                    && let Ok(v) = resp.json::<serde_json::Value>().await
+                    && v.get("recording")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false)
                 {
-                    if let Ok(v) = resp.json::<serde_json::Value>().await {
-                        if v.get("recording")
-                            .and_then(|b| b.as_bool())
-                            .unwrap_or(false)
-                        {
-                            recording = true;
-                            break;
-                        }
-                    }
+                    recording = true;
+                    break;
                 }
             }
         }
@@ -303,10 +300,9 @@ async fn stop_record(
                         .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                         .send()
                         .await
+                        && resp.status().is_success()
                     {
-                        if resp.status().is_success() {
-                            any_stopped = true;
-                        }
+                        any_stopped = true;
                     }
                 }
             }

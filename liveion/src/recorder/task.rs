@@ -5,7 +5,7 @@ use crate::recorder::codec::h264::H264RtpParser;
 use crate::recorder::codec::opus::OpusRtpParser;
 use crate::recorder::segmenter::Segmenter;
 use crate::stream::manager::Manager;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use tokio::task::JoinHandle;
@@ -160,17 +160,16 @@ impl RecordingTask {
                 tokio::select! {
                     // Periodic keyframe (PLI) check.
                     _ = keyframe_check_interval.tick() => {
-                        if segmenter.should_request_keyframe() {
-                            if let Some(video_track) = forward_clone.first_video_track().await {
-                                let ssrc = video_track.ssrc();
-                                if let Err(e) = forward_clone.send_rtcp_to_publish(
-                                    crate::forward::rtcp::RtcpMessage::PictureLossIndication,
-                                    ssrc,
-                                ).await {
-                                    tracing::warn!("[recorder] {} failed to send PLI: {:?}", stream_name_cloned, e);
-                                } else {
-                                    tracing::debug!("[recorder] {} sent PLI request for keyframe", stream_name_cloned);
-                                }
+                        if segmenter.should_request_keyframe()
+                            && let Some(video_track) = forward_clone.first_video_track().await {
+                            let ssrc = video_track.ssrc();
+                            if let Err(e) = forward_clone.send_rtcp_to_publish(
+                                crate::forward::rtcp::RtcpMessage::PictureLossIndication,
+                                ssrc,
+                            ).await {
+                                tracing::warn!("[recorder] {} failed to send PLI: {:?}", stream_name_cloned, e);
+                            } else {
+                                tracing::debug!("[recorder] {} sent PLI request for keyframe", stream_name_cloned);
                             }
                         }
                     },

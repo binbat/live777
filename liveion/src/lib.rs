@@ -7,9 +7,9 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{Level, error, info_span};
 
 use crate::config::Config;
-use crate::route::{admin, session, whep, whip, AppState};
+use crate::route::{AppState, admin, session, whep, whip};
 use api::path;
-use auth::{access::access_middleware, validate_middleware, AuthState};
+use auth::{AuthState, access::access_middleware, validate_middleware};
 use error::AppError;
 
 use stream::manager::Manager;

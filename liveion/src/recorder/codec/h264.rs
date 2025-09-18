@@ -1,6 +1,6 @@
 use super::{CodecAdapter, TrackKind};
 use crate::recorder::fmp4::nalu_to_avcc;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use bytes::BytesMut;
 use webrtc::rtp::packet::Packet;
@@ -56,16 +56,15 @@ impl H264Adapter {
     fn parse_dimensions(&mut self, sps_bytes: &[u8]) {
         use h264_reader::{
             nal::sps::SeqParameterSet,
-            rbsp::{decode_nal, BitReader},
+            rbsp::{BitReader, decode_nal},
         };
 
-        if let Ok(rbsp) = decode_nal(sps_bytes) {
-            if let Ok(sps) = SeqParameterSet::from_bits(BitReader::new(&rbsp[..])) {
-                if let Ok((w, h)) = sps.pixel_dimensions() {
-                    self.width = w;
-                    self.height = h;
-                }
-            }
+        if let Ok(rbsp) = decode_nal(sps_bytes)
+            && let Ok(sps) = SeqParameterSet::from_bits(BitReader::new(&rbsp[..]))
+            && let Ok((w, h)) = sps.pixel_dimensions()
+        {
+            self.width = w;
+            self.height = h;
         }
     }
 }

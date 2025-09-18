@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use crate::recorder::codec::h264::H264Adapter;
 use crate::recorder::codec::CodecAdapter;
+use crate::recorder::codec::h264::H264Adapter;
 use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
 use anyhow::Result;
 use bytes::Bytes;
@@ -193,20 +193,20 @@ impl Segmenter {
 
         // Now that we (likely) have frame rate, generate init segment if not yet written
         if self.video_track_id.is_none() && config_ready {
-            if let Some(adapter) = self.video_adapter.as_ref() {
-                if let Some(cfg) = adapter.codec_config() {
-                    if !cfg.is_empty() {
-                        // self.sps = Some(cfg[0].clone());
-                    }
-                    if cfg.len() >= 2 {
-                        // self.pps = Some(cfg[1].clone());
-                    }
-                    // Update codec string for manifest
-                    if self.video_codec.is_empty() {
-                        if let Some(cs) = adapter.codec_string() {
-                            self.video_codec = cs;
-                        }
-                    }
+            if let Some(adapter) = self.video_adapter.as_ref()
+                && let Some(cfg) = adapter.codec_config()
+            {
+                if !cfg.is_empty() {
+                    // self.sps = Some(cfg[0].clone());
+                }
+                if cfg.len() >= 2 {
+                    // self.pps = Some(cfg[1].clone());
+                }
+                // Update codec string for manifest
+                if self.video_codec.is_empty()
+                    && let Some(cs) = adapter.codec_string()
+                {
+                    self.video_codec = cs;
                 }
             }
 
@@ -258,12 +258,11 @@ impl Segmenter {
         }
 
         // Parse profile/level and construct codec string avc1.PPCCLL
-        if self.video_codec.is_empty() {
-            if let Some(adapter) = self.video_adapter.as_ref() {
-                if let Some(cs) = adapter.codec_string() {
-                    self.video_codec = cs;
-                }
-            }
+        if self.video_codec.is_empty()
+            && let Some(adapter) = self.video_adapter.as_ref()
+            && let Some(cs) = adapter.codec_string()
+        {
+            self.video_codec = cs;
         }
 
         // Save to member fields for generating the MPD

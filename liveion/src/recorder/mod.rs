@@ -61,12 +61,11 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
                 match stream_event.r#type {
                     StreamEventType::Up => {
                         let stream_name = stream_event.stream.stream;
-                        if should_record(&cfg.auto_streams, &stream_name) {
-                            if let Err(e) =
+                        if should_record(&cfg.auto_streams, &stream_name)
+                            && let Err(e) =
                                 start(manager_clone.clone(), stream_name.clone(), None).await
-                            {
-                                tracing::error!("[recorder] start failed: {}", e);
-                            }
+                        {
+                            tracing::error!("[recorder] start failed: {}", e);
                         }
                     }
                     StreamEventType::Down => {
@@ -112,10 +111,10 @@ pub async fn is_recording(stream: &str) -> bool {
 
 fn should_record(patterns: &[String], stream: &str) -> bool {
     for p in patterns {
-        if let Ok(pat) = Pattern::new(p) {
-            if pat.matches(stream) {
-                return true;
-            }
+        if let Ok(pat) = Pattern::new(p)
+            && pat.matches(stream)
+        {
+            return true;
         }
     }
     false
