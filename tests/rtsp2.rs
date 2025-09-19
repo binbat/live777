@@ -262,7 +262,8 @@ async fn test_livetwo_cycle_rtsp_vp9() {
 
     let width = 640;
     let height = 480;
-    let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p -b:v 1000k -deadline realtime";
+    let codec =
+        "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p -b:v 1000k -deadline realtime";
     let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
 
     helper_livetwo_cycle_rtsp(
@@ -294,7 +295,8 @@ async fn test_livetwo_cycle_rtsp_vp9_tcp() {
 
     let width = 640;
     let height = 480;
-    let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p -b:v 1000k -deadline realtime";
+    let codec =
+        "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p -b:v 1000k -deadline realtime";
     let prefix = format!(
         "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec} -rtsp_transport tcp"
     );
