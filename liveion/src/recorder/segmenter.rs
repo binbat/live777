@@ -257,11 +257,12 @@ impl Segmenter {
             if !is_keyframe {
                 return Ok(());
             }
-            if let Some((w, h)) = parse_vp8_keyframe_dimensions(frame.as_ref()) {
-                if w > 0 && h > 0 {
-                    self.video_width = w;
-                    self.video_height = h;
-                }
+            if let Some((w, h)) = parse_vp8_keyframe_dimensions(frame.as_ref())
+                && w > 0
+                && h > 0
+            {
+                self.video_width = w;
+                self.video_height = h;
             }
             // if dimensions still unknown, keep waiting (requesting PLI) instead of defaulting to 1280x720
             if self.video_width == 0 || self.video_height == 0 {
@@ -325,11 +326,12 @@ impl Segmenter {
             if !is_keyframe {
                 return Ok(());
             }
-            if let Some((w, h)) = parse_vp9_keyframe_dimensions(frame.as_ref()) {
-                if w > 0 && h > 0 {
-                    self.video_width = w;
-                    self.video_height = h;
-                }
+            if let Some((w, h)) = parse_vp9_keyframe_dimensions(frame.as_ref())
+                && w > 0
+                && h > 0
+            {
+                self.video_width = w;
+                self.video_height = h;
             }
             if self.video_width == 0 || self.video_height == 0 {
                 return Ok(());
@@ -379,14 +381,14 @@ impl Segmenter {
     async fn init_writer(&mut self) -> Result<()> {
         // Get video width/height from adapter (only meaningful for H264 path)
         let (mut width, mut height) = (self.video_width, self.video_height);
-        if width == 0 || height == 0 {
-            if let Some(adapter) = self.video_adapter.as_ref() {
-                let w = adapter.width();
-                let h = adapter.height();
-                if w != 0 && h != 0 {
-                    width = w;
-                    height = h;
-                }
+        if (width == 0 || height == 0)
+            && let Some(adapter) = self.video_adapter.as_ref()
+        {
+            let w = adapter.width();
+            let h = adapter.height();
+            if w != 0 && h != 0 {
+                width = w;
+                height = h;
             }
         }
 

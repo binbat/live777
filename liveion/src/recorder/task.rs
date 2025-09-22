@@ -209,8 +209,9 @@ impl RecordingTask {
                                 }
                                 frame_cnt_video += 1;
                             }
-                        } else if is_vp9 {
-                            if let Ok(Some(frame)) = parser_vp9.push_packet(&packet) {
+                        } else if is_vp9
+                            && let Ok(Some(frame)) = parser_vp9.push_packet(&packet)
+                        {
                                 let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
                                 prev_ts_video = Some(pkt_ts);
                                 // VP9 frame_type bit (LSB order): bit 5 of first byte: 0=key,1=inter
@@ -219,7 +220,6 @@ impl RecordingTask {
                                     tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
                                 }
                                 frame_cnt_video += 1;
-                            }
                         }
                     },
 
