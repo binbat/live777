@@ -5,6 +5,8 @@ import { getSegmentUrl } from '@/liveman/api';
 
 type BitrateInfo = { index: number; bitrate: number; label: string };
 
+type WindowWithMediaSource = Window & { MediaSource?: typeof MediaSource };
+
 function formatTime(sec: number) {
     if (!isFinite(sec)) return '00:00:00';
     const s = Math.max(0, Math.floor(sec));
@@ -121,7 +123,8 @@ export function DashPlayer() {
                 }
                 if (mime && codecs) {
                     const type = `${mime}; codecs="${codecs}"`;
-                    const ok = (window as any).MediaSource?.isTypeSupported?.(type);
+                    const ms = (window as WindowWithMediaSource).MediaSource;
+                    const ok = !!ms?.isTypeSupported?.(type);
                     if (!ok) {
                         setUnsupportedMsg(`Browser does not support ${type}. Video may not play (audio only).`);
                     } else {
