@@ -199,6 +199,13 @@ impl H264RtpParser {
 
     /// Push a RTP packet. If it returns `Some((frame, is_idr))` it means a frame has been assembled.
     pub fn push_packet(&mut self, pkt: &Packet) -> Result<Option<(BytesMut, bool)>> {
+        // Fast-path IDR detection for single-NALU packets (payload header available)
+        if let Some(&b0) = pkt.payload.first() {
+            if (b0 & 0x1F) == 5 {
+                self.idr = true;
+            }
+        }
+
         // Use webrtc-rs depacketizer to convert RTP payload into a complete NALU
         let nalu = self
             .depacketizer
@@ -209,7 +216,7 @@ impl H264RtpParser {
         self.push_annexb_prefix();
         self.buffer.extend_from_slice(&nalu);
 
-        // Detect IDR (NALU type 5)
+        // Detect IDR (NALU type 5) also from depacketized NALU
         if !nalu.is_empty() && (nalu[0] & 0x1F) == 5 {
             self.idr = true;
         }

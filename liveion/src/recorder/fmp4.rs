@@ -185,7 +185,14 @@ impl Fmp4Writer {
     fn build_stsd(&self) -> Vec<u8> {
         // Only one entry – sample entry depending on track kind
         let sample_entry = if self.kind == TrackKind::Video {
-            self.build_avc1_sample_entry()
+            let cs = self.codec_string.to_ascii_lowercase();
+            if cs.starts_with("vp09") {
+                self.build_vp09_sample_entry()
+            } else if cs.starts_with("vp08") {
+                self.build_vp08_sample_entry()
+            } else {
+                self.build_avc1_sample_entry()
+            }
         } else {
             self.build_opus_sample_entry()
         };
@@ -231,6 +238,73 @@ impl Fmp4Writer {
         payload.extend_from_slice(&avcc);
 
         make_box(b"avc1", &payload)
+    }
+
+    fn build_vpcc(&self, _is_vp9: bool) -> Vec<u8> {
+        // Minimal VP Codec Configuration box (vpcC)
+        // configVersion(1)=1, profile(1)=0, level(1)=10, bitDepth(4)=8, chromaSubsampling(2)=1 (4:2:0), videoFullRangeFlag(1)=0
+        let mut payload = Vec::new();
+        payload.push(1u8); // configVersion
+        payload.push(0u8); // profile
+        payload.push(10u8); // level
+        // pack: reserved(1)=0, bitDepth(4), chromaSubsampling(2), videoFullRangeFlag(1)
+        let bit_depth = 8u8; // 8-bit
+        let chroma = 1u8; // 4:2:0
+        let full_range = 0u8;
+        let packed = ((bit_depth & 0x0F) << 3) | ((chroma & 0x03) << 1) | (full_range & 0x01);
+        payload.push(packed);
+        // colourPrimaries, transferCharacteristics, matrixCoefficients
+        payload.push(2u8); // BT.709 nominal
+        payload.push(2u8);
+        payload.push(2u8);
+        // codecIntializationData (length=0)
+        payload.push(0u8); // codecIntializationDataSize (0)
+        // For VP8/VP9 we use the same box type vpcC
+        make_box(b"vpcC", &payload)
+    }
+
+    fn build_vpx_visual_sample_entry(&self, fourcc: &[u8; 4]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0u8; 6]); // reserved
+        payload.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+
+        // pre_defined & reserved (16+32*3 bits)
+        payload.extend_from_slice(&0u16.to_be_bytes()); // pre_defined
+        payload.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        payload.extend_from_slice(&0u32.to_be_bytes()); // pre_defined[0]
+        payload.extend_from_slice(&0u32.to_be_bytes()); // pre_defined[1]
+        payload.extend_from_slice(&0u32.to_be_bytes()); // pre_defined[2]
+
+        // width/height
+        payload.extend_from_slice(&(self.width as u16).to_be_bytes());
+        payload.extend_from_slice(&(self.height as u16).to_be_bytes());
+
+        // horiz & vert resolution (72 dpi)
+        payload.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+        payload.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+
+        payload.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        payload.extend_from_slice(&1u16.to_be_bytes()); // frame_count
+
+        // compressor name (32 bytes)
+        payload.extend_from_slice(&[0u8; 32]);
+
+        payload.extend_from_slice(&0x0018u16.to_be_bytes()); // depth
+        payload.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined
+
+        // vpcC box
+        let vpcc = self.build_vpcc(fourcc == b"vp09");
+        payload.extend_from_slice(&vpcc);
+
+        make_box(fourcc, &payload)
+    }
+
+    fn build_vp09_sample_entry(&self) -> Vec<u8> {
+        self.build_vpx_visual_sample_entry(b"vp09")
+    }
+
+    fn build_vp08_sample_entry(&self) -> Vec<u8> {
+        self.build_vpx_visual_sample_entry(b"vp08")
     }
 
     fn build_opus_sample_entry(&self) -> Vec<u8> {

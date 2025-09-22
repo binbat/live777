@@ -1,8 +1,12 @@
 pub mod h264;
 pub mod opus;
+pub mod vp8;
+pub mod vp9;
 
 pub use h264::{H264Adapter, H264RtpParser};
 pub use opus::OpusRtpParser;
+pub use vp8::Vp8RtpParser;
+pub use vp9::Vp9RtpParser;
 
 use anyhow::Result;
 use bytes::Bytes;

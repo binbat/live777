@@ -3,13 +3,15 @@ use std::time::{Duration, Instant};
 
 use crate::recorder::codec::h264::H264RtpParser;
 use crate::recorder::codec::opus::OpusRtpParser;
+use crate::recorder::codec::vp8::Vp8RtpParser;
+use crate::recorder::codec::vp9::Vp9RtpParser;
 use crate::recorder::segmenter::Segmenter;
 use crate::stream::manager::Manager;
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use tokio::task::JoinHandle;
-use webrtc::api::media_engine::MIME_TYPE_H264;
+use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_VP8, MIME_TYPE_VP9};
 
 #[derive(Debug)]
 pub struct RecordingTask {
@@ -141,7 +143,12 @@ impl RecordingTask {
         let forward_clone = forward.clone();
         let handle = tokio::spawn(async move {
             let is_h264 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264);
-            let mut parser_video = H264RtpParser::new();
+            let is_vp8 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP8);
+            let is_vp9 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9);
+
+            let mut parser_h264 = H264RtpParser::new();
+            let mut parser_vp8 = Vp8RtpParser::new();
+            let mut parser_vp9 = Vp9RtpParser::new();
             let mut prev_ts_video: Option<u32> = None;
 
             let mut parser_audio = OpusRtpParser::new();
@@ -181,23 +188,37 @@ impl RecordingTask {
                             Err(_) => break,
                         };
 
-                        if !is_h264 {
-                            continue;
-                        }
-
                         let pkt_ts = packet.header.timestamp;
-                        if let Ok(Some((frame, is_idr))) = parser_video.push_packet(&packet) {
-                            let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
-                                pkt_ts.wrapping_sub(prev)
-                            } else {
-                                3_000 // assume 30fps for first frame
-                            };
 
-                            prev_ts_video = Some(pkt_ts);
-                            if let Err(e) = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await {
-                                tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                        if is_h264 {
+                            if let Ok(Some((frame, is_idr))) = parser_h264.push_packet(&packet) {
+                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                prev_ts_video = Some(pkt_ts);
+                                if let Err(e) = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await {
+                                    tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                                }
+                                frame_cnt_video += 1;
                             }
-                            frame_cnt_video += 1;
+                        } else if is_vp8 {
+                            if let Ok(Some(frame)) = parser_vp8.push_packet(&packet) {
+                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                prev_ts_video = Some(pkt_ts);
+                                let is_key = if !frame.is_empty() { (frame[0] & 0x01) == 0 } else { false };
+                                if let Err(e) = segmenter.push_vp8(Bytes::from(frame), is_key, duration_ticks).await {
+                                    tracing::warn!("[recorder] {} failed to process VP8 frame: {}", stream_name_cloned, e);
+                                }
+                                frame_cnt_video += 1;
+                            }
+                        } else if is_vp9 {
+                            if let Ok(Some(frame)) = parser_vp9.push_packet(&packet) {
+                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                prev_ts_video = Some(pkt_ts);
+                                let is_key = if !frame.is_empty() { (frame[0] & 0x01) == 0 } else { false };
+                                if let Err(e) = segmenter.push_vp9(Bytes::from(frame), is_key, duration_ticks).await {
+                                    tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
+                                }
+                                frame_cnt_video += 1;
+                            }
                         }
                     },
 

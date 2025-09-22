@@ -75,7 +75,7 @@ pub struct Segmenter {
     last_keyframe_time: Option<Instant>,
     keyframe_request_timeout: Duration,
 
-    // video adapter for H264
+    // video adapter for H264 (unused for VP8/VP9)
     video_adapter: Option<H264Adapter>,
 
     /// List of completed segments with their actual durations
@@ -241,6 +241,96 @@ impl Segmenter {
         Ok(())
     }
 
+    /// Feed one VP8 frame (already reassembled by RTP parser)
+    pub async fn push_vp8(
+        &mut self,
+        frame: Bytes,
+        is_keyframe: bool,
+        duration_ticks: u32,
+    ) -> Result<()> {
+        // ensure codec string, init writer lazily
+        if self.video_track_id.is_none() {
+            if self.video_codec.is_empty() {
+                self.video_codec = "vp08.00.10.08".to_string();
+            }
+            self.init_writer().await?;
+        }
+
+        let dur = if duration_ticks == 0 {
+            3_000
+        } else {
+            duration_ticks
+        };
+
+        if is_keyframe && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
+            self.roll_segment().await?;
+        }
+
+        let sample = Mp4Sample {
+            start_time: self.current_pts,
+            duration: dur,
+            is_sync: is_keyframe,
+            bytes: frame,
+        };
+        self.samples.push(sample);
+        self.current_pts += dur as u64;
+        self.total_bytes += self
+            .samples
+            .last()
+            .map(|s| s.bytes.len() as u64)
+            .unwrap_or(0);
+        self.total_ticks += dur as u64;
+
+        // update fps heuristic
+        let fps_cur = self.timescale / dur;
+        if self.frame_rate == 0 || fps_cur > self.frame_rate {
+            self.frame_rate = fps_cur;
+        }
+        Ok(())
+    }
+
+    /// Feed one VP9 frame (already reassembled by RTP parser)
+    pub async fn push_vp9(
+        &mut self,
+        frame: Bytes,
+        is_keyframe: bool,
+        duration_ticks: u32,
+    ) -> Result<()> {
+        if self.video_track_id.is_none() {
+            if self.video_codec.is_empty() {
+                self.video_codec = "vp09.00.10.08".to_string();
+            }
+            self.init_writer().await?;
+        }
+
+        let dur = if duration_ticks == 0 {
+            3_000
+        } else {
+            duration_ticks
+        };
+
+        if is_keyframe && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
+            self.roll_segment().await?;
+        }
+
+        let size = frame.len();
+        let sample = Mp4Sample {
+            start_time: self.current_pts,
+            duration: dur,
+            is_sync: is_keyframe,
+            bytes: frame,
+        };
+        self.samples.push(sample);
+        self.current_pts += dur as u64;
+        self.total_bytes += size as u64;
+        self.total_ticks += dur as u64;
+        let fps_cur = self.timescale / dur;
+        if self.frame_rate == 0 || fps_cur > self.frame_rate {
+            self.frame_rate = fps_cur;
+        }
+        Ok(())
+    }
+
     /// Check if we need to request a keyframe due to timeout
     pub fn should_request_keyframe(&self) -> bool {
         match self.last_keyframe_time {
@@ -250,14 +340,20 @@ impl Segmenter {
     }
 
     async fn init_writer(&mut self) -> Result<()> {
-        // Get video width/height from adapter
-        let (mut width, mut height) = (0u32, 0u32);
-        if let Some(adapter) = self.video_adapter.as_ref() {
-            width = adapter.width();
-            height = adapter.height();
+        // Get video width/height from adapter (only meaningful for H264 path)
+        let (mut width, mut height) = (self.video_width, self.video_height);
+        if width == 0 || height == 0 {
+            if let Some(adapter) = self.video_adapter.as_ref() {
+                let w = adapter.width();
+                let h = adapter.height();
+                if w != 0 && h != 0 {
+                    width = w;
+                    height = h;
+                }
+            }
         }
 
-        // Parse profile/level and construct codec string avc1.PPCCLL
+        // Derive codec string from adapter if not set (H264)
         if self.video_codec.is_empty()
             && let Some(adapter) = self.video_adapter.as_ref()
             && let Some(cs) = adapter.codec_string()
@@ -266,14 +362,19 @@ impl Segmenter {
         }
 
         // Save to member fields for generating the MPD
-        self.video_width = width;
-        self.video_height = height;
+        self.video_width = if width == 0 { 1280 } else { width };
+        self.video_height = if height == 0 { 720 } else { height };
 
         // Build init segment via our new fMP4 writer (track_id fixed to 1)
         let track_id = 1u32;
-        let codec_config = if let Some(adapter) = self.video_adapter.as_ref() {
-            adapter.codec_config().unwrap_or_default()
+        let codec_config = if self.video_codec.to_ascii_lowercase().starts_with("avc1") {
+            if let Some(adapter) = self.video_adapter.as_ref() {
+                adapter.codec_config().unwrap_or_default()
+            } else {
+                vec![]
+            }
         } else {
+            // VP8/VP9 do not require codec private data here; vpcC in sample entry is enough
             vec![]
         };
 

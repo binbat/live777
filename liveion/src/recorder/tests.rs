@@ -2,11 +2,11 @@
 mod tests {
     use super::super::*;
     use crate::recorder::segmenter::Segmenter;
-    use opendal::services::Fs;
-    use opendal::Operator;
-    use tempfile::TempDir;
     use bytes::Bytes;
-    use tokio::time::{sleep, Duration};
+    use opendal::Operator;
+    use opendal::services::Fs;
+    use tempfile::TempDir;
+    use tokio::time::{Duration, sleep};
 
     // Helper to build a minimal H264 frame that includes SPS, PPS and an IDR slice
     fn make_h264_idr_frame() -> Bytes {
@@ -48,8 +48,47 @@ mod tests {
         // The init segment and manifest should exist
         let init_path = format!("{}/init.m4s", prefix);
         let manifest_path = format!("{}/manifest.mpd", prefix);
-        assert!(op.is_exist(&init_path).await.unwrap(), "init.m4s not written");
-        assert!(op.is_exist(&manifest_path).await.unwrap(), "manifest.mpd not written");
+        assert!(
+            op.is_exist(&init_path).await.unwrap(),
+            "init.m4s not written"
+        );
+        assert!(
+            op.is_exist(&manifest_path).await.unwrap(),
+            "manifest.mpd not written"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_segmenter_accepts_vpx_and_rolls_segment() {
+        let tmp = TempDir::new().expect("Failed to create temp dir");
+        let mut builder = Fs::default();
+        builder.root(tmp.path().to_string_lossy());
+        let op = Operator::new(builder).expect("op").finish();
+        let stream_name = "s".to_string();
+        let prefix = "vpx".to_string();
+        let mut seg = Segmenter::new(op.clone(), stream_name.clone(), prefix.clone())
+            .await
+            .expect("seg");
+
+        // two VP8 frames, the second is keyframe to roll
+        seg.push_vp8(Bytes::from_static(&[0x00, 1, 2, 3]), true, 3_000)
+            .await
+            .expect("vp8");
+        seg.push_vp8(Bytes::from_static(&[0x00, 4, 5, 6]), true, 90_000 * 10)
+            .await
+            .expect("vp8");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // files should be present
+        let _ = op
+            .stat(&format!("{}/init.m4s", prefix))
+            .await
+            .expect("init");
+        let _ = op
+            .stat(&format!("{}/manifest.mpd", prefix))
+            .await
+            .expect("mpd");
     }
 
     #[test]
