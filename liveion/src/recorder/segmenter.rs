@@ -248,6 +248,26 @@ impl Segmenter {
         is_keyframe: bool,
         duration_ticks: u32,
     ) -> Result<()> {
+        // Update keyframe tracking
+        if is_keyframe {
+            self.last_keyframe_time = Some(Instant::now());
+        }
+        // For VP8, initialize only on first keyframe to capture correct dimensions
+        if self.video_track_id.is_none() {
+            if !is_keyframe {
+                return Ok(());
+            }
+            if let Some((w, h)) = parse_vp8_keyframe_dimensions(frame.as_ref()) {
+                if w > 0 && h > 0 {
+                    self.video_width = w;
+                    self.video_height = h;
+                }
+            }
+            // if dimensions still unknown, keep waiting (requesting PLI) instead of defaulting to 1280x720
+            if self.video_width == 0 || self.video_height == 0 {
+                return Ok(());
+            }
+        }
         // ensure codec string, init writer lazily
         if self.video_track_id.is_none() {
             if self.video_codec.is_empty() {
@@ -296,7 +316,24 @@ impl Segmenter {
         is_keyframe: bool,
         duration_ticks: u32,
     ) -> Result<()> {
+        // Update keyframe tracking
+        if is_keyframe {
+            self.last_keyframe_time = Some(Instant::now());
+        }
+        // Initialize only on first keyframe to capture correct dimensions
         if self.video_track_id.is_none() {
+            if !is_keyframe {
+                return Ok(());
+            }
+            if let Some((w, h)) = parse_vp9_keyframe_dimensions(frame.as_ref()) {
+                if w > 0 && h > 0 {
+                    self.video_width = w;
+                    self.video_height = h;
+                }
+            }
+            if self.video_width == 0 || self.video_height == 0 {
+                return Ok(());
+            }
             if self.video_codec.is_empty() {
                 self.video_codec = "vp09.00.10.08".to_string();
             }
@@ -381,8 +418,8 @@ impl Segmenter {
         let fmp4_writer = Fmp4Writer::new(
             self.timescale,
             track_id,
-            width,
-            height,
+            self.video_width,
+            self.video_height,
             self.video_codec.clone(),
             codec_config,
         );
@@ -716,4 +753,50 @@ impl Segmenter {
         // lose one fragment, which is acceptable for live streaming.
         Ok(())
     }
+}
+
+// Add at bottom: helper to parse VP8 keyframe dimensions
+fn parse_vp8_keyframe_dimensions(frame: &[u8]) -> Option<(u32, u32)> {
+    // VP8 keyframe starts with uncompressed data chunk header:
+    // Start code bytes 0x9D 0x01 0x2A followed by 2 bytes width, 2 bytes height (little-endian),
+    // with 14-bit values and 2-bit scaling fields (ignored here).
+    // We search within the first 64 bytes for start code to be safe against payload descriptor.
+    let search_len = frame.len().min(64);
+    let hay = &frame[..search_len];
+    for i in 0..hay.len().saturating_sub(3) {
+        if hay[i] == 0x9D && hay[i + 1] == 0x01 && hay[i + 2] == 0x2A {
+            if i + 7 < hay.len() {
+                let w_raw = u16::from_le_bytes([hay[i + 3], hay[i + 4]]);
+                let h_raw = u16::from_le_bytes([hay[i + 5], hay[i + 6]]);
+                let width = (w_raw & 0x3FFF) as u32; // lower 14 bits
+                let height = (h_raw & 0x3FFF) as u32;
+                if width > 0 && height > 0 {
+                    return Some((width, height));
+                }
+            }
+            break;
+        }
+    }
+    None
+}
+
+// Add VP9 helper below VP8 helper
+fn parse_vp9_keyframe_dimensions(frame: &[u8]) -> Option<(u32, u32)> {
+    // VP9 keyframe contains sync code 0x49 0x83 0x42, followed by
+    // little-endian width_minus_1 and height_minus_1 (16-bit each).
+    let search_len = frame.len().min(128);
+    let hay = &frame[..search_len];
+    for i in 0..hay.len().saturating_sub(7) {
+        if hay[i] == 0x49 && hay[i + 1] == 0x83 && hay[i + 2] == 0x42 {
+            let w1 = u16::from_le_bytes([hay[i + 3], hay[i + 4]]) as u32;
+            let h1 = u16::from_le_bytes([hay[i + 5], hay[i + 6]]) as u32;
+            let w = w1 + 1;
+            let h = h1 + 1;
+            if w > 0 && h > 0 && w <= 8192 && h <= 8192 {
+                return Some((w, h));
+            }
+            break;
+        }
+    }
+    None
 }

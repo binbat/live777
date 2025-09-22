@@ -213,7 +213,8 @@ impl RecordingTask {
                             if let Ok(Some(frame)) = parser_vp9.push_packet(&packet) {
                                 let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
                                 prev_ts_video = Some(pkt_ts);
-                                let is_key = if !frame.is_empty() { (frame[0] & 0x01) == 0 } else { false };
+                                // VP9 frame_type bit (LSB order): bit 5 of first byte: 0=key,1=inter
+                                let is_key = if !frame.is_empty() { ((frame[0] >> 5) & 0x01) == 0 } else { false };
                                 if let Err(e) = segmenter.push_vp9(Bytes::from(frame), is_key, duration_ticks).await {
                                     tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
                                 }

@@ -37,6 +37,7 @@ export function DashPlayer() {
 
     const [hoverPct, setHoverPct] = useState<number | null>(null);
     const [hoverTime, setHoverTime] = useState(0);
+    const [unsupportedMsg, setUnsupportedMsg] = useState<string | null>(null);
 
     useEffect(() => {
         const params = new URLSearchParams(location.search);
@@ -98,6 +99,40 @@ export function DashPlayer() {
             refPlayer.current = null;
         };
     }, [mpd, token, autoplay]);
+
+    // Detect MSE codec/container support before/while initializing
+    useEffect(() => {
+        (async () => {
+            if (!mpd) return;
+            try {
+                const url = getSegmentUrl(mpd);
+                const headers: Record<string, string> = {};
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+                const res = await fetch(url, { headers });
+                const txt = await res.text();
+                // crude extract first video Representation mimeType & codecs
+                const mimeMatch = txt.match(/mimeType\s*=\s*"(video\/(?:mp4|webm))"/i);
+                const codecsMatch = txt.match(/codecs\s*=\s*"([^"]+)"/i);
+                const mime = mimeMatch?.[1];
+                const codecs = codecsMatch?.[1];
+                if (!('MediaSource' in window)) {
+                    setUnsupportedMsg('This browser does not support MSE. DASH playback is unavailable.');
+                    return;
+                }
+                if (mime && codecs) {
+                    const type = `${mime}; codecs="${codecs}"`;
+                    const ok = (window as any).MediaSource?.isTypeSupported?.(type);
+                    if (!ok) {
+                        setUnsupportedMsg(`Browser does not support ${type}. Video may not play (audio only).`);
+                    } else {
+                        setUnsupportedMsg(null);
+                    }
+                }
+            } catch {
+                // ignore detection errors
+            }
+        })();
+    }, [mpd, token]);
 
     // Retry autoplay when tab becomes visible (some browsers pause background video to save power)
     useEffect(() => {
@@ -273,6 +308,11 @@ export function DashPlayer() {
     return (
         <div id="dash-player">
             <div className="player-shell">
+                {unsupportedMsg && (
+                    <div className="warning">
+                        {unsupportedMsg} Try H.264, or play in a browser/settings that support WebM.
+                    </div>
+                )}
                 <video
                     ref={refVideo}
                     className="player-video"

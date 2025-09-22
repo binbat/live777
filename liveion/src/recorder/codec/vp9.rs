@@ -42,11 +42,9 @@ impl CodecAdapter for Vp9Adapter {
     }
     fn convert_frame(&mut self, frame: &Bytes) -> (Vec<u8>, bool, bool) {
         let payload = frame.as_ref();
-        // Heuristic: if frame_type=0 (keyframe). In VP9, first 2 bits of first byte are frame marker '10';
-        // frame_type bit comes later; without a full parser we conservatively infer keyframe when
-        // the first byte & 0x01 == 0 (commonly true for keyframes with show_existing_frame=0).
+        // VP9 uncompressed header: frame_type bit is bit5 (0=key, 1=inter)
         let is_key = if !payload.is_empty() {
-            (payload[0] & 0x01) == 0
+            ((payload[0] >> 5) & 0x01) == 0
         } else {
             false
         };
