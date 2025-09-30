@@ -82,7 +82,7 @@ fn main() {
         if web_dir.exists() {
             println!("cargo:info=Building WebUI...");
             let output = Command::new("npm")
-                .args(&["run", "build:livecam"])
+                .args(["run", "build:livecam"])
                 .current_dir(manifest_dir.parent().unwrap())
                 .output()
                 .expect("Failed to build WebUI");
