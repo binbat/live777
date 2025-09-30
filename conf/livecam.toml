@@ -1,0 +1,31 @@
+
+[http]
+listen = "0.0.0.0:9999"
+cors = true  
+public = "http://localhost:9999" 
+
+[log]
+level = "debug"
+
+[[cameras]]
+id = "camera" 
+rtp_port = 5004 
+
+ice_servers = [
+  { urls = ["stun:stun.l.google.com:19302"] },
+]
+
+[cameras.codec]
+mime_type = "video/H264"
+clock_rate = 90000
+channels = 0
+sdp_fmtp_line = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+
+[auth]
+username = "admin"
+#password = "livecam"
+password_hash = "$argon2id$v=19$m=65536,t=3,p=4$Oy2ha+TEEqepOLmRF5zZEA$BOOqmgmGhxCfHI5YvgRCVSRxmUQ5gR/ZYCeEnAZ+SiU"
+
+[stream]
+command = "ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1 -f rtp rtp://127.0.0.1:5004?pkt_size=1200"
+rtp_port = 5004
