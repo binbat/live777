@@ -9,10 +9,21 @@ import { TokenContext } from '../context';
 interface PageHeaderProps {
     currentView?: string;
     onNavigate?: (view: string) => void;
+    enabledTools?: {
+        debugger?: boolean;
+        player?: boolean;
+        dash?: boolean;
+    };
 }
 
-export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
+export function PageHeader({ currentView, onNavigate, enabledTools }: PageHeaderProps) {
     const tokenContext = useContext(TokenContext);
+    const tools = {
+        debugger: true,
+        player: true,
+        dash: true,
+        ...enabledTools,
+    };
 
     const handleOpenDebuggerPage = () => {
         const params = new URLSearchParams();
@@ -36,6 +47,13 @@ export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
         const url = new URL('/tools/dash.html', location.origin);
         window.open(url);
     };
+
+    const toolItems: Array<{ key: string; label: string; onClick: () => void; hidden?: boolean }> = [
+        { key: 'debugger', label: 'Debugger', onClick: handleOpenDebuggerPage, hidden: !tools.debugger },
+        { key: 'player', label: 'Player', onClick: handleOpenPlayerPage, hidden: !tools.player },
+        { key: 'dash', label: 'DASH Player', onClick: handleOpenDashPage, hidden: !tools.dash },
+    ];
+    const visibleItems = toolItems.filter(item => !item.hidden);
 
     return (
         <Navbar className="bg-base-300 px-0">
@@ -70,19 +88,21 @@ export function PageHeader({ currentView, onNavigate }: PageHeaderProps) {
                     </div>
                 )}
 
-                <Dropdown end>
-                    <Button
-                        tag="label"
-                        color="ghost"
-                        tabIndex={1}
-                        endIcon={<ChevronDownIcon className="size-4 stroke-current" />}
-                    >Tools</Button>
-                    <Dropdown.Menu className="bg-base-300 mt-4 z-10">
-                        <Dropdown.Item onClick={handleOpenDebuggerPage}>Debugger</Dropdown.Item>
-                        <Dropdown.Item onClick={handleOpenPlayerPage}>Player</Dropdown.Item>
-                        <Dropdown.Item onClick={handleOpenDashPage}>DASH Player</Dropdown.Item>
-                    </Dropdown.Menu>
-                </Dropdown>
+                {visibleItems.length > 0 ? (
+                    <Dropdown end>
+                        <Button
+                            tag="label"
+                            color="ghost"
+                            tabIndex={1}
+                            endIcon={<ChevronDownIcon className="size-4 stroke-current" />}
+                        >Tools</Button>
+                        <Dropdown.Menu className="bg-base-300 mt-4 z-10">
+                            {visibleItems.map(item => (
+                                <Dropdown.Item key={item.key} onClick={item.onClick}>{item.label}</Dropdown.Item>
+                            ))}
+                        </Dropdown.Menu>
+                    </Dropdown>
+                ) : null}
             </div>
         </Navbar>
     );

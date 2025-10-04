@@ -30,6 +30,11 @@ export interface StreamTableProps {
     getWhipUrl?: (streamId: string) => string;
     showCascade?: boolean;
     renderExtraActions?: (s: Stream) => ReactNode;
+    features?: {
+        player?: boolean;
+        debugger?: boolean;
+        recording?: boolean;
+    };
 }
 
 export function StreamsTable(props: StreamTableProps) {
@@ -46,6 +51,12 @@ export function StreamsTable(props: StreamTableProps) {
     const [previewStreamId, setPreviewStreamId] = useState('');
     const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map());
     const tokenContext = useContext(TokenContext);
+    const features = {
+        player: true,
+        debugger: true,
+        recording: true,
+        ...props.features,
+    };
 
     useEffect(() => {
         streams.updateData();
@@ -138,6 +149,10 @@ export function StreamsTable(props: StreamTableProps) {
     const [recordMpd, setRecordMpd] = useState('');
 
     useEffect(() => {
+        if (!features.recording) {
+            return;
+        }
+
         // refresh recording status for visible streams
         (async () => {
             const states: Record<string, boolean> = {};
@@ -150,7 +165,7 @@ export function StreamsTable(props: StreamTableProps) {
             }
             setRecordingStates(states);
         })();
-    }, [streams.data]);
+    }, [streams.data, features.recording]);
 
     const [confirmStopOpen, setConfirmStopOpen] = useState(false);
     const [confirmStopBusy, setConfirmStopBusy] = useState(false);
@@ -256,11 +271,17 @@ export function StreamsTable(props: StreamTableProps) {
                                     ? <Button size="sm" onClick={() => handleCascadePushStream(i.id)}>Cascade Push</Button>
                                     : null
                                 }
-                                <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
-                                <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
-                                <Button size="sm" color={recordingStates[i.id] ? 'success' : 'info'} onClick={() => openRecordDialog(i.id)}>
-                                    {recordingStates[i.id] ? 'Recording' : 'Record'}
-                                </Button>
+                                {features.player ? (
+                                    <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
+                                ) : null}
+                                {features.debugger ? (
+                                    <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
+                                ) : null}
+                                {features.recording ? (
+                                    <Button size="sm" color={recordingStates[i.id] ? 'success' : 'info'} onClick={() => openRecordDialog(i.id)}>
+                                        {recordingStates[i.id] ? 'Recording' : 'Record'}
+                                    </Button>
+                                ) : null}
                                 {props.renderExtraActions?.(i)}
                                 <Button size="sm" color="error" onClick={() => handleDestroyStream(i.id)}>Destroy</Button>
                             </div>
@@ -269,7 +290,7 @@ export function StreamsTable(props: StreamTableProps) {
                 </Table.Body>
             </Table>
 
-            {recordDialogOpen && (
+            {features.recording && recordDialogOpen && (
                 <div className="modal modal-open">
                     <div className="modal-box">
                         <h3 className="font-bold text-lg">Start Recording</h3>
@@ -303,7 +324,7 @@ export function StreamsTable(props: StreamTableProps) {
                 </div>
             )}
 
-            {confirmStopOpen && (
+            {features.recording && confirmStopOpen && (
                 <div className="modal modal-open">
                     <div className="modal-box">
                         <h3 className="font-bold text-lg">Stop Recording</h3>
