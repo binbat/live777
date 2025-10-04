@@ -192,13 +192,19 @@ Response: [200]
 
 ### Recording Status (by id)
 
-`GET` `/api/streams/:streamId/record/status`
+`GET` `/api/streams/:streamId/record`
 
 Response: [200]
 
 ```json
 { "recording": true }
 ```
+
+### Stop Recording
+
+`DELETE` `/api/streams/:streamId/record`
+
+Stops an active recording session for the specified stream. Returns [200] with an empty body on success.
 
 Reference: [Recorder](recorder)
 

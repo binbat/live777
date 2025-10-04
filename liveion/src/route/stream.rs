@@ -24,9 +24,10 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::streams("{stream}"), post(create))
         .route(&api::path::streams("{stream}"), delete(destroy))
         .route(api::path::streams_sse(), get(sse))
-        .route(&api::path::record("{stream}"), post(record_stream))
-        .route(&api::path::record_status("{stream}"), get(record_status))
-        .route(&api::path::record_stop("{stream}"), post(stop_record))
+        .route(
+            &api::path::record("{stream}"),
+            post(record_stream).get(record_status).delete(stop_record),
+        )
 }
 
 async fn index(

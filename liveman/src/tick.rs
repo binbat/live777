@@ -137,10 +137,10 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                 .get(first_node_alias)
                 .cloned();
             if let Some(server) = node {
-                let status_url = format!("{}{}", server.url, api::path::record_status(&stream_id));
+                let record_url = format!("{}{}", server.url, api::path::record(&stream_id));
                 let is_recording = match state
                     .client
-                    .get(status_url)
+                    .get(record_url.as_str())
                     .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                     .send()
                     .await
@@ -306,10 +306,10 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
         // Stop recording on all nodes where it's active
         for alias in aliases {
             if let Some(server) = map_server.get(alias) {
-                let status_url = format!("{}{}", server.url, api::path::record_status(stream_id));
+                let record_url = format!("{}{}", server.url, api::path::record(stream_id));
                 let is_recording = match state
                     .client
-                    .get(status_url)
+                    .get(record_url.as_str())
                     .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                     .send()
                     .await
@@ -325,10 +325,9 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
                 };
 
                 if is_recording {
-                    let stop_url = format!("{}{}", server.url, api::path::record_stop(stream_id));
                     let _ = state
                         .client
-                        .post(stop_url)
+                        .delete(record_url)
                         .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                         .send()
                         .await;

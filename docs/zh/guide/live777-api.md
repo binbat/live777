@@ -196,12 +196,18 @@ Request:
 
 ### 录制状态
 
-`GET` `/api/streams/:streamId/record/status`
+`GET` `/api/streams/:streamId/record`
 
 响应: [200]
 
 ```json
 { "recording": true }
 ```
+
+### 停止录制
+
+`DELETE` `/api/streams/:streamId/record`
+
+停止指定流的录制。成功时返回 [200]，响应体为空。
 
 参考： [Recorder](recorder)

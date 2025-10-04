@@ -17,6 +17,12 @@ pub fn route() -> Router<AppState> {
         .route("/api/record/start/{stream}", post(start_record))
         .route("/api/record/stop/{stream}", post(stop_record))
         .route("/api/record/status/{stream}", get(get_record_status))
+        .route(
+            "/api/streams/{stream}/record",
+            post(start_record)
+                .get(get_record_status)
+                .delete(stop_record),
+        )
         .route("/api/record/object/{*path}", get(get_segment))
 }
 
@@ -243,7 +249,7 @@ async fn get_record_status(
     if let Some(nodes) = streams.get(&stream) {
         for alias in nodes {
             if let Some(server) = map_server.get(alias) {
-                let url = format!("{}{}", server.url, api::path::record_status(&stream));
+                let url = format!("{}{}", server.url, api::path::record(&stream));
                 if let Ok(resp) = state
                     .client
                     .get(url)
@@ -275,10 +281,10 @@ async fn stop_record(
         for alias in nodes {
             if let Some(server) = map_server.get(alias) {
                 // check status first
-                let status_url = format!("{}{}", server.url, api::path::record_status(&stream));
+                let record_url = format!("{}{}", server.url, api::path::record(&stream));
                 let is_recording = match state
                     .client
-                    .get(&status_url)
+                    .get(record_url.as_str())
                     .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                     .send()
                     .await
@@ -293,10 +299,9 @@ async fn stop_record(
                     Err(_) => false,
                 };
                 if is_recording {
-                    let stop_url = format!("{}{}", server.url, api::path::record_stop(&stream));
                     if let Ok(resp) = state
                         .client
-                        .post(stop_url)
+                        .delete(record_url)
                         .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                         .send()
                         .await

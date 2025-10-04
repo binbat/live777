@@ -65,8 +65,9 @@ Requires `recorder` feature.
 - Start recording: `POST` `/api/streams/:streamId/record`
   - Body (optional): `{ "base_dir": "optional/path/prefix" }`
   - Response: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
-- Recording status: `GET` `/api/streams/:streamId/record/status`
+- Recording status: `GET` `/api/streams/:streamId/record`
   - Response: `{ "recording": true }`
+- Stop recording: `DELETE` `/api/streams/:streamId/record`
 
 ## MPD Path Conventions {#mpd}
 

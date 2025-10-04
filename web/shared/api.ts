@@ -67,15 +67,39 @@ export function cascade(streamId: string, params: Cascade) {
     return w.url(`/api/cascade/${streamId}`).post(params).res();
 }
 
+const recordUrl = (streamId: string) => `/api/streams/${encodeURIComponent(streamId)}/record`;
+
 export function startRecording(streamId: string) {
-    return w.url(`/api/record/start/${encodeURIComponent(streamId)}`).post().json<{ started: boolean; mpd_path: string }>();
+    return w
+        .url(recordUrl(streamId))
+        .post()
+        .json<{ id: string; mpd_path: string }>();
 }
 
 export async function getRecordingStatus(streamId: string): Promise<boolean> {
-    const { recording } = await w.url(`/api/record/status/${encodeURIComponent(streamId)}`).get().json<{ recording: boolean }>();
+    const { recording } = await w.url(recordUrl(streamId)).get().json<{ recording: boolean }>();
     return recording;
 }
 
-export async function stopRecording(streamId: string): Promise<{ stopped: boolean }> {
-    return w.url(`/api/record/stop/${encodeURIComponent(streamId)}`).post().json<{ stopped: boolean }>();
+export async function stopRecording(streamId: string): Promise<boolean> {
+    const response = await w.url(recordUrl(streamId)).delete().res();
+    if (!response.ok) {
+        throw new Error(`Failed to stop recording (HTTP ${response.status})`);
+    }
+
+    const body = await response.text();
+    if (!body.trim()) {
+        return true;
+    }
+
+    try {
+        const parsed = JSON.parse(body) as { stopped?: boolean };
+        if (typeof parsed.stopped === 'boolean') {
+            return parsed.stopped;
+        }
+    } catch {
+        // fall through to default true
+    }
+
+    return true;
 }

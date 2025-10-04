@@ -41,11 +41,3 @@ pub fn strategy() -> &'static str {
 pub fn record(stream: &str) -> String {
     format!("/api/streams/{stream}/record")
 }
-
-pub fn record_status(stream: &str) -> String {
-    format!("/api/streams/{stream}/record/status")
-}
-
-pub fn record_stop(stream: &str) -> String {
-    format!("/api/streams/{stream}/record/stop")
-}
