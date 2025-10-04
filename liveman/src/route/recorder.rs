@@ -298,17 +298,16 @@ async fn stop_record(
                     },
                     Err(_) => false,
                 };
-                if is_recording {
-                    if let Ok(resp) = state
+                if is_recording
+                    && let Ok(resp) = state
                         .client
                         .delete(record_url)
                         .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                         .send()
                         .await
-                        && resp.status().is_success()
-                    {
-                        any_stopped = true;
-                    }
+                    && resp.status().is_success()
+                {
+                    any_stopped = true;
                 }
             }
         }

@@ -11,10 +11,10 @@ pub async fn access_middleware(request: Request, next: Next) -> Response {
         Some(claims) => match (claims.id.clone(), request.method(), request.uri().path()) {
             (id, &Method::GET, path) if path == api::path::streams(&id) => true,
             // Allow Liveman auto-record APIs for JWT with specific id
-            (id, method, path) if path == api::path::record(&id) => match method {
-                &Method::POST => Access::from(claims.mode).x,
-                &Method::GET => Access::from(claims.mode).r,
-                &Method::DELETE => Access::from(claims.mode).x,
+            (id, method, path) if path == api::path::record(&id) => match *method {
+                Method::POST => Access::from(claims.mode).x,
+                Method::GET => Access::from(claims.mode).r,
+                Method::DELETE => Access::from(claims.mode).x,
                 _ => false,
             },
             (id, &Method::DELETE, path) if path == api::path::streams(&id) => {
