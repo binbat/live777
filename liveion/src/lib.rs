@@ -62,9 +62,6 @@ where
             )),
     );
 
-    #[cfg(feature = "recorder")]
-    let app = app;
-
     let app = app
         .route(path::METRICS, get(metrics))
         .with_state(app_state.clone())

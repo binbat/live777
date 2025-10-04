@@ -37,7 +37,7 @@ url = { workspace = true }
 
 chrono = { version = "0.4", features = ["serde"] }
 http-body-util = "0.1.2"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 glob = "0.3"
 
 # Database dependencies
