@@ -68,8 +68,7 @@ impl RecordingTask {
         );
 
         // Initialize Segmenter
-        let mut segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await
-        {
+        let segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await {
             Ok(seg) => {
                 tracing::debug!(
                     "[recorder] segmenter initialized for stream {} at path {}",
@@ -96,43 +95,50 @@ impl RecordingTask {
         // Subscribe to track change notifications to avoid polling
         let mut track_change_rx = forward.subscribe_tracks_change();
 
-        // Wait for video track and obtain codec mime type without busy polling
-        let codec_mime = loop {
-            if let Some(c) = forward.first_video_codec().await {
-                break c;
+        // Wait for at least one media track (video preferred, audio fallback)
+        let mut codec_mime_opt: Option<String> = None;
+        let mut video_receiver_opt = None;
+        let mut audio_receiver_opt = None;
+
+        loop {
+            if codec_mime_opt.is_none() {
+                codec_mime_opt = forward.first_video_codec().await;
             }
+
+            if codec_mime_opt.is_some() && video_receiver_opt.is_none() {
+                video_receiver_opt = forward.subscribe_video_rtp().await;
+            }
+
+            if audio_receiver_opt.is_none() {
+                audio_receiver_opt = forward.subscribe_audio_rtp().await;
+            }
+
+            let have_video = codec_mime_opt.is_some() && video_receiver_opt.is_some();
+            let have_audio = audio_receiver_opt.is_some();
+
+            if have_video || have_audio {
+                break;
+            }
+
             tracing::debug!(
-                "[recorder] waiting for video codec of stream {}",
+                "[recorder] waiting for media tracks of stream {}",
                 stream_name
             );
-            // Await next track-change notification; error indicates the channel is closed
             if track_change_rx.recv().await.is_err() {
-                return Err(anyhow!("forward closed while waiting for video codec"));
+                return Err(anyhow!("forward closed while waiting for media tracks"));
             }
-        };
+        }
 
-        // Subscribe to video RTP after we know codec
-        let mut rtp_receiver = loop {
-            if let Some(rx) = forward.subscribe_video_rtp().await {
-                break rx;
-            }
-            tracing::debug!(
-                "[recorder] waiting for video track of stream {}",
-                stream_name
+        if let Some(codec) = codec_mime_opt.as_ref() {
+            tracing::info!(
+                "[recorder] stream {} use video codec {}",
+                stream_name,
+                codec
             );
-            if track_change_rx.recv().await.is_err() {
-                return Err(anyhow!("forward closed while waiting for video track"));
-            }
-        };
+        } else {
+            tracing::info!("[recorder] stream {} is audio-only (Opus)", stream_name);
+        }
 
-        // Also subscribe to audio RTP (Opus) if available
-        let audio_receiver_opt = forward.subscribe_audio_rtp().await;
-
-        tracing::info!(
-            "[recorder] stream {} use video codec {}",
-            stream_name,
-            codec_mime
-        );
         if audio_receiver_opt.is_some() {
             tracing::info!("[recorder] stream {} audio track detected", stream_name);
         }
@@ -142,9 +148,10 @@ impl RecordingTask {
         let stream_name_cloned = stream_name.clone();
         let forward_clone = forward.clone();
         let handle = tokio::spawn(async move {
-            let is_h264 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264);
-            let is_vp8 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP8);
-            let is_vp9 = codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9);
+            let mut segmenter = segmenter;
+            let mut video_rx_opt = video_receiver_opt;
+            let mut audio_rx_opt = audio_receiver_opt;
+            let mut codec_mime_opt = codec_mime_opt;
 
             let mut parser_h264 = H264RtpParser::new();
             let mut parser_vp8 = Vp8RtpParser::new();
@@ -158,15 +165,13 @@ impl RecordingTask {
             let mut frame_cnt_audio: u64 = 0;
             let mut last_log = Instant::now();
 
-            // Timer for checking keyframe request
+            // Timer for checking keyframe request (video only)
             let mut keyframe_check_interval = tokio::time::interval(Duration::from_secs(1));
+            let mut track_change_rx = forward_clone.subscribe_tracks_change();
 
-            // Unified loop that handles video RTP (mandatory) and audio RTP (optional).
-            let mut audio_rx_opt = audio_receiver_opt;
             loop {
                 tokio::select! {
-                    // Periodic keyframe (PLI) check.
-                    _ = keyframe_check_interval.tick() => {
+                    _ = keyframe_check_interval.tick(), if video_rx_opt.is_some() => {
                         if segmenter.should_request_keyframe()
                             && let Some(video_track) = forward_clone.first_video_track().await {
                             let ssrc = video_track.ssrc();
@@ -181,57 +186,76 @@ impl RecordingTask {
                         }
                     },
 
-                    // Handle video RTP packets.
-                    result = rtp_receiver.recv() => {
-                        let packet = match result {
-                            Ok(packet) => packet,
-                            Err(_) => break,
-                        };
+                    result = async {
+                        match video_rx_opt.as_mut() {
+                            Some(rx) => match rx.recv().await {
+                                Ok(packet) => Some(packet),
+                                Err(_) => None,
+                            },
+                            None => std::future::pending().await,
+                        }
+                    }, if video_rx_opt.is_some() => {
+                        match result {
+                            Some(packet) => {
+                                let pkt_ts = packet.header.timestamp;
 
-                        let pkt_ts = packet.header.timestamp;
+                                if codec_mime_opt.is_none() {
+                                    codec_mime_opt = forward_clone.first_video_codec().await;
+                                }
 
-                        if is_h264 {
-                            if let Ok(Some((frame, is_idr))) = parser_h264.push_packet(&packet) {
-                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                prev_ts_video = Some(pkt_ts);
-                                if let Err(e) = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await {
-                                    tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                                let Some(codec_mime) = codec_mime_opt.as_ref() else {
+                                    continue;
+                                };
+
+                                if codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264) {
+                                    if let Ok(Some((frame, is_idr))) = parser_h264.push_packet(&packet) {
+                                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                        prev_ts_video = Some(pkt_ts);
+                                        if let Err(e) = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await {
+                                            tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                                        }
+                                        frame_cnt_video += 1;
+                                    }
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP8) {
+                                    if let Ok(Some(frame)) = parser_vp8.push_packet(&packet) {
+                                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                        prev_ts_video = Some(pkt_ts);
+                                        let is_key = if !frame.is_empty() { (frame[0] & 0x01) == 0 } else { false };
+                                        if let Err(e) = segmenter.push_vp8(Bytes::from(frame), is_key, duration_ticks).await {
+                                            tracing::warn!("[recorder] {} failed to process VP8 frame: {}", stream_name_cloned, e);
+                                        }
+                                        frame_cnt_video += 1;
+                                    }
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9) {
+                                    if let Ok(Some(frame)) = parser_vp9.push_packet(&packet) {
+                                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                        prev_ts_video = Some(pkt_ts);
+                                        let is_key = if !frame.is_empty() { ((frame[0] >> 5) & 0x01) == 0 } else { false };
+                                        if let Err(e) = segmenter.push_vp9(Bytes::from(frame), is_key, duration_ticks).await {
+                                            tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
+                                        }
+                                        frame_cnt_video += 1;
+                                    }
                                 }
-                                frame_cnt_video += 1;
                             }
-                        } else if is_vp8 {
-                            if let Ok(Some(frame)) = parser_vp8.push_packet(&packet) {
-                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                prev_ts_video = Some(pkt_ts);
-                                let is_key = if !frame.is_empty() { (frame[0] & 0x01) == 0 } else { false };
-                                if let Err(e) = segmenter.push_vp8(Bytes::from(frame), is_key, duration_ticks).await {
-                                    tracing::warn!("[recorder] {} failed to process VP8 frame: {}", stream_name_cloned, e);
-                                }
-                                frame_cnt_video += 1;
+                            None => {
+                                video_rx_opt = None;
+                                prev_ts_video = None;
                             }
-                        } else if is_vp9
-                            && let Ok(Some(frame)) = parser_vp9.push_packet(&packet)
-                        {
-                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                prev_ts_video = Some(pkt_ts);
-                                // VP9 frame_type bit (LSB order): bit 5 of first byte: 0=key,1=inter
-                                let is_key = if !frame.is_empty() { ((frame[0] >> 5) & 0x01) == 0 } else { false };
-                                if let Err(e) = segmenter.push_vp9(Bytes::from(frame), is_key, duration_ticks).await {
-                                    tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
-                                }
-                                frame_cnt_video += 1;
                         }
                     },
 
-                    // Handle audio RTP packets when an audio receiver exists.
                     result = async {
                         match audio_rx_opt.as_mut() {
-                            Some(rx) => rx.recv().await,
+                            Some(rx) => match rx.recv().await {
+                                Ok(packet) => Some(packet),
+                                Err(_) => None,
+                            },
                             None => std::future::pending().await,
                         }
                     }, if audio_rx_opt.is_some() => {
                         match result {
-                            Ok(packet) => {
+                            Some(packet) => {
                                 let (payload, pkt_ts) = match parser_audio.push_packet(&packet) {
                                     Ok(v) => v,
                                     Err(_) => continue,
@@ -239,7 +263,7 @@ impl RecordingTask {
                                 let duration_ticks: u32 = if let Some(prev) = prev_ts_audio {
                                     pkt_ts.wrapping_sub(prev)
                                 } else {
-                                    960 // Opus 48kHz with 20ms frame size
+                                    960
                                 };
                                 prev_ts_audio = Some(pkt_ts);
                                 if let Err(e) = segmenter.push_opus(Bytes::from(payload), duration_ticks).await {
@@ -247,34 +271,86 @@ impl RecordingTask {
                                 }
                                 frame_cnt_audio += 1;
                             }
-                            Err(_) => {
-                                // Audio channel closed — disable audio processing.
+                            None => {
                                 audio_rx_opt = None;
+                                prev_ts_audio = None;
+                            }
+                        }
+                    },
+
+                    change = async {
+                        match track_change_rx.recv().await {
+                            Ok(_) => true,
+                            Err(_) => false,
+                        }
+                    }, if video_rx_opt.is_none() => {
+                        if !change && audio_rx_opt.is_none() {
+                            break;
+                        }
+
+                        if codec_mime_opt.is_none() {
+                            codec_mime_opt = forward_clone.first_video_codec().await;
+                            if let Some(codec) = codec_mime_opt.as_ref() {
+                                tracing::info!(
+                                    "[recorder] stream {} detected video codec {}",
+                                    stream_name_cloned,
+                                    codec
+                                );
+                            }
+                        }
+
+                        if codec_mime_opt.is_some() && video_rx_opt.is_none() {
+                            if let Some(rx) = forward_clone.subscribe_video_rtp().await {
+                                tracing::info!(
+                                    "[recorder] stream {} video track became available",
+                                    stream_name_cloned
+                                );
+                                video_rx_opt = Some(rx);
                             }
                         }
                     }
                 }
 
-                // Log statistics every 5 seconds.
+                if video_rx_opt.is_none() && audio_rx_opt.is_none() {
+                    break;
+                }
+
                 if last_log.elapsed() >= Duration::from_secs(5) {
-                    if audio_rx_opt.is_some() {
-                        tracing::info!(
-                            "[recorder] stream {} received {} video frames and {} audio packets in last 5s",
-                            stream_name_cloned,
-                            frame_cnt_video,
-                            frame_cnt_audio
-                        );
-                        frame_cnt_audio = 0;
-                    } else {
-                        tracing::info!(
-                            "[recorder] stream {} received {} video frames in last 5s",
-                            stream_name_cloned,
-                            frame_cnt_video
-                        );
+                    match (video_rx_opt.is_some(), audio_rx_opt.is_some()) {
+                        (true, true) => {
+                            tracing::info!(
+                                "[recorder] stream {} received {} video frames and {} audio packets in last 5s",
+                                stream_name_cloned,
+                                frame_cnt_video,
+                                frame_cnt_audio
+                            );
+                            frame_cnt_audio = 0;
+                        }
+                        (true, false) => {
+                            tracing::info!(
+                                "[recorder] stream {} received {} video frames in last 5s",
+                                stream_name_cloned,
+                                frame_cnt_video
+                            );
+                            frame_cnt_audio = 0;
+                        }
+                        (false, true) => {
+                            tracing::info!(
+                                "[recorder] stream {} received {} audio packets in last 5s",
+                                stream_name_cloned,
+                                frame_cnt_audio
+                            );
+                            frame_cnt_audio = 0;
+                        }
+                        (false, false) => {}
                     }
                     frame_cnt_video = 0;
                     last_log = Instant::now();
                 }
+            }
+
+            if let Err(e) = segmenter.flush().await {
+                tracing::debug!("[recorder] {} flush error: {}", stream_name_cloned, e);
             }
         });
 

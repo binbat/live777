@@ -27,18 +27,18 @@ pub struct Segmenter {
     seg_duration_ticks: u64,
 
     // fragment index
-    seg_index: u32,
-    // Decode timestamp of current segment start (in timescale units)
-    seg_start_dts: u64,
+    video_seg_index: u32,
+    // Decode timestamp of current video segment start (in timescale units)
+    video_seg_start_dts: u64,
     video_track_id: Option<u32>,
 
     // Audio track id (Opus)
     audio_track_id: Option<u32>,
 
-    // All samples buffered for the current segment (already converted to AVCC length prefix)
-    samples: Vec<Mp4Sample>,
+    // All video samples buffered for the current segment (already converted to AVCC length prefix)
+    video_samples: Vec<Mp4Sample>,
 
-    // audio samples buffered for current segment
+    // Audio samples buffered for current audio segment
     audio_samples: Vec<Mp4Sample>,
 
     // video info
@@ -48,7 +48,7 @@ pub struct Segmenter {
     // codec string like "avc1.42E01E"
     video_codec: String,
 
-    current_pts: u64,
+    video_current_pts: u64,
 
     /// Frames per second, updated dynamically from incoming stream (timescale/duration)
     frame_rate: u32,
@@ -64,6 +64,8 @@ pub struct Segmenter {
 
     // audio writer for Opus
     audio_writer: Option<Fmp4Writer>,
+    audio_seg_index: u32,
+    audio_seg_start_pts: u64,
     // track pts for audio
     audio_current_pts: u64,
 
@@ -93,26 +95,28 @@ impl Segmenter {
             path_prefix: root_prefix,
             timescale: 90_000,
             seg_duration_ticks: 90_000u64 * DEFAULT_SEG_DURATION,
-            seg_index: 0,
-            seg_start_dts: 0,
+            video_seg_index: 0,
+            video_seg_start_dts: 0,
             video_track_id: None,
 
             audio_track_id: None,
 
-            samples: Vec::new(),
+            video_samples: Vec::new(),
 
             audio_samples: Vec::new(),
 
             video_width: 0,
             video_height: 0,
             video_codec: String::new(),
-            current_pts: 0,
+            video_current_pts: 0,
             frame_rate: 0,
             total_bytes: 0,
             total_ticks: 0,
             fmp4_writer: None,
 
             audio_writer: None,
+            audio_seg_index: 0,
+            audio_seg_start_pts: 0,
             audio_current_pts: 0,
 
             audio_total_bytes: 0,
@@ -166,20 +170,21 @@ impl Segmenter {
         // accumulated duration of the *current* segment has already reached the
         // target length, we should finish the current segment _before_ adding the
         // sample.
-        if is_idr && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
+        if is_idr && (self.video_current_pts - self.video_seg_start_dts >= self.seg_duration_ticks)
+        {
             self.roll_segment().await?;
         }
 
-        // After a possible roll, `self.current_pts` and `seg_start_dts` are intact
+        // After a possible roll, `self.video_current_pts` and `video_seg_start_dts` are intact
         // for the (potentially) new segment, so we can safely add the sample.
         let sample = Mp4Sample {
-            start_time: self.current_pts,
+            start_time: self.video_current_pts,
             duration: dur,
             is_sync: is_idr,
             bytes: Bytes::from(avcc_payload),
         };
-        self.samples.push(sample);
-        self.current_pts += dur as u64;
+        self.video_samples.push(sample);
+        self.video_current_pts += dur as u64;
 
         // Update dynamic statistics
         self.total_bytes += frame.len() as u64;
@@ -226,8 +231,12 @@ impl Segmenter {
         }
 
         let size_bytes = payload.len();
+        let sample_start = self.audio_current_pts;
+        if self.audio_samples.is_empty() {
+            self.audio_seg_start_pts = sample_start;
+        }
         let sample = Mp4Sample {
-            start_time: self.audio_current_pts,
+            start_time: sample_start,
             duration: duration_ticks,
             is_sync: true, // audio samples are always sync
             bytes: payload,
@@ -238,6 +247,7 @@ impl Segmenter {
         // stats
         self.audio_total_bytes += size_bytes as u64;
         self.audio_total_ticks += duration_ticks as u64;
+        self.roll_audio_segment(false).await?;
         Ok(())
     }
 
@@ -283,20 +293,22 @@ impl Segmenter {
             duration_ticks
         };
 
-        if is_keyframe && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
+        if is_keyframe
+            && (self.video_current_pts - self.video_seg_start_dts >= self.seg_duration_ticks)
+        {
             self.roll_segment().await?;
         }
 
         let sample = Mp4Sample {
-            start_time: self.current_pts,
+            start_time: self.video_current_pts,
             duration: dur,
             is_sync: is_keyframe,
             bytes: frame,
         };
-        self.samples.push(sample);
-        self.current_pts += dur as u64;
+        self.video_samples.push(sample);
+        self.video_current_pts += dur as u64;
         self.total_bytes += self
-            .samples
+            .video_samples
             .last()
             .map(|s| s.bytes.len() as u64)
             .unwrap_or(0);
@@ -348,19 +360,21 @@ impl Segmenter {
             duration_ticks
         };
 
-        if is_keyframe && (self.current_pts - self.seg_start_dts >= self.seg_duration_ticks) {
+        if is_keyframe
+            && (self.video_current_pts - self.video_seg_start_dts >= self.seg_duration_ticks)
+        {
             self.roll_segment().await?;
         }
 
         let size = frame.len();
         let sample = Mp4Sample {
-            start_time: self.current_pts,
+            start_time: self.video_current_pts,
             duration: dur,
             is_sync: is_keyframe,
             bytes: frame,
         };
-        self.samples.push(sample);
-        self.current_pts += dur as u64;
+        self.video_samples.push(sample);
+        self.video_current_pts += dur as u64;
         self.total_bytes += size as u64;
         self.total_ticks += dur as u64;
         let fps_cur = self.timescale / dur;
@@ -376,6 +390,12 @@ impl Segmenter {
             None => true, // No keyframe received yet, request one
             Some(last_time) => last_time.elapsed() >= self.keyframe_request_timeout,
         }
+    }
+
+    pub async fn flush(&mut self) -> Result<()> {
+        self.roll_segment().await?;
+        self.roll_audio_segment(true).await?;
+        Ok(())
     }
 
     async fn init_writer(&mut self) -> Result<()> {
@@ -476,27 +496,28 @@ impl Segmenter {
             })?;
         self.audio_track_id = Some(track_id);
         self.audio_writer = Some(writer);
+        self.audio_seg_index = 0;
+        self.audio_seg_start_pts = self.audio_current_pts;
 
         tracing::info!("[segmenter] {} audio_init.m4s written", self.stream);
         Ok(())
     }
 
     async fn open_new_segment(&mut self) -> Result<()> {
-        self.samples.clear();
-        self.audio_samples.clear();
-        self.seg_start_dts = self.current_pts;
-        self.seg_index += 1;
+        self.video_samples.clear();
+        self.video_seg_start_dts = self.video_current_pts;
+        self.video_seg_index += 1;
         Ok(())
     }
 
     async fn roll_segment(&mut self) -> Result<()> {
         // Return immediately if not ready (no samples or tracks haven't been set up)
-        if self.samples.is_empty() || self.video_track_id.is_none() {
+        if self.video_samples.is_empty() || self.video_track_id.is_none() {
             return Ok(());
         }
 
-        let base_time = self.seg_start_dts;
-        let segment_end_time = self.current_pts;
+        let base_time = self.video_seg_start_dts;
+        let segment_end_time = self.video_current_pts;
         let actual_duration = segment_end_time - base_time;
 
         let writer = self
@@ -504,8 +525,8 @@ impl Segmenter {
             .as_ref()
             .expect("fmp4 writer not initialized");
 
-        let fragment = writer.build_fragment(self.seg_index, base_time, &self.samples);
-        let filename = format!("seg_{:04}.m4s", self.seg_index);
+        let fragment = writer.build_fragment(self.video_seg_index, base_time, &self.video_samples);
+        let filename = format!("seg_{:04}.m4s", self.video_seg_index);
         self.store_file(&filename, fragment).await.map_err(|e| {
             tracing::error!(
                 "[segmenter] failed to store video segment {} for stream {}: {}",
@@ -523,50 +544,6 @@ impl Segmenter {
             duration: actual_duration,
         });
 
-        // Write audio fragment if any samples are available
-        if let (Some(writer), true) = (self.audio_writer.as_ref(), !self.audio_samples.is_empty()) {
-            // Use the decode timestamp of the *first* audio sample in this fragment
-            // for the tfdt base time. Using `audio_current_pts` (which points to the
-            // *end* of the last pushed sample) caused a time‐shift in the generated
-            // fragments leading to playback errors once an audio track was present.
-            let audio_base_time = self
-                .audio_samples
-                .first()
-                .map(|s| s.start_time)
-                .unwrap_or(self.audio_current_pts);
-
-            let fragment_a =
-                writer.build_fragment(self.seg_index, audio_base_time, &self.audio_samples);
-            let filename_a = format!("audio_seg_{:04}.m4s", self.seg_index);
-            self.store_file(&filename_a, fragment_a)
-                .await
-                .map_err(|e| {
-                    tracing::error!(
-                        "[segmenter] failed to store audio segment {} for stream {}: {}",
-                        filename_a,
-                        self.stream,
-                        e
-                    );
-                    e
-                })?;
-
-            // Record the audio segment - calculate duration based on audio samples
-            let audio_duration = if let (Some(first), Some(last)) =
-                (self.audio_samples.first(), self.audio_samples.last())
-            {
-                last.start_time + last.duration as u64 - first.start_time
-            } else {
-                0
-            };
-
-            self.audio_segments.push(SegmentInfo {
-                start_time: audio_base_time,
-                duration: audio_duration,
-            });
-
-            self.audio_samples.clear();
-        }
-
         // Clear the cache and start the next segment
         self.open_new_segment().await?;
 
@@ -575,88 +552,179 @@ impl Segmenter {
         Ok(())
     }
 
+    async fn roll_audio_segment(&mut self, force: bool) -> Result<()> {
+        if self.audio_writer.is_none() || self.audio_samples.is_empty() {
+            return Ok(());
+        }
+
+        let writer = self
+            .audio_writer
+            .as_ref()
+            .expect("audio writer must exist when rolling audio segments");
+        let segment_start = self.audio_seg_start_pts;
+        let segment_end = self.audio_current_pts;
+        let segment_duration = segment_end.saturating_sub(segment_start);
+        let target_duration = writer.timescale as u64 * DEFAULT_SEG_DURATION;
+
+        if !force && segment_duration < target_duration {
+            return Ok(());
+        }
+
+        self.audio_seg_index += 1;
+        let current_index = self.audio_seg_index;
+
+        let fragment = writer.build_fragment(current_index, segment_start, &self.audio_samples);
+        let filename = format!("audio_seg_{:04}.m4s", current_index);
+        self.store_file(&filename, fragment).await.map_err(|e| {
+            tracing::error!(
+                "[segmenter] failed to store audio segment {} for stream {}: {}",
+                filename,
+                self.stream,
+                e
+            );
+            e
+        })?;
+        info!("[segmenter] {} {} written", self.stream, filename);
+
+        self.audio_segments.push(SegmentInfo {
+            start_time: segment_start,
+            duration: segment_duration,
+        });
+
+        self.audio_samples.clear();
+        self.audio_seg_start_pts = self.audio_current_pts;
+
+        self.write_manifest().await?;
+        Ok(())
+    }
+
     async fn write_manifest(&self) -> Result<()> {
-        // Calculate total duration from actual segments
-        let total_duration_ticks: u64 = self.segments.iter().map(|s| s.duration).sum();
-        let total_duration_secs = total_duration_ticks as f64 / self.timescale as f64;
-        let media_presentation_duration = format!("PT{total_duration_secs:.3}S");
+        let has_video_segments = self.video_track_id.is_some() && !self.segments.is_empty();
+        let has_audio_segments = self.audio_writer.is_some() && !self.audio_segments.is_empty();
 
-        // Use the maximum actual segment duration for maxSegmentDuration
-        let max_actual_duration = self
-            .segments
-            .iter()
-            .map(|s| s.duration)
-            .max()
-            .unwrap_or(self.seg_duration_ticks);
-        let max_segment_duration_secs = max_actual_duration as f64 / self.timescale as f64;
+        if !has_video_segments && !has_audio_segments {
+            return Ok(());
+        }
+
+        let mut media_duration_secs = 0f64;
+        let mut max_segment_duration_secs = 0f64;
+
+        if has_video_segments {
+            if let Some(last) = self.segments.last() {
+                let end_ticks = last.start_time + last.duration;
+                media_duration_secs =
+                    media_duration_secs.max(end_ticks as f64 / self.timescale as f64);
+            }
+            if let Some(max_video_dur) = self.segments.iter().map(|s| s.duration).max() {
+                max_segment_duration_secs =
+                    max_segment_duration_secs.max(max_video_dur as f64 / self.timescale as f64);
+            }
+        }
+
+        if has_audio_segments {
+            let writer = self
+                .audio_writer
+                .as_ref()
+                .expect("audio writer missing while writing manifest");
+            if let Some(last) = self.audio_segments.last() {
+                let end_ticks = last.start_time + last.duration;
+                media_duration_secs =
+                    media_duration_secs.max(end_ticks as f64 / writer.timescale as f64);
+            }
+            if let Some(max_audio_dur) = self.audio_segments.iter().map(|s| s.duration).max() {
+                max_segment_duration_secs =
+                    max_segment_duration_secs.max(max_audio_dur as f64 / writer.timescale as f64);
+            }
+        }
+
+        // Fallback values when only one adaptation is present to avoid zero durations.
+        if max_segment_duration_secs == 0.0 {
+            max_segment_duration_secs = DEFAULT_SEG_DURATION as f64;
+        }
+        if media_duration_secs == 0.0 {
+            media_duration_secs = max_segment_duration_secs;
+        }
+
+        let media_presentation_duration = format!("PT{media_duration_secs:.3}S");
         let max_segment_duration = format!("PT{max_segment_duration_secs:.3}S");
-
         let min_buffer_time = if max_segment_duration_secs * 3.0 > 0.0 {
             format!("PT{:.3}S", max_segment_duration_secs * 3.0)
         } else {
             "PT1S".to_string()
         };
 
-        // Estimate average video bitrate (bits per second)
-        let video_bandwidth = if self.total_ticks > 0 {
-            self.total_bytes * 8 * self.timescale as u64 / self.total_ticks
-        } else {
-            0
-        };
+        let mut adaptation_sets = String::new();
 
-        // Generate SegmentTimeline for video
-        let video_segment_timeline = self.generate_segment_timeline(&self.segments);
-
-        // Audio params if available
-        let audio_section = if let Some(ref a_writer) = self.audio_writer {
-            let audio_bandwidth = if self.audio_total_ticks > 0 {
-                self.audio_total_bytes * 8 * a_writer.timescale as u64 / self.audio_total_ticks
+        if has_video_segments {
+            let video_bandwidth = if self.total_ticks > 0 {
+                self.total_bytes * 8 * self.timescale as u64 / self.total_ticks
             } else {
                 0
             };
 
-            // Generate SegmentTimeline for audio
-            let audio_segment_timeline = self.generate_segment_timeline(&self.audio_segments);
+            let video_segment_timeline = self.generate_segment_timeline(&self.segments);
 
-            format!(
-                "        <AdaptationSet id=\"1\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"1\" mimeType=\"audio/mp4\" codecs=\"{}\" bandwidth=\"{}\" audioSamplingRate=\"{}\" >\n                <SegmentTemplate timescale=\"{}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
-                a_writer.codec_string,
-                audio_bandwidth,
-                a_writer.sample_rate,
-                a_writer.timescale,
-                audio_segment_timeline
-            )
-        } else {
-            String::new()
-        };
-
-        // Use computed frame_rate, default to 30 if unavailable
-        let fps_val = if self.frame_rate > 0 {
-            self.frame_rate
-        } else {
-            30
-        };
-
-        // Calculate pixel aspect ratio (PAR) based on video dimension
-        let par_str = if self.video_width > 0 && self.video_height > 0 {
-            let mut w = self.video_width;
-            let mut h = self.video_height;
-            // gcd
-            while h != 0 {
-                let tmp = h;
-                h = w % h;
-                w = tmp;
-            }
-            if w == 0 {
-                "1:1".to_string()
+            let fps_val = if self.frame_rate > 0 {
+                self.frame_rate
             } else {
-                format!("{}:{}", self.video_width / w, self.video_height / w)
-            }
-        } else {
-            "1:1".to_string()
-        };
+                30
+            };
 
-        // Build MPD with SegmentTimeline instead of fixed duration
+            let par_str = if self.video_width > 0 && self.video_height > 0 {
+                let mut w = self.video_width;
+                let mut h = self.video_height;
+                while h != 0 {
+                    let tmp = h;
+                    h = w % h;
+                    w = tmp;
+                }
+                if w == 0 {
+                    "1:1".to_string()
+                } else {
+                    format!("{}:{}", self.video_width / w, self.video_height / w)
+                }
+            } else {
+                "1:1".to_string()
+            };
+
+            let video_section = format!(
+                "        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n{video_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
+                fps = fps_val,
+                width = self.video_width,
+                height = self.video_height,
+                par = par_str,
+                codec = self.video_codec,
+                bandwidth = video_bandwidth,
+                timescale = self.timescale,
+                video_timeline = video_segment_timeline,
+            );
+            adaptation_sets.push_str(&video_section);
+        }
+
+        if has_audio_segments {
+            let writer = self.audio_writer.as_ref().unwrap();
+            let audio_bandwidth = if self.audio_total_ticks > 0 {
+                self.audio_total_bytes * 8 * writer.timescale as u64 / self.audio_total_ticks
+            } else {
+                0
+            };
+            let audio_segment_timeline = self.generate_segment_timeline(&self.audio_segments);
+            let audio_adaptation_id = if has_video_segments { 1 } else { 0 };
+            let audio_representation_id = if has_video_segments { 1 } else { 0 };
+
+            let audio_section = format!(
+                "        <AdaptationSet id=\"{adapt_id}\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"{rep_id}\" mimeType=\"audio/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" audioSamplingRate=\"{sample_rate}\" >\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{audio_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
+                adapt_id = audio_adaptation_id,
+                rep_id = audio_representation_id,
+                codec = writer.codec_string,
+                bandwidth = audio_bandwidth,
+                sample_rate = writer.sample_rate,
+                timescale = writer.timescale,
+                audio_timeline = audio_segment_timeline,
+            );
+            adaptation_sets.push_str(&audio_section);
+        }
+
         let mpd_body = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
@@ -668,19 +736,11 @@ impl Segmenter {
      mediaPresentationDuration=\"{media_duration}\"\n\
      maxSegmentDuration=\"{max_seg_dur}\"\n\
      minBufferTime=\"{min_buf}\">\n\
-    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n{video_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n        {audio_section}\n    </Period>\n</MPD>\n",
+    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n{adapt_sets}    </Period>\n</MPD>\n",
             media_duration = media_presentation_duration,
             max_seg_dur = max_segment_duration,
             min_buf = min_buffer_time,
-            width = self.video_width,
-            height = self.video_height,
-            timescale = self.timescale,
-            codec = self.video_codec,
-            fps = fps_val,
-            bandwidth = video_bandwidth,
-            par = par_str,
-            video_timeline = video_segment_timeline,
-            audio_section = audio_section,
+            adapt_sets = adaptation_sets,
         );
 
         self.store_file("manifest.mpd", mpd_body.into_bytes())
