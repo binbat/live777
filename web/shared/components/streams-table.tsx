@@ -4,7 +4,7 @@ import { type ReactNode } from 'preact/compat';
 import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
-import { type Stream, getStreams, deleteStream, startRecording, getRecordingStatus, stopRecording } from '../api';
+import { type CapabilityProbeStatus, type Stream, deleteStream, getRecordingStatus, getStreams, probeRecorderFeature, startRecording, stopRecording } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 import { TokenContext } from '../context';
@@ -34,6 +34,8 @@ export interface StreamTableProps {
         player?: boolean;
         debugger?: boolean;
         recording?: boolean;
+        autoDetectRecording?: boolean;
+        recordingPlayback?: boolean;
     };
 }
 
@@ -55,12 +57,46 @@ export function StreamsTable(props: StreamTableProps) {
         player: true,
         debugger: true,
         recording: true,
+        autoDetectRecording: false,
+        recordingPlayback: true,
         ...props.features,
     };
 
     useEffect(() => {
         streams.updateData();
     }, [tokenContext.token]);
+
+    useEffect(() => {
+        if (!features.recording) {
+            setRecordingAvailable(false);
+            return;
+        }
+
+        if (!features.autoDetectRecording) {
+            setRecordingAvailable(features.recording);
+            return;
+        }
+
+        let disposed = false;
+        (async () => {
+            const status: CapabilityProbeStatus = await probeRecorderFeature();
+            if (disposed) {
+                return;
+            }
+
+            if (status === 'available') {
+                setRecordingAvailable(true);
+            } else if (status === 'unavailable') {
+                setRecordingAvailable(false);
+            } else {
+                setRecordingAvailable(features.recording);
+            }
+        })();
+
+        return () => {
+            disposed = true;
+        };
+    }, [tokenContext.token, features.recording, features.autoDetectRecording]);
 
     const handleViewClients = (id: string) => {
         setSelectedStreamId(id);
@@ -141,6 +177,7 @@ export function StreamsTable(props: StreamTableProps) {
         await streams.updateData();
     };
 
+    const [recordingAvailable, setRecordingAvailable] = useState<boolean>(features.recording);
     const [recordingStates, setRecordingStates] = useState<Record<string, boolean>>({});
     const [recordDialogOpen, setRecordDialogOpen] = useState(false);
     const [recordDialogStreamId, setRecordDialogStreamId] = useState('');
@@ -149,7 +186,8 @@ export function StreamsTable(props: StreamTableProps) {
     const [recordMpd, setRecordMpd] = useState('');
 
     useEffect(() => {
-        if (!features.recording) {
+        if (!recordingAvailable) {
+            setRecordingStates({});
             return;
         }
 
@@ -165,12 +203,15 @@ export function StreamsTable(props: StreamTableProps) {
             }
             setRecordingStates(states);
         })();
-    }, [streams.data, features.recording]);
+    }, [streams.data, recordingAvailable]);
 
     const [confirmStopOpen, setConfirmStopOpen] = useState(false);
     const [confirmStopBusy, setConfirmStopBusy] = useState(false);
 
     const openRecordDialog = (id: string) => {
+        if (!recordingAvailable) {
+            return;
+        }
         if (recordingStates[id]) {
             setRecordDialogStreamId(id);
             setConfirmStopOpen(true);
@@ -206,6 +247,7 @@ export function StreamsTable(props: StreamTableProps) {
     };
 
     const handlePlayNow = () => {
+        if (!features.recordingPlayback) return;
         if (!recordDialogStreamId || !recordMpd) return;
         const params = new URLSearchParams();
         params.set('mpd', recordMpd);
@@ -277,7 +319,7 @@ export function StreamsTable(props: StreamTableProps) {
                                 {features.debugger ? (
                                     <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
                                 ) : null}
-                                {features.recording ? (
+                                {recordingAvailable ? (
                                     <Button size="sm" color={recordingStates[i.id] ? 'success' : 'info'} onClick={() => openRecordDialog(i.id)}>
                                         {recordingStates[i.id] ? 'Recording' : 'Record'}
                                     </Button>
@@ -290,7 +332,7 @@ export function StreamsTable(props: StreamTableProps) {
                 </Table.Body>
             </Table>
 
-            {features.recording && recordDialogOpen && (
+            {recordingAvailable && recordDialogOpen && (
                 <div className="modal modal-open">
                     <div className="modal-box">
                         <h3 className="font-bold text-lg">Start Recording</h3>
@@ -315,7 +357,9 @@ export function StreamsTable(props: StreamTableProps) {
                                 </>
                             ) : (
                                 <>
-                                    <Button color="success" onClick={handlePlayNow}>Play now</Button>
+                                    {features.recordingPlayback ? (
+                                        <Button color="success" onClick={handlePlayNow}>Play now</Button>
+                                    ) : null}
                                     <Button color="ghost" onClick={closeRecordDialog}>Close</Button>
                                 </>
                             )}
@@ -324,7 +368,7 @@ export function StreamsTable(props: StreamTableProps) {
                 </div>
             )}
 
-            {features.recording && confirmStopOpen && (
+            {recordingAvailable && confirmStopOpen && (
                 <div className="modal modal-open">
                     <div className="modal-box">
                         <h3 className="font-bold text-lg">Stop Recording</h3>

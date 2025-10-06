@@ -24,7 +24,7 @@ export function Liveion() {
             >
                 <StreamsTable
                     showCascade
-                    features={{ debugger: true, player: true, recording: true }}
+                    features={{ debugger: true, player: true, recording: true, autoDetectRecording: true, recordingPlayback: false }}
                 />
             </PageLayout>
             <Login

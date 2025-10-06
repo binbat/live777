@@ -98,6 +98,7 @@ export function Liveman() {
                             getStreams={getStreams}
                             getWhepUrl={streamId => getWhxpUrl('whep', streamId)}
                             getWhipUrl={streamId => getWhxpUrl('whip', streamId)}
+                            features={{ autoDetectRecording: true }}
                             renderExtraActions={stream => (
                                 <Button size="sm" onClick={() => refStreamTokenDialog?.current?.show(stream.id)}>Create token</Button>
                             )}
