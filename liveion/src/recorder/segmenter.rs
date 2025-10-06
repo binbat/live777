@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::recorder::codec::CodecAdapter;
-use crate::recorder::codec::h264::H264Adapter;
+use crate::recorder::codec::{CodecAdapter, VideoCodec, create_video_adapter};
 use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
 use anyhow::Result;
 use bytes::Bytes;
@@ -77,8 +76,9 @@ pub struct Segmenter {
     last_keyframe_time: Option<Instant>,
     keyframe_request_timeout: Duration,
 
-    // video adapter for H264 (unused for VP8/VP9)
-    video_adapter: Option<H264Adapter>,
+    // active video codec adapter
+    video_codec_kind: Option<VideoCodec>,
+    video_adapter: Option<Box<dyn CodecAdapter>>,
 
     /// List of completed segments with their actual durations
     segments: Vec<SegmentInfo>,
@@ -125,7 +125,8 @@ impl Segmenter {
             last_keyframe_time: None,
             keyframe_request_timeout: Duration::from_secs(10),
 
-            video_adapter: Some(H264Adapter::new()),
+            video_codec_kind: None,
+            video_adapter: None,
             segments: Vec::new(),
             audio_segments: Vec::new(),
         })
@@ -133,93 +134,9 @@ impl Segmenter {
 
     /// Feed one H.264 Frame (Annex-B format, may contain multiple NALUs)
     /// `duration_ticks` – frame duration in the same timescale as self.timescale (90000 for H264)
-    pub async fn push_h264(
-        &mut self,
-        frame: Bytes,
-        mut is_idr: bool,
-        duration_ticks: u32,
-    ) -> Result<()> {
-        // ------- Split frame content into multiple NALUs -------
-        let (avcc_payload, detected_idr, config_ready) =
-            if let Some(adapter) = self.video_adapter.as_mut() {
-                adapter.convert_frame(&frame)
-            } else {
-                // Fallback to legacy path (should not happen)
-                (frame.as_ref().to_vec(), false, false)
-            };
-
-        if detected_idr {
-            is_idr = true;
-        }
-
-        // Use provided duration, fallback to 3000 ticks if it looks invalid (e.g. 0)
-        let dur = if duration_ticks == 0 {
-            3_000
-        } else {
-            duration_ticks
-        };
-
-        // Update keyframe tracking
-        if is_idr {
-            self.last_keyframe_time = Some(Instant::now());
-        }
-
-        // -------- Segment boundary check *before* enqueuing the new sample --------
-        // We want the very first IDR *after* reaching the nominal segment length to
-        // start the next segment. Therefore, if this frame is an IDR **and** the
-        // accumulated duration of the *current* segment has already reached the
-        // target length, we should finish the current segment _before_ adding the
-        // sample.
-        if is_idr && (self.video_current_pts - self.video_seg_start_dts >= self.seg_duration_ticks)
-        {
-            self.roll_segment().await?;
-        }
-
-        // After a possible roll, `self.video_current_pts` and `video_seg_start_dts` are intact
-        // for the (potentially) new segment, so we can safely add the sample.
-        let sample = Mp4Sample {
-            start_time: self.video_current_pts,
-            duration: dur,
-            is_sync: is_idr,
-            bytes: Bytes::from(avcc_payload),
-        };
-        self.video_samples.push(sample);
-        self.video_current_pts += dur as u64;
-
-        // Update dynamic statistics
-        self.total_bytes += frame.len() as u64;
-        self.total_ticks += dur as u64;
-
-        // Dynamically update nominal FPS: prefer the highest observed value
-        let fps_cur = self.timescale / dur;
-        if self.frame_rate == 0 || fps_cur > self.frame_rate {
-            self.frame_rate = fps_cur;
-        }
-
-        // Now that we (likely) have frame rate, generate init segment if not yet written
-        if self.video_track_id.is_none() && config_ready {
-            if let Some(adapter) = self.video_adapter.as_ref()
-                && let Some(cfg) = adapter.codec_config()
-            {
-                if !cfg.is_empty() {
-                    // self.sps = Some(cfg[0].clone());
-                }
-                if cfg.len() >= 2 {
-                    // self.pps = Some(cfg[1].clone());
-                }
-                // Update codec string for manifest
-                if self.video_codec.is_empty()
-                    && let Some(cs) = adapter.codec_string()
-                {
-                    self.video_codec = cs;
-                }
-            }
-
-            self.init_writer().await?;
-            // init_writer will call open_new_segment(), clear samples, so ensure it's called before samples are enqueued
-        }
-
-        Ok(())
+    pub async fn push_h264(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
+        self.push_video_frame(VideoCodec::H264, frame, None, duration_ticks)
+            .await
     }
 
     /// Feed Opus audio sample from RTP payload
@@ -252,106 +169,41 @@ impl Segmenter {
     }
 
     /// Feed one VP8 frame (already reassembled by RTP parser)
-    pub async fn push_vp8(
-        &mut self,
-        frame: Bytes,
-        is_keyframe: bool,
-        duration_ticks: u32,
-    ) -> Result<()> {
-        // Update keyframe tracking
-        if is_keyframe {
-            self.last_keyframe_time = Some(Instant::now());
-        }
-        // For VP8, initialize only on first keyframe to capture correct dimensions
-        if self.video_track_id.is_none() {
-            if !is_keyframe {
-                return Ok(());
-            }
-            if let Some((w, h)) = parse_vp8_keyframe_dimensions(frame.as_ref())
-                && w > 0
-                && h > 0
-            {
-                self.video_width = w;
-                self.video_height = h;
-            }
-            // if dimensions still unknown, keep waiting (requesting PLI) instead of defaulting to 1280x720
-            if self.video_width == 0 || self.video_height == 0 {
-                return Ok(());
-            }
-        }
-        // ensure codec string, init writer lazily
-        if self.video_track_id.is_none() {
-            if self.video_codec.is_empty() {
-                self.video_codec = "vp08.00.10.08".to_string();
-            }
-            self.init_writer().await?;
-        }
-
-        let dur = if duration_ticks == 0 {
-            3_000
-        } else {
-            duration_ticks
-        };
-
-        if is_keyframe
-            && (self.video_current_pts - self.video_seg_start_dts >= self.seg_duration_ticks)
-        {
-            self.roll_segment().await?;
-        }
-
-        let sample = Mp4Sample {
-            start_time: self.video_current_pts,
-            duration: dur,
-            is_sync: is_keyframe,
-            bytes: frame,
-        };
-        self.video_samples.push(sample);
-        self.video_current_pts += dur as u64;
-        self.total_bytes += self
-            .video_samples
-            .last()
-            .map(|s| s.bytes.len() as u64)
-            .unwrap_or(0);
-        self.total_ticks += dur as u64;
-
-        // update fps heuristic
-        let fps_cur = self.timescale / dur;
-        if self.frame_rate == 0 || fps_cur > self.frame_rate {
-            self.frame_rate = fps_cur;
-        }
-        Ok(())
+    pub async fn push_vp8(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
+        self.push_video_frame(VideoCodec::Vp8, frame, None, duration_ticks)
+            .await
     }
 
     /// Feed one VP9 frame (already reassembled by RTP parser)
-    pub async fn push_vp9(
+    pub async fn push_vp9(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
+        self.push_video_frame(VideoCodec::Vp9, frame, None, duration_ticks)
+            .await
+    }
+
+    async fn push_video_frame(
         &mut self,
+        codec: VideoCodec,
         frame: Bytes,
-        is_keyframe: bool,
+        explicit_sync: Option<bool>,
         duration_ticks: u32,
     ) -> Result<()> {
-        // Update keyframe tracking
-        if is_keyframe {
+        self.ensure_video_adapter(codec);
+
+        let (payload, adapter_sync, config_ready) = {
+            let adapter = self
+                .video_adapter
+                .as_mut()
+                .expect("video adapter should be initialized");
+            adapter.convert_frame(&frame)
+        };
+
+        self.refresh_video_metadata();
+        let adapter_ready = self.current_video_adapter_ready();
+
+        let is_sync = explicit_sync.unwrap_or(false) || adapter_sync;
+
+        if is_sync {
             self.last_keyframe_time = Some(Instant::now());
-        }
-        // Initialize only on first keyframe to capture correct dimensions
-        if self.video_track_id.is_none() {
-            if !is_keyframe {
-                return Ok(());
-            }
-            if let Some((w, h)) = parse_vp9_keyframe_dimensions(frame.as_ref())
-                && w > 0
-                && h > 0
-            {
-                self.video_width = w;
-                self.video_height = h;
-            }
-            if self.video_width == 0 || self.video_height == 0 {
-                return Ok(());
-            }
-            if self.video_codec.is_empty() {
-                self.video_codec = "vp09.00.10.08".to_string();
-            }
-            self.init_writer().await?;
         }
 
         let dur = if duration_ticks == 0 {
@@ -360,28 +212,108 @@ impl Segmenter {
             duration_ticks
         };
 
-        if is_keyframe
-            && (self.video_current_pts - self.video_seg_start_dts >= self.seg_duration_ticks)
+        if is_sync && (self.video_current_pts - self.video_seg_start_dts >= self.seg_duration_ticks)
         {
             self.roll_segment().await?;
         }
 
-        let size = frame.len();
+        if self.video_track_id.is_none() {
+            if config_ready || adapter_ready {
+                self.refresh_video_metadata();
+                self.init_writer().await?;
+            } else {
+                return Ok(());
+            }
+        }
+
+        let sample_bytes = Bytes::from(payload);
+        let sample_len = sample_bytes.len() as u64;
+
         let sample = Mp4Sample {
             start_time: self.video_current_pts,
             duration: dur,
-            is_sync: is_keyframe,
-            bytes: frame,
+            is_sync,
+            bytes: sample_bytes,
         };
         self.video_samples.push(sample);
         self.video_current_pts += dur as u64;
-        self.total_bytes += size as u64;
+
+        self.total_bytes += sample_len;
         self.total_ticks += dur as u64;
-        let fps_cur = self.timescale / dur;
-        if self.frame_rate == 0 || fps_cur > self.frame_rate {
+
+        let fps_cur = if dur > 0 { self.timescale / dur } else { 0 };
+        if fps_cur > 0 && (self.frame_rate == 0 || fps_cur > self.frame_rate) {
             self.frame_rate = fps_cur;
         }
+
+        self.refresh_video_metadata();
+
         Ok(())
+    }
+
+    fn ensure_video_adapter(&mut self, codec: VideoCodec) {
+        let adapter_missing = self.video_adapter.is_none();
+        let codec_changed = self
+            .video_codec_kind
+            .map(|kind| kind != codec)
+            .unwrap_or(true);
+
+        if adapter_missing || codec_changed {
+            self.reset_video_state();
+            self.video_adapter = Some(create_video_adapter(codec));
+            self.video_codec_kind = Some(codec);
+
+            if let Some(adapter) = self.video_adapter.as_ref() {
+                let timescale = adapter.timescale();
+                if timescale > 0 {
+                    self.timescale = timescale;
+                    self.seg_duration_ticks = timescale as u64 * DEFAULT_SEG_DURATION;
+                }
+            }
+        }
+    }
+
+    fn reset_video_state(&mut self) {
+        self.video_track_id = None;
+        self.fmp4_writer = None;
+        self.video_samples.clear();
+        self.video_seg_index = 0;
+        self.video_seg_start_dts = 0;
+        self.video_current_pts = 0;
+        self.segments.clear();
+        self.total_bytes = 0;
+        self.total_ticks = 0;
+        self.frame_rate = 0;
+        self.video_width = 0;
+        self.video_height = 0;
+        self.video_codec.clear();
+        self.last_keyframe_time = None;
+    }
+
+    fn refresh_video_metadata(&mut self) {
+        if let Some(adapter) = self.video_adapter.as_ref() {
+            let adapter = adapter.as_ref();
+            let width = adapter.width();
+            let height = adapter.height();
+            if width > 0 {
+                self.video_width = width;
+            }
+            if height > 0 {
+                self.video_height = height;
+            }
+            if let Some(cs) = adapter.codec_string() {
+                if self.video_codec != cs {
+                    self.video_codec = cs;
+                }
+            }
+        }
+    }
+
+    fn current_video_adapter_ready(&self) -> bool {
+        self.video_adapter
+            .as_ref()
+            .map(|adapter| adapter.ready())
+            .unwrap_or(false)
     }
 
     /// Check if we need to request a keyframe due to timeout
@@ -399,6 +331,7 @@ impl Segmenter {
     }
 
     async fn init_writer(&mut self) -> Result<()> {
+        self.refresh_video_metadata();
         // Get video width/height from adapter (only meaningful for H264 path)
         let (mut width, mut height) = (self.video_width, self.video_height);
         if (width == 0 || height == 0)
@@ -815,50 +748,4 @@ impl Segmenter {
         // lose one fragment, which is acceptable for live streaming.
         Ok(())
     }
-}
-
-// Add at bottom: helper to parse VP8 keyframe dimensions
-fn parse_vp8_keyframe_dimensions(frame: &[u8]) -> Option<(u32, u32)> {
-    // VP8 keyframe starts with uncompressed data chunk header:
-    // Start code bytes 0x9D 0x01 0x2A followed by 2 bytes width, 2 bytes height (little-endian),
-    // with 14-bit values and 2-bit scaling fields (ignored here).
-    // We search within the first 64 bytes for start code to be safe against payload descriptor.
-    let search_len = frame.len().min(64);
-    let hay = &frame[..search_len];
-    for i in 0..hay.len().saturating_sub(3) {
-        if hay[i] == 0x9D && hay[i + 1] == 0x01 && hay[i + 2] == 0x2A {
-            if i + 7 < hay.len() {
-                let w_raw = u16::from_le_bytes([hay[i + 3], hay[i + 4]]);
-                let h_raw = u16::from_le_bytes([hay[i + 5], hay[i + 6]]);
-                let width = (w_raw & 0x3FFF) as u32; // lower 14 bits
-                let height = (h_raw & 0x3FFF) as u32;
-                if width > 0 && height > 0 {
-                    return Some((width, height));
-                }
-            }
-            break;
-        }
-    }
-    None
-}
-
-// Add VP9 helper below VP8 helper
-fn parse_vp9_keyframe_dimensions(frame: &[u8]) -> Option<(u32, u32)> {
-    // VP9 keyframe contains sync code 0x49 0x83 0x42, followed by
-    // little-endian width_minus_1 and height_minus_1 (16-bit each).
-    let search_len = frame.len().min(128);
-    let hay = &frame[..search_len];
-    for i in 0..hay.len().saturating_sub(7) {
-        if hay[i] == 0x49 && hay[i + 1] == 0x83 && hay[i + 2] == 0x42 {
-            let w1 = u16::from_le_bytes([hay[i + 3], hay[i + 4]]) as u32;
-            let h1 = u16::from_le_bytes([hay[i + 5], hay[i + 6]]) as u32;
-            let w = w1 + 1;
-            let h = h1 + 1;
-            if w > 0 && h > 0 && w <= 8192 && h <= 8192 {
-                return Some((w, h));
-            }
-            break;
-        }
-    }
-    None
 }
