@@ -40,7 +40,7 @@ mod tests {
 
         // Feed one IDR frame which should trigger writer init
         let frame = make_h264_idr_frame();
-        seg.push_h264(frame, true, 3000).await.expect("push failed");
+        seg.push_h264(frame, 3000).await.expect("push failed");
 
         // Allow async background write task to finish
         sleep(Duration::from_millis(200)).await;
@@ -71,10 +71,10 @@ mod tests {
             .expect("seg");
 
         // two VP8 frames, the second is keyframe to roll
-        seg.push_vp8(Bytes::from_static(&[0x00, 1, 2, 3]), true, 3_000)
+        seg.push_vp8(Bytes::from_static(&[0x00, 1, 2, 3]), 3_000)
             .await
             .expect("vp8");
-        seg.push_vp8(Bytes::from_static(&[0x00, 4, 5, 6]), true, 90_000 * 10)
+        seg.push_vp8(Bytes::from_static(&[0x00, 4, 5, 6]), 90_000 * 10)
             .await
             .expect("vp8");
 

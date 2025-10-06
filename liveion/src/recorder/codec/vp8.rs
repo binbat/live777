@@ -41,7 +41,7 @@ impl CodecAdapter for Vp8Adapter {
         self.timescale
     }
     fn ready(&self) -> bool {
-        true
+        self.width > 0 && self.height > 0
     }
     fn convert_frame(&mut self, frame: &Bytes) -> (Vec<u8>, bool, bool) {
         let payload = frame.as_ref();
@@ -51,7 +51,13 @@ impl CodecAdapter for Vp8Adapter {
         } else {
             false
         };
-        (payload.to_vec(), is_key, false)
+
+        let mut cfg_updated = false;
+        if is_key {
+            cfg_updated = self.update_dimensions_from_keyframe(payload);
+        }
+
+        (payload.to_vec(), is_key, cfg_updated && self.ready())
     }
     fn codec_config(&self) -> Option<Vec<Vec<u8>>> {
         Some(vec![])
@@ -64,6 +70,36 @@ impl CodecAdapter for Vp8Adapter {
     }
     fn height(&self) -> u32 {
         self.height
+    }
+}
+
+impl Vp8Adapter {
+    fn update_dimensions_from_keyframe(&mut self, frame: &[u8]) -> bool {
+        let was_ready = self.ready();
+
+        // VP8 keyframe starts with uncompressed data chunk header:
+        // Start code bytes 0x9D 0x01 0x2A followed by 2 bytes width, 2 bytes height (little-endian),
+        // with 14-bit values and 2-bit scaling fields (ignored here).
+        let search_len = frame.len().min(64);
+        let hay = &frame[..search_len];
+        for i in 0..hay.len().saturating_sub(3) {
+            if hay[i] == 0x9D && hay[i + 1] == 0x01 && hay[i + 2] == 0x2A {
+                if i + 7 < hay.len() {
+                    let w_raw = u16::from_le_bytes([hay[i + 3], hay[i + 4]]);
+                    let h_raw = u16::from_le_bytes([hay[i + 5], hay[i + 6]]);
+                    let width = (w_raw & 0x3FFF) as u32;
+                    let height = (h_raw & 0x3FFF) as u32;
+                    if width > 0 && height > 0 {
+                        self.width = width;
+                        self.height = height;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+
+        !was_ready && self.ready()
     }
 }
 

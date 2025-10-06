@@ -11,7 +11,6 @@ use bytes::Bytes;
 /// This mirrors the public fields that were previously taken from `mp4::Mp4Sample`.
 #[derive(Clone, Debug)]
 pub struct Mp4Sample {
-    pub start_time: u64,
     pub duration: u32,
     pub is_sync: bool,
     pub bytes: Bytes,

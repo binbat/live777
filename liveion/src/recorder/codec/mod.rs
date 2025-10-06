@@ -3,9 +3,12 @@ pub mod opus;
 pub mod vp8;
 pub mod vp9;
 
-pub use h264::{H264Adapter, H264RtpParser};
+use h264::H264Adapter;
+pub use h264::H264RtpParser;
 pub use opus::OpusRtpParser;
+use vp8::Vp8Adapter;
 pub use vp8::Vp8RtpParser;
+use vp9::Vp9Adapter;
 pub use vp9::Vp9RtpParser;
 
 use anyhow::Result;
@@ -34,7 +37,7 @@ pub enum CodecEvent {
 /// 1. Eliminate Segmenter/Fmp4Writer dependencies on specific codec details;
 /// 2. Facilitate future support for HEVC/VP9/AV1 and other codecs;
 /// 3. Maintain zero dependencies, pure Rust implementation.
-pub trait CodecAdapter {
+pub trait CodecAdapter: Send + Sync {
     /// Track type (audio/video)
     fn kind(&self) -> TrackKind;
 
@@ -64,6 +67,23 @@ pub trait CodecAdapter {
     /// Video height, if applicable
     fn height(&self) -> u32 {
         0
+    }
+}
+
+/// Supported video codecs for recorder ingestion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoCodec {
+    H264,
+    Vp8,
+    Vp9,
+}
+
+/// Factory helper to create a concrete codec adapter by codec kind.
+pub fn create_video_adapter(codec: VideoCodec) -> Box<dyn CodecAdapter> {
+    match codec {
+        VideoCodec::H264 => Box::new(H264Adapter::new()),
+        VideoCodec::Vp8 => Box::new(Vp8Adapter::new()),
+        VideoCodec::Vp9 => Box::new(Vp9Adapter::new()),
     }
 }
 

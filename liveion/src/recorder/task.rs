@@ -188,10 +188,7 @@ impl RecordingTask {
 
                     result = async {
                         match video_rx_opt.as_mut() {
-                            Some(rx) => match rx.recv().await {
-                                Ok(packet) => Some(packet),
-                                Err(_) => None,
-                            },
+                            Some(rx) => rx.recv().await.ok(),
                             None => std::future::pending().await,
                         }
                     }, if video_rx_opt.is_some() => {
@@ -207,35 +204,33 @@ impl RecordingTask {
                                     continue;
                                 };
 
-                                if codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264) {
-                                    if let Ok(Some((frame, is_idr))) = parser_h264.push_packet(&packet) {
-                                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                        prev_ts_video = Some(pkt_ts);
-                                        if let Err(e) = segmenter.push_h264(Bytes::from(frame), is_idr, duration_ticks).await {
-                                            tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
-                                        }
-                                        frame_cnt_video += 1;
+                                if codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264)
+                                    && let Ok(Some((frame, _))) = parser_h264.push_packet(&packet)
+                                {
+                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                    prev_ts_video = Some(pkt_ts);
+                                    if let Err(e) = segmenter.push_h264(Bytes::from(frame), duration_ticks).await {
+                                        tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
                                     }
-                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP8) {
-                                    if let Ok(Some(frame)) = parser_vp8.push_packet(&packet) {
-                                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                        prev_ts_video = Some(pkt_ts);
-                                        let is_key = if !frame.is_empty() { (frame[0] & 0x01) == 0 } else { false };
-                                        if let Err(e) = segmenter.push_vp8(Bytes::from(frame), is_key, duration_ticks).await {
-                                            tracing::warn!("[recorder] {} failed to process VP8 frame: {}", stream_name_cloned, e);
-                                        }
-                                        frame_cnt_video += 1;
+                                    frame_cnt_video += 1;
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP8)
+                                    && let Ok(Some(frame)) = parser_vp8.push_packet(&packet)
+                                {
+                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                    prev_ts_video = Some(pkt_ts);
+                                    if let Err(e) = segmenter.push_vp8(Bytes::from(frame), duration_ticks).await {
+                                        tracing::warn!("[recorder] {} failed to process VP8 frame: {}", stream_name_cloned, e);
                                     }
-                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9) {
-                                    if let Ok(Some(frame)) = parser_vp9.push_packet(&packet) {
-                                        let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                        prev_ts_video = Some(pkt_ts);
-                                        let is_key = if !frame.is_empty() { ((frame[0] >> 5) & 0x01) == 0 } else { false };
-                                        if let Err(e) = segmenter.push_vp9(Bytes::from(frame), is_key, duration_ticks).await {
-                                            tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
-                                        }
-                                        frame_cnt_video += 1;
+                                    frame_cnt_video += 1;
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9)
+                                    && let Ok(Some(frame)) = parser_vp9.push_packet(&packet)
+                                {
+                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                    prev_ts_video = Some(pkt_ts);
+                                    if let Err(e) = segmenter.push_vp9(Bytes::from(frame), duration_ticks).await {
+                                        tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
                                     }
+                                    frame_cnt_video += 1;
                                 }
                             }
                             None => {
@@ -247,10 +242,7 @@ impl RecordingTask {
 
                     result = async {
                         match audio_rx_opt.as_mut() {
-                            Some(rx) => match rx.recv().await {
-                                Ok(packet) => Some(packet),
-                                Err(_) => None,
-                            },
+                            Some(rx) => rx.recv().await.ok(),
                             None => std::future::pending().await,
                         }
                     }, if audio_rx_opt.is_some() => {
@@ -278,12 +270,7 @@ impl RecordingTask {
                         }
                     },
 
-                    change = async {
-                        match track_change_rx.recv().await {
-                            Ok(_) => true,
-                            Err(_) => false,
-                        }
-                    }, if video_rx_opt.is_none() => {
+                    change = async { track_change_rx.recv().await.is_ok() }, if video_rx_opt.is_none() => {
                         if !change && audio_rx_opt.is_none() {
                             break;
                         }
@@ -299,14 +286,15 @@ impl RecordingTask {
                             }
                         }
 
-                        if codec_mime_opt.is_some() && video_rx_opt.is_none() {
-                            if let Some(rx) = forward_clone.subscribe_video_rtp().await {
-                                tracing::info!(
-                                    "[recorder] stream {} video track became available",
-                                    stream_name_cloned
-                                );
-                                video_rx_opt = Some(rx);
-                            }
+                        if codec_mime_opt.is_some()
+                            && video_rx_opt.is_none()
+                            && let Some(rx) = forward_clone.subscribe_video_rtp().await
+                        {
+                            tracing::info!(
+                                "[recorder] stream {} video track became available",
+                                stream_name_cloned
+                            );
+                            video_rx_opt = Some(rx);
                         }
                     }
                 }

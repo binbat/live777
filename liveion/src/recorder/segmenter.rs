@@ -153,7 +153,6 @@ impl Segmenter {
             self.audio_seg_start_pts = sample_start;
         }
         let sample = Mp4Sample {
-            start_time: sample_start,
             duration: duration_ticks,
             is_sync: true, // audio samples are always sync
             bytes: payload,
@@ -230,7 +229,6 @@ impl Segmenter {
         let sample_len = sample_bytes.len() as u64;
 
         let sample = Mp4Sample {
-            start_time: self.video_current_pts,
             duration: dur,
             is_sync,
             bytes: sample_bytes,
@@ -301,10 +299,10 @@ impl Segmenter {
             if height > 0 {
                 self.video_height = height;
             }
-            if let Some(cs) = adapter.codec_string() {
-                if self.video_codec != cs {
-                    self.video_codec = cs;
-                }
+            if let Some(cs) = adapter.codec_string()
+                && self.video_codec != cs
+            {
+                self.video_codec = cs;
             }
         }
     }
