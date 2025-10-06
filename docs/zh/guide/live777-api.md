@@ -174,7 +174,7 @@ Request:
 
 ### 开始录制流
 
-`POST` `/api/streams/:streamId/record`
+`POST` `/api/record/:streamId`
 
 开始录制指定的流。流必须处于活跃状态（有发布者）才能开始录制。需要启用 `recorder` 特性。
 
@@ -196,7 +196,7 @@ Request:
 
 ### 录制状态
 
-`GET` `/api/streams/:streamId/record`
+`GET` `/api/record/:streamId`
 
 响应: [200]
 
@@ -206,7 +206,7 @@ Request:
 
 ### 停止录制
 
-`DELETE` `/api/streams/:streamId/record`
+`DELETE` `/api/record/:streamId`
 
 停止指定流的录制。成功时返回 [200]，响应体为空。
 

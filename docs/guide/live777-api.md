@@ -174,7 +174,7 @@ Request:
 
 ### Start Recording a Stream
 
-`POST` `/api/streams/:streamId/record`
+`POST` `/api/record/:streamId`
 
 Starts recording the specified stream. The stream must be active (have a publisher) for recording to begin.
 
@@ -192,7 +192,7 @@ Response: [200]
 
 ### Recording Status (by id)
 
-`GET` `/api/streams/:streamId/record`
+`GET` `/api/record/:streamId`
 
 Response: [200]
 
@@ -202,7 +202,7 @@ Response: [200]
 
 ### Stop Recording
 
-`DELETE` `/api/streams/:streamId/record`
+`DELETE` `/api/record/:streamId`
 
 Stops an active recording session for the specified stream. Returns [200] with an empty body on success.
 

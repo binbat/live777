@@ -62,12 +62,12 @@ root = "/var/lib/live777/recordings"
 
 Requires `recorder` feature.
 
-- Start recording: `POST` `/api/streams/:streamId/record`
+- Start recording: `POST` `/api/record/:streamId`
   - Body (optional): `{ "base_dir": "optional/path/prefix" }`
   - Response: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
-- Recording status: `GET` `/api/streams/:streamId/record`
+- Recording status: `GET` `/api/record/:streamId`
   - Response: `{ "recording": true }`
-- Stop recording: `DELETE` `/api/streams/:streamId/record`
+- Stop recording: `DELETE` `/api/record/:streamId`
 
 ## MPD Path Conventions {#mpd}
 

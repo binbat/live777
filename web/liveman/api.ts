@@ -119,9 +119,9 @@ export interface RecordingIndexEntry {
 }
 
 export function getRecordingIndexStreams() {
-    return w.url('/api/record/index/streams').get().json<string[]>();
+    return w.url('/api/playback').get().json<string[]>();
 }
 
 export function getRecordingIndexByStream(stream: string) {
-    return w.url(`/api/record/index/${encodeURIComponent(stream)}`).get().json<RecordingIndexEntry[]>();
+    return w.url(`/api/playback/${encodeURIComponent(stream)}`).get().json<RecordingIndexEntry[]>();
 }

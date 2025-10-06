@@ -28,7 +28,7 @@ Recording and playback related APIs (proxy and index listing)
 
 ### List Streams with Recording Index
 
-`GET` `/api/record/index/streams`
+`GET` `/api/playback`
 
 Response: [200] `application/json`
 ```json
@@ -37,7 +37,7 @@ Response: [200] `application/json`
 
 ### List Index by Stream
 
-`GET` `/api/record/index/{stream}`
+`GET` `/api/playback/{stream}`
 
 Response: [200] `application/json`
 ```json

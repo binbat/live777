@@ -428,7 +428,7 @@ url = "http://${localhost}:${live777CloudPort}"
 
         async function getRecordingMpdPath(streamId: string): Promise<string | undefined> {
             try {
-                const res = await fetch(`${live777LivemanHost}/api/record/index/${streamId}`)
+                const res = await fetch(`${live777LivemanHost}/api/playback/${streamId}`)
                 if (!res.ok) return undefined
                 const recordings: { mpd_path: string }[] = await res.json()
                 return recordings.find(r => r.mpd_path)?.mpd_path

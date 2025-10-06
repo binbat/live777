@@ -28,7 +28,7 @@ Response: [204]
 
 ### 列出存在录制索引的流
 
-`GET` `/api/record/index/streams`
+`GET` `/api/playback`
 
 响应: [200] `application/json`
 ```json
@@ -37,7 +37,7 @@ Response: [204]
 
 ### 根据流列出录制索引
 
-`GET` `/api/record/index/{stream}`
+`GET` `/api/playback/{stream}`
 
 响应: [200] `application/json`
 ```json

@@ -12,13 +12,10 @@ use crate::{AppState, result::Result};
 
 pub fn route() -> Router<AppState> {
     Router::new()
-        .route("/api/record/index/streams", get(list_index_streams))
-        .route("/api/record/index/{stream}", get(list_index_by_stream))
-        .route("/api/record/start/{stream}", post(start_record))
-        .route("/api/record/stop/{stream}", post(stop_record))
-        .route("/api/record/status/{stream}", get(get_record_status))
+        .route("/api/playback", get(list_index_streams))
+        .route("/api/playback/{stream}", get(list_index_by_stream))
         .route(
-            "/api/streams/{stream}/record",
+            "/api/record/{stream}",
             post(start_record)
                 .get(get_record_status)
                 .delete(stop_record),

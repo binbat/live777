@@ -7,7 +7,6 @@ liveion 的 Recorder 是一个可选功能，用于将实时流自动录制为 M
 | container  | video codecs                | audio codecs   |
 | -------- | --------------------------- | -------------- |
 | `Fragmented MP4`   | `H264` | `Opus` |
-| `WebM`   |   |  |
 
 ## Liveman 集成 {#liveman}
 
@@ -62,11 +61,12 @@ root = "/var/lib/live777/recordings"
 
 需要启用 `recorder` 特性。
 
-- 启动录制: `POST` `/api/streams/:streamId/record`
+- 启动录制: `POST` `/api/record/:streamId`
   - 请求体（可选）: `{ "base_dir": "optional/path/prefix" }`
   - 响应: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
-- 录制状态: `GET` `/api/streams/:streamId/record/status`
+- 录制状态: `GET` `/api/record/:streamId`
   - 响应: `{ "recording": true }`
+- 停止录制: `DELETE` `/api/record/:streamId`
 
 
 ## MPD 路径规则 {#mpd}

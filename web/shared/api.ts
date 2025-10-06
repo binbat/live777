@@ -67,7 +67,7 @@ export function cascade(streamId: string, params: Cascade) {
     return w.url(`/api/cascade/${streamId}`).post(params).res();
 }
 
-const recordUrl = (streamId: string) => `/api/streams/${encodeURIComponent(streamId)}/record`;
+const recordUrl = (streamId: string) => `/api/record/${encodeURIComponent(streamId)}`;
 
 export function startRecording(streamId: string) {
     return w
