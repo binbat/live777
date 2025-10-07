@@ -98,14 +98,39 @@ impl Fmp4Writer {
     // === internal helpers ===
 
     fn build_ftyp(&self) -> Vec<u8> {
-        // major_brand = isom, minor_version = 512, compat = isom iso2 avc1 mp41
-        let mut payload = Vec::with_capacity(4 + 4 + 4 * 4);
+        // major_brand = isom, minor_version = 512, compatible brands depend on codec
+        let mut payload = Vec::with_capacity(4 + 4 + 4 * 5);
         payload.extend_from_slice(b"isom");
         payload.extend_from_slice(&512u32.to_be_bytes());
-        payload.extend_from_slice(b"isom");
-        payload.extend_from_slice(b"iso2");
-        payload.extend_from_slice(b"avc1");
-        payload.extend_from_slice(b"mp41");
+
+        let mut compatibles: Vec<[u8; 4]> = vec![*b"isom", *b"iso2", *b"mp41"];
+        let mut push_brand = |brand: &[u8; 4]| {
+            if !compatibles.iter().any(|b| b == brand) {
+                compatibles.push(*brand);
+            }
+        };
+
+        if self.kind == TrackKind::Video {
+            let cs = self.codec_string.to_ascii_lowercase();
+            if cs.starts_with("avc") {
+                push_brand(b"avc1");
+            } else if cs.starts_with("hev1") {
+                push_brand(b"hev1");
+            } else if cs.starts_with("hvc1") {
+                push_brand(b"hvc1");
+            } else if cs.starts_with("vp09") {
+                push_brand(b"vp09");
+            } else if cs.starts_with("vp08") {
+                push_brand(b"vp08");
+            }
+        } else if self.kind == TrackKind::Audio && self.codec_string.eq_ignore_ascii_case("opus") {
+            push_brand(b"Opus");
+        }
+
+        for brand in compatibles {
+            payload.extend_from_slice(&brand);
+        }
+
         make_box(b"ftyp", &payload)
     }
 
@@ -239,26 +264,95 @@ impl Fmp4Writer {
         make_box(b"avc1", &payload)
     }
 
-    fn build_vpcc(&self, _is_vp9: bool) -> Vec<u8> {
-        // Minimal VP Codec Configuration box (vpcC)
-        // configVersion(1)=1, profile(1)=0, level(1)=10, bitDepth(4)=8, chromaSubsampling(2)=1 (4:2:0), videoFullRangeFlag(1)=0
+    fn build_vpcc(&self, is_vp9: bool) -> Vec<u8> {
+        // VP Codec Configuration box (vpcC) as per ISO/IEC 23000-22
         let mut payload = Vec::new();
-        payload.push(1u8); // configVersion
-        payload.push(0u8); // profile
-        payload.push(10u8); // level
-        // pack: reserved(1)=0, bitDepth(4), chromaSubsampling(2), videoFullRangeFlag(1)
-        let bit_depth = 8u8; // 8-bit
-        let chroma = 1u8; // 4:2:0
-        let full_range = 0u8;
-        let packed = ((bit_depth & 0x0F) << 3) | ((chroma & 0x03) << 1) | (full_range & 0x01);
+        let lower_cs = self.codec_string.to_ascii_lowercase();
+        let parts: Vec<&str> = lower_cs.split('.').collect();
+
+        let mut profile: u8 = 0;
+        let mut level: u8 = if is_vp9 { 10 } else { 10 };
+        let mut bit_depth: u8 = 8;
+        let mut chroma_sampling: u8 = 1; // 4:2:0 default
+        let mut full_range: u8 = 0;
+        let mut colour_primaries: u8 = 2;
+        let mut transfer_characteristics: u8 = 2;
+        let mut matrix_coefficients: u8 = 2;
+
+        let parse_component = |s: &str| -> Option<u8> { s.parse::<u8>().ok() };
+
+        if parts.len() >= 2 {
+            if let Some(val) = parse_component(parts[1]) {
+                profile = val;
+            }
+        }
+        if parts.len() >= 3 {
+            if let Some(val) = parse_component(parts[2]) {
+                level = val;
+            }
+        }
+        if parts.len() >= 4 {
+            if let Some(val) = parse_component(parts[3]) {
+                bit_depth = val.clamp(1, 15);
+            }
+        }
+        if parts.len() >= 5 {
+            if let Some(val) = parse_component(parts[4]) {
+                match val {
+                    0 => chroma_sampling = 0,
+                    1 => chroma_sampling = 1,
+                    2 => chroma_sampling = 2,
+                    3 => chroma_sampling = 3,
+                    4 => chroma_sampling = 4,
+                    _ => {}
+                }
+            }
+        }
+        if parts.len() >= 6 {
+            if let Some(val) = parse_component(parts[5]) {
+                colour_primaries = val;
+            }
+        }
+        if parts.len() >= 7 {
+            if let Some(val) = parse_component(parts[6]) {
+                transfer_characteristics = val;
+            }
+        }
+        if parts.len() >= 8 {
+            if let Some(val) = parse_component(parts[7]) {
+                matrix_coefficients = val;
+            }
+        }
+        if parts.len() >= 9 {
+            if let Some(val) = parse_component(parts[8]) {
+                full_range = if val != 0 { 1 } else { 0 };
+            }
+        }
+
+        // FullBox version (1) and flags (0)
+        payload.push(1u8);
+        payload.extend_from_slice(&[0u8; 3]);
+
+        // core codec metadata
+        payload.push(profile);
+        payload.push(level);
+
+        let chroma_field = chroma_sampling & 0x07;
+        let packed = ((bit_depth & 0x0F) << 3) | ((chroma_field & 0x07) << 1) | (full_range & 0x01);
         payload.push(packed);
-        // colourPrimaries, transferCharacteristics, matrixCoefficients
-        payload.push(2u8); // BT.709 nominal
-        payload.push(2u8);
-        payload.push(2u8);
-        // codecIntializationData (length=0)
-        payload.push(0u8); // codecIntializationDataSize (0)
-        // For VP8/VP9 we use the same box type vpcC
+
+        payload.push(colour_primaries);
+        payload.push(transfer_characteristics);
+        payload.push(matrix_coefficients);
+
+        let mut codec_init_data = Vec::new();
+        for blob in &self.codec_config {
+            codec_init_data.extend_from_slice(blob);
+        }
+        let codec_init_len = codec_init_data.len().min(u16::MAX as usize) as u16;
+        payload.extend_from_slice(&codec_init_len.to_be_bytes());
+        payload.extend_from_slice(&codec_init_data[..codec_init_len as usize]);
+
         make_box(b"vpcC", &payload)
     }
 
@@ -725,5 +819,56 @@ mod tests {
         let len = u32::from_be_bytes([avcc[0], avcc[1], avcc[2], avcc[3]]);
         assert_eq!(len, 4);
         assert_eq!(&avcc[4..], &[0x65, 0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn test_vp8_init_segment_has_vpcc_with_expected_layout() {
+        let writer = Fmp4Writer::new(90_000, 1, 640, 480, "vp08.00.10.08".to_string(), vec![]);
+
+        let init_seg = writer.build_init_segment();
+        assert!(init_seg.len() > 32);
+
+        let ftyp_size = BigEndian::read_u32(&init_seg[0..4]) as usize;
+        assert_eq!(&init_seg[4..8], b"ftyp");
+        assert!(ftyp_size <= init_seg.len());
+
+        let mut found_vp08 = false;
+        let mut cursor = 16usize;
+        while cursor + 4 <= ftyp_size {
+            if &init_seg[cursor..cursor + 4] == b"vp08" {
+                found_vp08 = true;
+                break;
+            }
+            cursor += 4;
+        }
+        assert!(found_vp08, "ftyp missing vp08 compatible brand");
+
+        let vpcc_pos = init_seg
+            .windows(4)
+            .position(|w| w == b"vpcC")
+            .expect("vpcC box not found");
+        assert!(vpcc_pos >= 4);
+        let box_start = vpcc_pos - 4;
+        let box_size = BigEndian::read_u32(&init_seg[box_start..box_start + 4]) as usize;
+        let data_start = vpcc_pos + 4;
+        let data_end = box_start + box_size;
+        assert!(data_end <= init_seg.len(), "vpcC box overruns buffer");
+        let data = &init_seg[data_start..data_end];
+
+        assert!(
+            data.len() >= 13,
+            "vpcC payload too short: expected >= 13, got {}",
+            data.len()
+        );
+        let codec_init_len = u16::from_be_bytes([data[7], data[8]]) as usize;
+        let header_without_tail = 9;
+        let tail_len = 4;
+        assert_eq!(
+            data.len(),
+            header_without_tail + codec_init_len + tail_len,
+            "vpcC length mismatch"
+        );
+        assert_eq!(codec_init_len, 0);
+        assert_eq!(data[data.len() - 1], 0u8);
     }
 }
