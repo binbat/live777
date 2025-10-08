@@ -271,7 +271,7 @@ impl Fmp4Writer {
         let parts: Vec<&str> = lower_cs.split('.').collect();
 
         let mut profile: u8 = 0;
-        let mut level: u8 = if is_vp9 { 10 } else { 10 };
+        let mut level: u8 = if is_vp9 { 10 } else { 0 };
         let mut bit_depth: u8 = 8;
         let mut chroma_sampling: u8 = 1; // 4:2:0 default
         let mut full_range: u8 = 0;
@@ -281,52 +281,36 @@ impl Fmp4Writer {
 
         let parse_component = |s: &str| -> Option<u8> { s.parse::<u8>().ok() };
 
-        if parts.len() >= 2 {
-            if let Some(val) = parse_component(parts[1]) {
-                profile = val;
+        if let Some(val) = parts.get(1).and_then(|s| parse_component(s)) {
+            profile = val;
+        }
+        if let Some(val) = parts.get(2).and_then(|s| parse_component(s)) {
+            level = val;
+        }
+        if let Some(val) = parts.get(3).and_then(|s| parse_component(s)) {
+            bit_depth = val.clamp(1, 15);
+        }
+        if let Some(val) = parts.get(4).and_then(|s| parse_component(s)) {
+            match val {
+                0 => chroma_sampling = 0,
+                1 => chroma_sampling = 1,
+                2 => chroma_sampling = 2,
+                3 => chroma_sampling = 3,
+                4 => chroma_sampling = 4,
+                _ => {}
             }
         }
-        if parts.len() >= 3 {
-            if let Some(val) = parse_component(parts[2]) {
-                level = val;
-            }
+        if let Some(val) = parts.get(5).and_then(|s| parse_component(s)) {
+            colour_primaries = val;
         }
-        if parts.len() >= 4 {
-            if let Some(val) = parse_component(parts[3]) {
-                bit_depth = val.clamp(1, 15);
-            }
+        if let Some(val) = parts.get(6).and_then(|s| parse_component(s)) {
+            transfer_characteristics = val;
         }
-        if parts.len() >= 5 {
-            if let Some(val) = parse_component(parts[4]) {
-                match val {
-                    0 => chroma_sampling = 0,
-                    1 => chroma_sampling = 1,
-                    2 => chroma_sampling = 2,
-                    3 => chroma_sampling = 3,
-                    4 => chroma_sampling = 4,
-                    _ => {}
-                }
-            }
+        if let Some(val) = parts.get(7).and_then(|s| parse_component(s)) {
+            matrix_coefficients = val;
         }
-        if parts.len() >= 6 {
-            if let Some(val) = parse_component(parts[5]) {
-                colour_primaries = val;
-            }
-        }
-        if parts.len() >= 7 {
-            if let Some(val) = parse_component(parts[6]) {
-                transfer_characteristics = val;
-            }
-        }
-        if parts.len() >= 8 {
-            if let Some(val) = parse_component(parts[7]) {
-                matrix_coefficients = val;
-            }
-        }
-        if parts.len() >= 9 {
-            if let Some(val) = parse_component(parts[8]) {
-                full_range = if val != 0 { 1 } else { 0 };
-            }
+        if let Some(val) = parts.get(8).and_then(|s| parse_component(s)) {
+            full_range = u8::from(val != 0);
         }
 
         // FullBox version (1) and flags (0)

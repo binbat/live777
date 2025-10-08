@@ -437,11 +437,11 @@ impl Vp9RtpParser {
             return Ok(None);
         }
 
-        if let Some(expected) = self.fragment_next_seq {
-            if pkt.header.sequence_number != expected {
-                self.reset_fragments();
-                return Ok(None);
-            }
+        if let Some(expected) = self.fragment_next_seq
+            && pkt.header.sequence_number != expected
+        {
+            self.reset_fragments();
+            return Ok(None);
         }
 
         self.fragment_next_seq = Some(pkt.header.sequence_number.wrapping_add(1));

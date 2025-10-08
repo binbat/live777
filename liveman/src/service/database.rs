@@ -68,11 +68,11 @@ fn normalize_sqlite_url(database_url: &str) -> Result<String> {
         db_path = std::env::current_dir()?.join(db_path);
     }
 
-    if let Some(parent) = db_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create database directory: {:?}", parent))?;
-        }
+    if let Some(parent) = db_path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create database directory: {:?}", parent))?;
     }
 
     if !db_path.exists() {
