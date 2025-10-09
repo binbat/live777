@@ -179,6 +179,12 @@ impl Segmenter {
             .await
     }
 
+    /// Feed one AV1 temporal unit (already reassembled by RTP parser)
+    pub async fn push_av1(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
+        self.push_video_frame(VideoCodec::Av1, frame, None, duration_ticks)
+            .await
+    }
+
     async fn push_video_frame(
         &mut self,
         codec: VideoCodec,
@@ -357,14 +363,14 @@ impl Segmenter {
 
         // Build init segment via our new fMP4 writer (track_id fixed to 1)
         let track_id = 1u32;
-        let codec_config = if self.video_codec.to_ascii_lowercase().starts_with("avc1") {
-            if let Some(adapter) = self.video_adapter.as_ref() {
+        let lower_codec = self.video_codec.to_ascii_lowercase();
+        let codec_config = if let Some(adapter) = self.video_adapter.as_ref() {
+            if lower_codec.starts_with("avc1") || lower_codec.starts_with("av01") {
                 adapter.codec_config().unwrap_or_default()
             } else {
                 vec![]
             }
         } else {
-            // VP8/VP9 do not require codec private data here; vpcC in sample entry is enough
             vec![]
         };
 

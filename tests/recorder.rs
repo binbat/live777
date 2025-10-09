@@ -77,7 +77,7 @@ async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
     whip_future.abort();
     let _ = whip_future.await;
 
-    let mut outputs = collect_recording_outputs(storage_root.as_path());
+    let mut outputs = wait_for_video_outputs(storage_root.as_path()).await?;
 
     assert!(outputs.manifest.exists(), "manifest.mpd not found");
     let manifest_content = fs::read_to_string(&outputs.manifest)?;
@@ -96,6 +96,106 @@ async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
     assert!(
         outputs.video_segments.len() >= 2,
         "expected at least two video segments, got {}",
+        outputs.video_segments.len()
+    );
+
+    for seg_path in outputs.video_segments.iter().take(2) {
+        let metadata = fs::metadata(seg_path)?;
+        assert!(metadata.len() > 0, "segment {:?} is empty", seg_path);
+    }
+
+    assert!(
+        outputs.audio_segments.is_empty(),
+        "unexpected audio segments: {:?}",
+        outputs.audio_segments
+    );
+    assert!(
+        outputs.audio_init_segment.is_none(),
+        "unexpected audio_init.m4s present"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await?;
+    let addr = listener.local_addr()?;
+
+    let storage_dir = TempDir::new()?;
+    let storage_root = storage_dir.path().join("records");
+    fs::create_dir_all(&storage_root)?;
+
+    let stream_id = "recorder-av1";
+
+    let mut cfg = Config::default();
+    cfg.recorder.auto_streams = vec![stream_id.to_string()];
+    cfg.recorder.rotate_daily = false;
+    cfg.recorder.storage = StorageConfig::Fs {
+        root: storage_root.to_string_lossy().into_owned(),
+    };
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let client = Client::new();
+    client
+        .post(format!("http://{addr}{}", api::path::streams(stream_id)))
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let rtp_port: u16 = 5232;
+    let sdp_dir = TempDir::new()?;
+    let sdp_path = sdp_dir.path().join("input.sdp");
+    let sdp_path_str = sdp_path.to_string_lossy().into_owned();
+
+    let ffmpeg_cmd = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p -c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 -strict experimental -f rtp \"rtp://{}\" -sdp_file {}",
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rtp_port),
+        sdp_path_str
+    );
+
+    let whip_future = tokio::spawn(livetwo::whip::into(
+        sdp_path_str.clone(),
+        format!("http://{addr}{}", api::path::whip(stream_id)),
+        None,
+        Some(ffmpeg_cmd),
+    ));
+
+    wait_for_publish_connected(&client, addr, stream_id).await?;
+
+    sleep(Duration::from_secs(30)).await;
+
+    client
+        .delete(format!("http://{addr}{}", api::path::streams(stream_id)))
+        .send()
+        .await?;
+
+    sleep(Duration::from_secs(5)).await;
+
+    whip_future.abort();
+    let _ = whip_future.await;
+
+    let mut outputs = wait_for_video_outputs(storage_root.as_path()).await?;
+
+    assert!(outputs.manifest.exists(), "manifest.mpd not found");
+    let manifest_content = fs::read_to_string(&outputs.manifest)?;
+    assert!(
+        manifest_content.contains("codecs=\"av01"),
+        "manifest does not advertise AV1 codec"
+    );
+
+    let init_segment = outputs
+        .init_segment
+        .as_ref()
+        .expect("init.m4s path missing");
+    assert!(init_segment.exists(), "init.m4s not found");
+
+    outputs.video_segments.sort();
+    assert!(
+        outputs.video_segments.len() >= 1,
+        "expected at least one video segment, got {}",
         outputs.video_segments.len()
     );
 
@@ -292,4 +392,26 @@ fn collect_recording_outputs(root: &Path) -> RecordingOutputs {
         init_segment,
         audio_init_segment,
     }
+}
+
+async fn wait_for_video_outputs(root: &Path) -> anyhow::Result<RecordingOutputs> {
+    let mut attempts = 0;
+    let mut last = None;
+    while attempts < 150 {
+        let outputs = collect_recording_outputs(root);
+        let has_manifest = outputs.manifest.exists();
+        let has_init = outputs.init_segment.as_ref().is_some_and(|p| p.exists());
+        let has_segment = outputs.video_segments.iter().any(|p| p.exists());
+        if has_manifest && has_init && has_segment {
+            return Ok(outputs);
+        }
+        last = Some(outputs);
+        attempts += 1;
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    Err(anyhow::anyhow!(
+        "timed out waiting for video outputs: {:?}",
+        last
+    ))
 }

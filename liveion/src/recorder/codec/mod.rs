@@ -1,8 +1,11 @@
+pub mod av1;
 pub mod h264;
 pub mod opus;
 pub mod vp8;
 pub mod vp9;
 
+use av1::Av1Adapter;
+pub use av1::Av1RtpParser;
 use h264::H264Adapter;
 pub use h264::H264RtpParser;
 pub use opus::OpusRtpParser;
@@ -76,6 +79,7 @@ pub enum VideoCodec {
     H264,
     Vp8,
     Vp9,
+    Av1,
 }
 
 /// Factory helper to create a concrete codec adapter by codec kind.
@@ -84,6 +88,7 @@ pub fn create_video_adapter(codec: VideoCodec) -> Box<dyn CodecAdapter> {
         VideoCodec::H264 => Box::new(H264Adapter::new()),
         VideoCodec::Vp8 => Box::new(Vp8Adapter::new()),
         VideoCodec::Vp9 => Box::new(Vp9Adapter::new()),
+        VideoCodec::Av1 => Box::new(Av1Adapter::new()),
     }
 }
 

@@ -114,6 +114,8 @@ impl Fmp4Writer {
             let cs = self.codec_string.to_ascii_lowercase();
             if cs.starts_with("avc") {
                 push_brand(b"avc1");
+            } else if cs.starts_with("av01") {
+                push_brand(b"av01");
             } else if cs.starts_with("hev1") {
                 push_brand(b"hev1");
             } else if cs.starts_with("hvc1") {
@@ -210,7 +212,9 @@ impl Fmp4Writer {
         // Only one entry – sample entry depending on track kind
         let sample_entry = if self.kind == TrackKind::Video {
             let cs = self.codec_string.to_ascii_lowercase();
-            if cs.starts_with("vp09") {
+            if cs.starts_with("av01") {
+                self.build_av01_sample_entry()
+            } else if cs.starts_with("vp09") {
                 self.build_vp09_sample_entry()
             } else if cs.starts_with("vp08") {
                 self.build_vp08_sample_entry()
@@ -262,6 +266,38 @@ impl Fmp4Writer {
         payload.extend_from_slice(&avcc);
 
         make_box(b"avc1", &payload)
+    }
+
+    fn build_av01_sample_entry(&self) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0u8; 6]);
+        payload.extend_from_slice(&1u16.to_be_bytes());
+
+        payload.extend_from_slice(&0u16.to_be_bytes()); // pre_defined
+        payload.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+
+        payload.extend_from_slice(&(self.width as u16).to_be_bytes());
+        payload.extend_from_slice(&(self.height as u16).to_be_bytes());
+
+        payload.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+        payload.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&1u16.to_be_bytes());
+
+        payload.extend_from_slice(&[0u8; 32]);
+
+        payload.extend_from_slice(&0x0018u16.to_be_bytes());
+        payload.extend_from_slice(&0xFFFFu16.to_be_bytes());
+
+        let av1c_payload = self.codec_config.get(0).map(Vec::as_slice).unwrap_or(&[]);
+        let av1c = make_box(b"av1C", av1c_payload);
+        payload.extend_from_slice(&av1c);
+
+        make_box(b"av01", &payload)
     }
 
     fn build_vpcc(&self, is_vp9: bool) -> Vec<u8> {
@@ -790,6 +826,22 @@ mod tests {
         assert_eq!(&init_seg[4..8], b"ftyp");
         // Ensure that the moov box is also present somewhere in the buffer
         assert!(init_seg.windows(4).any(|w| w == b"moov"));
+    }
+
+    #[test]
+    fn test_av1_init_segment_contains_av1c_box() {
+        let writer = Fmp4Writer::new(
+            90_000,
+            1,
+            640,
+            360,
+            "av01.0.08M.08.01.0.0".to_string(),
+            vec![vec![0x81, 0x00, 0x00, 0x00]],
+        );
+
+        let init_seg = writer.build_init_segment();
+        assert!(init_seg.windows(4).any(|w| w == b"av1C"));
+        assert!(init_seg.windows(4).any(|w| w == b"av01"));
     }
 
     #[test]
