@@ -28,27 +28,37 @@ impl Av1Adapter {
         }
     }
 
-    fn update_sequence_header(&mut self, obu: &ParsedObu) -> Result<bool> {
+    fn update_sequence_header_from_obu(&mut self, obu_without_size: &[u8]) -> Result<bool> {
         if self
             .sequence_header
             .as_ref()
-            .map(|existing| existing.as_slice() == obu.obu_no_size.as_slice())
+            .map(|existing| existing.as_slice() == obu_without_size)
             .unwrap_or(false)
         {
             return Ok(false);
         }
 
-        let info = SequenceHeader::parse(&obu.obu_no_size)?;
+        let info = SequenceHeader::parse(obu_without_size)?;
         let codec_string = build_codec_string(&info);
         
         // The av1C record's ConfigOBUs field must contain the marshalled sequence header
-        // (i.e., with size field), matching mediamtx's implementation
-        let av1c = build_av1c_record(&info, &obu.obu_with_size);
+        // (i.e., with size field). We need to create an OBU with size field.
+        let payload_size = obu_without_size.len() - 1;
+        let mut obu_with_size = Vec::new();
+        obu_with_size.push(obu_without_size[0] | 0x02); // Set has_size_field bit
+        
+        // Write LEB128 size
+        let mut size_buf = BytesMut::new();
+        write_leb128(&mut size_buf, payload_size);
+        obu_with_size.extend_from_slice(&size_buf);
+        obu_with_size.extend_from_slice(&obu_without_size[1..]);
+        
+        let av1c = build_av1c_record(&info, &obu_with_size);
 
         self.width = info.max_frame_width_minus1 + 1;
         self.height = info.max_frame_height_minus1 + 1;
         self.codec_string = Some(codec_string);
-        self.sequence_header = Some(obu.obu_no_size.clone());
+        self.sequence_header = Some(obu_without_size.to_vec());
         self.av1c_record = Some(av1c);
         Ok(true)
     }
@@ -78,40 +88,49 @@ impl CodecAdapter for Av1Adapter {
         let mut is_random_access = false;
 
         // Parse the temporal unit and ensure all OBUs have size fields
-        match parse_bitstream(frame.as_ref()) {
+        match parse_temporal_unit(frame.as_ref()) {
             Ok(obus) => {
+                tracing::trace!("[av1] parsed {} OBUs from temporal unit (input size: {})", obus.len(), frame.len());
+                
                 for obu in &obus {
-                    match obu.obu_type {
-                        OBU_TYPE_SEQUENCE_HEADER => {
-                            match self.update_sequence_header(obu) {
-                                Ok(updated) => {
-                                    if updated {
-                                        tracing::debug!("[av1] sequence header updated");
-                                        config_updated = true;
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::warn!("[av1] failed to parse sequence header: {err}");
+                    let obu_type = (obu[0] >> 3) & 0x0F;
+                    tracing::trace!("[av1] OBU type: {}, size: {}, header: 0x{:02x}", obu_type, obu.len(), obu[0]);
+                    
+                    if obu_type == OBU_TYPE_SEQUENCE_HEADER {
+                        // Need to parse the OBU to update sequence header
+                        match self.update_sequence_header_from_obu(obu) {
+                            Ok(updated) => {
+                                if updated {
+                                    tracing::info!("[av1] sequence header updated: {}x{}, codec: {}", 
+                                        self.width, self.height, 
+                                        self.codec_string.as_ref().unwrap_or(&"unknown".to_string()));
+                                    config_updated = true;
                                 }
                             }
-                            // A temporal unit is random access if it contains a sequence header
-                            is_random_access = true;
+                            Err(err) => {
+                                tracing::warn!("[av1] failed to parse sequence header: {err}");
+                            }
                         }
-                        _ => {}
+                        // According to AV1 spec and mediamtx implementation:
+                        // A temporal unit is random access if it contains a sequence header
+                        is_random_access = true;
                     }
                 }
 
                 // Marshal the temporal unit to ensure all OBUs have size fields
                 // This matches the mediamtx implementation using av1.Bitstream.Marshal()
-                let marshalled = marshal_temporal_unit(&obus);
+                let marshalled = marshal_bitstream(&obus);
+                tracing::trace!("[av1] marshalled bitstream: {} OBUs, output size: {}", obus.len(), marshalled.len());
+                
                 return (marshalled, is_random_access, config_updated && self.ready());
             }
             Err(err) => {
-                tracing::debug!("[av1] failed to parse temporal unit: {err}");
+                tracing::warn!("[av1] failed to parse temporal unit: {err}");
             }
         }
 
         // Fallback: return the frame as-is
+        tracing::trace!("[av1] fallback: returning frame as-is (size: {})", frame.len());
         (
             frame.to_vec(),
             is_random_access,
@@ -181,6 +200,8 @@ impl Av1RtpParser {
         let mut payload = &pkt.payload[1..];
         let mut obus = Vec::new();
 
+        tracing::trace!("[av1-rtp] aggregation header: z={}, y={}, w={}, payload_len={}", z, y, w, pkt.payload.len());
+
         while !payload.is_empty() {
             let obu = if w == 0 || (obus.len() as u8) < (w - 1) {
                 let (size, leb_len) = read_leb128(payload)?;
@@ -192,10 +213,12 @@ impl Av1RtpParser {
                 }
 
                 let obu = payload[..size].to_vec();
+                tracing::trace!("[av1-rtp] extracted OBU: size={}, header=0x{:02x}", size, obu.get(0).copied().unwrap_or(0));
                 payload = &payload[size..];
                 obu
             } else {
                 let obu = payload.to_vec();
+                tracing::trace!("[av1-rtp] extracted final OBU: size={}, header=0x{:02x}", obu.len(), obu.get(0).copied().unwrap_or(0));
                 payload = &[];
                 obu
             };
@@ -354,69 +377,91 @@ impl crate::recorder::codec::RtpParser for Av1RtpParser {
     }
 }
 
-struct ParsedObu {
-    obu_type: u8,
-    obu_no_size: Vec<u8>,
-    obu_with_size: Vec<u8>,
-}
-
-fn parse_bitstream(data: &[u8]) -> Result<Vec<ParsedObu>> {
+/// Parse a temporal unit into individual OBUs without size fields.
+/// This matches av1.Bitstream.Unmarshal() in mediacommon.
+/// Returns a Vec of OBUs where each OBU has the has_size_field bit cleared.
+fn parse_temporal_unit(data: &[u8]) -> Result<Vec<Vec<u8>>> {
     let mut cursor = data;
     let mut result = Vec::new();
 
     while !cursor.is_empty() {
         let header = cursor[0];
+        
+        // Check forbidden bit
         if header & 0x80 != 0 {
             return Err(anyhow!("forbidden bit set in OBU header"));
         }
 
-        let obu_type = (header >> 3) & 0x0F;
+        // Check if has_size_field is set
         let has_size_field = (header & 0x02) != 0;
         if !has_size_field {
             return Err(anyhow!("OBU size field missing"));
         }
 
+        // Read LEB128 size
         let (payload_len, leb_len) = read_leb128(&cursor[1..])?;
-        let header_len = 1 + leb_len;
-        if cursor.len() < header_len + payload_len {
-            return Err(anyhow!("not enough bytes for OBU payload"));
+        let total_len = 1 + leb_len + payload_len;
+        
+        if cursor.len() < total_len {
+            return Err(anyhow!("not enough bytes for OBU"));
         }
 
-        let payload = &cursor[header_len..header_len + payload_len];
-        let mut obu_no_size = Vec::with_capacity(1 + payload_len);
-        obu_no_size.push(header & 0xFD);
-        obu_no_size.extend_from_slice(payload);
+        // Create OBU without size field (clear bit 1 of header)
+        let mut obu = Vec::with_capacity(1 + payload_len);
+        obu.push(header & 0b11111101); // Clear has_size_field bit
+        obu.extend_from_slice(&cursor[1 + leb_len..total_len]);
 
-        let mut obu_with_size = Vec::with_capacity(header_len + payload_len);
-        obu_with_size.push(header | 0x02);
-        obu_with_size.extend_from_slice(&cursor[1..header_len + payload_len]);
-
-        result.push(ParsedObu {
-            obu_type,
-            obu_no_size,
-            obu_with_size,
-        });
-
-        cursor = &cursor[header_len + payload_len..];
+        result.push(obu);
+        cursor = &cursor[total_len..];
     }
 
     Ok(result)
 }
 
-/// Marshal a temporal unit (list of OBUs) to ensure all OBUs have size fields.
-fn marshal_temporal_unit(obus: &[ParsedObu]) -> Vec<u8> {
-    let mut capacity = 0;
+/// Marshal a bitstream (list of OBUs without size fields) into Low Overhead Bitstream Format.
+/// This matches av1.Bitstream.Marshal() in mediacommon.
+/// All OBUs in the output will have size fields.
+fn marshal_bitstream(obus: &[Vec<u8>]) -> Vec<u8> {
+    // Calculate total size needed
+    let mut total_size = 0;
     for obu in obus {
-        // Each OBU needs: header byte + size field + payload
-        let payload_len = obu.obu_with_size.len() - 1; // Exclude header byte
-        capacity += 1 + leb128_size(payload_len) + payload_len;
+        let has_size = (obu[0] & 0x02) != 0;
+        if !has_size {
+            let payload_size = obu.len() - 1;
+            total_size += 1 + leb128_size(payload_size) + payload_size;
+        } else {
+            total_size += obu.len();
+        }
     }
 
-    let mut buf = Vec::with_capacity(capacity);
+    let mut buf = Vec::with_capacity(total_size);
+    
     for obu in obus {
-        // Use the obu_with_size which already has the size field included
-        buf.extend_from_slice(&obu.obu_with_size);
+        let has_size = (obu[0] & 0x02) != 0;
+        
+        if !has_size {
+            // Add size field
+            let payload_size = obu.len() - 1;
+            let header_with_size = obu[0] | 0x02; // Set has_size_field bit
+            buf.push(header_with_size);
+            
+            // Write LEB128 size
+            let mut size_buf = BytesMut::new();
+            write_leb128(&mut size_buf, payload_size);
+            buf.extend_from_slice(&size_buf);
+            
+            // Write payload
+            buf.extend_from_slice(&obu[1..]);
+            
+            tracing::trace!("[av1] marshalled OBU: type={}, header=0x{:02x}, size={}, total={}", 
+                (obu[0] >> 3) & 0x0F, header_with_size, payload_size, 1 + size_buf.len() + payload_size);
+        } else {
+            // Already has size field, copy as-is
+            buf.extend_from_slice(obu);
+            tracing::trace!("[av1] OBU already has size field, copied as-is: {}", obu.len());
+        }
     }
+
     buf
 }
 

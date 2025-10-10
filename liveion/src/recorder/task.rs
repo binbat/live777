@@ -153,7 +153,7 @@ impl RecordingTask {
             let mut video_rx_opt = video_receiver_opt;
             let mut audio_rx_opt = audio_receiver_opt;
             let mut codec_mime_opt = codec_mime_opt;
-            
+
             let mut parser_h264 = H264RtpParser::new();
             let mut parser_av1 = Av1RtpParser::new();
             let mut parser_vp8 = Vp8RtpParser::new();
