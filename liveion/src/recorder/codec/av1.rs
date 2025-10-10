@@ -5,7 +5,6 @@ use webrtc::rtp::packet::Packet;
 
 const TIMESCALE: u32 = 90_000;
 const OBU_TYPE_SEQUENCE_HEADER: u8 = 1;
-const OBU_TYPE_TEMPORAL_DELIMITER: u8 = 2;
 const MAX_TEMPORAL_UNIT_SIZE: usize = 3 * 1024 * 1024;
 const MAX_OBUS_PER_TEMPORAL_UNIT: usize = 10;
 
@@ -164,6 +163,12 @@ pub struct Av1RtpParser {
     temporal_unit_size: usize,
 }
 
+impl Default for Av1RtpParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Av1RtpParser {
     pub fn new() -> Self {
         Self {
@@ -213,12 +218,12 @@ impl Av1RtpParser {
                 }
 
                 let obu = payload[..size].to_vec();
-                tracing::trace!("[av1-rtp] extracted OBU: size={}, header=0x{:02x}", size, obu.get(0).copied().unwrap_or(0));
+                tracing::trace!("[av1-rtp] extracted OBU: size={}, header=0x{:02x}", size, obu.first().copied().unwrap_or(0));
                 payload = &payload[size..];
                 obu
             } else {
                 let obu = payload.to_vec();
-                tracing::trace!("[av1-rtp] extracted final OBU: size={}, header=0x{:02x}", obu.len(), obu.get(0).copied().unwrap_or(0));
+                tracing::trace!("[av1-rtp] extracted final OBU: size={}, header=0x{:02x}", obu.len(), obu.first().copied().unwrap_or(0));
                 payload = &[];
                 obu
             };
@@ -516,12 +521,17 @@ struct SequenceHeader {
 
 #[derive(Clone, Debug)]
 struct ColorConfig {
+    #[allow(dead_code)]
     high_bit_depth: bool,
+    #[allow(dead_code)]
     twelve_bit: bool,
     bit_depth: u8,
     mono_chrome: bool,
+    #[allow(dead_code)]
     color_primaries: u8,
+    #[allow(dead_code)]
     transfer_characteristics: u8,
+    #[allow(dead_code)]
     matrix_coefficients: u8,
     color_range: bool,
     subsampling_x: bool,
@@ -682,7 +692,7 @@ impl ColorConfig {
                 (2, 2, 2)
             };
 
-        let mut color_range = false;
+        let color_range;
         let mut subsampling_x = true;
         let mut subsampling_y = true;
         let mut chroma_sample_position = 0u8;
@@ -796,8 +806,8 @@ impl<'a> BitReader<'a> {
 
 fn build_codec_string(info: &SequenceHeader) -> String {
     let profile = info.seq_profile;
-    let level = info.seq_level_idx.get(0).copied().unwrap_or(0);
-    let tier_char = if info.seq_tier.get(0).copied().unwrap_or(false) {
+    let level = info.seq_level_idx.first().copied().unwrap_or(0);
+    let tier_char = if info.seq_tier.first().copied().unwrap_or(false) {
         'H'
     } else {
         'M'
@@ -828,11 +838,11 @@ fn build_av1c_record(info: &SequenceHeader, sequence_header_with_size: &[u8]) ->
     // marker (1) + version (7)
     record.push(0x81);
 
-    let seq_level = info.seq_level_idx.get(0).copied().unwrap_or(0) & 0x1F;
+    let seq_level = info.seq_level_idx.first().copied().unwrap_or(0) & 0x1F;
     let byte1 = ((info.seq_profile & 0x07) << 5) | seq_level;
     record.push(byte1);
 
-    let tier_bit = if info.seq_tier.get(0).copied().unwrap_or(false) {
+    let tier_bit = if info.seq_tier.first().copied().unwrap_or(false) {
         1
     } else {
         0
@@ -843,7 +853,7 @@ fn build_av1c_record(info: &SequenceHeader, sequence_header_with_size: &[u8]) ->
     let monochrome = if color.mono_chrome { 1 } else { 0 };
     let chroma_x = if color.subsampling_x { 1 } else { 0 };
     let chroma_y = if color.subsampling_y { 1 } else { 0 };
-    let chroma_pos = (color.chroma_sample_position & 0x03) as u8;
+    let chroma_pos = color.chroma_sample_position & 0x03;
 
     let byte2 = (tier_bit << 7)
         | (high_bitdepth << 6)

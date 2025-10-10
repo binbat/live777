@@ -293,7 +293,7 @@ impl Fmp4Writer {
         payload.extend_from_slice(&0x0018u16.to_be_bytes());
         payload.extend_from_slice(&0xFFFFu16.to_be_bytes());
 
-        let av1c_payload = self.codec_config.get(0).map(Vec::as_slice).unwrap_or(&[]);
+        let av1c_payload = self.codec_config.first().map(Vec::as_slice).unwrap_or(&[]);
         let av1c = make_box(b"av1C", av1c_payload);
         payload.extend_from_slice(&av1c);
 

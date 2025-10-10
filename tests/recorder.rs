@@ -194,7 +194,7 @@ async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
 
     outputs.video_segments.sort();
     assert!(
-        outputs.video_segments.len() >= 1,
+        !outputs.video_segments.is_empty(),
         "expected at least one video segment, got {}",
         outputs.video_segments.len()
     );
