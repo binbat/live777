@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use crate::recorder::codec::Av1RtpParser;
 use crate::recorder::codec::h264::H264RtpParser;
 use crate::recorder::codec::opus::OpusRtpParser;
-use crate::recorder::codec::vp8::Vp8RtpParser;
 use crate::recorder::codec::vp9::Vp9RtpParser;
 use crate::recorder::segmenter::Segmenter;
 use crate::stream::manager::Manager;
@@ -12,7 +11,7 @@ use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use tokio::task::JoinHandle;
-use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_VP8, MIME_TYPE_VP9};
+use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_VP9};
 
 #[derive(Debug)]
 pub struct RecordingTask {
@@ -156,7 +155,6 @@ impl RecordingTask {
 
             let mut parser_h264 = H264RtpParser::new();
             let mut parser_av1 = Av1RtpParser::new();
-            let mut parser_vp8 = Vp8RtpParser::new();
             let mut parser_vp9 = Vp9RtpParser::new();
             let mut prev_ts_video: Option<u32> = None;
 
@@ -170,6 +168,9 @@ impl RecordingTask {
             // Timer for checking keyframe request (video only)
             let mut keyframe_check_interval = tokio::time::interval(Duration::from_secs(1));
             let mut track_change_rx = forward_clone.subscribe_tracks_change();
+            
+            // Track PLI request success for logging
+            let mut last_pli_log = Instant::now();
 
             loop {
                 tokio::select! {
@@ -183,7 +184,16 @@ impl RecordingTask {
                             ).await {
                                 tracing::warn!("[recorder] {} failed to send PLI: {:?}", stream_name_cloned, e);
                             } else {
-                                tracing::debug!("[recorder] {} sent PLI request for keyframe", stream_name_cloned);
+                                // Record the PLI request in the backoff mechanism
+                                segmenter.record_pli_request();
+                                
+                                // Log PLI statistics periodically
+                                if last_pli_log.elapsed() >= Duration::from_secs(30) {
+                                    tracing::info!("[recorder] {} PLI stats: {}", stream_name_cloned, segmenter.pli_stats());
+                                    last_pli_log = Instant::now();
+                                } else {
+                                    tracing::debug!("[recorder] {} sent PLI request for keyframe", stream_name_cloned);
+                                }
                             }
                         }
                     },
@@ -223,15 +233,6 @@ impl RecordingTask {
                                     //println!("[recorder][test] {} processed AV1 frame", stream_name_cloned);
                                     if let Err(e) = segmenter.push_av1(frame.freeze(), duration_ticks).await {
                                         tracing::warn!("[recorder] {} failed to process AV1 frame: {}", stream_name_cloned, e);
-                                    }
-                                    frame_cnt_video += 1;
-                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP8)
-                                    && let Ok(Some(frame)) = parser_vp8.push_packet(&packet)
-                                {
-                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                    prev_ts_video = Some(pkt_ts);
-                                    if let Err(e) = segmenter.push_vp8(Bytes::from(frame), duration_ticks).await {
-                                        tracing::warn!("[recorder] {} failed to process VP8 frame: {}", stream_name_cloned, e);
                                     }
                                     frame_cnt_video += 1;
                                 } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9)

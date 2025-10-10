@@ -1,7 +1,6 @@
-use std::time::{Duration, Instant};
-
 use crate::recorder::codec::{CodecAdapter, VideoCodec, create_video_adapter};
 use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
+use crate::recorder::pli_backoff::PliBackoff;
 use anyhow::Result;
 use bytes::Bytes;
 use opendal::Operator;
@@ -72,9 +71,8 @@ pub struct Segmenter {
     audio_total_bytes: u64,
     audio_total_ticks: u64,
 
-    // keyframe request tracking
-    last_keyframe_time: Option<Instant>,
-    keyframe_request_timeout: Duration,
+    // keyframe request tracking with intelligent backoff
+    pli_backoff: PliBackoff,
 
     // active video codec adapter
     video_codec_kind: Option<VideoCodec>,
@@ -122,8 +120,7 @@ impl Segmenter {
             audio_total_bytes: 0,
             audio_total_ticks: 0,
 
-            last_keyframe_time: None,
-            keyframe_request_timeout: Duration::from_secs(10),
+            pli_backoff: PliBackoff::default(),
 
             video_codec_kind: None,
             video_adapter: None,
@@ -167,12 +164,6 @@ impl Segmenter {
         Ok(())
     }
 
-    /// Feed one VP8 frame (already reassembled by RTP parser)
-    pub async fn push_vp8(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
-        self.push_video_frame(VideoCodec::Vp8, frame, None, duration_ticks)
-            .await
-    }
-
     /// Feed one VP9 frame (already reassembled by RTP parser)
     pub async fn push_vp9(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
         self.push_video_frame(VideoCodec::Vp9, frame, None, duration_ticks)
@@ -208,7 +199,7 @@ impl Segmenter {
         let is_sync = explicit_sync.unwrap_or(false) || adapter_sync;
 
         if is_sync {
-            self.last_keyframe_time = Some(Instant::now());
+            self.pli_backoff.record_keyframe();
         }
 
         let dur = if duration_ticks == 0 {
@@ -291,7 +282,7 @@ impl Segmenter {
         self.video_width = 0;
         self.video_height = 0;
         self.video_codec.clear();
-        self.last_keyframe_time = None;
+        self.pli_backoff.hard_reset();
     }
 
     fn refresh_video_metadata(&mut self) {
@@ -322,10 +313,17 @@ impl Segmenter {
 
     /// Check if we need to request a keyframe due to timeout
     pub fn should_request_keyframe(&self) -> bool {
-        match self.last_keyframe_time {
-            None => true, // No keyframe received yet, request one
-            Some(last_time) => last_time.elapsed() >= self.keyframe_request_timeout,
-        }
+        self.pli_backoff.should_request()
+    }
+    
+    /// Record that a PLI request was sent
+    pub fn record_pli_request(&mut self) {
+        self.pli_backoff.record_request();
+    }
+    
+    /// Get PLI backoff statistics for logging
+    pub fn pli_stats(&self) -> String {
+        self.pli_backoff.state_summary()
     }
 
     pub async fn flush(&mut self) -> Result<()> {

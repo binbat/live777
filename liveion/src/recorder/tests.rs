@@ -58,39 +58,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_segmenter_accepts_vpx_and_rolls_segment() {
-        let tmp = TempDir::new().expect("Failed to create temp dir");
-        let mut builder = Fs::default();
-        builder.root(tmp.path().to_string_lossy());
-        let op = Operator::new(builder).expect("op").finish();
-        let stream_name = "s".to_string();
-        let prefix = "vpx".to_string();
-        let mut seg = Segmenter::new(op.clone(), stream_name.clone(), prefix.clone())
-            .await
-            .expect("seg");
-
-        // two VP8 frames, the second is keyframe to roll
-        seg.push_vp8(Bytes::from_static(&[0x00, 1, 2, 3]), 3_000)
-            .await
-            .expect("vp8");
-        seg.push_vp8(Bytes::from_static(&[0x00, 4, 5, 6]), 90_000 * 10)
-            .await
-            .expect("vp8");
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // files should be present
-        let _ = op
-            .stat(&format!("{}/init.m4s", prefix))
-            .await
-            .expect("init");
-        let _ = op
-            .stat(&format!("{}/manifest.mpd", prefix))
-            .await
-            .expect("mpd");
-    }
-
     #[test]
     fn test_should_record_glob() {
         let patterns = vec!["live/*".to_string(), "demo".to_string()];
