@@ -14,9 +14,9 @@ use crate::stream::manager::Manager;
 #[cfg(feature = "recorder")]
 use crate::config::RecorderConfig;
 
+mod pli_backoff;
 mod segmenter;
 mod task;
-mod pli_backoff;
 use task::RecordingTask;
 pub mod codec;
 mod fmp4;

@@ -315,12 +315,12 @@ impl Segmenter {
     pub fn should_request_keyframe(&self) -> bool {
         self.pli_backoff.should_request()
     }
-    
+
     /// Record that a PLI request was sent
     pub fn record_pli_request(&mut self) {
         self.pli_backoff.record_request();
     }
-    
+
     /// Get PLI backoff statistics for logging
     pub fn pli_stats(&self) -> String {
         self.pli_backoff.state_summary()

@@ -168,7 +168,7 @@ impl RecordingTask {
             // Timer for checking keyframe request (video only)
             let mut keyframe_check_interval = tokio::time::interval(Duration::from_secs(1));
             let mut track_change_rx = forward_clone.subscribe_tracks_change();
-            
+
             // Track PLI request success for logging
             let mut last_pli_log = Instant::now();
 
@@ -186,7 +186,7 @@ impl RecordingTask {
                             } else {
                                 // Record the PLI request in the backoff mechanism
                                 segmenter.record_pli_request();
-                                
+
                                 // Log PLI statistics periodically
                                 if last_pli_log.elapsed() >= Duration::from_secs(30) {
                                     tracing::info!("[recorder] {} PLI stats: {}", stream_name_cloned, segmenter.pli_stats());
