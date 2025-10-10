@@ -94,6 +94,22 @@ export function DashPlayer() {
             setQualityIndex('auto');
         });
 
+        // Add error handling to provide better feedback
+        player.on(dashjs.MediaPlayer.events.ERROR, (e: unknown) => {
+            console.error('[DASH Player] Error occurred:', e);
+            // Don't block playback, just log the error
+            // Some errors might be recoverable or non-fatal
+        });
+
+        // Log playback started successfully
+        player.on(dashjs.MediaPlayer.events.PLAYBACK_STARTED, () => {
+            console.log('[DASH Player] Playback started successfully');
+            // Clear unsupported warning if playback actually works
+            if (unsupportedMsg && unsupportedMsg.includes('reports no support')) {
+                setUnsupportedMsg(null);
+            }
+        });
+
         player.initialize(refVideo.current, getSegmentUrl(mpd), autoplay);
 
         return () => {
@@ -126,13 +142,16 @@ export function DashPlayer() {
                     const ms = (window as WindowWithMediaSource).MediaSource;
                     const ok = !!ms?.isTypeSupported?.(type);
                     if (!ok) {
-                        setUnsupportedMsg(`Browser does not support ${type}. Video may not play (audio only).`);
+                        // Show warning but still attempt playback
+                        setUnsupportedMsg(`Browser reports no support for ${type}. Attempting playback anyway - audio may work, or browser may support it despite reporting otherwise.`);
+                        console.warn('[DASH Player] Codec not officially supported, but will attempt playback:', type);
                     } else {
                         setUnsupportedMsg(null);
                     }
                 }
-            } catch {
-                // ignore detection errors
+            } catch (err) {
+                // ignore detection errors, but log them
+                console.warn('[DASH Player] Failed to detect codec support:', err);
             }
         })();
     }, [mpd, token]);
@@ -313,7 +332,7 @@ export function DashPlayer() {
             <div className="player-shell">
                 {unsupportedMsg && (
                     <div className="warning">
-                        {unsupportedMsg} Try H.264, or play in a browser/settings that support WebM.
+                        {unsupportedMsg}
                     </div>
                 )}
                 <video
