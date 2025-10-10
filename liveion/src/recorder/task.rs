@@ -220,7 +220,7 @@ impl RecordingTask {
                                 {
                                     let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
                                     prev_ts_video = Some(pkt_ts);
-                                    println!("[recorder][test] {} processed AV1 frame", stream_name_cloned);
+                                    //println!("[recorder][test] {} processed AV1 frame", stream_name_cloned);
                                     if let Err(e) = segmenter.push_av1(frame.freeze(), duration_ticks).await {
                                         tracing::warn!("[recorder] {} failed to process AV1 frame: {}", stream_name_cloned, e);
                                     }

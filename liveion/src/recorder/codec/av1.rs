@@ -40,6 +40,9 @@ impl Av1Adapter {
 
         let info = SequenceHeader::parse(&obu.obu_no_size)?;
         let codec_string = build_codec_string(&info);
+        
+        // The av1C record's ConfigOBUs field must contain the marshalled sequence header
+        // (i.e., with size field), matching mediamtx's implementation
         let av1c = build_av1c_record(&info, &obu.obu_with_size);
 
         self.width = info.max_frame_width_minus1 + 1;
@@ -74,6 +77,7 @@ impl CodecAdapter for Av1Adapter {
         let mut config_updated = false;
         let mut is_random_access = false;
 
+        // Parse the temporal unit and ensure all OBUs have size fields
         match parse_bitstream(frame.as_ref()) {
             Ok(obus) => {
                 for obu in &obus {
@@ -84,26 +88,30 @@ impl CodecAdapter for Av1Adapter {
                                     if updated {
                                         tracing::debug!("[av1] sequence header updated");
                                         config_updated = true;
-                                        is_random_access = true;
                                     }
                                 }
                                 Err(err) => {
                                     tracing::warn!("[av1] failed to parse sequence header: {err}");
                                 }
                             }
-                        }
-                        OBU_TYPE_TEMPORAL_DELIMITER => {
+                            // A temporal unit is random access if it contains a sequence header
                             is_random_access = true;
                         }
                         _ => {}
                     }
                 }
+
+                // Marshal the temporal unit to ensure all OBUs have size fields
+                // This matches the mediamtx implementation using av1.Bitstream.Marshal()
+                let marshalled = marshal_temporal_unit(&obus);
+                return (marshalled, is_random_access, config_updated && self.ready());
             }
             Err(err) => {
                 tracing::debug!("[av1] failed to parse temporal unit: {err}");
             }
         }
 
+        // Fallback: return the frame as-is
         (
             frame.to_vec(),
             is_random_access,
@@ -393,6 +401,23 @@ fn parse_bitstream(data: &[u8]) -> Result<Vec<ParsedObu>> {
     }
 
     Ok(result)
+}
+
+/// Marshal a temporal unit (list of OBUs) to ensure all OBUs have size fields.
+fn marshal_temporal_unit(obus: &[ParsedObu]) -> Vec<u8> {
+    let mut capacity = 0;
+    for obu in obus {
+        // Each OBU needs: header byte + size field + payload
+        let payload_len = obu.obu_with_size.len() - 1; // Exclude header byte
+        capacity += 1 + leb128_size(payload_len) + payload_len;
+    }
+
+    let mut buf = Vec::with_capacity(capacity);
+    for obu in obus {
+        // Use the obu_with_size which already has the size field included
+        buf.extend_from_slice(&obu.obu_with_size);
+    }
+    buf
 }
 
 fn read_leb128(buf: &[u8]) -> Result<(usize, usize)> {
