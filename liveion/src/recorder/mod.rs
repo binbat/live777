@@ -75,9 +75,13 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
                     }
                     StreamEventType::Down => {
                         let stream_name = stream_event.stream.stream;
-                        let mut map = TASKS.write().await;
-                        if let Some(task) = map.remove(&stream_name) {
-                            task.stop();
+                        let task_opt = {
+                            let mut map = TASKS.write().await;
+                            map.remove(&stream_name)
+                        };
+
+                        if let Some(task) = task_opt {
+                            task.stop().await;
                             tracing::info!("[recorder] stop recording task for {}", stream_name);
                         }
                     }
@@ -136,9 +140,13 @@ fn should_record(patterns: &[String], stream: &str) -> bool {
 
 /// Stop recording for a given stream if running
 pub async fn stop(stream: String) -> anyhow::Result<()> {
-    let mut map = TASKS.write().await;
-    if let Some(task) = map.remove(&stream) {
-        task.stop();
+    let task_opt = {
+        let mut map = TASKS.write().await;
+        map.remove(&stream)
+    };
+
+    if let Some(task) = task_opt {
+        task.stop().await;
         tracing::info!("[recorder] stopped recording task for {}", stream);
     } else {
         tracing::info!("[recorder] no recording task found for {}", stream);

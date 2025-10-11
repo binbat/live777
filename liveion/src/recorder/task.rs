@@ -11,13 +11,14 @@ use crate::stream::manager::Manager;
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP9};
 
-#[derive(Debug)]
 pub struct RecordingTask {
     pub stream: String,
     handle: JoinHandle<()>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 impl RecordingTask {
@@ -148,6 +149,8 @@ impl RecordingTask {
 
         let stream_name_cloned = stream_name.clone();
         let forward_clone = forward.clone();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+
         let handle = tokio::spawn(async move {
             let mut segmenter = segmenter;
             let mut video_rx_opt = video_receiver_opt;
@@ -176,6 +179,11 @@ impl RecordingTask {
 
             loop {
                 tokio::select! {
+                    biased;
+                    _ = &mut shutdown_rx => {
+                        tracing::info!("[recorder] received stop signal for stream {}", stream_name_cloned);
+                        break;
+                    },
                     _ = keyframe_check_interval.tick(), if video_rx_opt.is_some() => {
                         if segmenter.should_request_keyframe()
                             && let Some(video_track) = forward_clone.first_video_track().await {
@@ -371,12 +379,39 @@ impl RecordingTask {
         Ok(Self {
             stream: stream_name,
             handle,
+            shutdown_tx: Some(shutdown_tx),
         })
     }
 
-    pub fn stop(self) {
-        let RecordingTask { stream, handle } = self;
+    pub async fn stop(mut self) {
+        let stream = std::mem::take(&mut self.stream);
         tracing::info!("[recorder] stopping recording for stream {}", stream);
-        handle.abort();
+
+        if let Some(tx) = self.shutdown_tx.take() && tx.send(()).is_err() {
+            tracing::debug!(
+                "[recorder] stop signal dropped for stream {} (task already ended)",
+                stream
+            );
+        }
+
+        match self.handle.await {
+            Ok(()) => {
+                tracing::info!("[recorder] recording task for stream {} completed", stream);
+            }
+            Err(e) => {
+                if e.is_cancelled() {
+                    tracing::warn!(
+                        "[recorder] recording task for stream {} cancelled before completion",
+                        stream
+                    );
+                } else {
+                    tracing::error!(
+                        "[recorder] recording task for stream {} exited with error: {}",
+                        stream,
+                        e
+                    );
+                }
+            }
+        }
     }
 }
