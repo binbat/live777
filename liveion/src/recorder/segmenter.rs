@@ -136,6 +136,12 @@ impl Segmenter {
             .await
     }
 
+    /// Feed one H.265 frame (Annex-B format)
+    pub async fn push_h265(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
+        self.push_video_frame(VideoCodec::H265, frame, None, duration_ticks)
+            .await
+    }
+
     /// Feed Opus audio sample from RTP payload
     /// `duration_ticks` – duration in the 48 kHz time base (i.e. RTP timestamp delta)
     pub async fn push_opus(&mut self, payload: Bytes, duration_ticks: u32) -> Result<()> {
@@ -363,7 +369,11 @@ impl Segmenter {
         let track_id = 1u32;
         let lower_codec = self.video_codec.to_ascii_lowercase();
         let codec_config = if let Some(adapter) = self.video_adapter.as_ref() {
-            if lower_codec.starts_with("avc1") || lower_codec.starts_with("av01") {
+            if lower_codec.starts_with("avc1")
+                || lower_codec.starts_with("av01")
+                || lower_codec.starts_with("hev1")
+                || lower_codec.starts_with("hvc1")
+            {
                 adapter.codec_config().unwrap_or_default()
             } else {
                 vec![]

@@ -1,5 +1,6 @@
 pub mod av1;
 pub mod h264;
+pub mod h265;
 pub mod opus;
 pub mod vp9;
 
@@ -7,6 +8,8 @@ use av1::Av1Adapter;
 pub use av1::Av1RtpParser;
 use h264::H264Adapter;
 pub use h264::H264RtpParser;
+use h265::H265Adapter;
+pub use h265::H265RtpParser;
 pub use opus::OpusRtpParser;
 use vp9::Vp9Adapter;
 pub use vp9::Vp9RtpParser;
@@ -74,6 +77,7 @@ pub trait CodecAdapter: Send + Sync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VideoCodec {
     H264,
+    H265,
     Vp9,
     Av1,
 }
@@ -82,6 +86,7 @@ pub enum VideoCodec {
 pub fn create_video_adapter(codec: VideoCodec) -> Box<dyn CodecAdapter> {
     match codec {
         VideoCodec::H264 => Box::new(H264Adapter::new()),
+        VideoCodec::H265 => Box::new(H265Adapter::new()),
         VideoCodec::Vp9 => Box::new(Vp9Adapter::new()),
         VideoCodec::Av1 => Box::new(Av1Adapter::new()),
     }

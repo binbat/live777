@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::recorder::codec::Av1RtpParser;
+use crate::recorder::codec::H265RtpParser;
 use crate::recorder::codec::h264::H264RtpParser;
 use crate::recorder::codec::opus::OpusRtpParser;
 use crate::recorder::codec::vp9::Vp9RtpParser;
@@ -11,7 +12,7 @@ use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use tokio::task::JoinHandle;
-use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_VP9};
+use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP9};
 
 #[derive(Debug)]
 pub struct RecordingTask {
@@ -154,6 +155,7 @@ impl RecordingTask {
             let mut codec_mime_opt = codec_mime_opt;
 
             let mut parser_h264 = H264RtpParser::new();
+            let mut parser_h265 = H265RtpParser::new();
             let mut parser_av1 = Av1RtpParser::new();
             let mut parser_vp9 = Vp9RtpParser::new();
             let mut prev_ts_video: Option<u32> = None;
@@ -223,6 +225,17 @@ impl RecordingTask {
                                     prev_ts_video = Some(pkt_ts);
                                     if let Err(e) = segmenter.push_h264(Bytes::from(frame), duration_ticks).await {
                                         tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                                    }
+                                    frame_cnt_video += 1;
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_HEVC)
+                                    && let Ok(Some((frame, is_keyframe))) = parser_h265.push_packet(&packet)
+                                {
+                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
+                                    prev_ts_video = Some(pkt_ts);
+                                    if let Err(e) = segmenter.push_h265(frame.freeze(), duration_ticks).await {
+                                        tracing::warn!("[recorder] {} failed to process H265 frame: {}", stream_name_cloned, e);
+                                    } else if is_keyframe {
+                                        tracing::trace!("[recorder] {} processed H265 keyframe", stream_name_cloned);
                                     }
                                     frame_cnt_video += 1;
                                 } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_AV1)
