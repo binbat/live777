@@ -170,3 +170,41 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Recorder
+
+### Start Recording a Stream
+
+`POST` `/api/record/:streamId`
+
+Starts recording the specified stream. The stream must be active (have a publisher) for recording to begin.
+
+Request Body (optional):
+
+```json
+{ "base_dir": "optional/path/prefix" }
+```
+
+Response: [200]
+
+```json
+{ "id": "6b2f3c1a-...", "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+```
+
+### Recording Status (by id)
+
+`GET` `/api/record/:streamId`
+
+Response: [200]
+
+```json
+{ "recording": true }
+```
+
+### Stop Recording
+
+`DELETE` `/api/record/:streamId`
+
+Stops an active recording session for the specified stream. Returns [200] with an empty body on success.
+
+Reference: [Recorder](recorder)
+

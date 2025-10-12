@@ -1,7 +1,7 @@
 pub mod whep;
 pub mod whip;
 
-mod payload;
+pub mod payload;
 mod rtspclient;
 mod utils;
 

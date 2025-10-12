@@ -22,6 +22,10 @@ pub struct Config {
 
     #[serde(default)]
     pub webhook: Webhook,
+
+    #[cfg(feature = "recorder")]
+    #[serde(default)]
+    pub recorder: RecorderConfig,
 }
 
 #[cfg(feature = "net4mqtt")]
@@ -111,5 +115,47 @@ impl Config {
                 .map_err(|e| anyhow::anyhow!(format!("ice_server error : {}", e)))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "recorder")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecorderConfig {
+    /// List of stream names to automatically record
+    #[serde(default)]
+    pub auto_streams: Vec<String>,
+
+    /// Storage backend configuration
+    #[serde(default)]
+    pub storage: storage::StorageConfig,
+
+    /// Node alias for identification (optional)
+    #[serde(default)]
+    pub node_alias: Option<String>,
+
+    /// Rotate recordings at local midnight (based on rotate_tz_offset_minutes)
+    #[serde(default = "default_rotate_daily")]
+    pub rotate_daily: bool,
+
+    /// Timezone offset in minutes from UTC for daily rotation scheduling (e.g., +480 for UTC+8)
+    #[serde(default)]
+    pub rotate_tz_offset_minutes: i32,
+}
+
+#[cfg(feature = "recorder")]
+fn default_rotate_daily() -> bool {
+    true
+}
+
+#[cfg(feature = "recorder")]
+impl Default for RecorderConfig {
+    fn default() -> Self {
+        Self {
+            auto_streams: vec![],
+            storage: Default::default(),
+            node_alias: None,
+            rotate_daily: default_rotate_daily(),
+            rotate_tz_offset_minutes: 0,
+        }
     }
 }

@@ -18,8 +18,14 @@ export function Liveion() {
 
     return (
         <>
-            <PageLayout token={token}>
-                <StreamsTable showCascade />
+            <PageLayout
+                token={token}
+                enabledTools={{ debugger: true, player: true, dash: false }}
+            >
+                <StreamsTable
+                    showCascade
+                    features={{ debugger: true, player: true, recording: true, autoDetectRecording: true, recordingPlayback: false }}
+                />
             </PageLayout>
             <Login
                 show={needsAuthorizaiton}

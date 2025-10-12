@@ -11,6 +11,7 @@ crate-type = ["lib"]
 
 [dependencies]
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
+storage = { path = "../libs/storage", optional = true }
 
 api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
@@ -19,7 +20,7 @@ iceserver = { path = "../libs/iceserver", features = ["cloudflare", "coturn"] }
 signal = { path = "../libs/signal" }
 
 axum = { workspace = true, features = ["multipart", "tracing"] }
-axum-extra = { workspace = true, features = ["query"] }
+axum-extra = { workspace = true, features = ["typed-header", "query"] }
 rust-embed = { workspace = true, features = ["axum-ex"], optional = true }
 mime_guess = { workspace = true, optional = true }
 anyhow = { workspace = true, features = ["backtrace"] }
@@ -36,8 +37,23 @@ url = { workspace = true }
 
 chrono = { version = "0.4", features = ["serde"] }
 http-body-util = "0.1.2"
+uuid = { workspace = true, features = ["v4", "serde"] }
+glob = "0.3"
+
+# Database dependencies
+sea-orm = { version = "1.1", features = [
+    "sqlx-sqlite",
+    "runtime-tokio-rustls",
+    "macros",
+    "with-chrono",
+    "with-uuid",
+] }
+sea-orm-migration = "1.0"
+
+# Optional OpenDAL for segment file access when recorder feature is enabled
+opendal = { version = "0.54.0", optional = true }
 
 [features]
 webui = ["dep:rust-embed", "dep:mime_guess"]
 net4mqtt = ["dep:net4mqtt"]
-
+recorder = ["dep:storage", "dep:opendal"]

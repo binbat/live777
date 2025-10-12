@@ -21,6 +21,7 @@ macro_rules! timeout_await {
 }
 
 use crate::broker;
+#[cfg(not(windows))]
 use crate::kxdns;
 
 const MAX_BUFFER_SIZE: usize = 4096;
@@ -90,6 +91,7 @@ async fn up_add_tcp_server(listener: TcpListener) -> Result<(), Error> {
     }
 }
 
+#[cfg(not(windows))]
 async fn handle_request(body: &str, mut socket: TcpStream) -> Result<(), Error> {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
@@ -100,6 +102,7 @@ async fn handle_request(body: &str, mut socket: TcpStream) -> Result<(), Error> 
     Ok(())
 }
 
+#[cfg(not(windows))]
 async fn up_http_server(listener: TcpListener, body: &str) -> Result<(), Error> {
     loop {
         let (socket, _) = listener.accept().await?;

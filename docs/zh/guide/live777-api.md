@@ -170,3 +170,44 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## 录制
+
+### 开始录制流
+
+`POST` `/api/record/:streamId`
+
+开始录制指定的流。流必须处于活跃状态（有发布者）才能开始录制。需要启用 `recorder` 特性。
+
+请求体（可选）：
+
+```json
+{
+  "base_dir": "optional/path/prefix"
+}
+```
+
+- `base_dir`（可选）：覆盖默认的目录前缀。如果不设置，录制文件默认按 `/:streamId/YYYY/MM/DD/` 组织。
+
+响应: [200]
+
+```json
+{ "id": "6b2f3c1a-...", "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+```
+
+### 录制状态
+
+`GET` `/api/record/:streamId`
+
+响应: [200]
+
+```json
+{ "recording": true }
+```
+
+### 停止录制
+
+`DELETE` `/api/record/:streamId`
+
+停止指定流的录制。成功时返回 [200]，响应体为空。
+
+参考： [Recorder](recorder)

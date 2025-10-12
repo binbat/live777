@@ -86,6 +86,56 @@
 # listen = "127.0.0.1:1077"
 # domain = "net4mqtt.local"
 
+# Database configuration for recording index storage
+[database]
+# Default database URL (SQLite). Env: DATABASE_URL
+# Default: sqlite://./liveman.db
+url = "sqlite://./liveman.db?mode=rwc"
+# Maximum number of database connections (Default: 10)
+max_connections = 10
+# Connection timeout in seconds (Default: 30)
+connect_timeout = 30
+
+# Example for PostgreSQL:
+# [database]
+# url = "postgresql://user:password@localhost:5432/live777"
+# max_connections = 10
+# connect_timeout = 30
+
+# File storage configuration for accessing recorded segments
+# This allows Liveman to serve recorded segments for playback and proxy objects
+[recorder]
+
+[recorder.storage]
+# Storage type: "fs" for local filesystem; also supports "oss" (Alibaba Cloud OSS) and "s3"
+type = "fs"
+# Root path for local filesystem
+root = "./records"
+
+# Example: Alibaba Cloud OSS storage
+# type = "oss"
+# bucket = "my-oss-bucket"
+# root = "/recordings"
+# region = "oss-cn-hangzhou"
+# endpoint = "https://oss-cn-hangzhou.aliyuncs.com"
+# access_key_id = "your-access-key"
+# access_key_secret = "your-access-secret"
+
+# Liveman auto recording configuration (manager-driven)
+[auto_record]
+# Enable Liveman-driven auto recording
+enabled = true
+# Stream name patterns to record; supports glob
+auto_streams = ["*"]
+# Optional base directory prefix for date-based layout, e.g., "recordings"
+# base_prefix = ""
+# Interval to check streams and trigger recording (ms)
+# tick_ms = 5000
+# Rotate at local midnight automatically
+# rotate_daily = true
+# Timezone offset minutes for rotation (e.g. 480 for UTC+8)
+# rotate_tz_offset_minutes = 0
+
 # [[nodes]]
 # Globally unique id
 # alias = "static-0"
@@ -106,4 +156,3 @@
 # token = "live777"
 # Live777 Address
 # url = "http://liveion-0.net4mqtt.local:7777"
-

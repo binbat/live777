@@ -24,6 +24,52 @@ pub struct Config {
 
     #[serde(default)]
     pub nodes: Vec<Node>,
+
+    // Database for recording index (stream-date to mpd_path mapping)
+    #[serde(default)]
+    pub database: Database,
+
+    #[serde(default)]
+    pub playback: Playback,
+
+    /// Auto recording configuration (Liveman-driven)
+    #[serde(default)]
+    pub auto_record: AutoRecord,
+
+    #[cfg(feature = "recorder")]
+    #[serde(default)]
+    pub recorder: Recorder,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Database {
+    #[serde(default = "default_database_url")]
+    pub url: String,
+    #[serde(default = "default_database_max_connections")]
+    pub max_connections: u32,
+    #[serde(default = "default_database_connect_timeout")]
+    pub connect_timeout: u64,
+}
+
+impl Default for Database {
+    fn default() -> Self {
+        Self {
+            url: default_database_url(),
+            max_connections: default_database_max_connections(),
+            connect_timeout: default_database_connect_timeout(),
+        }
+    }
+}
+
+fn default_database_url() -> String {
+    std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://./liveman.db".to_string())
+}
+
+fn default_database_max_connections() -> u32 {
+    10
+}
+
+fn default_database_connect_timeout() -> u64 {
+    30
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -255,4 +301,74 @@ impl Config {
 
 fn default_reforward_maximum_idle_time() -> u64 {
     60 * 1000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Playback {
+    /// Whether to use signed redirects or direct proxy for segment access
+    #[serde(default = "default_signed_redirect")]
+    pub signed_redirect: bool,
+
+    /// TTL in seconds for signed URLs (only used if signed_redirect is true)
+    #[serde(default = "default_signed_ttl_seconds")]
+    pub signed_ttl_seconds: u64,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            signed_redirect: default_signed_redirect(),
+            signed_ttl_seconds: default_signed_ttl_seconds(),
+        }
+    }
+}
+
+fn default_signed_redirect() -> bool {
+    false
+}
+
+fn default_signed_ttl_seconds() -> u64 {
+    60
+}
+
+#[cfg(feature = "recorder")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Recorder {
+    #[serde(default)]
+    pub storage: storage::StorageConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoRecord {
+    #[serde(default)]
+    pub auto_streams: Vec<String>,
+    #[serde(default)]
+    pub base_prefix: String,
+    #[serde(default = "default_auto_record_tick")]
+    pub tick_ms: u64,
+    #[serde(default)]
+    pub enabled: bool,
+    /// Rotate recordings at local midnight (based on rotate_tz_offset_minutes)
+    #[serde(default)]
+    pub rotate_daily: bool,
+    /// Timezone offset in minutes from UTC for daily rotation scheduling (e.g., +480 for UTC+8)
+    #[serde(default)]
+    pub rotate_tz_offset_minutes: i32,
+}
+
+impl Default for AutoRecord {
+    fn default() -> Self {
+        Self {
+            auto_streams: vec![],
+            base_prefix: String::new(),
+            tick_ms: 5_000,
+            enabled: false,
+            rotate_daily: true,
+            rotate_tz_offset_minutes: 0,
+        }
+    }
+}
+
+fn default_auto_record_tick() -> u64 {
+    5_000
 }

@@ -1,0 +1,29 @@
+[package]
+name = "storage"
+description = "Unified storage backend for Live777"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+
+# OpenDAL for unified storage access
+opendal = { version = "0.54.0", features = [
+    "services-fs",
+    "services-s3",
+    "services-oss",
+] }
+
+# For path generation
+chrono = "0.4"
+
+[dev-dependencies]
+toml = "0.9"
+tokio = { workspace = true, features = ["rt", "macros"] }

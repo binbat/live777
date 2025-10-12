@@ -22,16 +22,67 @@ Response: [204]
 
 Response: [204]
 
+## Recording & Playback
+
+Recording and playback related APIs (proxy and index listing)
+
+### List Streams with Recording Index
+
+`GET` `/api/playback`
+
+Response: [200] `application/json`
+```json
+["camera01", "roomA", "web-0001"]
+```
+
+### List Index by Stream
+
+`GET` `/api/playback/{stream}`
+
+Response: [200] `application/json`
+```json
+[
+  { "year": 2025, "month": 7, "day": 24, "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+]
+```
+
+### Get Segment File via Proxy
+
+`GET` `/api/record/object/{path}`
+
+- `path`: URL-encoded storage path of the recorded object (e.g. `camera01/2025/07/24/manifest.mpd`)
+
+Response: [200] Binary media data, content-type inferred by extension (e.g. `application/dash+xml` for `.mpd`, `video/mp4` for `.m4s`/`.mp4`).
+
+
+Response: [200] `application/dash+xml`
+```xml
+<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" ...>
+  <!-- MPEG-DASH manifest content -->
+</MPD>
+```
+
+### Get Segment File
+
+Proxy access to recorded segment files.
+
+`GET` `/api/record/object/{path}`
+
+Path parameter: Storage path of the segment file (URL encoded)
+
+Response: [200] Binary media data or [302] redirect to storage URL
+
 ## Node
 
 `GET` `/api/nodes/`
 
 Response: [200]
 
-- `alias`: String, Alias must unique
-- `url`: String, Node API URL
-- `pub_max`: Int16, max publish count
-- `sub_max`: Int16, max subscribe count
+- `alias`: String, Alias must be unique
+- `url`: String, Node API URL  
+- `pub_max`: Int16, Maximum publish count
+- `sub_max`: Int16, Maximum subscribe count
 - `status`: StringEnum("running" | "stopped"), Node status
 
 For Example:

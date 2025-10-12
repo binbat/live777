@@ -54,7 +54,7 @@ pub(crate) struct PeerForwardInternal {
     publish_leave_at: RwLock<i64>,
     subscribe_leave_at: RwLock<i64>,
     publish: RwLock<Option<PublishRTCPeerConnection>>,
-    publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
+    pub(super) publish_tracks: Arc<RwLock<Vec<PublishTrackRemote>>>,
     publish_tracks_change: broadcast::Sender<()>,
     publish_rtcp_channel: broadcast::Sender<(RtcpMessage, u32)>,
     subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
@@ -400,6 +400,53 @@ impl PeerForwardInternal {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
         Self::data_channel_forward(dc, sender, receiver).await;
+        Ok(())
+    }
+
+    #[cfg(feature = "recorder")]
+    pub(crate) async fn first_publish_video_codec(&self) -> Option<String> {
+        let publish_tracks = self.publish_tracks.read().await;
+        for t in publish_tracks.iter() {
+            if t.kind == RTPCodecType::Video {
+                let c = t.codec();
+                return Some(format!(
+                    "{}/{}",
+                    c.kind.to_lowercase(),
+                    c.codec.to_lowercase()
+                ));
+            }
+        }
+        None
+    }
+
+    /// Subscribe to notifications when publish tracks change (e.g., new tracks arrive).
+    #[cfg(feature = "recorder")]
+    pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
+        self.publish_tracks_change.subscribe()
+    }
+
+    /// Get the first video track for keyframe requests
+    #[cfg(feature = "recorder")]
+    pub(crate) async fn first_video_track(
+        &self,
+    ) -> Option<Arc<webrtc::track::track_remote::TrackRemote>> {
+        let publish_tracks = self.publish_tracks.read().await;
+        publish_tracks
+            .iter()
+            .find(|track| track.kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video)
+            .map(|track| track.track.clone())
+    }
+
+    /// Send RTCP message to publish peer
+    #[cfg(feature = "recorder")]
+    pub(crate) async fn send_rtcp_to_publish(
+        &self,
+        message: crate::forward::rtcp::RtcpMessage,
+        ssrc: u32,
+    ) -> Result<()> {
+        if self.publish_rtcp_channel.send((message, ssrc)).is_err() {
+            return Err(crate::error::AppError::throw("Failed to send RTCP message"));
+        }
         Ok(())
     }
 }
