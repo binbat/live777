@@ -52,7 +52,9 @@ impl H265Adapter {
     }
 
     fn update_codec_info(&mut self) {
-        if let Some(ref sps) = self.sps && let Ok(parsed) = SpsNALUnit::parse(Cursor::new(sps)) {
+        if let Some(ref sps) = self.sps
+            && let Ok(parsed) = SpsNALUnit::parse(Cursor::new(sps))
+        {
             self.width = parsed.rbsp.cropped_width() as u32;
             self.height = parsed.rbsp.cropped_height() as u32;
             if self.codec_string.is_none() {

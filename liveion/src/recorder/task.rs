@@ -387,7 +387,9 @@ impl RecordingTask {
         let stream = std::mem::take(&mut self.stream);
         tracing::info!("[recorder] stopping recording for stream {}", stream);
 
-        if let Some(tx) = self.shutdown_tx.take() && tx.send(()).is_err() {
+        if let Some(tx) = self.shutdown_tx.take()
+            && tx.send(()).is_err()
+        {
             tracing::debug!(
                 "[recorder] stop signal dropped for stream {} (task already ended)",
                 stream
