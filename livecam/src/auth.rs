@@ -12,6 +12,7 @@ use axum::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
+use tracing::error;
 
 use super::config::Config;
 use super::{LiveCamManager, utils};
@@ -45,16 +46,6 @@ async fn login_handler(
 ) -> impl IntoResponse {
     let config = state.config.read().unwrap();
 
-    println!(
-        "Received username: {}, password: {}",
-        payload.username, payload.password
-    );
-    println!("Stored hash: {}", config.auth.password_hash);
-    if payload.username != config.auth.username {
-        println!("Invalid username");
-        return (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response();
-    }
-
     let parsed_hash = match PasswordHash::new(&config.auth.password_hash) {
         Ok(h) => h,
         Err(_) => {
@@ -84,7 +75,7 @@ async fn login_handler(
         ) {
             Ok(t) => t,
             Err(e) => {
-                tracing::error!("Failed to create JWT token: {}", e);
+                error!("Failed to create JWT token: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token")
                     .into_response();
             }
@@ -105,7 +96,7 @@ async fn change_password_handler(
         match Argon2::default().hash_password(payload.new_password.as_bytes(), &salt) {
             Ok(hash) => hash.to_string(),
             Err(e) => {
-                tracing::error!("Failed to hash new password: {}", e);
+                error!("Failed to hash new password: {}", e);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Failed to process password",
@@ -119,7 +110,7 @@ async fn change_password_handler(
         config_guard.auth.password_hash = new_password_hash;
 
         if let Err(e) = utils::save_config("livecam", &*config_guard) {
-            tracing::error!("Failed to save updated config: {}", e);
+            error!("Failed to save updated config: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to save configuration",

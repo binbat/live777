@@ -10,31 +10,35 @@ repository.workspace = true
 cli = { path = "../libs/cli" }
 iceserver = { path = "../libs/iceserver" }
 
-tower-http = { version = "0.5.2", features = ["fs", "auth", "trace", "cors"] }
-tower = { version = "0.5.2", features = ["util"] }
-bytes = "1"
-rtp = "0.14" 
-tokio-stream = "0.1.15"
-serde_json = "1.0.114"
-serde = { workspace = true, features = ["serde_derive"] }
-anyhow = "1.0"
-rand = "0.9.2"
-toml = "0.9.2"
-chrono = "0.4"
-jsonwebtoken = "9.3"
-base64 = "0.22.1"
+anyhow = { workspace = true }
 axum = "0.7.5"
 axum-test = "15.0"
-axum-extra = { version = "0.9.3", features = ["query"] }
-tokio = { workspace = true, features = ["full"] }
-tracing = { workspace = true }
 argon2 = "0.5.3"
-webrtc = { workspace = true }
+axum-extra = { workspace = true, optional = true }
+bytes = "1"
+base64 = "0.22.1"
+chrono = "0.4"
 config = { version = "0.15.13", features = ["toml"] } 
+jsonwebtoken = "9.3"
 libc = "0.2"
+mime_guess = { workspace = true, optional = true }
 rtp-rs = "0.6.0"
-rust-embed = { version = "8.4", features = ["axum-ex"], optional = true }
-mime_guess = { version = "2.0", optional = true }
+rtp = "0.14" 
+rand = "0.9.2"
+rust-embed = { workspace = true, optional = true }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
+toml = "0.9.2"
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = "0.1.15"
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { workspace = true, features = ["fs", "auth", "trace", "cors"] }
+webrtc = { workspace = true }
+
+[build-dependencies]
+reqwest = { workspace = true,  features = ["blocking"] }
+zip = "6.0.0"
 
 [features]
 webui = ["dep:rust-embed","dep:mime_guess"]

@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { useAuth } from './components/AuthContext';
+import { useAuth } from './components/auth';
 import { Card, Alert } from 'react-daisyui';
 import { KeyIcon, UserIcon } from '@heroicons/react/24/outline';
 

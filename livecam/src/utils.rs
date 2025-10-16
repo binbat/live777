@@ -3,6 +3,7 @@ use config::{Config as ConfigRs, File, FileFormat};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::Path;
+use tracing::{info, warn};
 
 const ETC_CONFIG_PATH: &str = "/etc/live777/";
 const VAR_CONFIG_PATH: &str = "/var/lib/live777/";
@@ -33,12 +34,12 @@ pub fn load<T: DeserializeOwned>(name: &str, config_path_override: Option<String
 
     if current_dir_path.exists() {
         builder = builder.add_source(File::from(current_dir_path.clone()).required(false));
-        tracing::info!(
+        info!(
             "Loaded config from current directory: {}",
             current_dir_path.display()
         );
     } else {
-        tracing::warn!(
+        warn!(
             "Config not found in current directory at {}, checking other sources.",
             current_dir_path.display()
         );
@@ -46,9 +47,9 @@ pub fn load<T: DeserializeOwned>(name: &str, config_path_override: Option<String
 
     if etc_path.exists() {
         builder = builder.add_source(File::from(etc_path.clone()).required(false));
-        tracing::info!("Loaded base config from {}", etc_path.display());
+        info!("Loaded base config from {}", etc_path.display());
     } else {
-        tracing::warn!(
+        warn!(
             "Base config not found at {}, using internal defaults.",
             etc_path.display()
         );
@@ -56,12 +57,12 @@ pub fn load<T: DeserializeOwned>(name: &str, config_path_override: Option<String
 
     if var_path.exists() {
         builder = builder.add_source(File::from(var_path.clone()).required(false));
-        tracing::info!("Loaded user override config from {}", var_path.display());
+        info!("Loaded user override config from {}", var_path.display());
     }
 
     if let Some(path) = config_path_override {
         builder = builder.add_source(File::new(&path, FileFormat::Toml).required(true));
-        tracing::info!("Loaded override config from command line: {}", path);
+        info!("Loaded override config from command line: {}", path);
     }
 
     builder
@@ -85,7 +86,7 @@ pub fn save_config<T: Serialize>(name: &str, config: &T) -> anyhow::Result<()> {
     std::fs::write(&temp_path, toml_string)?;
     std::fs::rename(&temp_path, &path)?;
 
-    tracing::info!("Configuration saved to {}", path.display());
+    info!("Configuration saved to {}", path.display());
     Ok(())
 }
 
@@ -93,9 +94,9 @@ pub fn reset_config(name: &str) -> anyhow::Result<()> {
     let path = Path::new(VAR_CONFIG_PATH).join(format!("{}.toml", name));
     if path.exists() {
         std::fs::remove_file(&path)?;
-        tracing::info!("Configuration reset by removing {}", path.display());
+        info!("Configuration reset by removing {}", path.display());
     } else {
-        tracing::info!(
+        info!(
             "No user configuration found at {}, nothing to reset.",
             path.display()
         );

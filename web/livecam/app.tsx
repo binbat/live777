@@ -1,7 +1,7 @@
 import { Router } from 'preact-router';
-import { AuthProvider } from './components/AuthContext';
-import { ProtectedRoute } from './components/ProtectedToute'; 
-import { LoginPage } from './LoginPage';
+import { AuthProvider } from './components/auth';
+import { ProtectedRoute } from './components/protected-route'; 
+import { LoginPage } from './login-page';
 import { LiveCamPage } from './livecam';
 
 export function App() {

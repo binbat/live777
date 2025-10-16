@@ -1,4 +1,7 @@
+use reqwest::blocking::get;
 use std::env;
+use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 #[cfg(feature = "webui")]
 use std::process::Command;
@@ -20,11 +23,10 @@ fn main() {
         let lib_dir = manifest_dir.join("dl_lib");
 
         if !lib_dir.exists() {
-            panic!(
-                "The 'dl_lib' directory does not exist at '{}'. \
-                Please create it and place all required .so files inside.",
-                lib_dir.display()
-            );
+            println!("cargo:info=dl_lib directory not found, downloading from GitHub Release...");
+            download_libs_from_github(&lib_dir);
+        } else {
+            println!("cargo:info=dl_lib directory already exists, skipping download.");
         }
 
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
@@ -95,4 +97,45 @@ fn main() {
             }
         }
     }
+}
+
+fn download_libs_from_github(lib_dir: &PathBuf) {
+    std::fs::create_dir_all(lib_dir).expect("Failed to create dl_lib directory");
+
+    let url = "https://github.com/Marsyew/milkv-so-libs/releases/download/v1.0.0/dl_lib.zip";
+    println!("cargo:info=Downloading .so files from {}", url);
+
+    let response = get(url).expect("Failed to download dl_lib.zip from GitHub Release");
+    let zip_path = lib_dir.join("dl_lib.zip");
+    let mut file = File::create(&zip_path).expect("Failed to create dl_lib.zip");
+    file.write_all(&response.bytes().expect("Failed to read response"))
+        .expect("Failed to write dl_lib.zip");
+
+    println!("cargo:info=Extracting dl_lib.zip to {}", lib_dir.display());
+    let file = File::open(&zip_path).expect("Failed to open dl_lib.zip");
+    let mut archive = zip::ZipArchive::new(file).expect("Failed to read zip archive");
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .expect("Failed to access file in archive");
+        let file_name = file
+            .name()
+            .split_once('/')
+            .map(|(_, name)| name)
+            .unwrap_or(file.name());
+        let outpath = lib_dir.join(file_name);
+        if file.name().ends_with('/') {
+            std::fs::create_dir_all(&outpath).expect("Failed to create directory");
+        } else {
+            if let Some(p) = outpath.parent()
+                && !p.exists()
+            {
+                std::fs::create_dir_all(p).expect("Failed to create parent directory");
+            }
+            let mut outfile = File::create(&outpath).expect("Failed to create output file");
+            std::io::copy(&mut file, &mut outfile).expect("Failed to copy file contents");
+        }
+    }
+
+    std::fs::remove_file(&zip_path).expect("Failed to delete dl_lib.zip");
 }

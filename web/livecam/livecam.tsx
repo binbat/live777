@@ -1,10 +1,10 @@
 import { useState, useRef} from 'preact/hooks';
 import { Input } from 'react-daisyui';
-import { LiveCamViewer } from './components/LiveViewer';
-import { PlaybackViewer } from './components/Playback'; 
-import { NetworkConfig, type NetworkConfigRef } from './components/NetworkConfig';
-import { useAuth } from './components/AuthContext';
-import { ChangePassword, type ChangePasswordRef } from './components/ChangePassword';
+import { LiveCamViewer } from './components/live-viewer';
+import { PlaybackViewer } from './components/playback'; 
+import { NetworkConfig, type NetworkConfigRef } from './components/network';
+import { useAuth } from './components/auth';
+import { ChangePassword, type ChangePasswordRef } from './components/change-password';
 
 export function LiveCamPage(_props: { path: string }) {
     const [streamId, setStreamId] = useState('camera');

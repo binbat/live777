@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
+use tracing::{debug, error, info, warn};
 use webrtc::api::API;
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
@@ -23,8 +24,6 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use axum::http::Uri;
 #[cfg(feature = "webui")]
 use axum::response::Response;
-#[cfg(feature = "webui")]
-use mime_guess;
 #[cfg(feature = "webui")]
 use rust_embed::RustEmbed;
 
@@ -75,7 +74,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
                 && !path.starts_with("session/")
             {
                 if let Some(index) = Assets::get("index.html") {
-                    tracing::debug!("Serving index.html for SPA route: {}", path);
+                    debug!("Serving index.html for SPA route: {}", path);
                     Response::builder()
                         .status(StatusCode::OK)
                         .header(header::CONTENT_TYPE, "text/html")
@@ -83,11 +82,11 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
                         .body(index.data.into())
                         .unwrap()
                 } else {
-                    tracing::error!("index.html not found in embedded assets");
+                    error!("index.html not found in embedded assets");
                     (StatusCode::NOT_FOUND, "index.html not found").into_response()
                 }
             } else {
-                tracing::warn!("Static file not found: {}", path);
+                warn!("Static file not found: {}", path);
                 (StatusCode::NOT_FOUND, "404 Not Found").into_response()
             }
         }
@@ -149,7 +148,7 @@ impl LiveCamManager {
     pub fn new(cfg: Arc<RwLock<ConfigRs>>, webrtc_api: Arc<API>) -> Self {
         let mut config_guard = cfg.write().unwrap();
         if let Err(e) = config_guard.validate() {
-            tracing::error!("Config validation failed: {}", e);
+            error!("Config validation failed: {}", e);
         }
         drop(config_guard);
 
@@ -195,7 +194,7 @@ impl LiveCamManager {
         let state = if let Some(existing) = streams.get_mut(stream_id) {
             existing
         } else {
-            tracing::info!(stream_id, "Dynamic stream created.");
+            info!(stream_id, "Dynamic stream created.");
             let config_read = self.config.read().unwrap();
             let rtp_port = self.port_manager.get_next_port();
             let command = {
@@ -243,7 +242,7 @@ impl LiveCamManager {
         };
 
         state.subscriber_count += 1;
-        tracing::info!(
+        info!(
             stream_id,
             subscribers = state.subscriber_count,
             port = state.config.rtp_port,
@@ -251,7 +250,7 @@ impl LiveCamManager {
         );
 
         if state.subscriber_count == 1 {
-            tracing::info!(
+            info!(
                 stream_id,
                 port = state.config.rtp_port,
                 "First subscriber arrived, starting video source and RTP receiver."
@@ -260,29 +259,17 @@ impl LiveCamManager {
             #[cfg(not(riscv_mode))]
             {
                 let command = state.config.command.clone();
-                tracing::debug!(stream_id, command = %command, "Starting FFmpeg via create_child.");
                 match cli::create_child(Some(command)) {
                     Ok(Some(child_mutex)) => {
                         let child_arc = Arc::new(child_mutex);
-                        let stream_id_clone = stream_id.to_string();
-                        let _wait_handle = {
-                            let child_clone = child_arc.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = child_clone.lock().unwrap().wait() {
-                                    tracing::error!(stream_id = %stream_id_clone, error = %e, "FFmpeg wait error.");
-                                } else {
-                                    tracing::info!(stream_id = %stream_id_clone, "FFmpeg exited normally.");
-                                }
-                            })
-                        };
                         state.child_process = Some(child_arc);
-                        tracing::info!(stream_id, "child started successfully.");
+                        info!(stream_id, "child process started successfully.");
                     }
                     Ok(None) => {
-                        tracing::warn!(stream_id, "No child process provided, skipping source.");
+                        warn!(stream_id, "No child process provided.");
                     }
                     Err(e) => {
-                        tracing::error!(stream_id, error = %e, "Failed to create child process.");
+                        error!(stream_id, error = %e, "Failed to create child process.");
                     }
                 }
             }
@@ -295,7 +282,7 @@ impl LiveCamManager {
 
             let handle = tokio::spawn(async move {
                 if let Err(e) = rtp_receiver::start(port, track_clone, rx, payload_type).await {
-                    tracing::error!(port, error = %e, "RTP receiver task failed.");
+                    error!(port, error = %e, "RTP receiver task failed.");
                 }
             });
             state.rtp_receiver_handle = Some(handle);
@@ -308,7 +295,7 @@ impl LiveCamManager {
         if let Some(state) = streams.get_mut(stream_id) {
             if state.subscriber_count > 0 {
                 state.subscriber_count -= 1;
-                tracing::info!(
+                info!(
                     stream_id,
                     subscribers = state.subscriber_count,
                     "Subscriber removed."
@@ -316,7 +303,7 @@ impl LiveCamManager {
             }
 
             if state.subscriber_count == 0 {
-                tracing::info!(
+                info!(
                     stream_id,
                     "Last subscriber left, stopping video source and RTP receiver."
                 );
@@ -326,7 +313,7 @@ impl LiveCamManager {
                 #[cfg(not(riscv_mode))]
                 {
                     if let Some(child_arc) = state.child_process.take() {
-                        tracing::debug!(stream_id, "Stopping FFmpeg process.");
+                        debug!(stream_id, "Stopping child process.");
 
                         let child_clone = child_arc.clone();
                         let stream_id_clone = stream_id.to_string();
@@ -334,17 +321,17 @@ impl LiveCamManager {
                             let mut child_guard = child_clone.lock().unwrap();
 
                             if let Err(e) = child_guard.kill() {
-                                tracing::error!(stream_id = %stream_id_clone, error = %e, "Failed to kill FFmpeg process.");
+                                error!(stream_id = %stream_id_clone, error = %e, "Failed to kill child process.");
                             } else {
-                                tracing::info!(stream_id = %stream_id_clone, "FFmpeg process killed.");
+                                info!(stream_id = %stream_id_clone, "child process killed.");
                             }
 
                             match child_guard.wait() {
                                 Ok(status) => {
-                                    tracing::info!(stream_id = %stream_id_clone, status = ?status, "FFmpeg process exited.");
+                                    info!(stream_id = %stream_id_clone, status = ?status, "child process exited.");
                                 }
                                 Err(e) => {
-                                    tracing::error!(stream_id = %stream_id_clone, error = %e, "Error waiting for FFmpeg process.");
+                                    error!(stream_id = %stream_id_clone, error = %e, "Error waiting for child process.");
                                 }
                             }
                         });
@@ -358,7 +345,7 @@ impl LiveCamManager {
                         tokio::spawn(async move {
                             let handle = handle_arc.lock().unwrap();
                             handle.stop();
-                            tracing::info!(stream_id = %stream_id_clone, "RISCV stream handle stopped.");
+                            info!(stream_id = %stream_id_clone, "stream handle stopped.");
                         });
                     }
                 }
@@ -372,10 +359,55 @@ impl LiveCamManager {
 
                 if should_remove {
                     streams.remove(stream_id);
-                    tracing::info!(stream_id, "Dynamic stream removed from manager.");
+                    info!(stream_id, "stream removed from manager.");
                 }
             }
         }
+    }
+
+    pub async fn shutdown(&self) {
+        let sessions = {
+            let mut sessions_guard = self.whep_sessions.lock().unwrap();
+            std::mem::take(&mut *sessions_guard)
+        };
+        for (stream_id, pc) in sessions {
+            debug!(stream_id = %stream_id, "Closing peer connection.");
+            if let Err(e) = pc.close().await {
+                error!(stream_id = %stream_id, error = %e, "Failed to close peer connection.");
+            }
+            self.remove_whep_session(&stream_id);
+            self.remove_subscriber(&stream_id);
+        }
+
+        let streams = {
+            let mut streams_guard = self.streams.lock().unwrap();
+            std::mem::take(&mut *streams_guard)
+        };
+        for (stream_id, mut state) in streams {
+            debug!(stream_id = %stream_id, "shutdown stream.");
+
+            #[cfg(not(riscv_mode))]
+            if let Some(child_arc) = state.child_process.take() {
+                let mut child_guard = child_arc.lock().unwrap();
+                if let Err(e) = child_guard.kill() {
+                    error!(stream_id = %stream_id, error = %e, "Failed to kill child process.");
+                } else {
+                    info!(stream_id = %stream_id, "child process.");
+                }
+                if let Err(e) = child_guard.wait() {
+                    error!(stream_id = %stream_id, error = %e, "Error waiting for child process.");
+                }
+            }
+
+            if let Some(tx) = state.shutdown_tx.take() {
+                let _ = tx.send(()).await;
+            }
+            if let Some(handle) = state.rtp_receiver_handle.take() {
+                handle.abort();
+            }
+        }
+
+        info!("shutdown completed.");
     }
 
     pub fn add_whep_session(&self, stream_id: String, pc: Arc<RTCPeerConnection>) {
@@ -440,14 +472,14 @@ pub async fn serve(
                 .allow_headers(vec![header::CONTENT_TYPE, header::AUTHORIZATION])
                 .expose_headers(vec![header::LOCATION, header::CONTENT_TYPE]),
         )
-        .with_state(app_state);
+        .with_state(app_state.clone());
 
     #[cfg(feature = "webui")]
     {
         if Assets::get("index.html").is_some() {
-            tracing::info!("index.html found in embedded assets");
+            debug!("index.html found in embedded assets");
         } else {
-            tracing::error!("index.html NOT found in embedded assets");
+            error!("index.html NOT found in embedded assets");
         }
 
         app = app.fallback(static_handler);
@@ -455,7 +487,7 @@ pub async fn serve(
 
     #[cfg(not(feature = "webui"))]
     {
-        tracing::info!("WebUI disabled, only API endpoints available");
+        info!("WebUI disabled, only API endpoints available");
         app = app.fallback(|| async {
             (
                 StatusCode::NOT_FOUND,
@@ -465,16 +497,15 @@ pub async fn serve(
     }
 
     let addr = listener.local_addr()?;
-    tracing::info!("Server listening on http://{}", addr);
+    info!("Server listening on http://{}", addr);
 
-    #[cfg(feature = "webui")]
-    tracing::info!("WebUI available at http://{}", addr);
-
-    tracing::info!("Server started, processing requests...");
+    info!("Server started, processing requests...");
     axum::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal)
         .await?;
 
-    tracing::info!("Server shutdown completed");
+    app_state.manager.shutdown().await;
+
+    info!("Server shutdown completed");
     Ok(())
 }

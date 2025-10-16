@@ -1,3 +1,6 @@
+use super::auth::{AppState, Claims};
+use super::config::{CameraSettings, NetworkConfig, NtpConfig, StaticIpConfig};
+use super::utils;
 use axum::{
     Json, Router,
     extract::State,
@@ -6,10 +9,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-
-use super::auth::{AppState, Claims};
-use super::config::{CameraSettings, NetworkConfig, NtpConfig, StaticIpConfig};
-use super::utils;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NetworkConfigRequest {
@@ -29,7 +29,7 @@ async fn get_config(State(state): State<AppState>, _claims: Claims) -> impl Into
     let config = state.config.read().unwrap();
     let network_config = &config.network;
 
-    tracing::info!("Retrieved network configuration");
+    info!("Retrieved network configuration");
     Json(network_config.clone())
 }
 
@@ -38,28 +38,23 @@ async fn set_config(
     _claims: Claims,
     Json(payload): Json<NetworkConfigRequest>,
 ) -> impl IntoResponse {
-    tracing::info!("Received network config update request");
+    debug!("Received network config update request");
 
     if let Err(e) = validate_config(&payload) {
-        tracing::warn!("Invalid network configuration: {}", e);
+        warn!("Invalid network configuration: {}", e);
         return (StatusCode::BAD_REQUEST, e).into_response();
     }
 
     #[cfg(riscv_mode)]
     {
         if let Err(e) = apply_network_config(&payload).await {
-            tracing::error!("Failed to apply network configuration: {}", e);
+            error!("Failed to apply network configuration: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to apply configuration: {}", e),
             )
                 .into_response();
         }
-    }
-
-    #[cfg(not(riscv_mode))]
-    {
-        tracing::info!("Network configuration received but not applied (not in RISC-V mode)");
     }
 
     {
@@ -72,7 +67,7 @@ async fn set_config(
         };
 
         if let Err(e) = utils::save_config("livecam", &*config_guard) {
-            tracing::error!("Failed to save updated config: {}", e);
+            error!("Failed to save updated config: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to save configuration",
@@ -81,7 +76,7 @@ async fn set_config(
         }
     }
 
-    tracing::info!("Network configuration updated successfully");
+    info!("Network configuration updated successfully");
     (StatusCode::OK, "Network configuration updated successfully").into_response()
 }
 
@@ -96,21 +91,17 @@ fn validate_config(config: &NetworkConfigRequest) -> Result<(), String> {
         }
 
         if !config.static_ip.ip.starts_with("192.168.42.") {
-            return Err(
-                "For Milk-V Duo USB network, IP should be in 192.168.42.x range".to_string(),
-            );
+            return Err("IP should be in 192.168.42.x range".to_string());
         }
 
         let ip_parts: Vec<&str> = config.static_ip.ip.split('.').collect();
-        if ip_parts.len() == 4 {
-            if let Ok(last_octet) = ip_parts[3].parse::<u8>() {
-                if !(2..=242).contains(&last_octet) {
-                    return Err(
-                        "IP address last octet should be between 2-242 for DHCP compatibility"
-                            .to_string(),
-                    );
-                }
-            }
+        if ip_parts.len() == 4
+            && let Ok(last_octet) = ip_parts[3].parse::<u8>()
+            && !(2..=242).contains(&last_octet)
+        {
+            return Err(
+                "IP address last octet should be between 2-242 for DHCP compatibility".to_string(),
+            );
         }
     }
 
@@ -133,10 +124,10 @@ async fn apply_network_config(config: &NetworkConfigRequest) -> Result<(), Strin
     use std::fs;
     use std::process::Command;
 
-    tracing::info!("Applying network configuration on Milk-V Duo device");
+    info!("Applying network configuration on Milk-V Duo device");
 
     if config.static_ip.enabled {
-        tracing::info!("Configuring USB network IP: {}", config.static_ip.ip);
+        info!("Configuring USB network IP: {}", config.static_ip.ip);
 
         let usb_ncm_script = format!(
             r#"#!/bin/sh
@@ -169,7 +160,7 @@ fi
             .map_err(|e| format!("Failed to set script permissions: {}", e))?;
 
         if !output.status.success() {
-            tracing::warn!(
+            warn!(
                 "Failed to set script permissions: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
@@ -208,17 +199,17 @@ dhcp-option=6
             .map_err(|e| format!("Failed to restart dnsmasq: {}", e))?;
 
         if !output.status.success() {
-            tracing::warn!(
+            warn!(
                 "Failed to restart dnsmasq: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
 
-        tracing::info!("USB network configuration applied successfully");
+        info!("USB network configuration applied successfully");
     }
 
     if config.ntp.enabled {
-        tracing::info!("Configuring NTP server: {}", config.ntp.server);
+        info!("Configuring NTP server: {}", config.ntp.server);
 
         let output = Command::new("ntpdate")
             .args(&["-s", &config.ntp.server])
@@ -227,9 +218,9 @@ dhcp-option=6
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("NTP sync warning: {}", error_msg);
+            warn!("NTP sync warning: {}", error_msg);
         } else {
-            tracing::info!("Time synchronized with NTP server successfully");
+            info!("Time synchronized with NTP server successfully");
         }
 
         let output = Command::new("hwclock").args(&["-w"]).output();
@@ -237,16 +228,16 @@ dhcp-option=6
         match output {
             Ok(output) => {
                 if output.status.success() {
-                    tracing::info!("Hardware clock synchronized");
+                    info!("Hardware clock synchronized");
                 } else {
-                    tracing::warn!(
+                    warn!(
                         "Failed to sync hardware clock: {}",
                         String::from_utf8_lossy(&output.stderr)
                     );
                 }
             }
             Err(e) => {
-                tracing::debug!("hwclock not available: {}", e);
+                debug!("hwclock not available: {}", e);
             }
         }
 
@@ -255,7 +246,7 @@ dhcp-option=6
             .output()
         {
             if !output.status.success() {
-                tracing::warn!(
+                warn!(
                     "Failed to set timezone: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
@@ -263,12 +254,10 @@ dhcp-option=6
         }
     }
 
-    tracing::info!("Camera configuration will be applied on next stream start");
-    tracing::info!(
+    info!("Camera configuration will be applied on next stream start");
+    info!(
         "Resolution: {}, FPS: {}, Bitrate: {}kbps",
-        config.camera.resolution,
-        config.camera.fps,
-        config.camera.bitrate
+        config.camera.resolution, config.camera.fps, config.camera.bitrate
     );
 
     Ok(())

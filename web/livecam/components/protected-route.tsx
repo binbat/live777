@@ -1,7 +1,7 @@
 import { ComponentType } from 'preact';
 import { route } from 'preact-router';
 import { useEffect } from 'preact/hooks';
-import { useAuth } from './AuthContext';
+import { useAuth } from './auth';
 
 type RouteComponent = ComponentType<{ path: string; [key: string]: unknown }>;
 

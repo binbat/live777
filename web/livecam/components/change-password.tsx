@@ -1,7 +1,7 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from 'preact/compat';
 import { Modal, Button, Alert } from 'react-daisyui';
 import { KeyIcon } from '@heroicons/react/24/outline';
-import { useAuth } from './AuthContext';
+import { useAuth } from './auth';
 
 export interface ChangePasswordRef {
     show: () => void;

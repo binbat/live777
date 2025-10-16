@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
-import { useAuth } from './AuthContext';
+import { useAuth } from './auth';
 import { WHEPClient } from '@binbat/whip-whep/whep.js';
 import { PlayIcon, StopIcon, ExclamationTriangleIcon, CameraIcon } from '@heroicons/react/24/solid';
 

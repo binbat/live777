@@ -1,6 +1,7 @@
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, str::FromStr};
+use tracing::{info, warn};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -281,7 +282,7 @@ impl Config {
         }
 
         if self.auth.jwt_secret.is_empty() {
-            tracing::warn!(
+            warn!(
                 "auth.jwt_secret is empty or not set. A random secret will be used for this session."
             );
             self.auth.jwt_secret = default_jwt_secret();
@@ -294,13 +295,12 @@ impl Config {
                     .stream
                     .command
                     .replace(&global_port_str, &cam.rtp_port.to_string());
-                tracing::info!("Filled command for camera {}: {}", cam.id, cam.command);
+                info!("Filled command for camera {}: {}", cam.id, cam.command);
             }
             if !cam.command.contains(&format!("127.0.0.1:{}", cam.rtp_port)) {
-                tracing::warn!(
+                warn!(
                     "Camera {} command does not include rtp_port {}, may need update.",
-                    cam.id,
-                    cam.rtp_port
+                    cam.id, cam.rtp_port
                 );
             }
         }

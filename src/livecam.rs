@@ -48,7 +48,7 @@ async fn main() {
     let config_arc = Arc::new(RwLock::new(cfg));
 
     if let Err(e) = livecam::serve(config_arc, listener, utils::shutdown_signal()).await {
-        tracing::error!("服务器运行时发生错误: {}", e);
+        tracing::error!("server error: {}", e);
     }
 
     info!("Server shutdown");

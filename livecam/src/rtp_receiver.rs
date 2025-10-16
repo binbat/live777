@@ -8,6 +8,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
+use tracing::{error, info, trace, warn};
 use webrtc::rtp::packet::Packet;
 #[cfg(riscv_mode)]
 use webrtc::rtp::{codecs::h264::H264Payloader, packetizer::Payloader};
@@ -69,12 +70,12 @@ async fn riscv_mode(
     let ssrc: u32 = rand::random();
     let mut payloader = H264Payloader::default();
 
-    tracing::info!("RISCV stream receiver started.");
+    info!("stream receiver started.");
 
     loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
-                tracing::info!("RISCV stream receiver shutting down.");
+                info!("stream receiver shutting down.");
                 let handle = stream_handle.lock().unwrap();
                 handle.stop();
                 break;
@@ -95,14 +96,14 @@ async fn riscv_mode(
                             ssrc,
                             &mut payloader,
                         ).await {
-                            tracing::error!("Failed to send H.264 frame as RTP: {}", e);
+                            error!("Failed to send frame as RTP: {}", e);
                         }
                     }
                     Ok(None) => {
                         continue;
                     }
                     Err(e) => {
-                        tracing::error!("Failed to get frame from RISCV device: {}", e);
+                        error!("Failed to get frame from device: {}", e);
                         if e.contains("Handle stopped") {
                             break;
                         }
@@ -113,7 +114,7 @@ async fn riscv_mode(
         }
     }
 
-    tracing::info!("RISCV stream receiver stopped.");
+    info!("stream receiver stopped.");
     Ok(())
 }
 
@@ -133,7 +134,7 @@ async fn send_rtp(
     match payloader.payload(RTP_MTU, &frame_bytes) {
         Ok(payloads) => {
             let num_payloads = payloads.len();
-            tracing::trace!("Packaged H.264 frame into {} RTP packets", num_payloads);
+            trace!("Packaged frame into {} RTP packets", num_payloads);
             for (i, payload) in payloads.into_iter().enumerate() {
                 let packet = Packet {
                     header: webrtc::rtp::header::Header {
@@ -155,7 +156,7 @@ async fn send_rtp(
             }
             Ok(())
         }
-        Err(e) => Err(anyhow!("Failed to payload H.264: {}", e)),
+        Err(e) => Err(anyhow!("Failed to payload: {}", e)),
     }
 }
 
@@ -166,17 +167,14 @@ async fn normal_mode(
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
     let socket = UdpSocket::bind(format!("0.0.0.0:{}", rtp_port)).await?;
-    tracing::info!(
-        port = rtp_port,
-        "RTP receiver listening on UDP (normal mode)."
-    );
+    info!(port = rtp_port, "RTP receiver listening on UDP.");
     let mut buffer = [0u8; 2048];
     let mut packet_count = 0u64;
 
     loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
-                tracing::info!(port = rtp_port, "RTP receiver shutting down.");
+                info!(port = rtp_port, "RTP receiver shutting down.");
                 break;
             }
             result = socket.recv_from(&mut buffer) => {
@@ -184,23 +182,23 @@ async fn normal_mode(
                     Ok((size, _)) => {
                         packet_count += 1;
                         if packet_count.is_multiple_of(100) {
-                            tracing::trace!("Processed {} RTP packets", packet_count);
+                            trace!("Processed {} RTP packets", packet_count);
                         }
 
                         match Packet::unmarshal(&mut &buffer[..size]) {
                             Ok(rtp_packet) => {
                                 if let Err(e) = track.write_rtp(&rtp_packet).await {
-                                    tracing::error!("Failed to write RTP packet: {}", e);
+                                    error!("Failed to write RTP packet: {}", e);
                                     break;
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to unmarshal RTP packet (size={}): {}", size, e);
+                                warn!("Failed to unmarshal RTP packet (size={}): {}", size, e);
                             }
                         }
                     }
                     Err(e) => {
-                        tracing::error!("UDP recv error: {}", e);
+                        error!("UDP recv error: {}", e);
                         sleep(Duration::from_secs(1)).await;
                     }
                 }

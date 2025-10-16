@@ -10,6 +10,7 @@ use axum::{
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tracing::{debug, error, info, warn};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, media_engine::MediaEngine};
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -36,15 +37,15 @@ async fn whep_handler(
     Path(stream_id): Path<String>,
     body: Bytes,
 ) -> impl IntoResponse {
-    tracing::info!(stream_id, "Received WHEP POST request for stream.");
+    info!(stream_id, "Received WHEP POST request for stream.");
     let body_str = String::from_utf8_lossy(&body);
     let offer = match RTCSessionDescription::offer((body_str).to_string()) {
         Ok(offer) => {
-            tracing::debug!(stream_id, "SDP offer parsed successfully.");
+            debug!(stream_id, "SDP offer parsed successfully.");
             offer
         }
         Err(e) => {
-            tracing::error!(stream_id, error = %e, "Failed to parse SDP offer.");
+            error!(stream_id, error = %e, "Failed to parse SDP offer.");
             return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
         }
     };
@@ -52,11 +53,11 @@ async fn whep_handler(
     let manager = &app_state.manager;
     let track = match manager.add_subscriber(&stream_id) {
         Some(track) => {
-            tracing::info!(stream_id, "Subscriber added successfully.");
+            info!(stream_id, "Subscriber added successfully.");
             track
         }
         None => {
-            tracing::warn!(stream_id, "Requested stream not found.");
+            warn!(stream_id, "Requested stream not found.");
             return (StatusCode::NOT_FOUND, "Stream not found".to_string()).into_response();
         }
     };
@@ -70,7 +71,6 @@ async fn whep_handler(
                 urls: s.urls.clone(),
                 username: s.username.clone(),
                 credential: s.credential.clone(),
-                ..Default::default()
             })
             .collect();
         let mut rtc_config = RTCConfiguration {
@@ -83,16 +83,16 @@ async fn whep_handler(
                 ..Default::default()
             }];
         }
-        tracing::debug!(stream_id, "RTC configuration prepared.");
+        debug!(stream_id, "RTC configuration prepared.");
         rtc_config
     };
 
     let mut m = MediaEngine::default();
     if let Err(e) = m.register_default_codecs() {
-        tracing::error!(stream_id, error = %e, "Failed to register default codecs.");
+        error!(stream_id, error = %e, "Failed to register default codecs.");
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    tracing::debug!(stream_id, "Media engine initialized with default codecs.");
+    debug!(stream_id, "Media engine initialized with default codecs.");
 
     let mut setting_engine = SettingEngine::default();
     setting_engine.set_ice_timeouts(
@@ -100,7 +100,6 @@ async fn whep_handler(
         Some(Duration::from_secs(30)),
         Some(Duration::from_secs(2)),
     );
-    tracing::debug!(stream_id, "Setting engine configured with ICE timeouts.");
 
     let registry = Registry::new();
     let api = APIBuilder::new()
@@ -111,11 +110,11 @@ async fn whep_handler(
 
     let pc: Arc<RTCPeerConnection> = match api.new_peer_connection(rtc_config).await {
         Ok(pc) => {
-            tracing::info!(stream_id, "PeerConnection created successfully.");
+            info!(stream_id, "PeerConnection created successfully.");
             Arc::new(pc)
         }
         Err(e) => {
-            tracing::error!(stream_id, error = %e, "Failed to create PeerConnection.");
+            error!(stream_id, error = %e, "Failed to create PeerConnection.");
             manager.remove_subscriber(&stream_id);
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
@@ -125,11 +124,11 @@ async fn whep_handler(
         .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
         .await
     {
-        tracing::error!(stream_id, error = %e, "Failed to add track.");
+        error!(stream_id, error = %e, "Failed to add track.");
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    tracing::debug!(stream_id, "Track added to PeerConnection.");
+    debug!(stream_id, "Track added to PeerConnection.");
 
     let manager_clone = manager.clone();
     let stream_id_clone = stream_id.clone();
@@ -137,12 +136,15 @@ async fn whep_handler(
         let stream_id_clone2 = stream_id_clone.clone();
         let manager_clone2 = manager_clone.clone();
         Box::pin(async move {
-            tracing::debug!(stream_id = stream_id_clone2, state = %s, "PeerConnection state changed.");
+            debug!(stream_id = stream_id_clone2, state = %s, "PeerConnection state changed.");
             if s == RTCPeerConnectionState::Closed
                 || s == RTCPeerConnectionState::Disconnected
                 || s == RTCPeerConnectionState::Failed
             {
-                tracing::info!(stream_id = stream_id_clone2, "Cleaning up subscriber and session due to connection state.");
+                debug!(
+                    stream_id = stream_id_clone2,
+                    "Cleaning up subscriber and session."
+                );
                 manager_clone2.remove_subscriber(&stream_id_clone2);
                 manager_clone2.remove_whep_session(&stream_id_clone2);
             }
@@ -150,36 +152,36 @@ async fn whep_handler(
     }));
 
     if let Err(e) = pc.set_remote_description(offer).await {
-        tracing::error!(stream_id, error = %e, "Failed to set remote description.");
+        error!(stream_id, error = %e, "Failed to set remote description.");
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    tracing::debug!(stream_id, "Remote description set.");
+    debug!(stream_id, "Remote description set.");
 
     let answer = match pc.create_answer(None).await {
         Ok(a) => {
-            tracing::debug!(stream_id, "Answer created successfully.");
+            debug!(stream_id, "Answer created successfully.");
             a
         }
         Err(e) => {
-            tracing::error!(stream_id, error = %e, "Failed to create answer.");
+            error!(stream_id, error = %e, "Failed to create answer.");
             manager.remove_subscriber(&stream_id);
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
 
     if let Err(e) = pc.set_local_description(answer).await {
-        tracing::error!(stream_id, error = %e, "Failed to set local description.");
+        error!(stream_id, error = %e, "Failed to set local description.");
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    tracing::debug!(stream_id, "Local description set.");
+    debug!(stream_id, "Local description set.");
 
     let (tx, rx) = oneshot::channel();
     let mut tx = Some(tx);
     pc.on_ice_candidate(Box::new(move |candidate| {
         if candidate.is_none() {
-            tracing::debug!("ICE gathering completed.");
+            debug!("ICE gathering completed.");
             if let Some(tx) = tx.take() {
                 let _ = tx.send(());
             }
@@ -191,16 +193,16 @@ async fn whep_handler(
         .await
         .is_err()
     {
-        tracing::warn!(stream_id, "ICE gathering timed out, proceeding.");
+        warn!(stream_id, "ICE gathering timed out, proceeding.");
     }
 
     let local_desc = match pc.local_description().await {
         Some(desc) => {
-            tracing::info!(stream_id, "Local description obtained.");
+            info!(stream_id, "Local description obtained.");
             desc
         }
         None => {
-            tracing::error!(stream_id, "No local description available.");
+            error!(stream_id, "No local description available.");
             manager.remove_subscriber(&stream_id);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -211,12 +213,12 @@ async fn whep_handler(
     };
 
     manager.add_whep_session(stream_id.clone(), pc.clone());
-    tracing::info!(stream_id, "WHEP session added.");
+    info!(stream_id, "WHEP session added.");
     let config = app_state.config.read().unwrap();
     let server_url = config.http.public.clone();
     let location = format!("{}/api/whep/{}", server_url, stream_id);
 
-    tracing::info!(stream_id, "WHEP handler completed successfully.");
+    info!(stream_id, "WHEP handler completed successfully.");
     match Response::builder()
         .status(StatusCode::CREATED)
         .header(header::CONTENT_TYPE, "application/sdp")
@@ -227,7 +229,7 @@ async fn whep_handler(
     {
         Ok(response) => response,
         Err(e) => {
-            tracing::error!(stream_id, error = %e, "Failed to build response");
+            error!(stream_id, error = %e, "Failed to build response");
             manager.remove_subscriber(&stream_id);
             manager.remove_whep_session(&stream_id);
             (
@@ -245,18 +247,18 @@ async fn whep_patch(
     Path(stream_id): Path<String>,
     body: Bytes,
 ) -> impl IntoResponse {
-    tracing::info!(stream_id, "Received WHEP PATCH request for stream.");
+    info!(stream_id, "Received WHEP PATCH request for stream.");
     let body_str = String::from_utf8_lossy(&body).to_string();
     let candidate_str = body_str.trim();
 
     let manager = &app_state.manager;
     let pc = match manager.get_whep_session(&stream_id) {
         Some(pc) => {
-            tracing::debug!(stream_id, "WHEP session retrieved.");
+            debug!(stream_id, "WHEP session retrieved.");
             pc
         }
         None => {
-            tracing::warn!(stream_id, "Session not found for PATCH.");
+            warn!(stream_id, "Session not found for PATCH.");
             return (StatusCode::NOT_FOUND, "Session not found").into_response();
         }
     };
@@ -266,7 +268,7 @@ async fn whep_patch(
     } else if candidate_str.starts_with("candidate:") {
         format!("a={}", candidate_str)
     } else {
-        tracing::warn!(stream_id, candidate = %candidate_str, "Invalid ICE candidate format.");
+        warn!(stream_id, candidate = %candidate_str, "Invalid ICE candidate format.");
         return (StatusCode::BAD_REQUEST, "Invalid candidate format").into_response();
     };
 
@@ -279,11 +281,11 @@ async fn whep_patch(
 
     match pc.add_ice_candidate(candidate_init).await {
         Ok(_) => {
-            tracing::info!(stream_id, "ICE candidate added.");
+            info!(stream_id, "ICE candidate added.");
             (StatusCode::OK, "").into_response()
         }
         Err(e) => {
-            tracing::error!(stream_id, error = %e, "Failed to add ICE candidate.");
+            error!(stream_id, error = %e, "Failed to add ICE candidate.");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -294,22 +296,22 @@ async fn whep_delete(
     _claims: Claims,
     Path(stream_id): Path<String>,
 ) -> impl IntoResponse {
-    tracing::info!(stream_id, "Received WHEP DELETE request for stream.");
+    info!(stream_id, "Received WHEP DELETE request for stream.");
     let manager = &app_state.manager;
     if let Some(pc) = manager.get_whep_session(&stream_id) {
         let _ = pc.close().await;
         manager.remove_whep_session(&stream_id);
         manager.remove_subscriber(&stream_id);
-        tracing::info!(stream_id, "WHEP session closed.");
+        info!(stream_id, "WHEP session closed.");
         (StatusCode::NO_CONTENT, "").into_response()
     } else {
-        tracing::warn!(stream_id, "Session not found for DELETE.");
+        warn!(stream_id, "Session not found for DELETE.");
         (StatusCode::NOT_FOUND, "Session not found").into_response()
     }
 }
 
 async fn whep_options() -> impl IntoResponse {
-    tracing::debug!("Received WHEP OPTIONS request.");
+    debug!("Received WHEP OPTIONS request.");
     Response::builder()
         .status(StatusCode::NO_CONTENT)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")

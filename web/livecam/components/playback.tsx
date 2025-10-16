@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { useAuth } from './AuthContext';
+import { useAuth } from './auth';
 import { FilmIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 
 interface PlaybackViewerProps {
