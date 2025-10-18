@@ -9,6 +9,7 @@ use tracing::{error, info, info_span};
 
 use crate::admin::{authorize, token};
 use crate::config::Config;
+use crate::service::database::DatabaseService;
 use crate::store::{Node, NodeKind, Storage};
 
 #[cfg(feature = "webui")]
@@ -18,9 +19,12 @@ struct Assets;
 
 mod admin;
 pub mod config;
+pub mod entity;
 mod error;
+pub mod migration;
 mod result;
 mod route;
+pub mod service;
 mod store;
 mod tick;
 
@@ -29,6 +33,32 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     info!("Server listening on {}", listener.local_addr().unwrap());
+
+    // Initialize database connection (recordings index)
+    let database_service = DatabaseService::new(&cfg.database)
+        .await
+        .expect("Failed to initialize database connection");
+
+    // Initialize file storage operator if recorder feature is enabled
+    #[cfg(feature = "recorder")]
+    let file_storage = if cfg!(feature = "recorder") {
+        match storage::init_operator(&cfg.recorder.storage).await {
+            Ok(operator) => {
+                info!("File storage initialized successfully");
+                Some(operator)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to initialize file storage: {}, continuing without file storage",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let client_req = reqwest::Client::builder();
     let client_mem = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(500))
@@ -141,6 +171,9 @@ where
         config: cfg.clone(),
         client: client_req.build().unwrap(),
         storage: store,
+        database: database_service,
+        #[cfg(feature = "recorder")]
+        file_storage,
     };
 
     let app = Router::new()
@@ -180,6 +213,11 @@ where
         .fallback(static_handler);
 
     tokio::spawn(tick::cascade_check(app_state.clone()));
+
+    tokio::spawn(tick::auto_record_check(app_state.clone()));
+
+    tokio::spawn(tick::auto_record_rotate_daily(app_state.clone()));
+
     axum::serve(listener, app)
         .with_graceful_shutdown(signal)
         .await
@@ -211,4 +249,7 @@ struct AppState {
     config: Config,
     client: reqwest::Client,
     storage: Storage,
+    database: DatabaseService,
+    #[cfg(feature = "recorder")]
+    file_storage: Option<opendal::Operator>,
 }

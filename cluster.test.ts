@@ -8,6 +8,7 @@ import { text } from "node:stream/consumers"
 import cp, { ChildProcess } from "node:child_process"
 
 import { describe, beforeAll, afterAll, test, expect, assert, beforeEach, afterEach } from "vitest"
+import { chromium } from "@playwright/test"
 
 import { Stream } from "./web/shared/api"
 
@@ -398,6 +399,71 @@ url = "http://${localhost}:${live777CloudPort}"
 
         expect(res2).toBeTruthy()
         expect(res2?.subscribe.sessions.length).toEqual(1)
+    })
+
+    test("frontend video playback", { timeout: 60 * 1000 }, async () => {
+        const width = 320, height = 240
+        const whipintoPort = "5002"
+        using _ffmpeg = spawn([
+            "ffmpeg", "-hide_banner", "-re", "-f", "lavfi",
+            "-i", `testsrc=size=${width}x${height}:rate=30`,
+            "-vcodec", "libvpx",
+            "-f", "rtp", `rtp://127.0.0.1:${whipintoPort}`,
+            "-sdp_file", tmpFileSdpWhipinto
+        ], {
+            stderr: null,
+            onExit: e => { e.exitCode && console.log(e.stderr) },
+        })
+        using _ = rmTempFile(tmpFileSdpWhipinto)
+
+        await until(() => existsSync(tmpFileSdpWhipinto))
+
+        using _whipinto = spawn([
+            appWhipinto,
+            "-i", tmpFileSdpWhipinto,
+            "-w", `${live777VergeHost}/whip/${live777VergeStream}`,
+        ], { onExit: e => { e.exitCode && console.log(e.stderr) } })
+
+        await until(() => hasPublishStreams(live777VergeHost))
+
+        async function getRecordingMpdPath(streamId: string): Promise<string | undefined> {
+            try {
+                const res = await fetch(`${live777LivemanHost}/api/playback/${streamId}`)
+                if (!res.ok) return undefined
+                const recordings: { mpd_path: string }[] = await res.json()
+                return recordings.find(r => r.mpd_path)?.mpd_path
+            } catch {
+                return undefined
+            }
+        }
+
+        let mpdPath: string | undefined
+        await until(async () => {
+            mpdPath = await getRecordingMpdPath(live777VergeStream)
+            return mpdPath
+        })
+        assert(mpdPath, "Failed to get MPD path")
+
+        const browser = await chromium.launch()
+        const page = await browser.newPage()
+        try {
+            const playerUrl = `${live777LivemanHost}/tools/dash.html?mpd=${encodeURIComponent(mpdPath)}`
+            await page.goto(playerUrl)
+
+            await page.waitForSelector("video")
+
+            await until(async () => {
+                return await page.evaluate(() => {
+                    const video = document.querySelector("video")
+                    return video && video.currentTime > 0 && !video.paused
+                })
+            }, undefined, 1000)
+
+            const currentTime = await page.evaluate(() => document.querySelector("video")?.currentTime)
+            expect(currentTime).toBeGreaterThan(0)
+        } finally {
+            await browser.close()
+        }
     })
 
     afterAll(async () => {

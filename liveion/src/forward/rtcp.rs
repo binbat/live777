@@ -4,7 +4,7 @@ use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndicat
 use webrtc::rtcp::payload_feedbacks::slice_loss_indication::SliceLossIndication;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum RtcpMessage {
+pub enum RtcpMessage {
     FullIntraRequest,
     PictureLossIndication,
     SliceLossIndication,

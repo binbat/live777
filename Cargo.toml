@@ -47,6 +47,7 @@ members = [
     "libs/libwish",
     "libs/signal",
     "libs/net4mqtt",
+    "libs/storage",
     "liveion",
     "liveman",
     "livetwo",
@@ -74,11 +75,14 @@ anyhow = "1.0"
 clap = "4.5"
 http = "1.3"
 http-body = "1.0"
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+], default-features = false }
 serde = "1.0"
 serde_json = "1.0"
 tokio = "1.47"
 tracing = "0.1"
+uuid = { version = "1", features = ["v4", "fast-rng"] }
 url = "2.5"
 
 [dev-dependencies]
@@ -89,6 +93,7 @@ api = { path = "libs/api" }
 cli = { path = "libs/cli" }
 reqwest = { workspace = true, features = ["socks", "json"] }
 tempfile = "3"
+anyhow = { workspace = true }
 
 [dependencies]
 liveion = { path = "liveion" }
@@ -97,6 +102,8 @@ livetwo = { path = "livetwo" }
 livecam = { path = "livecam" }
 net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
+
+storage = { path = "libs/storage" }
 
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["process"] }
@@ -107,6 +114,6 @@ toml = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
-webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
-net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt", "livecam/net4mqtt"]
+webui = ["liveion/webui", "liveman/webui"]
+net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]

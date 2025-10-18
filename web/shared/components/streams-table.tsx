@@ -4,7 +4,7 @@ import { type ReactNode } from 'preact/compat';
 import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
-import { type Stream, getStreams, deleteStream } from '../api';
+import { type CapabilityProbeStatus, type Stream, deleteStream, getRecordingStatus, getStreams, probeRecorderFeature, startRecording, stopRecording } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 import { TokenContext } from '../context';
@@ -30,6 +30,13 @@ export interface StreamTableProps {
     getWhipUrl?: (streamId: string) => string;
     showCascade?: boolean;
     renderExtraActions?: (s: Stream) => ReactNode;
+    features?: {
+        player?: boolean;
+        debugger?: boolean;
+        recording?: boolean;
+        autoDetectRecording?: boolean;
+        recordingPlayback?: boolean;
+    };
 }
 
 export function StreamsTable(props: StreamTableProps) {
@@ -46,10 +53,50 @@ export function StreamsTable(props: StreamTableProps) {
     const [previewStreamId, setPreviewStreamId] = useState('');
     const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map());
     const tokenContext = useContext(TokenContext);
+    const features = {
+        player: true,
+        debugger: true,
+        recording: true,
+        autoDetectRecording: false,
+        recordingPlayback: true,
+        ...props.features,
+    };
 
     useEffect(() => {
         streams.updateData();
     }, [tokenContext.token]);
+
+    useEffect(() => {
+        if (!features.recording) {
+            setRecordingAvailable(false);
+            return;
+        }
+
+        if (!features.autoDetectRecording) {
+            setRecordingAvailable(features.recording);
+            return;
+        }
+
+        let disposed = false;
+        (async () => {
+            const status: CapabilityProbeStatus = await probeRecorderFeature();
+            if (disposed) {
+                return;
+            }
+
+            if (status === 'available') {
+                setRecordingAvailable(true);
+            } else if (status === 'unavailable') {
+                setRecordingAvailable(false);
+            } else {
+                setRecordingAvailable(features.recording);
+            }
+        })();
+
+        return () => {
+            disposed = true;
+        };
+    }, [tokenContext.token, features.recording, features.autoDetectRecording]);
 
     const handleViewClients = (id: string) => {
         setSelectedStreamId(id);
@@ -130,6 +177,86 @@ export function StreamsTable(props: StreamTableProps) {
         await streams.updateData();
     };
 
+    const [recordingAvailable, setRecordingAvailable] = useState<boolean>(features.recording);
+    const [recordingStates, setRecordingStates] = useState<Record<string, boolean>>({});
+    const [recordDialogOpen, setRecordDialogOpen] = useState(false);
+    const [recordDialogStreamId, setRecordDialogStreamId] = useState('');
+    const [recordBusy, setRecordBusy] = useState(false);
+    const [recordError, setRecordError] = useState('');
+    const [recordMpd, setRecordMpd] = useState('');
+
+    useEffect(() => {
+        if (!recordingAvailable) {
+            setRecordingStates({});
+            return;
+        }
+
+        // refresh recording status for visible streams
+        (async () => {
+            const states: Record<string, boolean> = {};
+            for (const s of streams.data) {
+                try {
+                    states[s.id] = await getRecordingStatus(s.id);
+                } catch {
+                    states[s.id] = false;
+                }
+            }
+            setRecordingStates(states);
+        })();
+    }, [streams.data, recordingAvailable]);
+
+    const [confirmStopOpen, setConfirmStopOpen] = useState(false);
+    const [confirmStopBusy, setConfirmStopBusy] = useState(false);
+
+    const openRecordDialog = (id: string) => {
+        if (!recordingAvailable) {
+            return;
+        }
+        if (recordingStates[id]) {
+            setRecordDialogStreamId(id);
+            setConfirmStopOpen(true);
+            return;
+        }
+        setRecordDialogStreamId(id);
+        setRecordError('');
+        setRecordMpd('');
+        setRecordDialogOpen(true);
+    };
+
+    const closeRecordDialog = () => {
+        setRecordDialogOpen(false);
+        setRecordBusy(false);
+        setRecordError('');
+        setRecordMpd('');
+    };
+
+    const handleConfirmRecord = async () => {
+        if (!recordDialogStreamId) return;
+        try {
+            setRecordBusy(true);
+            setRecordError('');
+            const res = await startRecording(recordDialogStreamId);
+            setRecordingStates({ ...recordingStates, [recordDialogStreamId]: true });
+            setRecordMpd(res.mpd_path);
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : 'Failed to start recording';
+            setRecordError(message);
+        } finally {
+            setRecordBusy(false);
+        }
+    };
+
+    const handlePlayNow = () => {
+        if (!features.recordingPlayback) return;
+        if (!recordDialogStreamId || !recordMpd) return;
+        const params = new URLSearchParams();
+        params.set('mpd', recordMpd);
+        if (tokenContext.token) params.set('token', tokenContext.token);
+        const url = new URL(`/tools/dash.html?${params.toString()}`, location.origin);
+        window.open(url.toString(), '_blank');
+        closeRecordDialog();
+    };
+
     return (
         <>
             <div className="flex items-center gap-2 px-4 h-12">
@@ -186,8 +313,17 @@ export function StreamsTable(props: StreamTableProps) {
                                     ? <Button size="sm" onClick={() => handleCascadePushStream(i.id)}>Cascade Push</Button>
                                     : null
                                 }
-                                <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
-                                <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
+                                {features.player ? (
+                                    <Button size="sm" onClick={() => handleOpenPlayerPage(i.id)}>Player</Button>
+                                ) : null}
+                                {features.debugger ? (
+                                    <Button size="sm" onClick={() => handleOpenDebuggerPage(i.id)}>Debugger</Button>
+                                ) : null}
+                                {recordingAvailable ? (
+                                    <Button size="sm" color={recordingStates[i.id] ? 'success' : 'info'} onClick={() => openRecordDialog(i.id)}>
+                                        {recordingStates[i.id] ? 'Recording' : 'Record'}
+                                    </Button>
+                                ) : null}
                                 {props.renderExtraActions?.(i)}
                                 <Button size="sm" color="error" onClick={() => handleDestroyStream(i.id)}>Destroy</Button>
                             </div>
@@ -195,6 +331,65 @@ export function StreamsTable(props: StreamTableProps) {
                     ) : <tr><td colspan={6} className="text-center">N/A</td></tr>}
                 </Table.Body>
             </Table>
+
+            {recordingAvailable && recordDialogOpen && (
+                <div className="modal modal-open">
+                    <div className="modal-box">
+                        <h3 className="font-bold text-lg">Start Recording</h3>
+                        <p className="py-2 text-sm opacity-80">Stream: <span className="font-mono">{recordDialogStreamId}</span></p>
+                        {recordError && (
+                            <div className="alert alert-error my-2">
+                                <span>{recordError}</span>
+                            </div>
+                        )}
+                        {recordMpd && (
+                            <div className="alert alert-success my-2">
+                                <span>Recording started. MPD: <span className="font-mono break-all">{recordMpd}</span></span>
+                            </div>
+                        )}
+                        <div className="modal-action">
+                            {!recordMpd ? (
+                                <>
+                                    <Button color="primary" onClick={handleConfirmRecord} disabled={recordBusy}>
+                                        {recordBusy ? 'Starting…' : 'Start'}
+                                    </Button>
+                                    <Button color="ghost" onClick={closeRecordDialog}>Cancel</Button>
+                                </>
+                            ) : (
+                                <>
+                                    {features.recordingPlayback ? (
+                                        <Button color="success" onClick={handlePlayNow}>Play now</Button>
+                                    ) : null}
+                                    <Button color="ghost" onClick={closeRecordDialog}>Close</Button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {recordingAvailable && confirmStopOpen && (
+                <div className="modal modal-open">
+                    <div className="modal-box">
+                        <h3 className="font-bold text-lg">Stop Recording</h3>
+                        <p className="py-2 text-sm opacity-80">Are you sure you want to stop recording for stream <span className="font-mono">{recordDialogStreamId}</span>?</p>
+                        <div className="modal-action">
+                            <Button color="error" onClick={async () => {
+                                setConfirmStopBusy(true);
+                                try {
+                                    await stopRecording(recordDialogStreamId);
+                                    setRecordingStates({ ...recordingStates, [recordDialogStreamId]: false });
+                                } finally {
+                                    setConfirmStopBusy(false);
+                                    setConfirmStopOpen(false);
+                                    setRecordDialogStreamId('');
+                                }
+                            }} disabled={confirmStopBusy}>{confirmStopBusy ? 'Stopping…' : 'Confirm'}</Button>
+                            <Button color="ghost" onClick={() => { setConfirmStopOpen(false); setRecordDialogStreamId(''); }}>Cancel</Button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="flex gap-2 p-4">
                 <Button

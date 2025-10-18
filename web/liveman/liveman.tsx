@@ -10,6 +10,7 @@ import * as livemanApi from './api';
 import { type LoginProps, Login } from './components/login';
 import { NodesTable } from './components/nodes-table';
 import { type IStreamTokenDialog, StreamTokenDialog } from './components/dialog-token';
+import { RecordingsPage } from './components/recordings-page';
 
 const TOKEN_KEY = 'liveman_auth_token';
 const savedToken = localStorage.getItem(TOKEN_KEY) ?? '';
@@ -28,6 +29,36 @@ export function Liveman() {
         setToken(tokenValue);
         setNeedsAuthorization(false);
         localStorage.setItem(TOKEN_KEY, `${tokenType} ${tokenValue}`);
+    };
+
+    // View state management
+    const [currentView, setCurrentView] = useState<'streams' | 'recordings'>('streams');
+
+    // Initialize view from URL params
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const view = params.get('view') as 'streams' | 'recordings';
+
+        if (view) setCurrentView(view);
+
+
+        const handlePopState = () => {
+            const newParams = new URLSearchParams(location.search);
+            const newView = newParams.get('view') as 'streams' | 'recordings' || 'streams';
+
+            setCurrentView(newView);
+
+        };
+
+        window.addEventListener('popstate', handlePopState);
+        return () => window.removeEventListener('popstate', handlePopState);
+    }, []);
+
+    const navigateToView = (view: 'streams' | 'recordings') => {
+        const url = new URL(window.location.href);
+        url.searchParams.set('view', view);
+        window.history.pushState({}, '', url.toString());
+        setCurrentView(view);
     };
 
     const [filterNodes, setFilterNodes] = useState<string[]>(initialNodes);
@@ -55,18 +86,36 @@ export function Liveman() {
 
     const refStreamTokenDialog = useRef<IStreamTokenDialog>(null);
 
+    const renderCurrentView = () => {
+        switch (currentView) {
+            case 'recordings':
+                return <RecordingsPage />;
+            default:
+                return (
+                    <>
+                        {filterNodes.length > 0 ? null : <NodesTable />}
+                        <StreamsTable
+                            getStreams={getStreams}
+                            getWhepUrl={streamId => getWhxpUrl('whep', streamId)}
+                            getWhipUrl={streamId => getWhxpUrl('whip', streamId)}
+                            features={{ autoDetectRecording: true }}
+                            renderExtraActions={stream => (
+                                <Button size="sm" onClick={() => refStreamTokenDialog?.current?.show(stream.id)}>Create token</Button>
+                            )}
+                        />
+                    </>
+                );
+        }
+    };
+
     return (
         <>
-            <PageLayout token={token}>
-                {filterNodes.length > 0 ? null : <NodesTable />}
-                <StreamsTable
-                    getStreams={getStreams}
-                    getWhepUrl={streamId => getWhxpUrl('whep', streamId)}
-                    getWhipUrl={streamId => getWhxpUrl('whip', streamId)}
-                    renderExtraActions={stream => (
-                        <Button size="sm" onClick={() => refStreamTokenDialog?.current?.show(stream.id)}>Create token</Button>
-                    )}
-                />
+            <PageLayout
+                token={token}
+                currentView={currentView}
+                onNavigate={(v: string) => navigateToView(v as 'streams' | 'recordings')}
+            >
+                {renderCurrentView()}
             </PageLayout>
             <StreamTokenDialog ref={refStreamTokenDialog} />
             <Login

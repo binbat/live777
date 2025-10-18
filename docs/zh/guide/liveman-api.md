@@ -22,6 +22,56 @@ Response: [204]
 
 Response: [204]
 
+## Recording & Playback
+
+录制与回放相关 API（索引列表与代理）
+
+### 列出存在录制索引的流
+
+`GET` `/api/playback`
+
+响应: [200] `application/json`
+```json
+["camera01", "roomA", "web-0001"]
+```
+
+### 根据流列出录制索引
+
+`GET` `/api/playback/{stream}`
+
+响应: [200] `application/json`
+```json
+[
+  { "year": 2025, "month": 7, "day": 24, "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+]
+```
+
+### 代理获取分片文件
+
+`GET` `/api/record/object/{path}`
+
+- `path`: 录制对象在存储中的 URL 编码路径（如 `camera01/2025/07/24/manifest.mpd`）
+
+**响应**: [200] 二进制媒体数据，Content-Type 通过文件扩展名推断（例如 `.mpd` 为 `application/dash+xml`，`.m4s`/`.mp4` 为 `video/mp4`）。
+
+**响应**: [200] `application/dash+xml`
+```xml
+<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" ...>
+  <!-- MPEG-DASH manifest content -->
+</MPD>
+```
+
+### 获取分片文件
+
+代理访问录制的分片文件。
+
+`GET` `/api/record/object/{path}`
+
+路径参数: 分片文件的存储路径（URL编码）
+
+**响应**: [200] 二进制媒体数据 或 [302] 重定向到存储URL
+
 ## Node
 
 `GET` `/api/nodes/`
@@ -64,9 +114,9 @@ Response: [200]
 
 ## Stream
 
-### Get all Stream
+### 获取所有流
 
-**API 说明：获取所有节点合并后的流列表​​**
+**此API将合并所有节点的流**
 
 `GET` `/api/streams/`
 
@@ -168,9 +218,9 @@ Response: [200]
 ]
 ```
 
-### Get a Stream Details
+### 获取流详情
 
-**​API 说明：获取指定流在所有节点上的信息​​**
+**此API将返回指定流在所有节点上的信息**
 
 `GET` `/api/streams/:streamId`
 

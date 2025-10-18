@@ -37,3 +37,7 @@ pub fn streams_sse() -> &'static str {
 pub fn strategy() -> &'static str {
     "/api/strategy/"
 }
+
+pub fn record(stream: &str) -> String {
+    format!("/api/record/{stream}")
+}

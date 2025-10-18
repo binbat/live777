@@ -11,6 +11,8 @@ use axum::{Json, Router};
 // https://docs.rs/axum/latest/axum/extract/struct.Query.html
 // For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
+#[cfg(feature = "recorder")]
+use chrono::Utc;
 use http::StatusCode;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
@@ -22,6 +24,10 @@ pub fn route() -> Router<AppState> {
         .route(&api::path::streams("{stream}"), post(create))
         .route(&api::path::streams("{stream}"), delete(destroy))
         .route(api::path::streams_sse(), get(sse))
+        .route(
+            &api::path::record("{stream}"),
+            post(record_stream).get(record_status).delete(stop_record),
+        )
 }
 
 async fn index(
@@ -103,4 +109,80 @@ async fn sse(
     });
     let resp = Sse::new(stream).keep_alive(KeepAlive::default());
     Ok(resp)
+}
+
+#[cfg(feature = "recorder")]
+async fn record_stream(
+    State(state): State<AppState>,
+    Path(stream): Path<String>,
+    Json(body): Json<api::recorder::StartRecordRequest>,
+) -> crate::result::Result<Response<String>> {
+    let base_dir = body.base_dir.clone();
+    crate::recorder::start(
+        state.stream_manager.clone(),
+        stream.clone(),
+        base_dir.clone(),
+    )
+    .await?;
+    let date_path = Utc::now().format("%Y/%m/%d").to_string();
+    let mpd_path = if let Some(prefix) = base_dir {
+        format!("{prefix}/manifest.mpd")
+    } else {
+        format!("{stream}/{date_path}/manifest.mpd")
+    };
+    let resp = api::recorder::StartRecordResponse {
+        id: stream.clone(),
+        mpd_path,
+    };
+    match serde_json::to_string(&resp) {
+        Ok(json_body) => Ok(Response::builder().status(StatusCode::OK).body(json_body)?),
+        Err(e) => Err(AppError::InternalServerError(anyhow::anyhow!(
+            "Failed to serialize response: {}",
+            e
+        ))),
+    }
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn record_stream(
+    _state: State<AppState>,
+    Path(_stream): Path<String>,
+) -> crate::result::Result<Response<String>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn record_status(
+    State(_state): State<AppState>,
+    Path(stream): Path<String>,
+) -> crate::result::Result<Json<serde_json::Value>> {
+    let recording = crate::recorder::is_recording(&stream).await;
+    Ok(Json(serde_json::json!({ "recording": recording })))
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn record_status(
+    _state: State<AppState>,
+    _path: Path<String>,
+) -> crate::result::Result<Json<serde_json::Value>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn stop_record(
+    State(_state): State<AppState>,
+    Path(stream): Path<String>,
+) -> crate::result::Result<Response<String>> {
+    crate::recorder::stop(stream.clone()).await?;
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .body("".to_string())?)
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn stop_record(
+    _state: State<AppState>,
+    Path(_stream): Path<String>,
+) -> crate::result::Result<Response<String>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
 }

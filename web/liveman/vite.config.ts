@@ -24,6 +24,7 @@ export default mergeConfig(CommonConfig, defineConfig({
             input: {
                 index: resolve(configDir, 'index.html'),
                 player: resolve(configDir, 'tools/player.html'),
+                dash: resolve(configDir, 'tools/dash.html'),
                 debugger: resolve(configDir, 'tools/debugger.html'),
             }
         }

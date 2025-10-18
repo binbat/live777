@@ -8,6 +8,10 @@ output.sdp
 
 live777.toml
 gateway.toml
+liveman.toml
+
+liveman.db
+records
 
 # Vitepress
 docs/.vitepress/cache

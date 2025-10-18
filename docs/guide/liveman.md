@@ -2,7 +2,58 @@
 
 Live777 Cluster manager.
 
-If I have so many servers (live777 core cluster), I need this manage them all.
+If I have so many servers (live777 core cluster), I need this manage them all. Liveman also provides centralized recording index management and playback proxy services for the entire cluster.
+
+## Database Configuration
+
+Liveman stores the recording index (mapping stream + date → mpd_path) in a database. Migrations run automatically at startup.
+
+- Default driver: SQLite (embedded)
+- Supported drivers: SQLite, PostgreSQL (via SeaORM `DATABASE_URL`)
+
+```toml
+[database]
+# Default database URL (SQLite)
+# Environment variable: DATABASE_URL
+# Default value if not set: sqlite://./liveman.db
+url = "sqlite://./liveman.db?mode=rwc"
+
+# Maximum number of database connections
+# Default: 10
+max_connections = 10
+
+# Connection timeout in seconds
+# Default: 30
+connect_timeout = 30
+```
+
+Example for PostgreSQL
+
+```toml
+[database]
+url = "postgresql://user:password@localhost:5432/live777"
+max_connections = 10
+connect_timeout = 30
+```
+
+## Recording Index and Storage
+
+The recording system stores the index (date-based manifest location) in the database while keeping the actual media files in storage (filesystem, S3, OSS, etc.).
+
+### Recording Index Schema
+
+Table: `recordings` (auto-created by migrations)
+
+- **id**: UUID, primary key
+- **stream**: String, stream identifier
+- **year**: Integer
+- **month**: Integer
+- **day**: Integer
+- **mpd_path**: String, path to the manifest within storage
+- **created_at**: Timestamp with time zone
+- **updated_at**: Timestamp with time zone
+
+Unique index: `(stream, year, month, day)`
 
 ## Authentication
 

@@ -8,6 +8,7 @@ use tracing::{Level, error, info_span};
 
 use crate::config::Config;
 use crate::route::{AppState, admin, session, whep, whip};
+use api::path;
 use auth::{AuthState, access::access_middleware, validate_middleware};
 use error::AppError;
 
@@ -31,6 +32,9 @@ mod result;
 mod route;
 mod stream;
 
+#[cfg(feature = "recorder")]
+pub mod recorder;
+
 pub async fn serve<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -39,21 +43,27 @@ where
         stream_manager: Arc::new(Manager::new(cfg.clone()).await),
         config: cfg.clone(),
     };
-    let app = Router::new()
-        .merge(
-            whip::route()
-                .merge(whep::route())
-                .merge(session::route())
-                .merge(admin::route())
-                .merge(crate::route::stream::route())
-                .merge(crate::route::strategy::route())
-                .layer(middleware::from_fn(access_middleware))
-                .layer(middleware::from_fn_with_state(
-                    AuthState::new(cfg.auth.secret, cfg.auth.tokens),
-                    validate_middleware,
-                )),
-        )
-        .route(api::path::METRICS, get(metrics))
+
+    #[cfg(feature = "recorder")]
+    {
+        crate::recorder::init(app_state.stream_manager.clone(), cfg.recorder.clone()).await;
+    }
+    let app = Router::new().merge(
+        whip::route()
+            .merge(whep::route())
+            .merge(session::route())
+            .merge(admin::route())
+            .merge(crate::route::stream::route())
+            .merge(crate::route::strategy::route())
+            .layer(middleware::from_fn(access_middleware))
+            .layer(middleware::from_fn_with_state(
+                AuthState::new(cfg.auth.secret, cfg.auth.tokens),
+                validate_middleware,
+            )),
+    );
+
+    let app = app
+        .route(path::METRICS, get(metrics))
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {
             CorsLayer::permissive()

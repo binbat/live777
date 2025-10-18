@@ -25,7 +25,7 @@ mod internal;
 mod media;
 pub mod message;
 mod publish;
-mod rtcp;
+pub mod rtcp;
 mod subscribe;
 mod track;
 
@@ -221,6 +221,43 @@ impl PeerForward {
             Err(AppError::throw("not layers"))
         }
     }
+
+    #[cfg(feature = "recorder")]
+    pub async fn first_video_codec(&self) -> Option<String> {
+        self.internal.first_publish_video_codec().await
+    }
+
+    /// Subscribe to publish track change events so external components can react without polling.
+    #[cfg(feature = "recorder")]
+    pub fn subscribe_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
+        self.internal.subscribe_publish_tracks_change()
+    }
+
+    /// Get the first video track for keyframe requests
+    #[cfg(feature = "recorder")]
+    pub async fn first_video_track(&self) -> Option<Arc<webrtc::track::track_remote::TrackRemote>> {
+        self.internal.first_video_track().await
+    }
+
+    /// Send RTCP message to publish peer
+    #[cfg(feature = "recorder")]
+    pub async fn send_rtcp_to_publish(&self, message: rtcp::RtcpMessage, ssrc: u32) -> Result<()> {
+        self.internal.send_rtcp_to_publish(message, ssrc).await
+    }
+
+    /// Subscribe to the RTP packet broadcast of the first audio Track.
+    #[cfg(feature = "recorder")]
+    pub async fn subscribe_audio_rtp(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
+        let tracks = self.internal.publish_tracks.read().await;
+        for t in tracks.iter() {
+            if t.kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
+                return Some(t.subscribe());
+            }
+        }
+        None
+    }
 }
 
 // subscribe
@@ -357,6 +394,21 @@ impl PeerForward {
         self.internal
             .select_kind_rid(session, codec_type, rid)
             .await
+    }
+
+    /// Subscribe to the RTP packet broadcast of the first video Track.
+    #[cfg(feature = "recorder")]
+    pub async fn subscribe_video_rtp(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
+        // Directly read the internal publish_tracks list
+        let tracks = self.internal.publish_tracks.read().await;
+        for t in tracks.iter() {
+            if t.kind == RTPCodecType::Video {
+                return Some(t.subscribe());
+            }
+        }
+        None
     }
 }
 

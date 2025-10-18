@@ -78,3 +78,50 @@ export interface StreamTokenResponse {
 export function createStreamToken(req: CreateStreamTokenRequest) {
     return w.url('/api/token').post(req).json<StreamTokenResponse>();
 }
+
+// Recording & Playback APIs
+// removed: unused recording streams listing API placeholder
+
+export interface RecordingSession {
+    id?: string;
+    stream: string;
+    start_ts: number;
+    end_ts: number | null;
+    duration_ms: number | null;
+    mpd_path: string;
+    status: 'Active' | 'Completed' | 'Failed';
+}
+
+export interface RecordingSessionsResponse {
+    sessions: RecordingSession[];
+    total_count: number;
+}
+
+export interface RecordingSessionQuery {
+    stream?: string;
+    status?: string;
+    start_ts?: number;
+    end_ts?: number;
+    limit?: number;
+    offset?: number;
+}
+
+export function getSegmentUrl(path: string) {
+    // Use encodeURI so that "/" remains as path separators (server expects wildcard path)
+    return `/api/record/object/${encodeURI(path)}`;
+}
+
+export interface RecordingIndexEntry {
+    year: number;
+    month: number;
+    day: number;
+    mpd_path: string;
+}
+
+export function getRecordingIndexStreams() {
+    return w.url('/api/playback').get().json<string[]>();
+}
+
+export function getRecordingIndexByStream(stream: string) {
+    return w.url(`/api/playback/${encodeURIComponent(stream)}`).get().json<RecordingIndexEntry[]>();
+}
