@@ -1,4 +1,8 @@
 use anyhow::Context;
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+};
 use config::{Config as ConfigRs, File, FileFormat};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -102,4 +106,30 @@ pub fn reset_config(name: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+pub fn generate_password_hash(password: &str) -> anyhow::Result<String> {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+
+    match argon2.hash_password(password.as_bytes(), &salt) {
+        Ok(hash) => Ok(hash.to_string()),
+        Err(e) => Err(anyhow::anyhow!("Failed to generate password hash: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::*;
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
+
+    #[test]
+    fn test_generate_and_verify_password() {
+        let password = "test123";
+        let hash = generate_password_hash(password).unwrap();
+
+        let parsed_hash = PasswordHash::new(&hash).unwrap();
+        let result = Argon2::default().verify_password(password.as_bytes(), &parsed_hash);
+        assert!(result.is_ok());
+    }
 }

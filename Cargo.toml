@@ -109,4 +109,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt", "livecam/net4mqtt"]
-
+recorder = ["liveion/recorder", "liveman/recorder"]

@@ -24,9 +24,11 @@
   },
   "dependencies": {
     "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
+    "@nuintun/qrcode": "^4.1.18",
     "@heroicons/react": "^2.2.0",
-    "@nuintun/qrcode": "^4.1.12",
-    "preact": "^10.25.3",
+    "dashjs": "^4.7.4",
+    "lucide-react": "^0.460.0",
+    "preact": "^10.26.9",
     "preact-router": "^4.1.2",
     "react-daisyui": "^5.0.5",
     "typescript-event-target": "^1.1.1",

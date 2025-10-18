@@ -1,15 +1,14 @@
-
 [http]
 listen = "0.0.0.0:9999"
-cors = true  
-public = "http://localhost:9999" 
+cors = true
+public = "http://localhost:9999"
 
 [log]
 level = "debug"
 
 [[cameras]]
-id = "camera" 
-rtp_port = 5004 
+id = "camera"
+rtp_port = 5004
 
 ice_servers = [
   { urls = ["stun:stun.l.google.com:19302"] },
@@ -21,9 +20,12 @@ clock_rate = 90000
 channels = 0
 sdp_fmtp_line = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
 
+# How to generate new password hash:
+# 1. Interactive mode: ./livecam gen-hash
+# 2. Command line: ./livecam gen-hash --password "new_password"
+# default password : livecam
 [auth]
 username = "admin"
-#password = "livecam"
 password_hash = "$argon2id$v=19$m=65536,t=3,p=4$Oy2ha+TEEqepOLmRF5zZEA$BOOqmgmGhxCfHI5YvgRCVSRxmUQ5gR/ZYCeEnAZ+SiU"
 
 [stream]

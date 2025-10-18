@@ -1,6 +1,5 @@
 [package]
 name = "livecam"
-description = "A very simple, high performance, edge WebRTC SFU"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +8,7 @@ repository.workspace = true
 [dependencies]
 cli = { path = "../libs/cli" }
 iceserver = { path = "../libs/iceserver" }
+milkv-libs = { git = "https://github.com/Marsyew/milkv-libs", tag = "v1.0.4" }
 
 anyhow = { workspace = true }
 axum = "0.7.5"
@@ -35,10 +35,6 @@ tokio-stream = "0.1.15"
 tower = { version = "0.5.2", features = ["util"] }
 tower-http = { workspace = true, features = ["fs", "auth", "trace", "cors"] }
 webrtc = { workspace = true }
-
-[build-dependencies]
-reqwest = { workspace = true,  features = ["blocking"] }
-zip = "6.0.0"
 
 [features]
 webui = ["dep:rust-embed","dep:mime_guess"]

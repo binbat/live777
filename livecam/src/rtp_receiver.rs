@@ -38,8 +38,9 @@ async fn riscv_mode(
     track: Arc<TrackLocalStaticRTP>,
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
-    use crate::ffi::TDL_RTSP_Params;
-    use crate::stream::StreamHandle;
+    // use crate::ffi::TDL_RTSP_Params;
+    // use crate::stream::StreamHandle;
+    use milkv_libs::{TDL_RTSP_Params, stream::StreamHandle};
     use std::ffi::CString;
     use std::sync::Mutex;
 

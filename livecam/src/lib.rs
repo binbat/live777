@@ -24,6 +24,8 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use axum::http::Uri;
 #[cfg(feature = "webui")]
 use axum::response::Response;
+#[cfg(riscv_mode)]
+use milkv_libs::stream;
 #[cfg(feature = "webui")]
 use rust_embed::RustEmbed;
 
@@ -32,11 +34,8 @@ use crate::auth::AppState;
 
 pub mod auth;
 pub mod config;
-pub mod ffi;
 pub mod network;
 pub mod rtp_receiver;
-#[cfg(riscv_mode)]
-pub mod stream;
 mod test;
 pub mod utils;
 pub mod whep_handler;

@@ -129,29 +129,6 @@ mod tests {
                 || response.status_code() == StatusCode::INTERNAL_SERVER_ERROR
         );
     }
-
-    #[test]
-    fn generate_test_password_hash() {
-        use argon2::{
-            Argon2, PasswordHash, PasswordVerifier,
-            password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-        };
-
-        let password = "admin";
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)
-            .unwrap()
-            .to_string();
-
-        println!("Generated hash for 'admin': {}", password_hash);
-
-        let parsed_hash = PasswordHash::new(&password_hash).unwrap();
-        let result = argon2.verify_password(password.as_bytes(), &parsed_hash);
-        assert!(result.is_ok());
-    }
 }
 
 #[cfg(test)]

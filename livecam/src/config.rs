@@ -216,7 +216,8 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             username: "admin".to_string(),
-            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$bmljZXRyeQ$PqTT/n9ToBNVsdsoquTz1A/P5s9O4yvA9fym5Vd5s9s".to_string(),
+            // Default password "livecam" 
+            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$PTCRY11P+S3GZGFU2ekyYQ$PbznPtYcAawtIJyuxIlz4abnA2rpS4V/UwA7As3urKI".to_string(),
             jwt_secret: default_jwt_secret(),
         }
     }
