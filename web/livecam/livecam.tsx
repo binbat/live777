@@ -1,14 +1,14 @@
-import { useState, useRef} from 'preact/hooks';
+import { useState, useRef } from 'preact/hooks';
 import { Input } from 'react-daisyui';
 import { LiveCamViewer } from './components/live-viewer';
-import { PlaybackViewer } from './components/playback'; 
+import { PlaybackViewer } from './components/playback';
 import { NetworkConfig, type NetworkConfigRef } from './components/network';
 import { useAuth } from './components/auth';
 import { ChangePassword, type ChangePasswordRef } from './components/change-password';
 
 export function LiveCamPage(_props: { path: string }) {
     const [streamId, setStreamId] = useState('camera');
-    const [mode, setMode] = useState<'live' | 'playback' | 'network'>('live'); 
+    const [mode, setMode] = useState<'live' | 'playback' | 'network'>('live');
     const { logout } = useAuth();
 
     const changePasswordModalRef = useRef<ChangePasswordRef>(null);
@@ -20,13 +20,15 @@ export function LiveCamPage(_props: { path: string }) {
                 <div className="flex justify-between items-center mb-6">
                     <h1 className="text-3xl font-bold">LiveCam</h1>
                     <div className="flex items-center gap-2">
-                        <button 
-                            onClick={() => changePasswordModalRef.current?.show()} 
+                        <button
+                            onClick={() => changePasswordModalRef.current?.show()}
                             className="btn btn-outline btn-sm"
                         >
                             Change Password
                         </button>
-                        <button onClick={logout} className="btn btn-outline btn-sm">Logout</button>
+                        <button onClick={logout} className="btn btn-outline btn-sm">
+                            Logout
+                        </button>
                     </div>
                 </div>
 
@@ -43,19 +45,22 @@ export function LiveCamPage(_props: { path: string }) {
                         />
                     </div>
                     <div className="join">
-                        <button 
+                        <button
                             className={`btn join-item ${mode === 'live' ? 'btn-active' : ''}`}
-                            onClick={() => setMode('live')}>
+                            onClick={() => setMode('live')}
+                        >
                             Live
                         </button>
-                        <button 
+                        <button
                             className={`btn join-item ${mode === 'playback' ? 'btn-active' : ''}`}
-                            onClick={() => setMode('playback')}>
+                            onClick={() => setMode('playback')}
+                        >
                             Playback
                         </button>
-                        <button 
+                        <button
                             className={`btn join-item ${mode === 'network' ? 'btn-active' : ''}`}
-                            onClick={() => setMode('network')}>
+                            onClick={() => setMode('network')}
+                        >
                             Network Config
                         </button>
                     </div>
@@ -64,25 +69,21 @@ export function LiveCamPage(_props: { path: string }) {
                 {streamId ? (
                     <div>
                         {/* 保持 LiveCamViewer 始终挂载，通过 CSS 控制显示/隐藏 */}
-                        <div 
+                        <div
                             className={`transition-opacity duration-300 ${
                                 mode === 'live' ? 'opacity-100 block' : 'opacity-0 hidden'
                             }`}
                         >
-                            <LiveCamViewer 
-                                streamId={streamId} 
-                                autoPlay={mode === 'live'}
-                                isVisible={mode === 'live'}
-                            />
+                            <LiveCamViewer streamId={streamId} autoPlay={mode === 'live'} isVisible={mode === 'live'} />
                         </div>
-                        
+
                         {/* PlaybackViewer 只在需要时渲染 */}
                         {mode === 'playback' && (
                             <div className="transition-opacity duration-300 opacity-100">
                                 <PlaybackViewer streamId={streamId} />
                             </div>
                         )}
-                        
+
                         {/* NetworkConfig 只在需要时渲染 */}
                         {mode === 'network' && (
                             <div className="transition-opacity duration-300 opacity-100">

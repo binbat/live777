@@ -8,12 +8,12 @@ export interface ChangePasswordRef {
 }
 
 interface ChangePasswordProps {
-    className?: string; 
+    className?: string;
 }
 
 export const ChangePassword = forwardRef<ChangePasswordRef, ChangePasswordProps>((_props, ref) => {
     const modalRef = useRef<HTMLDialogElement>(null);
-    const { token } = useAuth(); 
+    const { token } = useAuth();
 
     const [newPassword, setNewPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -26,7 +26,7 @@ export const ChangePassword = forwardRef<ChangePasswordRef, ChangePasswordProps>
             setError('');
             setSuccess('');
             modalRef.current?.showModal();
-        }
+        },
     }));
 
     const handleSubmit = async () => {
@@ -43,14 +43,14 @@ export const ChangePassword = forwardRef<ChangePasswordRef, ChangePasswordProps>
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
+                    Authorization: `Bearer ${token}`,
                 },
-                body: JSON.stringify({ new_password: newPassword })
+                body: JSON.stringify({ new_password: newPassword }),
             });
 
             if (response.ok) {
                 setSuccess('Password updated successfully!');
-                setNewPassword(''); 
+                setNewPassword('');
                 setTimeout(() => modalRef.current?.close(), 3000);
             } else {
                 const data = await response.json();
@@ -95,10 +95,11 @@ export const ChangePassword = forwardRef<ChangePasswordRef, ChangePasswordProps>
                         <span>{success}</span>
                     </Alert>
                 )}
-
             </Modal.Body>
             <Modal.Actions>
-                <Button onClick={() => modalRef.current?.close()} disabled={isLoading}>Cancel</Button>
+                <Button onClick={() => modalRef.current?.close()} disabled={isLoading}>
+                    Cancel
+                </Button>
                 <Button color="primary" onClick={handleSubmit} disabled={isLoading || !newPassword}>
                     {isLoading && <span className="loading loading-spinner"></span>}
                     {isLoading ? 'Saving...' : 'Save'}

@@ -81,8 +81,8 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
         try {
             const response = await fetch('/api/network/config', {
                 headers: {
-                    'Authorization': `Bearer ${token}`
-                }
+                    Authorization: `Bearer ${token}`,
+                },
             });
 
             if (response.ok) {
@@ -109,9 +109,9 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
+                    Authorization: `Bearer ${token}`,
                 },
-                body: JSON.stringify(config)
+                body: JSON.stringify(config),
             });
 
             if (response.ok) {
@@ -130,7 +130,7 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
     };
 
     useImperativeHandle(ref, () => ({
-        refresh: loadConfig
+        refresh: loadConfig,
     }));
 
     useEffect(() => {
@@ -139,16 +139,16 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
 
     // 修复：使用具体的类型而不是 any
     const updateConfig = (path: string, value: string | number | boolean) => {
-        setConfig(prev => {
+        setConfig((prev) => {
             const newConfig = { ...prev };
             const keys = path.split('.');
             let current: Record<string, unknown> = newConfig;
-            
+
             for (let i = 0; i < keys.length - 1; i++) {
                 current = current[keys[i]] as Record<string, unknown>;
             }
             current[keys[keys.length - 1]] = value;
-            
+
             return newConfig;
         });
     };
@@ -182,9 +182,7 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
 
             <Card className="bg-base-200">
                 <Card.Body>
-                    <Card.Title>
-                        Streaming Protocol
-                    </Card.Title>
+                    <Card.Title>Streaming Protocol</Card.Title>
                     <div className="form-control">
                         <label className="label">
                             <span className="label-text">Protocol</span>
@@ -203,10 +201,8 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
 
             <Card className="bg-base-200">
                 <Card.Body>
-                    <Card.Title>
-                        Static IP Configuration
-                    </Card.Title>
-                    
+                    <Card.Title>Static IP Configuration</Card.Title>
+
                     <div className="form-control">
                         <label className="cursor-pointer label">
                             <span className="label-text">Enable Static IP</span>
@@ -283,10 +279,8 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
 
             <Card className="bg-base-200">
                 <Card.Body>
-                    <Card.Title>
-                        NTP Configuration
-                    </Card.Title>
-                    
+                    <Card.Title>NTP Configuration</Card.Title>
+
                     <div className="form-control">
                         <label className="cursor-pointer label">
                             <span className="label-text">Enable NTP</span>
@@ -322,7 +316,7 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
                                     value={config.ntp.timezone}
                                     onChange={(e) => updateConfig('ntp.timezone', e.currentTarget.value)}
                                 >
-                                    {TIMEZONE_OPTIONS.map(option => (
+                                    {TIMEZONE_OPTIONS.map((option) => (
                                         <option key={option.value} value={option.value}>
                                             {option.label}
                                         </option>
@@ -336,10 +330,8 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
 
             <Card className="bg-base-200">
                 <Card.Body>
-                    <Card.Title>
-                        Camera Configuration
-                    </Card.Title>
-                    
+                    <Card.Title>Camera Configuration</Card.Title>
+
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div className="form-control">
                             <label className="label">
@@ -350,7 +342,7 @@ export const NetworkConfig = forwardRef<NetworkConfigRef, NetworkConfigProps>((_
                                 value={config.camera.resolution}
                                 onChange={(e) => updateConfig('camera.resolution', e.currentTarget.value)}
                             >
-                                {RESOLUTION_OPTIONS.map(option => (
+                                {RESOLUTION_OPTIONS.map((option) => (
                                     <option key={option.value} value={option.value}>
                                         {option.label}
                                     </option>
