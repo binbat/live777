@@ -12,16 +12,12 @@ impl RecordingsIndexService {
     pub async fn upsert(
         db: &DatabaseConnection,
         stream: &str,
-        year: i32,
-        month: i32,
-        day: i32,
+        record: &str,
         mpd_path: &str,
     ) -> Result<recordings::Model> {
         if let Some(existing) = Recordings::find()
             .filter(recordings::Column::Stream.eq(stream))
-            .filter(recordings::Column::Year.eq(year))
-            .filter(recordings::Column::Month.eq(month))
-            .filter(recordings::Column::Day.eq(day))
+            .filter(recordings::Column::Record.eq(record))
             .one(db)
             .await?
         {
@@ -34,9 +30,7 @@ impl RecordingsIndexService {
             let am = recordings::ActiveModel {
                 id: Set(Uuid::new_v4()),
                 stream: Set(stream.to_string()),
-                year: Set(year),
-                month: Set(month),
-                day: Set(day),
+                record: Set(record.to_string()),
                 mpd_path: Set(mpd_path.to_string()),
                 created_at: Set(now_fixed),
                 updated_at: Set(now_fixed),

@@ -170,8 +170,7 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                 };
 
                 if !is_recording {
-                    let now = chrono::Utc::now();
-                    let date_path = now.format("%Y/%m/%d").to_string();
+                    let date_path = crate::utils::date_path();
                     let base_dir = if base_prefix.is_empty() {
                         None
                     } else {
@@ -202,21 +201,15 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                                     }
                                 };
 
-                            // extract yyyy/MM/dd from date_path
-                            let parts: Vec<&str> = date_path.split('/').collect();
-                            if parts.len() == 3 {
-                                let year = parts[0].parse::<i32>().unwrap_or(0);
-                                let month = parts[1].parse::<i32>().unwrap_or(0);
-                                let day = parts[2].parse::<i32>().unwrap_or(0);
-                                let _ = RecordingsIndexService::upsert(
-                                    state.database.get_connection(),
-                                    &stream_id,
-                                    year,
-                                    month,
-                                    day,
-                                    &mpd_path,
-                                )
-                                .await;
+                            if let Err(err) = RecordingsIndexService::upsert(
+                                state.database.get_connection(),
+                                &stream_id,
+                                &date_path,
+                                &mpd_path,
+                            )
+                            .await
+                            {
+                                tracing::error!("{}", err);
                             }
                         } else {
                             let status = r.status();
@@ -291,7 +284,7 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
     let map_server = state.storage.get_map_server();
 
     // Build new date path prefix for today (UTC)
-    let date_path = chrono::Utc::now().format("%Y/%m/%d").to_string();
+    let date_path = crate::utils::date_path();
     let base_dir = if base_prefix.is_empty() {
         None
     } else {
@@ -370,20 +363,16 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
                 };
 
                 // Upsert index
-                if let [y, m, d] = date_path.split('/').collect::<Vec<_>>()[..]
-                    && let (Ok(yy), Ok(mm), Ok(dd)) =
-                        (y.parse::<i32>(), m.parse::<i32>(), d.parse::<i32>())
+                if let Err(err) = RecordingsIndexService::upsert(
+                    state.database.get_connection(),
+                    stream_id,
+                    &date_path,
+                    &mpd_path,
+                )
+                .await
                 {
-                    let _ = RecordingsIndexService::upsert(
-                        state.database.get_connection(),
-                        stream_id,
-                        yy,
-                        mm,
-                        dd,
-                        &mpd_path,
-                    )
-                    .await;
-                }
+                    tracing::error!("{}", err);
+                };
             }
         }
     }

@@ -99,9 +99,7 @@ async fn get_segment(State(state): State<AppState>, Path(path): Path<String>) ->
 
 #[derive(serde::Serialize)]
 struct RecordingIndexEntry {
-    year: i32,
-    month: i32,
-    day: i32,
+    record: String,
     mpd_path: String,
 }
 
@@ -133,9 +131,7 @@ async fn list_index_by_stream(
     let entries = rows
         .into_iter()
         .map(|m| RecordingIndexEntry {
-            year: m.year,
-            month: m.month,
-            day: m.day,
+            record: m.record,
             mpd_path: m.mpd_path,
         })
         .collect();
@@ -175,7 +171,7 @@ async fn start_record(
     let server = target_server.ok_or(crate::error::AppError::NoAvailableNode)?;
 
     // Build base_dir using configured base_prefix + today
-    let date_path = chrono::Utc::now().format("%Y/%m/%d").to_string();
+    let date_path = crate::utils::date_path();
     let base_prefix = state.config.auto_record.base_prefix.clone();
     let base_dir = if base_prefix.is_empty() {
         None
@@ -211,19 +207,16 @@ async fn start_record(
     };
 
     // Parse date from date_path and upsert index
-    if let [y, m, d] = date_path.split('/').collect::<Vec<_>>()[..]
-        && let (Ok(yy), Ok(mm), Ok(dd)) = (y.parse::<i32>(), m.parse::<i32>(), d.parse::<i32>())
+    if let Err(err) = crate::service::recordings_index::RecordingsIndexService::upsert(
+        state.database.get_connection(),
+        &stream,
+        &date_path,
+        &mpd_path,
+    )
+    .await
     {
-        let _ = crate::service::recordings_index::RecordingsIndexService::upsert(
-            state.database.get_connection(),
-            &stream,
-            yy,
-            mm,
-            dd,
-            &mpd_path,
-        )
-        .await;
-    }
+        tracing::error!("{}", err);
+    };
 
     Ok(Json(StartRecordResponse {
         started: true,

@@ -111,7 +111,6 @@ pub async fn start(
         tracing::info!("[recorder] stream {} is already recording", stream);
         return Ok(());
     }
-
     let task = RecordingTask::spawn(manager, &stream, base_dir).await?;
     map.insert(stream.clone(), task);
 

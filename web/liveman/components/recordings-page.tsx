@@ -4,8 +4,25 @@ import { RefreshCw, Calendar, Search, Play, Link2, Copy } from 'lucide-react';
 import * as livemanApi from '../api';
 import { TokenContext } from '@/shared/context';
 
-function formatYearMonth(year: number, month: number) {
-    return `${year}-${String(month).padStart(2, '0')}`;
+function formatYearMonthDay(timestamp: string): string {
+    const date = new Date(parseInt(timestamp) * 1000);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+}
+
+function formatDateTime(timestamp: string): string {
+    const date = new Date(parseInt(timestamp) * 1000);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 function getFileName(path: string) {
@@ -51,11 +68,7 @@ export function RecordingsPage() {
             setLoading(true);
             setError('');
             const res = await livemanApi.getRecordingIndexByStream(selectedStream);
-            res.sort((a, b) => {
-                if (a.year !== b.year) return b.year - a.year;
-                if (a.month !== b.month) return b.month - a.month;
-                return b.day - a.day;
-            });
+            res.sort((a, b) => parseInt(b.record) - parseInt(a.record));
             setIndexEntries(res);
         } catch {
             setError('Failed to fetch recording index');
@@ -90,16 +103,16 @@ export function RecordingsPage() {
         return streams.filter(s => s.toLowerCase().includes(f));
     }, [streams, streamFilter]);
 
-    const groupedByMonth = useMemo(() => {
+    const groupedByDay = useMemo(() => {
         const groups = new Map<string, livemanApi.RecordingIndexEntry[]>();
         for (const e of indexEntries) {
-            const key = formatYearMonth(e.year, e.month);
+            const key = formatYearMonthDay(e.record);
             const arr = groups.get(key) ?? [];
             arr.push(e);
             groups.set(key, arr);
         }
         // sort each group by day desc
-        for (const [, arr] of groups) arr.sort((a, b) => b.day - a.day);
+        for (const [, arr] of groups) arr.sort((a, b) => parseInt(b.record) - parseInt(a.record));
         // return sorted keys desc by year-month
         return Array.from(groups.entries()).sort((a, b) => b[0].localeCompare(a[0]));
     }, [indexEntries]);
@@ -164,20 +177,20 @@ export function RecordingsPage() {
             ) : null}
 
             {/* Grouped list */}
-            {groupedByMonth.map(([ym, list]) => (
-                <Card key={ym} className="p-4">
+            {groupedByDay.map(([ymd, list]) => (
+                <Card key={ymd} className="p-4">
                     <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
-                            <span className="text-lg font-semibold">{ym}</span>
+                            <span className="text-lg font-semibold">{ymd}</span>
                             <Badge color="ghost">{list.length}</Badge>
                         </div>
                         <span className="text-sm opacity-70 truncate">{selectedStream}</span>
                     </div>
                     <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
                         {list.map(e => (
-                            <div key={`${e.year}-${e.month}-${e.day}-${e.mpd_path}`} className="border border-base-200 rounded-lg p-3 flex flex-col gap-2">
+                            <div key={ e.record } className="border border-base-200 rounded-lg p-3 flex flex-col gap-2">
                                 <div className="flex items-center justify-between">
-                                    <span className="font-medium">{`${e.year}-${String(e.month).padStart(2, '0')}-${String(e.day).padStart(2, '0')}`}</span>
+                                    <span className="font-medium">{ formatDateTime(e.record)}</span>
                                     <span className="text-xs opacity-70 font-mono truncate" title={e.mpd_path}>{getFileName(e.mpd_path)}</span>
                                 </div>
                                 <div className="flex items-center gap-2">

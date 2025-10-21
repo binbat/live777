@@ -10,7 +10,6 @@ use crate::recorder::segmenter::Segmenter;
 use crate::stream::manager::Manager;
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use chrono::{Datelike, Utc};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP9};
@@ -49,18 +48,12 @@ impl RecordingTask {
             }
         };
 
-        // Directory prefix, allow override; default to /<stream>/<yyyy>/<MM>/<DD>
+        // Directory prefix, allow override; default to /<stream_id>/<record_id>
+        // record_id unix timestamp(10)
         let path_prefix = if let Some(p) = path_prefix_override {
             p
         } else {
-            let now = Utc::now();
-            format!(
-                "{}/{:04}/{:02}/{:02}",
-                stream_name,
-                now.year(),
-                now.month(),
-                now.day()
-            )
+            format!("{}/{}", stream_name, chrono::Utc::now().timestamp())
         };
 
         tracing::info!(

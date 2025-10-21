@@ -18,9 +18,7 @@ impl MigrationTrait for Migration {
                             .primary_key(),
                     )
                     .col(ColumnDef::new(Recordings::Stream).string().not_null())
-                    .col(ColumnDef::new(Recordings::Year).integer().not_null())
-                    .col(ColumnDef::new(Recordings::Month).integer().not_null())
-                    .col(ColumnDef::new(Recordings::Day).integer().not_null())
+                    .col(ColumnDef::new(Recordings::Record).string().not_null())
                     .col(ColumnDef::new(Recordings::MpdPath).string().not_null())
                     .col(
                         ColumnDef::new(Recordings::CreatedAt)
@@ -42,9 +40,7 @@ impl MigrationTrait for Migration {
                     .name("idx_recordings_stream_date")
                     .table(Recordings::Table)
                     .col(Recordings::Stream)
-                    .col(Recordings::Year)
-                    .col(Recordings::Month)
-                    .col(Recordings::Day)
+                    .col(Recordings::Record)
                     .unique()
                     .to_owned(),
             )
@@ -63,9 +59,7 @@ enum Recordings {
     Table,
     Id,
     Stream,
-    Year,
-    Month,
-    Day,
+    Record,
     MpdPath,
     CreatedAt,
     UpdatedAt,

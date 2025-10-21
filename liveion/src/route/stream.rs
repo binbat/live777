@@ -11,8 +11,6 @@ use axum::{Json, Router};
 // https://docs.rs/axum/latest/axum/extract/struct.Query.html
 // For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
-#[cfg(feature = "recorder")]
-use chrono::Utc;
 use http::StatusCode;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
@@ -124,7 +122,8 @@ async fn record_stream(
         base_dir.clone(),
     )
     .await?;
-    let date_path = Utc::now().format("%Y/%m/%d").to_string();
+
+    let date_path = chrono::Utc::now().timestamp().to_string();
     let mpd_path = if let Some(prefix) = base_dir {
         format!("{prefix}/manifest.mpd")
     } else {

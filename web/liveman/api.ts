@@ -112,9 +112,7 @@ export function getSegmentUrl(path: string) {
 }
 
 export interface RecordingIndexEntry {
-    year: number;
-    month: number;
-    day: number;
+    record: string;
     mpd_path: string;
 }
 
