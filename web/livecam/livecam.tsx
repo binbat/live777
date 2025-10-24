@@ -68,7 +68,6 @@ export function LiveCamPage(_props: { path: string }) {
 
                 {streamId ? (
                     <div>
-                        {/* 保持 LiveCamViewer 始终挂载，通过 CSS 控制显示/隐藏 */}
                         <div
                             className={`transition-opacity duration-300 ${
                                 mode === 'live' ? 'opacity-100 block' : 'opacity-0 hidden'
@@ -77,14 +76,12 @@ export function LiveCamPage(_props: { path: string }) {
                             <LiveCamViewer streamId={streamId} autoPlay={mode === 'live'} isVisible={mode === 'live'} />
                         </div>
 
-                        {/* PlaybackViewer 只在需要时渲染 */}
                         {mode === 'playback' && (
                             <div className="transition-opacity duration-300 opacity-100">
                                 <PlaybackViewer streamId={streamId} />
                             </div>
                         )}
 
-                        {/* NetworkConfig 只在需要时渲染 */}
                         {mode === 'network' && (
                             <div className="transition-opacity duration-300 opacity-100">
                                 <NetworkConfig ref={networkConfigRef} />

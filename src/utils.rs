@@ -5,6 +5,7 @@ pub async fn shutdown_signal() {
     debug!("Received signal: {}", str);
 }
 
+#[allow(dead_code)]
 pub fn load<T>(name: String, path: Option<String>) -> T
 where
     T: serde::de::DeserializeOwned + std::default::Default,

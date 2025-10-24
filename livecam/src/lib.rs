@@ -277,10 +277,9 @@ impl LiveCamManager {
             state.shutdown_tx = Some(tx);
             let track_clone = state.track.clone();
             let port = state.config.rtp_port;
-            let payload_type = 96u8;
 
             let handle = tokio::spawn(async move {
-                if let Err(e) = rtp_receiver::start(port, track_clone, rx, payload_type).await {
+                if let Err(e) = rtp_receiver::start(port, track_clone, rx).await {
                     error!(port, error = %e, "RTP receiver task failed.");
                 }
             });

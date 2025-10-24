@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::{error, info, trace, warn};
+use tracing::{error, info, trace};
 use webrtc::rtp::packet::Packet;
 #[cfg(riscv_mode)]
 use webrtc::rtp::{codecs::h264::H264Payloader, packetizer::Payloader};
@@ -20,7 +20,6 @@ pub async fn start(
     rtp_port: u16,
     track: Arc<TrackLocalStaticRTP>,
     shutdown_rx: mpsc::Receiver<()>,
-    _payload_type: u8,
 ) -> anyhow::Result<()> {
     #[cfg(riscv_mode)]
     {
@@ -38,16 +37,12 @@ async fn riscv_mode(
     track: Arc<TrackLocalStaticRTP>,
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
-    // use crate::ffi::TDL_RTSP_Params;
-    // use crate::stream::StreamHandle;
     use milkv_libs::{TDL_RTSP_Params, stream::StreamHandle};
     use std::ffi::CString;
     use std::sync::Mutex;
 
     const POLL_INTERVAL: Duration = Duration::from_millis(33);
     const POLL_TIMEOUT_MS: u32 = 100;
-    const RTP_MTU: usize = 1200;
-    const H264_PAYLOAD_TYPE: u8 = 96;
 
     let stream_handle = {
         let codec_cstring = CString::new("h264").unwrap();
@@ -59,7 +54,7 @@ async fn riscv_mode(
             vb_blk_count: 8,
             vb_bind: 0,
             codec: codec_cstring.as_ptr(),
-            ring_capacity: 32,
+            ring_capacity: 64,
         };
 
         let handle = StreamHandle::start_encode_only(&params)
@@ -194,7 +189,7 @@ async fn normal_mode(
                                 }
                             }
                             Err(e) => {
-                                warn!("Failed to unmarshal RTP packet (size={}): {}", size, e);
+                                error!("Failed to unmarshal RTP packet (size={}): {}", size, e);
                             }
                         }
                     }

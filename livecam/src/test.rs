@@ -201,7 +201,7 @@ mod rtp_receiver_tests {
 
         let (tx, rx) = mpsc::channel(1);
 
-        let handle = tokio::spawn(async move { rtp_receiver::start(0, track, rx, 96).await });
+        let handle = tokio::spawn(async move { rtp_receiver::start(0, track, rx).await });
 
         tx.send(()).await.unwrap();
         let result = handle.await.unwrap();
