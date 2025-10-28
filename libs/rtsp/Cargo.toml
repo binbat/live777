@@ -21,3 +21,4 @@ cli = { path = "../cli" }
 rtsp-types = "0.1.1"
 sdp-types = "0.1.6"
 portpicker = "0.1.1"
+base64 = "0.21"

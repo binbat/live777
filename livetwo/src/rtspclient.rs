@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use base64::{Engine as _, engine::general_purpose};
 use cli::{Codec, codec_from_str};
 use md5::{Digest, Md5};
 use portpicker::pick_unused_port;
@@ -809,6 +810,19 @@ pub async fn setup_rtsp_session(
                 rtcp_channel: video_rtcp_channel,
             });
             media_info.video_codec = codec;
+
+            if let Some(codec) = codec
+                && matches!(codec, cli::Codec::H264)
+            {
+                media_info.h264_params = extract_params(video_track);
+                if let Some(ref params) = media_info.h264_params {
+                    trace!(
+                        "Extracted H.264 params from RTSP - SPS: {} bytes, PPS: {} bytes",
+                        params.sps.len(),
+                        params.pps.len()
+                    );
+                }
+            }
         } else {
             let (rtp_client, rtcp_client, rtp_server, rtcp_server, codec) =
                 setup_track(&mut rtsp_session, video_track, "0", &base_url).await?;
@@ -819,6 +833,18 @@ pub async fn setup_rtsp_session(
                 rtcp_recv_port: rtcp_client,
             });
             media_info.video_codec = codec;
+            if let Some(codec) = codec
+                && matches!(codec, cli::Codec::H264)
+            {
+                media_info.h264_params = extract_params(video_track);
+                if let Some(ref params) = media_info.h264_params {
+                    trace!(
+                        "Extracted H.264 params from RTSP - SPS: {} bytes, PPS: {} bytes",
+                        params.sps.len(),
+                        params.pps.len()
+                    );
+                }
+            }
         }
     }
 
@@ -1042,6 +1068,36 @@ fn generate_digest_response(
     let mut hasher = Md5::new();
     hasher.update(format!("{ha1}:{nonce}:{ha2}"));
     format!("{:x}", hasher.finalize())
+}
+
+fn extract_params(track: &sdp_types::Media) -> Option<rtsp::H264Params> {
+    track
+        .attributes
+        .iter()
+        .find(|attr| attr.attribute == "fmtp")
+        .and_then(|attr| {
+            let value = attr.value.as_ref()?;
+
+            let params_start = value.find("sprop-parameter-sets=")?;
+            let params_str = &value[params_start + 21..];
+            let params_end = params_str.find(';').unwrap_or(params_str.len());
+            let params = &params_str[..params_end].trim();
+
+            let mut parts = params.split(',');
+            let sps_b64 = parts.next()?.trim();
+            let pps_b64 = parts.next()?.trim();
+
+            let sps = general_purpose::STANDARD.decode(sps_b64).ok()?;
+            let pps = general_purpose::STANDARD.decode(pps_b64).ok()?;
+
+            trace!(
+                "Extracted H.264 params from track - SPS: {} bytes, PPS: {} bytes",
+                sps.len(),
+                pps.len()
+            );
+
+            Some(rtsp::H264Params { sps, pps })
+        })
 }
 
 #[cfg(test)]
