@@ -2707,7 +2707,7 @@ dependencies = [
 [[package]]
 name = "milkv-libs"
 version = "1.0.0"
-source = "git+https://github.com/Marsyew/milkv-libs?tag=v1.0.4#1714996a56ee41452def316bed82373b51933ca0"
+source = "git+https://github.com/Marsyew/milkv-libs?tag=v1.0.5#afe2ce66c13eab9490e7b55970d86dd4ea95c0db"
 dependencies = [
  "libc",
 ]
