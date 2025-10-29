@@ -217,7 +217,7 @@ async fn rtp_mode(target_url: &str) -> Result<(rtsp::MediaInfo, String)> {
         } else {
             None
         },
-        h264_params: None,
+        video_params: None,
     };
 
     Ok((media_info, host))
@@ -321,7 +321,7 @@ async fn setup_webrtc(
         media_info.audio_codec.map(|c| c.into()),
         complete_tx,
         input.to_string(),
-        media_info.h264_params.clone(),
+        media_info.video_params.clone(),
     )
     .await
     .map_err(|error| anyhow!(format!("[{}] {}", PREFIX_LIB, error)))?;
@@ -741,7 +741,7 @@ async fn webrtc_start(
     audio_codec: Option<RTCRtpCodecCapability>,
     complete_tx: UnboundedSender<()>,
     input: String,
-    h264_params: Option<rtsp::H264Params>,
+    video_params: Option<rtsp::VideoCodecParams>,
 ) -> Result<(
     Arc<RTCPeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
@@ -752,7 +752,7 @@ async fn webrtc_start(
         audio_codec,
         complete_tx.clone(),
         input,
-        h264_params,
+        video_params,
     )
     .await?;
 
@@ -768,7 +768,7 @@ async fn new_peer(
     audio_codec: Option<RTCRtpCodecCapability>,
     complete_tx: UnboundedSender<()>,
     input: String,
-    h264_params: Option<rtsp::H264Params>,
+    video_params: Option<rtsp::VideoCodecParams>,
 ) -> Result<(
     Arc<RTCPeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
@@ -801,7 +801,7 @@ async fn new_peer(
     utils::setup_peer_connection_handlers(peer.clone(), complete_tx).await;
 
     let video_tx = if let Some(video_codec) = video_codec {
-        setup_video_track(peer.clone(), video_codec, input.clone(), h264_params).await?
+        setup_video_track(peer.clone(), video_codec, input.clone(), video_params).await?
     } else {
         None
     };
@@ -819,7 +819,7 @@ async fn setup_video_track(
     peer: Arc<RTCPeerConnection>,
     video_codec: RTCRtpCodecCapability,
     input: String,
-    h264_params: Option<rtsp::H264Params>,
+    video_params: Option<rtsp::VideoCodecParams>,
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
     let video_track_id = format!("{input}-video");
     let video_track = Arc::new(TrackLocalStaticRTP::new(
@@ -841,8 +841,15 @@ async fn setup_video_track(
             MIME_TYPE_VP9 => Box::new(payload::RePayloadCodec::new(video_codec.mime_type)),
             MIME_TYPE_H264 => {
                 let mut codec = payload::RePayloadCodec::new(video_codec.mime_type);
-                if let Some(params) = h264_params {
-                    codec.set_h264_params(params.sps, params.pps);
+                if let Some(rtsp::VideoCodecParams::H264 { sps, pps }) = video_params {
+                    codec.set_h264_params(sps, pps);
+                }
+                Box::new(codec)
+            }
+            MIME_TYPE_HEVC => {
+                let mut codec = payload::RePayloadCodec::new(video_codec.mime_type);
+                if let Some(rtsp::VideoCodecParams::H265 { vps, sps, pps }) = video_params {
+                    codec.set_h265_params(vps, sps, pps);
                 }
                 Box::new(codec)
             }

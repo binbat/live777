@@ -575,7 +575,7 @@ async fn rtp_mode(
         }),
         video_codec,
         audio_codec,
-        h264_params: None,
+        video_params: None,
     };
 
     let connection_info = ConnectionInformation {

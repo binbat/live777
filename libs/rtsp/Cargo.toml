@@ -12,6 +12,7 @@ crate-type = ["lib"]
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+base64 = { workspace = true }
 
 webrtc = { workspace = true }
 sdp = { workspace = true }
@@ -21,4 +22,3 @@ cli = { path = "../cli" }
 rtsp-types = "0.1.1"
 sdp-types = "0.1.6"
 portpicker = "0.1.1"
-base64 = "0.21"

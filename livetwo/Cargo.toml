@@ -21,6 +21,7 @@ tracing = { workspace = true }
 webrtc = { workspace = true }
 sdp = { workspace = true }
 url = { workspace = true }
+base64 = { workspace = true }
 
 bytes = "1.6.0"
 scopeguard = "1.2.0"
@@ -28,4 +29,3 @@ md-5 = "0.10"
 portpicker = "0.1.1"
 rtsp-types = "0.1.2"
 sdp-types = "0.1"
-base64 = "0.21"

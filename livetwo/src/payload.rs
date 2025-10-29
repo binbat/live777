@@ -14,9 +14,21 @@ use webrtc::{
 /// WebRTC Build-in RTP must less 1200
 const RTP_OUTBOUND_MTU: usize = 1200;
 
+mod nal_type {
+    pub const NAL_SLICE_IDR: u8 = 5;
+    pub const NAL_SPS: u8 = 7;
+    pub const NAL_PPS: u8 = 8;
+
+    pub const H265_NAL_IDR_W_RADL: u8 = 19;
+    pub const H265_NAL_IDR_N_LP: u8 = 20;
+    pub const H265_NAL_VPS: u8 = 32;
+    pub const H265_NAL_SPS: u8 = 33;
+    pub const H265_NAL_PPS: u8 = 34;
+}
 pub trait RePayload {
     fn payload(&mut self, packet: Packet) -> Vec<Packet>;
     fn set_h264_params(&mut self, sps: Vec<u8>, pps: Vec<u8>);
+    fn set_h265_params(&mut self, vps: Vec<u8>, sps: Vec<u8>, pps: Vec<u8>);
 }
 
 pub(crate) struct Forward {}
@@ -33,6 +45,8 @@ impl RePayload for Forward {
     }
 
     fn set_h264_params(&mut self, _sps: Vec<u8>, _pps: Vec<u8>) {}
+
+    fn set_h265_params(&mut self, _vps: Vec<u8>, _sps: Vec<u8>, _pps: Vec<u8>) {}
 }
 
 pub(crate) struct RePayloadBase {
@@ -75,6 +89,7 @@ pub struct RePayloadCodec {
     mime_type: String,
     sps: Option<Vec<u8>>,
     pps: Option<Vec<u8>>,
+    vps: Option<Vec<u8>>,
     frame_count: u32,
 }
 
@@ -89,6 +104,8 @@ impl RePayloadCodec {
             Box::default() as Box<vp9::Vp9Packet>
         } else if is(MIME_TYPE_H264) {
             Box::default() as Box<h264::H264Packet>
+        } else if is(MIME_TYPE_HEVC) {
+            Box::default() as Box<h265::H265Packet>
         } else if is(MIME_TYPE_OPUS) {
             Box::default() as Box<opus::OpusPacket>
         } else {
@@ -101,6 +118,8 @@ impl RePayloadCodec {
             Box::default() as Box<vp9::Vp9Payloader>
         } else if is(MIME_TYPE_H264) {
             Box::default() as Box<h264::H264Payloader>
+        } else if is(MIME_TYPE_HEVC) {
+            Box::default() as Box<h265::HevcPayloader>
         } else if is(MIME_TYPE_OPUS) {
             Box::default() as Box<opus::OpusPayloader>
         } else {
@@ -114,12 +133,22 @@ impl RePayloadCodec {
             mime_type,
             sps: None,
             pps: None,
+            vps: None,
             frame_count: 0,
         }
     }
 
-    fn idr_frame(&self, data: &[u8]) -> bool {
-        if self.mime_type.to_lowercase() != "video/h264" {
+    fn is_idr_frame(&self, data: &[u8]) -> bool {
+        if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) {
+            return self.is_h264_idr_frame(data);
+        } else if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_HEVC) {
+            return self.is_h265_idr_frame(data);
+        }
+        false
+    }
+
+    fn is_h264_idr_frame(&self, data: &[u8]) -> bool {
+        if !self.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) {
             return false;
         }
 
@@ -135,7 +164,7 @@ impl RePayloadCodec {
 
                 if nal_start < data.len() {
                     let nal_type = data[nal_start] & 0x1F;
-                    if nal_type == 5 {
+                    if nal_type == nal_type::NAL_SLICE_IDR {
                         return true;
                     }
                 }
@@ -144,11 +173,98 @@ impl RePayloadCodec {
         false
     }
 
-    fn sps_pps(&self, data: &[u8]) -> bool {
-        if self.mime_type.to_lowercase() != "video/h264" {
-            return false;
+    fn is_h265_idr_frame(&self, data: &[u8]) -> bool {
+        for i in 0..data.len().saturating_sub(4) {
+            if data[i] == 0 && data[i + 1] == 0 {
+                let nal_start = if data[i + 2] == 0 && data[i + 3] == 1 {
+                    i + 4
+                } else if data[i + 2] == 1 {
+                    i + 3
+                } else {
+                    continue;
+                };
+
+                if nal_start < data.len() {
+                    let nal_type = (data[nal_start] >> 1) & 0x3F;
+                    if nal_type == nal_type::H265_NAL_IDR_W_RADL
+                        || nal_type == nal_type::H265_NAL_IDR_N_LP
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn inject_params(&mut self, data: &[u8]) -> Vec<u8> {
+        if !self.is_idr_frame(data) {
+            return data.to_vec();
         }
 
+        if self.has_params(data) {
+            trace!(
+                "Frame {} already has params, skipping injection",
+                self.frame_count
+            );
+            return data.to_vec();
+        }
+
+        if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) {
+            return self.inject_h264_params(data);
+        } else if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_HEVC) {
+            return self.inject_h265_params(data);
+        }
+
+        data.to_vec()
+    }
+
+    fn inject_h264_params(&self, data: &[u8]) -> Vec<u8> {
+        if self.sps.is_none() || self.pps.is_none() {
+            trace!("No cached H.264 SPS/PPS for frame {}", self.frame_count);
+            return data.to_vec();
+        }
+
+        let mut result = Vec::new();
+        result.extend_from_slice(&[0, 0, 0, 1]);
+        result.extend_from_slice(self.sps.as_ref().unwrap());
+        result.extend_from_slice(&[0, 0, 0, 1]);
+        result.extend_from_slice(self.pps.as_ref().unwrap());
+        result.extend_from_slice(data);
+
+        trace!("Injected H.264 SPS/PPS at frame {}", self.frame_count);
+        result
+    }
+
+    fn inject_h265_params(&self, data: &[u8]) -> Vec<u8> {
+        if self.vps.is_none() || self.sps.is_none() || self.pps.is_none() {
+            trace!("No cached H.265 VPS/SPS/PPS for frame {}", self.frame_count);
+            return data.to_vec();
+        }
+
+        let mut result = Vec::new();
+        result.extend_from_slice(&[0, 0, 0, 1]);
+        result.extend_from_slice(self.vps.as_ref().unwrap());
+        result.extend_from_slice(&[0, 0, 0, 1]);
+        result.extend_from_slice(self.sps.as_ref().unwrap());
+        result.extend_from_slice(&[0, 0, 0, 1]);
+        result.extend_from_slice(self.pps.as_ref().unwrap());
+        result.extend_from_slice(data);
+
+        trace!("Injected H.265 VPS/SPS/PPS at frame {}", self.frame_count);
+        result
+    }
+
+    fn has_params(&self, data: &[u8]) -> bool {
+        if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) {
+            return self.has_h264_params(data);
+        } else if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_HEVC) {
+            return self.has_h265_params(data);
+        }
+        false
+    }
+
+    fn has_h264_params(&self, data: &[u8]) -> bool {
         let mut has_sps = false;
         let mut has_pps = false;
 
@@ -164,9 +280,9 @@ impl RePayloadCodec {
 
                 if nal_start < data.len() {
                     let nal_type = data[nal_start] & 0x1F;
-                    if nal_type == 7 {
+                    if nal_type == nal_type::NAL_SPS {
                         has_sps = true;
-                    } else if nal_type == 8 {
+                    } else if nal_type == nal_type::NAL_PPS {
                         has_pps = true;
                     }
                 }
@@ -176,8 +292,39 @@ impl RePayloadCodec {
         has_sps && has_pps
     }
 
+    fn has_h265_params(&self, data: &[u8]) -> bool {
+        let mut has_vps = false;
+        let mut has_sps = false;
+        let mut has_pps = false;
+
+        for i in 0..data.len().saturating_sub(4) {
+            if data[i] == 0 && data[i + 1] == 0 {
+                let nal_start = if data[i + 2] == 0 && data[i + 3] == 1 {
+                    i + 4
+                } else if data[i + 2] == 1 {
+                    i + 3
+                } else {
+                    continue;
+                };
+
+                if nal_start < data.len() {
+                    let nal_type = (data[nal_start] >> 1) & 0x3F;
+                    if nal_type == nal_type::H265_NAL_VPS {
+                        has_vps = true;
+                    } else if nal_type == nal_type::H265_NAL_SPS {
+                        has_sps = true;
+                    } else if nal_type == nal_type::H265_NAL_PPS {
+                        has_pps = true;
+                    }
+                }
+            }
+        }
+
+        has_vps && has_sps && has_pps
+    }
+
     fn extract_params(&mut self, data: &[u8]) {
-        if self.mime_type.to_lowercase() != "video/h264" {
+        if !self.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) {
             return;
         }
 
@@ -216,13 +363,13 @@ impl RePayloadCodec {
                 }
 
                 match nal_type {
-                    7 => {
+                    nal_type::NAL_SPS => {
                         if self.sps.is_none() {
                             self.sps = Some(data[nal_start..nal_end].to_vec());
                             trace!("Extracted SPS from stream: {} bytes", nal_end - nal_start);
                         }
                     }
-                    8 => {
+                    nal_type::NAL_PPS => {
                         if self.pps.is_none() {
                             self.pps = Some(data[nal_start..nal_end].to_vec());
                             trace!("Extracted PPS from stream: {} bytes", nal_end - nal_start);
@@ -236,55 +383,6 @@ impl RePayloadCodec {
                 i += 1;
             }
         }
-    }
-
-    fn inject_params(&mut self, data: &[u8]) -> Vec<u8> {
-        if self.mime_type.to_lowercase() != "video/h264" {
-            return data.to_vec();
-        }
-
-        let is_idr = self.idr_frame(data);
-
-        if !is_idr {
-            return data.to_vec();
-        }
-
-        if self.sps_pps(data) {
-            trace!(
-                "Frame {} already has SPS/PPS, skipping injection",
-                self.frame_count
-            );
-            return data.to_vec();
-        }
-
-        if self.sps.is_none() || self.pps.is_none() {
-            trace!(
-                "No cached SPS/PPS for frame {}, cannot inject",
-                self.frame_count
-            );
-            return data.to_vec();
-        }
-
-        let mut result = Vec::new();
-
-        result.extend_from_slice(&[0, 0, 0, 1]);
-        result.extend_from_slice(self.sps.as_ref().unwrap());
-
-        result.extend_from_slice(&[0, 0, 0, 1]);
-        result.extend_from_slice(self.pps.as_ref().unwrap());
-
-        result.extend_from_slice(data);
-
-        trace!(
-            "Injected SPS/PPS at IDR frame {} (SPS: {} bytes, PPS: {} bytes, total: {} -> {})",
-            self.frame_count,
-            self.sps.as_ref().unwrap().len(),
-            self.pps.as_ref().unwrap().len(),
-            data.len(),
-            result.len()
-        );
-
-        result
     }
 }
 
@@ -343,12 +441,26 @@ impl RePayload for RePayloadCodec {
     }
 
     fn set_h264_params(&mut self, sps: Vec<u8>, pps: Vec<u8>) {
-        if self.mime_type.to_lowercase() == "video/h264" {
+        if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) {
             trace!(
                 "Setting H.264 params from SDP - SPS: {} bytes, PPS: {} bytes",
                 sps.len(),
                 pps.len()
             );
+            self.sps = Some(sps);
+            self.pps = Some(pps);
+        }
+    }
+
+    fn set_h265_params(&mut self, vps: Vec<u8>, sps: Vec<u8>, pps: Vec<u8>) {
+        if self.mime_type.eq_ignore_ascii_case(MIME_TYPE_HEVC) {
+            trace!(
+                "Setting H.265 params - VPS: {} bytes, SPS: {} bytes, PPS: {} bytes",
+                vps.len(),
+                sps.len(),
+                pps.len()
+            );
+            self.vps = Some(vps);
             self.sps = Some(sps);
             self.pps = Some(pps);
         }

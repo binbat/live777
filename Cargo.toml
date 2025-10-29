@@ -79,6 +79,7 @@ tokio = "1.47"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "fast-rng"] }
 url = "2.5"
+base64 = "0.22"
 
 [dev-dependencies]
 http = { workspace = true }

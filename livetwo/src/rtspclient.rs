@@ -811,16 +811,43 @@ pub async fn setup_rtsp_session(
             });
             media_info.video_codec = codec;
 
-            if let Some(codec) = codec
-                && matches!(codec, cli::Codec::H264)
-            {
-                media_info.h264_params = extract_params(video_track);
-                if let Some(ref params) = media_info.h264_params {
-                    trace!(
-                        "Extracted H.264 params from RTSP - SPS: {} bytes, PPS: {} bytes",
-                        params.sps.len(),
-                        params.pps.len()
-                    );
+            if let Some(codec) = codec {
+                match codec {
+                    cli::Codec::H264 => {
+                        if let Some(params) = extract_h264_params(video_track) {
+                            let sps_len = params.sps.len();
+                            let pps_len = params.pps.len();
+
+                            media_info.video_params = Some(rtsp::VideoCodecParams::H264 {
+                                sps: params.sps,
+                                pps: params.pps,
+                            });
+
+                            trace!(
+                                "Extracted H.264 params from RTSP - SPS: {} bytes, PPS: {} bytes",
+                                sps_len, pps_len
+                            );
+                        }
+                    }
+                    cli::Codec::H265 => {
+                        if let Some(params) = extract_h265_params(video_track) {
+                            let vps_len = params.vps.len();
+                            let sps_len = params.sps.len();
+                            let pps_len = params.pps.len();
+
+                            media_info.video_params = Some(rtsp::VideoCodecParams::H265 {
+                                vps: params.vps,
+                                sps: params.sps,
+                                pps: params.pps,
+                            });
+
+                            trace!(
+                                "Extracted H.265 params from RTSP - VPS: {} bytes, SPS: {} bytes, PPS: {} bytes",
+                                vps_len, sps_len, pps_len
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
         } else {
@@ -833,16 +860,43 @@ pub async fn setup_rtsp_session(
                 rtcp_recv_port: rtcp_client,
             });
             media_info.video_codec = codec;
-            if let Some(codec) = codec
-                && matches!(codec, cli::Codec::H264)
-            {
-                media_info.h264_params = extract_params(video_track);
-                if let Some(ref params) = media_info.h264_params {
-                    trace!(
-                        "Extracted H.264 params from RTSP - SPS: {} bytes, PPS: {} bytes",
-                        params.sps.len(),
-                        params.pps.len()
-                    );
+            if let Some(codec) = codec {
+                match codec {
+                    cli::Codec::H264 => {
+                        if let Some(params) = extract_h264_params(video_track) {
+                            let sps_len = params.sps.len();
+                            let pps_len = params.pps.len();
+
+                            media_info.video_params = Some(rtsp::VideoCodecParams::H264 {
+                                sps: params.sps,
+                                pps: params.pps,
+                            });
+
+                            trace!(
+                                "Extracted H.264 params from RTSP - SPS: {} bytes, PPS: {} bytes",
+                                sps_len, pps_len
+                            );
+                        }
+                    }
+                    cli::Codec::H265 => {
+                        if let Some(params) = extract_h265_params(video_track) {
+                            let vps_len = params.vps.len();
+                            let sps_len = params.sps.len();
+                            let pps_len = params.pps.len();
+
+                            media_info.video_params = Some(rtsp::VideoCodecParams::H265 {
+                                vps: params.vps,
+                                sps: params.sps,
+                                pps: params.pps,
+                            });
+
+                            trace!(
+                                "Extracted H.265 params from RTSP - VPS: {} bytes, SPS: {} bytes, PPS: {} bytes",
+                                vps_len, sps_len, pps_len
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1070,7 +1124,7 @@ fn generate_digest_response(
     format!("{:x}", hasher.finalize())
 }
 
-fn extract_params(track: &sdp_types::Media) -> Option<rtsp::H264Params> {
+fn extract_h264_params(track: &sdp_types::Media) -> Option<rtsp::H264Params> {
     track
         .attributes
         .iter()
@@ -1097,6 +1151,37 @@ fn extract_params(track: &sdp_types::Media) -> Option<rtsp::H264Params> {
             );
 
             Some(rtsp::H264Params { sps, pps })
+        })
+}
+
+fn extract_h265_params(track: &sdp_types::Media) -> Option<rtsp::H265Params> {
+    track
+        .attributes
+        .iter()
+        .find(|attr| attr.attribute == "fmtp")
+        .and_then(|attr| {
+            let value = attr.value.as_ref()?;
+
+            let extract_param = |param_name: &str| -> Option<Vec<u8>> {
+                let param_start = value.find(&format!("{}=", param_name))?;
+                let param_str = &value[param_start + param_name.len() + 1..];
+                let param_end = param_str.find(';').unwrap_or(param_str.len());
+                let param_b64 = param_str[..param_end].trim();
+                general_purpose::STANDARD.decode(param_b64).ok()
+            };
+
+            let vps = extract_param("sprop-vps")?;
+            let sps = extract_param("sprop-sps")?;
+            let pps = extract_param("sprop-pps")?;
+
+            trace!(
+                "Extracted H.265 params from track - VPS: {} bytes, SPS: {} bytes, PPS: {} bytes",
+                vps.len(),
+                sps.len(),
+                pps.len()
+            );
+
+            Some(rtsp::H265Params { vps, sps, pps })
         })
 }
 
