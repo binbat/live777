@@ -12,6 +12,7 @@ crate-type = ["lib"]
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+base64 = { workspace = true }
 
 webrtc = { workspace = true }
 sdp = { workspace = true }

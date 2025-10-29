@@ -2317,6 +2317,7 @@ name = "livetwo"
 version = "0.8.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "cli",
  "libwish",
@@ -3638,6 +3639,7 @@ name = "rtsp"
 version = "0.8.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "cli",
  "portpicker",
  "rtsp-types",

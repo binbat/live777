@@ -14,7 +14,8 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 
-use tracing::{debug, error, warn};
+use base64::{Engine as _, engine::general_purpose};
+use tracing::{debug, error, trace, warn};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
 
 const SERVER_NAME: &str = "whipinto";
@@ -51,6 +52,33 @@ pub struct MediaInfo {
     pub audio_transport: Option<TransportInfo>,
     pub video_codec: Option<Codec>,
     pub audio_codec: Option<Codec>,
+    pub video_params: Option<VideoCodecParams>,
+}
+
+#[derive(Debug, Clone)]
+pub struct H264Params {
+    pub sps: Vec<u8>,
+    pub pps: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct H265Params {
+    pub vps: Vec<u8>,
+    pub sps: Vec<u8>,
+    pub pps: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub enum VideoCodecParams {
+    H264 {
+        sps: Vec<u8>,
+        pps: Vec<u8>,
+    },
+    H265 {
+        vps: Vec<u8>,
+        sps: Vec<u8>,
+        pps: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +137,7 @@ impl Handler {
                 audio_transport: self.media_info.audio_transport.clone(),
                 video_codec: self.media_info.video_codec,
                 audio_codec: self.media_info.audio_codec,
+                video_params: self.media_info.video_params.clone(),
             })
             .unwrap();
 
@@ -125,6 +154,7 @@ impl Handler {
                 audio_transport: self.media_info.audio_transport.clone(),
                 video_codec: self.media_info.video_codec,
                 audio_codec: self.media_info.audio_codec,
+                video_params: self.media_info.video_params.clone(),
             })
             .unwrap();
 
@@ -224,6 +254,33 @@ impl Handler {
 
                             self.media_info.video_codec = extract_codec(media);
 
+                            if let Some(codec) = self.media_info.video_codec {
+                                match codec {
+                                    Codec::H264 => {
+                                        if let Some(params) = extract_h264_params(media) {
+                                            self.media_info.video_params =
+                                                Some(VideoCodecParams::H264 {
+                                                    sps: params.sps,
+                                                    pps: params.pps,
+                                                });
+                                            trace!("Extracted H.264 params from SDP");
+                                        }
+                                    }
+                                    Codec::H265 => {
+                                        if let Some(params) = extract_h265_params(media) {
+                                            self.media_info.video_params =
+                                                Some(VideoCodecParams::H265 {
+                                                    vps: params.vps,
+                                                    sps: params.sps,
+                                                    pps: params.pps,
+                                                });
+                                            trace!("Extracted H.265 params from SDP");
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             return Response::builder(req.version(), StatusCode::Ok)
                                 .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
                                 .header(headers::SERVER, SERVER_NAME)
@@ -320,6 +377,33 @@ impl Handler {
                             });
 
                             self.media_info.video_codec = extract_codec(media);
+
+                            if let Some(codec) = self.media_info.video_codec {
+                                match codec {
+                                    Codec::H264 => {
+                                        if let Some(params) = extract_h264_params(media) {
+                                            self.media_info.video_params =
+                                                Some(VideoCodecParams::H264 {
+                                                    sps: params.sps,
+                                                    pps: params.pps,
+                                                });
+                                            trace!("Extracted H.264 params from SDP");
+                                        }
+                                    }
+                                    Codec::H265 => {
+                                        if let Some(params) = extract_h265_params(media) {
+                                            self.media_info.video_params =
+                                                Some(VideoCodecParams::H265 {
+                                                    vps: params.vps,
+                                                    sps: params.sps,
+                                                    pps: params.pps,
+                                                });
+                                            trace!("Extracted H.265 params from SDP");
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
 
                             return Response::builder(req.version(), StatusCode::Ok)
                                 .header(headers::CSEQ, req.header(&headers::CSEQ).unwrap().as_str())
@@ -485,19 +569,12 @@ pub async fn process_socket(socket: TcpStream, handler: &mut Handler) -> Result<
                         accumulated_buf.drain(..consumed);
                         let response = match message {
                             Message::Request(ref request) => match request.method() {
-                                // push, pull
                                 Method::Options => handler.options(request),
-                                // push
                                 Method::Announce => handler.announce(request),
-                                // pull
                                 Method::Describe => handler.describe(request),
-                                // push, pull
                                 Method::Setup => handler.setup(request),
-                                // push
                                 Method::Record => handler.record(request),
-                                // pull
                                 Method::Play => handler.play(request),
-                                // push, pull
                                 Method::Teardown => handler.teardown(request),
                                 _ => handler.todo(request),
                             },
@@ -506,7 +583,6 @@ pub async fn process_socket(socket: TcpStream, handler: &mut Handler) -> Result<
 
                         let mut buffer = Vec::new();
                         response.write(&mut buffer)?;
-                        //writer.write_all(&buffer).await?;
                         let mut writer_guard = writer.lock().await;
                         writer_guard.write_all(&buffer).await?;
                         writer_guard.flush().await?;
@@ -628,4 +704,66 @@ pub fn extract_codec(media: &sdp_types::Media) -> Option<Codec> {
                 .map(|codec_str| codec_from_str(codec_str).ok())
         })
         .unwrap_or(None)
+}
+
+pub fn extract_h264_params(media: &sdp_types::Media) -> Option<H264Params> {
+    media
+        .attributes
+        .iter()
+        .find(|attr| attr.attribute == "fmtp")
+        .and_then(|attr| {
+            let value = attr.value.as_ref()?;
+
+            let params_start = value.find("sprop-parameter-sets=")?;
+            let params_str = &value[params_start + 21..];
+            let params_end = params_str.find(';').unwrap_or(params_str.len());
+            let params = &params_str[..params_end].trim();
+
+            let mut parts = params.split(',');
+            let sps_b64 = parts.next()?.trim();
+            let pps_b64 = parts.next()?.trim();
+
+            let sps = general_purpose::STANDARD.decode(sps_b64).ok()?;
+            let pps = general_purpose::STANDARD.decode(pps_b64).ok()?;
+
+            trace!(
+                "Extracted H.264 params from SDP - SPS: {} bytes, PPS: {} bytes",
+                sps.len(),
+                pps.len()
+            );
+
+            Some(H264Params { sps, pps })
+        })
+}
+
+pub fn extract_h265_params(media: &sdp_types::Media) -> Option<H265Params> {
+    media
+        .attributes
+        .iter()
+        .find(|attr| attr.attribute == "fmtp")
+        .and_then(|attr| {
+            let value = attr.value.as_ref()?;
+
+            let vps = extract_param(value, "sprop-vps")?;
+            let sps = extract_param(value, "sprop-sps")?;
+            let pps = extract_param(value, "sprop-pps")?;
+
+            trace!(
+                "Extracted H.265 params from SDP - VPS: {} bytes, SPS: {} bytes, PPS: {} bytes",
+                vps.len(),
+                sps.len(),
+                pps.len()
+            );
+
+            Some(H265Params { vps, sps, pps })
+        })
+}
+
+fn extract_param(fmtp: &str, param_name: &str) -> Option<Vec<u8>> {
+    let param_start = fmtp.find(&format!("{}=", param_name))?;
+    let param_str = &fmtp[param_start + param_name.len() + 1..];
+    let param_end = param_str.find(';').unwrap_or(param_str.len());
+    let param_b64 = param_str[..param_end].trim();
+
+    general_purpose::STANDARD.decode(param_b64).ok()
 }
