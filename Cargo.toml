@@ -22,6 +22,10 @@ name = "livenil"
 path = "src/livenil.rs"
 
 [[bin]]
+name = "livecam"
+path = "src/livecam.rs"
+
+[[bin]]
 name = "whipinto"
 path = "src/whipinto.rs"
 
@@ -47,6 +51,7 @@ members = [
     "liveion",
     "liveman",
     "livetwo",
+    "livecam",
 ]
 
 [workspace.package]
@@ -95,6 +100,7 @@ anyhow = { workspace = true }
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
 livetwo = { path = "livetwo" }
+livecam = { path = "livecam" }
 net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
 
@@ -109,6 +115,6 @@ toml = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
-webui = ["liveion/webui", "liveman/webui"]
+webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]
