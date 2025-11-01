@@ -1,4 +1,4 @@
-FROM rust:slim-bookworm AS builder
+FROM rust:slim-trixie AS builder
 
 WORKDIR /app
 
@@ -6,7 +6,7 @@ COPY . .
 
 RUN cargo build --bin=whipinto --release
 
-FROM debian:bookworm-slim
+FROM debian:slim-trixie
 
 COPY --from=builder /app/target/release/whipinto /usr/local/bin/whipinto
 

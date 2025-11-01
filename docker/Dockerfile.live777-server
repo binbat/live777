@@ -1,26 +1,36 @@
-FROM rust:slim-bookworm AS builder
+FROM node:trixie-slim AS builder-node
+ENV CI="true"
+RUN npm install -g pnpm
+WORKDIR /app
+
+COPY pnpm-lock.yaml /app
+RUN pnpm fetch --prod
+
+COPY . .
+RUN pnpm install
+RUN pnpm -r build
+
+FROM rust:slim-trixie AS builder-rust
 
 WORKDIR /app
 
 COPY . .
 
-RUN apt update -y && apt install -y --no-install-recommends npm
-
-RUN npm install && npm run build
+COPY --from=builder-node /app/assets/ assets
 
 RUN cargo build --release --all-targets --all-features
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
-COPY --from=builder /app/conf/live777.toml /etc/live777/live777.toml
-COPY --from=builder /app/target/release/live777 /usr/local/bin/live777
+COPY --from=builder-rust /app/conf/live777.toml /etc/live777/live777.toml
+COPY --from=builder-rust /app/target/release/live777 /usr/local/bin/live777
 
-COPY --from=builder /app/conf/liveman.toml /etc/live777/liveman.toml
-COPY --from=builder /app/target/release/liveman /usr/local/bin/liveman
+COPY --from=builder-rust /app/conf/liveman.toml /etc/live777/liveman.toml
+COPY --from=builder-rust /app/target/release/liveman /usr/local/bin/liveman
 
-COPY --from=builder /app/target/release/whipinto /usr/local/bin/whipinto
-COPY --from=builder /app/target/release/whepfrom /usr/local/bin/whepfrom
+COPY --from=builder-rust /app/target/release/whipinto /usr/local/bin/whipinto
+COPY --from=builder-rust /app/target/release/whepfrom /usr/local/bin/whepfrom
 
-COPY --from=builder /app/target/release/net4mqtt /usr/local/bin/net4mqtt
+COPY --from=builder-rust /app/target/release/net4mqtt /usr/local/bin/net4mqtt
 
 CMD ["live777"]
