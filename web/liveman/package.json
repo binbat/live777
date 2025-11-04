@@ -10,6 +10,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "debugger": "workspace:^"
+    "alone-player": "workspace:*",
+    "debugger": "workspace:*"
   }
 }

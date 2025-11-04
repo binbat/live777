@@ -1,0 +1,13 @@
+body {
+	margin: 0;
+}
+fieldset {
+	border-style: dotted;
+	border-width: 0.25rem;
+	border-radius: 0.5rem;
+	padding: 0.5rem;
+	margin: 0.5rem;
+}
+section {
+	margin: 0.5rem;
+}

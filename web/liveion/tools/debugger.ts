@@ -1,1 +1,2 @@
-import '../../shared/tools/debugger/main.tsx';
+import 'debugger';
+import 'debugger/style.css';

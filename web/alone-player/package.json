@@ -1,0 +1,24 @@
+{
+  "name": "alone-player",
+  "version": "1.0.0",
+  "description": "Live777 Alone player",
+  "type": "module",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./style.css": "./dist/index.css"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "solid-js": "^1.9.10",
+    "vite-plugin-solid": "^2.11.10"
+  }
+}
