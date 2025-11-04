@@ -2,6 +2,7 @@
   "name": "webui",
   "private": true,
   "version": "0.0.0",
+  "packageManager": "pnpm@10.20.0",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:liveion",
@@ -13,7 +14,6 @@
     "preview:liveman": "vite preview -c web/liveman/vite.config.ts",
     "preview:livecam": "vite preview -c web/livecam/vite.config.ts",
     "lint": "eslint && tsc --noEmit",
-    "build": "npm run lint && npm run build:liveion && npm run build:liveman && npm run build:livecam",
     "build:liveion": "vite build -c web/liveion/vite.config.ts",
     "build:liveman": "vite build -c web/liveman/vite.config.ts",
     "build:livecam": "vite build -c web/livecam/vite.config.ts",
@@ -23,29 +23,29 @@
     "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
-    "@binbat/whip-whep": "^1.1.1-sdp-trickle-throw",
+    "@binbat/whip-whep": "1.1.1-sdp-trickle-throw",
     "@heroicons/react": "^2.2.0",
     "@nuintun/qrcode": "^4.1.18",
     "dashjs": "^4.7.4",
     "lucide-react": "^0.460.0",
-    "preact": "^10.26.9",
+    "preact": "^10.27.2",
     "preact-router": "^4.1.2",
     "react-daisyui": "^5.0.5",
     "typescript-event-target": "^1.1.1",
-    "wretch": "^2.11.0"
+    "wretch": "^2.11.1"
   },
   "devDependencies": {
-    "@eslint/js": "^9.31.0",
-    "@playwright/test": "^1.45.3",
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.56.1",
     "@preact/preset-vite": "^2.10.2",
     "@stylistic/eslint-plugin-js": "^2.13.0",
-    "@types/node": "^22.16.5",
+    "@types/node": "^22.19.0",
     "daisyui": "^4.12.24",
-    "eslint": "^9.31.0",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.8.3",
-    "typescript-eslint": "^8.38.0",
-    "vite": "^6.3.5",
+    "eslint": "^9.39.1",
+    "tailwindcss": "^3.4.18",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.3",
+    "vite": "^6.4.1",
     "vitepress": "^0.1.1",
     "vitest": "^3.2.4"
   }
