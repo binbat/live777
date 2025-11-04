@@ -25,28 +25,28 @@
   "dependencies": {
     "@binbat/whip-whep": "1.1.1-sdp-trickle-throw",
     "@heroicons/react": "^2.2.0",
-    "@nuintun/qrcode": "^4.1.18",
+    "@nuintun/qrcode": "^5.0.2",
     "dashjs": "^4.7.4",
-    "lucide-react": "^0.460.0",
+    "lucide-react": "^0.552.0",
     "preact": "^10.27.2",
     "preact-router": "^4.1.2",
     "react-daisyui": "^5.0.5",
     "typescript-event-target": "^1.1.1",
-    "wretch": "^2.11.1"
+    "wretch": "^3.0.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@playwright/test": "^1.56.1",
     "@preact/preset-vite": "^2.10.2",
-    "@stylistic/eslint-plugin-js": "^2.13.0",
-    "@types/node": "^22.19.0",
+    "@stylistic/eslint-plugin-js": "^4.4.1",
+    "@types/node": "^24.10.0",
     "daisyui": "^4.12.24",
     "eslint": "^9.39.1",
-    "tailwindcss": "^3.4.18",
+    "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.3",
     "vite": "^7.1.12",
-    "vitepress": "^0.1.1",
-    "vitest": "^4.0.6"
+    "vitepress": "^1.6.4",
+    "vitest": "^4.0.7"
   }
 }
