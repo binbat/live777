@@ -17,6 +17,7 @@
     "preview:liveion": "pnpm --filter liveion preview",
     "preview:liveman": "pnpm --filter liveman preview",
     "preview:livecam": "pnpm --filter livecam preview",
+    "check": "biome check",
     "lint": "eslint && tsc --noEmit",
     "e2e:cluster": "vitest",
     "docs:dev": "vitepress dev docs",
@@ -36,6 +37,7 @@
     "wretch": "^3.0.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.3.3",
     "@eslint/js": "^9.39.1",
     "@playwright/test": "^1.56.1",
     "@preact/preset-vite": "^2.10.2",
@@ -46,7 +48,8 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.3",
-    "vite": "^7.1.12",
+    "vite": "^7.2.0",
+    "vite-plugin-solid": "^2.11.10",
     "vitepress": "^1.6.4",
     "vitest": "^4.0.7"
   }

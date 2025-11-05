@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "includes": [
+      "web/alone-player/**",
+      "!web/alone-player/dist",
+      "web/debugger/**",
+      "!web/debugger/dist"
+    ]
+  },
+  "formatter": {
+    "formatWithErrors": true,
+    "useEditorconfig": true
+  }
+}

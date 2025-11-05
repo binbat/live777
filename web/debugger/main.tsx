@@ -1,10 +1,11 @@
 /* @refresh reload */
-import { render } from "solid-js/web";
+
 import { Router } from "@solidjs/router";
+import { render } from "solid-js/web";
 import Debugger from "./components/debugger";
-import './index.css'
+import "./index.css";
 
 render(
-	() => <Router root={Debugger} />,
-	document.getElementById("app") as HTMLElement,
+    () => <Router root={Debugger} />,
+    document.getElementById("app") as HTMLElement,
 );
