@@ -26,10 +26,8 @@ export default function Device(props: {
     onSelectAudio: (deviceId: string) => void;
     onSelectVideo: (deviceId: string) => void;
 }) {
-    //const [refreshDisabled, setRefreshDisabled] = createSignal(false);
     const [audioDevices, setAudioDevices] = createSignal([NoneDevice]);
     const [videoDevices, setVideoDevices] = createSignal([NoneDevice]);
-    //const [searchParams, setSearchParams] = useSearchParams();
 
     const refreshDevice = async () => {
         try {
@@ -48,7 +46,6 @@ export default function Device(props: {
                 .map(deviceInfoToOption);
             if (audio.length > 0) {
                 setAudioDevices(uniqByValue(audio));
-                //props.onSelectAudio(audioDevices[0].deviceId)
             }
             const video = devices
                 .filter((i) => i.kind === "videoinput")
@@ -59,9 +56,6 @@ export default function Device(props: {
         } catch (e) {
             console.error("refreshDevice failed:", e);
         }
-
-        // TODO: 应该放到启动时在禁用
-        //setRefreshDisabled(true);
     };
     createEffect(
         on(
@@ -94,6 +88,7 @@ export default function Device(props: {
             <div style="margin: 0.2rem">
                 Audio Device:
                 <select
+                    disabled={props.disabled}
                     onChange={(e) => {
                         props.onSelectAudio(e.target.value);
                     }}
@@ -106,6 +101,7 @@ export default function Device(props: {
             <div style="margin: 0.2rem">
                 Video Device:
                 <select
+                    disabled={props.disabled}
                     onChange={(e) => {
                         props.onSelectVideo(e.target.value);
                     }}
