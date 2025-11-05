@@ -43,19 +43,22 @@ jobs:
       PKG_WHIPINTO_NAME: ""
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
         with:
           node-version: latest
 
       - name: Install npm dependencies
-        run: npm ci
+        run: pnpm install
 
       - name: Build WebUI
-        run: npm run build
+        run: pnpm -r build
 
       - name: Get the release version from the tag
         shell: bash

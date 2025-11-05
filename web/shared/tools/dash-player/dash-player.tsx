@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import dashjs from 'dashjs';
+import { MediaPlayer, type MediaPlayerClass } from 'dashjs';
 
 import { getSegmentUrl } from '@/liveman/api';
 
@@ -19,7 +19,7 @@ function formatTime(sec: number) {
 
 export function DashPlayer() {
     const refVideo = useRef<HTMLVideoElement>(null);
-    const refPlayer = useRef<dashjs.MediaPlayerClass | null>(null);
+    const refPlayer = useRef<MediaPlayerClass | null>(null);
     const refRaf = useRef<number | null>(null);
     const refDragging = useRef(false);
     const refProgressBar = useRef<HTMLDivElement>(null);
@@ -57,7 +57,7 @@ export function DashPlayer() {
     useEffect(() => {
         if (!refVideo.current || !mpd) return;
 
-        const player = dashjs.MediaPlayer().create();
+        const player = MediaPlayer().create();
         refPlayer.current = player;
 
         if (token) {
@@ -81,28 +81,28 @@ export function DashPlayer() {
             },
         });
 
-        player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => {
+        player.on(MediaPlayer.events.STREAM_INITIALIZED, () => {
             const v = refVideo.current!;
             setDuration(v.duration || player.duration() || 0);
-            const list = player.getBitrateInfoListFor('video') || [];
+            const list = player.getRepresentationsByType('video') || [];
             const mapped: BitrateInfo[] = list.map((b, idx) => ({
                 index: idx,
-                bitrate: b.bitrate,
-                label: `${(b.bitrate / 1000000).toFixed(2)} Mbps`,
+                bitrate: b.bandwidth,
+                label: `${(b.bandwidth / 1000000).toFixed(2)} Mbps`,
             }));
             setQualities(mapped);
             setQualityIndex('auto');
         });
 
         // Add error handling to provide better feedback
-        player.on(dashjs.MediaPlayer.events.ERROR, (e: unknown) => {
+        player.on(MediaPlayer.events.ERROR, (e: unknown) => {
             console.error('[DASH Player] Error occurred:', e);
             // Don't block playback, just log the error
             // Some errors might be recoverable or non-fatal
         });
 
         // Log playback started successfully
-        player.on(dashjs.MediaPlayer.events.PLAYBACK_STARTED, () => {
+        player.on(MediaPlayer.events.PLAYBACK_STARTED, () => {
             console.log('[DASH Player] Playback started successfully');
             // Clear unsupported warning if playback actually works
             if (unsupportedMsg && unsupportedMsg.includes('reports no support')) {
@@ -323,7 +323,7 @@ export function DashPlayer() {
         const p = refPlayer.current;
         if (!p) return;
         setAutoQuality(false);
-        try { p.setQualityFor('video', idx); } catch { /* ignore */ }
+        try { p.setRepresentationForTypeById('video', idx); } catch { /* ignore */ }
         setQualityIndex(idx);
     };
 
@@ -409,5 +409,4 @@ export function DashPlayer() {
         </div>
     );
 }
-
 
