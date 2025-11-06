@@ -2,11 +2,15 @@
 
 Depends:
 - [cargo](https://www.rust-lang.org/)
-- [nodejs](https://nodejs.org/) Or [bun](https://bun.sh/)
+- [nodejs](https://nodejs.org/)
+- [pnpm](https://pnpm.io/)
 
 OptDepends:
 - [ffmpeg](https://www.ffmpeg.org/)
 - [just](https://github.com/casey/just)
+- [cross-rs](https://github.com/cross-rs/cross)
+    - `docker` / `containerd` / `podman`
+- [nfpm](https://nfpm.goreleaser.com/)
 
 ## Binary and source code
 
@@ -14,6 +18,7 @@ Binary     | Package    | Comment
 ---------- | ---------- | -----------
 `live777`  | `liveion`  | Core, SFU Server
 `liveman`  | `liveman`  | Live777 Cluster Manager
+`livecam`  | `livecam`  | Live777 Camera Suit <Badge type="warning" text="experimental" />
 `whipinto` | `livetwo`  | rtp, rtsp to whip
 `whepfrom` | `livetwo`  | whep ro rtp, rtsp
 `livenil`  | `livenil`  | Only at developer, test, demo
@@ -22,8 +27,8 @@ Binary     | Package    | Comment
 
 ```bash
 # Build Web UI
-npm install
-npm run build
+pnpm install
+pnpm -r build
 
 # Live777 Core (SFU Server)
 cargo build --release
@@ -64,13 +69,16 @@ RUST_LOG=live777=error,net4mqtt=debug,webrtc=error",
 ### WebUI
 
 ```bash
-npm install
+pnpm install
+
+# live777 debugger
+pnpm --filter debugger dev
 
 # live777 webui
-npm run dev
+pnpm --filter liveion dev
 
 # liveman webui
-npm run dev:liveman
+pnpm --filter liveman dev
 ```
 
 ### Live777
