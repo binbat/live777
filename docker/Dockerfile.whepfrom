@@ -6,7 +6,7 @@ COPY . .
 
 RUN cargo build --bin=whepfrom --release
 
-FROM debian:slim-trixie
+FROM debian:trixie-slim
 
 COPY --from=builder /app/target/release/whepfrom /usr/local/bin/whepfrom
 
