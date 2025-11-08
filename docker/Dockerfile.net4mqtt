@@ -1,0 +1,13 @@
+FROM rust:slim-trixie AS builder
+
+WORKDIR /app
+
+COPY . .
+
+RUN cargo build --bin=net4mqtt --release
+
+FROM debian:trixie-slim
+
+COPY --from=builder /app/target/release/net4mqtt /usr/local/bin/net4mqtt
+
+CMD ["whipinto"]

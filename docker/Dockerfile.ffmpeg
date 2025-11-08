@@ -1,0 +1,48 @@
+FROM debian:trixie-20251103 AS common
+
+RUN apt update -y && apt install -y --no-install-recommends ca-certificates
+
+RUN apt install -y --no-install-recommends libaom3 librav1e0.7 libsvtav1enc2 libvpx9 libx264-164 libx265-215 libopus0
+
+FROM common AS builder
+ENV FFMPEG_VER=8.0
+
+RUN apt install -y --no-install-recommends build-essential pkg-config
+
+RUN apt install -y --no-install-recommends libaom-dev librav1e-dev libsvtav1enc-dev libvpx-dev libx264-dev libx265-dev libopus-dev libssl-dev
+
+# x86/x64 only
+RUN apt install -y --no-install-recommends nasm
+
+WORKDIR /app
+
+ADD https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz ffmpeg.tar.xz
+RUN tar -xf ffmpeg.tar.xz --strip-components 1
+
+RUN ./configure \
+        --prefix=/usr \
+        --disable-debug \
+        --disable-stripping \
+        --enable-gpl \
+        --enable-libaom \
+        --enable-libopus \
+        --enable-librav1e \
+        --enable-libsvtav1 \
+        --enable-libvpx \
+        --enable-libx264 \
+        --enable-libx265 \
+        --enable-openssl \
+        --enable-version3 \
+        --enable-protocol=dtls \
+        --enable-muxer=whip \
+        --enable-static
+
+RUN make
+# RUN make install
+
+FROM common
+
+COPY --from=builder /app/ffmpeg /usr/bin/
+COPY --from=builder /app/ffprobe /usr/bin/
+
+CMD ["ffmpeg", "-re", "-f", "lavfi", "-i", "testsrc=size=640x480:rate=30", "-vcodec", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30", "-b:v", "1000k", "-minrate", "1000k", "-maxrate", "1000k", "-bufsize", "1000k", "-preset", "ultrafast", "-tune", "zerolatency", "-f", "whip", "http://localhost:7777/whip/777"]

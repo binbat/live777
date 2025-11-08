@@ -6,7 +6,7 @@ COPY . .
 
 RUN cargo build --bin=whipinto --release
 
-FROM debian:slim-trixie
+FROM debian:trixie-slim
 
 COPY --from=builder /app/target/release/whipinto /usr/local/bin/whipinto
 

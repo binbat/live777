@@ -1,4 +1,6 @@
-FROM debian:sid-slim AS common
+# Must Lock image
+# trixie-20251103-slim use gstreamer 1.26.2
+FROM debian:trixie-20251103-slim AS common
 
 RUN apt update -y && apt install -y --no-install-recommends ca-certificates
 
@@ -10,17 +12,20 @@ RUN apt install -y --no-install-recommends libglib2.0-dev libssl-dev \
 
 FROM common AS builder
 
-# Now, rust version: 1.70
+# trixie-20251103-slim use gstreamer 1.26.2
+ENV GST_VER=1.26.2
+# cargo 1.85.0 (d73d2caf9 2024-12-31)
+# rustc 1.85.0 (4d91de4e4 2025-02-17)
 RUN apt install -y --no-install-recommends cargo cargo-c
 
 WORKDIR /app
 
-ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-1.22.8/gst-plugins-rs-gstreamer-1.22.8.tar.gz gst-plugins-rs-gstreamer.tar.gz
+ADD https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-${GST_VER}/gst-plugins-rs-gstreamer-${GST_VER}.tar.gz gst-plugins-rs-gstreamer.tar.gz
 
 RUN tar -xf gst-plugins-rs-gstreamer.tar.gz --strip-components 1
 
 # whip / whep: protocol support
-RUN cargo cinstall -p gst-plugin-webrtchttp --libdir=pkg/usr/lib/$(gcc -dumpmachine)
+RUN cargo cinstall --package gst-plugin-webrtchttp --prefix=/app --libdir=pkg/usr/lib/$(gcc -dumpmachine)
 # gst-plugin-webrtchttp
 # - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.a
 # - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.so
@@ -28,7 +33,7 @@ RUN cargo cinstall -p gst-plugin-webrtchttp --libdir=pkg/usr/lib/$(gcc -dumpmach
 RUN rm pkg/usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstwebrtchttp.a
 
 # rtpav1pay / rtpav1depay: RTP (de)payloader for the AV1 video codec.
-RUN cargo cinstall -p gst-plugin-rtp --libdir=pkg/usr/lib/$(gcc -dumpmachine)
+RUN cargo cinstall --package gst-plugin-rtp --prefix=/app --libdir=pkg/usr/lib/$(gcc -dumpmachine)
 # gst-plugin-rtp
 # - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.a
 # - usr/lib/$(gcc -dumpmachine)/gstreamer-1.0/libgstrsrtp.so
