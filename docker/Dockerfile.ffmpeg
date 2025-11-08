@@ -11,6 +11,9 @@ RUN apt install -y --no-install-recommends build-essential pkg-config
 
 RUN apt install -y --no-install-recommends libaom-dev librav1e-dev libsvtav1enc-dev libvpx-dev libx264-dev libx265-dev libopus-dev libssl-dev
 
+# x86/x64 only
+RUN apt install -y --no-install-recommends nasm
+
 WORKDIR /app
 
 ADD https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz ffmpeg.tar.xz
