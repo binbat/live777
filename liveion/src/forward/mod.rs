@@ -41,6 +41,15 @@ pub struct PeerForward {
     internal: Arc<PeerForwardInternal>,
 }
 
+#[cfg(feature = "recorder")]
+#[derive(Clone, Debug)]
+pub struct AudioTrackInfo {
+    pub clock_rate: u32,
+    pub channels: u16,
+    pub codec_mime: String,
+    pub fmtp: String,
+}
+
 impl PeerForward {
     pub fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         PeerForward {
@@ -225,6 +234,23 @@ impl PeerForward {
     #[cfg(feature = "recorder")]
     pub async fn first_video_codec(&self) -> Option<String> {
         self.internal.first_publish_video_codec().await
+    }
+
+    #[cfg(feature = "recorder")]
+    pub async fn first_audio_track_info(&self) -> Option<AudioTrackInfo> {
+        let tracks = self.internal.publish_tracks.read().await;
+        tracks
+            .iter()
+            .find(|track| track.kind == RTPCodecType::Audio)
+            .map(|track| {
+                let params = track.track.codec();
+                AudioTrackInfo {
+                    clock_rate: params.capability.clock_rate,
+                    channels: params.capability.channels,
+                    codec_mime: params.capability.mime_type.clone(),
+                    fmtp: params.capability.sdp_fmtp_line.clone(),
+                }
+            })
     }
 
     /// Subscribe to publish track change events so external components can react without polling.

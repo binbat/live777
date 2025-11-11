@@ -81,7 +81,8 @@ impl RecordingTask {
         );
 
         // Initialize Segmenter
-        let segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await {
+        let mut segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await
+        {
             Ok(seg) => {
                 tracing::debug!(
                     "[recorder] segmenter initialized for stream {} at path {}",
@@ -154,6 +155,23 @@ impl RecordingTask {
 
         if audio_receiver_opt.is_some() {
             tracing::info!("[recorder] stream {} audio track detected", stream_name);
+        }
+
+        if audio_receiver_opt.is_some() {
+            if let Some(info) = forward.first_audio_track_info().await {
+                let crate::forward::AudioTrackInfo {
+                    clock_rate,
+                    channels,
+                    codec_mime,
+                    fmtp,
+                } = info;
+                let fmtp_opt = if fmtp.trim().is_empty() {
+                    None
+                } else {
+                    Some(fmtp.as_str())
+                };
+                segmenter.configure_audio_track(clock_rate, channels, codec_mime, fmtp_opt);
+            }
         }
 
         tracing::info!("[recorder] subscribed RTP for stream {}", stream_name);
