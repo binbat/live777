@@ -23,21 +23,18 @@ async fn record_stream(
     Json(body): Json<api::recorder::StartRecordRequest>,
 ) -> crate::result::Result<Response<String>> {
     let base_dir = body.base_dir.clone();
-    crate::recorder::start(
+    let recording = crate::recorder::start(
         state.stream_manager.clone(),
         stream.clone(),
         base_dir.clone(),
     )
     .await?;
 
-    let date_path = chrono::Utc::now().timestamp().to_string();
-    let mpd_path = if let Some(prefix) = base_dir {
-        format!("{prefix}/manifest.mpd")
-    } else {
-        format!("{stream}/{date_path}/manifest.mpd")
-    };
+    let mpd_path = format!("{}/manifest.mpd", recording.record_dir);
     let resp = api::recorder::StartRecordResponse {
         id: stream.clone(),
+        record_id: recording.record_id.to_string(),
+        record_dir: recording.record_dir,
         mpd_path,
     };
     match serde_json::to_string(&resp) {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::RecordingInfo;
 use crate::recorder::codec::Av1RtpParser;
 use crate::recorder::codec::H265RtpParser;
 use crate::recorder::codec::h264::H264RtpParser;
@@ -16,6 +17,7 @@ use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, M
 
 pub struct RecordingTask {
     pub stream: String,
+    pub info: RecordingInfo,
     handle: JoinHandle<()>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
@@ -50,10 +52,11 @@ impl RecordingTask {
 
         // Directory prefix, allow override; default to /<stream_id>/<record_id>
         // record_id unix timestamp(10)
+        let record_id = chrono::Utc::now().timestamp();
         let path_prefix = if let Some(p) = path_prefix_override {
             p
         } else {
-            format!("{}/{}", stream_name, chrono::Utc::now().timestamp())
+            format!("{}/{}", stream_name, record_id)
         };
 
         tracing::info!(
@@ -369,8 +372,14 @@ impl RecordingTask {
             }
         });
 
+        let info = RecordingInfo {
+            record_dir: path_prefix,
+            record_id,
+        };
+
         Ok(Self {
             stream: stream_name,
+            info,
             handle,
             shutdown_tx: Some(shutdown_tx),
         })

@@ -14,9 +14,9 @@ The Recorder in liveion is an optional feature that automatically records live s
 
 Integrates with [Liveman](/guide/liveman) for centralized playback and proxy access:
 
-- When starting a recording, Live777 returns `mpd_path` directly
-- Liveman can use this `mpd_path` to play back recordings
-- Media files can be proxied via Liveman: `GET /api/record/object/{path}`
+- Start recording returns the storage metadata (`record_id`, `record_dir`, and `mpd_path`)
+- Liveman stores `record_id`/`record_dir` to keep the catalog in sync with storage
+- Clients can stream the manifest via `mpd_path`, and Liveman can proxy objects with `GET /api/record/object/{path}`
 
 ### Configuration
 
@@ -65,16 +65,17 @@ Requires `recorder` feature.
 
 - Start recording: `POST` `/api/record/:streamId`
   - Body (optional): `{ "base_dir": "optional/path/prefix" }`
-  - Response: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
+  - Response: `{ "id": ":streamId", "record_id": "<epoch-seconds>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
 - Recording status: `GET` `/api/record/:streamId`
   - Response: `{ "recording": true }`
 - Stop recording: `DELETE` `/api/record/:streamId`
 
 ## MPD Path Conventions {#mpd}
 
-- Default directory structure: `/:streamId/YYYY/MM/DD/`
-- Default MPD location: `/:streamId/YYYY/MM/DD/manifest.mpd`
-- When `base_dir` provided, MPD is at `/{base_dir}/manifest.mpd`
+- Default `record_dir`: `/:streamId/:record_id/` where `record_id` is the UNIX timestamp (seconds)
+- Default MPD location: `/:streamId/:record_id/manifest.mpd`
+- When `base_dir` is provided, `record_dir` matches that value exactly (e.g. `web-1/2025/07/24`) and the manifest lives at `/{record_dir}/manifest.mpd`
+- Liveman daily rotation reuses the API by setting `base_dir` to `/:streamId/YYYY/MM/DD`, ensuring one folder per day
 
 ### AWS S3
 
@@ -176,23 +177,25 @@ security_token = "..."
 
 ## File Structure {#file-structure}
 
-Recorded files are organized as follows:
+Recorded files are organized by `record_dir`. Two common layouts are:
 
 ```
 records/
 ├── stream1/
-│   └── 2025/
-│       └── 07/
-│           └── 24/
-│               ├── manifest.mpd
-│               ├── init.m4s
-│               ├── audio_init.m4s
-│               ├── seg_0001.m4s
-│               ├── audio_seg_0001.m4s
-│               └── ...
+│   └── 1762842203/
+│       ├── manifest.mpd
+│       ├── init.m4s
+│       ├── audio_init.m4s
+│       ├── v_seg_0001.m4s
+│       ├── a_seg_0001.m4s
+│       └── ...
 └── stream2/
-    └── 2025/
-        └── 07/
-            └── 24/
-                └── ...
+  └── 2025/
+    └── 07/
+      └── 24/
+        ├── manifest.mpd
+        └── ...
 ```
+
+- The timestamp-based folder (`stream1/1762842203`) is the default when no `base_dir` is supplied.
+- The date-based folder (`stream2/2025/07/24`) comes from providing `base_dir` (e.g. via Liveman’s daily rotation).

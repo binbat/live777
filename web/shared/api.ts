@@ -81,7 +81,7 @@ export function startRecording(streamId: string, options: StartRecordingOptions 
     return w
         .url(recordUrl(streamId))
         .post(payload)
-        .json<{ id: string; mpd_path: string }>();
+        .json<{ id: string; record_id: string; record_dir: string; mpd_path: string }>();
 }
 
 export async function getRecordingStatus(streamId: string): Promise<boolean> {

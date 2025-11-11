@@ -373,9 +373,9 @@ fn collect_recording_outputs(root: &Path) -> RecordingOutputs {
                         "init.m4s" => init_segment = Some(path.clone()),
                         "audio_init.m4s" => audio_init_segment = Some(path.clone()),
                         _ => {
-                            if name.starts_with("seg_") && name.ends_with(".m4s") {
+                            if name.starts_with("v_seg_") && name.ends_with(".m4s") {
                                 video_segments.push(path.clone());
-                            } else if name.starts_with("audio_seg_") && name.ends_with(".m4s") {
+                            } else if name.starts_with("a_seg_") && name.ends_with(".m4s") {
                                 audio_segments.push(path.clone());
                             }
                         }

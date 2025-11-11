@@ -26,6 +26,12 @@ static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =
 
 static STORAGE: Lazy<RwLock<Option<Operator>>> = Lazy::new(|| RwLock::new(None));
 
+#[derive(Clone, Debug)]
+pub struct RecordingInfo {
+    pub record_dir: String,
+    pub record_id: i64,
+}
+
 #[cfg(feature = "recorder")]
 use chrono::{FixedOffset, TimeZone, Utc};
 
@@ -105,17 +111,18 @@ pub async fn start(
     manager: Arc<Manager>,
     stream: String,
     base_dir: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RecordingInfo> {
     let mut map = TASKS.write().await;
-    if map.contains_key(&stream) {
+    if let Some(existing) = map.get(&stream) {
         tracing::info!("[recorder] stream {} is already recording", stream);
-        return Ok(());
+        return Ok(existing.info.clone());
     }
     let task = RecordingTask::spawn(manager, &stream, base_dir).await?;
+    let info = task.info.clone();
     map.insert(stream.clone(), task);
 
     tracing::info!("[recorder] spawn recording task for {}", stream);
-    Ok(())
+    Ok(info)
 }
 
 /// Check whether a stream is currently being recorded on this node

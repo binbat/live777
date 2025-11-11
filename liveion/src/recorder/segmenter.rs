@@ -471,7 +471,7 @@ impl Segmenter {
             .expect("fmp4 writer not initialized");
 
         let fragment = writer.build_fragment(self.video_seg_index, base_time, &self.video_samples);
-        let filename = format!("seg_{:04}.m4s", self.video_seg_index);
+        let filename = format!("v_seg_{:04}.m4s", self.video_seg_index);
         self.store_file(&filename, fragment).await.map_err(|e| {
             tracing::error!(
                 "[segmenter] failed to store video segment {} for stream {}: {}",
@@ -519,7 +519,7 @@ impl Segmenter {
         let current_index = self.audio_seg_index;
 
         let fragment = writer.build_fragment(current_index, segment_start, &self.audio_samples);
-        let filename = format!("audio_seg_{:04}.m4s", current_index);
+        let filename = format!("a_seg_{:04}.m4s", current_index);
         self.store_file(&filename, fragment).await.map_err(|e| {
             tracing::error!(
                 "[segmenter] failed to store audio segment {} for stream {}: {}",
@@ -633,7 +633,7 @@ impl Segmenter {
             };
 
             let video_section = format!(
-                "        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n{video_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
+                "        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"v_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{video_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
                 fps = fps_val,
                 width = self.video_width,
                 height = self.video_height,
@@ -658,7 +658,7 @@ impl Segmenter {
             let audio_representation_id = if has_video_segments { 1 } else { 0 };
 
             let audio_section = format!(
-                "        <AdaptationSet id=\"{adapt_id}\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"{rep_id}\" mimeType=\"audio/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" audioSamplingRate=\"{sample_rate}\" >\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{audio_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
+                "        <AdaptationSet id=\"{adapt_id}\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"{rep_id}\" mimeType=\"audio/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" audioSamplingRate=\"{sample_rate}\" >\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"audio_init.m4s\" media=\"a_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{audio_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
                 adapt_id = audio_adaptation_id,
                 rep_id = audio_representation_id,
                 codec = writer.codec_string,

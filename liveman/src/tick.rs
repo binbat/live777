@@ -170,11 +170,11 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                 };
 
                 if !is_recording {
-                    let date_path = crate::utils::date_path();
+                    let requested_ts = crate::utils::date_path();
                     let base_dir = if base_prefix.is_empty() {
                         None
                     } else {
-                        Some(format!("{base_prefix}/{date_path}"))
+                        Some(format!("{base_prefix}/{requested_ts}"))
                     };
                     let body = api::recorder::StartRecordRequest { base_dir };
                     let start_url = format!("{}{}", server.url, api::path::record(&stream_id));
@@ -188,23 +188,40 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
 
                     if let Ok(r) = resp {
                         if r.status().is_success() {
-                            // Prefer server-returned mpd_path, fallback to deterministic path
-                            let mpd_path =
-                                match r.json::<api::recorder::StartRecordResponse>().await {
-                                    Ok(v) => v.mpd_path,
-                                    Err(_) => {
-                                        if let Some(prefix) = &body.base_dir {
-                                            format!("{prefix}/manifest.mpd")
-                                        } else {
-                                            format!("{stream_id}/{date_path}/manifest.mpd")
+                            // Prefer server-returned metadata, fallback to deterministic values
+                            let fallback_mpd_path = if let Some(prefix) = &body.base_dir {
+                                format!("{prefix}/manifest.mpd")
+                            } else {
+                                format!("{stream_id}/{requested_ts}/manifest.mpd")
+                            };
+
+                            let mut record_ts = requested_ts.clone();
+                            let mut mpd_path = fallback_mpd_path;
+
+                            match r.json::<api::recorder::StartRecordResponse>().await {
+                                Ok(v) => {
+                                    if !v.mpd_path.is_empty() {
+                                        mpd_path = v.mpd_path;
+                                    }
+                                    if !v.record_id.is_empty() {
+                                        record_ts = v.record_id;
+                                    } else if !v.record_dir.is_empty() {
+                                        if let Some(ts) =
+                                            crate::utils::extract_timestamp_from_record_dir(
+                                                &v.record_dir,
+                                            )
+                                        {
+                                            record_ts = ts;
                                         }
                                     }
-                                };
+                                }
+                                Err(_) => {}
+                            }
 
                             if let Err(err) = RecordingsIndexService::upsert(
                                 state.database.get_connection(),
                                 &stream_id,
-                                &date_path,
+                                &record_ts,
                                 &mpd_path,
                             )
                             .await
@@ -284,11 +301,11 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
     let map_server = state.storage.get_map_server();
 
     // Build new date path prefix for today (UTC)
-    let date_path = crate::utils::date_path();
+    let requested_ts = crate::utils::date_path();
     let base_dir = if base_prefix.is_empty() {
         None
     } else {
-        Some(format!("{base_prefix}/{date_path}"))
+        Some(format!("{base_prefix}/{requested_ts}"))
     };
 
     for (stream_id, aliases) in streams.iter() {
@@ -351,22 +368,38 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
             if let Ok(r) = resp
                 && r.status().is_success()
             {
-                let mpd_path = match r.json::<api::recorder::StartRecordResponse>().await {
-                    Ok(v) => v.mpd_path,
-                    Err(_) => {
-                        if let Some(prefix) = &body.base_dir {
-                            format!("{prefix}/manifest.mpd")
-                        } else {
-                            format!("{stream_id}/{date_path}/manifest.mpd")
+                let fallback_mpd_path = if let Some(prefix) = &body.base_dir {
+                    format!("{prefix}/manifest.mpd")
+                } else {
+                    format!("{stream_id}/{requested_ts}/manifest.mpd")
+                };
+
+                let mut record_ts = requested_ts.clone();
+                let mut mpd_path = fallback_mpd_path;
+
+                match r.json::<api::recorder::StartRecordResponse>().await {
+                    Ok(v) => {
+                        if !v.mpd_path.is_empty() {
+                            mpd_path = v.mpd_path;
+                        }
+                        if !v.record_id.is_empty() {
+                            record_ts = v.record_id;
+                        } else if !v.record_dir.is_empty() {
+                            if let Some(ts) =
+                                crate::utils::extract_timestamp_from_record_dir(&v.record_dir)
+                            {
+                                record_ts = ts;
+                            }
                         }
                     }
-                };
+                    Err(_) => {}
+                }
 
                 // Upsert index
                 if let Err(err) = RecordingsIndexService::upsert(
                     state.database.get_connection(),
                     stream_id,
-                    &date_path,
+                    &record_ts,
                     &mpd_path,
                 )
                 .await

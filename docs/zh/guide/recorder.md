@@ -14,8 +14,8 @@ liveion 的 Recorder 是一个可选功能，用于将实时流自动录制为 M
 
 与 [Liveman](/zh/guide/liveman) 集成以实现集中式回放和代理访问：
 
-- 启动录制时由 Live777 直接返回 `mpd_path`
-- Liveman 使用该 `mpd_path` 进行回放
+- 启动录制时 Live777 返回存储元数据（`record_id`、`record_dir`、`mpd_path`）
+- Liveman 使用 `record_id`/`record_dir` 与存储保持一致，再通过 `mpd_path` 回放
 - 媒体文件可通过 Liveman 代理获取：`GET /api/record/object/{path}`
 
 ### 配置
@@ -65,7 +65,7 @@ root = "/var/lib/live777/recordings"
 
 - 启动录制: `POST` `/api/record/:streamId`
   - 请求体（可选）: `{ "base_dir": "optional/path/prefix" }`
-  - 响应: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
+  - 响应: `{ "id": ":streamId", "record_id": "<epoch-seconds>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
 - 录制状态: `GET` `/api/record/:streamId`
   - 响应: `{ "recording": true }`
 - 停止录制: `DELETE` `/api/record/:streamId`
@@ -73,9 +73,10 @@ root = "/var/lib/live777/recordings"
 
 ## MPD 路径规则 {#mpd}
 
-- 默认目录结构： `/:streamId/YYYY/MM/DD/`
-- 默认 MPD 位置： `/:streamId/YYYY/MM/DD/manifest.mpd`
-- 当提供 `base_dir` 时，MPD 位于 `/{base_dir}/manifest.mpd`
+- 默认 `record_dir`： `/:streamId/:record_id/`，其中 `record_id` 为 UNIX 时间戳（秒）
+- 默认 MPD 位置： `/:streamId/:record_id/manifest.mpd`
+- 当提供 `base_dir` 时，`record_dir` 与该值完全一致（如 `web-1/2025/07/24`），Manifest 位于 `/{record_dir}/manifest.mpd`
+- Liveman 每日轮转会调用同一 API，将 `base_dir` 设置为 `/:streamId/YYYY/MM/DD`
 
 ### AWS S3
 
@@ -177,23 +178,25 @@ security_token = "..."
 
 ## 文件组织结构 {#file-structure}
 
-录制文件按以下结构自动组织：
+录制文件会根据 `record_dir` 组织，常见的布局如下：
 
 ```
 records/
 ├── stream1/
-│   └── 2025/
-│       └── 07/
-│           └── 24/
-│               ├── manifest.mpd
-│               ├── init.m4s
-│               ├── audio_init.m4s
-│               ├── seg_0001.m4s
-│               ├── audio_seg_0001.m4s
-│               └── ...
+│   └── 1762842203/
+│       ├── manifest.mpd
+│       ├── init.m4s
+│       ├── audio_init.m4s
+│       ├── v_seg_0001.m4s
+│       ├── a_seg_0001.m4s
+│       └── ...
 └── stream2/
-    └── 2025/
-        └── 07/
-            └── 24/
-                └── ...
+  └── 2025/
+    └── 07/
+      └── 24/
+        ├── manifest.mpd
+        └── ...
 ```
+
+- 时间戳目录（`stream1/1762842203`）是未指定 `base_dir` 时的默认行为。
+- 日期目录（`stream2/2025/07/24`）来自调用方显式传入 `base_dir`，例如 Liveman 的每日轮转。
