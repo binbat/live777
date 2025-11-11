@@ -133,18 +133,14 @@ pub struct RecorderConfig {
     #[serde(default)]
     pub node_alias: Option<String>,
 
-    /// Rotate recordings at local midnight (based on rotate_tz_offset_minutes)
-    #[serde(default = "default_rotate_daily")]
-    pub rotate_daily: bool,
-
-    /// Timezone offset in minutes from UTC for daily rotation scheduling (e.g., +480 for UTC+8)
-    #[serde(default)]
-    pub rotate_tz_offset_minutes: i32,
+    /// Maximum duration in seconds for a single recording before rotation (0 disables auto-rotation)
+    #[serde(default = "default_max_recording_seconds")]
+    pub max_recording_seconds: u64,
 }
 
 #[cfg(feature = "recorder")]
-fn default_rotate_daily() -> bool {
-    true
+fn default_max_recording_seconds() -> u64 {
+    86_400
 }
 
 #[cfg(feature = "recorder")]
@@ -154,8 +150,7 @@ impl Default for RecorderConfig {
             auto_streams: vec![],
             storage: Default::default(),
             node_alias: None,
-            rotate_daily: default_rotate_daily(),
-            rotate_tz_offset_minutes: 0,
+            max_recording_seconds: default_max_recording_seconds(),
         }
     }
 }

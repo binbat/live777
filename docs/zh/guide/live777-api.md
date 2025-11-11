@@ -186,13 +186,20 @@ Request:
 }
 ```
 
-- `base_dir`（可选）：覆盖默认的目录前缀。如果不设置，录制文件默认按 `/:streamId/YYYY/MM/DD/` 组织。
+- `base_dir`（可选）：覆盖默认的目录前缀。如果不设置，录制会使用 `/:streamId/:record_id/`（10 位 Unix 时间戳）作为目录；当单次录制时长达到 `max_recording_seconds` 时，系统会自动以新的时间戳目录继续录制。
 
 响应: [200]
 
 ```json
-{ "id": "6b2f3c1a-...", "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+{
+  "id": "camera01",
+  "record_id": "1718200000",
+  "record_dir": "camera01/1718200000",
+  "mpd_path": "camera01/1718200000/manifest.mpd"
+}
 ```
+
+当输出路径末尾不是 10 位 Unix 时间戳（例如自定义 `base_dir` 未包含该段）时，`record_id` 会返回为空字符串。
 
 ### 录制状态
 

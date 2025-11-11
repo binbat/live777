@@ -170,8 +170,8 @@ async fn start_record(
 
     let server = target_server.ok_or(crate::error::AppError::NoAvailableNode)?;
 
-    // Build base_dir using configured base_prefix + today
-    let requested_ts = crate::utils::date_path();
+    // Build base_dir using configured base_prefix + current timestamp
+    let requested_ts = crate::utils::timestamp_dir();
     let base_prefix = state.config.auto_record.base_prefix.clone();
     let base_dir = if base_prefix.is_empty() {
         None

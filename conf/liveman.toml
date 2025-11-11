@@ -131,10 +131,8 @@ auto_streams = ["*"]
 # base_prefix = ""
 # Interval to check streams and trigger recording (ms)
 # tick_ms = 5000
-# Rotate at local midnight automatically
-# rotate_daily = true
-# Timezone offset minutes for rotation (e.g. 480 for UTC+8)
-# rotate_tz_offset_minutes = 0
+# Maximum duration in seconds before Liveman restarts a recording (0 to disable)
+# max_recording_seconds = 86400
 
 # [[nodes]]
 # Globally unique id

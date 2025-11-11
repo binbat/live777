@@ -31,7 +31,7 @@ async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
 
     let mut cfg = Config::default();
     cfg.recorder.auto_streams = vec![stream_id.to_string()];
-    cfg.recorder.rotate_daily = false;
+    cfg.recorder.max_recording_seconds = 0;
     cfg.recorder.storage = StorageConfig::Fs {
         root: storage_root.to_string_lossy().into_owned(),
     };
@@ -131,7 +131,7 @@ async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
 
     let mut cfg = Config::default();
     cfg.recorder.auto_streams = vec![stream_id.to_string()];
-    cfg.recorder.rotate_daily = false;
+    cfg.recorder.max_recording_seconds = 0;
     cfg.recorder.storage = StorageConfig::Fs {
         root: storage_root.to_string_lossy().into_owned(),
     };
@@ -231,7 +231,7 @@ async fn test_recorder_generates_opus_audio_segments() -> anyhow::Result<()> {
 
     let mut cfg = Config::default();
     cfg.recorder.auto_streams = vec![stream_id.to_string()];
-    cfg.recorder.rotate_daily = false;
+    cfg.recorder.max_recording_seconds = 0;
     cfg.recorder.storage = StorageConfig::Fs {
         root: storage_root.to_string_lossy().into_owned(),
     };

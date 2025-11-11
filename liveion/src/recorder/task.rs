@@ -18,6 +18,8 @@ use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, M
 pub struct RecordingTask {
     pub stream: String,
     pub info: RecordingInfo,
+    started_at: Instant,
+    base_dir_override: Option<String>,
     handle: JoinHandle<()>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
@@ -29,6 +31,7 @@ impl RecordingTask {
         path_prefix_override: Option<String>,
     ) -> Result<Self> {
         let stream_name = stream.to_string();
+        let base_dir_override = path_prefix_override;
 
         // Get storage Operator
         let op = {
@@ -53,8 +56,8 @@ impl RecordingTask {
         // Directory prefix, allow override; default to /<stream_id>/<record_id>
         // record_id unix timestamp(10)
         let generated_record_id = chrono::Utc::now().timestamp();
-        let (path_prefix, override_provided) = if let Some(p) = path_prefix_override {
-            (p, true)
+        let (path_prefix, override_provided) = if let Some(ref p) = base_dir_override {
+            (p.clone(), true)
         } else {
             (format!("{}/{}", stream_name, generated_record_id), false)
         };
@@ -413,6 +416,8 @@ impl RecordingTask {
         Ok(Self {
             stream: stream_name,
             info,
+            started_at: Instant::now(),
+            base_dir_override,
             handle,
             shutdown_tx: Some(shutdown_tx),
         })
@@ -450,5 +455,45 @@ impl RecordingTask {
                 }
             }
         }
+    }
+}
+
+impl RecordingTask {
+    pub(crate) fn has_exceeded(&self, max_duration: Duration) -> bool {
+        self.started_at.elapsed() >= max_duration
+    }
+
+    pub(crate) fn next_rotation_base_dir(&self) -> Option<String> {
+        self.base_dir_override
+            .as_ref()
+            .map(|current| Self::derive_next_base_dir(current))
+    }
+
+    fn derive_next_base_dir(current: &str) -> String {
+        let trimmed = current.trim_end_matches('/');
+        let next_ts = chrono::Utc::now().timestamp().to_string();
+        if trimmed.is_empty() {
+            return next_ts;
+        }
+
+        let mut segments: Vec<&str> = trimmed.split('/').collect();
+        if let Some(last) = segments.last() {
+            if Self::looks_like_timestamp(last) {
+                segments.pop();
+            }
+        }
+
+        if segments.is_empty() {
+            next_ts
+        } else {
+            let mut new_path = segments.join("/");
+            new_path.push('/');
+            new_path.push_str(&next_ts);
+            new_path
+        }
+    }
+
+    fn looks_like_timestamp(segment: &str) -> bool {
+        segment.len() >= 9 && segment.chars().all(|c| c.is_ascii_digit())
     }
 }
