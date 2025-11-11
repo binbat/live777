@@ -207,10 +207,10 @@ impl Segmenter {
         }
 
         let mut derived_channels = channels;
-        if let Some(fmtp_line) = fmtp {
-            if let Some(parsed) = parse_channels_from_fmtp(fmtp_line) {
-                derived_channels = parsed;
-            }
+        if let Some(fmtp_line) = fmtp
+            && let Some(parsed) = parse_channels_from_fmtp(fmtp_line)
+        {
+            derived_channels = parsed;
         }
 
         if derived_channels > 0 {

@@ -157,21 +157,21 @@ impl RecordingTask {
             tracing::info!("[recorder] stream {} audio track detected", stream_name);
         }
 
-        if audio_receiver_opt.is_some() {
-            if let Some(info) = forward.first_audio_track_info().await {
-                let crate::forward::AudioTrackInfo {
-                    clock_rate,
-                    channels,
-                    codec_mime,
-                    fmtp,
-                } = info;
-                let fmtp_opt = if fmtp.trim().is_empty() {
-                    None
-                } else {
-                    Some(fmtp.as_str())
-                };
-                segmenter.configure_audio_track(clock_rate, channels, codec_mime, fmtp_opt);
-            }
+        if audio_receiver_opt.is_some()
+            && let Some(info) = forward.first_audio_track_info().await
+        {
+            let crate::forward::AudioTrackInfo {
+                clock_rate,
+                channels,
+                codec_mime,
+                fmtp,
+            } = info;
+            let fmtp_opt = if fmtp.trim().is_empty() {
+                None
+            } else {
+                Some(fmtp.as_str())
+            };
+            segmenter.configure_audio_track(clock_rate, channels, codec_mime, fmtp_opt);
         }
 
         tracing::info!("[recorder] subscribed RTP for stream {}", stream_name);

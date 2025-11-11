@@ -198,24 +198,20 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                             let mut record_ts = requested_ts.clone();
                             let mut mpd_path = fallback_mpd_path;
 
-                            match r.json::<api::recorder::StartRecordResponse>().await {
-                                Ok(v) => {
-                                    if !v.mpd_path.is_empty() {
-                                        mpd_path = v.mpd_path;
-                                    }
-                                    if !v.record_id.is_empty() {
-                                        record_ts = v.record_id;
-                                    } else if !v.record_dir.is_empty() {
-                                        if let Some(ts) =
-                                            crate::utils::extract_timestamp_from_record_dir(
-                                                &v.record_dir,
-                                            )
-                                        {
-                                            record_ts = ts;
-                                        }
-                                    }
+                            if let Ok(v) = r.json::<api::recorder::StartRecordResponse>().await {
+                                if !v.mpd_path.is_empty() {
+                                    mpd_path = v.mpd_path;
                                 }
-                                Err(_) => {}
+                                if !v.record_id.is_empty() {
+                                    record_ts = v.record_id;
+                                } else if !v.record_dir.is_empty()
+                                    && let Some(ts) =
+                                        crate::utils::extract_timestamp_from_record_dir(
+                                            &v.record_dir,
+                                        )
+                                {
+                                    record_ts = ts;
+                                }
                             }
 
                             if let Err(err) = RecordingsIndexService::upsert(
@@ -377,22 +373,18 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
                 let mut record_ts = requested_ts.clone();
                 let mut mpd_path = fallback_mpd_path;
 
-                match r.json::<api::recorder::StartRecordResponse>().await {
-                    Ok(v) => {
-                        if !v.mpd_path.is_empty() {
-                            mpd_path = v.mpd_path;
-                        }
-                        if !v.record_id.is_empty() {
-                            record_ts = v.record_id;
-                        } else if !v.record_dir.is_empty() {
-                            if let Some(ts) =
-                                crate::utils::extract_timestamp_from_record_dir(&v.record_dir)
-                            {
-                                record_ts = ts;
-                            }
-                        }
+                if let Ok(v) = r.json::<api::recorder::StartRecordResponse>().await {
+                    if !v.mpd_path.is_empty() {
+                        mpd_path = v.mpd_path;
                     }
-                    Err(_) => {}
+                    if !v.record_id.is_empty() {
+                        record_ts = v.record_id;
+                    } else if !v.record_dir.is_empty()
+                        && let Some(ts) =
+                            crate::utils::extract_timestamp_from_record_dir(&v.record_dir)
+                    {
+                        record_ts = ts;
+                    }
                 }
 
                 // Upsert index
