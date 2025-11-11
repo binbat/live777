@@ -237,5 +237,5 @@ async fn enforce_max_duration(manager: Arc<Manager>, max_seconds: u64) -> anyhow
 fn rotation_check_interval(max_seconds: u64) -> u64 {
     let quarter = max_seconds / 4;
     let base = if quarter == 0 { 1 } else { quarter };
-    std::cmp::min(std::cmp::max(base, 1), 300)
+    base.clamp(1, 300)
 }

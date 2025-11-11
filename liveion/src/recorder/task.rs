@@ -477,10 +477,10 @@ impl RecordingTask {
         }
 
         let mut segments: Vec<&str> = trimmed.split('/').collect();
-        if let Some(last) = segments.last() {
-            if Self::looks_like_timestamp(last) {
-                segments.pop();
-            }
+        if let Some(last) = segments.last()
+            && Self::looks_like_timestamp(last)
+        {
+            segments.pop();
         }
 
         if segments.is_empty() {
