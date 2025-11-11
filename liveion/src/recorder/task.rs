@@ -52,11 +52,26 @@ impl RecordingTask {
 
         // Directory prefix, allow override; default to /<stream_id>/<record_id>
         // record_id unix timestamp(10)
-        let record_id = chrono::Utc::now().timestamp();
-        let path_prefix = if let Some(p) = path_prefix_override {
-            p
+        let generated_record_id = chrono::Utc::now().timestamp();
+        let (path_prefix, override_provided) = if let Some(p) = path_prefix_override {
+            (p, true)
         } else {
-            format!("{}/{}", stream_name, record_id)
+            (format!("{}/{}", stream_name, generated_record_id), false)
+        };
+
+        let derived_record_id = path_prefix
+            .rsplit('/')
+            .find(|segment| {
+                !segment.is_empty()
+                    && segment.len() >= 10
+                    && segment.chars().all(|c| c.is_ascii_digit())
+            })
+            .and_then(|s| s.parse::<i64>().ok());
+
+        let record_id = if override_provided {
+            derived_record_id.unwrap_or(0)
+        } else {
+            generated_record_id
         };
 
         tracing::info!(

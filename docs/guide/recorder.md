@@ -74,8 +74,8 @@ Requires `recorder` feature.
 
 - Default `record_dir`: `/:streamId/:record_id/` where `record_id` is the UNIX timestamp (seconds)
 - Default MPD location: `/:streamId/:record_id/manifest.mpd`
-- When `base_dir` is provided, `record_dir` matches that value exactly (e.g. `web-1/2025/07/24`) and the manifest lives at `/{record_dir}/manifest.mpd`
-- Liveman daily rotation reuses the API by setting `base_dir` to `/:streamId/YYYY/MM/DD`, ensuring one folder per day
+- When `base_dir` is provided, `record_dir` matches that value exactly (e.g. `web-1/1762842203`) and the manifest lives at `/{record_dir}/manifest.mpd`
+- Liveman daily rotation currently sets `base_dir` to `{base_prefix}/{unix_timestamp}` (for example `recordings/1762842203`), using a Unix timestamp directory. If you want calendar-style folders you must format and pass that value yourself.
 
 ### AWS S3
 
@@ -197,5 +197,5 @@ records/
         └── ...
 ```
 
-- The timestamp-based folder (`stream1/1762842203`) is the default when no `base_dir` is supplied.
-- The date-based folder (`stream2/2025/07/24`) comes from providing `base_dir` (e.g. via Liveman’s daily rotation).
+- The timestamp-based folder (`stream1/1762842203`) is the default (including Liveman’s rotation, which writes `{base_prefix}/{unix_timestamp}`).
+- The date-based folder (`stream2/2025/07/24`) is only produced if an integration explicitly supplies that `base_dir`; Liveman does not generate this structure automatically.

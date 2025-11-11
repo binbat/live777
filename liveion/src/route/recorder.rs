@@ -31,9 +31,14 @@ async fn record_stream(
     .await?;
 
     let mpd_path = format!("{}/manifest.mpd", recording.record_dir);
+    let record_id_str = if recording.record_id > 0 {
+        recording.record_id.to_string()
+    } else {
+        String::new()
+    };
     let resp = api::recorder::StartRecordResponse {
         id: stream.clone(),
-        record_id: recording.record_id.to_string(),
+        record_id: record_id_str,
         record_dir: recording.record_dir,
         mpd_path,
     };

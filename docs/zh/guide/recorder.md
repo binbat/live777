@@ -75,8 +75,8 @@ root = "/var/lib/live777/recordings"
 
 - 默认 `record_dir`： `/:streamId/:record_id/`，其中 `record_id` 为 UNIX 时间戳（秒）
 - 默认 MPD 位置： `/:streamId/:record_id/manifest.mpd`
-- 当提供 `base_dir` 时，`record_dir` 与该值完全一致（如 `web-1/2025/07/24`），Manifest 位于 `/{record_dir}/manifest.mpd`
-- Liveman 每日轮转会调用同一 API，将 `base_dir` 设置为 `/:streamId/YYYY/MM/DD`
+- 当提供 `base_dir` 时，`record_dir` 与该值完全一致（如 `web-1/1762842203`），Manifest 位于 `/{record_dir}/manifest.mpd`
+- Liveman 每日轮转当前会将 `base_dir` 设置为 `{base_prefix}/{unix时间戳}`（例如 `recordings/1762842203`），即使用 Unix 时间戳目录。如果需要日历式目录，需要在调用 API 时自行格式化并传入。
 
 ### AWS S3
 
@@ -198,5 +198,5 @@ records/
         └── ...
 ```
 
-- 时间戳目录（`stream1/1762842203`）是未指定 `base_dir` 时的默认行为。
-- 日期目录（`stream2/2025/07/24`）来自调用方显式传入 `base_dir`，例如 Liveman 的每日轮转。
+- 时间戳目录（`stream1/1762842203`）是默认行为（包括 Liveman 的每日轮转，它会写入 `{base_prefix}/{unix时间戳}`）。
+- 日期目录（`stream2/2025/07/24`）仅在集成方显式传入该 `base_dir` 时出现；Liveman 不会自动生成这种结构。
