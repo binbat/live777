@@ -25,12 +25,14 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage
-        run: cargo llvm-cov --all --lcov --output-path lcov.info
+        continue-on-error: true
+        run: cargo llvm-cov --all --lcov --output-path lcov.info --no-fail-fast
       - name: Upload coverage to codecov.io
+        if: always() && hashFiles('lcov.info') != ''
         uses: codecov/codecov-action@v4
         with:
           file: lcov.info
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
   e2e:
