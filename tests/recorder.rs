@@ -413,19 +413,19 @@ fn collect_recording_outputs(root: &Path, stream_id: &str) -> RecordingOutputs {
         && let Ok(entries) = fs::read_dir(&stream_dir)
     {
         let mut timestamp_dirs: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    let path = e.path();
-                    path.is_dir()
-                        && path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|s| s.chars().all(|c| c.is_ascii_digit()))
-                            .unwrap_or(false)
-                })
-                .collect();
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let path = e.path();
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.chars().all(|c| c.is_ascii_digit()))
+                        .unwrap_or(false)
+            })
+            .collect();
 
-            timestamp_dirs.sort_by_key(|e| e.file_name());
+        timestamp_dirs.sort_by_key(|e| e.file_name());
 
         if let Some(last_dir) = timestamp_dirs.last() {
             recording_dir = last_dir.path();
