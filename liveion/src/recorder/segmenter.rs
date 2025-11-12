@@ -9,6 +9,22 @@ use tracing::info;
 /// Default duration of each segment in seconds
 const DEFAULT_SEG_DURATION: u64 = 10;
 
+const MANIFEST_FILENAME: &str = "manifest.mpd";
+const VIDEO_INIT_FILENAME: &str = "v_init.m4s";
+const AUDIO_INIT_FILENAME: &str = "a_init.m4s";
+const VIDEO_SEGMENT_FILENAME_PREFIX: &str = "v_seg_";
+const AUDIO_SEGMENT_FILENAME_PREFIX: &str = "a_seg_";
+const SEGMENT_FILE_EXTENSION: &str = ".m4s";
+const VIDEO_SEGMENT_TEMPLATE: &str = "v_seg_$Number%04d$.m4s";
+const AUDIO_SEGMENT_TEMPLATE: &str = "a_seg_$Number%04d$.m4s";
+
+const DEFAULT_AUDIO_SAMPLE_RATE: u32 = 48_000;
+const DEFAULT_AUDIO_CHANNELS: u16 = 2;
+const DEFAULT_AUDIO_CODEC: &str = "opus";
+
+const VIDEO_TRACK_ID: u32 = 1;
+const AUDIO_TRACK_ID: u32 = 2;
+
 /// Represents a completed segment with its actual duration
 #[derive(Debug, Clone)]
 struct SegmentInfo {
@@ -67,6 +83,11 @@ pub struct Segmenter {
     // track pts for audio
     audio_current_pts: u64,
 
+    // audio track metadata
+    audio_sample_rate: u32,
+    audio_channels: u16,
+    audio_codec: String,
+
     // audio bitrate stats
     audio_total_bytes: u64,
     audio_total_ticks: u64,
@@ -116,6 +137,10 @@ impl Segmenter {
             audio_seg_index: 0,
             audio_seg_start_pts: 0,
             audio_current_pts: 0,
+
+            audio_sample_rate: DEFAULT_AUDIO_SAMPLE_RATE,
+            audio_channels: DEFAULT_AUDIO_CHANNELS,
+            audio_codec: DEFAULT_AUDIO_CODEC.to_string(),
 
             audio_total_bytes: 0,
             audio_total_ticks: 0,
@@ -168,6 +193,39 @@ impl Segmenter {
         self.audio_total_ticks += duration_ticks as u64;
         self.roll_audio_segment(false).await?;
         Ok(())
+    }
+
+    pub fn configure_audio_track(
+        &mut self,
+        sample_rate: u32,
+        channels: u16,
+        codec: impl Into<String>,
+        fmtp: Option<&str>,
+    ) {
+        if sample_rate > 0 {
+            self.audio_sample_rate = sample_rate;
+        }
+
+        let mut derived_channels = channels;
+        if let Some(fmtp_line) = fmtp
+            && let Some(parsed) = parse_channels_from_fmtp(fmtp_line)
+        {
+            derived_channels = parsed;
+        }
+
+        if derived_channels > 0 {
+            self.audio_channels = derived_channels;
+        }
+
+        let codec_input = codec.into();
+        if !codec_input.is_empty() {
+            let normalized = codec_input
+                .rsplit('/')
+                .next()
+                .unwrap_or(codec_input.as_str())
+                .to_ascii_lowercase();
+            self.audio_codec = normalized;
+        }
     }
 
     /// Feed one VP9 frame (already reassembled by RTP parser)
@@ -366,7 +424,7 @@ impl Segmenter {
         self.video_height = if height == 0 { 720 } else { height };
 
         // Build init segment via our new fMP4 writer (track_id fixed to 1)
-        let track_id = 1u32;
+        let track_id = VIDEO_TRACK_ID;
         let lower_codec = self.video_codec.to_ascii_lowercase();
         let codec_config = if let Some(adapter) = self.video_adapter.as_ref() {
             if lower_codec.starts_with("avc1")
@@ -395,14 +453,16 @@ impl Segmenter {
         self.video_track_id = Some(track_id);
         self.fmp4_writer = Some(fmp4_writer);
 
-        self.store_file("init.m4s", init_bytes).await.map_err(|e| {
-            tracing::error!(
-                "[segmenter] failed to store init.m4s for stream {}: {}",
-                self.stream,
+        self.store_file(VIDEO_INIT_FILENAME, init_bytes)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "[segmenter] failed to store init.m4s for stream {}: {}",
+                    self.stream,
+                    e
+                );
                 e
-            );
-            e
-        })?;
+            })?;
         info!("[segmenter] {} init.m4s written", self.stream);
 
         // Generate or update the MPD manifest
@@ -414,10 +474,22 @@ impl Segmenter {
     }
 
     async fn init_audio_writer(&mut self) -> Result<()> {
-        let track_id = 2u32;
-        let channels = 2u16;
-        let sample_rate = 48_000u32;
-        let codec_string = "opus".to_string();
+        let track_id = AUDIO_TRACK_ID;
+        let channels = if self.audio_channels == 0 {
+            DEFAULT_AUDIO_CHANNELS
+        } else {
+            self.audio_channels
+        };
+        let sample_rate = if self.audio_sample_rate == 0 {
+            DEFAULT_AUDIO_SAMPLE_RATE
+        } else {
+            self.audio_sample_rate
+        };
+        let codec_string = if self.audio_codec.is_empty() {
+            DEFAULT_AUDIO_CODEC.to_string()
+        } else {
+            self.audio_codec.clone()
+        };
 
         let writer = Fmp4Writer::new_audio(
             sample_rate,
@@ -429,7 +501,10 @@ impl Segmenter {
         );
 
         let init_bytes = writer.build_init_segment();
-        self.store_file("audio_init.m4s", init_bytes)
+        self.audio_sample_rate = sample_rate;
+        self.audio_channels = channels;
+        self.audio_codec = codec_string.clone();
+        self.store_file(AUDIO_INIT_FILENAME, init_bytes)
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -445,6 +520,7 @@ impl Segmenter {
         self.audio_seg_start_pts = self.audio_current_pts;
 
         tracing::info!("[segmenter] {} audio_init.m4s written", self.stream);
+        self.write_manifest().await?;
         Ok(())
     }
 
@@ -471,7 +547,12 @@ impl Segmenter {
             .expect("fmp4 writer not initialized");
 
         let fragment = writer.build_fragment(self.video_seg_index, base_time, &self.video_samples);
-        let filename = format!("seg_{:04}.m4s", self.video_seg_index);
+        let filename = format!(
+            "{prefix}{index:04}{ext}",
+            prefix = VIDEO_SEGMENT_FILENAME_PREFIX,
+            index = self.video_seg_index,
+            ext = SEGMENT_FILE_EXTENSION
+        );
         self.store_file(&filename, fragment).await.map_err(|e| {
             tracing::error!(
                 "[segmenter] failed to store video segment {} for stream {}: {}",
@@ -519,7 +600,12 @@ impl Segmenter {
         let current_index = self.audio_seg_index;
 
         let fragment = writer.build_fragment(current_index, segment_start, &self.audio_samples);
-        let filename = format!("audio_seg_{:04}.m4s", current_index);
+        let filename = format!(
+            "{prefix}{index:04}{ext}",
+            prefix = AUDIO_SEGMENT_FILENAME_PREFIX,
+            index = current_index,
+            ext = SEGMENT_FILE_EXTENSION
+        );
         self.store_file(&filename, fragment).await.map_err(|e| {
             tracing::error!(
                 "[segmenter] failed to store audio segment {} for stream {}: {}",
@@ -544,12 +630,15 @@ impl Segmenter {
     }
 
     async fn write_manifest(&self) -> Result<()> {
-        let has_video_segments = self.video_track_id.is_some() && !self.segments.is_empty();
-        let has_audio_segments = self.audio_writer.is_some() && !self.audio_segments.is_empty();
+        let video_track_ready = self.video_track_id.is_some();
+        let audio_track_ready = self.audio_writer.is_some();
 
-        if !has_video_segments && !has_audio_segments {
+        if !video_track_ready && !audio_track_ready {
             return Ok(());
         }
+
+        let has_video_segments = video_track_ready && !self.segments.is_empty();
+        let has_audio_segments = audio_track_ready && !self.audio_segments.is_empty();
 
         let mut media_duration_secs = 0f64;
         let mut max_segment_duration_secs = 0f64;
@@ -600,9 +689,12 @@ impl Segmenter {
 
         let mut adaptation_sets = String::new();
 
-        if has_video_segments {
+        if video_track_ready {
             let video_bandwidth = if self.total_ticks > 0 {
-                self.total_bytes * 8 * self.timescale as u64 / self.total_ticks
+                self.total_bytes
+                    .saturating_mul(8)
+                    .saturating_mul(self.timescale as u64)
+                    / self.total_ticks.max(1)
             } else {
                 0
             };
@@ -633,7 +725,7 @@ impl Segmenter {
             };
 
             let video_section = format!(
-                "        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"init.m4s\" media=\"seg_$Number%04d$.m4s\" startNumber=\"1\">\n{video_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
+                "        <AdaptationSet id=\"0\" contentType=\"video\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\" frameRate=\"{fps}/1\" maxWidth=\"{width}\" maxHeight=\"{height}\" par=\"{par}\">\n            <Representation id=\"0\" mimeType=\"video/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" width=\"{width}\" height=\"{height}\" sar=\"1:1\">\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"{video_init}\" media=\"{video_media}\" startNumber=\"1\">\n{video_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
                 fps = fps_val,
                 width = self.video_width,
                 height = self.video_height,
@@ -641,30 +733,37 @@ impl Segmenter {
                 codec = self.video_codec,
                 bandwidth = video_bandwidth,
                 timescale = self.timescale,
+                video_init = VIDEO_INIT_FILENAME,
+                video_media = VIDEO_SEGMENT_TEMPLATE,
                 video_timeline = video_segment_timeline,
             );
             adaptation_sets.push_str(&video_section);
         }
 
-        if has_audio_segments {
+        if audio_track_ready {
             let writer = self.audio_writer.as_ref().unwrap();
             let audio_bandwidth = if self.audio_total_ticks > 0 {
-                self.audio_total_bytes * 8 * writer.timescale as u64 / self.audio_total_ticks
+                self.audio_total_bytes
+                    .saturating_mul(8)
+                    .saturating_mul(writer.timescale as u64)
+                    / self.audio_total_ticks.max(1)
             } else {
                 0
             };
             let audio_segment_timeline = self.generate_segment_timeline(&self.audio_segments);
-            let audio_adaptation_id = if has_video_segments { 1 } else { 0 };
-            let audio_representation_id = if has_video_segments { 1 } else { 0 };
+            let audio_adaptation_id = if video_track_ready { 1 } else { 0 };
+            let audio_representation_id = if video_track_ready { 1 } else { 0 };
 
             let audio_section = format!(
-                "        <AdaptationSet id=\"{adapt_id}\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"{rep_id}\" mimeType=\"audio/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" audioSamplingRate=\"{sample_rate}\" >\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"audio_init.m4s\" media=\"audio_seg_$Number%04d$.m4s\" startNumber=\"1\">\n{audio_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
+                "        <AdaptationSet id=\"{adapt_id}\" contentType=\"audio\" segmentAlignment=\"true\">\n            <Representation id=\"{rep_id}\" mimeType=\"audio/mp4\" codecs=\"{codec}\" bandwidth=\"{bandwidth}\" audioSamplingRate=\"{sample_rate}\" >\n                <SegmentTemplate timescale=\"{timescale}\" initialization=\"{audio_init}\" media=\"{audio_media}\" startNumber=\"1\">\n{audio_timeline}\n                </SegmentTemplate>\n            </Representation>\n        </AdaptationSet>\n",
                 adapt_id = audio_adaptation_id,
                 rep_id = audio_representation_id,
                 codec = writer.codec_string,
                 bandwidth = audio_bandwidth,
                 sample_rate = writer.sample_rate,
                 timescale = writer.timescale,
+                audio_init = AUDIO_INIT_FILENAME,
+                audio_media = AUDIO_SEGMENT_TEMPLATE,
                 audio_timeline = audio_segment_timeline,
             );
             adaptation_sets.push_str(&audio_section);
@@ -688,7 +787,7 @@ impl Segmenter {
             adapt_sets = adaptation_sets,
         );
 
-        self.store_file("manifest.mpd", mpd_body.into_bytes())
+        self.store_file(MANIFEST_FILENAME, mpd_body.into_bytes())
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -760,4 +859,27 @@ impl Segmenter {
         // lose one fragment, which is acceptable for live streaming.
         Ok(())
     }
+}
+
+fn parse_channels_from_fmtp(fmtp: &str) -> Option<u16> {
+    fmtp.split(';').map(str::trim).find_map(|part| {
+        if let Some(value) = part.strip_prefix("channels=") {
+            return value.trim().parse::<u16>().ok().filter(|v| *v > 0);
+        }
+        if let Some(value) = part.strip_prefix("stereo=") {
+            return match value.trim() {
+                "1" => Some(2),
+                "0" => Some(1),
+                _ => None,
+            };
+        }
+        if let Some(value) = part.strip_prefix("sprop-stereo=") {
+            return match value.trim() {
+                "1" => Some(2),
+                "0" => Some(1),
+                _ => None,
+            };
+        }
+        None
+    })
 }

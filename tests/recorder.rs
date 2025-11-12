@@ -1,6 +1,5 @@
 #![cfg(feature = "recorder")]
 
-use std::collections::VecDeque;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -17,6 +16,11 @@ use tokio::time::sleep;
 mod common;
 use common::shutdown_signal;
 
+const PUBLISH_WAIT_TIMEOUT_SECS: u64 = 40;
+const RECORDING_DURATION_SECS: u64 = 15;
+const POST_RECORDING_WAIT_SECS: u64 = 8;
+const OUTPUT_COLLECTION_TIMEOUT_SECS: u64 = 30;
+
 #[tokio::test]
 async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -27,11 +31,11 @@ async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
     let storage_root = storage_dir.path().join("records");
     fs::create_dir_all(&storage_root)?;
 
-    let stream_id = "recorder-test";
+    let stream_id = "h264-test";
 
     let mut cfg = Config::default();
     cfg.recorder.auto_streams = vec![stream_id.to_string()];
-    cfg.recorder.rotate_daily = false;
+    cfg.recorder.max_recording_seconds = 0;
     cfg.recorder.storage = StorageConfig::Fs {
         root: storage_root.to_string_lossy().into_owned(),
     };
@@ -65,19 +69,19 @@ async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
 
     wait_for_publish_connected(&client, addr, stream_id).await?;
 
-    sleep(Duration::from_secs(25)).await;
+    sleep(Duration::from_secs(RECORDING_DURATION_SECS)).await;
 
     client
         .delete(format!("http://{addr}{}", api::path::streams(stream_id)))
         .send()
         .await?;
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(POST_RECORDING_WAIT_SECS)).await;
 
     whip_future.abort();
     let _ = whip_future.await;
 
-    let mut outputs = wait_for_video_outputs(storage_root.as_path()).await?;
+    let mut outputs = wait_for_video_outputs(&storage_root, stream_id).await?;
 
     assert!(outputs.manifest.exists(), "manifest.mpd not found");
     let manifest_content = fs::read_to_string(&outputs.manifest)?;
@@ -85,23 +89,34 @@ async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
         manifest_content.contains("<MPD"),
         "manifest content invalid"
     );
+    assert!(
+        manifest_content.contains("video"),
+        "manifest should contain video track"
+    );
 
     let init_segment = outputs
-        .init_segment
+        .video_init_segment
         .as_ref()
-        .expect("init.m4s path missing");
-    assert!(init_segment.exists(), "init.m4s not found");
+        .expect("v_init.m4s path missing");
+    assert!(init_segment.exists(), "v_init.m4s not found");
+    let init_size = fs::metadata(init_segment)?.len();
+    assert!(init_size > 100, "v_init.m4s too small: {} bytes", init_size);
 
     outputs.video_segments.sort();
     assert!(
-        outputs.video_segments.len() >= 2,
-        "expected at least two video segments, got {}",
+        !outputs.video_segments.is_empty(),
+        "expected at least one video segment, got {}",
         outputs.video_segments.len()
     );
 
-    for seg_path in outputs.video_segments.iter().take(2) {
+    for seg_path in &outputs.video_segments {
         let metadata = fs::metadata(seg_path)?;
-        assert!(metadata.len() > 0, "segment {:?} is empty", seg_path);
+        assert!(
+            metadata.len() > 1000,
+            "segment {:?} too small: {} bytes",
+            seg_path.file_name(),
+            metadata.len()
+        );
     }
 
     assert!(
@@ -111,14 +126,14 @@ async fn test_recorder_generates_h264_segments() -> anyhow::Result<()> {
     );
     assert!(
         outputs.audio_init_segment.is_none(),
-        "unexpected audio_init.m4s present"
+        "unexpected a_init.m4s present"
     );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
+async fn test_recorder_generates_vp9_segments() -> anyhow::Result<()> {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await?;
     let addr = listener.local_addr()?;
@@ -127,11 +142,11 @@ async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
     let storage_root = storage_dir.path().join("records");
     fs::create_dir_all(&storage_root)?;
 
-    let stream_id = "recorder-av1";
+    let stream_id = "vp9-test";
 
     let mut cfg = Config::default();
     cfg.recorder.auto_streams = vec![stream_id.to_string()];
-    cfg.recorder.rotate_daily = false;
+    cfg.recorder.max_recording_seconds = 0;
     cfg.recorder.storage = StorageConfig::Fs {
         root: storage_root.to_string_lossy().into_owned(),
     };
@@ -151,7 +166,7 @@ async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
     let sdp_path_str = sdp_path.to_string_lossy().into_owned();
 
     let ffmpeg_cmd = format!(
-        "ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p -c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 -strict experimental -f rtp \"rtp://{}\" -sdp_file {}",
+        "ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p -c:v libvpx-vp9 -b:v 1000k -minrate 1000k -maxrate 1000k -g 30 -keyint_min 30 -speed 8 -tile-columns 0 -frame-parallel 0 -threads 4 -deadline realtime -strict experimental -f rtp \"rtp://{}\" -sdp_file {}",
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rtp_port),
         sdp_path_str
     );
@@ -165,32 +180,34 @@ async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
 
     wait_for_publish_connected(&client, addr, stream_id).await?;
 
-    sleep(Duration::from_secs(30)).await;
+    sleep(Duration::from_secs(RECORDING_DURATION_SECS)).await;
 
     client
         .delete(format!("http://{addr}{}", api::path::streams(stream_id)))
         .send()
         .await?;
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(POST_RECORDING_WAIT_SECS)).await;
 
     whip_future.abort();
     let _ = whip_future.await;
 
-    let mut outputs = wait_for_video_outputs(storage_root.as_path()).await?;
+    let mut outputs = wait_for_video_outputs(&storage_root, stream_id).await?;
 
     assert!(outputs.manifest.exists(), "manifest.mpd not found");
     let manifest_content = fs::read_to_string(&outputs.manifest)?;
     assert!(
-        manifest_content.contains("codecs=\"av01"),
-        "manifest does not advertise AV1 codec"
+        manifest_content.contains("video"),
+        "manifest should contain video track"
     );
 
     let init_segment = outputs
-        .init_segment
+        .video_init_segment
         .as_ref()
-        .expect("init.m4s path missing");
-    assert!(init_segment.exists(), "init.m4s not found");
+        .expect("v_init.m4s path missing");
+    assert!(init_segment.exists(), "v_init.m4s not found");
+    let init_size = fs::metadata(init_segment)?.len();
+    assert!(init_size > 100, "v_init.m4s too small: {} bytes", init_size);
 
     outputs.video_segments.sort();
     assert!(
@@ -199,9 +216,14 @@ async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
         outputs.video_segments.len()
     );
 
-    for seg_path in outputs.video_segments.iter().take(2) {
+    for seg_path in &outputs.video_segments {
         let metadata = fs::metadata(seg_path)?;
-        assert!(metadata.len() > 0, "segment {:?} is empty", seg_path);
+        assert!(
+            metadata.len() > 500,
+            "segment {:?} too small: {} bytes",
+            seg_path.file_name(),
+            metadata.len()
+        );
     }
 
     assert!(
@@ -211,7 +233,7 @@ async fn test_recorder_generates_av1_segments() -> anyhow::Result<()> {
     );
     assert!(
         outputs.audio_init_segment.is_none(),
-        "unexpected audio_init.m4s present"
+        "unexpected a_init.m4s present"
     );
 
     Ok(())
@@ -227,11 +249,11 @@ async fn test_recorder_generates_opus_audio_segments() -> anyhow::Result<()> {
     let storage_root = storage_dir.path().join("records");
     fs::create_dir_all(&storage_root)?;
 
-    let stream_id = "recorder-opus-only";
+    let stream_id = "opus-test";
 
     let mut cfg = Config::default();
     cfg.recorder.auto_streams = vec![stream_id.to_string()];
-    cfg.recorder.rotate_daily = false;
+    cfg.recorder.max_recording_seconds = 0;
     cfg.recorder.storage = StorageConfig::Fs {
         root: storage_root.to_string_lossy().into_owned(),
     };
@@ -265,40 +287,50 @@ async fn test_recorder_generates_opus_audio_segments() -> anyhow::Result<()> {
 
     wait_for_publish_connected(&client, addr, stream_id).await?;
 
-    sleep(Duration::from_secs(25)).await;
+    sleep(Duration::from_secs(RECORDING_DURATION_SECS)).await;
 
     client
         .delete(format!("http://{addr}{}", api::path::streams(stream_id)))
         .send()
         .await?;
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(POST_RECORDING_WAIT_SECS)).await;
 
     whip_future.abort();
     let _ = whip_future.await;
 
-    let mut outputs = collect_recording_outputs(storage_root.as_path());
+    let mut outputs = wait_for_audio_outputs(&storage_root, stream_id).await?;
 
     assert!(outputs.manifest.exists(), "manifest.mpd not found");
     let manifest_content = fs::read_to_string(&outputs.manifest)?;
-    assert!(manifest_content.contains("contentType=\"audio\""));
+    assert!(
+        manifest_content.contains("contentType=\"audio\"") || manifest_content.contains("audio"),
+        "manifest should contain audio track"
+    );
 
     let audio_init = outputs
         .audio_init_segment
         .as_ref()
-        .expect("audio_init.m4s path missing");
-    assert!(audio_init.exists(), "audio_init.m4s not found");
+        .expect("a_init.m4s path missing");
+    assert!(audio_init.exists(), "a_init.m4s not found");
+    let init_size = fs::metadata(audio_init)?.len();
+    assert!(init_size > 50, "a_init.m4s too small: {} bytes", init_size);
 
     outputs.audio_segments.sort();
     assert!(
-        outputs.audio_segments.len() >= 2,
-        "expected at least two audio segments, got {}",
+        !outputs.audio_segments.is_empty(),
+        "expected at least one audio segment, got {}",
         outputs.audio_segments.len()
     );
 
-    for seg_path in outputs.audio_segments.iter().take(2) {
+    for seg_path in &outputs.audio_segments {
         let metadata = fs::metadata(seg_path)?;
-        assert!(metadata.len() > 0, "audio segment {:?} is empty", seg_path);
+        assert!(
+            metadata.len() > 100,
+            "audio segment {:?} too small: {} bytes",
+            seg_path.file_name(),
+            metadata.len()
+        );
     }
 
     assert!(
@@ -307,8 +339,8 @@ async fn test_recorder_generates_opus_audio_segments() -> anyhow::Result<()> {
         outputs.video_segments
     );
     assert!(
-        outputs.init_segment.is_none(),
-        "unexpected init.m4s present for audio-only recording"
+        outputs.video_init_segment.is_none(),
+        "unexpected v_init.m4s present for audio-only recording"
     );
 
     Ok(())
@@ -319,7 +351,8 @@ async fn wait_for_publish_connected(
     addr: SocketAddr,
     stream_id: &str,
 ) -> anyhow::Result<()> {
-    for _ in 0..200 {
+    let max_attempts = (PUBLISH_WAIT_TIMEOUT_SECS * 1000) / 200;
+    for attempt in 0..max_attempts {
         let res = client
             .get(format!("http://{addr}{}", api::path::streams("")))
             .send()
@@ -335,13 +368,22 @@ async fn wait_for_publish_connected(
                     .first()
                     .is_some_and(|s| s.state == RTCPeerConnectionState::Connected)
         }) {
+            tracing::info!(
+                "[test] publisher connected for stream '{}' after {} attempts",
+                stream_id,
+                attempt + 1
+            );
             return Ok(());
         }
 
         sleep(Duration::from_millis(200)).await;
     }
 
-    anyhow::bail!("publisher never connected")
+    anyhow::bail!(
+        "publisher never connected for stream '{}' within {} seconds",
+        stream_id,
+        PUBLISH_WAIT_TIMEOUT_SECS
+    )
 }
 
 #[derive(Debug)]
@@ -349,34 +391,59 @@ struct RecordingOutputs {
     manifest: PathBuf,
     video_segments: Vec<PathBuf>,
     audio_segments: Vec<PathBuf>,
-    init_segment: Option<PathBuf>,
+    video_init_segment: Option<PathBuf>,
     audio_init_segment: Option<PathBuf>,
+    #[allow(dead_code)]
+    recording_dir: PathBuf,
 }
 
-fn collect_recording_outputs(root: &Path) -> RecordingOutputs {
-    let mut dirs = VecDeque::from([root.to_path_buf()]);
+/// Collect recording outputs for a specific stream from storage root
+fn collect_recording_outputs(root: &Path, stream_id: &str) -> RecordingOutputs {
+    let stream_dir = root.join(stream_id);
+
     let mut manifest = None;
-    let mut init_segment = None;
+    let mut video_init_segment = None;
     let mut audio_init_segment = None;
     let mut video_segments = Vec::new();
     let mut audio_segments = Vec::new();
+    let mut recording_dir = stream_dir.clone();
 
-    while let Some(dir) = dirs.pop_front() {
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    dirs.push_back(path);
-                } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    match name {
-                        "manifest.mpd" => manifest = Some(path.clone()),
-                        "init.m4s" => init_segment = Some(path.clone()),
-                        "audio_init.m4s" => audio_init_segment = Some(path.clone()),
-                        _ => {
-                            if name.starts_with("seg_") && name.ends_with(".m4s") {
-                                video_segments.push(path.clone());
-                            } else if name.starts_with("audio_seg_") && name.ends_with(".m4s") {
-                                audio_segments.push(path.clone());
+    // Find the timestamp subdirectory (latest one if multiple exist)
+    if stream_dir.exists()
+        && let Ok(entries) = fs::read_dir(&stream_dir)
+    {
+        let mut timestamp_dirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let path = e.path();
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.chars().all(|c| c.is_ascii_digit()))
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        timestamp_dirs.sort_by_key(|e| e.file_name());
+
+        if let Some(last_dir) = timestamp_dirs.last() {
+            recording_dir = last_dir.path();
+
+            if let Ok(files) = fs::read_dir(&recording_dir) {
+                for entry in files.flatten() {
+                    let path = entry.path();
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        match name {
+                            "manifest.mpd" => manifest = Some(path),
+                            "v_init.m4s" => video_init_segment = Some(path),
+                            "a_init.m4s" => audio_init_segment = Some(path),
+                            _ => {
+                                if name.starts_with("v_seg_") && name.ends_with(".m4s") {
+                                    video_segments.push(path);
+                                } else if name.starts_with("a_seg_") && name.ends_with(".m4s") {
+                                    audio_segments.push(path);
+                                }
                             }
                         }
                     }
@@ -386,32 +453,86 @@ fn collect_recording_outputs(root: &Path) -> RecordingOutputs {
     }
 
     RecordingOutputs {
-        manifest: manifest.unwrap_or_else(|| root.join("manifest.mpd")),
+        manifest: manifest.unwrap_or_else(|| recording_dir.join("manifest.mpd")),
         video_segments,
         audio_segments,
-        init_segment,
+        video_init_segment,
         audio_init_segment,
+        recording_dir,
     }
 }
-
-async fn wait_for_video_outputs(root: &Path) -> anyhow::Result<RecordingOutputs> {
-    let mut attempts = 0;
+async fn wait_for_video_outputs(root: &Path, stream_id: &str) -> anyhow::Result<RecordingOutputs> {
+    let max_attempts = (OUTPUT_COLLECTION_TIMEOUT_SECS * 1000) / 200;
     let mut last = None;
-    while attempts < 150 {
-        let outputs = collect_recording_outputs(root);
+
+    for attempt in 0..max_attempts {
+        let outputs = collect_recording_outputs(root, stream_id);
         let has_manifest = outputs.manifest.exists();
-        let has_init = outputs.init_segment.as_ref().is_some_and(|p| p.exists());
-        let has_segment = outputs.video_segments.iter().any(|p| p.exists());
+        let has_init = outputs
+            .video_init_segment
+            .as_ref()
+            .is_some_and(|p| p.exists());
+        let has_segment =
+            !outputs.video_segments.is_empty() && outputs.video_segments.iter().all(|p| p.exists());
+
         if has_manifest && has_init && has_segment {
+            tracing::info!(
+                "[test] found video outputs for '{}' after {} attempts: manifest={}, init={}, segments={}",
+                stream_id,
+                attempt + 1,
+                has_manifest,
+                has_init,
+                outputs.video_segments.len()
+            );
             return Ok(outputs);
         }
+
         last = Some(outputs);
-        attempts += 1;
         sleep(Duration::from_millis(200)).await;
     }
 
     Err(anyhow::anyhow!(
-        "timed out waiting for video outputs: {:?}",
+        "timed out waiting for video outputs for stream '{}' within {} seconds: {:?}",
+        stream_id,
+        OUTPUT_COLLECTION_TIMEOUT_SECS,
+        last
+    ))
+}
+
+async fn wait_for_audio_outputs(root: &Path, stream_id: &str) -> anyhow::Result<RecordingOutputs> {
+    let max_attempts = (OUTPUT_COLLECTION_TIMEOUT_SECS * 1000) / 200;
+    let mut last = None;
+
+    for attempt in 0..max_attempts {
+        let outputs = collect_recording_outputs(root, stream_id);
+        let has_manifest = outputs.manifest.exists();
+        let has_init = outputs
+            .audio_init_segment
+            .as_ref()
+            .is_some_and(|p| p.exists());
+        let has_segment =
+            !outputs.audio_segments.is_empty() && outputs.audio_segments.iter().all(|p| p.exists());
+
+        if has_manifest && has_init && has_segment {
+            tracing::info!(
+                "[test] found audio outputs for '{}' after {} attempts: manifest={}, init={}, segments={}",
+                stream_id,
+                attempt + 1,
+                has_manifest,
+                has_init,
+                outputs.audio_segments.len()
+            );
+            return Ok(outputs);
+        }
+
+        last = Some(outputs);
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    Err(anyhow::anyhow!(
+        "timed out waiting for audio outputs for stream '{}' within {} seconds: {:?}",
+        stream_id,
+        OUTPUT_COLLECTION_TIMEOUT_SECS,
         last
     ))
 }

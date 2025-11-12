@@ -8,15 +8,15 @@ The Recorder in liveion is an optional feature that automatically records live s
 | ------------------- | ------------| ------------ |
 | `Fragmented MP4`    | `H264`, `VP9`| `Opus`       |
 
-**Recorder Don't supports `VP8` Codec, Because `VP8` need `WebM` container**
+**Recorder does not support the `VP8` codec because `VP8` requires a `WebM` container.**
 
 ## Liveman Integration {#liveman}
 
 Integrates with [Liveman](/guide/liveman) for centralized playback and proxy access:
 
-- When starting a recording, Live777 returns `mpd_path` directly
-- Liveman can use this `mpd_path` to play back recordings
-- Media files can be proxied via Liveman: `GET /api/record/object/{path}`
+- Start recording returns the storage metadata (`record_id`, `record_dir`, and `mpd_path`). The `record_id` field is only populated when the recorder can infer a 10-digit Unix timestamp from the output path; otherwise it is returned as an empty string.
+- Liveman stores `record_id`/`record_dir` to keep the catalog in sync with storage
+- Clients can stream the manifest via `mpd_path`, and Liveman can proxy objects with `GET /api/record/object/{path}`
 
 ### Configuration
 
@@ -36,17 +36,20 @@ Configure recording parameters in `live777.toml`:
 
 ```toml
 [recorder]
-# Stream name patterns for auto-recording, supports wildcards
-auto_streams = ["*"]  # Record all streams
-# auto_streams = ["room1", "room2", "web-*"]  # Record specific streams
+# Stream name patterns for auto-recording, supports wildcards (default: [])
+auto_streams = ["*"]              # Record all streams
+# auto_streams = ["room1", "web-*"]  # Record specific streams
+
+# Maximum duration (seconds) for a single recording session before rotation (default: 86_400)
+max_recording_seconds = 86_400
 
 # Optional: Node alias for multi-node deployments
 node_alias = "live777-node-001"
 
 # Storage backend configuration
 [recorder.storage]
-type = "fs"  # Storage type: "fs", "s3", or "oss"
-root = "./records"  # Root path for recordings
+type = "fs"          # Storage type: "fs", "s3", or "oss"
+root = "./records"   # Root path for recordings
 ```
 
 ## Storage Backends {#storage}
@@ -65,16 +68,17 @@ Requires `recorder` feature.
 
 - Start recording: `POST` `/api/record/:streamId`
   - Body (optional): `{ "base_dir": "optional/path/prefix" }`
-  - Response: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
+  - Response: `{ "id": ":streamId", "record_id": "<unix-timestamp-or-empty>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
 - Recording status: `GET` `/api/record/:streamId`
   - Response: `{ "recording": true }`
 - Stop recording: `DELETE` `/api/record/:streamId`
 
 ## MPD Path Conventions {#mpd}
 
-- Default directory structure: `/:streamId/YYYY/MM/DD/`
-- Default MPD location: `/:streamId/YYYY/MM/DD/manifest.mpd`
-- When `base_dir` provided, MPD is at `/{base_dir}/manifest.mpd`
+- Default `record_dir` (when `base_dir` is not provided): `/:streamId/:record_id/` where `record_id` is a 10-digit Unix timestamp (seconds).
+- Default MPD location: `/{record_dir}/manifest.mpd`.
+- When the cumulative duration for a session reaches `max_recording_seconds`, the recorder closes the current fragments and starts a new timestamped directory (for example `/:streamId/1718200000/`). No calendar-style paths are produced automatically.
+- When `base_dir` is provided, `record_dir` matches that value exactly and the manifest lives at `/{record_dir}/manifest.mpd`. If the override does not end with a 10-digit Unix timestamp, the returned `record_id` is an empty string.
 
 ### AWS S3
 
@@ -176,23 +180,18 @@ security_token = "..."
 
 ## File Structure {#file-structure}
 
-Recorded files are organized as follows:
+Recorded files are organized by `record_dir`:
 
 ```
 records/
-├── stream1/
-│   └── 2025/
-│       └── 07/
-│           └── 24/
-│               ├── manifest.mpd
-│               ├── init.m4s
-│               ├── audio_init.m4s
-│               ├── seg_0001.m4s
-│               ├── audio_seg_0001.m4s
-│               └── ...
-└── stream2/
-    └── 2025/
-        └── 07/
-            └── 24/
-                └── ...
+└── stream1/
+    └── 1762842203/
+        ├── manifest.mpd
+        ├── v_init.m4s
+        ├── a_init.m4s
+        ├── v_seg_0001.m4s
+        ├── a_seg_0001.m4s
+        └── ...
 ```
+
+- Timestamp-based folders (`stream/1762842203`) are the canonical layout produced by Live777, including automatic rotations triggered by `max_recording_seconds`. Provide a custom `base_dir` only if you intentionally need a different structure and accept the impact on `record_id` values.

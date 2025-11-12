@@ -1,7 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
-use chrono::{FixedOffset, TimeZone};
 use glob::Pattern;
 use http::header;
 use tracing::{error, info};
@@ -170,11 +169,11 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
                 };
 
                 if !is_recording {
-                    let date_path = crate::utils::date_path();
+                    let requested_ts = crate::utils::timestamp_dir();
                     let base_dir = if base_prefix.is_empty() {
                         None
                     } else {
-                        Some(format!("{base_prefix}/{date_path}"))
+                        Some(format!("{base_prefix}/{requested_ts}"))
                     };
                     let body = api::recorder::StartRecordRequest { base_dir };
                     let start_url = format!("{}{}", server.url, api::path::record(&stream_id));
@@ -188,23 +187,36 @@ async fn do_auto_record_check(mut state: AppState) -> Result<()> {
 
                     if let Ok(r) = resp {
                         if r.status().is_success() {
-                            // Prefer server-returned mpd_path, fallback to deterministic path
-                            let mpd_path =
-                                match r.json::<api::recorder::StartRecordResponse>().await {
-                                    Ok(v) => v.mpd_path,
-                                    Err(_) => {
-                                        if let Some(prefix) = &body.base_dir {
-                                            format!("{prefix}/manifest.mpd")
-                                        } else {
-                                            format!("{stream_id}/{date_path}/manifest.mpd")
-                                        }
-                                    }
-                                };
+                            // Prefer server-returned metadata, fallback to deterministic values
+                            let fallback_mpd_path = if let Some(prefix) = &body.base_dir {
+                                format!("{prefix}/manifest.mpd")
+                            } else {
+                                format!("{stream_id}/{requested_ts}/manifest.mpd")
+                            };
+
+                            let mut record_ts = requested_ts.clone();
+                            let mut mpd_path = fallback_mpd_path;
+
+                            if let Ok(v) = r.json::<api::recorder::StartRecordResponse>().await {
+                                if !v.mpd_path.is_empty() {
+                                    mpd_path = v.mpd_path;
+                                }
+                                if !v.record_id.is_empty() {
+                                    record_ts = v.record_id;
+                                } else if !v.record_dir.is_empty()
+                                    && let Some(ts) =
+                                        crate::utils::extract_timestamp_from_record_dir(
+                                            &v.record_dir,
+                                        )
+                                {
+                                    record_ts = ts;
+                                }
+                            }
 
                             if let Err(err) = RecordingsIndexService::upsert(
                                 state.database.get_connection(),
                                 &stream_id,
-                                &date_path,
+                                &record_ts,
                                 &mpd_path,
                             )
                             .await
@@ -240,32 +252,16 @@ fn should_record(patterns: &[String], stream: &str) -> bool {
     false
 }
 
-/// Daily rotation at local midnight: stop current recordings and start new ones under new date path
-pub async fn auto_record_rotate_daily(state: AppState) {
-    if !state.config.auto_record.enabled || !state.config.auto_record.rotate_daily {
+/// Rotate recordings when they exceed the configured max duration
+pub async fn auto_record_rotate(state: AppState) {
+    if !state.config.auto_record.enabled || state.config.auto_record.max_recording_seconds == 0 {
         return;
     }
-    // Prepare timezone offset
-    let offset_minutes = state.config.auto_record.rotate_tz_offset_minutes;
-    let tz =
-        FixedOffset::east_opt(offset_minutes * 60).unwrap_or(FixedOffset::east_opt(0).unwrap());
 
     loop {
-        // Compute sleep duration until next local midnight
-        let now_utc = Utc::now();
-        let now_local = now_utc.with_timezone(&tz);
-        let next_local_midnight = now_local
-            .date_naive()
-            .succ_opt()
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let target_local_dt = tz.from_local_datetime(&next_local_midnight).unwrap();
-        let wait_duration = (target_local_dt - now_local)
-            .to_std()
-            .unwrap_or(std::time::Duration::from_secs(60));
-
-        let timeout = tokio::time::sleep(wait_duration);
+        let timeout = tokio::time::sleep(Duration::from_secs(
+            state.config.auto_record.max_recording_seconds,
+        ));
         tokio::pin!(timeout);
         let _ = timeout.as_mut().await;
 
@@ -283,12 +279,12 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
     let base_prefix = state.config.auto_record.base_prefix.clone();
     let map_server = state.storage.get_map_server();
 
-    // Build new date path prefix for today (UTC)
-    let date_path = crate::utils::date_path();
+    // Build new timestamp-based prefix for the next recording window
+    let requested_ts = crate::utils::timestamp_dir();
     let base_dir = if base_prefix.is_empty() {
         None
     } else {
-        Some(format!("{base_prefix}/{date_path}"))
+        Some(format!("{base_prefix}/{requested_ts}"))
     };
 
     for (stream_id, aliases) in streams.iter() {
@@ -351,22 +347,34 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
             if let Ok(r) = resp
                 && r.status().is_success()
             {
-                let mpd_path = match r.json::<api::recorder::StartRecordResponse>().await {
-                    Ok(v) => v.mpd_path,
-                    Err(_) => {
-                        if let Some(prefix) = &body.base_dir {
-                            format!("{prefix}/manifest.mpd")
-                        } else {
-                            format!("{stream_id}/{date_path}/manifest.mpd")
-                        }
-                    }
+                let fallback_mpd_path = if let Some(prefix) = &body.base_dir {
+                    format!("{prefix}/manifest.mpd")
+                } else {
+                    format!("{stream_id}/{requested_ts}/manifest.mpd")
                 };
+
+                let mut record_ts = requested_ts.clone();
+                let mut mpd_path = fallback_mpd_path;
+
+                if let Ok(v) = r.json::<api::recorder::StartRecordResponse>().await {
+                    if !v.mpd_path.is_empty() {
+                        mpd_path = v.mpd_path;
+                    }
+                    if !v.record_id.is_empty() {
+                        record_ts = v.record_id;
+                    } else if !v.record_dir.is_empty()
+                        && let Some(ts) =
+                            crate::utils::extract_timestamp_from_record_dir(&v.record_dir)
+                    {
+                        record_ts = ts;
+                    }
+                }
 
                 // Upsert index
                 if let Err(err) = RecordingsIndexService::upsert(
                     state.database.get_connection(),
                     stream_id,
-                    &date_path,
+                    &record_ts,
                     &mpd_path,
                 )
                 .await

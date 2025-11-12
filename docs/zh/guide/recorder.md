@@ -8,14 +8,14 @@ liveion 的 Recorder 是一个可选功能，用于将实时流自动录制为 M
 | -------- | --------------------------- | -------------- |
 | `Fragmented MP4`    | `H264`, `VP9`| `Opus`       |
 
-**Recorder 不支持 `VP8` 编码，因为 `VP8` 需要 `WebM` 容器**
+**Recorder 暂不支持 `VP8` 编码，因为 `VP8` 需要 `WebM` 容器。**
 
 ## Liveman 集成 {#liveman}
 
 与 [Liveman](/zh/guide/liveman) 集成以实现集中式回放和代理访问：
 
-- 启动录制时由 Live777 直接返回 `mpd_path`
-- Liveman 使用该 `mpd_path` 进行回放
+- 启动录制时 Live777 会返回存储元数据（`record_id`、`record_dir`、`mpd_path`）。当输出路径的最后一段不是 10 位 Unix 时间戳时，`record_id` 字段会返回为空字符串。
+- Liveman 使用 `record_id`/`record_dir` 与存储保持一致，再通过 `mpd_path` 回放
 - 媒体文件可通过 Liveman 代理获取：`GET /api/record/object/{path}`
 
 ### 配置
@@ -36,17 +36,20 @@ node_alias 是可选的，但在多节点部署中建议配置，以帮助 Livem
 
 ```toml
 [recorder]
-# 自动录制的流名称模式，支持通配符
-auto_streams = ["*"]  # 录制所有流
-# auto_streams = ["room1", "room2", "web-*"]  # 录制指定流
+# 自动录制的流名称模式，支持通配符（默认：空列表）
+auto_streams = ["*"]                # 录制所有流
+# auto_streams = ["room1", "web-*"]   # 仅录制指定流
+
+# 单个录制会话的最大持续时间（秒），超过即重新开一个录制（默认：86_400）
+max_recording_seconds = 86_400
 
 # 可选：多节点部署的节点别名
 node_alias = "live777-node-001"
 
 # 存储后端配置
 [recorder.storage]
-type = "fs"  # 存储类型: "fs", "s3", 或 "oss"
-root = "./records"  # 录制文件根路径
+type = "fs"        # 存储类型: "fs"、"s3" 或 "oss"
+root = "./records" # 录制文件根路径
 ```
 
 ## 存储后端 {#storage}
@@ -65,7 +68,7 @@ root = "/var/lib/live777/recordings"
 
 - 启动录制: `POST` `/api/record/:streamId`
   - 请求体（可选）: `{ "base_dir": "optional/path/prefix" }`
-  - 响应: `{ "id": ":streamId", "mpd_path": ".../manifest.mpd" }`
+  - 响应: `{ "id": ":streamId", "record_id": "<10位Unix时间戳或空字符串>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
 - 录制状态: `GET` `/api/record/:streamId`
   - 响应: `{ "recording": true }`
 - 停止录制: `DELETE` `/api/record/:streamId`
@@ -73,9 +76,10 @@ root = "/var/lib/live777/recordings"
 
 ## MPD 路径规则 {#mpd}
 
-- 默认目录结构： `/:streamId/YYYY/MM/DD/`
-- 默认 MPD 位置： `/:streamId/YYYY/MM/DD/manifest.mpd`
-- 当提供 `base_dir` 时，MPD 位于 `/{base_dir}/manifest.mpd`
+- 默认 `record_dir`（未显式指定 `base_dir` 时）为 `/:streamId/:record_id/`，其中 `record_id` 是 10 位 Unix 时间戳。
+- 默认 MPD 位置： `/{record_dir}/manifest.mpd`。
+- 当单个录制会话累计时长达到 `max_recording_seconds` 时，Recorder 会关闭当前片段并以新的时间戳目录（如 `/:streamId/1718200000/`）继续录制，系统不会自动生成日历路径。
+- 当提供 `base_dir` 时，`record_dir` 与该值完全一致，Manifest 位于 `/{record_dir}/manifest.mpd`。若该值未以 10 位 Unix 时间戳结尾，响应中的 `record_id` 会是空字符串。
 
 ### AWS S3
 
@@ -177,23 +181,18 @@ security_token = "..."
 
 ## 文件组织结构 {#file-structure}
 
-录制文件按以下结构自动组织：
+录制文件会根据 `record_dir` 组织：
 
 ```
 records/
-├── stream1/
-│   └── 2025/
-│       └── 07/
-│           └── 24/
-│               ├── manifest.mpd
-│               ├── init.m4s
-│               ├── audio_init.m4s
-│               ├── seg_0001.m4s
-│               ├── audio_seg_0001.m4s
-│               └── ...
-└── stream2/
-    └── 2025/
-        └── 07/
-            └── 24/
-                └── ...
+└── stream1/
+    └── 1762842203/
+        ├── manifest.mpd
+        ├── v_init.m4s
+        ├── a_init.m4s
+        ├── v_seg_0001.m4s
+        ├── a_seg_0001.m4s
+        └── ...
 ```
+
+- 时间戳目录（如 `stream1/1762842203`）是 Live777 的唯一默认布局，也覆盖了 `max_recording_seconds` 触发的自动轮转。仅在非常明确的场景下才覆盖 `base_dir`，并留意这会让 `record_id` 变成空字符串。

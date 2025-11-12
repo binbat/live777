@@ -348,12 +348,9 @@ pub struct AutoRecord {
     pub tick_ms: u64,
     #[serde(default)]
     pub enabled: bool,
-    /// Rotate recordings at local midnight (based on rotate_tz_offset_minutes)
-    #[serde(default)]
-    pub rotate_daily: bool,
-    /// Timezone offset in minutes from UTC for daily rotation scheduling (e.g., +480 for UTC+8)
-    #[serde(default)]
-    pub rotate_tz_offset_minutes: i32,
+    /// Maximum duration in seconds for a single recording before rotation (0 disables auto-rotation)
+    #[serde(default = "default_auto_record_max_seconds")]
+    pub max_recording_seconds: u64,
 }
 
 impl Default for AutoRecord {
@@ -363,12 +360,15 @@ impl Default for AutoRecord {
             base_prefix: String::new(),
             tick_ms: 5_000,
             enabled: false,
-            rotate_daily: true,
-            rotate_tz_offset_minutes: 0,
+            max_recording_seconds: default_auto_record_max_seconds(),
         }
     }
 }
 
 fn default_auto_record_tick() -> u64 {
     5_000
+}
+
+fn default_auto_record_max_seconds() -> u64 {
+    86_400
 }

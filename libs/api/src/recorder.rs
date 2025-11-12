@@ -133,6 +133,10 @@ pub struct StartRecordRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartRecordResponse {
     pub id: String,
+    #[serde(default)]
+    pub record_id: String,
+    #[serde(default)]
+    pub record_dir: String,
     /// Absolute path (within storage) to the MPD manifest for this session
     pub mpd_path: String,
 }

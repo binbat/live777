@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::RecordingInfo;
 use crate::recorder::codec::Av1RtpParser;
 use crate::recorder::codec::H265RtpParser;
 use crate::recorder::codec::h264::H264RtpParser;
@@ -16,6 +17,9 @@ use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, M
 
 pub struct RecordingTask {
     pub stream: String,
+    pub info: RecordingInfo,
+    started_at: Instant,
+    base_dir_override: Option<String>,
     handle: JoinHandle<()>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
@@ -27,6 +31,7 @@ impl RecordingTask {
         path_prefix_override: Option<String>,
     ) -> Result<Self> {
         let stream_name = stream.to_string();
+        let base_dir_override = path_prefix_override;
 
         // Get storage Operator
         let op = {
@@ -50,10 +55,26 @@ impl RecordingTask {
 
         // Directory prefix, allow override; default to /<stream_id>/<record_id>
         // record_id unix timestamp(10)
-        let path_prefix = if let Some(p) = path_prefix_override {
-            p
+        let generated_record_id = chrono::Utc::now().timestamp();
+        let (path_prefix, override_provided) = if let Some(ref p) = base_dir_override {
+            (p.clone(), true)
         } else {
-            format!("{}/{}", stream_name, chrono::Utc::now().timestamp())
+            (format!("{}/{}", stream_name, generated_record_id), false)
+        };
+
+        let derived_record_id = path_prefix
+            .rsplit('/')
+            .find(|segment| {
+                !segment.is_empty()
+                    && segment.len() >= 10
+                    && segment.chars().all(|c| c.is_ascii_digit())
+            })
+            .and_then(|s| s.parse::<i64>().ok());
+
+        let record_id = if override_provided {
+            derived_record_id.unwrap_or(0)
+        } else {
+            generated_record_id
         };
 
         tracing::info!(
@@ -63,7 +84,8 @@ impl RecordingTask {
         );
 
         // Initialize Segmenter
-        let segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await {
+        let mut segmenter = match Segmenter::new(op, stream_name.clone(), path_prefix.clone()).await
+        {
             Ok(seg) => {
                 tracing::debug!(
                     "[recorder] segmenter initialized for stream {} at path {}",
@@ -136,6 +158,23 @@ impl RecordingTask {
 
         if audio_receiver_opt.is_some() {
             tracing::info!("[recorder] stream {} audio track detected", stream_name);
+        }
+
+        if audio_receiver_opt.is_some()
+            && let Some(info) = forward.first_audio_track_info().await
+        {
+            let crate::forward::AudioTrackInfo {
+                clock_rate,
+                channels,
+                codec_mime,
+                fmtp,
+            } = info;
+            let fmtp_opt = if fmtp.trim().is_empty() {
+                None
+            } else {
+                Some(fmtp.as_str())
+            };
+            segmenter.configure_audio_track(clock_rate, channels, codec_mime, fmtp_opt);
         }
 
         tracing::info!("[recorder] subscribed RTP for stream {}", stream_name);
@@ -369,8 +408,16 @@ impl RecordingTask {
             }
         });
 
+        let info = RecordingInfo {
+            record_dir: path_prefix,
+            record_id,
+        };
+
         Ok(Self {
             stream: stream_name,
+            info,
+            started_at: Instant::now(),
+            base_dir_override,
             handle,
             shutdown_tx: Some(shutdown_tx),
         })
@@ -408,5 +455,45 @@ impl RecordingTask {
                 }
             }
         }
+    }
+}
+
+impl RecordingTask {
+    pub(crate) fn has_exceeded(&self, max_duration: Duration) -> bool {
+        self.started_at.elapsed() >= max_duration
+    }
+
+    pub(crate) fn next_rotation_base_dir(&self) -> Option<String> {
+        self.base_dir_override
+            .as_ref()
+            .map(|current| Self::derive_next_base_dir(current))
+    }
+
+    fn derive_next_base_dir(current: &str) -> String {
+        let trimmed = current.trim_end_matches('/');
+        let next_ts = chrono::Utc::now().timestamp().to_string();
+        if trimmed.is_empty() {
+            return next_ts;
+        }
+
+        let mut segments: Vec<&str> = trimmed.split('/').collect();
+        if let Some(last) = segments.last()
+            && Self::looks_like_timestamp(last)
+        {
+            segments.pop();
+        }
+
+        if segments.is_empty() {
+            next_ts
+        } else {
+            let mut new_path = segments.join("/");
+            new_path.push('/');
+            new_path.push_str(&next_ts);
+            new_path
+        }
+    }
+
+    fn looks_like_timestamp(segment: &str) -> bool {
+        segment.len() >= 9 && segment.chars().all(|c| c.is_ascii_digit())
     }
 }

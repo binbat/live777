@@ -170,13 +170,13 @@ async fn start_record(
 
     let server = target_server.ok_or(crate::error::AppError::NoAvailableNode)?;
 
-    // Build base_dir using configured base_prefix + today
-    let date_path = crate::utils::date_path();
+    // Build base_dir using configured base_prefix + current timestamp
+    let requested_ts = crate::utils::timestamp_dir();
     let base_prefix = state.config.auto_record.base_prefix.clone();
     let base_dir = if base_prefix.is_empty() {
         None
     } else {
-        Some(format!("{base_prefix}/{date_path}"))
+        Some(format!("{base_prefix}/{requested_ts}"))
     };
 
     let body = api::recorder::StartRecordRequest { base_dir };
@@ -195,22 +195,33 @@ async fn start_record(
         ));
     }
 
-    let mpd_path = match resp.json::<api::recorder::StartRecordResponse>().await {
-        Ok(v) => v.mpd_path,
-        Err(_) => {
-            if let Some(prefix) = &body.base_dir {
-                format!("{prefix}/manifest.mpd")
-            } else {
-                format!("{stream}/{date_path}/manifest.mpd")
-            }
-        }
+    let fallback_mpd_path = if let Some(prefix) = &body.base_dir {
+        format!("{prefix}/manifest.mpd")
+    } else {
+        format!("{stream}/{requested_ts}/manifest.mpd")
     };
 
-    // Parse date from date_path and upsert index
+    let mut record_ts = requested_ts.clone();
+    let mut mpd_path = fallback_mpd_path;
+
+    if let Ok(v) = resp.json::<api::recorder::StartRecordResponse>().await {
+        if !v.mpd_path.is_empty() {
+            mpd_path = v.mpd_path;
+        }
+        if !v.record_id.is_empty() {
+            record_ts = v.record_id;
+        } else if !v.record_dir.is_empty()
+            && let Some(ts) = crate::utils::extract_timestamp_from_record_dir(&v.record_dir)
+        {
+            record_ts = ts;
+        }
+    }
+
+    // Parse date from record metadata and upsert index
     if let Err(err) = crate::service::recordings_index::RecordingsIndexService::upsert(
         state.database.get_connection(),
         &stream,
-        &date_path,
+        &record_ts,
         &mpd_path,
     )
     .await

@@ -184,11 +184,20 @@ Request Body (optional):
 { "base_dir": "optional/path/prefix" }
 ```
 
+- `base_dir` (optional): override the storage path prefix. If omitted, Live777 uses `/:streamId/:record_id/` where `record_id` is the current Unix timestamp. Once a session reaches `max_recording_seconds`, a new timestamp directory is created automatically.
+
 Response: [200]
 
 ```json
-{ "id": "6b2f3c1a-...", "mpd_path": "camera01/2025/07/24/manifest.mpd" }
+{
+  "id": "camera01",
+  "record_id": "1718200000",
+  "record_dir": "camera01/1718200000",
+  "mpd_path": "camera01/1718200000/manifest.mpd"
+}
 ```
+
+`record_id` is an empty string only when the recorder cannot infer a 10-digit Unix timestamp from the output path (for example, when a custom `base_dir` omits that suffix).
 
 ### Recording Status (by id)
 

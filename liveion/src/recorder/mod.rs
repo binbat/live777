@@ -2,7 +2,9 @@ use glob::Pattern;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio::time::{self, MissedTickBehavior};
 
 use opendal::Operator;
 #[cfg(feature = "recorder")]
@@ -26,8 +28,11 @@ static TASKS: Lazy<RwLock<HashMap<String, RecordingTask>>> =
 
 static STORAGE: Lazy<RwLock<Option<Operator>>> = Lazy::new(|| RwLock::new(None));
 
-#[cfg(feature = "recorder")]
-use chrono::{FixedOffset, TimeZone, Utc};
+#[derive(Clone, Debug)]
+pub struct RecordingInfo {
+    pub record_dir: String,
+    pub record_id: i64,
+}
 
 /// Initialize recorder event listener.
 #[cfg(feature = "recorder")]
@@ -90,13 +95,14 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
         }
     });
 
-    // Start daily rotation loop if enabled
-    if cfg.rotate_daily {
-        let manager_for_rotate = manager.clone();
-        let cfg_for_rotate = cfg.clone();
+    if cfg.max_recording_seconds > 0 {
+        let manager_for_rotation = manager.clone();
+        let cfg_for_rotation = cfg.clone();
         tokio::spawn(async move {
-            rotate_daily_loop(manager_for_rotate, cfg_for_rotate).await;
+            rotation_loop(manager_for_rotation, cfg_for_rotation).await;
         });
+    } else {
+        tracing::info!("[recorder] max_recording_seconds is 0, automatic rotation disabled");
     }
 }
 
@@ -105,17 +111,18 @@ pub async fn start(
     manager: Arc<Manager>,
     stream: String,
     base_dir: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RecordingInfo> {
     let mut map = TASKS.write().await;
-    if map.contains_key(&stream) {
+    if let Some(existing) = map.get(&stream) {
         tracing::info!("[recorder] stream {} is already recording", stream);
-        return Ok(());
+        return Ok(existing.info.clone());
     }
     let task = RecordingTask::spawn(manager, &stream, base_dir).await?;
+    let info = task.info.clone();
     map.insert(stream.clone(), task);
 
     tracing::info!("[recorder] spawn recording task for {}", stream);
-    Ok(())
+    Ok(info)
 }
 
 /// Check whether a stream is currently being recorded on this node
@@ -154,81 +161,81 @@ pub async fn stop(stream: String) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "recorder")]
-async fn rotate_daily_loop(manager: Arc<Manager>, cfg: Arc<RecorderConfig>) {
-    // Prepare timezone offset
-    let offset_minutes = cfg.rotate_tz_offset_minutes;
-    let tz =
-        FixedOffset::east_opt(offset_minutes * 60).unwrap_or(FixedOffset::east_opt(0).unwrap());
+async fn rotation_loop(manager: Arc<Manager>, cfg: Arc<RecorderConfig>) {
+    let max_seconds = cfg.max_recording_seconds;
+    if max_seconds == 0 {
+        return;
+    }
+
+    let interval_secs = rotation_check_interval(max_seconds);
+    let mut ticker = time::interval(Duration::from_secs(interval_secs));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
-        // Compute sleep duration until next local midnight
-        let now_utc = Utc::now();
-        let now_local = now_utc.with_timezone(&tz);
-        let next_local_midnight = now_local
-            .date_naive()
-            .succ_opt()
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let target_local_dt = tz.from_local_datetime(&next_local_midnight).unwrap();
-        let wait_duration = (target_local_dt - now_local)
-            .to_std()
-            .unwrap_or(std::time::Duration::from_secs(60));
-
-        let sleep = tokio::time::sleep(wait_duration);
-        tokio::pin!(sleep);
-        let _ = sleep.as_mut().await;
-
-        // Perform rotation: stop all current recordings and start new ones under the new date path
-        if let Err(e) = perform_daily_rotation(manager.clone(), cfg.clone()).await {
-            tracing::error!("[recorder] daily rotation failed: {}", e);
+        ticker.tick().await;
+        if let Err(e) = enforce_max_duration(manager.clone(), max_seconds).await {
+            tracing::error!("[recorder] duration rotation failed: {}", e);
         }
     }
 }
 
 #[cfg(feature = "recorder")]
-async fn perform_daily_rotation(
-    manager: Arc<Manager>,
-    cfg: Arc<RecorderConfig>,
-) -> anyhow::Result<()> {
-    // Collect current recording streams
-    let streams: Vec<String> = {
+async fn enforce_max_duration(manager: Arc<Manager>, max_seconds: u64) -> anyhow::Result<()> {
+    let max_duration = Duration::from_secs(max_seconds);
+    let candidates: Vec<(String, Option<String>)> = {
         let map = TASKS.read().await;
-        map.keys().cloned().collect()
+        map.iter()
+            .filter_map(|(stream, task)| {
+                if task.has_exceeded(max_duration) {
+                    Some((stream.clone(), task.next_rotation_base_dir()))
+                } else {
+                    None
+                }
+            })
+            .collect()
     };
 
-    if streams.is_empty() {
+    if candidates.is_empty() {
         return Ok(());
     }
 
     tracing::info!(
-        "[recorder] performing daily rotation for {} streams",
-        streams.len()
+        "[recorder] rotating {} streams after {} seconds",
+        candidates.len(),
+        max_seconds
     );
 
-    // Stop all
-    for s in &streams {
-        let _ = stop(s.clone()).await;
+    for (stream, _) in &candidates {
+        if let Err(e) = stop(stream.clone()).await {
+            tracing::error!(
+                "[recorder] failed to stop stream {} during rotation: {}",
+                stream,
+                e
+            );
+        }
     }
 
-    // Compute date path according to configured timezone
-    let offset_minutes = cfg.rotate_tz_offset_minutes;
-    let tz =
-        FixedOffset::east_opt(offset_minutes * 60).unwrap_or(FixedOffset::east_opt(0).unwrap());
-    let now_local = Utc::now().with_timezone(&tz);
-    let date_path = now_local.format("%Y/%m/%d").to_string();
-
-    // Start all again with tz-based date path: <stream>/<YYYY>/<MM>/<DD>
-    for s in streams {
-        if !should_record(&cfg.auto_streams, &s) {
-            // If the stream was manually started and not in auto_streams, still restart to preserve behavior
-            // Fall through to restart
-        }
-        let base_dir = Some(format!("{}/{}", s, date_path));
-        if let Err(e) = start(manager.clone(), s.clone(), base_dir).await {
-            tracing::error!("[recorder] failed to restart recording for {}: {}", s, e);
+    for (stream, base_dir) in candidates {
+        if let Err(e) = start(manager.clone(), stream.clone(), base_dir).await {
+            tracing::error!(
+                "[recorder] failed to restart stream {} during rotation: {}",
+                stream,
+                e
+            );
+        } else {
+            tracing::info!(
+                "[recorder] restarted recording for stream {} after reaching max duration",
+                stream
+            );
         }
     }
 
     Ok(())
+}
+
+#[cfg(feature = "recorder")]
+fn rotation_check_interval(max_seconds: u64) -> u64 {
+    let quarter = max_seconds / 4;
+    let base = if quarter == 0 { 1 } else { quarter };
+    base.clamp(1, 300)
 }

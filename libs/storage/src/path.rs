@@ -1,20 +1,15 @@
-use chrono::Datelike;
 use std::path::Path;
 
-/// Generate hierarchical storage path based on stream name and timestamp
-/// Format: {stream}/{year}/{month}/{day}/{filename}
-pub fn generate_path(stream: &str, timestamp: i64, filename: &str) -> String {
-    let dt =
-        chrono::DateTime::from_timestamp(timestamp / 1_000_000, 0).unwrap_or_else(chrono::Utc::now);
+/// Generate storage path based on stream name and UNIX timestamp
+/// Format: {stream}/{timestamp_seconds}/{filename}
+pub fn generate_path(stream: &str, timestamp_micros: i64, filename: &str) -> String {
+    let timestamp_seconds = if timestamp_micros < 0 {
+        0
+    } else {
+        timestamp_micros / 1_000_000
+    };
 
-    format!(
-        "{}/{:04}/{:02}/{:02}/{}",
-        stream,
-        dt.year_ce().1,
-        dt.month(),
-        dt.day(),
-        filename
-    )
+    format!("{}/{}/{}", stream, timestamp_seconds, filename)
 }
 
 /// Extract directory path from full storage path
@@ -36,18 +31,18 @@ mod tests {
         // 2024-01-15 12:00:00 UTC
         let timestamp = 1_705_320_000_000_000_i64;
         let path = generate_path("camera01", timestamp, "segment_001.m4s");
-        assert_eq!(path, "camera01/2024/01/15/segment_001.m4s");
+        assert_eq!(path, "camera01/1705320000/segment_001.m4s");
     }
 
     #[test]
     fn test_get_directory() {
-        let path = "camera01/2024/01/15/segment_001.m4s";
-        assert_eq!(get_directory(path), Some("camera01/2024/01/15"));
+        let path = "camera01/1705320000/segment_001.m4s";
+        assert_eq!(get_directory(path), Some("camera01/1705320000"));
     }
 
     #[test]
     fn test_validate_path() {
-        assert!(validate_path("camera01/2024/01/15/segment.m4s"));
+        assert!(validate_path("camera01/1705320000/segment.m4s"));
         assert!(!validate_path("../camera01/segment.m4s"));
         assert!(!validate_path("/absolute/path"));
         assert!(!validate_path(""));
