@@ -4,7 +4,7 @@ use tokio::net::TcpListener;
 use tokio::process::Command;
 
 mod common;
-use common::shutdown_signal;
+use common::{pick_ports, shutdown_signal};
 
 // === RTSP Bootstrapping ===
 //
@@ -47,6 +47,16 @@ struct Ports {
     whep: u16,
 }
 
+fn allocate_cycle_ports() -> Ports {
+    let ports = pick_ports(4);
+    Ports {
+        whip: ports[0],
+        p_ab: ports[1],
+        p_bc: ports[2],
+        whep: ports[3],
+    }
+}
+
 struct Detect {
     // channels
     audio: Option<u8>,
@@ -59,8 +69,7 @@ async fn test_livetwo_cycle_rtsp_h264() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7160;
-    let whep_port: u16 = 7175;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -72,12 +81,7 @@ async fn test_livetwo_cycle_rtsp_h264() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7165,
-            p_bc: 7170,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -92,8 +96,7 @@ async fn test_livetwo_cycle_rtsp_h264_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7360;
-    let whep_port: u16 = 7375;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -105,12 +108,7 @@ async fn test_livetwo_cycle_rtsp_h264_tcp() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7365,
-            p_bc: 7370,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -125,8 +123,7 @@ async fn test_livetwo_cycle_rtsp_vp8() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7020;
-    let whep_port: u16 = 7035;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -137,12 +134,7 @@ async fn test_livetwo_cycle_rtsp_vp8() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7025,
-            p_bc: 7030,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -157,8 +149,7 @@ async fn test_livetwo_cycle_rtsp_vp8_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7220;
-    let whep_port: u16 = 7235;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -171,12 +162,7 @@ async fn test_livetwo_cycle_rtsp_vp8_tcp() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7225,
-            p_bc: 7230,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -191,8 +177,7 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7040;
-    let whep_port: u16 = 7055;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -203,12 +188,7 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7045,
-            p_bc: 7050,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -223,8 +203,7 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7240;
-    let whep_port: u16 = 7255;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -237,12 +216,7 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7245,
-            p_bc: 7250,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -257,8 +231,7 @@ async fn test_livetwo_cycle_rtsp_vp9() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7060;
-    let whep_port: u16 = 7075;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -270,12 +243,7 @@ async fn test_livetwo_cycle_rtsp_vp9() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7065,
-            p_bc: 7070,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -290,8 +258,7 @@ async fn test_livetwo_cycle_rtsp_vp9_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7260;
-    let whep_port: u16 = 7275;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -305,12 +272,7 @@ async fn test_livetwo_cycle_rtsp_vp9_tcp() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7265,
-            p_bc: 7270,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -325,8 +287,7 @@ async fn test_livetwo_cycle_rtsp_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7080;
-    let whep_port: u16 = 7095;
+    let ports = allocate_cycle_ports();
 
     let codec = "-acodec libopus";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
@@ -335,12 +296,7 @@ async fn test_livetwo_cycle_rtsp_opus() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7085,
-            p_bc: 7090,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: Some(2),
             video: None,
@@ -355,8 +311,7 @@ async fn test_livetwo_cycle_rtsp_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7280;
-    let whep_port: u16 = 7295;
+    let ports = allocate_cycle_ports();
 
     let codec = "-acodec libopus";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec} -rtsp_transport tcp");
@@ -365,12 +320,7 @@ async fn test_livetwo_cycle_rtsp_opus_tcp() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7285,
-            p_bc: 7290,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: Some(2),
             video: None,
@@ -385,8 +335,7 @@ async fn test_livetwo_cycle_rtsp_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7120;
-    let whep_port: u16 = 7135;
+    let ports = allocate_cycle_ports();
 
     let codec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
@@ -395,12 +344,7 @@ async fn test_livetwo_cycle_rtsp_g722() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7125,
-            p_bc: 7130,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: Some(1),
             video: None,
@@ -415,8 +359,7 @@ async fn test_livetwo_cycle_rtsp_g722_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7320;
-    let whep_port: u16 = 7335;
+    let ports = allocate_cycle_ports();
 
     let codec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec} -rtsp_transport tcp");
@@ -425,12 +368,7 @@ async fn test_livetwo_cycle_rtsp_g722_tcp() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7325,
-            p_bc: 7330,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: Some(1),
             video: None,
@@ -445,8 +383,7 @@ async fn test_livetwo_cycle_rtsp_vp8_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7140;
-    let whep_port: u16 = 7155;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -460,12 +397,7 @@ async fn test_livetwo_cycle_rtsp_vp8_opus() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7145,
-            p_bc: 7150,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: Some(2),
             video: Some((width, height)),
@@ -480,8 +412,7 @@ async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 7340;
-    let whep_port: u16 = 7355;
+    let ports = allocate_cycle_ports();
 
     let width = 640;
     let height = 480;
@@ -495,12 +426,7 @@ async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
         ip,
         port,
         &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7345,
-            p_bc: 7350,
-            whep: whep_port,
-        },
+        ports,
         Detect {
             audio: Some(2),
             video: Some((width, height)),

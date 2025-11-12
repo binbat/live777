@@ -2412,6 +2412,7 @@ dependencies = [
  "liveman",
  "livetwo",
  "net4mqtt",
+ "portpicker",
  "reqwest",
  "serde",
  "serde_json",
