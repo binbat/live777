@@ -4,7 +4,7 @@ use tokio::net::TcpListener;
 use tokio::process::Command;
 
 mod common;
-use common::shutdown_signal;
+use common::{pick_ports, shutdown_signal};
 
 struct Detect {
     // channels
@@ -13,13 +13,49 @@ struct Detect {
     video: Option<(u16, u16)>,
 }
 
+struct WhepPorts {
+    video: Option<u16>,
+    audio: Option<u16>,
+}
+
+fn allocate_ports(needs_video: bool, needs_audio: bool) -> (u16, WhepPorts) {
+    let mut required = 1; // always reserve one port for WHIP ingest
+    if needs_video {
+        required += 1;
+    }
+    if needs_audio {
+        required += 1;
+    }
+
+    let ports = pick_ports(required);
+    let whip_port = ports[0];
+
+    let mut idx = 1;
+    let video_port = if needs_video {
+        let port = ports[idx];
+        idx += 1;
+        Some(port)
+    } else {
+        None
+    };
+
+    let audio_port = if needs_audio { Some(ports[idx]) } else { None };
+
+    (
+        whip_port,
+        WhepPorts {
+            video: video_port,
+            audio: audio_port,
+        },
+    )
+}
+
 #[tokio::test]
 async fn test_livetwo_rtp_vp8() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5000;
-    let whep_port: u16 = 5005;
+    let (whip_port, whep_ports) = allocate_ports(true, false);
 
     let width = 640;
     let height = 480;
@@ -31,7 +67,7 @@ async fn test_livetwo_rtp_vp8() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -45,8 +81,7 @@ async fn test_livetwo_rtp_vp8_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5010;
-    let whep_port: u16 = 5015;
+    let (whip_port, whep_ports) = allocate_ports(true, false);
 
     let width = 640;
     let height = 480;
@@ -58,7 +93,7 @@ async fn test_livetwo_rtp_vp8_ipv6() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -72,8 +107,7 @@ async fn test_livetwo_rtp_vp9() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5020;
-    let whep_port: u16 = 5025;
+    let (whip_port, whep_ports) = allocate_ports(true, false);
 
     let width = 640;
     let height = 480;
@@ -85,7 +119,7 @@ async fn test_livetwo_rtp_vp9() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -99,8 +133,7 @@ async fn test_livetwo_rtp_h264() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5030;
-    let whep_port: u16 = 5035;
+    let (whip_port, whep_ports) = allocate_ports(true, false);
 
     let width = 640;
     let height = 480;
@@ -114,7 +147,7 @@ async fn test_livetwo_rtp_h264() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -157,8 +190,7 @@ async fn test_livetwo_rtp_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5050;
-    let whep_port: u16 = 5055;
+    let (whip_port, whep_ports) = allocate_ports(false, true);
 
     let codec = "-acodec libopus";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
@@ -168,7 +200,7 @@ async fn test_livetwo_rtp_opus() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: Some(2),
             video: None,
@@ -182,8 +214,7 @@ async fn test_livetwo_rtp_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5060;
-    let whep_port: u16 = 5065;
+    let (whip_port, whep_ports) = allocate_ports(false, true);
 
     let codec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
@@ -193,7 +224,7 @@ async fn test_livetwo_rtp_g722() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: Some(1),
             video: None,
@@ -207,8 +238,7 @@ async fn test_livetwo_rtp_vp8_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5070;
-    let whep_port: u16 = 5075;
+    let (whip_port, whep_ports) = allocate_ports(true, true);
 
     let width = 640;
     let height = 480;
@@ -222,7 +252,7 @@ async fn test_livetwo_rtp_vp8_opus() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: Some(2),
             video: Some((width, height)),
@@ -236,8 +266,7 @@ async fn test_livetwo_rtp_h264_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5080;
-    let whep_port: u16 = 5085;
+    let (whip_port, whep_ports) = allocate_ports(true, true);
 
     let width = 640;
     let height = 480;
@@ -252,7 +281,7 @@ async fn test_livetwo_rtp_h264_g722() {
         port,
         &prefix,
         whip_port,
-        whep_port,
+        whep_ports,
         Detect {
             audio: Some(1),
             video: Some((width, height)),
@@ -266,7 +295,7 @@ async fn helper_livetwo_rtp(
     port: u16,
     prefix: &str,
     whip_port: u16,
-    whep_port: u16,
+    whep_ports: WhepPorts,
     detect: Detect,
 ) {
     let cfg = liveion::config::Config::default();
@@ -346,19 +375,22 @@ async fn helper_livetwo_rtp(
         _ => ip.to_string(),
     };
 
-    let target_url = if detect.audio.is_some() && detect.video.is_some() {
-        format!(
-            "rtp://{}?video={}&audio={}",
-            ip_str,
-            whep_port,
-            whep_port + 2
-        )
-    } else if detect.video.is_some() {
-        format!("rtp://{ip_str}?video={whep_port}")
-    } else if detect.audio.is_some() {
-        format!("rtp://{ip_str}?audio={whep_port}")
-    } else {
+    let WhepPorts { video, audio } = whep_ports;
+
+    let mut query_params = Vec::new();
+    if detect.video.is_some() {
+        let port = video.expect("missing video port");
+        query_params.push(format!("video={port}"));
+    }
+    if detect.audio.is_some() {
+        let port = audio.expect("missing audio port");
+        query_params.push(format!("audio={port}"));
+    }
+
+    let target_url = if query_params.is_empty() {
         format!("rtp://{ip_str}")
+    } else {
+        format!("rtp://{}?{}", ip_str, query_params.join("&"))
     };
 
     tokio::spawn(livetwo::whep::from(
