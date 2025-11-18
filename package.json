@@ -39,7 +39,6 @@
   "devDependencies": {
     "@biomejs/biome": "2.3.3",
     "@eslint/js": "^9.39.1",
-    "@playwright/test": "^1.56.1",
     "@preact/preset-vite": "^2.10.2",
     "@stylistic/eslint-plugin-js": "^4.4.1",
     "@types/node": "^24.10.0",
