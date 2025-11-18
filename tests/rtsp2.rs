@@ -11,17 +11,17 @@ use common::shutdown_signal;
 // - ffmpeg
 // - whipinto rtsp server
 //
-// # A
+// # stream: A
 //
 // - whepfrom rtsp server
 // - whipinto rtsp client
 //
-// # B
+// # stream: B
 //
 // - whipinto rtsp server
 // - whepfrom rtsp client
 //
-// # C
+// # stream: C
 //
 // - whepfrom rtsp server
 // - ffprobe
@@ -55,7 +55,7 @@ struct Detect {
 }
 
 #[tokio::test]
-async fn test_livetwo_cycle_rtsp_h264() {
+async fn test_livetwo_cycle_rtsp_h264_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -121,7 +121,7 @@ async fn test_livetwo_cycle_rtsp_h264_tcp() {
 }
 
 #[tokio::test]
-async fn test_livetwo_cycle_rtsp_vp8() {
+async fn test_livetwo_cycle_rtsp_vp8_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -187,7 +187,7 @@ async fn test_livetwo_cycle_rtsp_vp8_tcp() {
 }
 
 #[tokio::test]
-async fn test_livetwo_cycle_rtsp_vp8_ipv6() {
+async fn test_livetwo_cycle_rtsp_vp8_ipv6_udp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
@@ -253,7 +253,7 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
 }
 
 #[tokio::test]
-async fn test_livetwo_cycle_rtsp_vp9() {
+async fn test_livetwo_cycle_rtsp_vp9_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -321,7 +321,7 @@ async fn test_livetwo_cycle_rtsp_vp9_tcp() {
 }
 
 #[tokio::test]
-async fn test_livetwo_cycle_rtsp_opus() {
+async fn test_livetwo_cycle_rtsp_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -381,7 +381,7 @@ async fn test_livetwo_cycle_rtsp_opus_tcp() {
 }
 
 #[tokio::test]
-async fn test_livetwo_cycle_rtsp_g722() {
+async fn test_livetwo_cycle_rtsp_g722_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -441,7 +441,7 @@ async fn test_livetwo_cycle_rtsp_g722_tcp() {
 }
 
 #[tokio::test]
-async fn test_livetwo_cycle_rtsp_vp8_opus() {
+async fn test_livetwo_cycle_rtsp_vp8_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -585,6 +585,7 @@ async fn helper_livetwo_cycle_rtsp(
     }
 
     assert!(result.is_some());
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     tokio::spawn(livetwo::whep::from(
         format!(

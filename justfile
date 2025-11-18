@@ -29,6 +29,32 @@ run:
 run-cluster:
     cargo run --bin=livenil --features=webui -- -c conf/livenil
 
+[group('test-cycle-rtsp')]
+test-cycle-rtsp-0a:
+    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/cycle-rtsp-a --command \
+        "ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -vcodec libvpx -f rtsp rtsp://{{host}}:8550"
+
+[group('test-cycle-rtsp')]
+test-cycle-rtsp-1a:
+    cargo run --bin=whepfrom -- -o rtsp-listen://{{host}}:8650 -w {{server}}/whep/cycle-rtsp-a
+
+[group('test-cycle-rtsp')]
+test-cycle-rtsp-2b:
+    cargo run --bin=whipinto -- -i rtsp://{{host}}:8650 -w {{server}}/whip/cycle-rtsp-b
+
+[group('test-cycle-rtsp')]
+test-cycle-rtsp-3c:
+    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8750 -w {{server}}/whip/cycle-rtsp-c
+
+[group('test-cycle-rtsp')]
+test-cycle-rtsp-4b:
+    cargo run --bin=whepfrom -- -o rtsp://{{host}}:8750 -w {{server}}/whep/cycle-rtsp-b
+
+[group('test-cycle-rtsp')]
+test-cycle-rtsp-5c:
+    cargo run --bin=whepfrom -- -o rtsp-listen://{{host}}:8850 -w {{server}}/whep/cycle-rtsp-c --command \
+        "ffplay rtsp://{{host}}:8850"
+
 test-whipinto-rtp:
     cargo run --bin=whipinto -- -i {{isdp}} -w {{server}}/whip/test-rtp --command \
         "ffmpeg -re {{vsrc}} -vcodec libvpx -f rtp rtp://{{host}}:5002 -sdp_file {{isdp}}"
