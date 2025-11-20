@@ -210,24 +210,3 @@ records/
 ```
 
 - 时间戳目录（如 `stream1/1762842203`）是 Live777 的唯一默认布局，也覆盖了 `max_recording_seconds` 触发的自动轮转。仅在非常明确的场景下才覆盖 `base_dir`，并留意这会让 `record_id` 变成空字符串。
-
-````
-```
-
-## 文件组织结构 {#file-structure}
-
-录制文件会根据 `record_dir` 组织：
-
-```
-records/
-└── stream1/
-    └── 1762842203/
-        ├── manifest.mpd
-        ├── v_init.m4s
-        ├── a_init.m4s
-        ├── v_seg_0001.m4s
-        ├── a_seg_0001.m4s
-        └── ...
-```
-
-- 时间戳目录（如 `stream1/1762842203`）是 Live777 的唯一默认布局，也覆盖了 `max_recording_seconds` 触发的自动轮转。仅在非常明确的场景下才覆盖 `base_dir`，并留意这会让 `record_id` 变成空字符串。

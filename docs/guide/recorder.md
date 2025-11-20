@@ -210,24 +210,3 @@ records/
 ```
 
 - Timestamp-based folders (`stream/1762842203`) are the canonical layout produced by Live777, including automatic rotations triggered by `max_recording_seconds`. Provide a custom `base_dir` only if you intentionally need a different structure and accept the impact on `record_id` values.
-
-````
-```
-
-## File Structure {#file-structure}
-
-Recorded files are organized by `record_dir`:
-
-```
-records/
-└── stream1/
-    └── 1762842203/
-        ├── manifest.mpd
-        ├── v_init.m4s
-        ├── a_init.m4s
-        ├── v_seg_0001.m4s
-        ├── a_seg_0001.m4s
-        └── ...
-```
-
-- Timestamp-based folders (`stream/1762842203`) are the canonical layout produced by Live777, including automatic rotations triggered by `max_recording_seconds`. Provide a custom `base_dir` only if you intentionally need a different structure and accept the impact on `record_id` values.
