@@ -12,7 +12,7 @@
     - `docker` / `containerd` / `podman`
 - [nfpm](https://nfpm.goreleaser.com/)
 
-## 二进制包和源码对应关系
+## 二进制包和源码对应关系 {#binary}
 
 Binary     | Package    | Comment
 ---------- | ---------- | -----------
@@ -23,7 +23,7 @@ Binary     | Package    | Comment
 `whepfrom` | `livetwo`  | whep ro rtp, rtsp
 `livenil`  | `livenil`  | 集群启动器，主要用在开发和测试环境
 
-## Release build
+## Release build {#release}
 
 ```bash
 # Build Web UI
@@ -48,7 +48,7 @@ cp conf/live777.toml live777.toml
 cp conf/liveman.toml liveman.toml
 ```
 
-## Log
+## 自定义日志 {#log}
 
 可以使用 `RUST_LOG` 环境变量来设置日志分模块输出
 
@@ -64,7 +64,7 @@ RUST_LOG=live777=<cfg.log.level>,net4mqtt=<cfg.log.level>,http_log=<cfg.log.leve
 RUST_LOG=live777=error,net4mqtt=debug,webrtc=error",
 ```
 
-## 以开发模式运行
+## 以开发模式运行 {#developer-mode}
 
 ### WebUI
 
@@ -121,4 +121,13 @@ cargo run --bin=whipinto -- -i input.sdp -w http://localhost:7777/whip/777 --com
 cargo run --bin=whepfrom -- -o output.sdp -w http://localhost:7777/whep/777 --command \
 'ffplay -protocol_whitelist rtp,file,udp -i output.sdp'
 ```
+
+## 浏览器 WebRTC 调试工具 {#browser}
+
+大部份浏览器内置了 WebRTC 调试工具
+
+| Firefox        | Chrome                       | Edge                       |
+| -------------- | ---------------------------- | -------------------------- |
+| `about:webrtc` | `chrome://webrtc-internals/` | `edge://webrtc-internals/` |
+|                | `chrome://webrtc-logs/`      | `edge://webrtc-logs/`      |
 

@@ -12,7 +12,7 @@ OptDepends:
     - `docker` / `containerd` / `podman`
 - [nfpm](https://nfpm.goreleaser.com/)
 
-## Binary and source code
+## Binary and source code {#binary}
 
 Binary     | Package    | Comment
 ---------- | ---------- | -----------
@@ -23,7 +23,7 @@ Binary     | Package    | Comment
 `whepfrom` | `livetwo`  | whep ro rtp, rtsp
 `livenil`  | `livenil`  | Only at developer, test, demo
 
-## Release build
+## Release build {#release}
 
 ```bash
 # Build Web UI
@@ -48,7 +48,7 @@ cp conf/live777.toml live777.toml
 cp conf/liveman.toml liveman.toml
 ```
 
-## Log
+## Custom log {#log}
 
 Use `RUST_LOG` environment variable for set custom log level
 
@@ -64,7 +64,7 @@ You can use this for override default log set
 RUST_LOG=live777=error,net4mqtt=debug,webrtc=error",
 ```
 
-## Run in debug mode
+## Run in developer mode {#developer-mode}
 
 ### WebUI
 
@@ -121,4 +121,13 @@ cargo run --bin=whipinto -- -i input.sdp -w http://localhost:7777/whip/777 --com
 cargo run --bin=whepfrom -- -o output.sdp -w http://localhost:7777/whep/777 --command \
 'ffplay -protocol_whitelist rtp,file,udp -i output.sdp'
 ```
+
+## Use Web browser debug {#browser}
+
+Most browser build-in WebRTC debug tools
+
+| Firefox        | Chrome                       | Edge                       |
+| -------------- | ---------------------------- | -------------------------- |
+| `about:webrtc` | `chrome://webrtc-internals/` | `edge://webrtc-internals/` |
+|                | `chrome://webrtc-logs/`      | `edge://webrtc-logs/`      |
 
