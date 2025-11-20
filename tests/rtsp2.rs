@@ -585,6 +585,8 @@ async fn helper_livetwo_cycle_rtsp(
     }
 
     assert!(result.is_some());
+
+    // TODO: publish.state == connected is not ready
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     tokio::spawn(livetwo::whep::from(

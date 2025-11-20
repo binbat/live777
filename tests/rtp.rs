@@ -123,34 +123,32 @@ async fn test_livetwo_rtp_h264() {
     .await;
 }
 
-// TODO: In GitHub Actions, always have some problem
-//
-//#[tokio::test]
-//async fn test_livetwo_rtp_vp9_4k() {
-//    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-//    let port = 0;
-//
-//    let whip_port: u16 = 5040;
-//    let whep_port: u16 = 5045;
-//
-//    let width = 3840;
-//    let height = 2160;
-//    let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p";
-//    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
-//
-//    helper_livetwo_rtp(
-//        ip,
-//        port,
-//        &prefix,
-//        whip_port,
-//        whep_port,
-//        Detect {
-//            audio: None,
-//            video: Some((width, height)),
-//        },
-//    )
-//    .await;
-//}
+#[tokio::test]
+async fn test_livetwo_rtp_vp9_4k() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 5040;
+    let whep_port: u16 = 5045;
+
+    let width = 3840;
+    let height = 2160;
+    let codec = "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p";
+    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
+
+    helper_livetwo_rtp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+    )
+    .await;
+}
 
 #[tokio::test]
 async fn test_livetwo_rtp_opus() {
@@ -332,6 +330,9 @@ async fn helper_livetwo_rtp(
     }
 
     assert!(result.is_some());
+
+    // TODO: publish.state == connected is not ready
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     let tmp_path = tempfile::tempdir()
         .unwrap()
