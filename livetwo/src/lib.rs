@@ -2,7 +2,6 @@ pub mod whep;
 pub mod whip;
 
 pub mod payload;
-mod rtspclient;
 mod utils;
 
 #[cfg(test)]

@@ -3947,12 +3947,16 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "cli",
+ "md-5",
  "portpicker",
  "rtsp-types",
  "sdp",
  "sdp-types",
+ "serde",
  "tokio",
  "tracing",
+ "url",
+ "uuid",
  "webrtc",
 ]
 
