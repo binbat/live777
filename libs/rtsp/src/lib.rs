@@ -9,7 +9,9 @@ pub mod types;
 pub use channels::RtspChannels;
 pub use client::{AuthParams, RtspSession, setup_rtsp_session};
 pub use sdp::{extract_h264_params, extract_h265_params, filter_sdp, parse_media_info_from_sdp};
-pub use server::{Handler, RtspServer, ServerConfig, ServerSession, setup_rtsp_server_session};
+pub use server::{
+    Handler, PortUpdate, RtspServer, ServerConfig, ServerSession, setup_rtsp_server_session,
+};
 pub use transport_manager::{TransportConfig, TransportManager, UdpPortInfo, UdpSocketPair};
 pub use types::{
     AudioCodecParams, CodecInfo, MediaInfo, SessionMode, TransportInfo, VideoCodecParams,

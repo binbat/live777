@@ -6,13 +6,21 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::broadcast;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tracing::{debug, error, info, trace, warn};
 
 use super::{Handler, ServerConfig, ServerSession};
+use crate::channels::{InterleavedChannel, InterleavedData};
 use crate::sdp::parse_codecs_from_sdp;
 use crate::tcp_stream::handle_tcp_stream;
 use crate::types::{MediaInfo, SessionMode, TransportInfo};
+
+#[derive(Debug, Clone)]
+pub struct PortUpdate {
+    pub connection_id: u32,
+    pub media_info: MediaInfo,
+}
 
 pub struct RtspServerSession {
     handler: Handler,
@@ -44,11 +52,7 @@ impl RtspServerSession {
     pub async fn handle_session(
         mut self,
         _use_tcp: bool,
-    ) -> Result<(
-        MediaInfo,
-        Option<UnboundedSender<(u8, Vec<u8>)>>,
-        Option<UnboundedReceiver<(u8, Vec<u8>)>>,
-    )> {
+    ) -> Result<(MediaInfo, Option<InterleavedChannel>)> {
         debug!(
             "Starting RTSP session: mode={:?}, addr={}",
             self.mode, self.addr
@@ -59,7 +63,6 @@ impl RtspServerSession {
         let mut video_ports: Option<(u16, u16, u16, u16)> = None;
         let mut audio_ports: Option<(u16, u16, u16, u16)> = None;
         let mut actual_use_tcp = false;
-        let mut media_started = false;
 
         loop {
             let request = self.read_request().await?;
@@ -84,7 +87,7 @@ impl RtspServerSession {
                         .ok_or_else(|| anyhow!("Missing Transport header"))?;
 
                     let transport_str = transport_header.as_str();
-                    info!("Client requested transport: {}", transport_str);
+                    debug!("Client requested transport: {}", transport_str);
 
                     let client_wants_tcp =
                         transport_str.contains("TCP") || transport_str.contains("interleaved");
@@ -93,10 +96,37 @@ impl RtspServerSession {
                         .request_uri()
                         .map(|u| u.to_string())
                         .unwrap_or_default();
-                    let is_video = uri.contains("video")
+
+                    let is_video = if uri.contains("video")
                         || uri.contains("trackID=0")
                         || uri.contains("streamid=0")
-                        || (video_channels.is_none() && video_ports.is_none());
+                    {
+                        true
+                    } else if uri.contains("audio")
+                        || uri.contains("trackID=1")
+                        || uri.contains("streamid=1")
+                    {
+                        false
+                    } else {
+                        let sdp_bytes = self
+                            .handler
+                            .sdp_content()
+                            .ok_or_else(|| anyhow!("No SDP"))?;
+                        let sdp = sdp_types::Session::parse(sdp_bytes)?;
+
+                        let has_video = sdp.medias.iter().any(|m| m.media == "video");
+                        let has_audio = sdp.medias.iter().any(|m| m.media == "audio");
+
+                        if has_video && !has_audio {
+                            true
+                        } else if !has_video && has_audio {
+                            false
+                        } else if has_video && has_audio {
+                            video_channels.is_none() && video_ports.is_none()
+                        } else {
+                            true
+                        }
+                    };
 
                     if client_wants_tcp {
                         actual_use_tcp = true;
@@ -118,13 +148,13 @@ impl RtspServerSession {
 
                         if is_video {
                             video_ports = Some((client_rtp, client_rtcp, server_rtp, server_rtcp));
-                            info!(
+                            debug!(
                                 "Video UDP ports: client={}:{}, server={}:{}",
                                 client_rtp, client_rtcp, server_rtp, server_rtcp
                             );
                         } else {
                             audio_ports = Some((client_rtp, client_rtcp, server_rtp, server_rtcp));
-                            info!(
+                            debug!(
                                 "Audio UDP ports: client={}:{}, server={}:{}",
                                 client_rtp, client_rtcp, server_rtp, server_rtcp
                             );
@@ -147,11 +177,10 @@ impl RtspServerSession {
                     };
 
                     info!("MediaInfo: {:?}", media_info);
-                    media_started = true;
 
                     if actual_use_tcp {
-                        let (tx, rx) = self.start_tcp_data_transfer().await?;
-                        return Ok((media_info, Some(tx), Some(rx)));
+                        let channels = self.start_tcp_data_transfer().await?;
+                        return Ok((media_info, Some(channels)));
                     } else {
                         tokio::spawn(async move {
                             if let Err(e) = self.keep_control_connection().await {
@@ -159,20 +188,12 @@ impl RtspServerSession {
                             }
                         });
 
-                        return Ok((media_info, None, None));
+                        return Ok((media_info, None));
                     }
                 }
                 Method::Teardown => {
                     let response = self.handler.handle_teardown(&request).await?;
                     self.send_response(&response).await?;
-
-                    if media_started {
-                        info!("Session terminated by TEARDOWN after media started");
-                        return Err(anyhow!("Session terminated by TEARDOWN"));
-                    } else {
-                        info!("Session terminated by TEARDOWN before media started");
-                        return Err(anyhow!("Session terminated by TEARDOWN"));
-                    }
                 }
                 _ => {
                     warn!("Unsupported method: {:?}", request.method());
@@ -182,7 +203,7 @@ impl RtspServerSession {
     }
 
     async fn keep_control_connection(mut self) -> Result<()> {
-        debug!("Keeping RTSP control connection alive for UDP mode");
+        debug!("Keeping RTSP control connection alive");
 
         loop {
             match self.read_request().await {
@@ -254,12 +275,7 @@ impl RtspServerSession {
             .await
     }
 
-    async fn start_tcp_data_transfer(
-        self,
-    ) -> Result<(
-        UnboundedSender<(u8, Vec<u8>)>,
-        UnboundedReceiver<(u8, Vec<u8>)>,
-    )> {
+    async fn start_tcp_data_transfer(self) -> Result<InterleavedChannel> {
         let (data_from_stream_tx, data_from_stream_rx) = unbounded_channel();
         let (data_to_stream_tx, data_to_stream_rx) = unbounded_channel();
 
@@ -276,10 +292,10 @@ impl RtspServerSession {
             }
         });
 
-        match self.mode {
-            SessionMode::Push => Ok((data_to_stream_tx, data_from_stream_rx)),
-            SessionMode::Pull => Ok((data_to_stream_tx, data_from_stream_rx)),
-        }
+        Ok(match self.mode {
+            SessionMode::Push => (data_to_stream_tx, data_from_stream_rx),
+            SessionMode::Pull => (data_to_stream_tx, data_from_stream_rx),
+        })
     }
 
     fn build_media_info_tcp(
@@ -403,10 +419,6 @@ impl RtspServerSession {
                 }
                 Err(e) => {
                     error!("Failed to parse RTSP request: {:?}", e);
-                    error!(
-                        "Buffer content (first 200 bytes): {:?}",
-                        String::from_utf8_lossy(&buffer[..buffer.len().min(200)])
-                    );
                     return Err(anyhow!("Failed to parse RTSP request: {:?}", e));
                 }
                 Ok(_) => {
@@ -424,8 +436,8 @@ pub async fn setup_rtsp_server_session(
     use_tcp: bool,
 ) -> Result<(
     MediaInfo,
-    Option<UnboundedSender<(u8, Vec<u8>)>>,
-    Option<UnboundedReceiver<(u8, Vec<u8>)>>,
+    Option<InterleavedChannel>,
+    UnboundedReceiver<PortUpdate>,
 )> {
     use tokio::net::TcpListener;
 
@@ -438,22 +450,153 @@ pub async fn setup_rtsp_server_session(
     let local_addr = listener.local_addr()?;
     info!("RTSP server listening on {}", local_addr);
 
-    let (socket, addr) = listener.accept().await?;
-    info!("RTSP client connected from {}", addr);
+    let sdp_content = Arc::new(sdp_content);
 
-    let sessions = Arc::new(RwLock::new(HashMap::new()));
-    let config = ServerConfig::default();
+    let (broadcast_tx, _) = broadcast::channel::<InterleavedData>(100);
+    let broadcast_tx = Arc::new(broadcast_tx);
 
-    let session = RtspServerSession::new(socket, addr, sessions, config, sdp_content, mode);
-    session.handle_session(use_tcp).await
-}
+    let (main_data_to_webrtc_tx, main_data_to_webrtc_rx) = unbounded_channel::<InterleavedData>();
+    let (main_data_from_webrtc_tx, mut main_data_from_webrtc_rx) =
+        unbounded_channel::<InterleavedData>();
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    let (port_update_tx, port_update_rx) = unbounded_channel::<PortUpdate>();
+    let port_update_tx = Arc::new(port_update_tx);
 
-    #[test]
-    fn test_session_mode() {
-        assert_ne!(SessionMode::Push, SessionMode::Pull);
+    let broadcast_tx_clone = broadcast_tx.clone();
+    tokio::spawn(async move {
+        while let Some(data) = main_data_from_webrtc_rx.recv().await {
+            let _ = broadcast_tx_clone.send(data);
+        }
+    });
+
+    let main_data_to_webrtc_tx = Arc::new(main_data_to_webrtc_tx);
+
+    let (media_info_tx, mut media_info_rx) = unbounded_channel::<MediaInfo>();
+    let media_info_tx = Arc::new(media_info_tx);
+
+    let mut connection_count = 0u32;
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((socket, addr)) => {
+                    connection_count += 1;
+                    let conn_id = connection_count;
+                    info!("RTSP client #{} connected from {}", conn_id, addr);
+
+                    let sessions = Arc::new(RwLock::new(HashMap::new()));
+                    let config = ServerConfig::default();
+                    let sdp_clone = (*sdp_content).clone();
+
+                    let session =
+                        RtspServerSession::new(socket, addr, sessions, config, sdp_clone, mode);
+
+                    let media_info_tx_clone = media_info_tx.clone();
+                    let main_data_to_webrtc_tx_clone = main_data_to_webrtc_tx.clone();
+                    let broadcast_rx = broadcast_tx.subscribe();
+                    let port_update_tx_clone = port_update_tx.clone();
+
+                    tokio::spawn(async move {
+                        match session.handle_session(use_tcp).await {
+                            Ok((media_info, channels)) => {
+                                info!("Connection #{} session established successfully", conn_id);
+
+                                let _ = port_update_tx_clone.send(PortUpdate {
+                                    connection_id: conn_id,
+                                    media_info: media_info.clone(),
+                                });
+
+                                if conn_id == 1 {
+                                    let _ = media_info_tx_clone.send(media_info);
+                                }
+
+                                if let Some((conn_tx, mut conn_rx)) = channels {
+                                    let tx_clone = main_data_to_webrtc_tx_clone.clone();
+                                    tokio::spawn(async move {
+                                        info!("Connection #{} RTP receiver started", conn_id);
+                                        while let Some(data) = conn_rx.recv().await {
+                                            if tx_clone.send(data).is_err() {
+                                                warn!(
+                                                    "Connection #{} WebRTC channel closed",
+                                                    conn_id
+                                                );
+                                                break;
+                                            }
+                                        }
+                                        info!("Connection #{} RTP receiver stopped", conn_id);
+                                    });
+
+                                    let mut broadcast_rx = broadcast_rx;
+                                    tokio::spawn(async move {
+                                        info!("Connection #{} RTCP forwarder started", conn_id);
+                                        loop {
+                                            match broadcast_rx.recv().await {
+                                                Ok(data) => {
+                                                    if conn_tx.send(data).is_err() {
+                                                        warn!(
+                                                            "Connection #{} RTSP channel closed",
+                                                            conn_id
+                                                        );
+                                                        break;
+                                                    }
+                                                }
+                                                Err(broadcast::error::RecvError::Lagged(n)) => {
+                                                    warn!(
+                                                        "Connection #{} lagged by {} messages",
+                                                        conn_id, n
+                                                    );
+                                                }
+                                                Err(broadcast::error::RecvError::Closed) => {
+                                                    info!(
+                                                        "Broadcast channel closed for connection #{}",
+                                                        conn_id
+                                                    );
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        info!("Connection #{} RTCP forwarder stopped", conn_id);
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Connection #{} error: {}, waiting for reconnection...",
+                                    conn_id, e
+                                );
+                            }
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to accept connection: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    });
+
+    let media_info = media_info_rx
+        .recv()
+        .await
+        .ok_or_else(|| anyhow!("Failed to receive media info from first connection"))?;
+
+    let uses_tcp = media_info
+        .video_transport
+        .as_ref()
+        .is_some_and(|t| matches!(t, TransportInfo::Tcp { .. }))
+        || media_info
+            .audio_transport
+            .as_ref()
+            .is_some_and(|t| matches!(t, TransportInfo::Tcp { .. }));
+
+    if uses_tcp {
+        Ok((
+            media_info,
+            Some((main_data_from_webrtc_tx, main_data_to_webrtc_rx)),
+            port_update_rx,
+        ))
+    } else {
+        Ok((media_info, None, port_update_rx))
     }
 }

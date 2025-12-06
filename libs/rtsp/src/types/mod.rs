@@ -19,6 +19,35 @@ pub struct MediaInfo {
     pub audio_transport: Option<TransportInfo>,
 }
 
+impl MediaInfo {
+    pub fn normalize_audio_only(&mut self) {
+        if self.is_audio_only() && self.audio_transport.is_none() && self.video_transport.is_some()
+        {
+            self.audio_transport = self.video_transport.take();
+        }
+    }
+
+    pub fn is_audio_only(&self) -> bool {
+        self.video_codec.is_none() && self.audio_codec.is_some()
+    }
+
+    pub fn is_video_only(&self) -> bool {
+        self.video_codec.is_some() && self.audio_codec.is_none()
+    }
+
+    pub fn has_both(&self) -> bool {
+        self.video_codec.is_some() && self.audio_codec.is_some()
+    }
+
+    pub fn video_transport(&self) -> Option<&TransportInfo> {
+        self.video_transport.as_ref()
+    }
+
+    pub fn audio_transport(&self) -> Option<&TransportInfo> {
+        self.audio_transport.as_ref()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VideoCodecParams {
     H264 {
@@ -67,6 +96,28 @@ pub enum TransportInfo {
         rtp_channel: u8,
         rtcp_channel: u8,
     },
+}
+
+impl TransportInfo {
+    pub fn is_tcp(&self) -> bool {
+        matches!(self, TransportInfo::Tcp { .. })
+    }
+
+    pub fn is_udp(&self) -> bool {
+        matches!(self, TransportInfo::Udp { .. })
+    }
+
+    pub fn tcp_channels(&self) -> Option<(u8, u8)> {
+        if let TransportInfo::Tcp {
+            rtp_channel,
+            rtcp_channel,
+        } = self
+        {
+            Some((*rtp_channel, *rtcp_channel))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -212,5 +263,82 @@ impl From<AudioCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecC
             },
             rtcp_feedback: vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_media_info_is_audio_only() {
+        let media_info = MediaInfo {
+            video_codec: None,
+            audio_codec: Some(AudioCodecParams {
+                codec: "opus".to_string(),
+                payload_type: 111,
+                clock_rate: 48000,
+                channels: 2,
+            }),
+            video_transport: None,
+            audio_transport: None,
+        };
+
+        assert!(media_info.is_audio_only());
+        assert!(!media_info.is_video_only());
+        assert!(!media_info.has_both());
+    }
+
+    #[test]
+    fn test_media_info_normalize_audio_only() {
+        let mut media_info = MediaInfo {
+            video_codec: None,
+            audio_codec: Some(AudioCodecParams {
+                codec: "opus".to_string(),
+                payload_type: 111,
+                clock_rate: 48000,
+                channels: 2,
+            }),
+            video_transport: Some(TransportInfo::Udp {
+                rtp_send_port: Some(5004),
+                rtp_recv_port: None,
+                rtcp_send_port: Some(5005),
+                rtcp_recv_port: None,
+                server_addr: None,
+            }),
+            audio_transport: None,
+        };
+
+        media_info.normalize_audio_only();
+
+        assert!(media_info.audio_transport.is_some());
+        assert!(media_info.video_transport.is_none());
+    }
+
+    #[test]
+    fn test_transport_info_is_tcp() {
+        let tcp_transport = TransportInfo::Tcp {
+            rtp_channel: 0,
+            rtcp_channel: 1,
+        };
+
+        assert!(tcp_transport.is_tcp());
+        assert!(!tcp_transport.is_udp());
+        assert_eq!(tcp_transport.tcp_channels(), Some((0, 1)));
+    }
+
+    #[test]
+    fn test_transport_info_is_udp() {
+        let udp_transport = TransportInfo::Udp {
+            rtp_send_port: Some(5004),
+            rtp_recv_port: None,
+            rtcp_send_port: Some(5005),
+            rtcp_recv_port: None,
+            server_addr: None,
+        };
+
+        assert!(udp_transport.is_udp());
+        assert!(!udp_transport.is_tcp());
+        assert_eq!(udp_transport.tcp_channels(), None);
     }
 }

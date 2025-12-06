@@ -120,7 +120,7 @@ impl Handler {
         debug!("Handling SETUP UDP request from {}", self.addr);
 
         let (client_rtp_port, client_rtcp_port) = self.parse_client_ports(transport_str)?;
-        info!(
+        debug!(
             "Client ports: RTP={}, RTCP={}",
             client_rtp_port, client_rtcp_port
         );
@@ -132,7 +132,7 @@ impl Handler {
         drop(temp_rtp);
         drop(temp_rtcp);
 
-        info!(
+        debug!(
             "Allocated server ports: RTP={}, RTCP={}",
             server_rtp_port, server_rtcp_port
         );

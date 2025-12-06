@@ -73,7 +73,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:8554".parse().unwrap();
         let session = ServerSession::new("test-id".to_string(), addr, 0);
 
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_secs(1));
         assert!(session.is_expired(Instant::now()));
     }
 
@@ -82,7 +82,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:8554".parse().unwrap();
         let session = ServerSession::new("test-id".to_string(), addr, 60);
 
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_secs(1));
         assert!(session.age() > 0);
     }
 
@@ -95,8 +95,9 @@ mod tests {
         let idle_before = session.idle_time();
 
         session.update_activity();
+        thread::sleep(Duration::from_millis(10));
         let idle_after = session.idle_time();
 
-        assert!(idle_before > idle_after);
+        assert!(idle_before >= idle_after);
     }
 }

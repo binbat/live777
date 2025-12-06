@@ -5,6 +5,7 @@ use tracing::{debug, error, info, trace};
 
 use super::RtspMode;
 use super::auth::{AuthParams, generate_digest_response, parse_auth_header};
+use crate::channels::InterleavedChannel;
 use crate::transport_manager::{TransportConfig, UdpPortInfo};
 use crate::{MediaInfo, TransportInfo};
 
@@ -192,7 +193,11 @@ where
         Ok(())
     }
 
-    pub async fn setup_udp(&mut self, control_url: &str) -> Result<TransportConfig> {
+    pub async fn setup_udp(
+        &mut self,
+        control_url: &str,
+        mode: &crate::client::RtspMode,
+    ) -> Result<TransportConfig> {
         let rtp_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
         let rtcp_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
 
@@ -207,10 +212,20 @@ where
         drop(rtp_socket);
         drop(rtcp_socket);
 
-        let transport_header = format!(
-            "RTP/AVP;unicast;client_port={}-{}",
-            client_rtp_port, client_rtcp_port
-        );
+        let transport_header = match mode {
+            crate::client::RtspMode::Pull => {
+                format!(
+                    "RTP/AVP;unicast;client_port={}-{}",
+                    client_rtp_port, client_rtcp_port
+                )
+            }
+            crate::client::RtspMode::Push => {
+                format!(
+                    "RTP/AVP;unicast;client_port={}-{};mode=record",
+                    client_rtp_port, client_rtcp_port
+                )
+            }
+        };
 
         let mut setup_request = Request::builder(Method::Setup, Version::V1_0)
             .request_uri(control_url.parse::<Url>()?)
@@ -225,10 +240,20 @@ where
                 .header(headers::CSEQ, self.cseq.to_string())
                 .header(
                     headers::TRANSPORT,
-                    format!(
-                        "RTP/AVP;unicast;client_port={}-{}",
-                        client_rtp_port, client_rtcp_port
-                    ),
+                    match mode {
+                        crate::client::RtspMode::Pull => {
+                            format!(
+                                "RTP/AVP;unicast;client_port={}-{}",
+                                client_rtp_port, client_rtcp_port
+                            )
+                        }
+                        crate::client::RtspMode::Push => {
+                            format!(
+                                "RTP/AVP;unicast;client_port={}-{};mode=record",
+                                client_rtp_port, client_rtcp_port
+                            )
+                        }
+                    },
                 )
                 .header(headers::SESSION, sid.as_str())
                 .header(headers::USER_AGENT, USER_AGENT)
@@ -285,15 +310,29 @@ where
         }))
     }
 
-    pub async fn setup_tcp(&mut self, control_url: &str) -> Result<TransportConfig> {
+    pub async fn setup_tcp(
+        &mut self,
+        control_url: &str,
+        mode: &crate::client::RtspMode,
+    ) -> Result<TransportConfig> {
         let rtp_channel = self.next_channel;
         let rtcp_channel = self.next_channel + 1;
         self.next_channel += 2;
 
-        let transport_header = format!(
-            "RTP/AVP/TCP;unicast;interleaved={}-{}",
-            rtp_channel, rtcp_channel
-        );
+        let transport_header = match mode {
+            crate::client::RtspMode::Pull => {
+                format!(
+                    "RTP/AVP/TCP;unicast;interleaved={}-{}",
+                    rtp_channel, rtcp_channel
+                )
+            }
+            crate::client::RtspMode::Push => {
+                format!(
+                    "RTP/AVP/TCP;unicast;interleaved={}-{};mode=record",
+                    rtp_channel, rtcp_channel
+                )
+            }
+        };
 
         let mut setup_request = Request::builder(Method::Setup, Version::V1_0)
             .request_uri(control_url.parse::<Url>()?)
@@ -308,10 +347,20 @@ where
                 .header(headers::CSEQ, self.cseq.to_string())
                 .header(
                     headers::TRANSPORT,
-                    format!(
-                        "RTP/AVP/TCP;unicast;interleaved={}-{}",
-                        rtp_channel, rtcp_channel
-                    ),
+                    match mode {
+                        crate::client::RtspMode::Pull => {
+                            format!(
+                                "RTP/AVP/TCP;unicast;interleaved={}-{}",
+                                rtp_channel, rtcp_channel
+                            )
+                        }
+                        crate::client::RtspMode::Push => {
+                            format!(
+                                "RTP/AVP/TCP;unicast;interleaved={}-{};mode=record",
+                                rtp_channel, rtcp_channel
+                            )
+                        }
+                    },
                 )
                 .header(headers::SESSION, sid.as_str())
                 .header(headers::USER_AGENT, USER_AGENT)
@@ -429,11 +478,7 @@ pub async fn setup_rtsp_session(
     target_host: &str,
     mode: RtspMode,
     use_tcp: bool,
-) -> Result<(
-    MediaInfo,
-    Option<tokio::sync::mpsc::UnboundedSender<(u8, Vec<u8>)>>,
-    Option<tokio::sync::mpsc::UnboundedReceiver<(u8, Vec<u8>)>>,
-)> {
+) -> Result<(MediaInfo, Option<InterleavedChannel>)> {
     use tokio::sync::mpsc::unbounded_channel;
 
     let mut url = Url::parse(rtsp_url)?;
@@ -498,7 +543,7 @@ pub async fn setup_rtsp_session(
 
         if let Some(control) = video_control {
             let control_url = build_control_url(rtsp_url, &control);
-            let config = session.setup_tcp(&control_url).await?;
+            let config = session.setup_tcp(&control_url, &mode).await?;
 
             if let TransportConfig::Tcp {
                 rtp_channel,
@@ -518,7 +563,7 @@ pub async fn setup_rtsp_session(
 
         if let Some(control) = audio_control {
             let control_url = build_control_url(rtsp_url, &control);
-            let config = session.setup_tcp(&control_url).await?;
+            let config = session.setup_tcp(&control_url, &mode).await?;
 
             if let TransportConfig::Tcp {
                 rtp_channel,
@@ -560,50 +605,55 @@ pub async fn setup_rtsp_session(
             }
         });
 
-        match mode {
-            RtspMode::Pull => Ok((
-                media_info,
-                Some(data_to_stream_tx),
-                Some(data_from_stream_rx),
-            )),
-            RtspMode::Push => Ok((
-                media_info,
-                Some(data_to_stream_tx),
-                Some(data_from_stream_rx),
-            )),
-        }
+        Ok((media_info, Some((data_to_stream_tx, data_from_stream_rx))))
     } else {
         info!("Setting up UDP transport mode");
 
         if let Some(control) = video_control {
             let control_url = build_control_url(rtsp_url, &control);
-            let config = session.setup_udp(&control_url).await?;
+            let config = session.setup_udp(&control_url, &mode).await?;
 
             if let TransportConfig::Udp(ref port_info) = config {
-                media_info.video_transport = Some(TransportInfo::Udp {
-                    rtp_send_port: Some(port_info.server_rtp_port),
-                    rtp_recv_port: Some(port_info.client_rtp_port),
-                    rtcp_send_port: Some(port_info.server_rtcp_port),
-                    rtcp_recv_port: Some(port_info.client_rtcp_port),
-                    server_addr: Some(port_info.client_addr),
+                media_info.video_transport = Some(match mode {
+                    RtspMode::Pull => TransportInfo::Udp {
+                        rtp_recv_port: Some(port_info.client_rtp_port),
+                        rtp_send_port: None,
+                        rtcp_recv_port: Some(port_info.client_rtcp_port),
+                        rtcp_send_port: Some(port_info.server_rtcp_port),
+                        server_addr: Some(port_info.client_addr),
+                    },
+                    RtspMode::Push => TransportInfo::Udp {
+                        rtp_send_port: Some(port_info.server_rtp_port),
+                        rtp_recv_port: None,
+                        rtcp_send_port: Some(port_info.server_rtcp_port),
+                        rtcp_recv_port: Some(port_info.client_rtcp_port),
+                        server_addr: Some(port_info.client_addr),
+                    },
                 });
-                info!("Video UDP configured");
             }
         }
 
         if let Some(control) = audio_control {
             let control_url = build_control_url(rtsp_url, &control);
-            let config = session.setup_udp(&control_url).await?;
+            let config = session.setup_udp(&control_url, &mode).await?;
 
             if let TransportConfig::Udp(ref port_info) = config {
-                media_info.audio_transport = Some(TransportInfo::Udp {
-                    rtp_send_port: Some(port_info.server_rtp_port),
-                    rtp_recv_port: Some(port_info.client_rtp_port),
-                    rtcp_send_port: Some(port_info.server_rtcp_port),
-                    rtcp_recv_port: Some(port_info.client_rtcp_port),
-                    server_addr: Some(port_info.client_addr),
+                media_info.audio_transport = Some(match mode {
+                    RtspMode::Pull => TransportInfo::Udp {
+                        rtp_recv_port: Some(port_info.client_rtp_port),
+                        rtp_send_port: None,
+                        rtcp_recv_port: Some(port_info.client_rtcp_port),
+                        rtcp_send_port: Some(port_info.server_rtcp_port),
+                        server_addr: Some(port_info.client_addr),
+                    },
+                    RtspMode::Push => TransportInfo::Udp {
+                        rtp_send_port: Some(port_info.server_rtp_port),
+                        rtp_recv_port: None,
+                        rtcp_send_port: Some(port_info.server_rtcp_port),
+                        rtcp_recv_port: Some(port_info.client_rtcp_port),
+                        server_addr: Some(port_info.client_addr),
+                    },
                 });
-                info!("Audio UDP configured");
             }
         }
 
@@ -652,7 +702,8 @@ pub async fn setup_rtsp_session(
 
             info!("RTSP keep-alive task stopped");
         });
-        Ok((media_info, None, None))
+
+        Ok((media_info, None))
     }
 }
 
@@ -667,19 +718,3 @@ fn build_control_url(base_url: &str, control: &str) -> String {
         )
     }
 }
-
-// fn extract_profile_level_id(media: &sdp_types::Media) -> Option<String> {
-//     media
-//         .attributes
-//         .iter()
-//         .find(|attr| attr.attribute == "fmtp")
-//         .and_then(|attr| attr.value.as_ref())
-//         .and_then(|value| {
-//             for param in value.split(';') {
-//                 if let Some(profile) = param.trim().strip_prefix("profile-level-id=") {
-//                     return Some(profile.to_string());
-//                 }
-//             }
-//             None
-//         })
-// }

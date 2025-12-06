@@ -222,7 +222,6 @@ pub fn extract_h265_params(media: &sdp_types::Media) -> Option<(Vec<u8>, Vec<u8>
     Some((vps, sps, pps))
 }
 
-/// Extract profile-level-id from fmtp attribute
 fn extract_profile_level_id(media: &sdp_types::Media) -> Option<String> {
     media
         .attributes
@@ -239,7 +238,6 @@ fn extract_profile_level_id(media: &sdp_types::Media) -> Option<String> {
         })
 }
 
-/// Filter SDP to only include specified codecs
 pub fn filter_sdp(
     webrtc_sdp: &str,
     video_codec: Option<&RTCRtpCodecParameters>,

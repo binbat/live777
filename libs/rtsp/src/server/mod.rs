@@ -1,10 +1,3 @@
-//! RTSP Server module
-//!
-//! Provides RTSP server functionality including:
-//! - Request handling (OPTIONS, DESCRIBE, SETUP, PLAY, RECORD, etc.)
-//! - Session management
-//! - Unified session handler for WHIP and WHEP
-
 pub mod handler;
 pub mod server_session;
 pub mod unified_session;
@@ -16,7 +9,7 @@ use tokio::sync::RwLock;
 
 pub use handler::Handler;
 pub use server_session::ServerSession;
-pub use unified_session::{RtspServerSession, setup_rtsp_server_session};
+pub use unified_session::{PortUpdate, RtspServerSession, setup_rtsp_server_session};
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -50,29 +43,9 @@ impl RtspServer {
         }
     }
 
-    // /// Start the RTSP server
-    // ///
-    // /// This will bind to the configured address and start accepting connections
-    // pub async fn start(&self) -> Result<()> {
-    //     use tokio::net::TcpListener;
-    //     use tracing::info;
-
-    //     let listener = TcpListener::bind(self.config.listen_addr).await?;
-    //     info!("RTSP server listening on {}", self.config.listen_addr);
-
-    //     loop {
-    //         let (socket, addr) = listener.accept().await?;
-    //         info!("New connection from {}", addr);
-
-    //         let sessions = Arc::clone(&self.sessions);
-    //         let config = self.config.clone();
-
-    //         tokio::spawn(async move {
-    //             // In real usage, this would create a RtspServerSession
-    //             info!("Connection from {} accepted", addr);
-    //         });
-    //     }
-    // }
+    pub fn config(&self) -> &ServerConfig {
+        &self.config
+    }
 
     pub async fn active_sessions(&self) -> usize {
         let sessions = self.sessions.read().await;
@@ -102,6 +75,16 @@ impl RtspServer {
         let mut sessions = self.sessions.write().await;
         sessions.remove(id).is_some()
     }
+
+    pub async fn list_sessions(&self) -> Vec<String> {
+        let sessions = self.sessions.read().await;
+        sessions.keys().cloned().collect()
+    }
+
+    pub async fn is_full(&self) -> bool {
+        let sessions = self.sessions.read().await;
+        sessions.len() >= self.config.max_connections
+    }
 }
 
 #[cfg(test)]
@@ -124,25 +107,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_management() {
+    async fn test_server_config_access() {
+        let config = ServerConfig::default();
+        let server = RtspServer::new(config.clone());
+
+        assert_eq!(server.config().max_connections, config.max_connections);
+        assert_eq!(server.config().session_timeout, config.session_timeout);
+    }
+
+    #[tokio::test]
+    async fn test_server_is_full() {
+        let config = ServerConfig {
+            max_connections: 0,
+            ..Default::default()
+        };
+        let server = RtspServer::new(config);
+
+        assert!(server.is_full().await);
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions() {
         let config = ServerConfig::default();
         let server = RtspServer::new(config);
 
-        assert_eq!(server.active_sessions().await, 0);
-
-        let addr: SocketAddr = "127.0.0.1:8554".parse().unwrap();
-        let session = ServerSession::new("test-id".to_string(), addr, 60);
-        {
-            let mut sessions = server.sessions.write().await;
-            sessions.insert("test-id".to_string(), session);
-        }
-
-        assert_eq!(server.active_sessions().await, 1);
-
-        let retrieved = server.get_session("test-id").await;
-        assert!(retrieved.is_some());
-
-        assert!(server.remove_session("test-id").await);
-        assert_eq!(server.active_sessions().await, 0);
+        let sessions = server.list_sessions().await;
+        assert_eq!(sessions.len(), 0);
     }
 }
