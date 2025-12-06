@@ -27,14 +27,16 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
+    let log_level = match args.verbose {
+        0 => Level::WARN,
+        1 => Level::INFO,
+        2 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
+
     log::set(format!(
-        "livetwo={},webrtc=error",
-        match args.verbose {
-            0 => Level::WARN,
-            1 => Level::INFO,
-            2 => Level::DEBUG,
-            _ => Level::TRACE,
-        }
+        "livetwo={},rtsp={},webrtc=error",
+        log_level, log_level,
     ));
 
     livetwo::whip::into(

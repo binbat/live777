@@ -16,9 +16,13 @@ base64 = { workspace = true }
 
 webrtc = { workspace = true }
 sdp = { workspace = true }
+serde = { workspace = true }
 
 cli = { path = "../cli" }
 
 rtsp-types = "0.1.1"
 sdp-types = "0.1.6"
 portpicker = "0.1.1"
+md-5 = "0.10"
+url = "2.5"
+uuid = { version = "1.0", features = ["v4"] }
