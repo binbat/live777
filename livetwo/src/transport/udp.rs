@@ -8,6 +8,8 @@ use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::rtp_codec::RTP
 use crate::utils;
 pub struct UdpHandler;
 
+pub const RTP_BUFFER_SIZE: usize = 1500;
+
 impl UdpHandler {
     pub fn new() -> Self {
         Self
@@ -242,7 +244,7 @@ impl UdpHandler {
         );
 
         tokio::spawn(async move {
-            let mut buf = vec![0u8; 2000];
+            let mut buf = vec![0u8; RTP_BUFFER_SIZE];
 
             loop {
                 match socket.recv_from(&mut buf).await {

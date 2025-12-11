@@ -5,6 +5,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{error, info, trace};
 
+use crate::constants::{net, transport};
+
 #[derive(Debug, Clone)]
 pub struct UdpPortInfo {
     pub client_rtp_port: u16,
@@ -27,9 +29,10 @@ pub struct UdpSocketPair {
 
 impl UdpSocketPair {
     pub async fn create_and_connect(port_info: &UdpPortInfo) -> Result<Self> {
-        let rtp_socket = UdpSocket::bind(format!("0.0.0.0:{}", port_info.server_rtp_port)).await?;
-        let rtcp_socket =
-            UdpSocket::bind(format!("0.0.0.0:{}", port_info.server_rtcp_port)).await?;
+        let bind_rtp = net::bind_addr_for(&port_info.client_addr, port_info.server_rtp_port);
+        let bind_rtcp = net::bind_addr_for(&port_info.client_addr, port_info.server_rtcp_port);
+        let rtp_socket = UdpSocket::bind(&bind_rtp).await?;
+        let rtcp_socket = UdpSocket::bind(&bind_rtcp).await?;
 
         info!(
             "UDP sockets bound: RTP={}, RTCP={}",
@@ -69,7 +72,7 @@ impl UdpSocketPair {
         let socket = Arc::clone(&self.rtp_socket);
 
         tokio::spawn(async move {
-            let mut buf = vec![0u8; 2000];
+            let mut buf = vec![0u8; transport::RTP_BUFFER_SIZE];
             info!("UDP RTP receiver started");
 
             loop {
@@ -116,7 +119,7 @@ impl UdpSocketPair {
     }
 
     async fn rtcp_read_task(socket: Arc<UdpSocket>, tx: UnboundedSender<Vec<u8>>) -> Result<()> {
-        let mut buf = vec![0u8; 1500];
+        let mut buf = vec![0u8; transport::RTCP_BUFFER_SIZE];
         info!("RTCP receiver started");
 
         loop {

@@ -169,8 +169,5 @@ async fn create_peer(
 }
 
 fn is_supported_audio_codec(codec: &str) -> bool {
-    matches!(
-        codec.to_uppercase().as_str(),
-        "OPUS" | "G722" | "PCMU" | "PCMA"
-    )
+    matches!(codec.to_uppercase().as_str(), "OPUS" | "G722")
 }

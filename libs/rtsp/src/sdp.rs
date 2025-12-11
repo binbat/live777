@@ -6,6 +6,7 @@ use std::io::Cursor;
 use tracing::{debug, warn};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
 
+use crate::constants::media_type;
 use crate::types::{AudioCodecParams, MediaInfo, VideoCodecParams};
 
 pub fn parse_media_info_from_sdp(sdp_bytes: &[u8]) -> Result<MediaInfo> {
@@ -29,9 +30,9 @@ pub fn parse_codecs_from_sdp(
     let mut audio_codec = None;
 
     for media in &sdp.medias {
-        if media.media == "video" {
+        if media.media == media_type::VIDEO {
             video_codec = parse_video_codec(media);
-        } else if media.media == "audio" {
+        } else if media.media == media_type::AUDIO {
             audio_codec = parse_audio_codec(media);
         }
     }
@@ -248,7 +249,7 @@ pub fn filter_sdp(
         .map_err(|e| anyhow!("Failed to parse SDP: {:?}", e))?;
 
     session.media_descriptions.retain_mut(|media| {
-        if media.media_name.media == "video" {
+        if media.media_name.media == media_type::VIDEO {
             if video_codec.is_none() {
                 return false;
             } else if let Some(video_codec) = video_codec {
@@ -284,7 +285,7 @@ pub fn filter_sdp(
                     value: Some("streamid=0".to_string()),
                 });
             }
-        } else if media.media_name.media == "audio" {
+        } else if media.media_name.media == media_type::AUDIO {
             if audio_codec.is_none() {
                 return false;
             } else if let Some(audio_codec) = audio_codec {

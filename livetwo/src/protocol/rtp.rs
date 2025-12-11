@@ -12,6 +12,7 @@ use tokio::sync::Notify;
 use tracing::{debug, info};
 
 use crate::utils;
+use rtsp::constants::media_type;
 
 pub async fn setup_rtp_input(target_url: &str) -> Result<(rtsp::MediaInfo, String)> {
     info!("Processing RTP input mode");
@@ -32,8 +33,8 @@ pub async fn setup_rtp_input(target_url: &str) -> Result<(rtsp::MediaInfo, Strin
     }
     info!("SDP file parsed successfully");
 
-    let video_track = sdp.medias.iter().find(|md| md.media == "video");
-    let audio_track = sdp.medias.iter().find(|md| md.media == "audio");
+    let video_track = sdp.medias.iter().find(|md| md.media == media_type::VIDEO);
+    let audio_track = sdp.medias.iter().find(|md| md.media == media_type::AUDIO);
     let (codec_vid, codec_aud) = parse_codecs(&video_track, &audio_track);
 
     let media_info = rtsp::MediaInfo {
@@ -91,8 +92,8 @@ pub async fn setup_rtp_output(
 
     for (key, value) in input.query_pairs() {
         match key.as_ref() {
-            "video" => video_port = value.parse::<u16>().ok(),
-            "audio" => audio_port = value.parse::<u16>().ok(),
+            media_type::VIDEO => video_port = value.parse::<u16>().ok(),
+            media_type::AUDIO => audio_port = value.parse::<u16>().ok(),
             _ => {}
         }
     }
@@ -160,7 +161,7 @@ pub async fn setup_rtp_output(
     for media in &mut session.media_descriptions {
         media.connection_information = Some(connection_info.clone());
 
-        if media.media_name.media == "video"
+        if media.media_name.media == media_type::VIDEO
             && let Some(rtsp::TransportInfo::Udp {
                 rtp_send_port: Some(port),
                 ..
@@ -170,7 +171,7 @@ pub async fn setup_rtp_output(
                 value: *port as isize,
                 range: None,
             };
-        } else if media.media_name.media == "audio"
+        } else if media.media_name.media == media_type::AUDIO
             && let Some(rtsp::TransportInfo::Udp {
                 rtp_send_port: Some(port),
                 ..
@@ -243,7 +244,7 @@ fn extract_codec_from_media(
             value
                 .split_whitespace()
                 .nth(1)
-                .unwrap_or("")
+                .unwrap_or_default()
                 .split('/')
                 .next()
                 .and_then(|codec_str| codec_from_str(codec_str).ok())

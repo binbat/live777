@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use md5::{Digest, Md5};
-use rtsp_types::headers;
 use url::Url;
+
+use crate::headers;
 
 #[derive(Debug, Clone)]
 pub struct AuthParams {
@@ -25,7 +26,7 @@ impl AuthParams {
 
         Some(Self {
             username: username.to_string(),
-            password: password.unwrap_or("").to_string(),
+            password: password.unwrap_or_default().to_string(),
         })
     }
 

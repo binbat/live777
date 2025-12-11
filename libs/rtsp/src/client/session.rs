@@ -1,15 +1,14 @@
 use anyhow::{Result, anyhow};
-use rtsp_types::{Message, Method, Request, Response, StatusCode, Url, Version, headers};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, error, info, trace};
 
 use super::RtspMode;
 use super::auth::{AuthParams, generate_digest_response, parse_auth_header};
 use crate::channels::InterleavedChannel;
+use crate::constants::{buffer, client, media_type, net};
 use crate::transport_manager::{TransportConfig, UdpPortInfo};
 use crate::{MediaInfo, TransportInfo};
-
-const USER_AGENT: &str = "livetwo";
+use crate::{Message, Method, Request, Response, StatusCode, Url, Version, headers};
 
 pub struct RtspSession<T> {
     stream: T,
@@ -48,7 +47,7 @@ where
     }
 
     pub async fn read_response(&mut self) -> Result<Response<Vec<u8>>> {
-        let mut buffer = vec![0; 4096];
+        let mut buffer = vec![0; buffer::RTSP_RESPONSE_BUFFER_SIZE];
         let n = self.stream.read(&mut buffer).await?;
         if n == 0 {
             return Err(anyhow!("Connection closed"));
@@ -64,24 +63,13 @@ where
     }
 
     fn generate_authorization_header(&self, realm: &str, nonce: &str, method: &Method) -> String {
-        let method_str = match method {
-            Method::Options => "OPTIONS",
-            Method::Describe => "DESCRIBE",
-            Method::Setup => "SETUP",
-            Method::Play => "PLAY",
-            Method::Record => "RECORD",
-            Method::Teardown => "TEARDOWN",
-            Method::Announce => "ANNOUNCE",
-            _ => "UNKNOWN",
-        };
-
         let response = generate_digest_response(
             &self.auth_params.username,
             &self.auth_params.password,
             &self.url,
             realm,
             nonce,
-            method_str,
+            method.into(),
         );
 
         format!(
@@ -101,7 +89,7 @@ where
         let auth_request = Request::builder(method, Version::V1_0)
             .request_uri(self.url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .header(headers::AUTHORIZATION, auth_header_value)
             .empty();
 
@@ -116,7 +104,7 @@ where
         let options_request = Request::builder(Method::Options, Version::V1_0)
             .request_uri(self.url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .empty();
 
         self.send_request(&options_request.map_body(|_| vec![]))
@@ -131,8 +119,8 @@ where
         let describe_request = Request::builder(Method::Describe, Version::V1_0)
             .request_uri(self.url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
-            .header(headers::ACCEPT, "application/sdp")
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::ACCEPT, media_type::APPLICATION)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .empty();
 
         self.send_request(&describe_request.map_body(|_| vec![]))
@@ -163,8 +151,8 @@ where
         let announce_request = Request::builder(Method::Announce, Version::V1_0)
             .request_uri(self.url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
-            .header(headers::CONTENT_TYPE, "application/sdp")
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::CONTENT_TYPE, media_type::APPLICATION)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .build(sdp.into_bytes());
 
         self.send_request(&announce_request).await?;
@@ -198,8 +186,16 @@ where
         control_url: &str,
         mode: &crate::client::RtspMode,
     ) -> Result<TransportConfig> {
-        let rtp_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
-        let rtcp_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let server_addr = self
+            .url
+            .parse::<Url>()?
+            .host_str()
+            .ok_or_else(|| anyhow!("No host in URL"))?
+            .parse::<std::net::IpAddr>()?;
+        let bind_addr = net::bind_any_for(&std::net::SocketAddr::new(server_addr, 0));
+
+        let rtp_socket = tokio::net::UdpSocket::bind(&bind_addr).await?;
+        let rtcp_socket = tokio::net::UdpSocket::bind(&bind_addr).await?;
 
         let client_rtp_port = rtp_socket.local_addr()?.port();
         let client_rtcp_port = rtcp_socket.local_addr()?.port();
@@ -231,7 +227,7 @@ where
             .request_uri(control_url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
             .header(headers::TRANSPORT, transport_header)
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .empty();
 
         if let Some(sid) = &self.session_id {
@@ -256,7 +252,7 @@ where
                     },
                 )
                 .header(headers::SESSION, sid.as_str())
-                .header(headers::USER_AGENT, USER_AGENT)
+                .header(headers::USER_AGENT, client::USER_AGENT)
                 .empty();
         }
 
@@ -274,7 +270,7 @@ where
                 .as_str()
                 .split(';')
                 .next()
-                .unwrap_or("")
+                .unwrap_or_default()
                 .to_string();
             if self.session_id.is_none() {
                 self.session_id = Some(session_id);
@@ -338,7 +334,7 @@ where
             .request_uri(control_url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
             .header(headers::TRANSPORT, transport_header)
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .empty();
 
         if let Some(sid) = &self.session_id {
@@ -363,7 +359,7 @@ where
                     },
                 )
                 .header(headers::SESSION, sid.as_str())
-                .header(headers::USER_AGENT, USER_AGENT)
+                .header(headers::USER_AGENT, client::USER_AGENT)
                 .empty();
         }
 
@@ -381,7 +377,7 @@ where
                 .as_str()
                 .split(';')
                 .next()
-                .unwrap_or("")
+                .unwrap_or_default()
                 .to_string();
             if self.session_id.is_none() {
                 self.session_id = Some(session_id);
@@ -409,7 +405,7 @@ where
             .request_uri(self.url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
             .header(headers::SESSION, session_id.as_str())
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .empty();
 
         self.send_request(&play_request.map_body(|_| vec![]))
@@ -435,7 +431,7 @@ where
             .request_uri(self.url.parse::<Url>()?)
             .header(headers::CSEQ, self.cseq.to_string())
             .header(headers::SESSION, session_id.as_str())
-            .header(headers::USER_AGENT, USER_AGENT)
+            .header(headers::USER_AGENT, client::USER_AGENT)
             .empty();
 
         self.send_request(&record_request.map_body(|_| vec![]))
@@ -531,9 +527,9 @@ pub async fn setup_rtsp_session(
             .iter()
             .find(|a| a.attribute == "control")
             .and_then(|a| a.value.clone());
-        if media.media == "video" {
+        if media.media == media_type::VIDEO {
             video_control = control;
-        } else if media.media == "audio" {
+        } else if media.media == media_type::AUDIO {
             audio_control = control;
         }
     }
@@ -670,7 +666,9 @@ pub async fn setup_rtsp_session(
             .ok_or_else(|| anyhow!("Missing session ID"))?;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                client::KEEP_ALIVE_INTERVAL_SECS,
+            ));
 
             loop {
                 interval.tick().await;
@@ -678,7 +676,7 @@ pub async fn setup_rtsp_session(
                 let options_request = Request::builder(Method::Options, Version::V1_0)
                     .request_uri(session.url.parse::<Url>().unwrap())
                     .header(headers::CSEQ, session.cseq.to_string())
-                    .header(headers::USER_AGENT, USER_AGENT)
+                    .header(headers::USER_AGENT, client::USER_AGENT)
                     .header(headers::SESSION, session_id.as_str())
                     .empty();
 

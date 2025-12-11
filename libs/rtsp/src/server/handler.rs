@@ -1,10 +1,12 @@
 use anyhow::{Result, anyhow};
-use rtsp_types::{Request, Response, StatusCode, Version, headers};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
+
+use crate::constants::net;
+use crate::{Request, Response, StatusCode, Version, headers};
 
 use super::{ServerConfig, ServerSession};
 
@@ -125,8 +127,10 @@ impl Handler {
             client_rtp_port, client_rtcp_port
         );
 
-        let temp_rtp = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
-        let temp_rtcp = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let bind_addr = net::bind_any_for(&self.addr);
+
+        let temp_rtp = tokio::net::UdpSocket::bind(&bind_addr).await?;
+        let temp_rtcp = tokio::net::UdpSocket::bind(&bind_addr).await?;
         let server_rtp_port = temp_rtp.local_addr()?.port();
         let server_rtcp_port = temp_rtcp.local_addr()?.port();
         drop(temp_rtp);

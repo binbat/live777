@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use rtsp_types::{Message, Method, Request, Response, StatusCode, Version};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,9 +11,11 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::{Handler, ServerConfig, ServerSession};
 use crate::channels::{InterleavedChannel, InterleavedData};
+use crate::constants::{media_type, track};
 use crate::sdp::parse_codecs_from_sdp;
 use crate::tcp_stream::handle_tcp_stream;
 use crate::types::{MediaInfo, SessionMode, TransportInfo};
+use crate::{Message, Method, Request, Response, StatusCode, Version};
 
 #[derive(Debug, Clone)]
 pub struct PortUpdate {
@@ -97,14 +98,14 @@ impl RtspServerSession {
                         .map(|u| u.to_string())
                         .unwrap_or_default();
 
-                    let is_video = if uri.contains("video")
-                        || uri.contains("trackID=0")
-                        || uri.contains("streamid=0")
+                    let is_video = if uri.contains(media_type::VIDEO)
+                        || uri.contains(track::VIDEO_TRACK_ID)
+                        || uri.contains(track::VIDEO_STREAM_ID)
                     {
                         true
-                    } else if uri.contains("audio")
-                        || uri.contains("trackID=1")
-                        || uri.contains("streamid=1")
+                    } else if uri.contains(media_type::AUDIO)
+                        || uri.contains(track::AUDIO_TRACK_ID)
+                        || uri.contains(track::AUDIO_STREAM_ID)
                     {
                         false
                     } else {
@@ -114,8 +115,8 @@ impl RtspServerSession {
                             .ok_or_else(|| anyhow!("No SDP"))?;
                         let sdp = sdp_types::Session::parse(sdp_bytes)?;
 
-                        let has_video = sdp.medias.iter().any(|m| m.media == "video");
-                        let has_audio = sdp.medias.iter().any(|m| m.media == "audio");
+                        let has_video = sdp.medias.iter().any(|m| m.media == media_type::VIDEO);
+                        let has_audio = sdp.medias.iter().any(|m| m.media == media_type::AUDIO);
 
                         if has_video && !has_audio {
                             true

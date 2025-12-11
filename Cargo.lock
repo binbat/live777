@@ -2551,7 +2551,6 @@ dependencies = [
  "md-5",
  "portpicker",
  "rtsp",
- "rtsp-types",
  "scopeguard",
  "sdp",
  "sdp-types",

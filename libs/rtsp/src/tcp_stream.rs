@@ -4,12 +4,8 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 
+use crate::constants::buffer;
 use crate::types::SessionMode;
-
-const MAX_BUFFER_SIZE: usize = 2 * 1024 * 1024;
-const READ_BUFFER_SIZE: usize = 64 * 1024;
-const INTERLEAVED_HEADER_SIZE: usize = 4;
-const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 pub async fn handle_tcp_stream(
     stream: TcpStream,
@@ -47,8 +43,8 @@ async fn handle_read_stream<R>(mut reader: R, tx: UnboundedSender<(u8, Vec<u8>)>
 where
     R: AsyncReadExt + Unpin,
 {
-    let mut buffer = Vec::with_capacity(READ_BUFFER_SIZE);
-    let mut temp_buffer = vec![0u8; READ_BUFFER_SIZE];
+    let mut buffer = Vec::with_capacity(buffer::TCP_READ_BUFFER_SIZE);
+    let mut temp_buffer = vec![0u8; buffer::TCP_READ_BUFFER_SIZE];
     let mut total_frames = 0u64;
     let mut total_bytes = 0u64;
 
@@ -64,12 +60,12 @@ where
             Ok(n) => {
                 trace!("Read {} bytes from TCP stream", n);
 
-                if buffer.len() + n > MAX_BUFFER_SIZE {
+                if buffer.len() + n > buffer::MAX_BUFFER_SIZE {
                     warn!(
                         "Buffer size limit reached ({} + {} > {}), clearing buffer",
                         buffer.len(),
                         n,
-                        MAX_BUFFER_SIZE
+                        buffer::MAX_BUFFER_SIZE
                     );
                     buffer.clear();
 
@@ -106,7 +102,7 @@ where
                     break;
                 }
 
-                if buffer.len() > MAX_BUFFER_SIZE / 2 {
+                if buffer.len() > buffer::MAX_BUFFER_SIZE / 2 {
                     warn!(
                         "Buffer size is large: {} bytes (may indicate slow consumer)",
                         buffer.len()
@@ -128,7 +124,7 @@ where
 }
 
 fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>> {
-    if buffer.len() < INTERLEAVED_HEADER_SIZE {
+    if buffer.len() < buffer::INTERLEAVED_HEADER_SIZE {
         return Ok(None);
     }
 
@@ -139,16 +135,17 @@ fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>
     let channel = buffer[1];
     let length = u16::from_be_bytes([buffer[2], buffer[3]]) as usize;
 
-    if length > MAX_FRAME_SIZE {
+    if length > buffer::MAX_FRAME_SIZE {
         warn!(
             "Interleaved frame too large: {} bytes (max: {}), skipping",
-            length, MAX_FRAME_SIZE
+            length,
+            buffer::MAX_FRAME_SIZE
         );
 
-        return Ok(Some((channel, Vec::new(), INTERLEAVED_HEADER_SIZE)));
+        return Ok(Some((channel, Vec::new(), buffer::INTERLEAVED_HEADER_SIZE)));
     }
 
-    let total_size = INTERLEAVED_HEADER_SIZE + length;
+    let total_size = buffer::INTERLEAVED_HEADER_SIZE + length;
     if buffer.len() < total_size {
         trace!(
             "Incomplete frame: have {} bytes, need {} bytes",
@@ -158,7 +155,7 @@ fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>
         return Ok(None);
     }
 
-    let data = buffer[INTERLEAVED_HEADER_SIZE..total_size].to_vec();
+    let data = buffer[buffer::INTERLEAVED_HEADER_SIZE..total_size].to_vec();
 
     Ok(Some((channel, data, total_size)))
 }
@@ -194,11 +191,11 @@ where
     let mut total_bytes = 0u64;
 
     while let Some((channel, data)) = rx.recv().await {
-        if data.len() > MAX_FRAME_SIZE {
+        if data.len() > buffer::MAX_FRAME_SIZE {
             error!(
                 "Frame too large to send: {} bytes (max: {}), dropping",
                 data.len(),
-                MAX_FRAME_SIZE
+                buffer::MAX_FRAME_SIZE
             );
             continue;
         }
@@ -246,7 +243,7 @@ fn build_interleaved_frame(channel: u8, data: &[u8]) -> Result<Vec<u8>> {
         ));
     }
 
-    let mut frame = Vec::with_capacity(INTERLEAVED_HEADER_SIZE + length);
+    let mut frame = Vec::with_capacity(buffer::INTERLEAVED_HEADER_SIZE + length);
     frame.push(b'$');
     frame.push(channel);
     frame.extend_from_slice(&(length as u16).to_be_bytes());
@@ -294,7 +291,7 @@ mod tests {
         let data = vec![b'$', 0, (length >> 8) as u8, (length & 0xFF) as u8];
 
         let result = parse_interleaved_frame(&data).unwrap();
-        if length as usize > MAX_FRAME_SIZE {
+        if length as usize > buffer::MAX_FRAME_SIZE {
             assert!(result.is_some());
             let (channel, frame_data, consumed) = result.unwrap();
             assert_eq!(channel, 0);

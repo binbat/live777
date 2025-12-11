@@ -626,7 +626,7 @@ async fn helper_livetwo_cycle_rtsp(
 
     assert!(result.is_some());
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
 
     let stream_b = stream_id("b");
 
@@ -718,7 +718,7 @@ async fn helper_livetwo_cycle_rtsp(
 
     assert!(result.is_some());
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
 
     tokio::spawn(livetwo::whep::from(
         format!(
@@ -778,6 +778,8 @@ async fn helper_livetwo_cycle_rtsp(
         .output()
         .await
         .expect("Failed to execute command");
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
     assert!(
         output.status.success(),

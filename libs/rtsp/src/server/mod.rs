@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::constants::server;
 pub use handler::Handler;
 pub use server_session::ServerSession;
 pub use unified_session::{PortUpdate, RtspServerSession, setup_rtsp_server_session};
@@ -23,8 +24,8 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: "0.0.0.0:8554".parse().unwrap(),
-            max_connections: 100,
-            session_timeout: 60,
+            max_connections: server::DEFAULT_MAX_CONNECTIONS,
+            session_timeout: server::DEFAULT_SESSION_TIMEOUT,
             enable_auth: false,
         }
     }
@@ -94,8 +95,8 @@ mod tests {
     #[test]
     fn test_server_config_default() {
         let config = ServerConfig::default();
-        assert_eq!(config.max_connections, 100);
-        assert_eq!(config.session_timeout, 60);
+        assert_eq!(config.max_connections, server::DEFAULT_MAX_CONNECTIONS);
+        assert_eq!(config.session_timeout, server::DEFAULT_SESSION_TIMEOUT);
         assert!(!config.enable_auth);
     }
 
