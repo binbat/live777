@@ -28,9 +28,12 @@ mod publish;
 pub mod rtcp;
 mod subscribe;
 mod track;
+use md5::{Md5,Digest};
 
 pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
-    let digest = md5::compute(peer.get_stats_id());
+    let mut hasher =Md5::new();
+    hasher.update(peer.get_stats_id());
+    let digest = hasher.finalize();
     format!("{digest:x}")
 }
 
