@@ -18,7 +18,7 @@ libwish = { path = "../libs/libwish" }
 storage = { path = "../libs/storage", optional = true }
 
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
-#axum依赖于rummpt，而rummpt的 rust 编译工具链版本，和部分核心依赖过于陈旧
+
 axum = { workspace = true, features = ["multipart", "tracing"] }
 axum-extra = { workspace = true, features = ["query"] }
 tower-http = { workspace = true, features = ["trace", "cors"] }
