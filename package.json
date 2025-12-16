@@ -6,8 +6,10 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm run dev:liveion",
-    "dev:liveion": "pnpm --filter liveion dev",
-    "dev:liveman": "pnpm --filter liveman dev",
+    "dev:player": "pnpm --filter alone-player dev:player",
+    "dev:debugger": "pnpm --filter debugger dev:debugger",
+    "dev:liveion": "pnpm --filter debugger --filter alone-player --filter liveion dev",
+    "dev:liveman": "pnpm --filter debugger --filter alone-player --filter liveman dev",
     "dev:livecam": "pnpm --filter livecam dev",
     "build": "pnpm -r build",
     "build:liveion": "pnpm --filter liveion build",
