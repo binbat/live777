@@ -186,14 +186,10 @@ where
         control_url: &str,
         mode: &crate::client::RtspMode,
     ) -> Result<TransportConfig> {
-        let server_addr = self
-            .url
-            .parse::<Url>()?
-            .host_str()
-            .ok_or_else(|| anyhow!("No host in URL"))?
-            .parse::<std::net::IpAddr>()?;
-        let bind_addr = net::bind_any_for(&std::net::SocketAddr::new(server_addr, 0));
+        let url = self.url.parse::<Url>()?;
+        let server_addr = net::extract_ip_from_url(&url)?;
 
+        let bind_addr = net::bind_any_for(&std::net::SocketAddr::new(server_addr, 0));
         let rtp_socket = tokio::net::UdpSocket::bind(&bind_addr).await?;
         let rtcp_socket = tokio::net::UdpSocket::bind(&bind_addr).await?;
 
@@ -282,13 +278,6 @@ where
             .ok_or_else(|| anyhow!("No transport in SETUP response"))?;
 
         let (server_rtp_port, server_rtcp_port) = parse_server_ports(transport.as_str())?;
-
-        let server_addr = self
-            .url
-            .parse::<Url>()?
-            .host_str()
-            .ok_or_else(|| anyhow!("No host in URL"))?
-            .parse::<std::net::IpAddr>()?;
 
         let server_socket_addr = std::net::SocketAddr::new(server_addr, server_rtp_port);
 

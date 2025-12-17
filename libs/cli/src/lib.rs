@@ -140,21 +140,37 @@ pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
     }
 }
 
-pub fn create_child(command: Option<String>) -> Result<Option<Mutex<Child>>> {
+pub struct ChildGuard(Mutex<Child>);
+
+impl ChildGuard {
+    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Child>> {
+        self.0.lock()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self.0.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+pub fn create_child(command: Option<String>) -> Result<Option<ChildGuard>> {
     Ok(match command {
         Some(command) => {
             #[cfg(windows)]
             let command = command.replace('\\', "/");
-
             let mut args = shellwords::split(&command)?;
-            Some(Mutex::new(
+            Some(ChildGuard(Mutex::new(
                 Command::new(args.remove(0))
                     .args(args)
                     .stdin(Stdio::inherit())
                     .stdout(Stdio::inherit())
                     .stderr(Stdio::inherit())
                     .spawn()?,
-            ))
+            )))
         }
         None => None,
     })

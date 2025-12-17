@@ -4,8 +4,6 @@ use axum::http::header;
 use axum::response::IntoResponse;
 use std::collections::HashMap;
 use std::future::Future;
-#[cfg(not(riscv_mode))]
-use std::process::Child;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -48,17 +46,13 @@ struct Assets;
 #[cfg(feature = "webui")]
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
-
     let path = if path.is_empty() { "index.html" } else { path };
-
     match Assets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-
             let mut response = Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime.as_ref());
-
             if path.starts_with("assets/") || path.ends_with(".js") || path.ends_with(".css") {
                 response = response.header(header::CACHE_CONTROL, "public, max-age=31536000");
             } else {
@@ -109,7 +103,7 @@ pub struct StreamState {
     shutdown_tx: Option<mpsc::Sender<()>>,
     config: CameraConfig,
     #[cfg(not(riscv_mode))]
-    child_process: Option<Arc<Mutex<Child>>>,
+    child_process: Option<Arc<cli::ChildGuard>>,
     #[cfg(riscv_mode)]
     stream_handle: Option<Arc<Mutex<stream::StreamHandle>>>,
 }
@@ -259,8 +253,8 @@ impl LiveCamManager {
             {
                 let command = state.config.command.clone();
                 match cli::create_child(Some(command)) {
-                    Ok(Some(child_mutex)) => {
-                        let child_arc = Arc::new(child_mutex);
+                    Ok(Some(child_guard)) => {
+                        let child_arc = Arc::new(child_guard);
                         state.child_process = Some(child_arc);
                         info!(stream_id, "child process started successfully.");
                     }
@@ -310,29 +304,8 @@ impl LiveCamManager {
 
                 #[cfg(not(riscv_mode))]
                 {
-                    if let Some(child_arc) = state.child_process.take() {
-                        debug!(stream_id, "Stopping child process.");
-
-                        let child_clone = child_arc.clone();
-                        let stream_id_clone = stream_id.to_string();
-                        tokio::spawn(async move {
-                            let mut child_guard = child_clone.lock().unwrap();
-
-                            if let Err(e) = child_guard.kill() {
-                                error!(stream_id = %stream_id_clone, error = %e, "Failed to kill child process.");
-                            } else {
-                                info!(stream_id = %stream_id_clone, "child process killed.");
-                            }
-
-                            match child_guard.wait() {
-                                Ok(status) => {
-                                    info!(stream_id = %stream_id_clone, status = ?status, "child process exited.");
-                                }
-                                Err(e) => {
-                                    error!(stream_id = %stream_id_clone, error = %e, "Error waiting for child process.");
-                                }
-                            }
-                        });
+                    if let Some(_child_arc) = state.child_process.take() {
+                        debug!(stream_id, "Stopping child process (via Drop).");
                     }
                 }
 
@@ -385,16 +358,8 @@ impl LiveCamManager {
             debug!(stream_id = %stream_id, "shutdown stream.");
 
             #[cfg(not(riscv_mode))]
-            if let Some(child_arc) = state.child_process.take() {
-                let mut child_guard = child_arc.lock().unwrap();
-                if let Err(e) = child_guard.kill() {
-                    error!(stream_id = %stream_id, error = %e, "Failed to kill child process.");
-                } else {
-                    info!(stream_id = %stream_id, "child process.");
-                }
-                if let Err(e) = child_guard.wait() {
-                    error!(stream_id = %stream_id, error = %e, "Error waiting for child process.");
-                }
+            if let Some(_child_arc) = state.child_process.take() {
+                info!(stream_id = %stream_id, "child process stopped (via Drop).");
             }
 
             if let Some(tx) = state.shutdown_tx.take() {
