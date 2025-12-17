@@ -138,19 +138,6 @@ pub async fn from(
 
     let child = Arc::new(create_child(command)?);
 
-    let child_for_cleanup = child.clone();
-    let shutdown_for_cleanup = shutdown.clone();
-
-    tokio::spawn(async move {
-        shutdown_for_cleanup.wait().await;
-        if let Some(child_mutex) = child_for_cleanup.as_ref()
-            && let Ok(mut child_guard) = child_mutex.lock()
-        {
-            info!("Killing child process");
-            let _ = child_guard.kill();
-        }
-    });
-
     let output_target = output_handle.await??;
     info!("Output target configured: {:?}", output_target.scheme());
 

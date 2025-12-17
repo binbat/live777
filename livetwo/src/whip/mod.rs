@@ -35,19 +35,6 @@ pub async fn into(
 
     let child = Arc::new(create_child(command)?);
 
-    let child_for_cleanup = child.clone();
-    let shutdown_for_cleanup = shutdown.clone();
-
-    tokio::spawn(async move {
-        shutdown_for_cleanup.wait().await;
-        if let Some(child_mutex) = child_for_cleanup.as_ref()
-            && let Ok(mut child_guard) = child_mutex.lock()
-        {
-            info!("Killing child process");
-            let _ = child_guard.kill();
-        }
-    });
-
     let mut input_source = input::setup_input_source(&target_url, complete_tx.clone()).await?;
     info!("Input source configured: {:?}", input_source.scheme());
 
@@ -170,18 +157,15 @@ pub async fn into(
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        if let Some(child_mutex) = child_clone.as_ref()
-                            && let Ok(mut child_guard) = child_mutex.lock()
-                                && let Ok(Some(status)) = child_guard.try_wait() {
-                                    info!("Child process exited with status: {:?}", status);
-                                    let _ = complete_tx_child.send(());
-                                    break;
-                                }
-
-
+                        if let Some(child_guard_wrapper) = child_clone.as_ref()
+                            && let Ok(mut child_guard) = child_guard_wrapper.lock()
+                            && let Ok(Some(status)) = child_guard.try_wait() {
+                                info!("Child process exited with status: {:?}", status);
+                                let _ = complete_tx_child.send(());
+                                break;
+                            }
                     }
                     _ = shutdown_child.wait() => {
-                        info!("Child monitor shutting down");
                         break;
                     }
                 }

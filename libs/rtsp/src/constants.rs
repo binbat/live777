@@ -63,7 +63,9 @@ pub mod server {
 }
 
 pub mod net {
+    use anyhow::{Result, anyhow};
     use std::net::{IpAddr, SocketAddr};
+    use url::Url;
 
     pub fn unspecified_for(addr: &SocketAddr) -> IpAddr {
         match addr {
@@ -90,6 +92,17 @@ pub mod net {
         match addr {
             SocketAddr::V4(_) => "0.0.0.0:0".to_string(),
             SocketAddr::V6(_) => "[::]:0".to_string(),
+        }
+    }
+
+    pub fn extract_ip_from_url(url: &Url) -> Result<IpAddr> {
+        match url.host() {
+            Some(url::Host::Ipv4(ip)) => Ok(IpAddr::V4(ip)),
+            Some(url::Host::Ipv6(ip)) => Ok(IpAddr::V6(ip)),
+            Some(url::Host::Domain(domain)) => domain
+                .parse::<IpAddr>()
+                .map_err(|e| anyhow!("Failed to parse domain '{}' as IP: {}", domain, e)),
+            None => Err(anyhow!("No host in URL")),
         }
     }
 }
