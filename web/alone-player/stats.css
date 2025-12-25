@@ -1,0 +1,32 @@
+.title {
+    display: flex;
+    justify-content: space-between;
+}
+
+.btn {
+    cursor: pointer;
+}
+
+.stats {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.4rem 1rem;
+    min-width: 300px;
+    max-width: 600px;
+    color: #fff;
+    font-family: Roboto, Arial, sans-serif;
+    font-size: 13px;
+}
+
+.stats dt {
+    text-align: right;
+    color: #aaa;
+    white-space: nowrap;
+}
+
+.stats dd {
+    text-align: left;
+    margin: 0;
+    color: #fff;
+    word-break: break-all;
+}

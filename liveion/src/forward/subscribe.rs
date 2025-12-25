@@ -228,11 +228,11 @@ impl SubscribeRTCPeerConnection {
                                 }
                             };
                             if new_rid == constant::RID_DISABLE {
-                                if current_rid.is_some(){
+                                if let Some(rid) = current_rid {
                                     recv = virtual_sender.subscribe();
                                     let _ = sender.replace_track(None).await;
                                     track = None;
-                                    pre_rid = Some(current_rid.unwrap());
+                                    pre_rid = Some(rid);
                                 }
                                 track_binding_publish_rid.insert(kind.clone().to_string(), new_rid);
                                 continue;

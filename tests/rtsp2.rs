@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -8,34 +9,41 @@ use common::shutdown_signal;
 
 // === RTSP Bootstrapping ===
 //
-// - ffmpeg
-// - whipinto rtsp server
+// - ffmpeg → whip into rtsp server
 //
 // # stream: A
 //
-// - whepfrom rtsp server
-// - whipinto rtsp client
+// - whep from rtsp server
+// - whip into rtsp client
 //
 // # stream: B
 //
-// - whipinto rtsp server
-// - whepfrom rtsp client
+// - whip into rtsp server
+// - whep from rtsp client
 //
 // # stream: C
 //
-// - whepfrom rtsp server
+// - whep from rtsp server
 // - ffprobe
 
+#[derive(Clone, Copy)]
 enum Transport {
     Udp,
     Tcp,
 }
 
 impl Transport {
-    fn as_str(&self) -> &str {
+    fn as_query_param(&self) -> &str {
         match self {
             Transport::Udp => "",
             Transport::Tcp => "?transport=tcp",
+        }
+    }
+
+    fn as_ffmpeg_flag(&self) -> &str {
+        match self {
+            Transport::Udp => "",
+            Transport::Tcp => "-rtsp_transport tcp",
         }
     }
 }
@@ -47,635 +55,498 @@ struct Ports {
     whep: u16,
 }
 
-struct Detect {
-    // channels
-    audio: Option<u8>,
-    // (width, height)
-    video: Option<(u16, u16)>,
+struct MediaExpectation {
+    audio_channels: Option<u8>,
+    video_resolution: Option<(u16, u16)>,
 }
+
+struct TestConfig {
+    ip: IpAddr,
+    server_port: u16,
+    ports: Ports,
+    ffmpeg_command: String,
+    media: MediaExpectation,
+    transport: Transport,
+}
+
+const CONNECTION_CHECK_INTERVAL_MS: u64 = 100;
+const MAX_CONNECTION_ATTEMPTS: u32 = 100;
+const STREAM_STABILIZATION_MS: u64 = 1000;
+const INTER_STREAM_DELAY_MS: u64 = 3000;
+const FFPROBE_PREPARATION_MS: u64 = 5000;
+const FFPROBE_TIMEOUT_MS: u64 = 5000;
+const FFPROBE_MAX_RETRIES: u32 = 3;
+const FFPROBE_RETRY_DELAY_MS: u64 = 3000;
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_h264_udp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7160;
-    let whep_port: u16 = 7175;
-
-    let width = 640;
-    let height = 480;
-    let prefix = format!(
-        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1"
-    );
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
-            p_ab: 7165,
-            p_bc: 7170,
-            whep: whep_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 8000,
+            p_ab: 8010,
+            p_bc: 8020,
+            whep: 8030,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_h264_command(640, 480, Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Udp,
-    )
+        transport: Transport::Udp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_h264_tcp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7360;
-    let whep_port: u16 = 7375;
-
-    let width = 640;
-    let height = 480;
-    let prefix = format!(
-        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -preset ultrafast -tune zerolatency -x264-params repeat_headers=1 -rtsp_transport tcp"
-    );
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7360,
             p_ab: 7365,
             p_bc: 7370,
-            whep: whep_port,
+            whep: 7375,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_h264_command(640, 480, Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Tcp,
-    )
+        transport: Transport::Tcp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp8_udp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7020;
-    let whep_port: u16 = 7035;
-
-    let width = 640;
-    let height = 480;
-    let codec = "-vcodec libvpx -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7020,
             p_ab: 7025,
             p_bc: 7030,
-            whep: whep_port,
+            whep: 7035,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_vp8_command(640, 480, Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Udp,
-    )
+        transport: Transport::Udp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp8_tcp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7220;
-    let whep_port: u16 = 7235;
-
-    let width = 640;
-    let height = 480;
-    let codec = "-vcodec libvpx -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!(
-        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec} -rtsp_transport tcp"
-    );
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7220,
             p_ab: 7225,
             p_bc: 7230,
-            whep: whep_port,
+            whep: 7235,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_vp8_command(640, 480, Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Tcp,
-    )
+        transport: Transport::Tcp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp8_ipv6_udp() {
-    let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7040;
-    let whep_port: u16 = 7055;
-
-    let width = 640;
-    let height = 480;
-    let codec = "-vcodec libvpx -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7040,
             p_ab: 7045,
             p_bc: 7050,
-            whep: whep_port,
+            whep: 7055,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_vp8_command(640, 480, Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Udp,
-    )
+        transport: Transport::Udp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
-    let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7240;
-    let whep_port: u16 = 7255;
-
-    let width = 640;
-    let height = 480;
-    let codec = "-vcodec libvpx -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!(
-        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec} -rtsp_transport tcp"
-    );
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7240,
             p_ab: 7245,
             p_bc: 7250,
-            whep: whep_port,
+            whep: 7255,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_vp8_command(640, 480, Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Tcp,
-    )
+        transport: Transport::Tcp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp9_udp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7060;
-    let whep_port: u16 = 7075;
-
-    let width = 640;
-    let height = 480;
-    let codec =
-        "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7060,
             p_ab: 7065,
             p_bc: 7070,
-            whep: whep_port,
+            whep: 7075,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_vp9_command(640, 480, Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Udp,
-    )
+        transport: Transport::Udp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp9_tcp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7260;
-    let whep_port: u16 = 7275;
-
-    let width = 640;
-    let height = 480;
-    let codec =
-        "-strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!(
-        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec} -rtsp_transport tcp"
-    );
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7260,
             p_ab: 7265,
             p_bc: 7270,
-            whep: whep_port,
+            whep: 7275,
         },
-        Detect {
-            audio: None,
-            video: Some((width, height)),
+        ffmpeg_command: build_vp9_command(640, 480, Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
         },
-        Transport::Tcp,
-    )
+        transport: Transport::Tcp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_opus_udp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7080;
-    let whep_port: u16 = 7095;
-
-    let codec = "-acodec libopus";
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7080,
             p_ab: 7085,
             p_bc: 7090,
-            whep: whep_port,
+            whep: 7095,
         },
-        Detect {
-            audio: Some(2),
-            video: None,
+        ffmpeg_command: build_opus_command(Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: Some(2),
+            video_resolution: None,
         },
-        Transport::Udp,
-    )
+        transport: Transport::Udp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_opus_tcp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7280;
-    let whep_port: u16 = 7295;
-
-    let codec = "-acodec libopus";
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec} -rtsp_transport tcp");
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7280,
             p_ab: 7285,
             p_bc: 7290,
-            whep: whep_port,
+            whep: 7295,
         },
-        Detect {
-            audio: Some(2),
-            video: None,
+        ffmpeg_command: build_opus_command(Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: Some(2),
+            video_resolution: None,
         },
-        Transport::Tcp,
-    )
+        transport: Transport::Tcp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_g722_udp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7120;
-    let whep_port: u16 = 7135;
-
-    let codec = "-acodec g722";
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec}");
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7120,
             p_ab: 7125,
             p_bc: 7130,
-            whep: whep_port,
+            whep: 7135,
         },
-        Detect {
-            audio: Some(1),
-            video: None,
+        ffmpeg_command: build_g722_command(Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: Some(1),
+            video_resolution: None,
         },
-        Transport::Udp,
-    )
+        transport: Transport::Udp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_g722_tcp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7320;
-    let whep_port: u16 = 7335;
-
-    let codec = "-acodec g722";
-    let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {codec} -rtsp_transport tcp");
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7320,
             p_ab: 7325,
             p_bc: 7330,
-            whep: whep_port,
+            whep: 7335,
         },
-        Detect {
-            audio: Some(1),
-            video: None,
+        ffmpeg_command: build_g722_command(Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: Some(1),
+            video_resolution: None,
         },
-        Transport::Tcp,
-    )
+        transport: Transport::Tcp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp8_opus_udp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7140;
-    let whep_port: u16 = 7155;
-
-    let width = 640;
-    let height = 480;
-    let a_codec = "-acodec libopus";
-    let v_codec = "-vcodec libvpx -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 {a_codec} {v_codec}"
-    );
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7140,
             p_ab: 7145,
             p_bc: 7150,
-            whep: whep_port,
+            whep: 7155,
         },
-        Detect {
-            audio: Some(2),
-            video: Some((width, height)),
+        ffmpeg_command: build_vp8_opus_command(640, 480, Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: Some(2),
+            video_resolution: Some((640, 480)),
         },
-        Transport::Udp,
-    )
+        transport: Transport::Udp,
+    })
     .await;
 }
 
 #[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
-    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 7340;
-    let whep_port: u16 = 7355;
-
-    let width = 640;
-    let height = 480;
-    let a_codec = "-acodec libopus";
-    let v_codec = "-vcodec libvpx -pix_fmt yuv420p -b:v 1000k -deadline realtime";
-    let prefix = format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 {a_codec} {v_codec} -rtsp_transport tcp"
-    );
-
-    helper_livetwo_cycle_rtsp(
-        ip,
-        port,
-        &prefix,
-        Ports {
-            whip: whip_port,
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7340,
             p_ab: 7345,
             p_bc: 7350,
-            whep: whep_port,
+            whep: 7355,
         },
-        Detect {
-            audio: Some(2),
-            video: Some((width, height)),
+        ffmpeg_command: build_vp8_opus_command(640, 480, Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: Some(2),
+            video_resolution: Some((640, 480)),
         },
-        Transport::Tcp,
-    )
+        transport: Transport::Tcp,
+    })
     .await;
 }
 
-pub fn stream_id(stream: &str) -> String {
-    format!("test-cycle-{stream}")
+fn build_h264_command(width: u16, height: u16, transport: Transport) -> String {
+    format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 \
+         -vcodec libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p \
+         -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k \
+         -bufsize 1000k -preset ultrafast -tune zerolatency \
+         -x264-params repeat_headers=1 {} -f rtsp 'rtsp://{{}}'",
+        transport.as_ffmpeg_flag()
+    )
 }
 
-async fn helper_livetwo_cycle_rtsp(
-    ip: IpAddr,
-    port: u16,
-    prefix: &str,
-    ports: Ports,
-    detect: Detect,
-    transport: Transport,
-) {
-    let cfg = liveion::config::Config::default();
+fn build_vp8_command(width: u16, height: u16, transport: Transport) -> String {
+    format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 \
+         -vcodec libvpx -pix_fmt yuv420p -b:v 1000k -deadline realtime \
+         {} -f rtsp 'rtsp://{{}}'",
+        transport.as_ffmpeg_flag()
+    )
+}
 
-    let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
+fn build_vp9_command(width: u16, height: u16, transport: Transport) -> String {
+    format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 \
+         -strict experimental -vcodec libvpx-vp9 -pix_fmt yuv420p \
+         -b:v 1000k -deadline realtime {} -f rtsp 'rtsp://{{}}'",
+        transport.as_ffmpeg_flag()
+    )
+}
+
+fn build_opus_command(transport: Transport) -> String {
+    format!(
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -acodec libopus \
+         {} -f rtsp 'rtsp://{{}}'",
+        transport.as_ffmpeg_flag()
+    )
+}
+
+fn build_g722_command(transport: Transport) -> String {
+    format!(
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -acodec g722 \
+         {} -f rtsp 'rtsp://{{}}'",
+        transport.as_ffmpeg_flag()
+    )
+}
+
+fn build_vp8_opus_command(width: u16, height: u16, transport: Transport) -> String {
+    format!(
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 \
+         -f lavfi -i testsrc=size={width}x{height}:rate=30 \
+         -acodec libopus -vcodec libvpx -pix_fmt yuv420p \
+         -b:v 1000k -deadline realtime {} -f rtsp 'rtsp://{{}}'",
+        transport.as_ffmpeg_flag()
+    )
+}
+
+async fn run_rtsp_cycle_test(config: TestConfig) {
+    let server_addr = setup_liveion_server(config.ip, config.server_port).await;
+
+    create_default_stream(&server_addr).await;
+
+    // Stream A: ffmpeg → RTSP server → WebRTC
+    let stream_a = stream_id("a");
+    start_stream_a(&config, &server_addr, &stream_a).await;
+    wait_for_publish_connected(&server_addr, &stream_a).await;
+    tokio::time::sleep(Duration::from_millis(STREAM_STABILIZATION_MS)).await;
+
+    // Stream A → RTSP server → Stream B
+    start_stream_a_to_b(&config, &server_addr, &stream_a).await;
+    wait_for_subscribe_connected(&server_addr, &stream_a).await;
+    tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
+
+    // Stream B: RTSP client → WebRTC
+    let stream_b = stream_id("b");
+    start_stream_b(&config, &server_addr, &stream_b).await;
+    wait_for_publish_connected(&server_addr, &stream_b).await;
+
+    // Stream C: Stream B → RTSP server
+    let stream_c = stream_id("c");
+    start_stream_b_to_c(&config, &server_addr, &stream_b, &stream_c).await;
+    wait_for_subscribe_connected(&server_addr, &stream_b).await;
+    tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
+
+    // Stream C → RTSP server → ffprobe
+    start_stream_c_output(&config, &server_addr, &stream_c).await;
+    wait_for_subscribe_connected(&server_addr, &stream_c).await;
+    tokio::time::sleep(Duration::from_millis(FFPROBE_PREPARATION_MS)).await;
+
+    // Verify with ffprobe
+    verify_stream_with_ffprobe(&config).await;
+}
+
+async fn setup_liveion_server(ip: IpAddr, port: u16) -> SocketAddr {
+    let cfg = liveion::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(ip, port))
+        .await
+        .expect("Failed to bind server");
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
+    addr
+}
+
+async fn create_default_stream(server_addr: &SocketAddr) {
     let res = reqwest::Client::new()
-        .post(format!("http://{addr}{}", api::path::streams("-")))
+        .post(format!("http://{server_addr}{}", api::path::streams("-")))
         .send()
         .await
-        .unwrap();
+        .expect("Failed to create default stream");
 
     assert_eq!(http::StatusCode::NO_CONTENT, res.status());
 
-    let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
+    let res = reqwest::get(format!("http://{server_addr}{}", api::path::streams("")))
         .await
-        .unwrap();
+        .expect("Failed to get streams");
 
-    let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
+    let body = res
+        .json::<Vec<api::response::Stream>>()
+        .await
+        .expect("Failed to parse streams response");
 
-    assert_eq!(1, body.len());
+    assert_eq!(1, body.len(), "Expected exactly one default stream");
+}
 
-    let stream_a = stream_id("a");
+async fn start_stream_a(config: &TestConfig, server_addr: &SocketAddr, stream_id: &str) {
+    let rtsp_addr = SocketAddr::new(config.ip, config.ports.whip);
+    let ffmpeg_cmd = config.ffmpeg_command.replace("{}", &rtsp_addr.to_string());
 
     tokio::spawn(livetwo::whip::into(
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.whip),
-        ),
-        format!("http://{addr}{}", api::path::whip(&stream_a)),
+        format!("{}://{}", livetwo::SCHEME_RTSP_SERVER, rtsp_addr),
+        format!("http://{server_addr}{}", api::path::whip(stream_id)),
         None,
-        Some(format!(
-            "{prefix} -f rtsp 'rtsp://{}'",
-            SocketAddr::new(ip, ports.whip),
-        )),
+        Some(ffmpeg_cmd),
     ));
+}
 
-    let mut result = None;
-    for _ in 0..100 {
-        let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
-            .await
-            .unwrap();
-
-        assert_eq!(http::StatusCode::OK, res.status());
-
-        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
-
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_a)
-            && !r.publish.sessions.is_empty()
-        {
-            let s = r.publish.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
-                result = Some(s);
-                break;
-            }
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-
-    assert!(result.is_some());
-
-    // TODO: publish.state == connected is not ready
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+async fn start_stream_a_to_b(config: &TestConfig, server_addr: &SocketAddr, stream_id: &str) {
+    let rtsp_addr = SocketAddr::new(config.ip, config.ports.p_ab);
 
     tokio::spawn(livetwo::whep::from(
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.p_ab),
-        ),
-        format!("http://{addr}{}", api::path::whep(&stream_a)),
+        format!("{}://{}", livetwo::SCHEME_RTSP_SERVER, rtsp_addr),
+        format!("http://{server_addr}{}", api::path::whep(stream_id)),
         None,
         None,
         None,
     ));
+}
 
-    let mut result = None;
-    for _ in 0..100 {
-        let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
-            .await
-            .unwrap();
-
-        assert_eq!(http::StatusCode::OK, res.status());
-
-        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
-
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_a)
-            && !r.subscribe.sessions.is_empty()
-        {
-            let s = r.subscribe.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
-                result = Some(s);
-                break;
-            }
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-
-    assert!(result.is_some());
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
-    let stream_b = stream_id("b");
+async fn start_stream_b(config: &TestConfig, server_addr: &SocketAddr, stream_id: &str) {
+    let rtsp_addr = SocketAddr::new(config.ip, config.ports.p_ab);
 
     tokio::spawn(livetwo::whip::into(
         format!(
             "{}://{}{}",
             livetwo::SCHEME_RTSP_CLIENT,
-            SocketAddr::new(ip, ports.p_ab),
-            transport.as_str()
+            rtsp_addr,
+            config.transport.as_query_param()
         ),
-        format!("http://{addr}{}", api::path::whip(&stream_b)),
+        format!("http://{server_addr}{}", api::path::whip(stream_id)),
         None,
         None,
     ));
+}
 
-    let mut result = None;
-    for _ in 0..100 {
-        let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
-            .await
-            .unwrap();
-
-        assert_eq!(http::StatusCode::OK, res.status());
-
-        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
-
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_b)
-            && !r.publish.sessions.is_empty()
-        {
-            let s = r.publish.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
-                result = Some(s);
-                break;
-            }
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-
-    assert!(result.is_some());
-
-    let stream_c = stream_id("c");
+async fn start_stream_b_to_c(
+    config: &TestConfig,
+    server_addr: &SocketAddr,
+    stream_b_id: &str,
+    stream_c_id: &str,
+) {
+    let rtsp_addr = SocketAddr::new(config.ip, config.ports.p_bc);
 
     tokio::spawn(livetwo::whip::into(
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.p_bc),
-        ),
-        format!("http://{addr}{}", api::path::whip(&stream_c)),
+        format!("{}://{}", livetwo::SCHEME_RTSP_SERVER, rtsp_addr),
+        format!("http://{server_addr}{}", api::path::whip(stream_c_id)),
         None,
         None,
     ));
@@ -684,143 +555,191 @@ async fn helper_livetwo_cycle_rtsp(
         format!(
             "{}://{}{}",
             livetwo::SCHEME_RTSP_CLIENT,
-            SocketAddr::new(ip, ports.p_bc),
-            transport.as_str()
+            rtsp_addr,
+            config.transport.as_query_param()
         ),
-        format!("http://{addr}{}", api::path::whep(&stream_b)),
+        format!("http://{server_addr}{}", api::path::whep(stream_b_id)),
         None,
         None,
         None,
     ));
+}
 
-    let mut result = None;
-    for _ in 0..100 {
-        let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
-            .await
-            .unwrap();
-
-        assert_eq!(http::StatusCode::OK, res.status());
-
-        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
-
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_b)
-            && !r.subscribe.sessions.is_empty()
-        {
-            let s = r.subscribe.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
-                result = Some(s);
-                break;
-            }
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-
-    assert!(result.is_some());
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+async fn start_stream_c_output(config: &TestConfig, server_addr: &SocketAddr, stream_id: &str) {
+    let rtsp_addr = SocketAddr::new(config.ip, config.ports.whep);
 
     tokio::spawn(livetwo::whep::from(
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, ports.whep),
-        ),
-        format!("http://{addr}{}", api::path::whep(&stream_c)),
+        format!("{}://{}", livetwo::SCHEME_RTSP_SERVER, rtsp_addr),
+        format!("http://{server_addr}{}", api::path::whep(stream_id)),
         None,
         None,
         None,
     ));
+}
 
-    let mut result = None;
-    for _ in 0..100 {
-        let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
+async fn wait_for_publish_connected(server_addr: &SocketAddr, stream_id: &str) {
+    wait_for_connection_state(
+        server_addr,
+        stream_id,
+        |stream| !stream.publish.sessions.is_empty(),
+        |stream| stream.publish.sessions[0].state,
+    )
+    .await;
+}
+
+async fn wait_for_subscribe_connected(server_addr: &SocketAddr, stream_id: &str) {
+    wait_for_connection_state(
+        server_addr,
+        stream_id,
+        |stream| !stream.subscribe.sessions.is_empty(),
+        |stream| stream.subscribe.sessions[0].state,
+    )
+    .await;
+}
+
+async fn wait_for_connection_state<F, G>(
+    server_addr: &SocketAddr,
+    stream_id: &str,
+    has_sessions: F,
+    get_state: G,
+) where
+    F: Fn(&api::response::Stream) -> bool,
+    G: Fn(&api::response::Stream) -> api::response::RTCPeerConnectionState,
+{
+    for attempt in 0..MAX_CONNECTION_ATTEMPTS {
+        let res = reqwest::get(format!("http://{server_addr}{}", api::path::streams("")))
             .await
-            .unwrap();
+            .expect("Failed to get streams");
 
         assert_eq!(http::StatusCode::OK, res.status());
 
-        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
+        let body = res
+            .json::<Vec<api::response::Stream>>()
+            .await
+            .expect("Failed to parse streams response");
 
-        if let Some(r) = body.into_iter().find(|i| i.id == stream_c)
-            && !r.subscribe.sessions.is_empty()
+        if let Some(stream) = body.into_iter().find(|s| s.id == stream_id)
+            && has_sessions(&stream)
+            && get_state(&stream) == api::response::RTCPeerConnectionState::Connected
         {
-            let s = r.subscribe.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
-                result = Some(s);
-                break;
-            }
+            return;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        if attempt == MAX_CONNECTION_ATTEMPTS - 1 {
+            panic!(
+                "Stream '{}' did not reach connected state after {} attempts",
+                stream_id, MAX_CONNECTION_ATTEMPTS
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(CONNECTION_CHECK_INTERVAL_MS)).await;
     }
+}
 
-    assert!(result.is_some());
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
-    let output = Command::new("ffprobe")
-        .args(vec![
-            "-v",
-            "error",
-            "-hide_banner",
-            "-i",
-            &format!(
-                "{}://{}{}",
-                livetwo::SCHEME_RTSP_CLIENT,
-                SocketAddr::new(ip, ports.whep),
-                transport.as_str()
-            ),
-            "-show_streams",
-            "-of",
-            "json",
-        ])
-        .output()
-        .await
-        .expect("Failed to execute command");
-
-    assert!(
-        output.status.success(),
-        "stdout: {}\r\nstderr: {}",
-        std::str::from_utf8(output.stdout.as_slice()).unwrap(),
-        std::str::from_utf8(output.stderr.as_slice()).unwrap()
+async fn verify_stream_with_ffprobe(config: &TestConfig) {
+    let rtsp_url = format!(
+        "{}://{}{}",
+        livetwo::SCHEME_RTSP_CLIENT,
+        SocketAddr::new(config.ip, config.ports.whep),
+        config.transport.as_query_param()
     );
 
-    if output.status.success() {
-        #[derive(serde::Deserialize)]
-        struct FfprobeStream {
-            codec_type: String,
-            width: Option<u16>,
-            height: Option<u16>,
-            channels: Option<u8>,
+    let mut last_error = None;
+
+    for attempt in 0..FFPROBE_MAX_RETRIES {
+        let output = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-hide_banner",
+                "-i",
+                &rtsp_url,
+                "-show_streams",
+                "-of",
+                "json",
+            ])
+            .output()
+            .await
+            .expect("Failed to execute ffprobe");
+
+        tokio::time::sleep(Duration::from_millis(FFPROBE_TIMEOUT_MS)).await;
+
+        if output.status.success() {
+            validate_ffprobe_output(&output.stdout, &config.media);
+            return;
         }
 
-        #[derive(serde::Deserialize)]
-        struct Ffprobe {
-            streams: Vec<FfprobeStream>,
-        }
+        last_error = Some(format!(
+            "Attempt {}/{} failed\nstdout: {}\nstderr: {}",
+            attempt + 1,
+            FFPROBE_MAX_RETRIES,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
 
-        let r: Ffprobe = serde_json::from_slice(output.stdout.as_slice()).unwrap();
-
-        for stream in r.streams.iter() {
-            match stream.codec_type.as_str() {
-                "video" => {
-                    if let Some((width, height)) = detect.video {
-                        assert_eq!(stream.width.unwrap(), width);
-                        assert_eq!(stream.height.unwrap(), height);
-                    } else {
-                        panic!("Shouldn't exist video");
-                    }
-                }
-                "audio" => {
-                    if let Some(channels) = detect.audio {
-                        assert_eq!(stream.channels.unwrap(), channels);
-                    } else {
-                        panic!("Shouldn't exist audio");
-                    }
-                }
-                _ => panic!("Unknown codec_type: {}", stream.codec_type),
-            }
+        if attempt < FFPROBE_MAX_RETRIES - 1 {
+            tokio::time::sleep(Duration::from_millis(FFPROBE_RETRY_DELAY_MS)).await;
         }
     }
+
+    panic!(
+        "ffprobe failed after {} attempts:\n{}",
+        FFPROBE_MAX_RETRIES,
+        last_error.unwrap()
+    );
+}
+
+fn validate_ffprobe_output(stdout: &[u8], expected: &MediaExpectation) {
+    #[derive(serde::Deserialize)]
+    struct FfprobeStream {
+        codec_type: String,
+        width: Option<u16>,
+        height: Option<u16>,
+        channels: Option<u8>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Ffprobe {
+        streams: Vec<FfprobeStream>,
+    }
+
+    let result: Ffprobe =
+        serde_json::from_slice(stdout).expect("Failed to parse ffprobe JSON output");
+
+    for stream in result.streams.iter() {
+        match stream.codec_type.as_str() {
+            "video" => {
+                if let Some((expected_width, expected_height)) = expected.video_resolution {
+                    assert_eq!(
+                        stream.width.unwrap(),
+                        expected_width,
+                        "Video width mismatch"
+                    );
+                    assert_eq!(
+                        stream.height.unwrap(),
+                        expected_height,
+                        "Video height mismatch"
+                    );
+                } else {
+                    panic!("Unexpected video stream found");
+                }
+            }
+            "audio" => {
+                if let Some(expected_channels) = expected.audio_channels {
+                    assert_eq!(
+                        stream.channels.unwrap(),
+                        expected_channels,
+                        "Audio channels mismatch"
+                    );
+                } else {
+                    panic!("Unexpected audio stream found");
+                }
+            }
+            _ => panic!("Unknown codec_type: {}", stream.codec_type),
+        }
+    }
+}
+
+fn stream_id(suffix: &str) -> String {
+    format!("test-cycle-{}", suffix)
 }

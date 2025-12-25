@@ -12,3 +12,44 @@ video {
 video {
     display: block;
 }
+
+:root {
+    font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    font-weight: 400;
+
+    color-scheme: light dark;
+    color: rgba(255, 255, 255, 0.87);
+    background-color: #242424;
+
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.player-wrapper {
+    position: relative;
+}
+
+.stats-container {
+    position: absolute;
+    top: 2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(28, 28, 28, 0.8);
+    border: 1px solid #3c3c3c;
+    border-radius: 1rem;
+    padding: 1rem;
+    color: #fff;
+    font-size: 13px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+    z-index: 999;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        color: #213547;
+        background-color: #ffffff;
+    }
+}

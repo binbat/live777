@@ -46,6 +46,7 @@ members = [
     "libs/iceserver",
     "libs/libwish",
     "libs/signal",
+    "libs/rtsp",
     "libs/net4mqtt",
     "libs/storage",
     "liveion",

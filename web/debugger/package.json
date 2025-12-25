@@ -12,7 +12,8 @@
     "./style.css": "./dist/index.css"
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "vite build --watch",
+    "dev:debugger": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
