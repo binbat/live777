@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UDP PTZ Control Demo - live777</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        .header p {
+            opacity: 0.9;
+        }
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 30px;
+        }
+        .panel {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .panel h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .status.connected {
+            background: rgba(40, 167, 69, 0.9);
+        }
+        .controls {
+            display: grid;
+            gap: 15px;
+        }
+        .control-group {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        .control-group h3 {
+            color: #495057;
+            font-size: 1em;
+            margin-bottom: 10px;
+        }
+        .button-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 10px;
+        }
+        button {
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            background: #667eea;
+            color: white;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-connect {
+            grid-column: 1 / -1;
+            background: #28a745;
+            padding: 15px;
+            font-size: 1em;
+        }
+        .btn-connect:hover {
+            background: #218838;
+        }
+        .btn-stop {
+            background: #dc3545;
+        }
+        .btn-stop:hover {
+            background: #c82333;
+        }
+        .logs {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            line-height: 1.5;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+        }
+        .log-entry.info { color: #4ec9b0; }
+        .log-entry.warn { color: #dcdcaa; }
+        .log-entry.error { color: #f48771; }
+        .log-entry.success { color: #b5cea8; }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .stat-item {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        .stat-label {
+            color: #6c757d;
+            font-size: 0.8em;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            color: #333;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎥 UDP PTZ Control Demo</h1>
+            <p>通过 UDP 控制云台 - live777 DataChannel Bridge</p>
+        </div>
+        
+        <div class="content">
+            <div class="panel">
+                <h2>视频预览</h2>
+                <div class="video-container">
+                    <video id="video" autoplay playsinline muted></video>
+                    <div class="status" id="status">未连接</div>
+                </div>
+                
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-label">发送指令</div>
+                        <div class="stat-value" id="sentCount">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">接收消息</div>
+                        <div class="stat-value" id="recvCount">0</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>控制面板</h2>
+                
+                <div class="control-group">
+                    <div class="input-group">
+                        <input type="text" id="whepUrl" placeholder="WHEP URL" value="http://localhost:9999/whep/camera1">
+                        <button class="btn-connect" onclick="connect()">连接</button>
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <h3>云台控制</h3>
+                    <div class="button-grid">
+                        <div></div>
+                        <button onclick="sendCommand('tilt', 'up')">↑ 上</button>
+                        <div></div>
+                        <button onclick="sendCommand('pan', 'left')">← 左</button>
+                        <button class="btn-stop" onclick="sendCommand('stop')">停止</button>
+                        <button onclick="sendCommand('pan', 'right')">右 →</button>
+                        <div></div>
+                        <button onclick="sendCommand('tilt', 'down')">↓ 下</button>
+                        <div></div>
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <h3>变焦控制</h3>
+                    <div class="button-grid">
+                        <button onclick="sendCommand('zoom', 'in')">🔍 放大</button>
+                        <button onclick="sendCommand('zoom', 'out')">🔍 缩小</button>
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <h3>自定义指令</h3>
+                    <div class="input-group">
+                        <input type="text" id="customCmd" placeholder='{"action":"custom","value":123}'>
+                        <button onclick="sendCustom()">发送</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div style="padding: 0 30px 30px;">
+            <div class="panel">
+                <h2>消息日志</h2>
+                <div class="logs" id="logs"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let pc = null;
+        let dc = null;
+        let sentCount = 0;
+        let recvCount = 0;
+
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            logs.appendChild(entry);
+            logs.scrollTop = logs.scrollHeight;
+        }
+
+        function updateStatus(text, connected = false) {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            status.className = connected ? 'status connected' : 'status';
+        }
+
+        function updateStats() {
+            document.getElementById('sentCount').textContent = sentCount;
+            document.getElementById('recvCount').textContent = recvCount;
+        }
+
+        async function connect() {
+            const url = document.getElementById('whepUrl').value;
+            
+            try {
+                log('正在连接到 WHEP 端点...', 'info');
+                updateStatus('连接中...');
+                
+                pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+
+                // 创建 DataChannel
+                dc = pc.createDataChannel('control');
+                
+                dc.onopen = () => {
+                    log('✓ DataChannel 已打开', 'success');
+                    updateStatus('已连接', true);
+                };
+                
+                dc.onclose = () => {
+                    log('✗ DataChannel 已关闭', 'warn');
+                    updateStatus('已断开');
+                };
+                
+                dc.onerror = (error) => {
+                    log(`✗ DataChannel 错误: ${error}`, 'error');
+                };
+                
+                dc.onmessage = (event) => {
+                    recvCount++;
+                    updateStats();
+                    
+                    try {
+                        const message = new TextDecoder().decode(event.data);
+                        log(`← 收到: ${message}`, 'info');
+                        
+                        // 尝试解析 JSON
+                        try {
+                            const data = JSON.parse(message);
+                            log(`  解析: ${JSON.stringify(data)}`, 'info');
+                        } catch (e) {
+                            // 不是 JSON，显示原始消息
+                        }
+                    } catch (e) {
+                        log(`← 收到二进制数据: ${event.data.byteLength} 字节`, 'info');
+                    }
+                };
+
+                // 添加 transceiver
+                pc.addTransceiver('video', { direction: 'recvonly' });
+                pc.addTransceiver('audio', { direction: 'recvonly' });
+
+                // 处理 track
+                pc.ontrack = (event) => {
+                    log(`✓ 收到 ${event.track.kind} track`, 'success');
+                    const video = document.getElementById('video');
+                    if (!video.srcObject) {
+                        video.srcObject = new MediaStream();
+                    }
+                    video.srcObject.addTrack(event.track);
+                };
+
+                // ICE 状态
+                pc.oniceconnectionstatechange = () => {
+                    log(`ICE 状态: ${pc.iceConnectionState}`, 'info');
+                };
+
+                // 创建 offer
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // 发送 offer 到 WHEP 端点
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/sdp'
+                    },
+                    body: offer.sdp
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const answer = await response.text();
+                await pc.setRemoteDescription({
+                    type: 'answer',
+                    sdp: answer
+                });
+
+                log('✓ 连接成功！', 'success');
+                
+            } catch (error) {
+                log(`✗ 连接失败: ${error.message}`, 'error');
+                updateStatus('连接失败');
+            }
+        }
+
+        function sendCommand(action, direction = null) {
+            if (!dc || dc.readyState !== 'open') {
+                log('✗ DataChannel 未连接', 'error');
+                return;
+            }
+
+            const command = {
+                action: action,
+                timestamp: Date.now()
+            };
+
+            if (direction) {
+                if (action === 'pan' || action === 'tilt') {
+                    command.direction = direction;
+                    command.speed = 50;
+                } else if (action === 'zoom') {
+                    command.direction = direction;
+                    command.value = 1;
+                }
+            }
+
+            const message = JSON.stringify(command);
+            dc.send(message);
+            sentCount++;
+            updateStats();
+            log(`→ 发送: ${message}`, 'success');
+        }
+
+        function sendCustom() {
+            if (!dc || dc.readyState !== 'open') {
+                log('✗ DataChannel 未连接', 'error');
+                return;
+            }
+
+            const input = document.getElementById('customCmd');
+            const message = input.value.trim();
+            
+            if (!message) {
+                log('✗ 请输入指令', 'warn');
+                return;
+            }
+
+            try {
+                // 验证 JSON
+                JSON.parse(message);
+                dc.send(message);
+                sentCount++;
+                updateStats();
+                log(`→ 发送: ${message}`, 'success');
+                input.value = '';
+            } catch (e) {
+                log(`✗ 无效的 JSON: ${e.message}`, 'error');
+            }
+        }
+
+        // 键盘控制
+        document.addEventListener('keydown', (e) => {
+            if (!dc || dc.readyState !== 'open') return;
+            
+            switch(e.key) {
+                case 'ArrowUp':
+                    e.preventDefault();
+                    sendCommand('tilt', 'up');
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    sendCommand('tilt', 'down');
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    sendCommand('pan', 'left');
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    sendCommand('pan', 'right');
+                    break;
+                case ' ':
+                    e.preventDefault();
+                    sendCommand('stop');
+                    break;
+                case '+':
+                case '=':
+                    e.preventDefault();
+                    sendCommand('zoom', 'in');
+                    break;
+                case '-':
+                    e.preventDefault();
+                    sendCommand('zoom', 'out');
+                    break;
+            }
+        });
+
+        log('页面已加载，请点击"连接"按钮开始', 'info');
+        log('提示：连接后可使用方向键控制云台，空格键停止，+/- 键变焦', 'info');
+    </script>
+</body>
+</html>
