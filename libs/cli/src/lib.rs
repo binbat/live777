@@ -71,10 +71,10 @@ impl From<Codec> for RTCRtpCodecCapability {
                 rtcp_feedback: video_rtcp_feedback,
             },
             Codec::H265 => RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_HEVC.to_owned(),
+                mime_type: "video/H265".to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "".to_owned(),
+                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_owned(),
                 rtcp_feedback: video_rtcp_feedback,
             },
             Codec::AV1 => RTCRtpCodecCapability {

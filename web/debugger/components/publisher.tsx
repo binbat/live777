@@ -18,6 +18,7 @@ const VideoCodecOptions = [
     { value: "vp9", text: "VP9" },
     { value: "vp8", text: "VP8" },
     { value: "h264", text: "H264" },
+    { value: "h265", text: "H265" },
 ];
 
 const mapCodec: Record<string, string> = {
@@ -26,6 +27,7 @@ const mapCodec: Record<string, string> = {
     vp9: "vp9/90000",
     vp8: "vp8/90000",
     h264: "h264/90000",
+    h265: "h265/90000",
     opus: "opus/48000",
     g722: "g722/8000",
 };

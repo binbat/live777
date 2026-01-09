@@ -346,6 +346,117 @@ async fn test_recorder_generates_opus_audio_segments() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_recorder_generates_h265_segments() -> anyhow::Result<()> {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await?;
+    let addr = listener.local_addr()?;
+
+    let storage_dir = TempDir::new()?;
+    let storage_root = storage_dir.path().join("records");
+    fs::create_dir_all(&storage_root)?;
+
+    let stream_id = "h265-test";
+
+    let mut cfg = Config::default();
+    cfg.recorder.auto_streams = vec![stream_id.to_string()];
+    cfg.recorder.max_recording_seconds = 0;
+    cfg.recorder.storage = StorageConfig::Fs {
+        root: storage_root.to_string_lossy().into_owned(),
+    };
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let client = Client::new();
+    client
+        .post(format!("http://{addr}{}", api::path::streams(stream_id)))
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let rtp_port: u16 = 5242;
+    let sdp_dir = TempDir::new()?;
+    let sdp_path = sdp_dir.path().join("input.sdp");
+    let sdp_path_str = sdp_path.to_string_lossy().into_owned();
+
+    let ffmpeg_cmd = format!(
+        "ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -pix_fmt yuv420p -vcodec libx265 -preset ultrafast -tune zerolatency -x265-params keyint=30:min-keyint=30:repeat-headers=1 -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k -f rtp \"rtp://{}\" -sdp_file {}",
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rtp_port),
+        sdp_path_str
+    );
+
+    let whip_future = tokio::spawn(livetwo::whip::into(
+        sdp_path_str.clone(),
+        format!("http://{addr}{}", api::path::whip(stream_id)),
+        None,
+        Some(ffmpeg_cmd),
+    ));
+
+    wait_for_publish_connected(&client, addr, stream_id).await?;
+
+    sleep(Duration::from_secs(RECORDING_DURATION_SECS)).await;
+
+    client
+        .delete(format!("http://{addr}{}", api::path::streams(stream_id)))
+        .send()
+        .await?;
+
+    sleep(Duration::from_secs(POST_RECORDING_WAIT_SECS)).await;
+
+    whip_future.abort();
+    let _ = whip_future.await;
+
+    let mut outputs = wait_for_video_outputs(&storage_root, stream_id).await?;
+
+    assert!(outputs.manifest.exists(), "manifest.mpd not found");
+    let manifest_content = fs::read_to_string(&outputs.manifest)?;
+    assert!(
+        manifest_content.contains("<MPD"),
+        "manifest content invalid"
+    );
+    assert!(
+        manifest_content.contains("video"),
+        "manifest should contain video track"
+    );
+
+    let init_segment = outputs
+        .video_init_segment
+        .as_ref()
+        .expect("v_init.m4s path missing");
+    assert!(init_segment.exists(), "v_init.m4s not found");
+    let init_size = fs::metadata(init_segment)?.len();
+    assert!(init_size > 100, "v_init.m4s too small: {} bytes", init_size);
+
+    outputs.video_segments.sort();
+    assert!(
+        !outputs.video_segments.is_empty(),
+        "expected at least one H.265 video segment, got {}",
+        outputs.video_segments.len()
+    );
+
+    for seg_path in &outputs.video_segments {
+        let metadata = fs::metadata(seg_path)?;
+        assert!(
+            metadata.len() > 1000,
+            "H.265 segment {:?} too small: {} bytes",
+            seg_path.file_name(),
+            metadata.len()
+        );
+    }
+
+    assert!(
+        outputs.audio_segments.is_empty(),
+        "unexpected audio segments: {:?}",
+        outputs.audio_segments
+    );
+    assert!(
+        outputs.audio_init_segment.is_none(),
+        "unexpected a_init.m4s present"
+    );
+
+    Ok(())
+}
+
 async fn wait_for_publish_connected(
     client: &Client,
     addr: SocketAddr,
