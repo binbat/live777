@@ -66,6 +66,12 @@ impl PublishTrackRemote {
         loop {
             match track.read(&mut b).await {
                 Ok((rtp_packet, _)) => {
+                    trace!(
+                        "RTP packet - SSRC: {}, SeqNum: {}, Timestamp: {}",
+                        rtp_packet.header.ssrc,
+                        rtp_packet.header.sequence_number,
+                        rtp_packet.header.timestamp
+                    );
                     if let Err(err) = rtp_sender.send(Arc::new(rtp_packet)) {
                         debug!(
                             "[{}] [{}] [track] kind: {:?}, rid: {}, rtp broadcast error : {}",
