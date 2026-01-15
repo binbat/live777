@@ -13,7 +13,10 @@ use storage::init_operator;
 
 use crate::hook::{Event, StreamEventType};
 use crate::stream::manager::Manager;
-use api::recorder::{AckRecordingsRequest, AckRecordingsResponse, PullRecordingsRequest, PullRecordingsResponse, RecordingStatus};
+use api::recorder::{
+    AckRecordingsRequest, AckRecordingsResponse, PullRecordingsRequest, PullRecordingsResponse,
+    RecordingStatus,
+};
 use chrono::Utc;
 
 #[cfg(feature = "recorder")]

@@ -352,7 +352,8 @@ async fn do_record_sync(mut state: AppState) -> Result<()> {
                 && !id.trim().is_empty()
             {
                 id.clone()
-            } else if let Some(ts) = crate::utils::extract_timestamp_from_record_dir(&session.mpd_path)
+            } else if let Some(ts) =
+                crate::utils::extract_timestamp_from_record_dir(&session.mpd_path)
             {
                 ts
             } else {
@@ -416,9 +417,7 @@ async fn do_record_sync(mut state: AppState) -> Result<()> {
             }
         }
 
-        if should_advance
-            && let Some(last_ts) = pull.last_ts
-        {
+        if should_advance && let Some(last_ts) = pull.last_ts {
             let mut guard = state.record_sync_cursor.write().await;
             guard.insert(server.alias.clone(), last_ts);
         }
