@@ -277,10 +277,11 @@ pub async fn ack_recordings(req: AckRecordingsRequest) -> anyhow::Result<AckReco
 
 fn record_key(info: &RecordingInfo) -> String {
     if info.record_id > 0 {
-        info.record_id.to_string()
-    } else {
-        info.record_dir.clone()
+        return info.record_id.to_string();
     }
+
+    let ts = (info.start_ts_micros / 1_000_000).max(0);
+    ts.to_string()
 }
 
 fn resolve_index_path(cfg: &RecorderConfig) -> Option<PathBuf> {

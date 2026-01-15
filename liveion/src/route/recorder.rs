@@ -37,7 +37,8 @@ async fn record_stream(
     let record_id_str = if recording.record_id > 0 {
         recording.record_id.to_string()
     } else {
-        String::new()
+        let ts = (recording.start_ts_micros / 1_000_000).max(0);
+        ts.to_string()
     };
     let resp = api::recorder::StartRecordResponse {
         id: stream.clone(),
