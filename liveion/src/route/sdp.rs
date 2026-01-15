@@ -58,7 +58,9 @@ pub fn maybe_filter_vp8(sdp: &str, disable_vp8: bool) -> Result<String> {
     }
 
     if removed_all_video {
-        return Err(anyhow!("VP8 is disabled and no alternative video codec is available"));
+        return Err(anyhow!(
+            "VP8 is disabled and no alternative video codec is available"
+        ));
     }
 
     Ok(output.join("\n"))
