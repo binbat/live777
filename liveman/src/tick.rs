@@ -3,11 +3,13 @@ use std::{collections::HashMap, time::Duration};
 use chrono::Utc;
 use glob::Pattern;
 use http::header;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use url::Url;
 
 use crate::service::recordings_index::RecordingsIndexService;
 use crate::{AppState, error::AppError, result::Result, route::utils::session_delete};
+
+use api::recorder::{AckRecordingsRequest, PullRecordingsRequest, RecordingKey};
 
 pub async fn cascade_check(state: AppState) {
     loop {
@@ -267,6 +269,162 @@ pub async fn auto_record_rotate(state: AppState) {
 
         let _ = do_auto_record_rotate(state.clone()).await;
     }
+}
+
+/// Pull recording index from liveion nodes and ack after syncing to DB
+pub async fn record_sync(state: AppState) {
+    if !state.config.record_sync.enabled {
+        info!("record_sync is disabled, skip record_sync loop");
+        return;
+    }
+
+    loop {
+        let timeout = tokio::time::sleep(Duration::from_millis(state.config.record_sync.tick_ms));
+        tokio::pin!(timeout);
+        let _ = timeout.as_mut().await;
+        let _ = do_record_sync(state.clone()).await;
+    }
+}
+
+async fn do_record_sync(mut state: AppState) -> Result<()> {
+    let servers = state.storage.nodes().await;
+    if servers.is_empty() {
+        return Ok(());
+    }
+
+    for server in servers {
+        let since_ts = {
+            let guard = state.record_sync_cursor.read().await;
+            guard.get(&server.alias).copied()
+        };
+
+        let req = PullRecordingsRequest {
+            stream: None,
+            since_ts,
+            limit: state.config.record_sync.limit,
+        };
+
+        let url = format!("{}{}", server.url, api::path::recordings_pull());
+        let resp = match state
+            .client
+            .post(url)
+            .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+            .json(&req)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!(node = %server.alias, error = ?e, "record_sync pull failed");
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            warn!(
+                node = %server.alias,
+                status = %resp.status(),
+                "record_sync pull failed"
+            );
+            continue;
+        }
+
+        let pull = match resp.json::<api::recorder::PullRecordingsResponse>().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(node = %server.alias, error = ?e, "record_sync parse failed");
+                continue;
+            }
+        };
+
+        if pull.sessions.is_empty() {
+            if let Some(last_ts) = pull.last_ts {
+                let mut guard = state.record_sync_cursor.write().await;
+                guard.insert(server.alias.clone(), last_ts);
+            }
+            continue;
+        }
+
+        let mut ack_records: Vec<RecordingKey> = Vec::new();
+
+        for session in pull.sessions.iter() {
+            let record = if let Some(id) = session.id.as_ref()
+                && !id.trim().is_empty()
+            {
+                id.clone()
+            } else if let Some(ts) = crate::utils::extract_timestamp_from_record_dir(&session.mpd_path)
+            {
+                ts
+            } else {
+                warn!(
+                    node = %server.alias,
+                    stream = %session.stream,
+                    mpd_path = %session.mpd_path,
+                    "record_sync missing record id"
+                );
+                continue;
+            };
+
+            if let Err(err) = RecordingsIndexService::upsert(
+                state.database.get_connection(),
+                &session.stream,
+                &record,
+                &session.mpd_path,
+            )
+            .await
+            {
+                error!("{}", err);
+                continue;
+            }
+
+            ack_records.push(RecordingKey {
+                stream: session.stream.clone(),
+                record,
+            });
+        }
+
+        let mut should_advance = false;
+
+        if ack_records.is_empty() {
+            should_advance = pull.last_ts.is_some();
+        } else {
+            let ack_url = format!("{}{}", server.url, api::path::recordings_ack());
+            let ack_req = AckRecordingsRequest {
+                records: ack_records,
+            };
+            match state
+                .client
+                .post(ack_url)
+                .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                .json(&ack_req)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    should_advance = true;
+                }
+                Ok(r) => {
+                    warn!(
+                        node = %server.alias,
+                        status = %r.status(),
+                        "record_sync ack failed"
+                    );
+                }
+                Err(e) => {
+                    warn!(node = %server.alias, error = ?e, "record_sync ack failed");
+                }
+            }
+        }
+
+        if should_advance
+            && let Some(last_ts) = pull.last_ts
+        {
+            let mut guard = state.record_sync_cursor.write().await;
+            guard.insert(server.alias.clone(), last_ts);
+        }
+    }
+
+    Ok(())
 }
 
 async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
