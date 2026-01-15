@@ -133,6 +133,10 @@ pub struct RecorderConfig {
     #[serde(default)]
     pub node_alias: Option<String>,
 
+    /// Optional path for recorder index file (index.json)
+    #[serde(default)]
+    pub index_path: Option<String>,
+
     /// Maximum duration in seconds for a single recording before rotation (0 disables auto-rotation)
     #[serde(default = "default_max_recording_seconds")]
     pub max_recording_seconds: u64,
@@ -150,6 +154,7 @@ impl Default for RecorderConfig {
             auto_streams: vec![],
             storage: Default::default(),
             node_alias: None,
+            index_path: None,
             max_recording_seconds: default_max_recording_seconds(),
         }
     }

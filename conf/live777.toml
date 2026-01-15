@@ -14,7 +14,9 @@ urls = [
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards
-auto_streams = ["*"] # Record all streams
+# auto_streams = ["*"] # Record all streams
+# Optional path for recorder index file (index.json)
+# index_path = "./records/index.json"
 # Maximum duration in seconds before Live777 restarts a recording (0 disables auto-rotation)
 # max_recording_seconds = 86400
 
