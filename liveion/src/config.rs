@@ -16,6 +16,9 @@ pub struct Config {
     #[serde(default)]
     pub strategy: api::strategy::Strategy,
 
+    #[serde(default)]
+    pub sdp: Sdp,
+
     #[cfg(feature = "net4mqtt")]
     #[serde(default)]
     pub net4mqtt: Option<Net4mqtt>,
@@ -70,6 +73,13 @@ pub struct Auth {
 pub struct Log {
     #[serde(default = "default_log_level")]
     pub level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Sdp {
+    /// Disable VP8 codec in SDP negotiation
+    #[serde(default)]
+    pub disable_vp8: bool,
 }
 
 fn default_http_listen() -> SocketAddr {

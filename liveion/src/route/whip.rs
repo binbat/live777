@@ -9,6 +9,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use iceserver::link_header;
 
 use crate::AppState;
+use crate::route::sdp::maybe_filter_vp8;
 
 pub fn route() -> Router<AppState> {
     Router::new().route(&api::path::whip("{stream}"), post(whip))
@@ -26,7 +27,8 @@ async fn whip(
     if content_type.to_str()? != "application/sdp" {
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
-    let offer = RTCSessionDescription::offer(body)?;
+    let filtered_sdp = maybe_filter_vp8(&body, state.config.sdp.disable_vp8)?;
+    let offer = RTCSessionDescription::offer(filtered_sdp)?;
     debug!("offer: {}", offer.sdp);
     let (answer, session) = state.stream_manager.publish(stream.clone(), offer).await?;
     debug!("answer: {}", answer.sdp);

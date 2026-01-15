@@ -68,6 +68,10 @@ root = "./records"
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
 
+[sdp]
+# Disable VP8 in SDP negotiation (useful for recorder-only pipelines)
+# disable_vp8 = false
+
 [strategy]
 # If not set, use default u16::MAX
 # Default: 65535
