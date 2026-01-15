@@ -41,3 +41,11 @@ pub fn strategy() -> &'static str {
 pub fn record(stream: &str) -> String {
     format!("/api/record/{stream}")
 }
+
+pub fn recordings_pull() -> &'static str {
+    "/api/recordings/pull"
+}
+
+pub fn recordings_ack() -> &'static str {
+    "/api/recordings/ack"
+}

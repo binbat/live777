@@ -10,10 +10,13 @@ use crate::AppState;
 use crate::error::AppError;
 
 pub fn route() -> Router<AppState> {
-    Router::new().route(
-        &api::path::record("{stream}"),
-        post(record_stream).get(record_status).delete(stop_record),
-    )
+    Router::new()
+        .route(
+            &api::path::record("{stream}"),
+            post(record_stream).get(record_status).delete(stop_record),
+        )
+        .route(api::path::recordings_pull(), post(pull_recordings))
+        .route(api::path::recordings_ack(), post(ack_recordings))
 }
 
 #[cfg(feature = "recorder")]
@@ -92,5 +95,35 @@ async fn stop_record(
     _state: State<AppState>,
     Path(_stream): Path<String>,
 ) -> crate::result::Result<Response<String>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn pull_recordings(
+    Json(req): Json<api::recorder::PullRecordingsRequest>,
+) -> crate::result::Result<Json<api::recorder::PullRecordingsResponse>> {
+    let resp = crate::recorder::pull_recordings(req).await?;
+    Ok(Json(resp))
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn pull_recordings(
+    Json(_req): Json<api::recorder::PullRecordingsRequest>,
+) -> crate::result::Result<Json<api::recorder::PullRecordingsResponse>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn ack_recordings(
+    Json(req): Json<api::recorder::AckRecordingsRequest>,
+) -> crate::result::Result<Json<api::recorder::AckRecordingsResponse>> {
+    let resp = crate::recorder::ack_recordings(req).await?;
+    Ok(Json(resp))
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn ack_recordings(
+    Json(_req): Json<api::recorder::AckRecordingsRequest>,
+) -> crate::result::Result<Json<api::recorder::AckRecordingsResponse>> {
     Err(AppError::Throw("feature recorder not enabled".into()))
 }

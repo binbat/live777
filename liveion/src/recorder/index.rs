@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use api::recorder::RecordingStatus;
+use api::recorder::{AckRecordingsRequest, RecordingKey, RecordingSession, RecordingStatus};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -106,6 +106,67 @@ impl RecordingsIndex {
             .await
             .with_context(|| format!("Failed to replace index file {}", self.path.display()))?;
         Ok(())
+    }
+
+    pub async fn list_sessions(
+        &self,
+        stream: Option<String>,
+        since_ts: Option<i64>,
+        limit: u32,
+    ) -> (Vec<RecordingSession>, Option<i64>) {
+        let limit = if limit == 0 { 100 } else { limit } as usize;
+        let mut rows: Vec<RecordingIndexEntry> = {
+            let map = self.entries.read().await;
+            map.values().cloned().collect()
+        };
+
+        if let Some(stream) = stream.as_ref() {
+            rows.retain(|r| &r.stream == stream);
+        }
+
+        if let Some(since) = since_ts {
+            rows.retain(|r| r.updated_at > since);
+        }
+
+        rows.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        if rows.len() > limit {
+            rows.truncate(limit);
+        }
+
+        let last_ts = rows.iter().map(|r| r.updated_at).max();
+        let sessions = rows
+            .into_iter()
+            .map(|r| RecordingSession {
+                id: Some(r.record.clone()),
+                stream: r.stream,
+                start_ts: r.start_ts,
+                end_ts: r.end_ts,
+                duration_ms: r.duration_ms,
+                mpd_path: r.mpd_path,
+                status: r.status,
+            })
+            .collect();
+
+        (sessions, last_ts)
+    }
+
+    pub async fn ack(&self, req: AckRecordingsRequest) -> Result<usize> {
+        let mut removed = 0usize;
+        {
+            let mut map = self.entries.write().await;
+            for RecordingKey { stream, record } in req.records {
+                let key = format!("{}/{}", stream, record);
+                if map.remove(&key).is_some() {
+                    removed += 1;
+                }
+            }
+        }
+
+        if removed > 0 {
+            self.persist().await?;
+        }
+
+        Ok(removed)
     }
 }
 

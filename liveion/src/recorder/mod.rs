@@ -13,7 +13,7 @@ use storage::init_operator;
 
 use crate::hook::{Event, StreamEventType};
 use crate::stream::manager::Manager;
-use api::recorder::RecordingStatus;
+use api::recorder::{AckRecordingsRequest, AckRecordingsResponse, PullRecordingsRequest, PullRecordingsResponse, RecordingStatus};
 use chrono::Utc;
 
 #[cfg(feature = "recorder")]
@@ -246,6 +246,30 @@ async fn update_index_on_stop(
 async fn get_index() -> Option<Arc<RecordingsIndex>> {
     let index = INDEX.read().await;
     index.clone()
+}
+
+pub async fn pull_recordings(req: PullRecordingsRequest) -> anyhow::Result<PullRecordingsResponse> {
+    let Some(index) = get_index().await else {
+        return Ok(PullRecordingsResponse {
+            sessions: Vec::new(),
+            last_ts: None,
+        });
+    };
+
+    let (sessions, last_ts) = index
+        .list_sessions(req.stream, req.since_ts, req.limit)
+        .await;
+
+    Ok(PullRecordingsResponse { sessions, last_ts })
+}
+
+pub async fn ack_recordings(req: AckRecordingsRequest) -> anyhow::Result<AckRecordingsResponse> {
+    let Some(index) = get_index().await else {
+        return Ok(AckRecordingsResponse { deleted: 0 });
+    };
+
+    let deleted = index.ack(req).await?;
+    Ok(AckRecordingsResponse { deleted })
 }
 
 fn record_key(info: &RecordingInfo) -> String {
