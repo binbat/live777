@@ -166,61 +166,93 @@ pub fn extract_h265_params(media: &sdp_types::Media) -> Option<(Vec<u8>, Vec<u8>
         .value
         .as_ref()?;
 
+    debug!("Raw H.265 fmtp line: {}", fmtp_line);
+
     let mut vps = Vec::new();
     let mut sps = Vec::new();
     let mut pps = Vec::new();
 
-    for part in fmtp_line.split(';').map(|s| s.trim()) {
+    for part in fmtp_line.split(';') {
+        let part = part.trim();
+
+        if part.is_empty() {
+            continue;
+        }
+
+        debug!("Processing H.265 fmtp part: '{}'", part);
+
+        let part = if part.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            part.split_whitespace()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            part.to_string()
+        };
+
+        if part.is_empty() {
+            continue;
+        }
+
         if let Some(b64) = part.strip_prefix("sprop-vps=") {
-            if let Ok(decoded) = BASE64.decode(b64) {
-                vps = decoded;
+            let b64_clean = b64.trim();
+            debug!("Found VPS Base64: '{}'", b64_clean);
+            match BASE64.decode(b64_clean) {
+                Ok(decoded) => {
+                    vps = decoded;
+                    debug!("Decoded VPS: {} bytes", vps.len());
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to decode VPS Base64: '{}' - error: {}",
+                        b64_clean, e
+                    );
+                }
             }
         } else if let Some(b64) = part.strip_prefix("sprop-sps=") {
-            if let Ok(decoded) = BASE64.decode(b64) {
-                sps = decoded;
+            let b64_clean = b64.trim();
+            debug!("Found SPS Base64: '{}'", b64_clean);
+            match BASE64.decode(b64_clean) {
+                Ok(decoded) => {
+                    sps = decoded;
+                    debug!("Decoded SPS: {} bytes", sps.len());
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to decode SPS Base64: '{}' - error: {}",
+                        b64_clean, e
+                    );
+                }
             }
         } else if let Some(b64) = part.strip_prefix("sprop-pps=") {
-            if let Ok(decoded) = BASE64.decode(b64) {
-                pps = decoded;
-            }
-        } else if part.starts_with("sprop-parameter-sets=")
-            && vps.is_empty()
-            && sps.is_empty()
-            && pps.is_empty()
-            && let Some(sets) = part.strip_prefix("sprop-parameter-sets=")
-        {
-            let parts: Vec<&str> = sets.split(',').map(str::trim).collect();
-            if parts.len() >= 3
-                && let (Ok(v), Ok(s), Ok(p)) = (
-                    BASE64.decode(parts[0]),
-                    BASE64.decode(parts[1]),
-                    BASE64.decode(parts[2]),
-                )
-            {
-                vps = v;
-                sps = s;
-                pps = p;
+            let b64_clean = b64.trim();
+            debug!("Found PPS Base64: '{}'", b64_clean);
+            match BASE64.decode(b64_clean) {
+                Ok(decoded) => {
+                    pps = decoded;
+                    debug!("Decoded PPS: {} bytes", pps.len());
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to decode PPS Base64: '{}' - error: {}",
+                        b64_clean, e
+                    );
+                }
             }
         }
     }
-
-    if vps.is_empty() || sps.is_empty() || pps.is_empty() {
+    if !vps.is_empty() || !sps.is_empty() || !pps.is_empty() {
         debug!(
-            "Incomplete H.265 params extracted: VPS={} SPS={} PPS={}",
+            "Extracted H.265 params: VPS={} bytes, SPS={} bytes, PPS={} bytes",
             vps.len(),
             sps.len(),
             pps.len()
         );
-        return None;
+        Some((vps, sps, pps))
+    } else {
+        debug!("No H.265 params found in SDP");
+        None
     }
-
-    debug!(
-        "Extracted H.265 params: VPS={} bytes, SPS={} bytes, PPS={} bytes",
-        vps.len(),
-        sps.len(),
-        pps.len()
-    );
-    Some((vps, sps, pps))
 }
 
 fn extract_profile_level_id(media: &sdp_types::Media) -> Option<String> {

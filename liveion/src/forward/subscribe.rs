@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
@@ -168,6 +168,7 @@ impl SubscribeRTCPeerConnection {
                        }
                 }
                 rtp_result = recv.recv() => {
+                    trace!("Received RTP packet, sequence: {}", sequence_number);
                     match rtp_result {
                         Ok(packet) => {
                             match track {

@@ -121,6 +121,48 @@ async fn test_livetwo_cycle_rtsp_h264_tcp() {
 }
 
 #[tokio::test]
+async fn test_livetwo_cycle_rtsp_h265_udp() {
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7160,
+            p_ab: 7165,
+            p_bc: 7170,
+            whep: 7175,
+        },
+        ffmpeg_command: build_h265_command(640, 480, Transport::Udp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
+        },
+        transport: Transport::Udp,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_livetwo_cycle_rtsp_h265_tcp() {
+    run_rtsp_cycle_test(TestConfig {
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        server_port: 0,
+        ports: Ports {
+            whip: 7380,
+            p_ab: 7385,
+            p_bc: 7390,
+            whep: 7395,
+        },
+        ffmpeg_command: build_h265_command(640, 480, Transport::Tcp),
+        media: MediaExpectation {
+            audio_channels: None,
+            video_resolution: Some((640, 480)),
+        },
+        transport: Transport::Tcp,
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_livetwo_cycle_rtsp_vp8_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -379,6 +421,17 @@ fn build_h264_command(width: u16, height: u16, transport: Transport) -> String {
          -g 15 -keyint_min 15 -b:v 1000k -minrate 1000k -maxrate 1000k \
          -bufsize 1000k -preset ultrafast -tune zerolatency \
          -x264-params repeat_headers=1 {} -f rtsp 'rtsp://{{}}'",
+        transport.as_ffmpeg_flag()
+    )
+}
+
+fn build_h265_command(width: u16, height: u16, transport: Transport) -> String {
+    format!(
+        "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 \
+         -vcodec libx265 -preset ultrafast -tune zerolatency \
+         -x265-params keyint=15:min-keyint=15:bframes=0:repeat-headers=1 \
+         -pix_fmt yuv420p -b:v 1000k -minrate 1000k -maxrate 1000k \
+         -bufsize 1000k {} -f rtsp 'rtsp://{{}}'",
         transport.as_ffmpeg_flag()
     )
 }

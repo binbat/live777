@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::forward::PeerForward;
@@ -262,6 +262,10 @@ impl Manager {
     }
 
     pub async fn publish(&self, stream: String, offer: RTCSessionDescription) -> Result<Response> {
+        trace!(
+            "Publishing to stream: {}, offer type: {:?}",
+            stream, offer.sdp_type
+        );
         let mut stream_map = self.stream_map.write().await;
         let mut forward = stream_map.get(&stream).cloned();
         if forward.is_none() && self.config.auto_create_pub {
@@ -282,6 +286,11 @@ impl Manager {
         stream: String,
         offer: RTCSessionDescription,
     ) -> Result<Response> {
+        trace!(
+            "Subscribing to stream: {}, offer SDP length: {}",
+            stream,
+            offer.sdp.len()
+        );
         let mut stream_map = self.stream_map.write().await;
         let mut forward = stream_map.get(&stream).cloned();
         if forward.is_none() && self.config.auto_create_sub {
