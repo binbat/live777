@@ -1,4 +1,4 @@
-use std::{future::Future, time::Duration};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use auth::{AuthState, access::access_middleware, validate_middleware};
 use axum::{Router, extract::Request, middleware, response::IntoResponse, routing::post};
@@ -173,6 +173,7 @@ where
         client: client_req.build().unwrap(),
         storage: store,
         database: database_service,
+        record_sync_cursor: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         #[cfg(feature = "recorder")]
         file_storage,
     };
@@ -219,6 +220,8 @@ where
 
     tokio::spawn(tick::auto_record_rotate(app_state.clone()));
 
+    tokio::spawn(tick::record_sync(app_state.clone()));
+
     axum::serve(listener, app)
         .with_graceful_shutdown(signal)
         .await
@@ -251,6 +254,7 @@ struct AppState {
     client: reqwest::Client,
     storage: Storage,
     database: DatabaseService,
+    record_sync_cursor: Arc<tokio::sync::RwLock<HashMap<String, i64>>>,
     #[cfg(feature = "recorder")]
     file_storage: Option<opendal::Operator>,
 }

@@ -36,6 +36,10 @@ pub struct Config {
     #[serde(default)]
     pub auto_record: AutoRecord,
 
+    /// Recording index sync from liveion
+    #[serde(default)]
+    pub record_sync: RecordSync,
+
     #[cfg(feature = "recorder")]
     #[serde(default)]
     pub recorder: Recorder,
@@ -363,6 +367,34 @@ impl Default for AutoRecord {
             max_recording_seconds: default_auto_record_max_seconds(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordSync {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_record_sync_tick")]
+    pub tick_ms: u64,
+    #[serde(default = "default_record_sync_limit")]
+    pub limit: u32,
+}
+
+impl Default for RecordSync {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tick_ms: default_record_sync_tick(),
+            limit: default_record_sync_limit(),
+        }
+    }
+}
+
+fn default_record_sync_tick() -> u64 {
+    10_000
+}
+
+fn default_record_sync_limit() -> u32 {
+    200
 }
 
 fn default_auto_record_tick() -> u64 {

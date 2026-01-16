@@ -14,7 +14,9 @@ urls = [
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards
-auto_streams = ["*"] # Record all streams
+# auto_streams = ["*"] # Record all streams
+# Optional path for recorder index file (index.json)
+# index_path = "./records/index.json"
 # Maximum duration in seconds before Live777 restarts a recording (0 disables auto-rotation)
 # max_recording_seconds = 86400
 
@@ -65,6 +67,11 @@ root = "./records"
 # Default: info
 # Values: off, error, warn, info, debug, trace
 # level = "warn"
+
+[sdp]
+# Disable codecs in SDP negotiation (useful for recorder-only pipelines)
+# Available: VP8, VP9, H264, H265, AV1, OPUS, G722, PCMU, PCMA
+# disable_codecs = ["VP8", "H264"]
 
 [strategy]
 # If not set, use default u16::MAX

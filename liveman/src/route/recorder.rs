@@ -201,7 +201,7 @@ async fn start_record(
         format!("{stream}/{requested_ts}/manifest.mpd")
     };
 
-    let mut record_ts = requested_ts.clone();
+    let mut record_ts = String::new();
     let mut mpd_path = fallback_mpd_path;
 
     if let Ok(v) = resp.json::<api::recorder::StartRecordResponse>().await {
@@ -210,11 +210,13 @@ async fn start_record(
         }
         if !v.record_id.is_empty() {
             record_ts = v.record_id;
-        } else if !v.record_dir.is_empty()
-            && let Some(ts) = crate::utils::extract_timestamp_from_record_dir(&v.record_dir)
-        {
-            record_ts = ts;
         }
+    }
+
+    if record_ts.is_empty() {
+        return Err(crate::error::AppError::InternalServerError(
+            anyhow::anyhow!("record_id is required from liveion"),
+        ));
     }
 
     // Parse date from record metadata and upsert index

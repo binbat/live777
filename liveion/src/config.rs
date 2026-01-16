@@ -16,6 +16,9 @@ pub struct Config {
     #[serde(default)]
     pub strategy: api::strategy::Strategy,
 
+    #[serde(default)]
+    pub sdp: Sdp,
+
     #[cfg(feature = "net4mqtt")]
     #[serde(default)]
     pub net4mqtt: Option<Net4mqtt>,
@@ -70,6 +73,13 @@ pub struct Auth {
 pub struct Log {
     #[serde(default = "default_log_level")]
     pub level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Sdp {
+    /// Disable specific codecs in SDP negotiation, e.g. ["VP8", "H264"]
+    #[serde(default)]
+    pub disable_codecs: Vec<String>,
 }
 
 fn default_http_listen() -> SocketAddr {
@@ -133,6 +143,10 @@ pub struct RecorderConfig {
     #[serde(default)]
     pub node_alias: Option<String>,
 
+    /// Optional path for recorder index file (index.json)
+    #[serde(default)]
+    pub index_path: Option<String>,
+
     /// Maximum duration in seconds for a single recording before rotation (0 disables auto-rotation)
     #[serde(default = "default_max_recording_seconds")]
     pub max_recording_seconds: u64,
@@ -150,6 +164,7 @@ impl Default for RecorderConfig {
             auto_streams: vec![],
             storage: Default::default(),
             node_alias: None,
+            index_path: None,
             max_recording_seconds: default_max_recording_seconds(),
         }
     }
