@@ -69,8 +69,9 @@ root = "./records"
 # level = "warn"
 
 [sdp]
-# Disable VP8 in SDP negotiation (useful for recorder-only pipelines)
-# disable_vp8 = false
+# Disable codecs in SDP negotiation (useful for recorder-only pipelines)
+# Available: VP8, VP9, H264, H265, AV1, OPUS, G722, PCMU, PCMA
+# disable_codecs = ["VP8", "H264"]
 
 [strategy]
 # If not set, use default u16::MAX

@@ -77,9 +77,9 @@ pub struct Log {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Sdp {
-    /// Disable VP8 codec in SDP negotiation
+    /// Disable specific codecs in SDP negotiation, e.g. ["VP8", "H264"]
     #[serde(default)]
-    pub disable_vp8: bool,
+    pub disable_codecs: Vec<String>,
 }
 
 fn default_http_listen() -> SocketAddr {

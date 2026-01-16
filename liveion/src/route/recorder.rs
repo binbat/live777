@@ -15,8 +15,10 @@ pub fn route() -> Router<AppState> {
             &api::path::record("{stream}"),
             post(record_stream).get(record_status).delete(stop_record),
         )
-        .route(api::path::recordings_pull(), post(pull_recordings))
-        .route(api::path::recordings_ack(), post(ack_recordings))
+        .route(
+            api::path::recordings(),
+            post(pull_recordings).delete(ack_recordings),
+        )
 }
 
 #[cfg(feature = "recorder")]

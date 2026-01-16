@@ -302,7 +302,7 @@ async fn do_record_sync(mut state: AppState) -> Result<()> {
             limit: state.config.record_sync.limit,
         };
 
-        let url = format!("{}{}", server.url, api::path::recordings_pull());
+        let url = format!("{}{}", server.url, api::path::recordings());
         let resp = match state
             .client
             .post(url)
@@ -383,13 +383,13 @@ async fn do_record_sync(mut state: AppState) -> Result<()> {
         if ack_records.is_empty() {
             should_advance = pull.last_ts.is_some();
         } else {
-            let ack_url = format!("{}{}", server.url, api::path::recordings_ack());
+            let ack_url = format!("{}{}", server.url, api::path::recordings());
             let ack_req = AckRecordingsRequest {
                 records: ack_records,
             };
             match state
                 .client
-                .post(ack_url)
+                .delete(ack_url)
                 .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                 .json(&ack_req)
                 .send()
