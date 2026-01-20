@@ -15,7 +15,6 @@ start_complete_demo.bat
 这个脚本会自动启动：
 - ✅ Liveion 服务器 (端口 7777)
 - ✅ UDP 桥接程序 (端口 8888) 
-- ✅ UDP 测试监听器 (端口 8889)
 - ✅ Python HTTP 服务器 (端口 8080)
 - ✅ Web 控制界面
 
@@ -26,7 +25,7 @@ start_complete_demo.bat
 3. **打开 Web 界面** - 浏览器自动打开 `http://localhost:8080/examples/liveion_udp_control.html`
 4. **点击连接** - 点击"连接"按钮
 5. **测试控制** - 使用方向键或点击按钮发送云台控制指令
-6. **查看日志** - 在 UDP 监听器窗口查看接收到的消息
+6. **监听 UDP** - 使用任何 UDP 客户端工具监听端口 8889 接收消息
 
 ## 🎯 预期结果
 
@@ -53,10 +52,11 @@ start_complete_demo.bat
    DataChannel + UDP桥接已连接
    ```
 
-4. **UDP 监听器窗口**:
+4. **UDP 消息发送**:
    ```
-   UDP 监听器启动，端口: 8889
-   [UDP收到] 来自 ('127.0.0.1', 8888): {"action":"pan","direction":"left",...}
+   UDP 消息会自动发送到 127.0.0.1:8889
+   你可以使用 netcat 或其他 UDP 工具监听:
+   nc -u -l 8889
    ```
 
 ## 🔧 手动启动（可选）
@@ -70,11 +70,12 @@ target\release\live777.exe --config conf\live777.toml
 # 2. 启动 UDP 桥接程序
 target\release\liveion-udp-bridge.exe -v
 
-# 3. 启动 UDP 监听器
-python test_liveion_udp.py listen
-
-# 4. 启动 HTTP 服务器
+# 3. 启动 HTTP 服务器
 python -m http.server 8080
+
+# 4. 监听 UDP 消息 (可选)
+# 使用 netcat 或其他工具监听端口 8889
+nc -u -l 8889
 
 # 5. 打开浏览器
 # 访问 http://localhost:8080/examples/liveion_udp_control.html
@@ -106,19 +107,20 @@ taskkill /f /im python.exe
 2. 等待 liveion 服务器完全启动（约 5 秒）
 3. 使用 HTTP 服务器访问页面，不要直接打开 HTML 文件
 
-### UDP 监听器无消息
+### UDP 消息接收
 1. 检查桥接程序是否显示 "DataChannel 已打开"
 2. 确认网页显示"已连接"状态
-3. 查看桥接程序日志是否有错误
+3. 使用 UDP 客户端工具监听端口 8889
+4. 查看桥接程序日志是否有错误
 
-## 📞 测试命令
+## 📞 测试 UDP 接收
 
 ```cmd
-# 发送测试 UDP 命令
-python test_liveion_udp.py test
+# 使用 netcat 监听 UDP 消息
+nc -u -l 8889
 
-# 查看帮助
-target\release\liveion-udp-bridge.exe --help
+# 或使用 PowerShell
+# 创建简单的 UDP 监听器脚本
 ```
 
 ## 🎮 控制说明
