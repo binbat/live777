@@ -90,7 +90,7 @@ async fn rtsp_mode(
     let rtsp_server =
         RtspServer::start(params).map_err(|e| anyhow!("Failed to start RTSP server: {}", e))?;
 
-    info!("âœ?Internal RTSP server created");
+    info!("Internal RTSP server created");
 
     if !rtsp_server.wait_running(5000) {
         let err = rtsp_server.last_error();
@@ -98,7 +98,7 @@ async fn rtsp_mode(
     }
 
     let rtsp_url = format!("rtsp://127.0.0.1:{}/h264", DEFAULT_RTSP_PORT);
-    info!("âœ?RTSP server running at: {}", rtsp_url);
+    info!("RTSP server running at: {}", rtsp_url);
 
     info!("Starting ffmpeg client to pull RTSP stream...");
 
@@ -129,7 +129,7 @@ async fn rtsp_mode(
         .map_err(|e| anyhow!("Failed to start ffmpeg: {}", e))?;
 
     info!(
-        "âœ?FFmpeg client started (PID: {})",
+        "FFmpeg client started (PID: {})",
         ffmpeg_child.id().unwrap_or(0)
     );
 
@@ -154,7 +154,7 @@ async fn rtsp_mode(
         .await
         .map_err(|e| anyhow!("Failed to bind UDP on port {}: {}", rtp_port, e))?;
 
-    info!("âœ?RTP receiver listening on 127.0.0.1:{}", rtp_port);
+    info!("RTP receiver listening on 127.0.0.1:{}", rtp_port);
     info!("=== RTSP Mode Running ===");
 
     let mut buffer = [0u8; 4096];
@@ -294,7 +294,7 @@ async fn rtp_encode_mode(
     let ssrc: u32 = rand::random();
     let mut payloader = H264Payloader::default();
 
-    info!("âœ?RTP encode mode started (SSRC: 0x{:08X})", ssrc);
+    info!("RTP encode mode started (SSRC: 0x{:08X})", ssrc);
 
     let mut frame_count = 0u64;
     let mut keyframe_count = 0u64;

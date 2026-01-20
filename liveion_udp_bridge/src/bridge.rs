@@ -208,7 +208,7 @@ impl BridgeState {
                         if let Err(e) = udp_outbound_tx.send(udp_msg).await {
                             error!("Failed to send targeted UDP message: {}", e);
                         } else {
-                            info!("�?Successfully sent targeted message to UDP client {}", target_client);
+                            info!("Successfully sent targeted message to UDP client {}", target_client);
                         }
                     } else {
                         warn!("Target UDP client not found: {}", target_client);
@@ -284,7 +284,7 @@ impl BridgeState {
                 error!("Failed to broadcast UDP message to {}: {}", addr, e);
             } else {
                 sent_count += 1;
-                info!("�?Successfully sent to known client {}: {}", client_id, addr);
+                info!("Successfully sent to known client {}: {}", client_id, addr);
             }
         }
         
@@ -303,7 +303,7 @@ impl BridgeState {
                         error!("Failed to send UDP message to default target {}: {}", addr, e);
                     } else {
                         sent_count += 1;
-                        info!("�?Successfully sent to default target: {}", addr);
+                        info!("Successfully sent to default target: {}", addr);
                     }
                 } else {
                     warn!("Invalid target address format: {}", target_addr_str);

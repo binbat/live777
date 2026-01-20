@@ -16,7 +16,7 @@ mod tests {
         buf.extend_from_slice(&[0, 0, 0, 1, 0x67, 0x42, 0xE0, 0x1E, 0x8D, 0x68, 0x50]);
         // PPS (nal type 8)
         buf.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE, 0x06, 0xE2]);
-        // IDR slice (nal type 5) â€?payload bytes arbitrary
+        // IDR slice (nal type 5) - payload bytes arbitrary
         buf.extend_from_slice(&[0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00]);
         Bytes::from(buf)
     }

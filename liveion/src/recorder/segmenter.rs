@@ -155,7 +155,7 @@ impl Segmenter {
     }
 
     /// Feed one H.264 Frame (Annex-B format, may contain multiple NALUs)
-    /// `duration_ticks` �?frame duration in the same timescale as self.timescale (90000 for H264)
+    /// `duration_ticks` - frame duration in the same timescale as self.timescale (90000 for H264)
     pub async fn push_h264(&mut self, frame: Bytes, duration_ticks: u32) -> Result<()> {
         self.push_video_frame(VideoCodec::H264, frame, None, duration_ticks)
             .await
@@ -168,7 +168,7 @@ impl Segmenter {
     }
 
     /// Feed Opus audio sample from RTP payload
-    /// `duration_ticks` �?duration in the 48 kHz time base (i.e. RTP timestamp delta)
+    /// `duration_ticks` - duration in the 48 kHz time base (i.e. RTP timestamp delta)
     pub async fn push_opus(&mut self, payload: Bytes, duration_ticks: u32) -> Result<()> {
         // Initialize writer if not yet done
         if self.audio_track_id.is_none() {

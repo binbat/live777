@@ -9,7 +9,7 @@ use common::shutdown_signal;
 
 // === RTSP Bootstrapping ===
 //
-// - ffmpeg â†?whip into rtsp server
+// - ffmpeg -> whip into rtsp server
 //
 // # stream: A
 //
@@ -485,29 +485,29 @@ async fn run_rtsp_cycle_test(config: TestConfig) {
 
     create_default_stream(&server_addr).await;
 
-    // Stream A: ffmpeg â†?RTSP server â†?WebRTC
+    // Stream A: ffmpeg -> RTSP server -> WebRTC
     let stream_a = stream_id("a");
     start_stream_a(&config, &server_addr, &stream_a).await;
     wait_for_publish_connected(&server_addr, &stream_a).await;
     tokio::time::sleep(Duration::from_millis(STREAM_STABILIZATION_MS)).await;
 
-    // Stream A â†?RTSP server â†?Stream B
+    // Stream A -> RTSP server -> Stream B
     start_stream_a_to_b(&config, &server_addr, &stream_a).await;
     wait_for_subscribe_connected(&server_addr, &stream_a).await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
-    // Stream B: RTSP client â†?WebRTC
+    // Stream B: RTSP client -> WebRTC
     let stream_b = stream_id("b");
     start_stream_b(&config, &server_addr, &stream_b).await;
     wait_for_publish_connected(&server_addr, &stream_b).await;
 
-    // Stream C: Stream B â†?RTSP server
+    // Stream C: Stream B -> RTSP server
     let stream_c = stream_id("c");
     start_stream_b_to_c(&config, &server_addr, &stream_b, &stream_c).await;
     wait_for_subscribe_connected(&server_addr, &stream_b).await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
-    // Stream C â†?RTSP server â†?ffprobe
+    // Stream C -> RTSP server -> ffprobe
     start_stream_c_output(&config, &server_addr, &stream_c).await;
     wait_for_subscribe_connected(&server_addr, &stream_c).await;
     tokio::time::sleep(Duration::from_millis(FFPROBE_PREPARATION_MS)).await;
