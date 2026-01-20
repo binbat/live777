@@ -73,19 +73,19 @@ impl UdpDataChannelBridge {
         };
         
         let bridge_task = tokio::spawn(async move {
-            println!("🔄 桥接任务已启动，等待消息...");
+            println!("Bridge task started, waiting for messages...");
             loop {
                 tokio::select! {
                     // UDP -> DataChannel
                     Some(udp_msg) = udp_inbound_rx.recv() => {
-                        println!("📥 [桥接] 收到 UDP 消息: {} bytes from {}", udp_msg.data.len(), udp_msg.addr);
+                        println!("[Bridge] Received UDP message: {} bytes from {}", udp_msg.data.len(), udp_msg.addr);
                         bridge_state.handle_udp_to_datachannel(udp_msg, &dc_outbound_tx).await;
                     }
                     
                     // DataChannel -> UDP
                     Some(dc_data) = dc_inbound_rx.recv() => {
-                        println!("📥 [桥接] 收到 DataChannel 消息: {} bytes", dc_data.len());
-                        println!("   内容: {:?}", String::from_utf8_lossy(&dc_data));
+                        println!("[Bridge] Received DataChannel message: {} bytes", dc_data.len());
+                        println!("   Content: {:?}", String::from_utf8_lossy(&dc_data));
                         bridge_state.handle_datachannel_to_udp(dc_data, &udp_outbound_tx).await;
                     }
                 }
@@ -192,7 +192,7 @@ impl BridgeState {
         match msg_type {
             "datachannel_to_udp" => {
                 // Message specifically intended for UDP
-                info!("🔄 Processing datachannel_to_udp message: {}", json_msg);
+                info!("Processing datachannel_to_udp message: {}", json_msg);
                 
                 if let Some(target_client) = json_msg.get("target_client").and_then(|v| v.as_str()) {
                     // Send to specific UDP client
@@ -203,12 +203,12 @@ impl BridgeState {
                             .as_bytes()
                             .to_vec();
                         
-                        info!("📤 Sending targeted message to UDP client {}: {} bytes", target_client, data.len());
+                        info!("Sending targeted message to UDP client {}: {} bytes", target_client, data.len());
                         let udp_msg = UdpMessage { data, addr };
                         if let Err(e) = udp_outbound_tx.send(udp_msg).await {
                             error!("Failed to send targeted UDP message: {}", e);
                         } else {
-                            info!("�?Successfully sent targeted message to UDP client {}", target_client);
+                            info!("�?Successfully sent targeted message to UDP client {}", target_client);
                         }
                     } else {
                         warn!("Target UDP client not found: {}", target_client);
@@ -220,8 +220,8 @@ impl BridgeState {
                         .unwrap_or("");
                     let data = data_str.as_bytes().to_vec();
                     
-                    info!("📡 Broadcasting datachannel_to_udp message: '{}' ({} bytes)", data_str, data.len());
-                    info!("📍 Known UDP clients: {}, Default targets: {}", 
+                    info!("Broadcasting datachannel_to_udp message: '{}' ({} bytes)", data_str, data.len());
+                    info!("Known UDP clients: {}, Default targets: {}", 
                           self.udp_clients.len(), self.config.udp.target_addresses.len());
                     
                     self.broadcast_to_all_udp_clients(data, udp_outbound_tx).await;
@@ -270,7 +270,7 @@ impl BridgeState {
         let mut sent_count = 0;
         let data_str = String::from_utf8_lossy(&data);
         
-        info!("🚀 Starting broadcast of message: '{}' ({} bytes)", data_str, data.len());
+        info!("Starting broadcast of message: '{}' ({} bytes)", data_str, data.len());
         
         // First, try to send to known UDP clients
         for (client_id, &addr) in &self.udp_clients {
@@ -279,18 +279,18 @@ impl BridgeState {
                 addr,
             };
             
-            info!("📤 Sending to known client {}: {}", client_id, addr);
+            info!("Sending to known client {}: {}", client_id, addr);
             if let Err(e) = udp_outbound_tx.send(udp_msg).await {
                 error!("Failed to broadcast UDP message to {}: {}", addr, e);
             } else {
                 sent_count += 1;
-                info!("�?Successfully sent to known client {}: {}", client_id, addr);
+                info!("�?Successfully sent to known client {}: {}", client_id, addr);
             }
         }
         
         // If no known clients, use default target addresses
         if sent_count == 0 && !self.config.udp.target_addresses.is_empty() {
-            info!("📍 No known clients, using default targets: {:?}", self.config.udp.target_addresses);
+            info!("No known clients, using default targets: {:?}", self.config.udp.target_addresses);
             for target_addr_str in &self.config.udp.target_addresses {
                 if let Ok(addr) = target_addr_str.parse::<std::net::SocketAddr>() {
                     let udp_msg = UdpMessage {
@@ -298,12 +298,12 @@ impl BridgeState {
                         addr,
                     };
                     
-                    info!("📤 Sending to default target: {}", addr);
+                    info!("Sending to default target: {}", addr);
                     if let Err(e) = udp_outbound_tx.send(udp_msg).await {
                         error!("Failed to send UDP message to default target {}: {}", addr, e);
                     } else {
                         sent_count += 1;
-                        info!("�?Successfully sent to default target: {}", addr);
+                        info!("�?Successfully sent to default target: {}", addr);
                     }
                 } else {
                     warn!("Invalid target address format: {}", target_addr_str);
@@ -312,9 +312,9 @@ impl BridgeState {
         }
         
         if sent_count > 0 {
-            info!("🎯 Broadcast complete: sent to {} UDP targets", sent_count);
+            info!("Broadcast complete: sent to {} UDP targets", sent_count);
         } else {
-            error!("�?Broadcast failed: no UDP targets available - known clients: {}, default targets: {}", 
+            error!("Broadcast failed: no UDP targets available - known clients: {}, default targets: {}", 
                   self.udp_clients.len(), self.config.udp.target_addresses.len());
         }
     }

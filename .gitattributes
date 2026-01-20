@@ -1,1 +1,10 @@
 * text=auto eol=lf
+*.rs text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.tsx text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.toml text eol=lf
+*.json text eol=lf

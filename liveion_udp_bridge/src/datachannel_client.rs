@@ -70,37 +70,37 @@ impl DataChannelClient {
         let pc = self.create_peer_connection().await?;
         
         // Create data channel
-        println!("🔧 创建 DataChannel，标�? 'control'");
+        println!("Creating DataChannel with label 'control'");
         let dc = pc.create_data_channel("control", None).await?;
-        println!("�?DataChannel 创建成功，ID: {:?}, Label: {}", dc.id(), dc.label());
+        println!("DataChannel created successfully, ID: {:?}, Label: {}", dc.id(), dc.label());
         let dc_clone = dc.clone();
         
         // Set up data channel handlers
         let dc_id = dc.id();
         dc.on_open(Box::new(move || {
             info!("DataChannel opened");
-            println!("📡 DataChannel 已打开 [ID: {:?}]", dc_id);
-            println!("   - 准备接收消息");
+            println!("DataChannel opened [ID: {:?}]", dc_id);
+            println!("   - Ready to receive messages");
             Box::pin(async {})
         }));
         
         dc.on_close(Box::new(move || {
             warn!("DataChannel closed");
-            println!("🔴 DataChannel 已关�?);
+            println!("DataChannel closed");
             Box::pin(async {})
         }));
         
         dc.on_error(Box::new(move |err| {
             error!("DataChannel error: {}", err);
-            println!("�?DataChannel 错误: {}", err);
+            println!("DataChannel error: {}", err);
             Box::pin(async {})
         }));
         
-        // 同时监听服务端创建的 DataChannel
+        // Also listen for server-created DataChannels
         let inbound_tx_server = inbound_tx.clone();
         pc.on_data_channel(Box::new(move |d| {
             let tx = inbound_tx_server.clone();
-            println!("📡 收到服务�?DataChannel:");
+            println!("Received server DataChannel:");
             println!("   - Label: {}", d.label());
             println!("   - ID: {:?}", d.id());
             println!("   - ReadyState: {:?}", d.ready_state());
@@ -108,8 +108,8 @@ impl DataChannelClient {
             let d_clone = d.clone();
             let d_id = d.id();
             d.on_open(Box::new(move || {
-                println!("📡 [服务端DC ID:{:?}] 已打开: {}", d_id, d_clone.label());
-                println!("   - 准备接收消息");
+                println!("[Server DC ID:{:?}] opened: {}", d_id, d_clone.label());
+                println!("   - Ready to receive messages");
                 Box::pin(async {})
             }));
             
@@ -117,14 +117,14 @@ impl DataChannelClient {
             d.on_message(Box::new(move |msg| {
                 let tx_msg = tx.clone();
                 let data = msg.data.to_vec();
-                println!("📨 [服务端DC ID:{:?}] 收到消息 {} bytes", d_msg_id, data.len());
-                println!("   内容: {:?}", String::from_utf8_lossy(&data));
+                println!("[Server DC ID:{:?}] received message {} bytes", d_msg_id, data.len());
+                println!("   Content: {:?}", String::from_utf8_lossy(&data));
                 tokio::spawn(async move {
                     if let Err(e) = tx_msg.send(data).await {
                         error!("Failed to forward server DataChannel message: {}", e);
-                        println!("�?[服务端DC] 转发失败: {}", e);
+                        println!("[Server DC] Forward failed: {}", e);
                     } else {
-                        println!("�?[服务端DC] 消息已转发到桥接处理");
+                        println!("[Server DC] Message forwarded to bridge handler");
                     }
                 });
                 Box::pin(async {})
@@ -132,13 +132,13 @@ impl DataChannelClient {
             
             let d_err_id = d.id();
             d.on_error(Box::new(move |err| {
-                println!("�?[服务端DC ID:{:?}] 错误: {}", d_err_id, err);
+                println!("[Server DC ID:{:?}] error: {}", d_err_id, err);
                 Box::pin(async {})
             }));
             
             let d_close_id = d.id();
             d.on_close(Box::new(move || {
-                println!("🔴 [服务端DC ID:{:?}] 已关�?, d_close_id);
+                println!("[Server DC ID:{:?}] closed", d_close_id);
                 Box::pin(async {})
             }));
             
@@ -151,14 +151,14 @@ impl DataChannelClient {
         dc.on_message(Box::new(move |msg| {
             let tx = inbound_tx_msg.clone();
             let data = msg.data.to_vec();
-            println!("📨 [客户端DC ID:{:?}] 收到消息 {} bytes", dc_msg_id, data.len());
-            println!("   内容: {:?}", String::from_utf8_lossy(&data));
+            println!("[Client DC ID:{:?}] received message {} bytes", dc_msg_id, data.len());
+            println!("   Content: {:?}", String::from_utf8_lossy(&data));
             tokio::spawn(async move {
                 if let Err(e) = tx.send(data).await {
                     error!("Failed to forward DataChannel message: {}", e);
-                    println!("�?转发失败: {}", e);
+                    println!("Forward failed: {}", e);
                 } else {
-                    println!("�?[客户端DC] 消息已转发到桥接处理");
+                    println!("[Client DC] Message forwarded to bridge handler");
                 }
             });
             Box::pin(async {})
@@ -212,7 +212,7 @@ impl DataChannelClient {
         pc.set_remote_description(answer).await?;
         
         info!("WebRTC connection established");
-        println!("�?WebRTC connection established");
+        println!("WebRTC connection established");
         
         // Handle outbound messages
         loop {
@@ -288,7 +288,7 @@ impl DataChannelClient {
         registry = register_default_interceptors(registry, &mut m)?;
         
         let mut s = SettingEngine::default();
-        // 暂时禁用 detach_data_channels 来测�?on_message 回调
+        // Temporarily disable detach_data_channels to test on_message callbacks
         // s.detach_data_channels();
         s.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
         

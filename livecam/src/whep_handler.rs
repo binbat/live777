@@ -105,11 +105,11 @@ async fn whep_handler(
     debug!(stream_id, "Media engine initialized with default codecs.");
 
     let mut setting_engine = SettingEngine::default();
-    // 增加ICE超时时间以提高连接稳定�?
+    // Increase ICE timeout for better connection stability
     setting_engine.set_ice_timeouts(
-        Some(Duration::from_secs(30)),  // 增加�?0�?
-        Some(Duration::from_secs(60)),  // 增加�?0�?
-        Some(Duration::from_secs(5)),   // 增加�?�?
+        Some(Duration::from_secs(30)),  // Increase to 30s
+        Some(Duration::from_secs(60)),  // Increase to 60s
+        Some(Duration::from_secs(5)),   // Increase to 5s
     );
 
     let registry = Registry::new();
