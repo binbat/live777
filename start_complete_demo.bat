@@ -45,9 +45,13 @@ if %errorlevel% equ 0 (
 )
 
 echo.
-echo 5. System startup completed
-echo   UDP bridge program will forward DataChannel messages to UDP port 8889
-echo   You can use any UDP client to listen on that port to receive messages
+echo 5. Starting UDP test listener...
+python --version >nul 2>&1
+if %errorlevel% equ 0 (
+    start "UDP Test Listener" cmd /k "python test_liveion_udp.py listen"
+) else (
+    echo Warning: Python not detected, skipping UDP listener
+)
 
 echo.
 echo 6. Opening Web interface...
@@ -67,18 +71,19 @@ echo.
 echo Service Status:
 echo - Liveion Server: http://localhost:7777
 echo - UDP Bridge Program: Listening on port 8888
+echo - UDP Test Listener: Listening on port 8889
 echo - Python HTTP Server: http://localhost:8080
 echo - Web Control Interface: http://localhost:8080/examples/liveion_udp_control.html
 echo.
 echo Usage Instructions:
-echo 1. Wait for all services to start completely (about 10 seconds)
+echo 1. Wait for all services to start completely (about 15 seconds)
 echo 2. Click "Connect" button in the Web Control Interface
 echo 3. Use the control panel to send PTZ control commands
-echo 4. UDP messages will be automatically sent to port 8889
+echo 4. Check the UDP Test Listener window for received messages
 echo.
 echo Test UDP Reception:
-echo You can use any UDP client tool to listen on port 8889 to receive control messages
-echo Example: netcat, socat, or custom UDP client
+echo The UDP test listener will automatically receive and display all control messages
+echo You can also send test commands by running: python test_liveion_udp.py test
 echo.
 echo Important Notes:
 echo - Must access pages through HTTP server (http://localhost:8080/...)
