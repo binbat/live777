@@ -74,6 +74,25 @@ pub struct PullRecordingsResponse {
     pub last_ts: Option<i64>,
 }
 
+/// Recording key for ack/delete operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingKey {
+    pub stream: String,
+    pub record: String,
+}
+
+/// Request to acknowledge and delete recordings from index
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AckRecordingsRequest {
+    pub records: Vec<RecordingKey>,
+}
+
+/// Response for ack/delete
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AckRecordingsResponse {
+    pub deleted: usize,
+}
+
 /// Response containing recording sessions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingSessionResponse {

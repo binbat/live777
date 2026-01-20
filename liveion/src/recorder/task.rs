@@ -10,7 +10,9 @@ use crate::recorder::codec::vp9::Vp9RtpParser;
 use crate::recorder::segmenter::Segmenter;
 use crate::stream::manager::Manager;
 use anyhow::{Result, anyhow};
+use api::recorder::RecordingStatus;
 use bytes::Bytes;
+use chrono::Utc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP9};
@@ -22,6 +24,12 @@ pub struct RecordingTask {
     base_dir_override: Option<String>,
     handle: JoinHandle<()>,
     shutdown_tx: Option<oneshot::Sender<()>>,
+}
+
+pub struct RecordingStopOutcome {
+    pub status: RecordingStatus,
+    pub end_ts: i64,
+    pub duration_ms: i32,
 }
 
 impl RecordingTask {
@@ -411,6 +419,7 @@ impl RecordingTask {
         let info = RecordingInfo {
             record_dir: path_prefix,
             record_id,
+            start_ts_micros: Utc::now().timestamp_micros(),
         };
 
         Ok(Self {
@@ -423,7 +432,7 @@ impl RecordingTask {
         })
     }
 
-    pub async fn stop(mut self) {
+    pub async fn stop(mut self) -> RecordingStopOutcome {
         let stream = std::mem::take(&mut self.stream);
         tracing::info!("[recorder] stopping recording for stream {}", stream);
 
@@ -436,9 +445,10 @@ impl RecordingTask {
             );
         }
 
-        match self.handle.await {
+        let status = match self.handle.await {
             Ok(()) => {
                 tracing::info!("[recorder] recording task for stream {} completed", stream);
+                RecordingStatus::Completed
             }
             Err(e) => {
                 if e.is_cancelled() {
@@ -453,7 +463,17 @@ impl RecordingTask {
                         e
                     );
                 }
+                RecordingStatus::Failed
             }
+        };
+
+        let end_ts = Utc::now().timestamp_micros();
+        let duration_ms = self.started_at.elapsed().as_millis().min(i32::MAX as u128) as i32;
+
+        RecordingStopOutcome {
+            status,
+            end_ts,
+            duration_ms,
         }
     }
 }

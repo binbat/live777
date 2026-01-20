@@ -4,6 +4,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use libwish::Client;
 use tokio::sync::{RwLock, broadcast};
+use tracing::trace;
 use tracing::{debug, info};
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -121,6 +122,11 @@ impl PeerForwardInternal {
         id: String,
         ice_candidates: Vec<RTCIceCandidateInit>,
     ) -> Result<()> {
+        trace!(
+            "Adding {} ICE candidates for session {}",
+            ice_candidates.len(),
+            id
+        );
         let publish = self.publish.read().await;
         if publish.is_some() && publish.as_ref().unwrap().id == id {
             let publish = publish.as_ref().unwrap();
@@ -206,6 +212,8 @@ impl PeerForwardInternal {
                     return;
                 }
             };
+
+            trace!("Read {} bytes from data channel", n);
             if n == 0 {
                 break;
             }

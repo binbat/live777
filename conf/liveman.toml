@@ -134,6 +134,15 @@ auto_streams = ["*"]
 # Maximum duration in seconds before Liveman restarts a recording (0 to disable)
 # max_recording_seconds = 86400
 
+# Sync recording index from liveion nodes
+[record_sync]
+# Enable record index sync
+enabled = false
+# Pull interval in milliseconds
+# tick_ms = 10000
+# Max sessions per pull
+# limit = 200
+
 # [[nodes]]
 # Globally unique id
 # alias = "static-0"

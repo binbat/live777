@@ -124,6 +124,33 @@ async fn test_livetwo_rtp_h264() {
 }
 
 #[tokio::test]
+async fn test_livetwo_rtp_h265() {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let whip_port: u16 = 5090;
+    let whep_port: u16 = 5095;
+
+    let width = 640;
+    let height = 480;
+    let codec = "-vcodec libx265 -preset ultrafast -tune zerolatency -x265-params keyint=30:min-keyint=30:bframes=0:repeat-headers=1 -pix_fmt yuv420p -b:v 1000k -minrate 1000k -maxrate 1000k -bufsize 1000k";
+    let prefix = format!("ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {codec}");
+
+    helper_livetwo_rtp(
+        ip,
+        port,
+        &prefix,
+        whip_port,
+        whep_port,
+        Detect {
+            audio: None,
+            video: Some((width, height)),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_livetwo_rtp_vp9_4k() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
