@@ -92,9 +92,9 @@ pub fn create_video_adapter(codec: VideoCodec) -> Box<dyn CodecAdapter> {
     }
 }
 
-/// Unified RTP parser trait so that different codecs (H264/Opus/…) share the same façade.
+/// Unified RTP parser trait so that different codecs (H264/Opus/�? share the same façade.
 ///
-/// Associated type `Output` represents the parsed unit – for video it could be
+/// Associated type `Output` represents the parsed unit �?for video it could be
 /// `(BytesMut, bool)` (frame + is_idr), for audio `(BytesMut, u32)` (payload + timestamp).
 /// The method returns `Ok(Some(x))` when a full unit is ready, or `Ok(None)` when the
 /// parser needs more RTP packets.

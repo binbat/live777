@@ -1,4 +1,4 @@
-// fmp4.rs â€“ minimal fragmented-MP4 (fMP4) writer
+// fmp4.rs â€?minimal fragmented-MP4 (fMP4) writer
 // This intentionally supports only the subset needed by the recorder right now
 // (one H.264/AVC video track) but is designed to be codec-agnostic so it can be
 // extended later. The focus is to remove the dependency on the external `mp4`
@@ -209,7 +209,7 @@ impl Fmp4Writer {
     }
 
     fn build_stsd(&self) -> Vec<u8> {
-        // Only one entry â€“ sample entry depending on track kind
+        // Only one entry â€?sample entry depending on track kind
         let sample_entry = if self.kind == TrackKind::Video {
             let cs = self.codec_string.to_ascii_lowercase();
             if cs.starts_with("hev1") || cs.starts_with("hvc1") {
@@ -703,10 +703,10 @@ fn make_box(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 
 /// Build a `styp` + `moof` + `mdat` fragment for the provided samples.
 ///
-/// * `track_id`     â€“ ID of the track the samples belong to (usually 1)
-/// * `seq_number`   â€“ monotonically increasing sequence number (starts at 1)
-/// * `base_time`    â€“ decode timestamp (DTS) of the first sample in this fragment
-/// * `samples`      â€“ list of media samples already converted to length-prefixed
+/// * `track_id`     â€?ID of the track the samples belong to (usually 1)
+/// * `seq_number`   â€?monotonically increasing sequence number (starts at 1)
+/// * `base_time`    â€?decode timestamp (DTS) of the first sample in this fragment
+/// * `samples`      â€?list of media samples already converted to length-prefixed
 ///   AVCC format (for AVC) or other 4-byte-length-prefixed
 ///   RAW format the decoder expects.
 fn _build_fragment_internal(

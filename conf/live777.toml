@@ -3,7 +3,7 @@
 # listen = "[::]:7777"
 # Cross-Origin Resource Sharing (CORS)
 # reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-# cors = false
+cors = true
 
 [[ice_servers]]
 urls = [
@@ -74,18 +74,18 @@ root = "./records"
 # cascade_push_close_sub = false
 
 # WHIP auto a stream
-# auto_create_whip = true
+auto_create_whip = true
 # WHEP auto a stream
-# auto_create_whep = true
+auto_create_whep = true
 #
 # Default: -1
 # -1: disable
 # 0: immediately destroy
 # >= 1: delay millisecond
 # Auto a destroy a stream at no pub
-# auto_delete_whip = 60000
+auto_delete_whip = 60000
 # Auto a destroy a stream at no sub
-# auto_delete_whep = 60000
+auto_delete_whep = 60000
 
 # Experimental Feature
 # [webhook]

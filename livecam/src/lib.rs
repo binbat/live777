@@ -32,7 +32,6 @@ use crate::auth::AppState;
 
 pub mod auth;
 pub mod config;
-pub mod control_receiver;
 pub mod network;
 pub mod rtp_receiver;
 mod test;
@@ -102,10 +101,6 @@ pub struct StreamState {
     track: Arc<TrackLocalStaticRTP>,
     rtp_receiver_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
-    control_receiver_handle: Option<JoinHandle<()>>,
-    control_shutdown_tx: Option<mpsc::Sender<()>>,
-    datachannel_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
-    datachannel_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
     config: CameraConfig,
     #[cfg(not(riscv_mode))]
     child_process: Option<Arc<cli::ChildGuard>>,
@@ -168,10 +163,6 @@ impl LiveCamManager {
                     track,
                     rtp_receiver_handle: None,
                     shutdown_tx: None,
-                    control_receiver_handle: None,
-                    control_shutdown_tx: None,
-                    datachannel_tx: None,
-                    datachannel_rx: None,
                     config: cam.clone(),
                     #[cfg(not(riscv_mode))]
                     child_process: None,
@@ -210,7 +201,6 @@ impl LiveCamManager {
             let cam_config = CameraConfig {
                 id: stream_id.to_string(),
                 rtp_port,
-                control_port: None,
                 codec: config::CodecConfig {
                     mime_type: "video/H264".to_string(),
                     clock_rate: 90000,
@@ -234,10 +224,6 @@ impl LiveCamManager {
                 track: track.clone(),
                 rtp_receiver_handle: None,
                 shutdown_tx: None,
-                control_receiver_handle: None,
-                control_shutdown_tx: None,
-                datachannel_tx: None,
-                datachannel_rx: None,
                 config: cam_config,
                 #[cfg(not(riscv_mode))]
                 child_process: None,
@@ -292,45 +278,6 @@ impl LiveCamManager {
                 }
             });
             state.rtp_receiver_handle = Some(handle);
-
-            // Start UDP control receiver if control_port is configured
-            if let Some(control_port) = state.config.control_port {
-                info!(
-                    stream_id,
-                    control_port,
-                    "Starting UDP control receiver for PTZ/control commands"
-                );
-
-                // Create broadcast channels for bidirectional communication
-                let (dc_tx, dc_rx1) = tokio::sync::broadcast::channel::<Vec<u8>>(1024);
-                let dc_rx2 = dc_tx.subscribe();
-                
-                state.datachannel_tx = Some(dc_tx.clone());
-                state.datachannel_rx = Some(dc_rx2);
-
-                let (control_tx, control_rx) = mpsc::channel(1);
-                state.control_shutdown_tx = Some(control_tx);
-
-                let stream_id_clone = stream_id.to_string();
-                let control_handle = tokio::spawn(async move {
-                    if let Err(e) = control_receiver::start(
-                        control_port,
-                        stream_id_clone,
-                        dc_tx,
-                        dc_rx1,
-                        control_rx,
-                    )
-                    .await
-                    {
-                        error!(
-                            port = control_port,
-                            error = %e,
-                            "UDP control receiver task failed"
-                        );
-                    }
-                });
-                state.control_receiver_handle = Some(control_handle);
-            }
         }
         Some(state.track.clone())
     }
@@ -381,14 +328,6 @@ impl LiveCamManager {
                     handle.abort();
                 }
 
-                // Stop control receiver
-                if let Some(tx) = state.control_shutdown_tx.take() {
-                    let _ = tx.try_send(());
-                }
-                if let Some(handle) = state.control_receiver_handle.take() {
-                    handle.abort();
-                }
-
                 if should_remove {
                     streams.remove(stream_id);
                     info!(stream_id, "stream removed from manager.");
@@ -429,13 +368,6 @@ impl LiveCamManager {
             if let Some(handle) = state.rtp_receiver_handle.take() {
                 handle.abort();
             }
-
-            if let Some(tx) = state.control_shutdown_tx.take() {
-                let _ = tx.send(()).await;
-            }
-            if let Some(handle) = state.control_receiver_handle.take() {
-                handle.abort();
-            }
         }
 
         info!("shutdown completed.");
@@ -454,31 +386,6 @@ impl LiveCamManager {
     pub fn get_whep_session(&self, stream_id: &str) -> Option<Arc<RTCPeerConnection>> {
         let sessions = self.whep_sessions.lock().unwrap();
         sessions.get(stream_id).cloned()
-    }
-
-    /// Get DataChannel sender for injecting control messages from UDP
-    pub fn get_datachannel_sender(
-        &self,
-        stream_id: &str,
-    ) -> Option<tokio::sync::broadcast::Sender<Vec<u8>>> {
-        let streams = self.streams.lock().unwrap();
-        streams
-            .get(stream_id)
-            .and_then(|state| state.datachannel_tx.clone())
-    }
-
-    /// Get DataChannel receiver for receiving feedback messages
-    pub fn get_datachannel_receiver(
-        &self,
-        stream_id: &str,
-    ) -> Option<tokio::sync::broadcast::Receiver<Vec<u8>>> {
-        let streams = self.streams.lock().unwrap();
-        streams.get(stream_id).and_then(|state| {
-            state
-                .datachannel_tx
-                .as_ref()
-                .map(|tx| tx.subscribe())
-        })
     }
 }
 

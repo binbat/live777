@@ -53,6 +53,7 @@ members = [
     "liveman",
     "livetwo",
     "livecam",
+    "liveion_udp_bridge",
 ]
 
 [workspace.package]

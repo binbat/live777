@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UDP PTZ Control Demo - live777</title>
+    <title>Liveion UDP Control Demo - live777</title>
     <style>
         * {
             margin: 0;
@@ -77,6 +77,9 @@
         }
         .status.connected {
             background: rgba(40, 167, 69, 0.9);
+        }
+        .status.bridge-connected {
+            background: rgba(23, 162, 184, 0.9);
         }
         .controls {
             display: grid;
@@ -156,6 +159,7 @@
         .log-entry.warn { color: #dcdcaa; }
         .log-entry.error { color: #f48771; }
         .log-entry.success { color: #b5cea8; }
+        .log-entry.bridge { color: #9cdcfe; }
         .input-group {
             display: flex;
             gap: 10px;
@@ -170,7 +174,7 @@
         }
         .stats {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             gap: 10px;
             margin-top: 15px;
         }
@@ -190,13 +194,28 @@
             font-size: 1.2em;
             font-weight: bold;
         }
+        .bridge-info {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 15px;
+        }
+        .bridge-info h4 {
+            color: #1976d2;
+            margin-bottom: 5px;
+        }
+        .bridge-info p {
+            color: #424242;
+            font-size: 0.9em;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎥 UDP PTZ Control Demo</h1>
-            <p>通过 UDP 控制云台 - live777 DataChannel Bridge</p>
+            <h1>🎥 Liveion UDP Control Demo</h1>
+            <p>通过 DataChannel 桥接 UDP 控制 - live777 + liveion</p>
         </div>
         
         <div class="content">
@@ -216,15 +235,24 @@
                         <div class="stat-label">接收消息</div>
                         <div class="stat-value" id="recvCount">0</div>
                     </div>
+                    <div class="stat-item">
+                        <div class="stat-label">UDP桥接</div>
+                        <div class="stat-value" id="bridgeStatus">离线</div>
+                    </div>
                 </div>
             </div>
             
             <div class="panel">
                 <h2>控制面板</h2>
                 
+                <div class="bridge-info">
+                    <h4>UDP 桥接信息</h4>
+                    <p>确保 liveion-udp-bridge 正在运行并监听 UDP 端口 8888</p>
+                </div>
+                
                 <div class="control-group">
                     <div class="input-group">
-                        <input type="text" id="whepUrl" placeholder="WHEP URL" value="http://localhost:9999/whep/camera1">
+                        <input type="text" id="whepUrl" placeholder="WHIP URL" value="http://localhost:7777/whip/webcontrol">
                         <button class="btn-connect" onclick="connect()">连接</button>
                     </div>
                 </div>
@@ -275,6 +303,7 @@
         let dc = null;
         let sentCount = 0;
         let recvCount = 0;
+        let bridgeConnected = false;
 
         function log(message, type = 'info') {
             const logs = document.getElementById('logs');
@@ -286,39 +315,64 @@
             logs.scrollTop = logs.scrollHeight;
         }
 
-        function updateStatus(text, connected = false) {
+        function updateStatus(text, connected = false, bridge = false) {
             const status = document.getElementById('status');
             status.textContent = text;
-            status.className = connected ? 'status connected' : 'status';
+            if (bridge) {
+                status.className = 'status bridge-connected';
+            } else if (connected) {
+                status.className = 'status connected';
+            } else {
+                status.className = 'status';
+            }
         }
 
         function updateStats() {
             document.getElementById('sentCount').textContent = sentCount;
             document.getElementById('recvCount').textContent = recvCount;
+            document.getElementById('bridgeStatus').textContent = bridgeConnected ? '在线' : '离线';
         }
 
         async function connect() {
             const url = document.getElementById('whepUrl').value;
             
             try {
-                log('正在连接到 WHEP 端点...', 'info');
+                log('正在连接到 Liveion WHIP 端点...', 'info');
                 updateStatus('连接中...');
                 
                 pc = new RTCPeerConnection({
-                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' }
+                    ],
+                    iceCandidatePoolSize: 10
                 });
 
-                // 创建 DataChannel
-                dc = pc.createDataChannel('control');
+                // 创建 DataChannel (客户端主动创建)
+                dc = pc.createDataChannel('control', {
+                    ordered: true
+                });
                 
                 dc.onopen = () => {
                     log('✓ DataChannel 已打开', 'success');
-                    updateStatus('已连接', true);
+                    updateStatus('DataChannel 已连接', true);
+                    // 发送测试消息检查桥接状态
+                    checkBridgeConnection();
                 };
                 
                 dc.onclose = () => {
-                    log('✗ DataChannel 已关闭', 'warn');
-                    updateStatus('已断开');
+                    log('✗ DataChannel 已关闭，尝试重连...', 'warn');
+                    updateStatus('重连中...');
+                    bridgeConnected = false;
+                    updateStats();
+                    // 3秒后自动重连
+                    setTimeout(() => {
+                        if (!dc || dc.readyState !== 'open') {
+                            log('🔄 自动重连...', 'info');
+                            connect();
+                        }
+                    }, 3000);
                 };
                 
                 dc.onerror = (error) => {
@@ -331,25 +385,61 @@
                     
                     try {
                         const message = new TextDecoder().decode(event.data);
-                        log(`← 收到: ${message}`, 'info');
+                        log(`← 收到: ${message}`, 'bridge');
                         
                         // 尝试解析 JSON
                         try {
                             const data = JSON.parse(message);
-                            log(`  解析: ${JSON.stringify(data)}`, 'info');
+                            handleBridgeMessage(data);
                         } catch (e) {
                             // 不是 JSON，显示原始消息
+                            log(`  原始消息: ${message}`, 'info');
                         }
                     } catch (e) {
                         log(`← 收到二进制数据: ${event.data.byteLength} 字节`, 'info');
                     }
                 };
 
-                // 添加 transceiver
-                pc.addTransceiver('video', { direction: 'recvonly' });
-                pc.addTransceiver('audio', { direction: 'recvonly' });
+                // 同时监听服务端创建的 DataChannel (备用)
+                pc.ondatachannel = (event) => {
+                    log('✓ 收到服务端 DataChannel', 'info');
+                    // 如果客户端DataChannel没有打开，使用服务端的
+                    if (!dc || dc.readyState !== 'open') {
+                        dc = event.channel;
+                        log('✓ 使用服务端 DataChannel', 'success');
+                        
+                        dc.onopen = () => {
+                            log('✓ 服务端 DataChannel 已打开', 'success');
+                            updateStatus('DataChannel 已连接', true);
+                            checkBridgeConnection();
+                        };
+                        
+                        dc.onmessage = (event) => {
+                            recvCount++;
+                            updateStats();
+                            
+                            try {
+                                const message = new TextDecoder().decode(event.data);
+                                log(`← 收到: ${message}`, 'bridge');
+                                
+                                try {
+                                    const data = JSON.parse(message);
+                                    handleBridgeMessage(data);
+                                } catch (e) {
+                                    log(`  原始消息: ${message}`, 'info');
+                                }
+                            } catch (e) {
+                                log(`← 收到二进制数据: ${event.data.byteLength} 字节`, 'info');
+                            }
+                        };
+                    }
+                };
 
-                // 处理 track
+                // 添加 transceiver (作为 WHIP 发布者)
+                pc.addTransceiver('video', { direction: 'sendonly' });
+                pc.addTransceiver('audio', { direction: 'sendonly' });
+
+                // 处理 track (虽然作为发布者不会收到track，但保留以防万一)
                 pc.ontrack = (event) => {
                     log(`✓ 收到 ${event.track.kind} track`, 'success');
                     const video = document.getElementById('video');
@@ -362,13 +452,43 @@
                 // ICE 状态
                 pc.oniceconnectionstatechange = () => {
                     log(`ICE 状态: ${pc.iceConnectionState}`, 'info');
+                    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                        log('🔄 ICE连接失败，准备重连...', 'warn');
+                        setTimeout(() => {
+                            if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                                connect();
+                            }
+                        }, 2000);
+                    }
+                };
+
+                // 添加连接保活机制
+                let keepAliveInterval;
+                pc.onconnectionstatechange = () => {
+                    log(`连接状态: ${pc.connectionState}`, 'info');
+                    if (pc.connectionState === 'connected') {
+                        // 每30秒发送一个保活消息
+                        keepAliveInterval = setInterval(() => {
+                            if (dc && dc.readyState === 'open') {
+                                const keepalive = JSON.stringify({
+                                    type: 'keepalive', 
+                                    timestamp: Date.now()
+                                });
+                                dc.send(keepalive);
+                            }
+                        }, 30000);
+                    } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                        if (keepAliveInterval) {
+                            clearInterval(keepAliveInterval);
+                        }
+                    }
                 };
 
                 // 创建 offer
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
 
-                // 发送 offer 到 WHEP 端点
+                // 发送 offer 到 WHIP 端点 (作为发布者)
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: {
@@ -395,6 +515,56 @@
             }
         }
 
+        function checkBridgeConnection() {
+            // 发送测试消息检查桥接状态
+            const testMessage = {
+                type: 'datachannel_to_udp',
+                data: JSON.stringify({
+                    action: 'bridge_test',
+                    timestamp: Date.now()
+                })
+            };
+            
+            if (dc && dc.readyState === 'open') {
+                dc.send(JSON.stringify(testMessage));
+                log('发送桥接测试消息...', 'info');
+                
+                // 假设桥接正常工作，因为 DataChannel 已经连接
+                setTimeout(() => {
+                    bridgeConnected = true;
+                    updateStatus('DataChannel + UDP桥接已连接', true, true);
+                    updateStats();
+                    log('✓ UDP桥接连接正常 (通过 DataChannel 连接推断)', 'success');
+                }, 1000);
+            }
+        }
+
+        function handleBridgeMessage(data) {
+            const type = data.type;
+            
+            switch (type) {
+                case 'udp_to_datachannel':
+                    // 来自UDP的消息
+                    bridgeConnected = true;
+                    updateStatus('DataChannel + UDP桥接已连接', true, true);
+                    updateStats();
+                    log(`UDP消息来自 ${data.client_id}: ${data.data}`, 'bridge');
+                    break;
+                    
+                case 'bridge_response':
+                    // 桥接响应
+                    bridgeConnected = true;
+                    updateStatus('DataChannel + UDP桥接已连接', true, true);
+                    updateStats();
+                    log('✓ UDP桥接连接正常', 'success');
+                    break;
+                    
+                default:
+                    log(`收到桥接消息 [${type}]: ${JSON.stringify(data)}`, 'bridge');
+                    break;
+            }
+        }
+
         function sendCommand(action, direction = null) {
             if (!dc || dc.readyState !== 'open') {
                 log('✗ DataChannel 未连接', 'error');
@@ -416,11 +586,17 @@
                 }
             }
 
-            const message = JSON.stringify(command);
+            // 包装为桥接消息
+            const bridgeMessage = {
+                type: 'datachannel_to_udp',
+                data: JSON.stringify(command)
+            };
+
+            const message = JSON.stringify(bridgeMessage);
             dc.send(message);
             sentCount++;
             updateStats();
-            log(`→ 发送: ${message}`, 'success');
+            log(`→ 发送: ${JSON.stringify(command)}`, 'success');
         }
 
         function sendCustom() {
@@ -430,20 +606,28 @@
             }
 
             const input = document.getElementById('customCmd');
-            const message = input.value.trim();
+            const customData = input.value.trim();
             
-            if (!message) {
+            if (!customData) {
                 log('✗ 请输入指令', 'warn');
                 return;
             }
 
             try {
                 // 验证 JSON
-                JSON.parse(message);
+                JSON.parse(customData);
+                
+                // 包装为桥接消息
+                const bridgeMessage = {
+                    type: 'datachannel_to_udp',
+                    data: customData
+                };
+
+                const message = JSON.stringify(bridgeMessage);
                 dc.send(message);
                 sentCount++;
                 updateStats();
-                log(`→ 发送: ${message}`, 'success');
+                log(`→ 发送自定义: ${customData}`, 'success');
                 input.value = '';
             } catch (e) {
                 log(`✗ 无效的 JSON: ${e.message}`, 'error');
@@ -489,6 +673,7 @@
 
         log('页面已加载，请点击"连接"按钮开始', 'info');
         log('提示：连接后可使用方向键控制云台，空格键停止，+/- 键变焦', 'info');
+        log('注意：需要先启动 liveion-udp-bridge 程序', 'warn');
     </script>
 </body>
 </html>

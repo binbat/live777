@@ -179,7 +179,7 @@ impl PliBackoff {
              time_since_kf={}, time_since_req={}",
             self.request_count,
             if self.max_requests == 0 {
-                "âˆž".to_string()
+                "âˆ?.to_string()
             } else {
                 self.max_requests.to_string()
             },

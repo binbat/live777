@@ -1,7 +1,7 @@
 [http]
-listen = "0.0.0.0:9999"
+listen = "0.0.0.0:9998"
 cors = true
-public = "http://localhost:9999"
+public = "http://localhost:9998"
 
 [log]
 level = "debug"
@@ -9,8 +9,6 @@ level = "debug"
 [[cameras]]
 id = "camera"
 rtp_port = 5004
-# Optional: UDP port for receiving PTZ/control commands
-# control_port = 5005
 
 ice_servers = [
   { urls = ["stun:stun.l.google.com:19302"] },

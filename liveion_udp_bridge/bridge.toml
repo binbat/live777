@@ -1,0 +1,24 @@
+[udp]
+# UDP server listen address
+listen = "0.0.0.0"
+# UDP server port
+port = 8888
+
+[liveion]
+# Liveion server URL
+url = "http://localhost:7777"
+# Stream name to connect to
+stream = "camera"
+
+# Optional authentication (uncomment if needed)
+# [liveion.auth]
+# username = "admin"
+# password = "livecam"
+
+[bridge]
+# Reconnection interval in seconds
+reconnect_interval = 5
+# Maximum message size in bytes
+max_message_size = 16384
+# Enable detailed message logging
+enable_logging = true

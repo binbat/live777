@@ -251,8 +251,6 @@ fn default_log_level() -> String {
 pub struct CameraConfig {
     pub id: String,
     pub rtp_port: u16,
-    #[serde(default)]
-    pub control_port: Option<u16>,
     pub codec: CodecConfig,
     #[serde(default)]
     pub command: String,
