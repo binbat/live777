@@ -12,6 +12,9 @@ pub mod stream;
 pub mod whep;
 pub mod whip;
 
+#[cfg(feature = "source")]
+pub mod source;
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,

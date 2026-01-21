@@ -22,11 +22,16 @@ use crate::forward::message::Layer;
 use crate::stream::config::ManagerConfig;
 use crate::{AppError, metrics, new_broadcast_channel};
 
+#[cfg(feature = "source")]
+use crate::stream::source::*;
+
 #[derive(Clone)]
 pub struct Manager {
     stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
     config: ManagerConfig,
     event_sender: broadcast::Sender<Event>,
+    #[cfg(feature = "source")]
+    pub source_manager: SourceManager,
 }
 
 pub type Response = (RTCSessionDescription, String);
@@ -64,6 +69,8 @@ impl Manager {
             stream_map,
             config: cfg,
             event_sender: send,
+            #[cfg(feature = "source")]
+            source_manager: SourceManager::new(),
         }
     }
 
@@ -466,6 +473,143 @@ impl Manager {
             }
         });
         Ok(recv)
+    }
+
+    #[cfg(feature = "source")]
+    async fn wait_for_source_codec(&self, stream_id: &str, timeout_ms: u64) -> bool {
+        let start = std::time::Instant::now();
+
+        while start.elapsed().as_millis() < timeout_ms as u128 {
+            if self.source_manager.is_codec_ready(stream_id).await {
+                return true;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        false
+    }
+
+    #[cfg(feature = "source")]
+    pub async fn auto_start_sources(
+        &self,
+        sources_config: &crate::config::SourcesConfig,
+    ) -> Result<()> {
+        if sources_config.sources.is_empty() {
+            tracing::info!("No sources configured, skipping auto-start");
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Auto-starting {} configured sources",
+            sources_config.sources.len()
+        );
+
+        for source_cfg in &sources_config.sources {
+            tracing::info!(
+                "Auto-starting source: {} from {}",
+                source_cfg.stream_id,
+                source_cfg.url
+            );
+
+            let source = match create_source_from_url(&source_cfg.url, source_cfg).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to create source {}: {}", source_cfg.stream_id, e);
+                    continue;
+                }
+            };
+
+            if let Err(e) = self.source_manager.add_source(source).await {
+                tracing::error!("Failed to start source {}: {}", source_cfg.stream_id, e);
+                continue;
+            }
+
+            let codec_ready = self
+                .wait_for_source_codec(&source_cfg.stream_id, 10000)
+                .await;
+
+            if !codec_ready {
+                tracing::warn!(
+                    "Codec not ready for source: {} after 10s, continuing anyway",
+                    source_cfg.stream_id
+                );
+            }
+
+            let forward = self.get_or_create_forward(&source_cfg.stream_id).await;
+
+            let mut retry_count = 0;
+            let max_retries = 3;
+
+            loop {
+                match self
+                    .source_manager
+                    .create_bridge(&source_cfg.stream_id, forward.clone())
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!("Successfully started source: {}", source_cfg.stream_id);
+                        break;
+                    }
+                    Err(e) => {
+                        retry_count += 1;
+                        if retry_count >= max_retries {
+                            tracing::error!(
+                                "Failed to create bridge for {} after {} retries: {}",
+                                source_cfg.stream_id,
+                                max_retries,
+                                e
+                            );
+                            break;
+                        }
+
+                        tracing::warn!(
+                            "Failed to create bridge for {} (attempt {}/{}): {}, retrying...",
+                            source_cfg.stream_id,
+                            retry_count,
+                            max_retries,
+                            e
+                        );
+
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        }
+
+        tracing::info!("Auto-start sources completed");
+        Ok(())
+    }
+
+    #[cfg(feature = "source")]
+    pub async fn get_or_create_forward_for_source(
+        &self,
+        stream_id: &str,
+    ) -> Arc<crate::forward::PeerForward> {
+        self.get_or_create_forward(stream_id).await
+    }
+
+    #[cfg(feature = "source")]
+    async fn get_or_create_forward(&self, stream_id: &str) -> Arc<crate::forward::PeerForward> {
+        let mut stream_map = self.stream_map.write().await;
+
+        if let Some(forward) = stream_map.get(stream_id) {
+            Arc::new(forward.clone())
+        } else {
+            let forward = crate::forward::PeerForward::new(
+                stream_id.to_string(),
+                self.config.ice_servers.clone(),
+            );
+
+            let subscribe_event = forward.subscribe_event();
+            let event_sender = self.event_sender.clone();
+            tokio::spawn(Self::forward_event_handler(subscribe_event, event_sender));
+
+            stream_map.insert(stream_id.to_string(), forward.clone());
+
+            tracing::info!("Created PeerForward for source: {}", stream_id);
+            Arc::new(forward)
+        }
     }
 
     #[cfg(feature = "recorder")]

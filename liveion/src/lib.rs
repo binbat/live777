@@ -48,6 +48,27 @@ where
     {
         crate::recorder::init(app_state.stream_manager.clone(), cfg.recorder.clone()).await;
     }
+
+    #[cfg(feature = "source")]
+    {
+        if !cfg.sources.sources.is_empty() {
+            tracing::info!(
+                "[Server] Auto-starting {} configured sources...",
+                cfg.sources.sources.len()
+            );
+            if let Err(e) = app_state
+                .stream_manager
+                .auto_start_sources(&cfg.sources)
+                .await
+            {
+                tracing::error!("Failed to auto-start sources: {:?}", e);
+            } else {
+                tracing::info!("All configured sources started successfully");
+            }
+        } else {
+            tracing::info!("No sources configured for auto-start");
+        }
+    }
     let app = Router::new().merge(
         whip::route()
             .merge(whep::route())
@@ -56,6 +77,16 @@ where
             .merge(crate::route::stream::route())
             .merge(crate::route::recorder::route())
             .merge(crate::route::strategy::route())
+            .merge({
+                #[cfg(feature = "source")]
+                {
+                    crate::route::source::route()
+                }
+                #[cfg(not(feature = "source"))]
+                {
+                    Router::new()
+                }
+            })
             .layer(middleware::from_fn(access_middleware))
             .layer(middleware::from_fn_with_state(
                 AuthState::new(cfg.auth.secret, cfg.auth.tokens),
@@ -131,8 +162,22 @@ where
         }
     }
 
+    #[cfg(feature = "source")]
+    let stream_manager = app_state.stream_manager.clone();
+
     axum::serve(listener, app)
-        .with_graceful_shutdown(signal)
+        .with_graceful_shutdown(async move {
+            signal.await;
+            tracing::info!("Shutdown signal received");
+
+            #[cfg(feature = "source")]
+            {
+                tracing::info!("Stopping all sources...");
+                if let Err(e) = stream_manager.source_manager.stop_all().await {
+                    tracing::error!("Failed to stop sources: {}", e);
+                }
+            }
+        })
         .await
         .unwrap_or_else(|e| error!("Application error: {e}"));
 }
