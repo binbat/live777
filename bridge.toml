@@ -1,0 +1,13 @@
+[udp]
+listen = "0.0.0.0"
+port = 8888
+target_addresses = ["127.0.0.1:8889"]
+
+[liveion]
+url = "http://localhost:7777"
+stream = "webcontrol"
+
+[bridge]
+reconnect_interval = 5
+max_message_size = 16384
+enable_logging = true

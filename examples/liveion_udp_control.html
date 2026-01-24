@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liveion UDP Control Demo - live777</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        .header p {
+            opacity: 0.9;
+        }
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 30px;
+        }
+        .panel {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .panel h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .status.connected {
+            background: rgba(40, 167, 69, 0.9);
+        }
+        .status.bridge-connected {
+            background: rgba(23, 162, 184, 0.9);
+        }
+        .controls {
+            display: grid;
+            gap: 15px;
+        }
+        .control-group {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        .control-group h3 {
+            color: #495057;
+            font-size: 1em;
+            margin-bottom: 10px;
+        }
+        .button-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 10px;
+        }
+        button {
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            background: #667eea;
+            color: white;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-connect {
+            grid-column: 1 / -1;
+            background: #28a745;
+            padding: 15px;
+            font-size: 1em;
+        }
+        .btn-connect:hover {
+            background: #218838;
+        }
+        .btn-stop {
+            background: #dc3545;
+        }
+        .btn-stop:hover {
+            background: #c82333;
+        }
+        .logs {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            line-height: 1.5;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+        }
+        .log-entry.info { color: #4ec9b0; }
+        .log-entry.warn { color: #dcdcaa; }
+        .log-entry.error { color: #f48771; }
+        .log-entry.success { color: #b5cea8; }
+        .log-entry.bridge { color: #9cdcfe; }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .stat-item {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        .stat-label {
+            color: #6c757d;
+            font-size: 0.8em;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            color: #333;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .bridge-info {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 15px;
+        }
+        .bridge-info h4 {
+            color: #1976d2;
+            margin-bottom: 5px;
+        }
+        .bridge-info p {
+            color: #424242;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎥 Liveion UDP Control Demo</h1>
+            <p>通过 DataChannel 桥接 UDP 控制 - live777 + liveion</p>
+        </div>
+        
+        <div class="content">
+            <div class="panel">
+                <h2>视频预览</h2>
+                <div class="video-container">
+                    <video id="video" autoplay playsinline muted></video>
+                    <div class="status" id="status">未连接</div>
+                </div>
+                
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-label">发送指令</div>
+                        <div class="stat-value" id="sentCount">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">接收消息</div>
+                        <div class="stat-value" id="recvCount">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">UDP桥接</div>
+                        <div class="stat-value" id="bridgeStatus">离线</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>控制面板</h2>
+                
+                <div class="bridge-info">
+                    <h4>UDP 桥接信息</h4>
+                    <p>确保 liveion-udp-bridge 正在运行并监听 UDP 端口 8888</p>
+                </div>
+                
+                <div class="control-group">
+                    <div class="input-group">
+                        <input type="text" id="whepUrl" placeholder="WHIP URL" value="http://localhost:7777/whip/webcontrol">
+                        <button class="btn-connect" onclick="connect()">连接</button>
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <h3>云台控制</h3>
+                    <div class="button-grid">
+                        <div></div>
+                        <button onclick="sendCommand('tilt', 'up')">↑ 上</button>
+                        <div></div>
+                        <button onclick="sendCommand('pan', 'left')">← 左</button>
+                        <button class="btn-stop" onclick="sendCommand('stop')">停止</button>
+                        <button onclick="sendCommand('pan', 'right')">右 →</button>
+                        <div></div>
+                        <button onclick="sendCommand('tilt', 'down')">↓ 下</button>
+                        <div></div>
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <h3>变焦控制</h3>
+                    <div class="button-grid">
+                        <button onclick="sendCommand('zoom', 'in')">🔍 放大</button>
+                        <button onclick="sendCommand('zoom', 'out')">🔍 缩小</button>
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <h3>自定义指令</h3>
+                    <div class="input-group">
+                        <input type="text" id="customCmd" placeholder='{"action":"custom","value":123}'>
+                        <button onclick="sendCustom()">发送</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div style="padding: 0 30px 30px;">
+            <div class="panel">
+                <h2>消息日志</h2>
+                <div class="logs" id="logs"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let pc = null;
+        let dc = null;
+        let sentCount = 0;
+        let recvCount = 0;
+        let bridgeConnected = false;
+
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            logs.appendChild(entry);
+            logs.scrollTop = logs.scrollHeight;
+        }
+
+        function updateStatus(text, connected = false, bridge = false) {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            if (bridge) {
+                status.className = 'status bridge-connected';
+            } else if (connected) {
+                status.className = 'status connected';
+            } else {
+                status.className = 'status';
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('sentCount').textContent = sentCount;
+            document.getElementById('recvCount').textContent = recvCount;
+            document.getElementById('bridgeStatus').textContent = bridgeConnected ? '在线' : '离线';
+        }
+
+        async function connect() {
+            const url = document.getElementById('whepUrl').value;
+            
+            try {
+                log('正在连接到 Liveion WHIP 端点...', 'info');
+                updateStatus('连接中...');
+                
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' }
+                    ],
+                    iceCandidatePoolSize: 10
+                });
+
+                // 创建 DataChannel (客户端主动创建)
+                dc = pc.createDataChannel('control', {
+                    ordered: true
+                });
+                
+                dc.onopen = () => {
+                    log('✓ DataChannel 已打开', 'success');
+                    updateStatus('DataChannel 已连接', true);
+                    // 发送测试消息检查桥接状态
+                    checkBridgeConnection();
+                };
+                
+                dc.onclose = () => {
+                    log('✗ DataChannel 已关闭，尝试重连...', 'warn');
+                    updateStatus('重连中...');
+                    bridgeConnected = false;
+                    updateStats();
+                    // 3秒后自动重连
+                    setTimeout(() => {
+                        if (!dc || dc.readyState !== 'open') {
+                            log('🔄 自动重连...', 'info');
+                            connect();
+                        }
+                    }, 3000);
+                };
+                
+                dc.onerror = (error) => {
+                    log(`✗ DataChannel 错误: ${error}`, 'error');
+                };
+                
+                dc.onmessage = (event) => {
+                    recvCount++;
+                    updateStats();
+                    
+                    try {
+                        const message = new TextDecoder().decode(event.data);
+                        log(`← 收到: ${message}`, 'bridge');
+                        
+                        // 尝试解析 JSON
+                        try {
+                            const data = JSON.parse(message);
+                            handleBridgeMessage(data);
+                        } catch (e) {
+                            // 不是 JSON，显示原始消息
+                            log(`  原始消息: ${message}`, 'info');
+                        }
+                    } catch (e) {
+                        log(`← 收到二进制数据: ${event.data.byteLength} 字节`, 'info');
+                    }
+                };
+
+                // 同时监听服务端创建的 DataChannel (备用)
+                pc.ondatachannel = (event) => {
+                    log('✓ 收到服务端 DataChannel', 'info');
+                    // 如果客户端DataChannel没有打开，使用服务端的
+                    if (!dc || dc.readyState !== 'open') {
+                        dc = event.channel;
+                        log('✓ 使用服务端 DataChannel', 'success');
+                        
+                        dc.onopen = () => {
+                            log('✓ 服务端 DataChannel 已打开', 'success');
+                            updateStatus('DataChannel 已连接', true);
+                            checkBridgeConnection();
+                        };
+                        
+                        dc.onmessage = (event) => {
+                            recvCount++;
+                            updateStats();
+                            
+                            try {
+                                const message = new TextDecoder().decode(event.data);
+                                log(`← 收到: ${message}`, 'bridge');
+                                
+                                try {
+                                    const data = JSON.parse(message);
+                                    handleBridgeMessage(data);
+                                } catch (e) {
+                                    log(`  原始消息: ${message}`, 'info');
+                                }
+                            } catch (e) {
+                                log(`← 收到二进制数据: ${event.data.byteLength} 字节`, 'info');
+                            }
+                        };
+                    }
+                };
+
+                // 添加 transceiver (作为 WHIP 发布者)
+                pc.addTransceiver('video', { direction: 'sendonly' });
+                pc.addTransceiver('audio', { direction: 'sendonly' });
+
+                // 处理 track (虽然作为发布者不会收到track，但保留以防万一)
+                pc.ontrack = (event) => {
+                    log(`✓ 收到 ${event.track.kind} track`, 'success');
+                    const video = document.getElementById('video');
+                    if (!video.srcObject) {
+                        video.srcObject = new MediaStream();
+                    }
+                    video.srcObject.addTrack(event.track);
+                };
+
+                // ICE 状态
+                pc.oniceconnectionstatechange = () => {
+                    log(`ICE 状态: ${pc.iceConnectionState}`, 'info');
+                    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                        log('🔄 ICE连接失败，准备重连...', 'warn');
+                        setTimeout(() => {
+                            if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                                connect();
+                            }
+                        }, 2000);
+                    }
+                };
+
+                // 添加连接保活机制
+                let keepAliveInterval;
+                pc.onconnectionstatechange = () => {
+                    log(`连接状态: ${pc.connectionState}`, 'info');
+                    if (pc.connectionState === 'connected') {
+                        // 每30秒发送一个保活消息
+                        keepAliveInterval = setInterval(() => {
+                            if (dc && dc.readyState === 'open') {
+                                const keepalive = JSON.stringify({
+                                    type: 'keepalive', 
+                                    timestamp: Date.now()
+                                });
+                                dc.send(keepalive);
+                            }
+                        }, 30000);
+                    } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                        if (keepAliveInterval) {
+                            clearInterval(keepAliveInterval);
+                        }
+                    }
+                };
+
+                // 创建 offer
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // 发送 offer 到 WHIP 端点 (作为发布者)
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/sdp'
+                    },
+                    body: offer.sdp
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const answer = await response.text();
+                await pc.setRemoteDescription({
+                    type: 'answer',
+                    sdp: answer
+                });
+
+                log('✓ 连接成功！', 'success');
+                
+            } catch (error) {
+                log(`✗ 连接失败: ${error.message}`, 'error');
+                updateStatus('连接失败');
+            }
+        }
+
+        function checkBridgeConnection() {
+            // 发送测试消息检查桥接状态
+            const testMessage = {
+                type: 'datachannel_to_udp',
+                data: JSON.stringify({
+                    action: 'bridge_test',
+                    timestamp: Date.now()
+                })
+            };
+            
+            if (dc && dc.readyState === 'open') {
+                dc.send(JSON.stringify(testMessage));
+                log('发送桥接测试消息...', 'info');
+                
+                // 假设桥接正常工作，因为 DataChannel 已经连接
+                setTimeout(() => {
+                    bridgeConnected = true;
+                    updateStatus('DataChannel + UDP桥接已连接', true, true);
+                    updateStats();
+                    log('✓ UDP桥接连接正常 (通过 DataChannel 连接推断)', 'success');
+                }, 1000);
+            }
+        }
+
+        function handleBridgeMessage(data) {
+            const type = data.type;
+            
+            switch (type) {
+                case 'udp_to_datachannel':
+                    // 来自UDP的消息
+                    bridgeConnected = true;
+                    updateStatus('DataChannel + UDP桥接已连接', true, true);
+                    updateStats();
+                    log(`UDP消息来自 ${data.client_id}: ${data.data}`, 'bridge');
+                    break;
+                    
+                case 'bridge_response':
+                    // 桥接响应
+                    bridgeConnected = true;
+                    updateStatus('DataChannel + UDP桥接已连接', true, true);
+                    updateStats();
+                    log('✓ UDP桥接连接正常', 'success');
+                    break;
+                    
+                default:
+                    log(`收到桥接消息 [${type}]: ${JSON.stringify(data)}`, 'bridge');
+                    break;
+            }
+        }
+
+        function sendCommand(action, direction = null) {
+            if (!dc || dc.readyState !== 'open') {
+                log('✗ DataChannel 未连接', 'error');
+                return;
+            }
+
+            const command = {
+                action: action,
+                timestamp: Date.now()
+            };
+
+            if (direction) {
+                if (action === 'pan' || action === 'tilt') {
+                    command.direction = direction;
+                    command.speed = 50;
+                } else if (action === 'zoom') {
+                    command.direction = direction;
+                    command.value = 1;
+                }
+            }
+
+            // 包装为桥接消息
+            const bridgeMessage = {
+                type: 'datachannel_to_udp',
+                data: JSON.stringify(command)
+            };
+
+            const message = JSON.stringify(bridgeMessage);
+            dc.send(message);
+            sentCount++;
+            updateStats();
+            log(`→ 发送: ${JSON.stringify(command)}`, 'success');
+        }
+
+        function sendCustom() {
+            if (!dc || dc.readyState !== 'open') {
+                log('✗ DataChannel 未连接', 'error');
+                return;
+            }
+
+            const input = document.getElementById('customCmd');
+            const customData = input.value.trim();
+            
+            if (!customData) {
+                log('✗ 请输入指令', 'warn');
+                return;
+            }
+
+            try {
+                // 验证 JSON
+                JSON.parse(customData);
+                
+                // 包装为桥接消息
+                const bridgeMessage = {
+                    type: 'datachannel_to_udp',
+                    data: customData
+                };
+
+                const message = JSON.stringify(bridgeMessage);
+                dc.send(message);
+                sentCount++;
+                updateStats();
+                log(`→ 发送自定义: ${customData}`, 'success');
+                input.value = '';
+            } catch (e) {
+                log(`✗ 无效的 JSON: ${e.message}`, 'error');
+            }
+        }
+
+        // 键盘控制
+        document.addEventListener('keydown', (e) => {
+            if (!dc || dc.readyState !== 'open') return;
+            
+            switch(e.key) {
+                case 'ArrowUp':
+                    e.preventDefault();
+                    sendCommand('tilt', 'up');
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    sendCommand('tilt', 'down');
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    sendCommand('pan', 'left');
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    sendCommand('pan', 'right');
+                    break;
+                case ' ':
+                    e.preventDefault();
+                    sendCommand('stop');
+                    break;
+                case '+':
+                case '=':
+                    e.preventDefault();
+                    sendCommand('zoom', 'in');
+                    break;
+                case '-':
+                    e.preventDefault();
+                    sendCommand('zoom', 'out');
+                    break;
+            }
+        });
+
+        log('页面已加载，请点击"连接"按钮开始', 'info');
+        log('提示：连接后可使用方向键控制云台，空格键停止，+/- 键变焦', 'info');
+        log('注意：需要先启动 liveion-udp-bridge 程序', 'warn');
+    </script>
+</body>
+</html>

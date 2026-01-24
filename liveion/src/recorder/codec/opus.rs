@@ -5,7 +5,7 @@ use webrtc::rtp::packet::Packet;
 /// Very simple RTP parser for Opus.
 /// For Opus over RTP we normally have exactly one complete Opus frame per RTP packet
 /// (although the payload itself may aggregate multiple Opus frames). For recording
-/// purposes we do not need to split them â€“ we can treat the entire RTP payload as a
+/// purposes we do not need to split them â€?we can treat the entire RTP payload as a
 /// single sample for the MP4 track.
 ///
 /// The parser therefore just forwards the payload without extra processing and
