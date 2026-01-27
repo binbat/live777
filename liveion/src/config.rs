@@ -29,6 +29,9 @@ pub struct Config {
     #[cfg(feature = "recorder")]
     #[serde(default)]
     pub recorder: RecorderConfig,
+
+    #[serde(default)]
+    pub sources: SourcesConfig,
 }
 
 #[cfg(feature = "net4mqtt")]
@@ -124,6 +127,13 @@ impl Config {
                 .validate()
                 .map_err(|e| anyhow::anyhow!(format!("ice_server error : {}", e)))?;
         }
+
+        #[cfg(feature = "source")]
+        for source in &self.sources.sources {
+            source
+                .validate()
+                .map_err(|e| anyhow::anyhow!("source config error: {}", e))?;
+        }
         Ok(())
     }
 }
@@ -167,5 +177,47 @@ impl Default for RecorderConfig {
             index_path: None,
             max_recording_seconds: default_max_recording_seconds(),
         }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SourcesConfig {
+    #[serde(default)]
+    pub sources: Vec<SourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceConfig {
+    /// Stream ID
+    pub stream_id: String,
+
+    /// Source URL
+    /// - RTSP: rtsp://username:password@host:port/path
+    /// - SDP file: file:///path/to/file.sdp or /path/to/file.sdp
+    pub url: String,
+}
+
+impl SourceConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.stream_id.trim().is_empty() {
+            anyhow::bail!("stream_id cannot be empty");
+        }
+
+        if self.url.trim().is_empty() {
+            anyhow::bail!("url cannot be empty");
+        }
+
+        let url_lower = self.url.to_lowercase();
+        if !url_lower.starts_with("rtsp://")
+            && !url_lower.starts_with("rtsps://")
+            && !url_lower.starts_with("file://")
+            && !url_lower.ends_with(".sdp")
+        {
+            anyhow::bail!(
+                "Invalid URL format: {}. Must be rtsp://, rtsps://, file://, or end with .sdp",
+                self.url
+            );
+        }
+
+        Ok(())
     }
 }

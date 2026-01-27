@@ -52,7 +52,7 @@ jobs:
       - name: Cargo clippy default-features
         run: cargo clippy --all-targets --workspace -- -D warnings
       - name: Cargo clippy no webui
-        run: cargo clippy --all-targets --features=net4mqtt,recorder --workspace -- -D warnings
+        run: cargo clippy --all-targets --features=net4mqtt,recorder,source-all --workspace -- -D warnings
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, info, trace};
+use tracing::{debug, error, info, trace};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
@@ -113,73 +113,103 @@ impl SubscribeRTCPeerConnection {
         mut forward_channel: SubscribeForwardChannel,
     ) {
         info!("[{}] [{}] {} up", stream, id, kind);
+
         let mut pre_rid: Option<String> = None;
         // empty broadcast channel
         let virtual_sender = new_broadcast_channel!(1);
         let mut recv = virtual_sender.subscribe();
         let mut track = None;
         let mut sequence_number: u16 = 0;
+
         loop {
             tokio::select! {
-                publish_change = forward_channel.publish_track_change.recv() =>{
-                    debug!("{} {} recv publish track_change",stream,id);
+                publish_change = forward_channel.publish_track_change.recv() => {
+                    debug!("{} {} recv publish track_change", stream, id);
+
                     if publish_change.is_err() {
                         continue;
                     }
-                      let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
-                        let publish_tracks = publish_tracks.read().await;
-                        let current_rid = track_binding_publish_rid.get(&kind.clone().to_string());
-                        if publish_tracks.is_empty() {
-                            debug!("{} {} publish track len 0 , probably offline",stream,id);
-                            recv = virtual_sender.subscribe();
-                            let _ = sender.replace_track(None).await;
-                            track = None;
-                            pre_rid = None;
-                            if current_rid.is_some() && current_rid.cloned().unwrap() != constant::RID_DISABLE {
-                                track_binding_publish_rid.remove(&kind.clone().to_string());
-                            };
+
+                    let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
+                    let publish_tracks = publish_tracks.read().await;
+                    let current_rid = track_binding_publish_rid.get(&kind.to_string());
+
+                    if publish_tracks.is_empty() {
+                        debug!("{} {} publish track len 0 , probably offline", stream, id);
+                        recv = virtual_sender.subscribe();
+                        let _ = sender.replace_track(None).await;
+                        track = None;
+                        pre_rid = None;
+
+                        if current_rid.is_some() && current_rid.cloned().unwrap() != constant::RID_DISABLE {
+                            track_binding_publish_rid.remove(&kind.to_string());
+                        }
+                        continue;
+                    }
+
+                    if track.is_some() {
+                        continue;
+                    }
+
+                    if current_rid.is_some() && current_rid.cloned().unwrap() == constant::RID_DISABLE {
+                        continue;
+                    }
+
+                    for publish_track in publish_tracks.iter() {
+                        if publish_track.kind() != kind {
                             continue;
                         }
-                        if track.is_some(){
-                            continue;
-                        }
-                        if current_rid.is_some() && current_rid.cloned().unwrap() == constant::RID_DISABLE {
-                           continue;
-                        }
-                        for publish_track in publish_tracks.iter() {
-                              if publish_track.kind != kind {
-                                continue;
+
+                        let new_track = Arc::new(TrackLocalStaticRTP::new(
+                            match publish_track {
+                                PublishTrackRemote::Real { track, .. } => track.codec().capability,
+                                #[cfg(feature = "source")]
+                                PublishTrackRemote::Virtual(v) => v.codec_params.capability.clone(),
+                            },
+                            "webrtc".to_string(),
+                            format!("{}-{}", "webrtc", kind),
+                        ));
+
+                        match sender.replace_track(Some(new_track.clone())).await {
+                            Ok(_) => {
+                                debug!("[{}] [{}] {} track replace ok", stream, id, kind);
+                                recv = publish_track.subscribe();
+                                track = Some(new_track);
+
+                                let ssrc = match publish_track {
+                                    PublishTrackRemote::Real { track, .. } => track.ssrc(),
+                                    #[cfg(feature = "source")]
+                                    PublishTrackRemote::Virtual(v) => v.ssrc(),
+                                };
+
+                                let _ = forward_channel.publish_rtcp_sender.send((
+                                    RtcpMessage::PictureLossIndication,
+                                    ssrc,
+                                ));
+
+                                track_binding_publish_rid.insert(kind.to_string(), publish_track.rid().to_string());
                             }
-                                    let new_track= Arc::new(
-                                        TrackLocalStaticRTP::new(publish_track.track.clone().codec().capability,"webrtc".to_string(),format!("{}-{}","webrtc",kind))
-                                    );
-                                    match sender.replace_track(Some(new_track.clone())).await {
-                                     Ok(_) => {
-                                        debug!("[{}] [{}] {} track replace ok", stream, id,kind);
-                                        recv = publish_track.subscribe();
-                                        track = Some(new_track);
-                                        let _ = forward_channel.publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc()));
-                                        track_binding_publish_rid.insert(kind.clone().to_string(), publish_track.rid.clone());
-                                    }
-                                     Err(e) => {
-                                        debug!("[{}] [{}] {} track replace err: {}", stream, id,kind, e);
-                                    }};
-                                     break;
-                       }
+                            Err(e) => {
+                                debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
+                            }
+                        }
+                        break;
+                    }
                 }
+
                 rtp_result = recv.recv() => {
                     trace!("Received RTP packet, sequence: {}", sequence_number);
+
                     match rtp_result {
                         Ok(packet) => {
                             match track {
-                                None => {
-                                    continue;
-                                }
+                                None => continue,
                                 Some(ref track) => {
                                     let mut packet = packet.as_ref().clone();
                                     packet.header.sequence_number = sequence_number;
+
                                     if let Err(err) = track.write_rtp(&packet).await {
-                                        debug!("[{}] [{}] {} track write err: {}", stream, id,kind, err);
+                                        debug!("[{}] [{}] {} track write err: {}", stream, id, kind, err);
                                         break;
                                     }
                                     sequence_number = sequence_number.wrapping_add(1);
@@ -187,47 +217,54 @@ impl SubscribeRTCPeerConnection {
                             }
                         }
                         Err(err) => {
-                            debug!("[{}] [{}] {} rtp receiver err: {}", stream, id, kind,err);
+                            debug!("[{}] [{}] {} rtp receiver err: {}", stream, id, kind, err);
                         }
                     }
                 }
+
                 select_layer_result = forward_channel.select_layer_recv.recv() => {
                     match select_layer_result {
                         Ok(select_layer_body) => {
                             if select_layer_body.0 != kind {
                                 continue;
-                            };
-                             let select_rid = select_layer_body.1;
-                             let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
-                             let publish_tracks =  publish_tracks.read().await;
-                             let current_rid = track_binding_publish_rid.get(&kind.to_string()).cloned();
-                             if current_rid == Some(select_rid.clone()){
+                            }
+
+                            let select_rid = select_layer_body.1;
+                            let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
+                            let publish_tracks = publish_tracks.read().await;
+                            let current_rid = track_binding_publish_rid.get(&kind.to_string()).cloned();
+
+                            if current_rid == Some(select_rid.clone()) {
                                 continue;
-                             }
-                            let new_rid = match &current_rid{
-                                None => {
-                                    select_rid.clone()
-                                }
+                            }
+
+                            let new_rid = match &current_rid {
+                                None => select_rid.clone(),
                                 Some(current_rid) => {
-                                    if current_rid == constant::RID_DISABLE && select_rid == constant::RID_ENABLE{
-                                        track_binding_publish_rid.remove(&kind.clone().to_string());
-                                        match &pre_rid{
+                                    if current_rid == constant::RID_DISABLE && select_rid == constant::RID_ENABLE {
+                                        track_binding_publish_rid.remove(&kind.to_string());
+
+                                        match &pre_rid {
                                             None => {
-                                                let next_rid = publish_tracks.iter().filter(|t|t.kind==kind).map(|t|t.rid.clone()).next();
-                                                if next_rid.is_none(){
+                                                let next_rid = publish_tracks
+                                                    .iter()
+                                                    .filter(|t| t.kind() == kind)
+                                                    .map(|t| t.rid().to_string())
+                                                    .next();
+
+                                                if next_rid.is_none() {
                                                     continue;
                                                 }
                                                 next_rid.unwrap()
                                             }
-                                            Some(pre_rid) => {
-                                                pre_rid.clone()
-                                            }
+                                            Some(pre_rid) => pre_rid.clone(),
                                         }
-                                    }else{
+                                    } else {
                                         select_rid.clone()
                                     }
                                 }
                             };
+
                             if new_rid == constant::RID_DISABLE {
                                 if let Some(rid) = current_rid {
                                     recv = virtual_sender.subscribe();
@@ -235,38 +272,61 @@ impl SubscribeRTCPeerConnection {
                                     track = None;
                                     pre_rid = Some(rid);
                                 }
-                                track_binding_publish_rid.insert(kind.clone().to_string(), new_rid);
+                                track_binding_publish_rid.insert(kind.to_string(), new_rid);
                                 continue;
-                            };
-                            for  publish_track in publish_tracks.iter() {
-                                if publish_track.kind == RTPCodecType::Video && (publish_track.rid == new_rid || new_rid == constant::RID_ENABLE) {
-                                      let new_track= Arc::new(
-                                        TrackLocalStaticRTP::new(publish_track.track.clone().codec().capability,"webrtc".to_string(),format!("{}-{}","webrtc",kind))
-                                    );
+                            }
+
+                            for publish_track in publish_tracks.iter() {
+                                if publish_track.kind() == RTPCodecType::Video
+                                    && (publish_track.rid() == new_rid || new_rid == constant::RID_ENABLE)
+                                {
+                                    let new_track = Arc::new(TrackLocalStaticRTP::new(
+                                        match publish_track {
+                                            PublishTrackRemote::Real { track, .. } => track.codec().capability,
+                                            #[cfg(feature = "source")]
+                                            PublishTrackRemote::Virtual(v) => v.codec_params.capability.clone(),
+                                        },
+                                        "webrtc".to_string(),
+                                        format!("{}-{}", "webrtc", kind),
+                                    ));
+
                                     match sender.replace_track(Some(new_track.clone())).await {
-                                     Ok(_) => {
-                                        debug!("[{}] [{}] {} track replace ok", stream, id,kind);
-                                        recv = publish_track.subscribe();
-                                        track = Some(new_track);
-                                        let _ = forward_channel.publish_rtcp_sender.send((RtcpMessage::PictureLossIndication, publish_track.track.ssrc())).unwrap();
-                                        track_binding_publish_rid.insert(kind.clone().to_string(), new_rid.clone());
-                                        info!("[{}] [{}] {} select layer to {}", stream, id, kind,new_rid);
+                                        Ok(_) => {
+                                            debug!("[{}] [{}] {} track replace ok", stream, id, kind);
+                                            recv = publish_track.subscribe();
+                                            track = Some(new_track);
+
+                                            let ssrc = match publish_track {
+                                                PublishTrackRemote::Real { track, .. } => track.ssrc(),
+                                                #[cfg(feature = "source")]
+                                                PublishTrackRemote::Virtual(v) => v.ssrc(),
+                                            };
+
+                                            let _ = forward_channel
+                                                .publish_rtcp_sender
+                                                .send((RtcpMessage::PictureLossIndication, ssrc))
+                                                .unwrap();
+
+                                            track_binding_publish_rid.insert(kind.to_string(), new_rid.clone());
+                                            info!("[{}] [{}] {} select layer to {}", stream, id, kind, new_rid);
+                                        }
+                                        Err(e) => {
+                                            debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
+                                        }
                                     }
-                                     Err(e) => {
-                                        debug!("[{}] [{}] {} track replace err: {}", stream, id,kind, e);
-                                    }};
                                     break;
                                 }
                             }
                         }
                         Err(e) => {
-                            debug!("select_layer_recv err : {:?}",e);
-                            break ;
+                            debug!("select_layer_recv err : {:?}", e);
+                            break;
                         }
                     }
                 }
             }
         }
+
         info!("[{}] [{}] {} down", stream, id, kind);
     }
 
@@ -289,29 +349,38 @@ impl SubscribeRTCPeerConnection {
             match sender.read_rtcp().await {
                 Ok((packets, _)) => {
                     let track_binding_publish_rid = track_binding_publish_rid.read().await;
-                    let publish_rid = match track_binding_publish_rid.get(&kind.clone().to_string())
-                    {
-                        None => {
-                            continue;
-                        }
+                    let publish_rid = match track_binding_publish_rid.get(&kind.to_string()) {
+                        None => continue,
                         Some(rid) => rid,
                     };
+
                     for packet in packets {
                         if let Some(msg) = RtcpMessage::from_rtcp_packet(packet) {
                             let publish_tracks = publish_tracks.read().await;
                             for publish_track in publish_tracks.iter() {
-                                if publish_track.kind == kind
-                                    && &publish_track.rid == publish_rid
-                                    && let Err(_err) =
-                                        publish_rtcp_sender.send((msg, publish_track.track.ssrc()))
+                                if publish_track.kind() == kind
+                                    && publish_track.rid() == publish_rid
                                 {
-                                    return;
+                                    let ssrc = match publish_track {
+                                        PublishTrackRemote::Real { track, .. } => track.ssrc(),
+                                        #[cfg(feature = "source")]
+                                        PublishTrackRemote::Virtual(v) => v.ssrc(),
+                                    };
+
+                                    if let Err(e) = publish_rtcp_sender.send((msg, ssrc)) {
+                                        error!(
+                                            "Failed to send RTCP message (kind: {:?}, ssrc: {}): {}",
+                                            kind, ssrc, e
+                                        );
+                                        return;
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                Err(_err) => {
+                Err(e) => {
+                    debug!("RTCP read error for {:?}: {}", kind, e);
                     return;
                 }
             }
