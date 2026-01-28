@@ -2,12 +2,14 @@ use anyhow::Result;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct UdpMessage {
     pub data: Vec<u8>,
     pub addr: SocketAddr,
+    pub timestamp: Instant,
 }
 
 pub struct UdpServer {
@@ -94,6 +96,7 @@ impl UdpServer {
         Ok(UdpMessage {
             data: buffer,
             addr,
+            timestamp: Instant::now(),
         })
     }
 }

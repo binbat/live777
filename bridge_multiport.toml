@@ -1,0 +1,18 @@
+[udp]
+listen = "0.0.0.0"
+port = 8888
+# Target addresses for different message types
+target_addresses = [
+    "127.0.0.1:8888",  # Media control
+    "127.0.0.1:8890",  # PTZ control  
+    "127.0.0.1:8892"   # General control
+]
+
+[liveion]
+url = "http://localhost:7777"
+stream = "webcontrol"
+
+[bridge]
+reconnect_interval = 5
+max_message_size = 16384
+enable_logging = true

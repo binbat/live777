@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>工作的多端口控制 - DataChannel消息路由</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #4a5568;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #718096;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        
+        .connection-status {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background: #f7fafc;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-connected { background-color: #48bb78; }
+        .status-disconnected { background-color: #f56565; }
+        .status-connecting { background-color: #ed8936; }
+        
+        .control-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .control-panel {
+            background: #f7fafc;
+            border-radius: 10px;
+            padding: 25px;
+            border: 2px solid #e2e8f0;
+        }
+        
+        .control-panel h3 {
+            margin-top: 0;
+            color: #2d3748;
+            border-bottom: 2px solid #4299e1;
+            padding-bottom: 10px;
+        }
+        
+        .video-container {
+            background: #000;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #videoElement {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 8px;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            margin: 5px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        
+        .btn:disabled {
+            background: #a0aec0;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .btn-ptz {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            min-width: 80px;
+            min-height: 50px;
+        }
+        
+        .btn-media {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+        
+        .btn-general {
+            background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+        }
+        
+        .ptz-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin: 20px 0;
+            max-width: 240px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .message-log {
+            background: #1a202c;
+            color: #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        
+        .log-entry {
+            margin-bottom: 5px;
+        }
+        
+        .log-ptz { color: #f093fb; }
+        .log-media { color: #4facfe; }
+        .log-general { color: #43e97b; }
+        .log-datachannel { color: #48bb78; }
+        .log-error { color: #f56565; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 工作的多端口控制系统</h1>
+        <p class="subtitle">通过DataChannel发送，服务端路由到不同UDP端口</p>
+        
+        <div class="connection-status">
+            <span class="status-indicator status-disconnected" id="statusIndicator"></span>
+            <span id="connectionStatus">未连接</span>
+            <button class="btn" id="connectBtn" onclick="toggleConnection()">连接</button>
+        </div>
+        
+        <div class="control-section">
+            <div class="control-panel">
+                <h3>📹 视频流</h3>
+                <div class="video-container">
+                    <video id="videoElement" autoplay muted playsinline style="display: none;"></video>
+                    <div id="videoPlaceholder">点击"连接"开始视频流</div>
+                </div>
+            </div>
+            
+            <div class="control-panel">
+                <h3>🎮 云台控制 (路由到UDP 8890)</h3>
+                <div class="ptz-grid">
+                    <div></div>
+                    <button class="btn btn-ptz" onclick="sendPTZCommand('tilt', 'up')">↑</button>
+                    <div></div>
+                    <button class="btn btn-ptz" onclick="sendPTZCommand('pan', 'left')">←</button>
+                    <button class="btn btn-ptz" onclick="sendPTZCommand('stop', '')">停</button>
+                    <button class="btn btn-ptz" onclick="sendPTZCommand('pan', 'right')">→</button>
+                    <div></div>
+                    <button class="btn btn-ptz" onclick="sendPTZCommand('tilt', 'down')">↓</button>
+                    <div></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="control-section">
+            <div class="control-panel">
+                <h3>🎥 媒体控制 (路由到UDP 8888)</h3>
+                <div style="text-align: center;">
+                    <button class="btn btn-media" onclick="sendMediaCommand('start_stream', 'high')">开始高清流</button>
+                    <button class="btn btn-media" onclick="sendMediaCommand('start_stream', 'medium')">开始标清流</button>
+                    <button class="btn btn-media" onclick="sendMediaCommand('stop_stream', '')">停止流</button>
+                </div>
+                <div style="text-align: center; margin-top: 10px;">
+                    <button class="btn btn-media" onclick="sendMediaCommand('set_bitrate', '2000')">设置码率 2Mbps</button>
+                    <button class="btn btn-media" onclick="sendMediaCommand('set_fps', '30')">设置帧率 30fps</button>
+                </div>
+            </div>
+            
+            <div class="control-panel">
+                <h3>⚙️ 通用控制 (路由到UDP 8892)</h3>
+                <div style="text-align: center;">
+                    <button class="btn btn-general" onclick="sendGeneralCommand('status', '')">查询状态</button>
+                    <button class="btn btn-general" onclick="sendGeneralCommand('ping', '')">连接测试</button>
+                    <button class="btn btn-general" onclick="sendGeneralCommand('reset', '')">重置系统</button>
+                </div>
+                <div style="text-align: center; margin-top: 10px;">
+                    <button class="btn btn-general" onclick="sendGeneralCommand('save_config', '')">保存配置</button>
+                    <button class="btn btn-general" onclick="sendGeneralCommand('load_config', '')">加载配置</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="control-panel">
+            <h3>📊 消息日志</h3>
+            <div id="messageLog" class="message-log"></div>
+            <div style="margin-top: 10px;">
+                <button class="btn" onclick="clearLog()">清空日志</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let pc = null;
+        let dataChannel = null;
+        let isConnected = false;
+        
+        function logMessage(message, type = 'general') {
+            const log = document.getElementById('messageLog');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        function updateConnectionStatus(status, connected) {
+            const indicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('connectionStatus');
+            const connectBtn = document.getElementById('connectBtn');
+            
+            indicator.className = `status-indicator status-${connected ? 'connected' : (status === '连接中...' ? 'connecting' : 'disconnected')}`;
+            statusText.textContent = status;
+            connectBtn.textContent = connected ? '断开连接' : '连接';
+            connectBtn.disabled = status === '连接中...';
+            isConnected = connected;
+        }
+        
+        async function toggleConnection() {
+            if (isConnected) {
+                disconnect();
+            } else {
+                await connect();
+            }
+        }
+        
+        async function connect() {
+            try {
+                updateConnectionStatus('连接中...', false);
+                logMessage('正在连接到liveion服务器 (WHIP发布者模式)...', 'datachannel');
+                
+                // Create peer connection
+                pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+                
+                // Create data channel
+                dataChannel = pc.createDataChannel("control");
+                
+                dataChannel.onopen = () => {
+                    logMessage('DataChannel已打开 - 准备发送控制消息', 'datachannel');
+                };
+                
+                dataChannel.onclose = () => {
+                    logMessage('DataChannel已关闭', 'datachannel');
+                };
+                
+                dataChannel.onerror = (error) => {
+                    logMessage(`DataChannel错误: ${error}`, 'error');
+                };
+                
+                dataChannel.onmessage = (event) => {
+                    try {
+                        const message = new TextDecoder().decode(event.data);
+                        logMessage(`收到DataChannel消息: ${message}`, 'datachannel');
+                    } catch (e) {
+                        logMessage(`收到DataChannel二进制消息: ${event.data.byteLength} 字节`, 'datachannel');
+                    }
+                };
+                
+                // Add transceivers for WHIP (as publisher)
+                pc.addTransceiver('video', { direction: 'sendonly' });
+                pc.addTransceiver('audio', { direction: 'sendonly' });
+                
+                // Handle incoming streams (though we're a publisher)
+                pc.ontrack = (event) => {
+                    const videoElement = document.getElementById('videoElement');
+                    const placeholder = document.getElementById('videoPlaceholder');
+                    
+                    if (event.streams && event.streams[0]) {
+                        videoElement.srcObject = event.streams[0];
+                        videoElement.style.display = 'block';
+                        placeholder.style.display = 'none';
+                        logMessage('视频流已接收', 'datachannel');
+                    }
+                };
+                
+                // Create offer
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                // Send offer to WHIP endpoint (as publisher)
+                const response = await fetch('http://localhost:7777/whip/webcontrol', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/sdp',
+                    },
+                    body: offer.sdp
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`WHIP请求失败: ${response.status}`);
+                }
+                
+                const answerSdp = await response.text();
+                await pc.setRemoteDescription({
+                    type: 'answer',
+                    sdp: answerSdp
+                });
+                
+                updateConnectionStatus('已连接', true);
+                logMessage('成功连接到liveion服务器', 'datachannel');
+                logMessage('多端口路由架构已激活:', 'general');
+                logMessage('- PTZ控制消息将路由到UDP端口8890', 'ptz');
+                logMessage('- 媒体控制消息将路由到UDP端口8888', 'media');
+                logMessage('- 通用控制消息将路由到UDP端口8892', 'general');
+                
+            } catch (error) {
+                updateConnectionStatus('连接失败', false);
+                logMessage(`连接错误: ${error.message}`, 'error');
+                console.error('Connection error:', error);
+            }
+        }
+        
+        function disconnect() {
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            
+            dataChannel = null;
+            
+            const videoElement = document.getElementById('videoElement');
+            const placeholder = document.getElementById('videoPlaceholder');
+            videoElement.style.display = 'none';
+            placeholder.style.display = 'block';
+            placeholder.textContent = '点击"连接"开始视频流';
+            
+            updateConnectionStatus('未连接', false);
+            logMessage('已断开与liveion服务器的连接', 'datachannel');
+        }
+        
+        // PTZ控制 - 添加路由标记
+        function sendPTZCommand(action, direction) {
+            if (!isConnected || !dataChannel || dataChannel.readyState !== 'open') {
+                logMessage('❌ 错误: DataChannel未连接', 'error');
+                return;
+            }
+            
+            const message = {
+                message_type: 'ptz_control',  // 路由标记
+                action: action,
+                direction: direction,
+                speed: 50,
+                timestamp: Date.now()
+            };
+            
+            try {
+                const messageStr = JSON.stringify(message);
+                dataChannel.send(messageStr);
+                logMessage(`🎮 PTZ命令已发送 (路由到8890): ${messageStr}`, 'ptz');
+            } catch (error) {
+                logMessage(`❌ PTZ命令发送失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 媒体控制 - 添加路由标记
+        function sendMediaCommand(command, param) {
+            if (!isConnected || !dataChannel || dataChannel.readyState !== 'open') {
+                logMessage('❌ 错误: DataChannel未连接', 'error');
+                return;
+            }
+            
+            const message = {
+                message_type: 'media_control',  // 路由标记
+                type: 'media_control',
+                command: command,
+                param: param,
+                timestamp: Date.now()
+            };
+            
+            try {
+                const messageStr = JSON.stringify(message);
+                dataChannel.send(messageStr);
+                logMessage(`🎥 媒体命令已发送 (路由到8888): ${messageStr}`, 'media');
+            } catch (error) {
+                logMessage(`❌ 媒体命令发送失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 通用控制 - 添加路由标记
+        function sendGeneralCommand(command, param) {
+            if (!isConnected || !dataChannel || dataChannel.readyState !== 'open') {
+                logMessage('❌ 错误: DataChannel未连接', 'error');
+                return;
+            }
+            
+            const message = {
+                message_type: 'general_control',  // 路由标记
+                command: command,
+                param: param,
+                timestamp: Date.now()
+            };
+            
+            try {
+                const messageStr = JSON.stringify(message);
+                dataChannel.send(messageStr);
+                logMessage(`⚙️ 通用命令已发送 (路由到8892): ${messageStr}`, 'general');
+            } catch (error) {
+                logMessage(`❌ 通用命令发送失败: ${error.message}`, 'error');
+            }
+        }
+        
+        function clearLog() {
+            const log = document.getElementById('messageLog');
+            log.innerHTML = '';
+            logMessage('日志已清空', 'general');
+        }
+        
+        // Initialize
+        logMessage('工作的多端口控制界面已加载', 'general');
+        logMessage('架构: DataChannel发送 -> 服务端路由 -> 多UDP端口', 'general');
+        logMessage('消息类型: ptz_control(8890), media_control(8888), general_control(8892)', 'general');
+    </script>
+</body>
+</html>

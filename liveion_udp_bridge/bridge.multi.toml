@@ -1,0 +1,86 @@
+[udp]
+listen = "0.0.0.0"
+
+[udp.media_control]
+port = 8888
+target_addresses = ["127.0.0.1:8889"]
+enabled = true
+max_message_size = 16384
+
+[udp.ptz_control]
+port = 8890
+target_addresses = ["127.0.0.1:8891"]
+enabled = true
+max_message_size = 16384
+
+[udp.general_control]
+port = 8892
+target_addresses = ["127.0.0.1:8893"]
+enabled = true
+max_message_size = 16384
+
+[udp.legacy]
+port = 8888
+target_addresses = ["127.0.0.1:8889"]
+enabled = false
+max_message_size = 16384
+
+[liveion]
+url = "http://localhost:7777"
+
+[[liveion.streams]]
+name = "camera"
+channels = [
+    "media_control",
+    "ptz_control",
+]
+
+[liveion.streams.datachannel_labels]
+media_control = "camera_media"
+ptz_control = "camera_ptz"
+
+[[liveion.streams]]
+name = "webcontrol"
+channels = [
+    "ptz_control",
+    "general_control",
+]
+
+[liveion.streams.datachannel_labels]
+
+[bridge]
+reconnect_interval = 5
+max_message_size = 16384
+enable_logging = true
+queue_size = 1000
+worker_threads = 4
+
+[routing]
+filter_rules = []
+
+[[routing.detection_rules]]
+name = "ptz_action"
+message_type = "ptz_control"
+json_path = "$.action"
+keywords = [
+    "pan",
+    "tilt",
+    "zoom",
+    "preset",
+    "stop",
+]
+
+[[routing.detection_rules]]
+name = "media_control"
+message_type = "media_control"
+json_path = "$.type"
+keywords = [
+    "media_control",
+    "stream_control",
+    "codec_control",
+]
+
+[routing.priority_config]
+ptz_control = 1
+media_control = 2
+general_control = 3

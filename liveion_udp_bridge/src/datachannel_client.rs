@@ -74,13 +74,16 @@ impl DataChannelClient {
         let dc = pc.create_data_channel("control", None).await?;
         println!("DataChannel created successfully, ID: {:?}, Label: {}", dc.id(), dc.label());
         let dc_clone = dc.clone();
+        let dc_clone_for_loop = dc.clone();
         
         // Set up data channel handlers
         let dc_id = dc.id();
         dc.on_open(Box::new(move || {
             info!("DataChannel opened");
             println!("DataChannel opened [ID: {:?}]", dc_id);
+            println!("   - Label: {}", dc_clone.label());
             println!("   - Ready to receive messages");
+            println!("   - ReadyState: {:?}", dc_clone.ready_state());
             Box::pin(async {})
         }));
         
@@ -100,7 +103,7 @@ impl DataChannelClient {
         let inbound_tx_server = inbound_tx.clone();
         pc.on_data_channel(Box::new(move |d| {
             let tx = inbound_tx_server.clone();
-            println!("Received server DataChannel:");
+            println!("🎉 Received server DataChannel:");
             println!("   - Label: {}", d.label());
             println!("   - ID: {:?}", d.id());
             println!("   - ReadyState: {:?}", d.ready_state());
@@ -108,8 +111,8 @@ impl DataChannelClient {
             let d_clone = d.clone();
             let d_id = d.id();
             d.on_open(Box::new(move || {
-                println!("[Server DC ID:{:?}] opened: {}", d_id, d_clone.label());
-                println!("   - Ready to receive messages");
+                println!("✅ [Server DC ID:{:?}] opened: {}", d_id, d_clone.label());
+                println!("   - Ready to receive messages from web interface");
                 Box::pin(async {})
             }));
             
@@ -117,14 +120,16 @@ impl DataChannelClient {
             d.on_message(Box::new(move |msg| {
                 let tx_msg = tx.clone();
                 let data = msg.data.to_vec();
-                println!("[Server DC ID:{:?}] received message {} bytes", d_msg_id, data.len());
-                println!("   Content: {:?}", String::from_utf8_lossy(&data));
+                println!("🎉 [Server DC ID:{:?}] RECEIVED MESSAGE {} bytes", d_msg_id, data.len());
+                println!("   📄 Content: {:?}", String::from_utf8_lossy(&data));
+                println!("   🕒 Timestamp: {:?}", std::time::SystemTime::now());
+                println!("   📡 Forwarding to bridge handler...");
                 tokio::spawn(async move {
                     if let Err(e) = tx_msg.send(data).await {
                         error!("Failed to forward server DataChannel message: {}", e);
-                        println!("[Server DC] Forward failed: {}", e);
+                        println!("❌ [Server DC] Forward failed: {}", e);
                     } else {
-                        println!("[Server DC] Message forwarded to bridge handler");
+                        println!("✅ [Server DC] Message forwarded to bridge handler successfully");
                     }
                 });
                 Box::pin(async {})
@@ -132,13 +137,13 @@ impl DataChannelClient {
             
             let d_err_id = d.id();
             d.on_error(Box::new(move |err| {
-                println!("[Server DC ID:{:?}] error: {}", d_err_id, err);
+                println!("❌ [Server DC ID:{:?}] error: {}", d_err_id, err);
                 Box::pin(async {})
             }));
             
             let d_close_id = d.id();
             d.on_close(Box::new(move || {
-                println!("[Server DC ID:{:?}] closed", d_close_id);
+                println!("🔌 [Server DC ID:{:?}] closed", d_close_id);
                 Box::pin(async {})
             }));
             
@@ -146,19 +151,20 @@ impl DataChannelClient {
         }));
         
         let inbound_tx_msg = inbound_tx.clone();
-        let inbound_tx_msg = inbound_tx.clone();
         let dc_msg_id = dc.id();
         dc.on_message(Box::new(move |msg| {
             let tx = inbound_tx_msg.clone();
             let data = msg.data.to_vec();
-            println!("[Client DC ID:{:?}] received message {} bytes", dc_msg_id, data.len());
-            println!("   Content: {:?}", String::from_utf8_lossy(&data));
+            println!("🎉 [Client DC ID:{:?}] RECEIVED MESSAGE {} bytes", dc_msg_id, data.len());
+            println!("   📄 Content: {:?}", String::from_utf8_lossy(&data));
+            println!("   🕒 Timestamp: {:?}", std::time::SystemTime::now());
+            println!("   📡 Forwarding to bridge handler...");
             tokio::spawn(async move {
                 if let Err(e) = tx.send(data).await {
                     error!("Failed to forward DataChannel message: {}", e);
-                    println!("Forward failed: {}", e);
+                    println!("❌ [Client DC] Forward failed: {}", e);
                 } else {
-                    println!("[Client DC] Message forwarded to bridge handler");
+                    println!("✅ [Client DC] Message forwarded to bridge handler successfully");
                 }
             });
             Box::pin(async {})
@@ -218,9 +224,9 @@ impl DataChannelClient {
         loop {
             tokio::select! {
                 Some(data) = outbound_rx.recv() => {
-                    if dc_clone.ready_state() == RTCDataChannelState::Open {
+                    if dc_clone_for_loop.ready_state() == RTCDataChannelState::Open {
                         let data_len = data.len();
-                        if let Err(e) = dc_clone.send(&data.into()).await {
+                        if let Err(e) = dc_clone_for_loop.send(&data.into()).await {
                             error!("Failed to send DataChannel message: {}", e);
                             break;
                         } else {
@@ -232,13 +238,13 @@ impl DataChannelClient {
                 }
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {
                     // Send keepalive
-                    if dc_clone.ready_state() == RTCDataChannelState::Open {
+                    if dc_clone_for_loop.ready_state() == RTCDataChannelState::Open {
                         let keepalive = json!({
                             "action": "keepalive",
                             "timestamp": chrono::Utc::now().timestamp_millis()
                         }).to_string();
                         
-                        if let Err(e) = dc_clone.send(&keepalive.into_bytes().into()).await {
+                        if let Err(e) = dc_clone_for_loop.send(&keepalive.into_bytes().into()).await {
                             error!("Failed to send keepalive: {}", e);
                             break;
                         }

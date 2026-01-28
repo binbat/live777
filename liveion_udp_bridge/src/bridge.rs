@@ -1,4 +1,5 @@
 use anyhow::Result;
+use tokio::time::Instant;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
@@ -160,25 +161,85 @@ impl BridgeState {
             }
         };
         
-        if self.config.bridge.enable_logging {
-            debug!("DataChannel received: {}", message_str);
-        }
+        println!("🎯 [Bridge Router] Processing DataChannel message: {}", message_str);
         
-        // Try to parse as JSON
+        // Try to parse as JSON for message routing
         match serde_json::from_str::<serde_json::Value>(&message_str) {
             Ok(json_msg) => {
-                if self.config.bridge.enable_logging {
-                    debug!("Parsed DataChannel JSON: {}", json_msg);
+                // Check for message_type field for routing
+                if let Some(message_type) = json_msg.get("message_type").and_then(|v| v.as_str()) {
+                    println!("📍 [Message Router] Detected message type: {}", message_type);
+                    self.route_message_by_type(message_type, message_str.into_bytes(), udp_outbound_tx).await;
+                } else {
+                    // No message_type, check for legacy structured messages
+                    self.handle_structured_datachannel_message(json_msg, udp_outbound_tx).await;
                 }
-                self.handle_structured_datachannel_message(json_msg, udp_outbound_tx).await;
             }
             Err(_) => {
-                // Not JSON, treat as plain text command
-                if self.config.bridge.enable_logging {
-                    debug!("Received plain text from DataChannel: {}", message_str);
-                }
-                self.broadcast_to_all_udp_clients(message_str.into_bytes(), udp_outbound_tx).await;
+                // Not JSON, treat as plain text command - send to default port
+                println!("📝 [Message Router] Plain text message, routing to default port 8888");
+                self.send_to_specific_port(message_str.into_bytes(), 8888, udp_outbound_tx).await;
             }
+        }
+    }
+    
+    async fn route_message_by_type(
+        &self,
+        message_type: &str,
+        data: Vec<u8>,
+        udp_outbound_tx: &mpsc::Sender<UdpMessage>,
+    ) {
+        let target_port = match message_type {
+            "ptz_control" => {
+                println!("🎮 [PTZ Router] Routing PTZ control message to UDP port 8890");
+                8890
+            }
+            "media_control" => {
+                println!("🎥 [Media Router] Routing media control message to UDP port 8888");
+                8888
+            }
+            "general_control" => {
+                println!("⚙️ [General Router] Routing general control message to UDP port 8892");
+                8892
+            }
+            _ => {
+                println!("❓ [Unknown Router] Unknown message type '{}', routing to default port 8888", message_type);
+                8888
+            }
+        };
+        
+        self.send_to_specific_port(data, target_port, udp_outbound_tx).await;
+    }
+    
+    async fn send_to_specific_port(
+        &self,
+        data: Vec<u8>,
+        target_port: u16,
+        udp_outbound_tx: &mpsc::Sender<UdpMessage>,
+    ) {
+        let data_str = String::from_utf8_lossy(&data);
+        println!("📡 [Port Router] Sending {} bytes to UDP port {}", data.len(), target_port);
+        println!("   📄 Content: {}", data_str);
+        
+        // Create target address for the specific port
+        let target_addr = format!("127.0.0.1:{}", target_port);
+        
+        if let Ok(addr) = target_addr.parse::<std::net::SocketAddr>() {
+            let udp_msg = UdpMessage {
+                data,
+                addr,
+                timestamp: Instant::now(),
+            };
+            
+            if let Err(e) = udp_outbound_tx.send(udp_msg).await {
+                error!("Failed to send UDP message to port {}: {}", target_port, e);
+                println!("❌ [Port Router] Failed to send to port {}: {}", target_port, e);
+            } else {
+                println!("✅ [Port Router] Successfully sent message to UDP port {}", target_port);
+            }
+        } else {
+            error!("Invalid target address: {}", target_addr);
+            println!("❌ [Port Router] Invalid target address: {}", target_addr);
         }
     }
     
@@ -204,7 +265,11 @@ impl BridgeState {
                             .to_vec();
                         
                         info!("Sending targeted message to UDP client {}: {} bytes", target_client, data.len());
-                        let udp_msg = UdpMessage { data, addr };
+                        let udp_msg = UdpMessage { 
+                            data, 
+                            addr,
+                            timestamp: Instant::now(),
+                        };
                         if let Err(e) = udp_outbound_tx.send(udp_msg).await {
                             error!("Failed to send targeted UDP message: {}", e);
                         } else {
@@ -277,6 +342,7 @@ impl BridgeState {
             let udp_msg = UdpMessage {
                 data: data.clone(),
                 addr,
+                timestamp: Instant::now(),
             };
             
             info!("Sending to known client {}: {}", client_id, addr);
@@ -296,6 +362,7 @@ impl BridgeState {
                     let udp_msg = UdpMessage {
                         data: data.clone(),
                         addr,
+                        timestamp: Instant::now(),
                     };
                     
                     info!("Sending to default target: {}", addr);

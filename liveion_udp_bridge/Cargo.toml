@@ -18,3 +18,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # WebRTC dependencies (matching liveion)
 webrtc = "0.12"
 reqwest = { version = "0.12", features = ["json"] }
+
+# Additional dependencies for multi-port architecture
+regex = "1.0"
+md5 = "0.7"
+bytes = "1.0"
