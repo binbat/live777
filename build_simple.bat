@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo Build Liveion UDP Bridge
+echo Build Liveion Multi-Port UDP Bridge
 echo ========================================
 echo.
 
@@ -46,9 +46,11 @@ if %errorlevel% equ 0 (
     
     echo.
     echo Usage:
-    echo 1. Edit configuration file: liveion_udp_bridge\bridge.toml
-    echo 2. Run program: target\release\liveion-udp-bridge.exe
-    echo 3. Or use startup script: start_complete_demo.bat
+    echo 1. Configuration file: bridge_multiport.toml (default)
+    echo 2. Run program: target\release\liveion-udp-bridge.exe -v
+    echo 3. Or use startup scripts:
+    echo    - start_hardware_integration.bat (hardware integration)
+    echo    - start_multiport_routing_demo.bat (message routing demo)
     
 ) else (
     echo.
