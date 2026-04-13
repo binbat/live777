@@ -406,7 +406,7 @@ impl SdpSource {
 
                             let packet = MediaPacket::Rtp {
                                 channel: ctx.channel,
-                                data: buf[..len].to_vec(),
+                                data: buf[..len].to_vec().into(),
                             };
 
                             if ctx.rtp_tx.send(packet).is_err() {

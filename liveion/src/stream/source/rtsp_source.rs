@@ -367,7 +367,7 @@ impl RtspSource {
 
                             let packet = MediaPacket::Rtp {
                                 channel,
-                                data,
+                                data: data.into(),
                             };
 
                             if rtp_tx.send(packet).is_err() {
