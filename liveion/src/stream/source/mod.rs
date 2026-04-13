@@ -1,11 +1,22 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
+use bytes::Bytes;
 
 #[cfg(feature = "source-rtsp")]
 mod rtsp_source;
 #[cfg(feature = "source-sdp")]
 mod sdp_source;
+
+pub mod lifecycle;
+pub mod stream_config_v2;
+pub mod h264_utils;
+pub mod source_router;
+
+#[cfg(feature = "source-rtp")]
+pub mod rtp_listener;
+#[cfg(feature = "source-libcamera")]
+pub mod libcamera_source;
 
 pub mod manager;
 
@@ -13,6 +24,8 @@ pub mod manager;
 pub use rtsp_source::RtspSource;
 #[cfg(feature = "source-sdp")]
 pub use sdp_source::SdpSource;
+#[cfg(feature = "source-libcamera")]
+pub use libcamera_source::LibcameraSource;
 
 pub use manager::SourceManager;
 
@@ -34,7 +47,7 @@ pub struct StateChangeEvent {
 
 #[derive(Debug, Clone)]
 pub enum MediaPacket {
-    Rtp { channel: u8, data: Vec<u8> },
+    Rtp { channel: u8, data: Bytes },
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +112,13 @@ pub trait StreamSource: Send + Sync {
 }
 
 pub async fn create_source_from_url(
+    url: &str,
+    config: &crate::config::SourceConfig,
+) -> Result<Box<dyn StreamSource>> {
+    source_router::create_source_extended(url, config).await
+}
+
+pub(crate) async fn create_legacy_source_from_url(
     url: &str,
     config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
