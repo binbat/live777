@@ -10,35 +10,36 @@ pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 
 # Source files
 set(SOURCES
-    main.cpp
     camera.cpp
     encoder.cpp
+    bridge_ffi.cpp
 )
 
-# Executable
-add_executable(libcamera-bridge ${SOURCES})
+# Link directories (help CMake find the sysroot libraries if needed)
+link_directories(${LIBCAMERA_LIBRARY_DIRS})
 
-# Include directories
-target_include_directories(libcamera-bridge PRIVATE
+# Static Library for Rust FFI
+add_library(cambridge STATIC ${SOURCES})
+
+target_include_directories(cambridge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${LIBCAMERA_INCLUDE_DIRS}
 )
 
-# Link libraries
-target_link_libraries(libcamera-bridge PRIVATE
+target_link_libraries(cambridge PRIVATE
     ${LIBCAMERA_LIBRARIES}
     pthread
 )
 
-# Compiler options
-target_compile_options(libcamera-bridge PRIVATE
+target_compile_options(cambridge PRIVATE
     -Wall
     -Wextra
     -Werror
     ${LIBCAMERA_CFLAGS_OTHER}
 )
 
-# Install
-install(TARGETS libcamera-bridge
-    RUNTIME DESTINATION bin
+# Install rules for the static library
+install(TARGETS cambridge
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
 )

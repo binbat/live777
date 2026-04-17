@@ -1,20 +1,22 @@
-//! Libcamera-Bridge Source.
+//! Libcamera-Bridge Source (FFI Edition).
 //!
-//! Launches the `libcamera-bridge` binary, captures its H.264 stdout,
-//! and supports sending keyframe requests via stdin (`k\n`).
+//! Direct integration with libcamera via C FFI.
+//! Eliminates process overhead and IPC latency by linking libcamera-bridge
+//! as a static library.
 
-use super::h264_utils::{AnnexBParser, H264Packetizer, NalType, parse_profile_level_id};
-use super::stream_config_v2::ExecUrlParams;
+use super::h264_utils::{H264Packetizer, AnnexBParser, parse_profile_level_id};
+use super::stream_config_v2::LibcameraUrlParams;
 use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 use tokio::sync::{RwLock, broadcast, mpsc};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{info, warn};
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int, c_void};
+use std::time::Instant;
 
+// SYNC imports with rtsp_source.rs patterns (V14.8-STABLE)
 #[cfg(feature = "source")]
 use webrtc::rtp_transceiver::RTCPFeedback;
 #[cfg(feature = "source")]
@@ -22,9 +24,50 @@ use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParam
 
 const CHANNEL_VIDEO_RTP: u8 = 0;
 
+// --- FFI Bindings ---
+
+#[repr(C)]
+struct BridgeContext { _private: [u8; 0] }
+
+/// Safety wrapper for the raw FFI pointer to allow Send/Sync crossing tokio task boundaries.
+#[derive(Clone, Copy)]
+pub struct LibcameraPtr(pub *mut BridgeContext);
+unsafe impl Send for LibcameraPtr {}
+unsafe impl Sync for LibcameraPtr {}
+
+// V14.8: SYNC WITH bridge_ffi.cpp (5 arguments)
+type NALCallbackFFI = unsafe extern "C" fn(data: *const u8, size: usize, is_keyframe: c_int, timestamp: u64, user_data: *mut c_void);
+
+unsafe extern "C" {
+    fn bridge_init(
+        width: c_int, 
+        height: c_int, 
+        fps: c_int, 
+        bitrate: c_int, 
+        camera_id: c_int,
+        rotation: c_int,
+        hflip: c_int,
+        vflip: c_int
+    ) -> *mut BridgeContext;
+
+    fn bridge_set_callback(ctx: *mut BridgeContext, callback: NALCallbackFFI, user_data: *mut c_void);
+    fn bridge_start(ctx: *mut BridgeContext) -> bool;
+    fn bridge_stop(ctx: *mut BridgeContext);
+    fn bridge_request_keyframe(ctx: *mut BridgeContext);
+    fn bridge_get_error(ctx: *mut BridgeContext) -> *const c_char;
+    fn bridge_free(ctx: *mut BridgeContext);
+}
+
+/// Raw message from C++ callback
+struct NALMessage {
+    data: Vec<u8>,
+    is_keyframe: bool,
+    timestamp_us: u64,
+}
+
 pub struct LibcameraSource {
     config: InternalSourceConfig,
-    params: ExecUrlParams,
+    params: LibcameraUrlParams,
     state: Arc<RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -32,26 +75,23 @@ pub struct LibcameraSource {
     shutdown_tx: Option<broadcast::Sender<()>>,
     #[cfg(feature = "source")]
     dynamic_profile: Arc<RwLock<Option<String>>>,
-    stdin_tx: mpsc::UnboundedSender<String>,
-    stdin_rx: Option<mpsc::UnboundedReceiver<String>>,
+    
+    // FFI Bridge handle
+    bridge_ctx: Option<LibcameraPtr>,
+    // Holding the raw pointer to prevent Sender from being dropped prematurely
+    _user_data_holder: Option<*mut c_void>,
 }
 
-impl LibcameraSource {
-    /// Create a new LibcameraSource from a URL.
-    pub fn from_url(url: &str, config: &crate::config::SourceConfig) -> Result<Self> {
-        // We use the specialized libcamera parser
-        let mut params = super::stream_config_v2::parse_libcamera_url(url)?;
-        
-        // If the path is empty or just "libcamera-bridge", try to find it in the expected path
-        if params.executable.is_empty() || params.executable == "libcamera-bridge" {
-            params.executable = "/home/hao/livesrc/libcamera-bridge/build/libcamera-bridge".to_string();
-        }
+unsafe impl Send for LibcameraSource {}
+unsafe impl Sync for LibcameraSource {}
 
+impl LibcameraSource {
+    pub fn from_url(url: &str, config: &crate::config::SourceConfig) -> Result<Self> {
+        let params = super::stream_config_v2::parse_libcamera_url(url)?;
         let internal_config = InternalSourceConfig::from_config(config);
 
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
-        let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
 
         Ok(Self {
             config: internal_config,
@@ -63,8 +103,8 @@ impl LibcameraSource {
             shutdown_tx: None,
             #[cfg(feature = "source")]
             dynamic_profile: Arc::new(RwLock::new(None)),
-            stdin_tx,
-            stdin_rx: Some(stdin_rx),
+            bridge_ctx: None,
+            _user_data_holder: None,
         })
     }
 
@@ -89,96 +129,22 @@ impl LibcameraSource {
         }
     }
 
-    /// Process stdout loop
-    async fn stdout_task(
-        stream_id: String,
-        mut stdout: tokio::process::ChildStdout,
-        params: ExecUrlParams,
-        rtp_tx: broadcast::Sender<MediaPacket>,
-        state: Arc<RwLock<StreamSourceState>>,
-        state_tx: broadcast::Sender<StateChangeEvent>,
-        mut shutdown_rx: broadcast::Receiver<()>,
-        #[cfg(feature = "source")] dynamic_profile: Arc<RwLock<Option<String>>>,
-    ) {
-        info!("[{}] libcamera stdout task started", stream_id);
-
-        let mut annexb = AnnexBParser::new();
-        let mut packetizer = H264Packetizer::new(1400, params.payload_type, params.clock_rate);
+    /// The C++ callback trampoline (V14.8-SYNC)
+    unsafe extern "C" fn nal_callback(data: *const u8, size: usize, is_keyframe: c_int, timestamp: u64, user_data: *mut c_void) {
+        if user_data.is_null() { return; }
         
-        let mut buf = vec![0u8; 32 * 1024];
-        let mut _frame_count: u64 = 0;
-
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.recv() => break,
-                res = stdout.read(&mut buf) => {
-                    match res {
-                        Ok(0) => {
-                            warn!("[{}] libcamera stdout EOF", stream_id);
-                            let mut s = state.write().await;
-                            *s = StreamSourceState::Disconnected;
-                            let _ = state_tx.send(StateChangeEvent {
-                                old_state: StreamSourceState::Connected,
-                                new_state: StreamSourceState::Disconnected,
-                                error: Some("Process exited".to_string()),
-                            });
-                            break;
-                        }
-                        Ok(n) => {
-                            annexb.push(&buf[..n]);
-                            let nals = annexb.extract_nals();
-                            
-                            for nal in nals {
-                                #[cfg(feature = "source")]
-                                if nal.nal_type == NalType::Sps {
-                                    if let Some(profile) = parse_profile_level_id(&nal.data) {
-                                        let mut dp = dynamic_profile.write().await;
-                                        if dp.as_ref() != Some(&profile) {
-                                            info!("[{}] H.264 profile: {}", stream_id, profile);
-                                            *dp = Some(profile);
-                                        }
-                                    }
-                                }
-
-                                 let rtp_packets = packetizer.packetize(&nal);
-                                for packet in rtp_packets {
-                                    let _ = rtp_tx.send(MediaPacket::Rtp {
-                                        channel: CHANNEL_VIDEO_RTP,
-                                        data: packet.to_bytes(),
-                                    });
-                                }
-
-                                if nal.nal_type.is_vcl() {
-                                    _frame_count += 1;
-                                    packetizer.advance_timestamp(params.clock_rate / 30); // Assume 30 FPS
-
-                                    // Check if we should generate SDP file
-                                    if let (Some(sps), Some(_pps), Some(sprop)) = (packetizer.cached_sps(), packetizer.cached_pps(), packetizer.get_sprop_parameter_sets()) {
-                                        let profile = parse_profile_level_id(&sps).unwrap_or_else(|| "42001f".into());
-                                        let sdp_content = format!(
-                                            "v=0\no=- 0 0 IN IP4 127.0.0.1\ns=Liveion-Libcamera\nc=IN IP4 127.0.0.1\nt=0 0\nm=video 5002 RTP/AVP {}\na=rtpmap:{} H264/90000\na=fmtp:{} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={};sprop-parameter-sets={}\n",
-                                            params.payload_type, params.payload_type, params.payload_type, profile, sprop
-                                        );
-                                        
-                                        let sdp_path = format!("conf/{}.sdp", stream_id);
-                                        if !std::path::Path::new(&sdp_path).exists() {
-                                            if let Err(e) = std::fs::write(&sdp_path, sdp_content) {
-                                                error!("[{}] Failed to write SDP file: {}", stream_id, e);
-                                            } else {
-                                                info!("[{}] Automatically generated SDP file: {}", stream_id, sdp_path);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("[{}] libcamera stdout error: {}", stream_id, e);
-                            break;
-                        }
-                    }
-                }
-            }
+        // V14.8: Safety - explicitly scoped unsafe operations
+        unsafe {
+            let tx = &*(user_data as *const mpsc::UnboundedSender<NALMessage>);
+            let buf = std::slice::from_raw_parts(data, size);
+            
+            let msg = NALMessage {
+                data: buf.to_vec(),
+                is_keyframe: is_keyframe != 0,
+                timestamp_us: timestamp,
+            };
+            
+            let _ = tx.send(msg);
         }
     }
 
@@ -208,103 +174,111 @@ impl LibcameraSource {
 #[async_trait]
 impl StreamSource for LibcameraSource {
     fn stream_id(&self) -> &str { &self.config.stream_id }
-
     fn state(&self) -> StreamSourceState { *self.state.blocking_read() }
 
     async fn start(&mut self) -> Result<()> {
-        if !self.task_handles.is_empty() { anyhow::bail!("Already started"); }
+        if self.bridge_ctx.is_some() { anyhow::bail!("Already started"); }
 
-        let (shutdown_tx, _) = broadcast::channel(1);
-        self.shutdown_tx = Some(shutdown_tx.clone());
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+        self.shutdown_tx = Some(shutdown_tx);
 
-        info!("[{}] Starting libcamera-bridge: {} args: {:?}", self.config.stream_id, self.params.executable, self.params.args);
+        info!("[{}] Starting libcamera-bridge (V14.8-SYNC)", self.config.stream_id);
 
-        let mut child = Command::new(&self.params.executable)
-            .args(&self.params.args)
-            .stdout(Stdio::piped())
-            .stdin(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-
-        let stdout = child.stdout.take().unwrap();
-        let mut stdin = child.stdin.take().unwrap();
-        let mut stdin_rx = self.stdin_rx.take().ok_or_else(|| anyhow::anyhow!("Stdin receiver already taken"))?;
-
-        // Process management task
-        let stream_id = self.config.stream_id.clone();
-        let state = self.state.clone();
-        let state_tx = self.state_tx.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
+        let ctx_raw = unsafe {
+            bridge_init(self.params.width as c_int, self.params.height as c_int, self.params.fps as c_int, self.params.bitrate as c_int, self.params.camera_id as c_int, self.params.rotation as c_int, if self.params.hflip { 1 } else { 0 }, if self.params.vflip { 1 } else { 0 })
+        };
+        if ctx_raw.is_null() { anyhow::bail!("Failed to initialize libcamera bridge"); }
         
-        self.task_handles.push(tokio::spawn(async move {
-            tokio::select! {
-                status = child.wait() => {
-                    info!("[{}] Process exited: {:?}", stream_id, status);
-                    let mut s = state.write().await;
-                    *s = StreamSourceState::Disconnected;
-                    let _ = state_tx.send(StateChangeEvent {
-                        old_state: StreamSourceState::Connected,
-                        new_state: StreamSourceState::Disconnected,
-                        error: Some("Terminated".into()),
-                    });
-                }
-                _ = shutdown_rx.recv() => {
-                    let _ = child.kill().await;
-                }
-            }
-        }));
+        let ctx = LibcameraPtr(ctx_raw);
+        self.bridge_ctx = Some(ctx);
 
-        // Stdin relay & Keyframe timer task
+        let (nal_tx, mut nal_rx) = mpsc::unbounded_channel::<NALMessage>();
+        let nal_tx_box = Box::new(nal_tx);
+        let user_data_raw = Box::into_raw(nal_tx_box) as *mut c_void;
+        self._user_data_holder = Some(user_data_raw);
+
+        unsafe { bridge_set_callback(ctx.0, Self::nal_callback, user_data_raw); }
+
         let _stream_id = self.config.stream_id.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
+        let rtp_tx = self.rtp_tx.clone();
+        let params = self.params.clone();
+        #[cfg(feature = "source")]
+        let dynamic_profile = self.dynamic_profile.clone();
+
         self.task_handles.push(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            let mut packetizer = H264Packetizer::new(1400, params.payload_type, params.clock_rate);
+            let mut parser = AnnexBParser::new();
+            let start_inst = Instant::now();
+            let mut last_rtp_ts: u32 = 0;
+
             loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => break,
-                    _ = interval.tick() => {
-                        let _ = stdin.write_all(b"k\n").await;
-                        let _ = stdin.flush().await;
-                    }
-                    cmd = stdin_rx.recv() => {
-                        if let Some(c) = cmd {
-                            let _ = stdin.write_all(c.as_bytes()).await;
-                            let _ = stdin.flush().await;
+                    msg = nal_rx.recv() => {
+                        if let Some(msg) = msg {
+                            // 1. Sync Timestamp (FFI us -> RTP 90kHz)
+                            let rtp_ts = if msg.timestamp_us > 0 {
+                                (msg.timestamp_us * 9 / 100) as u32
+                            } else {
+                                (start_inst.elapsed().as_micros() * 9 / 100) as u32
+                            };
+                            
+                            // Prevent time going backwards in JitterBuffer
+                            let final_ts = if rtp_ts > last_rtp_ts { rtp_ts } else { last_rtp_ts.wrapping_add(3000) };
+                            last_rtp_ts = final_ts;
+
+                            // 2. Parse AnnexB (Handle multiple NALs in one buffer)
+                            parser.push(&msg.data);
+                            let nals = parser.extract_nals();
+                            
+                            for nal in nals {
+                                // 3. Profile detection (SPS)
+                                #[cfg(feature = "source")]
+                                if nal.nal_type == super::h264_utils::NalType::Sps {
+                                    if let Some(profile) = parse_profile_level_id(&nal.data) {
+                                        let mut dp = dynamic_profile.write().await;
+                                        if dp.as_ref() != Some(&profile) {
+                                            info!("[V14.8] SPS Profile: {}", profile);
+                                            *dp = Some(profile);
+                                        }
+                                    }
+                                }
+
+                                // 4. Packetize with real timestamp
+                                packetizer.advance_timestamp(final_ts.wrapping_sub(packetizer.get_current_timestamp()));
+                                
+                                let rtp_packets = packetizer.packetize(&nal);
+                                for packet in rtp_packets {
+                                    let _ = rtp_tx.send(MediaPacket::Rtp {
+                                        channel: CHANNEL_VIDEO_RTP,
+                                        data: packet.to_bytes(),
+                                    });
+                                }
+                            }
                         } else { break; }
                     }
                 }
             }
         }));
 
-        // Stdout task
-        let stream_id = self.config.stream_id.clone();
-        let params = self.params.clone();
-        let rtp_tx = self.rtp_tx.clone();
-        let state = self.state.clone();
-        let state_tx = self.state_tx.clone();
-        let shutdown_rx_stdout = shutdown_tx.subscribe();
-        #[cfg(feature = "source")]
-        let dynamic_profile = self.dynamic_profile.clone();
-
-        self.task_handles.push(tokio::spawn(async move {
-            {
-                let mut s = state.write().await;
-                *s = StreamSourceState::Connected;
-                let _ = state_tx.send(StateChangeEvent {
-                    old_state: StreamSourceState::Initializing,
-                    new_state: StreamSourceState::Connected,
-                    error: None,
-                });
-            }
-            Self::stdout_task(stream_id, stdout, params, rtp_tx, state, state_tx, shutdown_rx_stdout, #[cfg(feature = "source")] dynamic_profile).await;
-        }));
-
+        if unsafe { !bridge_start(ctx.0) } { 
+            let error_msg = unsafe {
+                let err = bridge_get_error(ctx.0);
+                if err.is_null() { "Unknown err".to_string() }
+                else { CStr::from_ptr(err).to_string_lossy().into_owned() }
+            };
+            self.stop().await?; 
+            anyhow::bail!("Bridge failed: {}", error_msg); 
+        }
+        self.set_state(StreamSourceState::Connected, None).await;
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
         if let Some(tx) = self.shutdown_tx.take() { let _ = tx.send(()); }
         for h in self.task_handles.drain(..) { let _ = h.await; }
+        if let Some(ctx) = self.bridge_ctx.take() { unsafe { bridge_stop(ctx.0); bridge_free(ctx.0); } }
+        if let Some(ptr) = self._user_data_holder.take() { unsafe { let _ = Box::from_raw(ptr as *mut mpsc::UnboundedSender<NALMessage>); } }
         self.set_state(StreamSourceState::Disconnected, None).await;
         Ok(())
     }
@@ -320,26 +294,25 @@ impl StreamSource for LibcameraSource {
     #[cfg(feature = "source")]
     async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let stdin_tx = self.stdin_tx.clone();
-        let stream_id = self.config.stream_id.clone();
+        let bridge_ctx = self.bridge_ctx; 
         tokio::spawn(async move {
             while let Some(data) = rx.recv().await {
-                // Try to parse RTCP to identify PLI/FIR
                 if let Ok(packets) = webrtc::rtcp::packet::unmarshal(&mut &data[..]) {
                     for packet in packets {
-                        let is_pli = packet.as_any().downcast_ref::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>().is_some();
-                        
-                        if is_pli {
-                            info!("[{}] Instant Keyframe Request (PLI received)", stream_id);
-                            let _ = stdin_tx.send("k\n".into());
+                        if packet.as_any().downcast_ref::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>().is_some() {
+                            if let Some(ctx) = bridge_ctx { unsafe { bridge_request_keyframe(ctx.0) }; }
                         }
                     }
-                } else {
-                    // Fallback: any RTCP on this channel might be a hint
-                    let _ = stdin_tx.send("k\n".into());
                 }
             }
         });
         Some(tx)
+    }
+}
+
+impl Drop for LibcameraSource {
+    fn drop(&mut self) {
+        if let Some(ctx) = self.bridge_ctx.take() { unsafe { bridge_free(ctx.0) }; }
+        if let Some(ptr) = self._user_data_holder.take() { unsafe { let _ = Box::from_raw(ptr as *mut mpsc::UnboundedSender<NALMessage>); } }
     }
 }

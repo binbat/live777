@@ -122,7 +122,7 @@ pub(crate) async fn create_legacy_source_from_url(
     url: &str,
     config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    let internal_config = InternalSourceConfig::from_config(config);
+    let _internal_config = InternalSourceConfig::from_config(config);
 
     if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
         #[cfg(feature = "source-rtsp")]

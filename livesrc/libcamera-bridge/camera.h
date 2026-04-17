@@ -1,20 +1,9 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
+#include <stddef.h>
 #include <stdint.h>
-#include <functional>
-#include <memory>
 
-// Forward declarations
-namespace libcamera {
-    class Camera;
-    class CameraManager;
-    class Stream;
-    class Request;
-    class FrameBuffer;
-}
-
-// Camera parameters
 struct CameraParams {
     int width;
     int height;
@@ -26,33 +15,20 @@ struct CameraParams {
     bool vflip;
 };
 
-// H.264 frame callback
-using FrameCallback = std::function<void(const uint8_t* data, size_t size, uint64_t timestamp)>;
+// Raw Global Callback Type
+typedef void (*GlobalFrameCallback)(const uint8_t* data, size_t size, uint64_t timestamp, void* user_data);
 
-// PiCamera class - wrapper for libcamera
-class PiCamera {
-public:
-    PiCamera();
-    ~PiCamera();
+// Opaque handle for C++ implementation
+typedef void* CameraHandle;
 
-    // Initialize camera with parameters
-    bool init(const CameraParams& params);
-    
-    // Start capturing
-    bool start();
-    
-    // Stop capturing
-    void stop();
-    
-    // Set frame callback
-    void setFrameCallback(FrameCallback callback);
-    
-    // Get last error message
-    const char* getError() const;
-
-private:
-    class Impl;
-    std::unique_ptr<Impl> pImpl;
-};
+extern "C" {
+    CameraHandle camera_create();
+    void camera_destroy(CameraHandle handle);
+    bool camera_init(CameraHandle handle, const CameraParams* params);
+    bool camera_start(CameraHandle handle);
+    void camera_stop(CameraHandle handle);
+    void camera_set_callback(CameraHandle handle, GlobalFrameCallback callback, void* user_data);
+    const char* camera_get_error(CameraHandle handle);
+}
 
 #endif // CAMERA_H

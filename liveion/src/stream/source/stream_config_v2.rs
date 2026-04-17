@@ -150,17 +150,24 @@ impl StreamsConfigV2 {
 ///
 /// Supports query parameters for width, height, fps, bitrate, etc.
 /// Format: `libcamera:///path/to/bin?width=640&height=480&fps=30&bitrate=2000000`
-pub fn parse_libcamera_url(url: &str) -> anyhow::Result<ExecUrlParams> {
+pub fn parse_libcamera_url(url: &str) -> anyhow::Result<LibcameraUrlParams> {
     let stripped = url.strip_prefix("libcamera://").ok_or_else(|| anyhow::anyhow!("URL must start with libcamera://"))?;
-    let (path_part, query_part) = match stripped.find('?') {
+    let (addr_part, query_part) = match stripped.find('?') {
         Some(idx) => (&stripped[..idx], Some(&stripped[idx + 1..])),
         None => (stripped, None),
     };
 
-    let mut args = Vec::new();
+    let mut width = 1280;
+    let mut height = 720;
+    let mut fps = 30;
+    let mut bitrate = 2_000_000;
+    let mut camera_id = 0;
+    let mut rotation = 0;
+    let mut hflip = false;
+    let mut vflip = false;
     let mut codec = "H264".to_string();
     let mut profile = "42001f".to_string();
-    let mut clock_rate = 90000;
+    let clock_rate = 90000;
     let mut payload_type = 96;
 
     if let Some(query) = query_part {
@@ -171,14 +178,14 @@ pub fn parse_libcamera_url(url: &str) -> anyhow::Result<ExecUrlParams> {
             };
 
             match key {
-                "width" | "w" => { args.push("--width".into()); args.push(value.into()); }
-                "height" | "h" => { args.push("--height".into()); args.push(value.into()); }
-                "fps" | "f" => { args.push("--fps".into()); args.push(value.into()); }
-                "bitrate" | "b" => { args.push("--bitrate".into()); args.push(value.into()); }
-                "camera" | "c" => { args.push("--camera-id".into()); args.push(value.into()); }
-                "rotation" | "r" => { args.push("--rotation".into()); args.push(value.into()); }
-                "hflip" if value == "true" || value == "1" => { args.push("--hflip".into()); }
-                "vflip" if value == "true" || value == "1" => { args.push("--vflip".into()); }
+                "width" | "w" => width = value.parse().unwrap_or(1280),
+                "height" | "h" => height = value.parse().unwrap_or(720),
+                "fps" | "f" => fps = value.parse().unwrap_or(30),
+                "bitrate" | "b" => bitrate = value.parse().unwrap_or(2_000_000),
+                "camera" | "c" => camera_id = value.parse().unwrap_or(0),
+                "rotation" | "r" => rotation = value.parse().unwrap_or(0),
+                "hflip" => hflip = value == "true" || value == "1",
+                "vflip" => vflip = value == "true" || value == "1",
                 "codec" => codec = value.to_uppercase(),
                 "profile" => profile = value.into(),
                 "pt" => payload_type = value.parse().unwrap_or(96),
@@ -187,14 +194,39 @@ pub fn parse_libcamera_url(url: &str) -> anyhow::Result<ExecUrlParams> {
         }
     }
 
-    Ok(ExecUrlParams {
-        executable: path_part.to_string(),
-        args,
+    Ok(LibcameraUrlParams {
+        placeholder_path: addr_part.to_string(),
+        width,
+        height,
+        fps,
+        bitrate,
+        camera_id,
+        rotation,
+        hflip,
+        vflip,
         codec,
         profile,
         clock_rate,
         payload_type,
     })
+}
+
+/// Parsed parameters from a `libcamera://` URL.
+#[derive(Debug, Clone)]
+pub struct LibcameraUrlParams {
+    pub placeholder_path: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate: u32,
+    pub camera_id: u32,
+    pub rotation: u32,
+    pub hflip: bool,
+    pub vflip: bool,
+    pub codec: String,
+    pub profile: String,
+    pub clock_rate: u32,
+    pub payload_type: u8,
 }
 
 /// Parsed parameters from an `exec://` URL.
