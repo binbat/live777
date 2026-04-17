@@ -38,6 +38,7 @@ async-stream = "0.3.5"
 tracing = { workspace = true }
 webrtc = { workspace = true }
 uuid = { workspace = true }
+libc = "0.2"
 
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -79,3 +80,7 @@ source-all = ["source-sdp", "source-rtsp", "source-rtp", "source-libcamera"]
 
 [dev-dependencies]
 tempfile = "3.26"
+
+[build-dependencies]
+cmake = "0.1"
+pkg-config = "0.3"

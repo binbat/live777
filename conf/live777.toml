@@ -18,15 +18,14 @@ url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
 # listen = "[::]:7777"
 # Cross-Origin Resource Sharing (CORS)
 # reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-# cors = false
+cors = true
 
-[[ice_servers]]
-urls = [
-    "stun:stun.22333.fun",
-    "stun:cn.22333.fun",
-    "stun:stun.l.google.com:19302",
+ [[ice_servers]]
+ urls = [
+     "stun:stun.22333.fun",
+     "stun:cn.22333.fun",
+     "stun:stun.l.google.com:19302",
 ]
-
 [stream]
 
 # Need enabled `--features=source`
@@ -38,6 +37,11 @@ urls = [
 # Need enabled `--features=source-rtsp`
 # - RTSP: rtsp://username:password@host:port/path
 # url = "rtsp://username:password@host:port/path"
+
+# 核心测试：使用原生 libcamera-bridge 方案 (普适性标准方案)
+[[stream.sources]]
+stream_id = "pi_cam"
+url = "libcamera://0?width=640&height=480&fps=30"
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards

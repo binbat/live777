@@ -170,6 +170,16 @@ impl H264Packetizer {
         }
     }
 
+    /// Helper for FFI: packetize raw bytes directly
+    pub fn packetize_raw(&mut self, data: &Bytes) -> Vec<RtpPacket> {
+        let nal_type = NalType::from_header(data[0]);
+        let nal = NalUnit {
+            nal_type,
+            data: data.clone(),
+        };
+        self.packetize(&nal)
+    }
+
     pub fn packetize(&mut self, nal: &NalUnit) -> Vec<RtpPacket> {
         let mut packets = Vec::new();
         match nal.nal_type {
@@ -238,8 +248,8 @@ impl H264Packetizer {
         packets
     }
 
-    pub fn advance_timestamp(&mut self, fps: u32) {
-        self.timestamp = self.timestamp.wrapping_add(self.clock_rate / fps);
+    pub fn advance_timestamp(&mut self, increment: u32) {
+        self.timestamp = self.timestamp.wrapping_add(increment);
     }
 
     pub fn cached_sps(&self) -> Option<Bytes> { self.cached_sps.clone() }
@@ -252,6 +262,10 @@ impl H264Packetizer {
         } else {
             None
         }
+    }
+
+    pub fn get_current_timestamp(&self) -> u32 {
+        self.timestamp
     }
 }
 
