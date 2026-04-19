@@ -29,6 +29,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     const refVideo = useRef<HTMLVideoElement>(null);
     const refCanvas = useRef<HTMLCanvasElement>(null);
     const refQrCodeStream = useRef<QRCodeStream>(null);
+    const [qrPreviewing, setQrPreviewing] = useState(false);
 
     useImperativeHandle(ref, () => {
         return {
@@ -100,14 +101,27 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         handleStreamStart(stream);
     };
 
-    const handleEncodeLatencyStart = () => {
+    const handleEncodeLatencyPreview = () => {
         if (!refQrCodeStream.current) {
             refQrCodeStream.current = new QRCodeStream(refCanvas.current!);
         }
-        handleStreamStart(refQrCodeStream.current!.capture());
+        const stream = refQrCodeStream.current.capture();
+        refMediaStream.current = stream;
+        if (refVideo.current) {
+            refVideo.current.srcObject = stream;
+        }
+        setQrPreviewing(true);
+    };
+
+    const handleEncodeLatencyPublish = () => {
+        if (refMediaStream.current) {
+            handleStreamStart(refMediaStream.current);
+            setQrPreviewing(false);
+        }
     };
 
     const handleStreamStop = async () => {
+        setQrPreviewing(false);
         if (refQrCodeStream.current) {
             refQrCodeStream.current.stop();
             refQrCodeStream.current = null;
@@ -159,9 +173,14 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             <Modal.Actions className="mt-0">
                 {refWhipClient.current ? (
                     <Button color="error" onClick={handleStreamStop}>Stop</Button>
+                ) : qrPreviewing ? (
+                    <>
+                        <Button color="success" onClick={handleEncodeLatencyPublish}>Publish</Button>
+                        <Button color="error" onClick={handleStreamStop}>Stop</Button>
+                    </>
                 ) : (
                     <>
-                        <Button color="info" onClick={handleEncodeLatencyStart}>Encode Latency</Button>
+                        <Button color="info" onClick={handleEncodeLatencyPreview}>Encode Latency</Button>
                         <Button onClick={handleDisplayMediaStart}>Start</Button>
                     </>
                 )}
