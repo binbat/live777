@@ -164,7 +164,10 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
     }
 
     // TODO: move decoding to worker
-    private decodeFrame(now: number, width: number, height: number) {
+    // 从当前视频帧中识别二维码，返回二维码中编码的发送时间戳（毫秒）
+    // 识别失败或无二维码时返回 null
+    // 注意：此函数不负责计算延时，只负责读取发送端打入的时间戳
+    private decodeFrame(width: number, height: number): number | null {
         this.canvas.width = width;
         this.canvas.height = height;
         this.ctx.drawImage(this.video, 0, 0, width, height);
@@ -175,9 +178,9 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
         const detected = this.detector.detect(binarized).next().value;
         if (detected) {
             const decoded = this.decoder.decode(detected.matrix);
-            const latency = now - Number.parseInt(decoded.content, 10);
-            this.emitLatencyEvent(latency);
+            return Number.parseInt(decoded.content, 10);
         }
+        return null;
     }
 
     private videoFrameCallback_unbound(_now: DOMHighResTimeStamp, metadata: VideoFrameCallbackMetadata) {
@@ -186,7 +189,14 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
         if (this.seq >= 5) {
             this.seq = 0;
             try {
-                this.decodeFrame(Date.now(), metadata.width, metadata.height);
+                // 在二维码识别开始前记录"帧可处理时刻"
+                // 这样二维码识别本身的耗时不会被计入延时结果
+                // 测量的是：发送端写入时间戳 → 接收端视频帧进入回调可被处理
+                const frameReceiveTime = Date.now();
+                const sentTimestamp = this.decodeFrame(metadata.width, metadata.height);
+                if (sentTimestamp !== null) {
+                    this.emitLatencyEvent(frameReceiveTime - sentTimestamp);
+                }
             } catch (e) {
                 console.log(e);
             }
