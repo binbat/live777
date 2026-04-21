@@ -19,7 +19,9 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
+    "@nuintun/qrcode": "^5.0.2",
     "@solidjs/router": "^0.15.3",
-    "solid-js": "^1.9.10"
+    "solid-js": "^1.9.10",
+    "typescript-event-target": "^1.1.1"
   }
 }
