@@ -16,6 +16,12 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
         (layer: string) => Promise<void>,
     ]
 > {
+    const is404Error = (e: unknown) => {
+        const maybe = e as { response?: { status?: number }; status?: number };
+        const status = maybe?.response?.status ?? maybe?.status;
+        return status === 404 || String(e).includes("404");
+    };
+
     cfg.log("started");
     const pc = new RTCPeerConnection();
 
@@ -50,7 +56,14 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
     }
 
     const stop = async () => {
-        await whep.stop();
+        try {
+            await whep.stop();
+        } catch (e) {
+            if (!is404Error(e)) {
+                throw e;
+            }
+            cfg.log("stop ignored: session already closed (404)");
+        }
         cfg.log("stopped");
         cfg.onStream(null);
     };

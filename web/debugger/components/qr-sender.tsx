@@ -6,6 +6,8 @@ import convertSessionDescription from "./sdp";
 
 type State = "idle" | "previewing" | "publishing";
 
+const PREVIEW_SIZE = 320;
+
 export default function QrSender() {
     const [searchParams] = useSearchParams();
     const [state, setState] = createSignal<State>("idle");
@@ -16,11 +18,11 @@ export default function QrSender() {
     let qrStream: QRCodeStream | null = null;
     let whipClient: WHIPClient | null = null;
     let pc: RTCPeerConnection | null = null;
+    let published = false;
 
     onMount(() => {
-        // canvas 尺寸必须在 mount 后设置，QRCodeStream 构造时从 canvas 属性读取
-        canvasRef!.width = 320;
-        canvasRef!.height = 320;
+        canvasRef!.width = PREVIEW_SIZE;
+        canvasRef!.height = PREVIEW_SIZE;
     });
 
     onCleanup(() => {
@@ -44,6 +46,7 @@ export default function QrSender() {
         pc.addTransceiver(ms.getVideoTracks()[0], { direction: "sendonly" });
 
         whipClient = new WHIPClient();
+        published = false;
         // biome-ignore lint/suspicious/noExplicitAny: whip-whep.js uses any
         whipClient.onAnswer = (answer: any) =>
             convertSessionDescription(answer, "", "");
@@ -52,17 +55,21 @@ export default function QrSender() {
         try {
             const url = `${location.origin}/whip/${searchParams.id || "-"}`;
             await whipClient.publish(pc, url, (searchParams.token as string) || "");
+            published = true;
         } catch (e) {
             console.error(e);
-            stopAll();
+            await stopAll();
         }
     };
 
     const stopAll = async () => {
         if (whipClient) {
-            await whipClient.stop();
+            if (published) {
+                await whipClient.stop();
+            }
             whipClient = null;
         }
+        published = false;
         if (pc) {
             pc.close();
             pc = null;
@@ -81,12 +88,16 @@ export default function QrSender() {
         <fieldset>
             <legend>QR Sender (WHIP)</legend>
             <div style="text-align: center;">
-                {/* canvas 隐藏，仅用于 QRCodeStream 渲染 */}
                 <canvas ref={canvasRef} style="display: none;" />
-                <section>
+                <section style={{ width: `${PREVIEW_SIZE}px`, height: `${PREVIEW_SIZE}px` }}>
                     <video
                         ref={videoRef}
-                        style={{ width: "320px" }}
+                        style={{
+                            width: "100%",
+                            height: "100%",
+                            "object-fit": "contain",
+                            "background-color": "#ffffff",
+                        }}
                         autoplay={true}
                         muted={true}
                     />
