@@ -4,6 +4,7 @@ import { QRCodeStreamDecoder } from "../../shared/qrcode-stream";
 import subscribe from "./subscribe";
 
 type State = "idle" | "subscribing" | "measuring";
+const PREVIEW_SIZE = 320;
 
 export default function QrReceiver() {
     const [searchParams] = useSearchParams();
@@ -38,7 +39,6 @@ export default function QrReceiver() {
 
     const startMeasure = () => {
         if (!videoRef) return;
-        // video 元素需要有 width/height 属性供 QRCodeStreamDecoder 构造 OffscreenCanvas
         videoRef.width = videoRef.videoWidth || 320;
         videoRef.height = videoRef.videoHeight || 240;
         decoder = new QRCodeStreamDecoder(videoRef);
@@ -69,13 +69,17 @@ export default function QrReceiver() {
         <fieldset>
             <legend>QR Receiver (WHEP)</legend>
             <div style="text-align: center;">
-                <section>
+                <section style={{ width: `${PREVIEW_SIZE}px`, height: `${PREVIEW_SIZE}px` }}>
                     <video
                         ref={videoRef}
-                        style={{ width: "320px" }}
+                        style={{
+                            width: "100%",
+                            height: "100%",
+                            "object-fit": "contain",
+                            "background-color": "#ffffff",
+                        }}
                         autoplay={true}
                         muted={true}
-                        controls={true}
                     />
                 </section>
                 <section>
