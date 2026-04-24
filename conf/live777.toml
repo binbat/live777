@@ -1,3 +1,18 @@
+# Channel forwarding configuration.
+# Each stream has one independent channel endpoint.
+# URL format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
+#   listen_host:listen_port  - liveion listens here for replies from downstream
+#   target_host:target_port  - liveion sends DataChannel messages to this address
+#
+# [channel.streams.camera]
+# url = "udp://0.0.0.0:7774?host=127.0.0.1&port=1234"
+#
+# [channel.streams.camera2]
+# url = "udp://0.0.0.0:7775?host=127.0.0.1&port=1235"
+
+[channel.streams.webcontrol]
+url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
+
 [http]
 # Http Server Listen Address
 # listen = "[::]:7777"

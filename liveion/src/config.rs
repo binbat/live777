@@ -26,6 +26,10 @@ pub struct Config {
     #[serde(default)]
     pub webhook: Webhook,
 
+    #[cfg(feature = "source")]
+    #[serde(default)]
+    pub channel: Channel,
+
     #[cfg(feature = "recorder")]
     #[serde(default)]
     pub recorder: RecorderConfig,
@@ -107,6 +111,124 @@ impl Default for Log {
         Self {
             level: default_log_level(),
         }
+    }
+}
+
+#[cfg(feature = "source")]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Channel {
+    /// Per-stream channel configuration, keyed by stream name.
+    /// URL format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
+    /// Example:
+    ///   [channel.streams.camera]
+    ///   url = "udp://0.0.0.0:7774?host=127.0.0.1&port=1234"
+    #[serde(default)]
+    pub streams: std::collections::HashMap<String, ChannelStream>,
+}
+
+#[cfg(feature = "source")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChannelStream {
+    /// Channel URL, currently supports UDP:
+    /// udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
+    pub url: String,
+}
+
+#[cfg(feature = "source")]
+impl ChannelStream {
+    /// Parse the URL into (listen_host, listen_port, target_host, target_port).
+    /// Supported format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
+    pub fn parse(&self) -> Option<(String, u16, String, u16)> {
+        // Parse udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
+        let s = self.url.strip_prefix("udp://")?;
+        let (host_port, query) = s.split_once('?')?;
+        // rsplit_once handles IPv6 like [::1]:7774 correctly
+        let (listen_host_raw, listen_port_str) = host_port.rsplit_once(':')?;
+        let listen_port: u16 = listen_port_str.parse().ok()?;
+        // Strip brackets from IPv6 address e.g. [::1] -> ::1, then re-add for socket addr
+        let listen_host_inner = listen_host_raw.trim_matches(|c| c == '[' || c == ']');
+        let listen_host = if listen_host_inner.contains(':') {
+            format!("[{}]", listen_host_inner)
+        } else {
+            listen_host_inner.to_string()
+        };
+
+        let mut target_host = String::new();
+        let mut target_port: u16 = 0;
+        for param in query.split('&') {
+            if let Some(v) = param.strip_prefix("host=") {
+                // Wrap IPv6 addresses in brackets for use as socket address
+                target_host = if v.parse::<std::net::Ipv6Addr>().is_ok() {
+                    format!("[{}]", v)
+                } else {
+                    v.to_string()
+                };
+            } else if let Some(v) = param.strip_prefix("port=") {
+                target_port = v.parse().ok()?;
+            }
+        }
+        if target_host.is_empty() || target_port == 0 {
+            return None;
+        }
+        Some((listen_host, listen_port, target_host, target_port))
+    }
+}
+
+#[cfg(feature = "source")]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_channel_stream_parse_ipv4() {
+        let s = ChannelStream {
+            url: "udp://0.0.0.0:7774?host=127.0.0.1&port=1234".to_string(),
+        };
+        let (listen_host, listen_port, target_host, target_port) = s.parse().unwrap();
+        assert_eq!(listen_host, "0.0.0.0");
+        assert_eq!(listen_port, 7774);
+        assert_eq!(target_host, "127.0.0.1");
+        assert_eq!(target_port, 1234);
+    }
+
+    #[test]
+    fn test_channel_stream_parse_ipv6() {
+        let s = ChannelStream {
+            url: "udp://[::]:7774?host=::1&port=1234".to_string(),
+        };
+        let (listen_host, listen_port, target_host, target_port) = s.parse().unwrap();
+        assert_eq!(listen_host, "[::]");
+        assert_eq!(listen_port, 7774);
+        assert_eq!(target_host, "[::1]");
+        assert_eq!(target_port, 1234);
+    }
+
+    #[test]
+    fn test_channel_stream_parse_domain() {
+        let s = ChannelStream {
+            url: "udp://localhost:7774?host=example.com&port=1234".to_string(),
+        };
+        let (listen_host, listen_port, target_host, target_port) = s.parse().unwrap();
+        assert_eq!(listen_host, "localhost");
+        assert_eq!(listen_port, 7774);
+        assert_eq!(target_host, "example.com");
+        assert_eq!(target_port, 1234);
+    }
+
+    #[test]
+    fn test_channel_stream_parse_invalid_scheme() {
+        let s = ChannelStream {
+            url: "tcp://0.0.0.0:7774?host=127.0.0.1&port=1234".to_string(),
+        };
+        assert!(s.parse().is_none());
+    }
+
+    #[test]
+    fn test_channel_stream_parse_missing_target() {
+        let s = ChannelStream {
+            url: "udp://0.0.0.0:7774".to_string(),
+        };
+        assert!(s.parse().is_none());
     }
 }
 

@@ -30,6 +30,8 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::AppError;
+#[cfg(feature = "source")]
+use crate::config::Channel;
 use crate::forward::get_peer_id;
 use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
@@ -63,9 +65,38 @@ pub(crate) struct PeerForwardInternal {
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
     event_sender: broadcast::Sender<ForwardEvent>,
+    #[cfg(feature = "source")]
+    channel: Channel,
 }
 
 impl PeerForwardInternal {
+    #[cfg(feature = "source")]
+    pub(crate) fn new(
+        stream: impl ToString,
+        ice_server: Vec<RTCIceServer>,
+        channel: Channel,
+    ) -> Self {
+        PeerForwardInternal {
+            stream: stream.to_string(),
+            create_at: Utc::now().timestamp_millis(),
+            publish_leave_at: RwLock::new(0),
+            subscribe_leave_at: RwLock::new(Utc::now().timestamp_millis()),
+            publish: RwLock::new(None),
+            publish_tracks: Arc::new(RwLock::new(Vec::new())),
+            publish_tracks_change: new_broadcast_channel!(16),
+            publish_rtcp_channel: new_broadcast_channel!(48),
+            subscribe_group: RwLock::new(Vec::new()),
+            data_channel_forward: DataChannelForward {
+                publish: new_broadcast_channel!(1024),
+                subscribe: new_broadcast_channel!(1024),
+            },
+            ice_server,
+            event_sender: new_broadcast_channel!(16),
+            channel,
+        }
+    }
+
+    #[cfg(not(feature = "source"))]
     pub(crate) fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
         PeerForwardInternal {
             stream: stream.to_string(),
@@ -462,6 +493,17 @@ impl PeerForwardInternal {
     ) -> Result<()> {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
+        // DataChannel ↔ UDP bidirectional forwarding (feature=source only).
+        // Messages from the WHIP publisher arrive on the subscribe channel.
+        #[cfg(feature = "source")]
+        if let Some(stream_cfg) = self.channel.streams.get(&self.stream).cloned() {
+            // UDP acts as a member of the WHIP group:
+            // - dc_rx: receive messages from WHEP group (publish channel)
+            // - dc_tx: send messages to WHEP group (subscribe channel)
+            let dc_rx = self.data_channel_forward.publish.subscribe();
+            let dc_tx = self.data_channel_forward.subscribe.clone();
+            super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;
+        }
         Self::data_channel_forward(dc, sender, receiver).await;
         Ok(())
     }

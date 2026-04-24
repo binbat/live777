@@ -217,6 +217,13 @@ impl Manager {
     }
 
     async fn do_stream_create(&self, stream: String) -> PeerForward {
+        #[cfg(feature = "source")]
+        let forward = PeerForward::new(
+            stream.clone(),
+            self.config.ice_servers.clone(),
+            self.config.channel.clone(),
+        );
+        #[cfg(not(feature = "source"))]
         let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
         let subscribe_event = forward.subscribe_event();
         tokio::spawn(Self::forward_event_handler(
@@ -599,6 +606,7 @@ impl Manager {
             let forward = crate::forward::PeerForward::new(
                 stream_id.to_string(),
                 self.config.ice_servers.clone(),
+                self.config.channel.clone(),
             );
 
             let subscribe_event = forward.subscribe_event();
