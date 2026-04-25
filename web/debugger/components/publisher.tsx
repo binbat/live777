@@ -1,5 +1,6 @@
 import { useSearchParams } from "@solidjs/router";
-import { createSignal, Show } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
+import { QRCodeStream } from "../../shared/qrcode-stream";
 import { createLogger } from "../primitive/logger";
 import Datachannel from "./datachannel";
 import Device from "./device";
@@ -58,12 +59,23 @@ const WhipLayerOptions = [
     { value: "q", text: "Base + 1/2 + 1/4" },
 ];
 
+type SourceMode = "device" | "desktop" | "qrtime";
+type QrState = "idle" | "previewing" | "publishing";
+
+const QrCanvasWidth = 480;
+const QrCanvasHeight = 320;
+
 export default function Publisher() {
     const [disabled, setDisabled] = createSignal(false);
     const [stream, setStream] = createSignal<MediaStream | null>(null);
+    const [preparedDesktopStream, setPreparedDesktopStream] =
+        createSignal<MediaStream | null>(null);
     const [datachannel, setDatachannel] = createSignal<RTCDataChannel | null>(
         null,
     );
+    const [sourceMode, setSourceMode] = createSignal<SourceMode>("device");
+    const [qrState, setQrState] = createSignal<QrState>("idle");
+    const [deviceRefreshToken, setDeviceRefreshToken] = createSignal(0);
     const [selectAudioDevice, setSelectAudioDevice] = createSignal("");
     const [selectVideoDevice, setSelectVideoDevice] = createSignal("");
     const [selectVideoWidth, setSelectVideoWidth] = createSignal("");
@@ -78,52 +90,291 @@ export default function Publisher() {
 
     const [logs, setLogs, clear] = createLogger();
 
-    let stop: () => Promise<void> | undefined;
+    let stop: (() => Promise<void>) | undefined;
+    let qrCanvasRef: HTMLCanvasElement | undefined;
+    let qrStream: QRCodeStream | null = null;
+    let desktopStreamCleanupInProgress = false;
+
+    const updatePreviewStream = (currentStream: MediaStream | null) => {
+        setAudioTrackCount(
+            currentStream ? currentStream.getAudioTracks().length : 0,
+        );
+        setVideoTrackCount(
+            currentStream ? currentStream.getVideoTracks().length : 0,
+        );
+        setStream(currentStream);
+    };
+
+    const clearPreparedDesktopStream = ({
+        stopTracks = true,
+        clearPreview = true,
+    }: {
+        stopTracks?: boolean;
+        clearPreview?: boolean;
+    } = {}) => {
+        const currentStream = preparedDesktopStream();
+        if (!currentStream) {
+            if (clearPreview) {
+                updatePreviewStream(null);
+            }
+            return;
+        }
+        desktopStreamCleanupInProgress = true;
+        currentStream.getTracks().forEach((track) => {
+            track.onended = null;
+            if (stopTracks && track.readyState === "live") {
+                track.stop();
+            }
+        });
+        desktopStreamCleanupInProgress = false;
+        setPreparedDesktopStream(null);
+        if (clearPreview) {
+            updatePreviewStream(null);
+        }
+    };
+
+    const clearQrStream = ({
+        clearPreview = true,
+    }: {
+        clearPreview?: boolean;
+    } = {}) => {
+        if (qrStream) {
+            qrStream.stop();
+            qrStream = null;
+        }
+        setQrState("idle");
+        if (clearPreview) {
+            updatePreviewStream(null);
+        }
+    };
+
+    onCleanup(async () => {
+        if (stop) {
+            await stop();
+            stop = undefined;
+        }
+        clearQrStream();
+        clearPreparedDesktopStream();
+    });
+
+    const ensureQrInputStream = () => {
+        if (!qrCanvasRef) {
+            return null;
+        }
+        qrCanvasRef.width = QrCanvasWidth;
+        qrCanvasRef.height = QrCanvasHeight;
+        if (!qrStream) {
+            qrStream = new QRCodeStream(qrCanvasRef);
+        }
+        return qrStream.capture();
+    };
+
+    const prepareQrStream = () => {
+        clear();
+        clearPreparedDesktopStream();
+        clearQrStream();
+        setSourceMode("qrtime");
+
+        const inputStream = ensureQrInputStream();
+        if (!inputStream) {
+            setLogs("QRCode Time stream initialization failed.");
+            return;
+        }
+
+        updatePreviewStream(inputStream);
+        setQrState("previewing");
+        setLogs("QR source ready. Click Start to publish.");
+    };
+
+    const handleDesktopStreamEnded = async () => {
+        if (desktopStreamCleanupInProgress) {
+            return;
+        }
+        clear();
+        setLogs("Desktop sharing ended.");
+        if (disabled()) {
+            await stopPublishing();
+            return;
+        }
+        clearPreparedDesktopStream();
+    };
+
+    const prepareDesktopStream = async () => {
+        clear();
+        setSourceMode("desktop");
+        clearQrStream();
+        clearPreparedDesktopStream();
+
+        const videoWidth = parseInt(selectVideoWidth(), 10) || undefined;
+        const videoHeight = parseInt(selectVideoHeight(), 10) || undefined;
+        const videoConstraints: MediaTrackConstraints = {};
+        if (videoWidth) {
+            videoConstraints.width = videoWidth;
+        }
+        if (videoHeight) {
+            videoConstraints.height = videoHeight;
+        }
+
+        try {
+            const currentStream = await navigator.mediaDevices.getDisplayMedia({
+                audio: true,
+                video: videoConstraints,
+            });
+            currentStream.getTracks().forEach((track) => {
+                track.onended = () => {
+                    void handleDesktopStreamEnded();
+                };
+            });
+            setPreparedDesktopStream(currentStream);
+            updatePreviewStream(currentStream);
+            setLogs("Desktop source ready. Click Start to publish.");
+        } catch (e) {
+            const error =
+                e instanceof Error
+                    ? `${e.name}: ${e.message}`
+                    : "unknown error";
+            setLogs(`Desktop sharing was not started. ${error}`);
+        }
+    };
 
     const start = async () => {
         setDisabled(true);
         clear();
+
+        const isDesktopMode = sourceMode() === "desktop";
+        const isQrMode = sourceMode() === "qrtime";
+        const inputStream = isDesktopMode
+            ? preparedDesktopStream()
+            : isQrMode
+              ? ensureQrInputStream()
+              : null;
+        if (isDesktopMode && !inputStream) {
+            setLogs("Click Share Desktop to choose a screen before publishing.");
+            setDisabled(false);
+            return;
+        }
+        if (isQrMode && !inputStream) {
+            setLogs("QRCode Time stream initialization failed.");
+            setDisabled(false);
+            return;
+        }
+        if (isQrMode && qrState() !== "previewing") {
+            setLogs("Click QRCode Time to generate a QR preview first.");
+            setDisabled(false);
+            return;
+        }
+
         stop = await publish({
             url: `${location.origin}/whip/${searchParams.id || "-"}`,
             token: (searchParams.token as string) || "",
+            sourceMode: sourceMode(),
+            inputStream,
             audio: {
-                device: selectAudioDevice(),
+                device: isDesktopMode || isQrMode ? "" : selectAudioDevice(),
                 codec: mapCodec[(searchParams.acodec as string) || ""],
-                pseudo: selectAudioPseudo(),
+                pseudo: sourceMode() === "device" && selectAudioPseudo(),
             },
             video: {
-                device: selectVideoDevice(),
+                device: isDesktopMode || isQrMode ? "" : selectVideoDevice(),
                 codec: mapCodec[(searchParams.vcodec as string) || ""],
                 layer: selectVideoLayer(),
                 width: parseInt(selectVideoWidth(), 10) || null,
                 height: parseInt(selectVideoHeight(), 10) || null,
             },
-            onStream: (stream: MediaStream | null): void => {
-                setAudioTrackCount(stream ? stream.getAudioTracks().length : 0);
-                setVideoTrackCount(stream ? stream.getVideoTracks().length : 0);
-                setStream(stream);
+            onStream: (currentStream: MediaStream | null): void => {
+                updatePreviewStream(currentStream);
             },
             onChannel: (channel: RTCDataChannel): void => {
                 setDatachannel(channel);
             },
             log: setLogs,
         });
+        if (isQrMode) {
+            setQrState("publishing");
+        }
     };
+
+    const stopPublishing = async () => {
+        setDisabled(false);
+        if (sourceMode() === "desktop") {
+            clearPreparedDesktopStream({
+                stopTracks: false,
+                clearPreview: false,
+            });
+        }
+        if (stop) {
+            await stop();
+            stop = undefined;
+        }
+        if (sourceMode() === "qrtime") {
+            clearQrStream();
+        }
+        if (sourceMode() !== "desktop") {
+            updatePreviewStream(null);
+        }
+    };
+
+    const useDeviceSource = () => {
+        clearPreparedDesktopStream();
+        clearQrStream();
+        setSourceMode("device");
+        setDeviceRefreshToken((token) => token + 1);
+    };
+
+    const useQrTimeSource = () => {
+        prepareQrStream();
+    };
+
     return (
         <>
             <legend>WHIP</legend>
             <div style="text-align: center;">
-                <section>
-                    <Device
+                <canvas ref={qrCanvasRef} style="display: none;" />
+
+                <section style="margin-bottom: 0.6rem; display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap;">
+                    <button
+                        type="button"
                         disabled={disabled()}
-                        onSelectAudio={(deviceId) =>
-                            setSelectAudioDevice(deviceId)
-                        }
-                        onSelectVideo={(deviceId) =>
-                            setSelectVideoDevice(deviceId)
-                        }
-                    />
+                        onClick={useDeviceSource}
+                    >
+                        Use Device
+                    </button>
+                    <button
+                        type="button"
+                        disabled={disabled()}
+                        onClick={() => {
+                            void prepareDesktopStream();
+                        }}
+                    >
+                        Share Desktop
+                    </button>
+                    <button
+                        type="button"
+                        disabled={disabled()}
+                        onClick={useQrTimeSource}
+                    >
+                        QRCode Time
+                    </button>
                 </section>
+
+                <section>
+                    <span>Mode: {sourceMode()}</span>
+                </section>
+
+                <Show when={sourceMode() === "device"}>
+                    <section>
+                        <Device
+                            disabled={disabled()}
+                            refreshToken={deviceRefreshToken()}
+                            onSelectAudio={(deviceId) =>
+                                setSelectAudioDevice(deviceId)
+                            }
+                            onSelectVideo={(deviceId) =>
+                                setSelectVideoDevice(deviceId)
+                            }
+                        />
+                    </section>
+                </Show>
 
                 <section>
                     <label>
@@ -190,7 +441,7 @@ export default function Publisher() {
                         onChange={(e) => {
                             setSelectAudioPseudo(e.target.checked);
                         }}
-                        disabled={disabled()}
+                        disabled={disabled() || sourceMode() !== "device"}
                     />
                     Use Pseudo Audio Track
                 </section>
@@ -210,20 +461,50 @@ export default function Publisher() {
                     </label>
                 </section>
                 <section>
-                    <button type="button" onClick={start} disabled={disabled()}>
+                    <button
+                        type="button"
+                        onClick={start}
+                        disabled={
+                            disabled() ||
+                            (sourceMode() === "qrtime" &&
+                                qrState() !== "previewing") ||
+                            (sourceMode() === "desktop" &&
+                                !preparedDesktopStream())
+                        }
+                    >
                         Start
                     </button>
                     <button
                         type="button"
-                        onClick={() => {
-                            setDisabled(false);
-                            stop();
-                        }}
+                        onClick={stopPublishing}
                         disabled={!disabled()}
                     >
                         Stop
                     </button>
                 </section>
+                <Show when={sourceMode() === "desktop" && !disabled()}>
+                    <section>
+                        <small>
+                            {preparedDesktopStream()
+                                ? "Desktop source ready. Click Start to publish."
+                                : "Click Share Desktop to choose a screen, window, or tab."}
+                        </small>
+                    </section>
+                </Show>
+                <Show when={sourceMode() === "qrtime" && !disabled()}>
+                    <section>
+                        <small>
+                            {qrState() === "previewing"
+                                ? "QR source ready. Click Start to publish."
+                                : qrState() === "publishing"
+                                  ? "QR source is publishing."
+                                  : "Click QRCode Time to generate a QR preview."}
+                        </small>
+                    </section>
+                    <section>
+                        <span>QR State: {qrState()}</span>
+                    </section>
+                </Show>
                 <section>
                     <h3>WHIP Video:</h3>
                     <h5>

@@ -3,7 +3,6 @@ import "./debugger.css";
 
 import Publisher from "./publisher";
 import Subscriber from "./subscriber";
-import QrLatency from "./qr-latency";
 
 export default function Debugger() {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -43,7 +42,6 @@ export default function Debugger() {
                     <Subscriber />
                 </fieldset>
             </div>
-            <QrLatency />
         </>
     );
 }
