@@ -1,10 +1,23 @@
 import { Encoder, Numeric, binarize, Decoder, Detector, grayscale } from '@nuintun/qrcode';
 import { TypedEventTarget } from 'typescript-event-target';
 
+function timestamp(value: number) {
+    const date = new Date(value);
+    const s = date.toLocaleString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23'
+    });
+    const ms = date.getMilliseconds().toString().padStart(3, '0');
+    return `${s}.${ms}`;
+}
+
 export class QRCodeStream {
 
     static White = '#fff';
     static Black = '#000';
+    static TimestampTextSample = '12:34:56.789';
 
     private encoder: Encoder;
     private width: number;
@@ -13,6 +26,8 @@ export class QRCodeStream {
     private qrSize: number;
     private qrMarginX: number;
     private qrMarginY: number;
+    private textOriginX: number;
+    private textOriginY: number;
 
     private scheduled = false;
     private frameRequestCallback: FrameRequestCallback;
@@ -29,6 +44,31 @@ export class QRCodeStream {
         this.qrMarginX = (width - this.qrSize) / 2;
         this.qrMarginY = (height - this.qrSize) / 2;
         this.frameRequestCallback = this.frameRequestCallback_unbound.bind(this);
+        const textMarginX = Math.max(4, width * 0.01);
+        const textMarginY = Math.max(4, height * 0.01);
+        let fontSize = 1000;
+        this.ctx.font = `bold ${fontSize}px monospace`;
+        const metrics = this.ctx.measureText(QRCodeStream.TimestampTextSample);
+        const textWidth = metrics.width;
+        const textHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+        if (this.qrMarginX > 0) {
+            if (textWidth > this.qrMarginX) {
+                fontSize *= (this.qrMarginX - textMarginX * 2) / textWidth;
+            }
+        } else if (this.qrMarginY > 0) {
+            let scale = 1;
+            if (textWidth > this.width) {
+                scale = Math.min(scale, (this.width - textMarginX * 2) / textWidth);
+            }
+            if (textHeight > this.qrMarginY) {
+                scale = Math.min(scale, (this.qrMarginY - textMarginY * 2) / textHeight);
+            }
+            fontSize *= scale;
+        }
+        this.ctx.font = `bold ${fontSize}px monospace`;
+        this.textOriginX = textMarginX;
+        const realMetrics = this.ctx.measureText(QRCodeStream.TimestampTextSample);
+        this.textOriginY = textMarginY + realMetrics.actualBoundingBoxAscent + realMetrics.actualBoundingBoxDescent;
     }
 
     private doFrame(now: number) {
@@ -50,6 +90,7 @@ export class QRCodeStream {
                 }
             }
         }
+        this.ctx.fillText(timestamp(now), this.textOriginX, this.textOriginY);
     }
 
     private frameRequestCallback_unbound(_time: DOMHighResTimeStamp) {
@@ -122,9 +163,9 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
     }
 
     // TODO: move decoding to worker
-    // 从当前视频帧中识别二维码，返回二维码中编码的发送时间戳（毫秒）
-    // 识别失败或无二维码时返回 null
-    // 注意：此函数不负责计算延时，只负责读取发送端打入的时间戳
+    // Detect the QR code from the current video frame and return the sent timestamp encoded in it (milliseconds).
+    // Return null when detection fails or no QR code is present.
+    // Note: this function does not calculate latency; it only reads the timestamp written by the sender.
     private decodeFrame(width: number, height: number): number | null {
         this.canvas.width = width;
         this.canvas.height = height;
@@ -147,9 +188,9 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
         if (this.seq >= 5) {
             this.seq = 0;
             try {
-                // 在二维码识别开始前记录"帧可处理时刻"
-                // 这样二维码识别本身的耗时不会被计入延时结果
-                // 测量的是：发送端写入时间戳 → 接收端视频帧进入回调可被处理
+                // Record the "frame ready for processing" time before QR decoding starts.
+                // This ensures the QR decoding cost itself is not included in the latency result.
+                // What is being measured is: sender timestamp write -> receiver video frame becomes available in the callback.
                 const frameReceiveTime = Date.now();
                 const sentTimestamp = this.decodeFrame(metadata.width, metadata.height);
                 if (sentTimestamp !== null) {
