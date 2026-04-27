@@ -1,3 +1,4 @@
+mod channel;
 mod output;
 mod webrtc;
 
@@ -28,6 +29,7 @@ pub async fn from(
     sdp_file: Option<String>,
     token: Option<String>,
     command: Option<String>,
+    channel_url: Option<String>,
 ) -> Result<()> {
     info!("Starting WHEP session: {}", target_url);
 
@@ -37,7 +39,7 @@ pub async fn from(
 
     let mut client = Client::new(whep_url.clone(), Client::get_auth_header_map(token.clone()));
 
-    let (peer, answer, stats) = webrtc::setup_whep_peer(
+    let (peer, answer, stats, dc_recv_rx, dc_send_tx) = webrtc::setup_whep_peer(
         ct.clone(),
         &mut client,
         video_send,
@@ -46,6 +48,11 @@ pub async fn from(
     )
     .await?;
     info!("WebRTC peer connection established");
+
+    // Start DataChannel <-> UDP forwarding if channel_url is configured
+    if let Some(url) = channel_url {
+        channel::spawn_channel(url, dc_recv_rx, dc_send_tx).await?;
+    }
 
     start_stats_monitor(ct.clone(), peer.clone(), stats.clone()).await;
 
@@ -57,12 +64,12 @@ pub async fn from(
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let summary = stats_clone.get_summary().await;
+                    let summary: crate::utils::stats::StatsSummary = stats_clone.get_summary().await;
                     info!("{}", summary.format());
                 }
                 _ = ct_clone.cancelled() => {
                     info!("Stats reporter shutting down");
-                    let final_summary = stats_clone.get_summary().await;
+                    let final_summary: crate::utils::stats::StatsSummary = stats_clone.get_summary().await;
                     info!("Final Statistics:\n{}", final_summary.format());
                     break;
                 }
