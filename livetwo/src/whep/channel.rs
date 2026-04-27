@@ -196,13 +196,10 @@ mod tests {
             .await
             .unwrap();
 
-        let received = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            dc_send_rx.recv(),
-        )
-        .await
-        .expect("timeout")
-        .unwrap();
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), dc_send_rx.recv())
+            .await
+            .expect("timeout")
+            .unwrap();
 
         assert_eq!(received, msg);
     }

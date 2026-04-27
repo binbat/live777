@@ -37,7 +37,15 @@ pub async fn setup_whep_peer(
     let (dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (dc_send_tx, dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let peer = create_peer(ct, video_send, audio_send, codec_info.clone(), dc_recv_tx, dc_send_rx).await?;
+    let peer = create_peer(
+        ct,
+        video_send,
+        audio_send,
+        codec_info.clone(),
+        dc_recv_tx,
+        dc_send_rx,
+    )
+    .await?;
 
     utils::webrtc::setup_connection(peer.clone(), client).await?;
 
