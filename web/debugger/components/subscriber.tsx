@@ -150,7 +150,9 @@ export default function Subscriber() {
                     <button
                         type="button"
                         onClick={startQrLatencyMeasure}
-                        disabled={disabled() || !stream() || isMeasuringQrLatency()}
+                        disabled={
+                            disabled() || !stream() || isMeasuringQrLatency()
+                        }
                     >
                         Measure QR Latency
                     </button>

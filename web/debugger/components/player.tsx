@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount } from "solid-js";
+import { createEffect, createSignal, onMount } from "solid-js";
 
 const DisplayWidthOptions = [
     { value: "320px", text: "320px" },

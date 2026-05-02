@@ -51,20 +51,18 @@ export default async function startWhip(
     const stream = cfg.inputStream
         ? cfg.inputStream
         : cfg.sourceMode === "desktop"
-            ? await navigator.mediaDevices.getDisplayMedia({
-                  audio: true,
-                  video: videoSize,
-              })
-            : await navigator.mediaDevices.getUserMedia({
-                  audio: cfg.audio.device
-                      ? { deviceId: cfg.audio.device }
+          ? await navigator.mediaDevices.getDisplayMedia({
+                audio: true,
+                video: videoSize,
+            })
+          : await navigator.mediaDevices.getUserMedia({
+                audio: cfg.audio.device ? { deviceId: cfg.audio.device } : true,
+                video: cfg.video.device
+                    ? { deviceId: cfg.video.device, ...videoSize }
+                    : Object.keys(videoSize).length > 0
+                      ? videoSize
                       : true,
-                  video: cfg.video.device
-                      ? { deviceId: cfg.video.device, ...videoSize }
-                      : Object.keys(videoSize).length > 0
-                        ? videoSize
-                        : true,
-              });
+            });
 
     cfg.onStream(stream);
 

@@ -249,7 +249,9 @@ export default function Publisher() {
               ? ensureQrInputStream()
               : null;
         if (isDesktopMode && !inputStream) {
-            setLogs("Click Share Desktop to choose a screen before publishing.");
+            setLogs(
+                "Click Share Desktop to choose a screen before publishing.",
+            );
             setDisabled(false);
             return;
         }
