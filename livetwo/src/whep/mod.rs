@@ -51,6 +51,7 @@ pub async fn from(
 
     // Start DataChannel <-> UDP forwarding if channel_url is configured
     if let Some(url) = channel_url {
+        debug!("Starting DataChannel <-> UDP forwarding: {}", url);
         channel::spawn_channel(url, dc_recv_rx, dc_send_tx).await?;
     }
 

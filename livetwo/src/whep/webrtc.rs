@@ -21,6 +21,9 @@ use webrtc::{
 use crate::utils;
 use crate::utils::stats::RtcpStats;
 
+/// DataChannel label used to join liveion's WHEP group for bidirectional control messaging.
+const DATA_CHANNEL_LABEL: &str = "control";
+
 pub async fn setup_whep_peer(
     ct: CancellationToken,
     client: &mut Client,
@@ -147,11 +150,11 @@ async fn create_peer(
 
     // Create DataChannel to participate in liveion's WHEP group
     let dc = peer
-        .create_data_channel("control", None)
+        .create_data_channel(DATA_CHANNEL_LABEL, None)
         .await
         .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
 
-    // detach 模式：在 on_open 里 detach，然后用 raw read/write loop
+    // Detach mode: call detach() inside on_open, then drive reads/writes via raw loops.
     let dc_for_detach = dc.clone();
     dc.on_open(Box::new(move || {
         info!("whepfrom: DataChannel opened");
@@ -165,33 +168,39 @@ async fn create_peer(
                 }
             };
 
-            // raw read loop: DataChannel -> dc_recv_tx
+            // Single task driving both directions with tokio::select!:
+            // - raw read  -> dc_recv_tx (DataChannel -> upstream)
+            // - dc_send_rx -> raw write (upstream -> DataChannel)
             let raw_r = raw.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 65536];
                 loop {
-                    match raw_r.read(&mut buf).await {
-                        Ok(0) => {
-                            info!("whepfrom: DataChannel read loop ended");
-                            break;
-                        }
-                        Ok(n) => {
-                            let _ = dc_recv_tx.send(buf[..n].to_vec());
-                        }
-                        Err(e) => {
-                            info!("whepfrom: DataChannel read error: {}", e);
-                            break;
-                        }
-                    }
-                }
-            });
-
-            // raw write loop: dc_send_rx -> DataChannel
-            tokio::spawn(async move {
-                while let Some(data) = dc_send_rx.recv().await {
-                    if let Err(e) = raw.write(&data.into()).await {
-                        warn!("whepfrom: DataChannel write failed: {}", e);
-                        break;
+                    tokio::select! {
+                        result = raw_r.read(&mut buf) => match result {
+                            Ok(0) => {
+                                info!("whepfrom: DataChannel read loop ended");
+                                break;
+                            }
+                            Ok(n) => {
+                                let _ = dc_recv_tx.send(buf[..n].to_vec());
+                            }
+                            Err(e) => {
+                                info!("whepfrom: DataChannel read error: {}", e);
+                                break;
+                            }
+                        },
+                        msg = dc_send_rx.recv() => match msg {
+                            Some(data) => {
+                                if let Err(e) = raw.write(&data.into()).await {
+                                    warn!("whepfrom: DataChannel write failed: {}", e);
+                                    break;
+                                }
+                            }
+                            None => {
+                                info!("whepfrom: DataChannel send channel closed");
+                                break;
+                            }
+                        },
                     }
                 }
             });

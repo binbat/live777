@@ -95,6 +95,7 @@ base64 = "0.22"
 [dev-dependencies]
 http = { workspace = true }
 serde_json = { workspace = true }
+portpicker = "0.1.1"
 
 api = { path = "libs/api" }
 cli = { path = "libs/cli" }

@@ -19,9 +19,6 @@ async fn test_livetwo_rtp_vp8() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5000;
-    let whep_port: u16 = 5005;
-
     let width = 1280;
     let height = 720;
     let vcodec = "-vcodec libvpx -pix_fmt yuv420p -g 30 -keyint_min 30 -deadline realtime -speed 4 -b:v 2000k -maxrate 2500k -bufsize 5000k";
@@ -31,8 +28,6 @@ async fn test_livetwo_rtp_vp8() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -46,9 +41,6 @@ async fn test_livetwo_rtp_vp8_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5010;
-    let whep_port: u16 = 5015;
-
     let width = 1280;
     let height = 720;
     let vcodec = "-vcodec libvpx -pix_fmt yuv420p -g 30 -keyint_min 30 -deadline realtime -speed 4 -b:v 2000k -maxrate 2500k -bufsize 5000k";
@@ -58,8 +50,6 @@ async fn test_livetwo_rtp_vp8_ipv6() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -73,9 +63,6 @@ async fn test_livetwo_rtp_vp9() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5020;
-    let whep_port: u16 = 5025;
-
     let width = 1280;
     let height = 720;
     let vcodec = "-vcodec libvpx-vp9 -pix_fmt yuv420p -g 30 -keyint_min 30 -deadline realtime -speed 5 -row-mt 1 -tile-columns 2 -frame-parallel 1 -b:v 1800k -maxrate 2200k -bufsize 4400k";
@@ -87,8 +74,6 @@ async fn test_livetwo_rtp_vp9() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -102,9 +87,6 @@ async fn test_livetwo_rtp_h264() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5030;
-    let whep_port: u16 = 5035;
-
     let width = 1280;
     let height = 720;
     let vcodec = "-vcodec libx264 -pix_fmt yuv420p -g 30 -keyint_min 30 -crf 23 -preset ultrafast -tune zerolatency -profile:v main -level 4.1";
@@ -114,8 +96,6 @@ async fn test_livetwo_rtp_h264() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -129,9 +109,6 @@ async fn test_livetwo_rtp_h265() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5090;
-    let whep_port: u16 = 5095;
-
     let width = 1280;
     let height = 720;
     let vcodec = "-vcodec libx265 -pix_fmt yuv420p -g 30 -keyint_min 30 -crf 25 -preset ultrafast -tune zerolatency -profile:v main -level 4.1";
@@ -141,8 +118,6 @@ async fn test_livetwo_rtp_h265() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -156,9 +131,6 @@ async fn test_livetwo_rtp_vp9_4k() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5040;
-    let whep_port: u16 = 5045;
-
     let width = 3840;
     let height = 2160;
     let vcodec = "-vcodec libvpx-vp9 -pix_fmt yuv420p -g 30 -keyint_min 30 -deadline realtime -speed 5 -row-mt 1 -tile-columns 2 -frame-parallel 1 -b:v 10m -maxrate 15m -bufsize 30m";
@@ -170,8 +142,6 @@ async fn test_livetwo_rtp_vp9_4k() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -185,9 +155,6 @@ async fn test_livetwo_rtp_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5050;
-    let whep_port: u16 = 5055;
-
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
 
@@ -195,8 +162,6 @@ async fn test_livetwo_rtp_opus() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(2),
             video: None,
@@ -210,9 +175,6 @@ async fn test_livetwo_rtp_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 5060;
-    let whep_port: u16 = 5065;
-
     let acodec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
 
@@ -220,8 +182,6 @@ async fn test_livetwo_rtp_g722() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(1),
             video: None,
@@ -234,9 +194,6 @@ async fn test_livetwo_rtp_g722() {
 async fn test_livetwo_rtp_vp8_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
-
-    let whip_port: u16 = 5070;
-    let whep_port: u16 = 5075;
 
     let width = 1280;
     let height = 720;
@@ -251,8 +208,6 @@ async fn test_livetwo_rtp_vp8_opus() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(2),
             video: Some((width, height)),
@@ -265,9 +220,6 @@ async fn test_livetwo_rtp_vp8_opus() {
 async fn test_livetwo_rtp_h264_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
-
-    let whip_port: u16 = 5080;
-    let whep_port: u16 = 5085;
 
     let width = 1280;
     let height = 720;
@@ -282,8 +234,6 @@ async fn test_livetwo_rtp_h264_g722() {
         ip,
         port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(1),
             video: Some((width, height)),
@@ -292,14 +242,7 @@ async fn test_livetwo_rtp_h264_g722() {
     .await;
 }
 
-async fn helper_livetwo_rtp(
-    ip: IpAddr,
-    port: u16,
-    prefix: &str,
-    whip_port: u16,
-    whep_port: u16,
-    detect: Detect,
-) {
+async fn helper_livetwo_rtp(ip: IpAddr, port: u16, prefix: &str, detect: Detect) {
     let cfg = liveion::config::Config::default();
 
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
@@ -329,6 +272,10 @@ async fn helper_livetwo_rtp(
         .to_str()
         .unwrap()
         .to_string();
+
+    // Use port 0 to let the OS assign a free port, avoiding conflicts when
+    // tests run concurrently (WSAEADDRINUSE / -10048 on Windows).
+    let whip_port = portpicker::pick_unused_port().unwrap();
 
     let ct = CancellationToken::new();
     let handle_whip = tokio::spawn(livetwo::whip::into(
@@ -382,6 +329,8 @@ async fn helper_livetwo_rtp(
         std::net::IpAddr::V6(_) => format!("[{ip}]"),
         _ => ip.to_string(),
     };
+
+    let whep_port = portpicker::pick_unused_port().unwrap();
 
     let target_url = if detect.audio.is_some() && detect.video.is_some() {
         format!(
