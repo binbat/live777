@@ -44,7 +44,6 @@ export class QRCodeStream {
         this.qrMarginX = (width - this.qrSize) / 2;
         this.qrMarginY = (height - this.qrSize) / 2;
         this.frameRequestCallback = this.frameRequestCallback_unbound.bind(this);
-        // try fit timestamp text beside QR code
         const textMarginX = Math.max(4, width * 0.01);
         const textMarginY = Math.max(4, height * 0.01);
         let fontSize = 1000;
@@ -69,7 +68,7 @@ export class QRCodeStream {
         this.ctx.font = `bold ${fontSize}px monospace`;
         this.textOriginX = textMarginX;
         const realMetrics = this.ctx.measureText(QRCodeStream.TimestampTextSample);
-        this.textOriginY = textMarginY + realMetrics.actualBoundingBoxAscent + realMetrics.actualBoundingBoxDescent;;
+        this.textOriginY = textMarginY + realMetrics.actualBoundingBoxAscent + realMetrics.actualBoundingBoxDescent;
     }
 
     private doFrame(now: number) {
@@ -164,7 +163,10 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
     }
 
     // TODO: move decoding to worker
-    private decodeFrame(now: number, width: number, height: number) {
+    // Detect the QR code from the current video frame and return the sent timestamp encoded in it (milliseconds).
+    // Return null when detection fails or no QR code is present.
+    // Note: this function does not calculate latency; it only reads the timestamp written by the sender.
+    private decodeFrame(width: number, height: number): number | null {
         this.canvas.width = width;
         this.canvas.height = height;
         this.ctx.drawImage(this.video, 0, 0, width, height);
@@ -175,9 +177,9 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
         const detected = this.detector.detect(binarized).next().value;
         if (detected) {
             const decoded = this.decoder.decode(detected.matrix);
-            const latency = now - Number.parseInt(decoded.content, 10);
-            this.emitLatencyEvent(latency);
+            return Number.parseInt(decoded.content, 10);
         }
+        return null;
     }
 
     private videoFrameCallback_unbound(_now: DOMHighResTimeStamp, metadata: VideoFrameCallbackMetadata) {
@@ -186,7 +188,14 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
         if (this.seq >= 5) {
             this.seq = 0;
             try {
-                this.decodeFrame(Date.now(), metadata.width, metadata.height);
+                // Record the "frame ready for processing" time before QR decoding starts.
+                // This ensures the QR decoding cost itself is not included in the latency result.
+                // What is being measured is: sender timestamp write -> receiver video frame becomes available in the callback.
+                const frameReceiveTime = Date.now();
+                const sentTimestamp = this.decodeFrame(metadata.width, metadata.height);
+                if (sentTimestamp !== null) {
+                    this.emitLatencyEvent(frameReceiveTime - sentTimestamp);
+                }
             } catch (e) {
                 console.log(e);
             }
