@@ -79,9 +79,6 @@ export function createStreamToken(req: CreateStreamTokenRequest) {
     return w.url('/api/token').post(req).json<StreamTokenResponse>();
 }
 
-// Recording & Playback APIs
-// removed: unused recording streams listing API placeholder
-
 export interface RecordingSession {
     id?: string;
     stream: string;
@@ -104,22 +101,4 @@ export interface RecordingSessionQuery {
     end_ts?: number;
     limit?: number;
     offset?: number;
-}
-
-export function getSegmentUrl(path: string) {
-    // Use encodeURI so that "/" remains as path separators (server expects wildcard path)
-    return `/api/record/object/${encodeURI(path)}`;
-}
-
-export interface RecordingIndexEntry {
-    record: string;
-    mpd_path: string;
-}
-
-export function getRecordingIndexStreams() {
-    return w.url('/api/playback').get().json<string[]>();
-}
-
-export function getRecordingIndexByStream(stream: string) {
-    return w.url(`/api/playback/${encodeURIComponent(stream)}`).get().json<RecordingIndexEntry[]>();
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { MediaPlayer, type MediaPlayerClass } from 'dashjs';
 
-import { getSegmentUrl } from '@/liveman/api';
+import { getSegmentUrl } from '@/shared/api';
 
 type BitrateInfo = { index: number; bitrate: number; label: string };
 
@@ -409,4 +409,3 @@ export function DashPlayer() {
         </div>
     );
 }
-

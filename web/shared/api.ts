@@ -135,3 +135,20 @@ export async function probeRecorderFeature(force = false): Promise<CapabilityPro
         return 'unavailable';
     }
 }
+
+export function getSegmentUrl(path: string) {
+    return `/api/record/object/${encodeURI(path)}`;
+}
+
+export interface RecordingIndexEntry {
+    record: string;
+    mpd_path: string;
+}
+
+export function getRecordingIndexStreams() {
+    return w.url('/api/playback').get().json<string[]>();
+}
+
+export function getRecordingIndexByStream(stream: string) {
+    return w.url(`/api/playback/${encodeURIComponent(stream)}`).get().json<RecordingIndexEntry[]>();
+}
