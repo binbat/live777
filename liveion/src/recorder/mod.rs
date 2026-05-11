@@ -331,7 +331,31 @@ pub async fn list_playback_entries(stream: &str) -> anyhow::Result<Vec<PlaybackI
         return Ok(Vec::new());
     };
 
-    Ok(index.list_playback_entries(stream).await)
+    let mut entries = index.list_playback_entries(stream).await;
+    if let Some(operator) = STORAGE.read().await.as_ref().cloned() {
+        let mut playable_entries = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match operator.exists(&entry.mpd_path).await {
+                Ok(true) => playable_entries.push(entry),
+                Ok(false) => {
+                    tracing::warn!(
+                        "[recorder] skip playback entry without manifest: {}",
+                        entry.mpd_path
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[recorder] skip playback entry after manifest check failed: {} ({})",
+                        entry.mpd_path,
+                        e
+                    );
+                }
+            }
+        }
+        entries = playable_entries;
+    }
+
+    Ok(entries)
 }
 
 pub async fn read_object(path: &str) -> anyhow::Result<Option<Vec<u8>>> {
