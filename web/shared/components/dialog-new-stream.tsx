@@ -17,6 +17,13 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
     const [streamId, setStreamId] = useState('');
     const refDialog = useRef<HTMLDialogElement>(null);
 
+    const closeDialog = () => {
+        if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
+        refDialog.current?.close();
+    };
+
     useImperativeHandle(ref, () => {
         return {
             show: (initialId: string) => {
@@ -65,7 +72,7 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
         const success = await handleCreateStream(streamId);
         if (success) {
             props.onStreamCreated();
-            refDialog.current?.close();
+            closeDialog();
         }
     };
 
@@ -81,10 +88,10 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
                 </div>
             </Modal.Body>
             <Modal.Actions>
-                <form method="dialog" className="flex gap-2">
-                    <Button onClick={onConfirmNewStreamId}>Confirm</Button>
-                    <Button onClick={() => refDialog.current?.close()}>Cancel</Button>
-                </form>
+                <div className="flex gap-2">
+                    <Button type="button" onClick={onConfirmNewStreamId}>Confirm</Button>
+                    <Button type="button" onClick={closeDialog}>Cancel</Button>
+                </div>
             </Modal.Actions>
         </Modal>
     );
