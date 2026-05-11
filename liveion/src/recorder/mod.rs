@@ -48,6 +48,12 @@ pub struct RecordingInfo {
     pub start_ts_micros: i64,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PlaybackIndexEntry {
+    pub record: String,
+    pub mpd_path: String,
+}
+
 /// Initialize recorder event listener.
 #[cfg(feature = "recorder")]
 pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
@@ -310,6 +316,32 @@ pub async fn delete_recordings(
 
     let deleted = index.delete_acked(req).await?;
     Ok(DeleteRecordingsResponse { deleted })
+}
+
+pub async fn list_playback_streams() -> anyhow::Result<Vec<String>> {
+    let Some(index) = get_index().await else {
+        return Ok(Vec::new());
+    };
+
+    Ok(index.list_streams().await)
+}
+
+pub async fn list_playback_entries(stream: &str) -> anyhow::Result<Vec<PlaybackIndexEntry>> {
+    let Some(index) = get_index().await else {
+        return Ok(Vec::new());
+    };
+
+    Ok(index.list_playback_entries(stream).await)
+}
+
+pub async fn read_object(path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    let storage = STORAGE.read().await;
+    let Some(operator) = storage.as_ref() else {
+        return Ok(None);
+    };
+
+    let bytes = operator.read(path).await?;
+    Ok(Some(bytes.to_vec()))
 }
 
 fn record_key(info: &RecordingInfo) -> String {

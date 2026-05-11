@@ -1,10 +1,8 @@
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-
-#[cfg(feature = "recorder")]
-use http::StatusCode;
+use http::{StatusCode, header};
 
 use crate::AppState;
 use crate::error::AppError;
@@ -21,6 +19,9 @@ pub fn route() -> Router<AppState> {
                 .patch(ack_recordings)
                 .delete(delete_recordings),
         )
+        .route("/api/playback", get(list_playback_streams))
+        .route("/api/playback/{stream}", get(list_playback_entries))
+        .route("/api/record/object/{*path}", get(get_record_object))
 }
 #[cfg(feature = "recorder")]
 async fn record_stream(
@@ -145,4 +146,65 @@ async fn delete_recordings(
     Json(_req): Json<api::recorder::DeleteRecordingsRequest>,
 ) -> crate::result::Result<Json<api::recorder::DeleteRecordingsResponse>> {
     Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn list_playback_streams() -> crate::result::Result<Json<Vec<String>>> {
+    Ok(Json(crate::recorder::list_playback_streams().await?))
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn list_playback_streams() -> crate::result::Result<Json<Vec<String>>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn list_playback_entries(
+    Path(stream): Path<String>,
+) -> crate::result::Result<Json<Vec<crate::recorder::PlaybackIndexEntry>>> {
+    Ok(Json(crate::recorder::list_playback_entries(&stream).await?))
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn list_playback_entries(
+    Path(_stream): Path<String>,
+) -> crate::result::Result<Json<Vec<serde_json::Value>>> {
+    Err(AppError::Throw("feature recorder not enabled".into()))
+}
+
+#[cfg(feature = "recorder")]
+async fn get_record_object(Path(path): Path<String>) -> crate::result::Result<Response> {
+    let Some(bytes) = crate::recorder::read_object(&path).await? else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Recorder storage is not available",
+        )
+            .into_response());
+    };
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, record_object_content_type(&path))],
+        bytes,
+    )
+        .into_response())
+}
+
+#[cfg(not(feature = "recorder"))]
+async fn get_record_object(Path(_path): Path<String>) -> crate::result::Result<Response> {
+    Ok((StatusCode::NOT_IMPLEMENTED, "feature recorder not enabled").into_response())
+}
+
+fn record_object_content_type(path: &str) -> &'static str {
+    if path.ends_with(".mpd") {
+        "application/dash+xml"
+    } else if path.ends_with(".m4s") || path.ends_with(".mp4") {
+        if path.contains("audio_") {
+            "audio/mp4"
+        } else {
+            "video/mp4"
+        }
+    } else {
+        "application/octet-stream"
+    }
 }

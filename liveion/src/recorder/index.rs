@@ -155,6 +155,38 @@ impl RecordingsIndex {
         (sessions, last_ts)
     }
 
+    pub async fn list_streams(&self) -> Vec<String> {
+        let mut streams: Vec<String> = {
+            let map = self.entries.read().await;
+            map.values().map(|entry| entry.stream.clone()).collect()
+        };
+
+        streams.sort();
+        streams.dedup();
+        streams
+    }
+
+    pub async fn list_playback_entries(
+        &self,
+        stream: &str,
+    ) -> Vec<super::PlaybackIndexEntry> {
+        let mut rows: Vec<RecordingIndexEntry> = {
+            let map = self.entries.read().await;
+            map.values()
+                .filter(|entry| entry.stream == stream)
+                .cloned()
+                .collect()
+        };
+
+        rows.sort_by(|a, b| a.record.cmp(&b.record));
+        rows.into_iter()
+            .map(|entry| super::PlaybackIndexEntry {
+                record: entry.record,
+                mpd_path: entry.mpd_path,
+            })
+            .collect()
+    }
+
     pub async fn ack(&self, req: AckRecordingsRequest) -> Result<usize> {
         let mut acked = 0usize;
         let records = req.records;
