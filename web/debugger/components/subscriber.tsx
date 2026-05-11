@@ -69,8 +69,14 @@ export default function Subscriber() {
     const start = async () => {
         clear();
         stopQrLatencyMeasure();
+        const streamId = ((searchParams.id as string) || "").trim();
+        if (!streamId) {
+            setLogs("Stream ID is required before subscribing.");
+            return;
+        }
+
         [stop, mute, selectLayer] = await subscribe({
-            url: `${location.origin}/whep/${searchParams.id || "-"}`,
+            url: `${location.origin}/whep/${encodeURIComponent(streamId)}`,
             token: (searchParams.token as string) || "",
             onStream: (stream: MediaStream | null): void => {
                 setAudioTrackCount(stream ? stream.getAudioTracks().length : 0);
