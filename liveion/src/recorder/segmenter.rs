@@ -841,6 +841,10 @@ impl Segmenter {
             self.stream
         );
 
+        if name == MANIFEST_FILENAME {
+            return self.store_file_now(path, data).await;
+        }
+
         if let Some(uploader) = self.uploader.as_ref()
             && let Some(local_dir) = self.local_dir.as_ref()
         {
@@ -903,6 +907,25 @@ impl Segmenter {
 
         // Return immediately. The caller does not need to wait for persistence; worst-case we
         // lose one fragment, which is acceptable for live streaming.
+        Ok(())
+    }
+
+    async fn store_file_now(&self, path: String, data: Vec<u8>) -> Result<()> {
+        if let Some(uploader) = self.uploader.as_ref()
+            && let Some(local_dir) = self.local_dir.as_ref()
+        {
+            let local_path = local_dir.join(&path);
+            if let Some(parent) = local_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(&local_path, data).await?;
+            uploader
+                .enqueue(path, local_path.to_string_lossy().to_string())
+                .await?;
+        } else {
+            self.op.write(&path, data).await?;
+        }
+
         Ok(())
     }
 }
