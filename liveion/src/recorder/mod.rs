@@ -323,7 +323,15 @@ pub async fn list_playback_streams() -> anyhow::Result<Vec<String>> {
         return Ok(Vec::new());
     };
 
-    Ok(index.list_streams().await)
+    let streams = index.list_streams().await;
+    let mut playable_streams = Vec::with_capacity(streams.len());
+    for stream in streams {
+        if !list_playback_entries(&stream).await?.is_empty() {
+            playable_streams.push(stream);
+        }
+    }
+
+    Ok(playable_streams)
 }
 
 pub async fn list_playback_entries(stream: &str) -> anyhow::Result<Vec<PlaybackIndexEntry>> {
