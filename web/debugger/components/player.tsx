@@ -1,4 +1,5 @@
-import { createEffect, createSignal, onMount } from "solid-js";
+import { createSignal, createEffect } from "solid-js";
+import PlayerCore from "../../alone-player/player-core";
 
 const DisplayWidthOptions = [
     { value: "320px", text: "320px" },
@@ -12,13 +13,14 @@ const DisplayWidthOptions = [
 export default function Player(props: {
     stream: MediaStream;
     onVideoElement?: (video: HTMLVideoElement) => void;
+    getPeerConnection?: () => RTCPeerConnection | null;
 }) {
     const [resolution, setResolution] = createSignal("");
     const [displayWidth, setDisplayWidth] = createSignal("320px");
 
     let ref: HTMLVideoElement | undefined;
 
-    onMount(() => {
+    createEffect(() => {
         if (ref) {
             ref.srcObject = props.stream;
         }
@@ -47,17 +49,24 @@ export default function Player(props: {
                 </select>
             </label>
             <br />
-            <video
-                ref={ref}
-                style={{ width: displayWidth() }}
-                onResize={(e) => {
-                    const video = e.target as HTMLVideoElement;
-                    setResolution(`${video.videoWidth}x${video.videoHeight}`);
-                }}
-                autoplay={true}
-                muted={true}
-                controls={true}
-            />
+            <div style={{ width: displayWidth() }}>
+                <PlayerCore
+                    autoplay
+                    muted
+                    controls
+                    getPeerConnection={props.getPeerConnection}
+                    onVideoElement={(video) => {
+                        ref = video;
+                        ref.srcObject = props.stream;
+                        props.onVideoElement?.(video);
+                        video.addEventListener("resize", () => {
+                            setResolution(
+                                `${video.videoWidth}x${video.videoHeight}`,
+                            );
+                        });
+                    }}
+                />
+            </div>
         </>
     );
 }

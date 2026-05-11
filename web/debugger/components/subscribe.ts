@@ -5,6 +5,7 @@ type startWhepConfig = {
     token: string;
     onStream: (stream: MediaStream | null) => void;
     onChannel: (channel: RTCDataChannel) => void;
+    onPeerConnection?: (peerConnection: RTCPeerConnection | null) => void;
     log: (msg: string) => void;
 };
 
@@ -24,6 +25,7 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
 
     cfg.log("started");
     const pc = new RTCPeerConnection();
+    cfg.onPeerConnection?.(pc);
 
     // NOTE:
     // 1. Live777 Don't support label
@@ -66,6 +68,7 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
         }
         cfg.log("stopped");
         cfg.onStream(null);
+        cfg.onPeerConnection?.(null);
     };
 
     // biome-ignore lint/suspicious/noExplicitAny: This whip-whep.js use any type

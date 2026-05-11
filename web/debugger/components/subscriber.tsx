@@ -19,6 +19,8 @@ export default function Subscriber() {
     const [disabledAudio, setDisabledAudio] = createSignal(false);
     const [disabledVideo, setDisabledVideo] = createSignal(false);
     const [stream, setStream] = createSignal<MediaStream | null>(null);
+    const [peerConnection, setPeerConnection] =
+        createSignal<RTCPeerConnection | null>(null);
     const [datachannel, setDatachannel] = createSignal<RTCDataChannel | null>(
         null,
     );
@@ -80,6 +82,9 @@ export default function Subscriber() {
             },
             onChannel: (channel: RTCDataChannel): void => {
                 setDatachannel(channel);
+            },
+            onPeerConnection: (pc: RTCPeerConnection | null): void => {
+                setPeerConnection(pc);
             },
             log: setLogs,
         });
@@ -179,6 +184,7 @@ export default function Subscriber() {
                                 onVideoElement={(video) => {
                                     videoRef = video;
                                 }}
+                                getPeerConnection={() => peerConnection()}
                             />
                         )}
                     </Show>
