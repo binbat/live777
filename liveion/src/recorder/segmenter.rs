@@ -314,7 +314,7 @@ impl Segmenter {
         self.total_bytes += sample_len;
         self.total_ticks += dur as u64;
 
-        let fps_cur = if dur > 0 { self.timescale / dur } else { 0 };
+        let fps_cur = self.timescale.checked_div(dur).unwrap_or(0);
         if fps_cur > 0 && (self.frame_rate == 0 || fps_cur > self.frame_rate) {
             self.frame_rate = fps_cur;
         }
@@ -733,10 +733,14 @@ impl Segmenter {
                     h = w % h;
                     w = tmp;
                 }
-                if w == 0 {
-                    "1:1".to_string()
-                } else {
-                    format!("{}:{}", self.video_width / w, self.video_height / w)
+                match (
+                    self.video_width.checked_div(w),
+                    self.video_height.checked_div(w),
+                ) {
+                    (Some(video_width), Some(video_height)) => {
+                        format!("{video_width}:{video_height}")
+                    }
+                    _ => "1:1".to_string(),
                 }
             } else {
                 "1:1".to_string()

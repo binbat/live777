@@ -22,8 +22,7 @@ export async function collectWebRtcStats(
                 statsNerds.acodec = `${codec}@${report.sdpFmtpLine ?? ""}`;
             }
         } else if (report.type === "candidate-pair" && report.nominated) {
-            statsNerds.currentRoundTripTime =
-                report.currentRoundTripTime ?? 0;
+            statsNerds.currentRoundTripTime = report.currentRoundTripTime ?? 0;
         }
 
         if (report.type === "inbound-rtp" && report.kind === "video") {

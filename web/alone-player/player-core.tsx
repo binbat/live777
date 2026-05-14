@@ -1,6 +1,6 @@
-import { Show, createSignal, onCleanup, onMount } from "solid-js";
-import type { StatsNerds } from "./types";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import Stats from "./stats";
+import type { StatsNerds } from "./types";
 import { collectWebRtcStats } from "./webrtc-stats";
 import "./player.css";
 

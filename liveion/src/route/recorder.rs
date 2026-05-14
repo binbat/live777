@@ -2,7 +2,9 @@ use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use http::{StatusCode, header};
+use http::StatusCode;
+#[cfg(feature = "recorder")]
+use http::header;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -195,6 +197,7 @@ async fn get_record_object(Path(_path): Path<String>) -> crate::result::Result<R
     Ok((StatusCode::NOT_IMPLEMENTED, "feature recorder not enabled").into_response())
 }
 
+#[cfg(feature = "recorder")]
 fn record_object_content_type(path: &str) -> &'static str {
     if path.ends_with(".mpd") {
         "application/dash+xml"
