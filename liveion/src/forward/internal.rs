@@ -1,5 +1,7 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
+#[cfg(feature = "source")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
 use libwish::Client;
@@ -67,6 +69,8 @@ pub(crate) struct PeerForwardInternal {
     event_sender: broadcast::Sender<ForwardEvent>,
     #[cfg(feature = "source")]
     channel: Channel,
+    #[cfg(feature = "source")]
+    channel_started: AtomicBool,
 }
 
 impl PeerForwardInternal {
@@ -93,6 +97,7 @@ impl PeerForwardInternal {
             ice_server,
             event_sender: new_broadcast_channel!(16),
             channel,
+            channel_started: AtomicBool::new(false),
         }
     }
 
@@ -237,6 +242,26 @@ impl PeerForwardInternal {
         }
 
         info!("{} close", self.stream);
+        Ok(())
+    }
+
+    /// Initialize the UDP <-> DataChannel bridge for this stream, if configured.
+    /// Idempotent: subsequent calls are no-ops (guarded by AtomicBool).
+    #[cfg(feature = "source")]
+    pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
+        if self
+            .channel_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if let Some(stream_cfg) = self.channel.streams.get(&self.stream).cloned() {
+            let dc_rx = self.data_channel_forward.publish.subscribe();
+            let dc_tx = self.data_channel_forward.subscribe.clone();
+            super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;
+        }
         Ok(())
     }
 
@@ -493,17 +518,8 @@ impl PeerForwardInternal {
     ) -> Result<()> {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
-        // DataChannel ↔ UDP bidirectional forwarding (feature=source only).
-        // Messages from the WHIP publisher arrive on the subscribe channel.
         #[cfg(feature = "source")]
-        if let Some(stream_cfg) = self.channel.streams.get(&self.stream).cloned() {
-            // UDP acts as a member of the WHIP group:
-            // - dc_rx: receive messages from WHEP group (publish channel)
-            // - dc_tx: send messages to WHEP group (subscribe channel)
-            let dc_rx = self.data_channel_forward.publish.subscribe();
-            let dc_tx = self.data_channel_forward.subscribe.clone();
-            super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;
-        }
+        self.try_init_udp_channel().await?;
         Self::data_channel_forward(dc, sender, receiver).await;
         Ok(())
     }
