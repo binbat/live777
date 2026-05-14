@@ -74,7 +74,6 @@ export default function Subscriber() {
             setLogs("Stream ID is required before subscribing.");
             return;
         }
-
         [stop, mute, selectLayer] = await subscribe({
             url: `${location.origin}/whep/${encodeURIComponent(streamId)}`,
             token: (searchParams.token as string) || "",
