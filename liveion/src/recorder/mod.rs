@@ -52,6 +52,7 @@ pub struct RecordingInfo {
 pub struct PlaybackIndexEntry {
     pub record: String,
     pub mpd_path: String,
+    pub duration_ms: Option<i32>,
 }
 
 /// Initialize recorder event listener.

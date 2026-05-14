@@ -25,6 +25,23 @@ function formatDateTime(timestamp: string): string {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
+function formatDuration(durationMs?: number | null): string {
+    if (durationMs == null || durationMs <= 0) {
+        return '--:--';
+    }
+
+    const totalSeconds = Math.floor(durationMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 function getFileName(path: string) {
     try {
         const idx = path.lastIndexOf('/');
@@ -128,22 +145,19 @@ export function RecordingsPage() {
     return (
         <div className="space-y-6">
             {/* Header */}
-            <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                    <h2 className="text-2xl font-bold flex items-center gap-2">
-                        <Calendar className="w-6 h-6" />
-                        Recordings
-                    </h2>
-                    <Badge color="info" variant="outline">{indexEntries.length} entries</Badge>
-                </div>
-                <Button size="sm" color="ghost" onClick={() => { fetchStreams(); fetchIndex(); }}>
-                    <RefreshCw className="w-4 h-4" />
-                    Refresh
-                </Button>
+            <div className="flex items-center gap-2 px-4 h-12">
+                <span className="font-bold text-lg">Recordings</span>
+                <Badge color="ghost" className="font-bold mr-auto">{indexEntries.length}</Badge>
+                <Button
+                    size="sm"
+                    color="ghost"
+                    endIcon={<RefreshCw className="size-4" />}
+                    onClick={() => { fetchStreams(); fetchIndex(); }}
+                >Refresh</Button>
             </div>
 
             {/* Stream picker */}
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3 px-4">
                 <div className="relative">
                     <Input
                         size="sm"
@@ -190,8 +204,11 @@ export function RecordingsPage() {
                         {list.map(e => (
                             <div key={ e.record } className="border border-base-200 rounded-lg p-3 flex flex-col gap-2">
                                 <div className="flex items-center justify-between">
-                                    <span className="font-medium">{ formatDateTime(e.record)}</span>
-                                    <span className="text-xs opacity-70 font-mono truncate" title={e.mpd_path}>{getFileName(e.mpd_path)}</span>
+                                    <div className="min-w-0">
+                                        <div className="font-medium">{ formatDateTime(e.record)}</div>
+                                        <div className="text-xs opacity-70">Duration {formatDuration(e.duration_ms)}</div>
+                                    </div>
+                                    <span className="text-xs opacity-70 font-mono truncate ml-3" title={e.mpd_path}>{getFileName(e.mpd_path)}</span>
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <Button size="sm" color="primary" className="flex-1" onClick={() => playMpd(e.mpd_path)}>

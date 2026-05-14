@@ -183,6 +183,7 @@ impl RecordingsIndex {
             .map(|entry| super::PlaybackIndexEntry {
                 record: entry.record,
                 mpd_path: entry.mpd_path,
+                duration_ms: entry.duration_ms,
             })
             .collect()
     }

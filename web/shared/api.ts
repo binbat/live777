@@ -143,6 +143,7 @@ export function getSegmentUrl(path: string) {
 export interface RecordingIndexEntry {
     record: string;
     mpd_path: string;
+    duration_ms?: number | null;
 }
 
 export function getRecordingIndexStreams() {
