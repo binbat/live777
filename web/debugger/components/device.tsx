@@ -23,6 +23,7 @@ function uniqByValue<T extends { value: unknown }>(items: T[]) {
 
 export default function Device(props: {
     disabled: boolean;
+    refreshToken: number;
     onSelectAudio: (deviceId: string) => void;
     onSelectVideo: (deviceId: string) => void;
 }) {
@@ -59,6 +60,17 @@ export default function Device(props: {
     };
     createEffect(
         on(
+            () => props.refreshToken,
+            () => {
+                void refreshDevice();
+            },
+            {
+                defer: true,
+            },
+        ),
+    );
+    createEffect(
+        on(
             audioDevices,
             (i) => i.length > 0 && props.onSelectAudio(i[0].value),
             {
@@ -78,13 +90,6 @@ export default function Device(props: {
 
     return (
         <>
-            <button
-                type="button"
-                disabled={props.disabled}
-                onClick={refreshDevice}
-            >
-                Use Device
-            </button>
             <div style="margin: 0.2rem">
                 Audio Device:
                 <select

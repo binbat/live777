@@ -1,4 +1,4 @@
-import { createSignal, onMount } from "solid-js";
+import { createEffect, createSignal, onMount } from "solid-js";
 
 const DisplayWidthOptions = [
     { value: "320px", text: "320px" },
@@ -9,7 +9,10 @@ const DisplayWidthOptions = [
     { value: "", text: "auto" },
 ];
 
-export default function Player(props: { stream: MediaStream }) {
+export default function Player(props: {
+    stream: MediaStream;
+    onVideoElement?: (video: HTMLVideoElement) => void;
+}) {
     const [resolution, setResolution] = createSignal("");
     const [displayWidth, setDisplayWidth] = createSignal("320px");
 
@@ -18,6 +21,12 @@ export default function Player(props: { stream: MediaStream }) {
     onMount(() => {
         if (ref) {
             ref.srcObject = props.stream;
+        }
+    });
+
+    createEffect(() => {
+        if (ref) {
+            props.onVideoElement?.(ref);
         }
     });
 

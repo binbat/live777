@@ -15,6 +15,8 @@ const layers = [
 type startWhipConfig = {
     url: string;
     token: string;
+    sourceMode?: "device" | "desktop" | "qrtime";
+    inputStream?: MediaStream | null;
     audio: {
         device: string;
         codec: string;
@@ -46,16 +48,21 @@ export default async function startWhip(
     cfg.log(`audio device: ${!cfg.audio.device ? "none" : cfg.audio.device}`);
     cfg.log(`video device: ${!cfg.video.device ? "none" : cfg.video.device}`);
 
-    const stream =
-        !cfg.audio.device && !cfg.video.device
-            ? await navigator.mediaDevices.getDisplayMedia({
-                  audio: true,
-                  video: videoSize,
-              })
-            : await navigator.mediaDevices.getUserMedia({
-                  audio: { deviceId: cfg.audio.device },
-                  video: { deviceId: cfg.video.device, ...videoSize },
-              });
+    const stream = cfg.inputStream
+        ? cfg.inputStream
+        : cfg.sourceMode === "desktop"
+          ? await navigator.mediaDevices.getDisplayMedia({
+                audio: true,
+                video: videoSize,
+            })
+          : await navigator.mediaDevices.getUserMedia({
+                audio: cfg.audio.device ? { deviceId: cfg.audio.device } : true,
+                video: cfg.video.device
+                    ? { deviceId: cfg.video.device, ...videoSize }
+                    : Object.keys(videoSize).length > 0
+                      ? videoSize
+                      : true,
+            });
 
     cfg.onStream(stream);
 
