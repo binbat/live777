@@ -531,8 +531,9 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
 
     let mut ice_candidates = Vec::new();
 
-    for media_descriptions in session_desc.media_descriptions {
-        let attributes = media_descriptions.attributes;
+    for (mline_index, media_descriptions) in session_desc.media_descriptions.iter().enumerate() {
+        let mline_index = mline_index as u16;
+        let attributes = &media_descriptions.attributes;
 
         let mid = attributes
             .iter()
@@ -544,14 +545,12 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
             .ok_or_else(|| anyhow::anyhow!("no mid"))?
             .ok_or_else(|| anyhow::anyhow!("no mid"))?;
 
-        let mline_index = mid.parse::<u16>()?;
-
         for attr in attributes {
             if attr.is_ice_candidate()
-                && let Some(value) = attr.value
+                && let Some(value) = &attr.value
             {
                 ice_candidates.push(RTCIceCandidateInit {
-                    candidate: value,
+                    candidate: value.clone(),
                     sdp_mid: Some(mid.clone()),
                     sdp_mline_index: Some(mline_index),
                     username_fragment: None,

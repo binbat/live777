@@ -4,6 +4,7 @@ import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 import tailwindcss from 'tailwindcss';
 import daisyui from 'daisyui';
+import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 export const ProjectRoot = resolve(import.meta.dirname, '..');
 
@@ -48,7 +49,15 @@ export default defineConfig({
         emptyOutDir: true,
     },
     plugins: [
-        preact()
+        preact(),
+        viteStaticCopy({
+            targets: [
+                {
+                    src: resolve(ProjectRoot, 'web/assets/av1_samples/*').replace(/\\/g, '/'),
+                    dest: 'assets/av1_samples',
+                },
+            ],
+        }),
     ],
     resolve: {
         alias: {

@@ -73,6 +73,10 @@ pub enum VideoCodecParams {
         payload_type: u8,
         clock_rate: u32,
     },
+    AV1 {
+        payload_type: u8,
+        clock_rate: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +158,10 @@ impl From<cli::Codec> for VideoCodecParams {
                 clock_rate: 90000,
             },
             cli::Codec::Vp9 => VideoCodecParams::VP9 {
+                payload_type: 96,
+                clock_rate: 90000,
+            },
+            cli::Codec::AV1 => VideoCodecParams::AV1 {
                 payload_type: 96,
                 clock_rate: 90000,
             },
@@ -243,6 +251,15 @@ impl From<VideoCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecC
                     clock_rate,
                     channels: 0,
                     sdp_fmtp_line: "profile-id=0".to_string(),
+                    rtcp_feedback: vec![],
+                }
+            }
+            VideoCodecParams::AV1 { clock_rate, .. } => {
+                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                    mime_type: "video/AV1".to_string(),
+                    clock_rate,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_string(),
                     rtcp_feedback: vec![],
                 }
             }

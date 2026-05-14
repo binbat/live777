@@ -94,6 +94,10 @@ fn parse_video_codec(media: &sdp_types::Media) -> Option<VideoCodecParams> {
             payload_type,
             clock_rate,
         }),
+        "AV1" => Some(VideoCodecParams::AV1 {
+            payload_type,
+            clock_rate,
+        }),
         _ => {
             warn!("Unsupported video codec: {}", codec_name);
             None

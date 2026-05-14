@@ -28,28 +28,29 @@
   "dependencies": {
     "@binbat/whip-whep": "1.1.1-sdp-trickle-throw",
     "@heroicons/react": "^2.2.0",
-    "@nuintun/qrcode": "^5.0.2",
-    "dashjs": "^5.0.3",
+    "@nuintun/qrcode": "^5.0.3",
+    "dashjs": "^5.1.1",
     "lucide-react": "^0.552.0",
-    "preact": "^10.27.2",
+    "preact": "^10.29.1",
     "preact-router": "^4.1.2",
     "react-daisyui": "^5.0.5",
-    "typescript-event-target": "^1.1.1",
-    "wretch": "^3.0.2"
+    "typescript-event-target": "^1.1.2",
+    "wretch": "^3.0.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.3",
-    "@eslint/js": "^9.39.1",
-    "@preact/preset-vite": "^2.10.2",
+    "@eslint/js": "^9.39.4",
+    "@preact/preset-vite": "^2.10.5",
     "@stylistic/eslint-plugin-js": "^4.4.1",
-    "@types/node": "^24.10.0",
+    "@types/node": "^24.12.3",
     "daisyui": "^4.12.24",
-    "eslint": "^9.39.1",
-    "tailwindcss": "^3.4.17",
+    "eslint": "^9.39.4",
+    "tailwindcss": "^3.4.19",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.46.3",
-    "vite": "^7.2.0",
-    "vite-plugin-solid": "^2.11.10",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^7.3.3",
+    "vite-plugin-solid": "^2.11.12",
+    "vite-plugin-static-copy": "^2.0.0",
     "vitepress": "^1.6.4"
   }
 }

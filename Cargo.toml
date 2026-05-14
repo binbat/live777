@@ -126,8 +126,12 @@ opendal = "0.55.0"
 
 toml = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rav1e = { version = "0.7", optional = true, default-features = false }
+bytes = "1.6"
 
 [features]
+default = ["av1"]
+av1 = ["rav1e"]
 webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]

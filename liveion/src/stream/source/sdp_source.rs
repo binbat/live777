@@ -447,6 +447,8 @@ impl SdpSource {
                 sdp_fmtp_line: if codec.codec_name.to_uppercase() == "H264" {
                     "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
                         .to_string()
+                } else if codec.codec_name.to_uppercase() == "VP9" {
+                    "profile-id=0".to_string()
                 } else {
                     String::new()
                 },

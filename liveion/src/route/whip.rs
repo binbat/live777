@@ -24,7 +24,7 @@ async fn whip(
     let content_type = header
         .get(header::CONTENT_TYPE)
         .ok_or(anyhow::anyhow!("Content-Type is required"))?;
-    if content_type.to_str()? != "application/sdp" {
+    if !content_type.to_str()?.starts_with("application/sdp") {
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
     let filtered_sdp = maybe_filter_codecs(&body, &state.config.sdp.disable_codecs)?;
