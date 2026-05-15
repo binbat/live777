@@ -1,6 +1,9 @@
 import { WHEPClient } from "@binbat/whip-whep/whep.js";
-import { createEffect, createSignal, onCleanup } from "solid-js";
-import PlayerCore from "./player-core";
+import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
+import Stats from "./stats";
+import type { StatsNerds } from "./types";
+import { collectWebRtcStats } from "./webrtc-stats";
+import "./player.css";
 
 export default () => {
     const [streamId, setStreamId] = createSignal("");
@@ -10,9 +13,12 @@ export default () => {
     const [reconnect, setReconnect] = createSignal(0);
     const [token, setToken] = createSignal("");
 
+    const [statsNerds, setStatsNerds] = createSignal<StatsNerds | null>(null);
+
     let videoRef: HTMLVideoElement | undefined;
     let peerConnectionRef: RTCPeerConnection | null = null;
     let whepClientRef: WHEPClient | null = null;
+    let statsInterval: ReturnType<typeof setInterval> | null = null;
 
     createEffect(() => {
         const params = new URLSearchParams(location.search);
@@ -97,20 +103,54 @@ export default () => {
         }
     };
 
+    const stopSyncStats = () => {
+        if (statsInterval) {
+            clearInterval(statsInterval);
+            statsInterval = null;
+        }
+        setStatsNerds(null);
+    };
+
+    const syncStats = async () => {
+        if (!peerConnectionRef) return;
+
+        const stats = await collectWebRtcStats(peerConnectionRef);
+        stats.muted = videoRef?.muted;
+        setStatsNerds(stats);
+    };
+
+    const startSyncStats = () => {
+        if (statsInterval) return;
+        syncStats();
+        statsInterval = setInterval(syncStats, 1000);
+    };
+
+    onMount(() => {
+        videoRef?.addEventListener("contextmenu", startSyncStats);
+    });
+
     onCleanup(() => {
         handleStop();
+        videoRef?.removeEventListener("contextmenu", startSyncStats);
+        stopSyncStats();
     });
 
     return (
-        <PlayerCore
-            autoplay={autoPlay()}
-            muted={muted()}
-            controls={controls()}
-            onClick={handleVideoClick}
-            onVideoElement={(video) => {
-                videoRef = video;
-            }}
-            getPeerConnection={() => peerConnectionRef}
-        />
+        <div id="player" class="player-wrapper">
+            <video
+                ref={videoRef}
+                autoplay={autoPlay()}
+                muted={muted()}
+                controls={controls()}
+                onClick={handleVideoClick}
+            />
+            <Show when={statsNerds()}>
+                {(stats) => (
+                    <div class="stats-container" id="stats">
+                        <Stats stats={stats()} onClose={stopSyncStats} />
+                    </div>
+                )}
+            </Show>
+        </div>
     );
 };
