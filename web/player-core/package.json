@@ -1,11 +1,13 @@
 {
-  "name": "debugger",
+  "name": "player-core",
   "version": "1.0.0",
-  "description": "Live777 debugger",
+  "description": "Live777 player core",
   "type": "module",
   "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
@@ -13,18 +15,11 @@
   },
   "scripts": {
     "dev": "vite build --watch",
-    "dev:debugger": "vite dev",
-    "build": "vite build",
+    "build": "vite build && tsc -p tsconfig.dts.json",
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "dependencies": {
-    "player-core": "workspace:*"
-  },
   "devDependencies": {
-    "@nuintun/qrcode": "^5.0.2",
-    "@solidjs/router": "^0.15.3",
-    "solid-js": "^1.9.10",
-    "typescript-event-target": "^1.1.1"
+    "solid-js": "^1.9.10"
   }
 }
