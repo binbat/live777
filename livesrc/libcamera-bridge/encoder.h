@@ -12,6 +12,7 @@ public:
 
     bool init(const CameraParams& params);
     void encode(const uint8_t* data, size_t size, uint64_t timestamp);
+    void encodeShared(int dma_fd, size_t size, uint64_t timestamp);
     void stop();
     void requestKeyframe();
     

@@ -461,10 +461,12 @@ impl SourceConfig {
             && !url_lower.starts_with("file://")
             && !url_lower.ends_with(".sdp")
             && !url_lower.starts_with("rtp://")
+            && !url_lower.starts_with("exec://")
             && !url_lower.starts_with("libcamera://")
+            && !url_lower.starts_with("v4l2://")
         {
             anyhow::bail!(
-                "Invalid URL format: {}. Must be rtsp://, rtsps://, file://, rtp://, libcamera:// or end with .sdp",
+                "Invalid URL format: {}. Must be rtsp://, rtsps://, file://, rtp://, exec://, libcamera://, v4l2:// or end with .sdp",
                 self.url
             );
         }

@@ -70,6 +70,7 @@ impl StreamEntryConfig {
         let src = self.source.to_lowercase();
         let valid = src.starts_with("rtp://")
             || src.starts_with("libcamera://")
+            || src.starts_with("v4l2://")
             || src.starts_with("rtsp://")
             || src.starts_with("rtsps://")
             || src.starts_with("file://")
@@ -77,7 +78,7 @@ impl StreamEntryConfig {
 
         if !valid {
             anyhow::bail!(
-                "Unsupported source URL: {}. Valid schemes: rtp://, libcamera://, rtsp://, file://, .sdp",
+                "Unsupported source URL: {}. Valid schemes: rtp://, libcamera://, v4l2://, rtsp://, file://, .sdp",
                 self.source
             );
         }
@@ -367,4 +368,67 @@ mod tests {
         };
         assert_eq!(cfg.daemon_policy(), DaemonPolicy::Always);
     }
+}
+
+/// Parse a `v4l2://` URL for direct V4L2 capture.
+///
+/// Format: `v4l2:///dev/video2?width=640&height=480&fps=30&bitrate=2000000`
+pub fn parse_v4l2_url(url: &str) -> anyhow::Result<V4L2UrlParams> {
+    let stripped = url.strip_prefix("v4l2://").ok_or_else(|| anyhow::anyhow!("URL must start with v4l2://"))?;
+    let (device_part, query_part) = match stripped.find('?') {
+        Some(idx) => (&stripped[..idx], Some(&stripped[idx + 1..])),
+        None => (stripped, None),
+    };
+
+    let device = if device_part.is_empty() { "/dev/video2".to_string() } else { device_part.to_string() };
+
+    let mut width: u32 = 640;
+    let mut height: u32 = 480;
+    let mut fps: u32 = 30;
+    let mut bitrate: u32 = 2_000_000;
+    let mut profile = "42001f".to_string();
+    let clock_rate: u32 = 90000;
+    let mut payload_type: u8 = 96;
+
+    if let Some(query) = query_part {
+        for param in query.split('&') {
+            let (key, value) = match param.find('=') {
+                Some(idx) => (&param[..idx], &param[idx + 1..]),
+                None => continue,
+            };
+            match key {
+                "width" | "w" => width = value.parse().unwrap_or(640),
+                "height" | "h" => height = value.parse().unwrap_or(480),
+                "fps" | "f" => fps = value.parse().unwrap_or(30),
+                "bitrate" | "b" => bitrate = value.parse().unwrap_or(2_000_000),
+                "profile" => profile = value.into(),
+                "pt" => payload_type = value.parse().unwrap_or(96),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(V4L2UrlParams {
+        device,
+        width,
+        height,
+        fps,
+        bitrate,
+        profile,
+        clock_rate,
+        payload_type,
+    })
+}
+
+/// Parsed parameters from a `v4l2://` URL.
+#[derive(Debug, Clone)]
+pub struct V4L2UrlParams {
+    pub device: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate: u32,
+    pub profile: String,
+    pub clock_rate: u32,
+    pub payload_type: u8,
 }
