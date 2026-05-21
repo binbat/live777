@@ -17,6 +17,8 @@ pub mod source_router;
 pub mod rtp_listener;
 #[cfg(feature = "source-libcamera")]
 pub mod libcamera_source;
+#[cfg(feature = "source-libcamera")]
+pub mod v4l2_source;
 
 pub mod manager;
 
@@ -26,6 +28,8 @@ pub use rtsp_source::RtspSource;
 pub use sdp_source::SdpSource;
 #[cfg(feature = "source-libcamera")]
 pub use libcamera_source::LibcameraSource;
+#[cfg(feature = "source-libcamera")]
+pub use v4l2_source::V4L2Source;
 
 pub use manager::SourceManager;
 

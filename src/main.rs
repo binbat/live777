@@ -14,7 +14,7 @@ struct Args {
     #[arg(short = 'v', action = ArgAction::Count)]
     verbose: u8,
     /// Set config file path
-    #[arg(short, long, default_value_t = format!("{}.toml", "live777"))]
+    #[arg(short, long, default_value_t = format!("{}.toml", if option_env!("CXXFLAGS").unwrap_or("").contains("PLATFORM_RDK") { "livesrc-rdk" } else { "live777" }))]
     config: String,
 }
 

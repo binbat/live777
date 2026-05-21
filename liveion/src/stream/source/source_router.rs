@@ -52,6 +52,20 @@ pub async fn create_source_extended(url: &str, config: &SourceConfig) -> Result<
         }
     }
 
+    // Check for V4L2 Direct Capture scheme
+    if url_lower.starts_with("v4l2://") {
+        #[cfg(feature = "source-libcamera")]
+        {
+            use super::v4l2_source::V4L2Source;
+            let source = V4L2Source::from_url(url, config)?;
+            return Ok(Box::new(source));
+        }
+        #[cfg(not(feature = "source-libcamera"))]
+        {
+            anyhow::bail!("V4L2 source requires feature 'source-libcamera' (shared hardware encoder)");
+        }
+    }
+
     // Delegate to existing, unmodified factory for legacy schemes (rtsp://, file://, .sdp)
     super::create_legacy_source_from_url(url, config).await
 }

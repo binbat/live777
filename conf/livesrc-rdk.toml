@@ -1,0 +1,19 @@
+[http]
+listen = "0.0.0.0:7777"
+cors = true
+
+[[ice_servers]]
+urls = [
+    "stun:stun.l.google.com:19302",
+]
+
+[stream]
+[[stream.sources]]
+stream_id = "usbcam"
+# RDK X5 专用 V4L2 配置：
+# 1. 务必确认 /dev/video0 是出流节点，而非 metadata 节点（可用 v4l2-ctl --list-devices 确认）
+# 2. 建议通过 v4l2-ctl 关闭自动曝光，或码率设为 1.5Mbps 防止花屏
+url = "v4l2:///dev/video0?width=640&height=480&fps=30&bitrate=1500000"
+
+[log]
+level = "info"

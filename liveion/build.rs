@@ -7,61 +7,79 @@ fn main() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/bridge_ffi.cpp");
-    println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/bridge_ffi.h");
-    println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/camera.cpp");
-    println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/encoder.cpp");
+    let target = env::var("TARGET").unwrap_or_default();
+    let is_rdk = target.contains("aarch64");
 
-    // 1. Setup Mini-Sysroot if path is provided
-    // Users can set PI_SYSROOT to point to ~/pi-sysroot
-    if let Ok(sysroot) = env::var("PI_SYSROOT") {
+    // 1. Rerun-if-changed for all platforms
+    println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/bridge_ffi.h");
+    if is_rdk {
+        println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/encoder_rdk.cpp");
+        println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/v4l2_capture_rdk.cpp");
+        println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/bridge_v4l2_rdk_ffi.cpp");
+    } else {
+        println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/camera.cpp");
+        println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/encoder.cpp");
+        println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/v4l2_capture.cpp");
+        println!("cargo:rerun-if-changed=../livesrc/libcamera-bridge/bridge_v4l2_ffi.cpp");
+    }
+
+    // 2. Setup Sysroot handles
+    if is_rdk {
+         if let Ok(sysroot) = env::var("RDK_SYSROOT") {
+            let sysroot = PathBuf::from(sysroot);
+            println!("cargo:rustc-link-search=native={}", sysroot.join("usr/lib").display());
+            println!("cargo:rustc-link-search=native={}", sysroot.join("lib").display());
+            unsafe { env::set_var("PKG_CONFIG_ALLOW_CROSS", "1"); }
+         }
+    } else if let Ok(sysroot) = env::var("PI_SYSROOT") {
         let sysroot = PathBuf::from(sysroot);
         let pkg_config_path = sysroot.join("usr/lib/arm-linux-gnueabihf/pkgconfig");
-        
         unsafe {
             env::set_var("PKG_CONFIG_SYSROOT_DIR", &sysroot);
             env::set_var("PKG_CONFIG_PATH", pkg_config_path);
             env::set_var("PKG_CONFIG_ALLOW_CROSS", "1");
         }
-        
-        // Help the linker find the libraries in sysroot
         println!("cargo:rustc-link-search=native={}", sysroot.join("usr/lib/arm-linux-gnueabihf").display());
     }
 
-    // 2. Find libcamera and libevent using pkg-config
-    let mut config = pkg_config::Config::new();
-    config.atleast_version("0.1");
-    
-    match config.probe("libcamera") {
-        Ok(lib) => {
-            for path in lib.include_paths {
-                println!("cargo:include={}", path.display());
-            }
-        }
-        Err(e) => {
-            // If pkg-config fails, we might still proceed if we're not cross-compiling
-            // or if the user has manually set up include paths.
-            println!("cargo:warning=pkg-config failed to find libcamera: {}", e);
+    // 3. Find libcamera (RPi Only)
+    if !is_rdk {
+        let mut config = pkg_config::Config::new();
+        config.atleast_version("0.1");
+        if let Ok(lib) = config.probe("libcamera") {
+            for path in lib.include_paths { println!("cargo:include={}", path.display()); }
         }
     }
 
-    // 3. Build the C++ bridge library using CMake
-    let dst = cmake::Config::new("../livesrc/libcamera-bridge")
-        .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON")
-        .build();
+    // 4. Build the C++ bridge library using CMake
+    let mut cmake_config = cmake::Config::new("../livesrc/libcamera-bridge");
+    cmake_config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+    
+    if is_rdk {
+        cmake_config.define("PLATFORM_RDK", "ON");
+    }
+
+    let dst = cmake_config.build();
 
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=cambridge");
 
-    // 4. Link only CORE dependencies
+    // 5. Link CORE dependencies
     println!("cargo:rustc-link-lib=dylib=stdc++");
-    println!("cargo:rustc-link-lib=dylib=camera");
-    println!("cargo:rustc-link-lib=dylib=camera-base");
-    println!("cargo:rustc-link-lib=dylib=event");
+    if is_rdk {
+        // Direct path for RDK X5 firmware libraries
+        println!("cargo:rustc-link-search=native=/usr/hobot/lib");
+        println!("cargo:rustc-link-search=native=/usr/lib");
+        
+        println!("cargo:rustc-link-lib=dylib=multimedia");
+        println!("cargo:rustc-link-lib=dylib=hbmem");
+        println!("cargo:rustc-link-lib=dylib=vpf");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=camera");
+        println!("cargo:rustc-link-lib=dylib=camera-base");
+        println!("cargo:rustc-link-lib=dylib=event");
+    }
     
-    // THE NUCLEAR OPTION: Ignore all undefined symbols inside shared libraries
-    // This is valid because we know these libraries exist on the target Raspberry Pi.
-    // This stops the linker from recursive dependency checking on the host.
     println!("cargo:rustc-link-arg=-Wl,--allow-shlib-undefined");
     println!("cargo:rustc-link-arg=-Wl,--unresolved-symbols=ignore-in-shared-libs");
 }
