@@ -518,8 +518,6 @@ impl PeerForwardInternal {
     ) -> Result<()> {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
-        #[cfg(feature = "source")]
-        self.try_init_udp_channel().await?;
         Self::data_channel_forward(dc, sender, receiver).await;
         Ok(())
     }

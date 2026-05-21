@@ -32,6 +32,8 @@ async fn test_livetwo_rtp_vp8() {
             audio: None,
             video: Some((width, height)),
         },
+        8800,
+        8802,
     )
     .await;
 }
@@ -54,6 +56,8 @@ async fn test_livetwo_rtp_vp8_ipv6() {
             audio: None,
             video: Some((width, height)),
         },
+        8804,
+        8806,
     )
     .await;
 }
@@ -78,6 +82,8 @@ async fn test_livetwo_rtp_vp9() {
             audio: None,
             video: Some((width, height)),
         },
+        8808,
+        8810,
     )
     .await;
 }
@@ -100,6 +106,8 @@ async fn test_livetwo_rtp_h264() {
             audio: None,
             video: Some((width, height)),
         },
+        8812,
+        8814,
     )
     .await;
 }
@@ -122,6 +130,8 @@ async fn test_livetwo_rtp_h265() {
             audio: None,
             video: Some((width, height)),
         },
+        8816,
+        8818,
     )
     .await;
 }
@@ -146,6 +156,8 @@ async fn test_livetwo_rtp_vp9_4k() {
             audio: None,
             video: Some((width, height)),
         },
+        8820,
+        8822,
     )
     .await;
 }
@@ -166,6 +178,8 @@ async fn test_livetwo_rtp_opus() {
             audio: Some(2),
             video: None,
         },
+        8824,
+        8826,
     )
     .await;
 }
@@ -186,6 +200,8 @@ async fn test_livetwo_rtp_g722() {
             audio: Some(1),
             video: None,
         },
+        8828,
+        8830,
     )
     .await;
 }
@@ -212,6 +228,8 @@ async fn test_livetwo_rtp_vp8_opus() {
             audio: Some(2),
             video: Some((width, height)),
         },
+        8832,
+        8834,
     )
     .await;
 }
@@ -238,11 +256,20 @@ async fn test_livetwo_rtp_h264_g722() {
             audio: Some(1),
             video: Some((width, height)),
         },
+        8838,
+        8840,
     )
     .await;
 }
 
-async fn helper_livetwo_rtp(ip: IpAddr, port: u16, prefix: &str, detect: Detect) {
+async fn helper_livetwo_rtp(
+    ip: IpAddr,
+    port: u16,
+    prefix: &str,
+    detect: Detect,
+    whip_port: u16,
+    whep_port: u16,
+) {
     let cfg = liveion::config::Config::default();
 
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
@@ -273,10 +300,7 @@ async fn helper_livetwo_rtp(ip: IpAddr, port: u16, prefix: &str, detect: Detect)
         .unwrap()
         .to_string();
 
-    // Use port 0 to let the OS assign a free port, avoiding conflicts when
-    // tests run concurrently (WSAEADDRINUSE / -10048 on Windows).
-    let whip_port = portpicker::pick_unused_port().unwrap();
-
+    // Static port assigned per test to avoid WSAEADDRINUSE (-10048) on Windows CI.
     let ct = CancellationToken::new();
     let handle_whip = tokio::spawn(livetwo::whip::into(
         ct.clone(),
@@ -329,8 +353,6 @@ async fn helper_livetwo_rtp(ip: IpAddr, port: u16, prefix: &str, detect: Detect)
         std::net::IpAddr::V6(_) => format!("[{ip}]"),
         _ => ip.to_string(),
     };
-
-    let whep_port = portpicker::pick_unused_port().unwrap();
 
     let target_url = if detect.audio.is_some() && detect.video.is_some() {
         format!(
