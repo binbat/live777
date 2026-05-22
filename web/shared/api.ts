@@ -127,7 +127,13 @@ export async function probeRecorderFeature(force = false): Promise<CapabilityPro
             return 'unauthorized';
         }
 
-        const status: CapabilityProbeStatus = response.ok ? 'available' : 'unavailable';
+        if (!response.ok) {
+            recorderProbeCache = 'unavailable';
+            return 'unavailable';
+        }
+
+        const payload = await response.json().catch(() => null) as { available?: boolean } | null;
+        const status: CapabilityProbeStatus = payload?.available === false ? 'unavailable' : 'available';
         recorderProbeCache = status;
         return status;
     } catch {

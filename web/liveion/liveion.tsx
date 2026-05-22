@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
 import * as api from '@/shared/api';
 import { useNeedAuthorization } from '@/shared/hooks/use-need-authorization';
@@ -15,6 +15,32 @@ export function Liveion() {
         const view = new URLSearchParams(location.search).get('view');
         return view === 'recordings' ? 'recordings' : 'streams';
     });
+    const [recorderAvailable, setRecorderAvailable] = useState(false);
+
+    useEffect(() => {
+        let disposed = false;
+        (async () => {
+            const status = await api.probeRecorderFeature();
+            if (!disposed) {
+                setRecorderAvailable(status === 'available');
+            }
+        })();
+
+        return () => {
+            disposed = true;
+        };
+    }, [token]);
+
+    useEffect(() => {
+        if (recorderAvailable || currentView !== 'recordings') {
+            return;
+        }
+
+        const url = new URL(window.location.href);
+        url.searchParams.delete('view');
+        window.history.replaceState({}, '', url.toString());
+        setCurrentView('streams');
+    }, [currentView, recorderAvailable]);
 
     const onLoginSuccess = (t: string) => {
         setToken(t);
@@ -33,14 +59,14 @@ export function Liveion() {
     };
 
     const renderCurrentView = () => {
-        if (currentView === 'recordings') {
+        if (recorderAvailable && currentView === 'recordings') {
             return <RecordingsPage />;
         }
 
         return (
             <StreamsTable
                 showCascade
-                features={{ debugger: true, player: true, recording: true, autoDetectRecording: true, recordingPlayback: true }}
+                features={{ debugger: true, player: true, recording: recorderAvailable, autoDetectRecording: false, recordingPlayback: recorderAvailable }}
             />
         );
     };
@@ -51,7 +77,7 @@ export function Liveion() {
                 token={token}
                 currentView={currentView}
                 onNavigate={(view: string) => navigateToView(view as 'streams' | 'recordings')}
-                enabledTools={{ debugger: true, player: true, dash: true }}
+                enabledTools={{ debugger: true, player: true, dash: recorderAvailable, recordings: recorderAvailable }}
             >
                 {renderCurrentView()}
             </PageLayout>
