@@ -4,6 +4,11 @@ import solid from "vite-plugin-solid";
 
 export default defineConfig({
     plugins: [solid()],
+    resolve: {
+        alias: {
+            "@": resolve(__dirname, ".."),
+        },
+    },
     build: {
         lib: {
             entry: resolve(__dirname, "main.tsx"),

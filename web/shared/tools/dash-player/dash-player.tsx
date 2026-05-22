@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { MediaPlayer, type MediaPlayerClass } from 'dashjs';
 
-import { getSegmentUrl } from '@/liveman/api';
+import { getSegmentUrl } from '@/shared/api';
 
 type BitrateInfo = { index: number; bitrate: number; label: string };
 
 type WindowWithMediaSource = Window & { MediaSource?: typeof MediaSource };
+type ManifestStatus = 'idle' | 'checking' | 'waiting' | 'ready' | 'error';
+
+const MANIFEST_RETRY_MS = 2000;
+const MANIFEST_REFRESH_MS = 2000;
 
 function formatTime(sec: number) {
     if (!isFinite(sec)) return '00:00:00';
@@ -15,6 +19,28 @@ function formatTime(sec: number) {
     const ss = s % 60;
     const pad = (n: number) => n.toString().padStart(2, '0');
     return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
+}
+
+function manifestHasPlayableSegments(text: string) {
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length > 0) return false;
+
+    for (const timeline of Array.from(doc.getElementsByTagName('SegmentTimeline'))) {
+        if (timeline.getElementsByTagName('S').length > 0) return true;
+    }
+
+    if (doc.getElementsByTagName('SegmentURL').length > 0) return true;
+    if (doc.getElementsByTagName('SegmentBase').length > 0) return true;
+
+    return Array.from(doc.getElementsByTagName('SegmentTemplate')).some(template =>
+        template.hasAttribute('media') && template.hasAttribute('duration')
+    );
+}
+
+function manifestIsDynamic(text: string) {
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length > 0) return false;
+    return doc.documentElement.getAttribute('type') === 'dynamic';
 }
 
 export function DashPlayer() {
@@ -40,6 +66,8 @@ export function DashPlayer() {
     const [hoverPct, setHoverPct] = useState<number | null>(null);
     const [hoverTime, setHoverTime] = useState(0);
     const [unsupportedMsg, setUnsupportedMsg] = useState<string | null>(null);
+    const [manifestStatus, setManifestStatus] = useState<ManifestStatus>('idle');
+    const [isLiveManifest, setIsLiveManifest] = useState(false);
 
     useEffect(() => {
         const params = new URLSearchParams(location.search);
@@ -53,9 +81,71 @@ export function DashPlayer() {
         setIsMuted(mute !== '0');
     }, []);
 
-    // Initialize dash.js
     useEffect(() => {
-        if (!refVideo.current || !mpd) return;
+        if (!mpd) {
+            setManifestStatus('idle');
+            return;
+        }
+
+        let disposed = false;
+        let timer: number | undefined;
+
+        const checkManifest = async () => {
+            setManifestStatus(current => current === 'ready' ? current : 'checking');
+            try {
+                const headers: Record<string, string> = {};
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+                const res = await fetch(getSegmentUrl(mpd), { headers, cache: 'no-store' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+                const text = await res.text();
+                if (!disposed) setIsLiveManifest(manifestIsDynamic(text));
+                if (manifestHasPlayableSegments(text)) {
+                    if (!disposed) setManifestStatus('ready');
+                    return;
+                }
+
+                if (!disposed) {
+                    setManifestStatus('waiting');
+                    timer = window.setTimeout(checkManifest, MANIFEST_RETRY_MS);
+                }
+            } catch (err) {
+                console.warn('[DASH Player] Manifest is not ready:', err);
+                if (!disposed) {
+                    setManifestStatus('error');
+                    timer = window.setTimeout(checkManifest, MANIFEST_RETRY_MS);
+                }
+            }
+        };
+
+        checkManifest();
+
+        return () => {
+            disposed = true;
+            if (timer !== undefined) window.clearTimeout(timer);
+        };
+    }, [mpd, token]);
+
+    useEffect(() => {
+        if (!mpd || !isLiveManifest || manifestStatus !== 'ready') return;
+
+        const player = refPlayer.current;
+        if (!player) return;
+
+        const interval = window.setInterval(() => {
+            try {
+                player.refreshManifest(() => { /* ignore refresh callback */ });
+            } catch (err) {
+                console.warn('[DASH Player] Failed to refresh manifest:', err);
+            }
+        }, MANIFEST_REFRESH_MS);
+
+        return () => window.clearInterval(interval);
+    }, [mpd, isLiveManifest, manifestStatus]);
+
+    // Initialize dash.js after the manifest has at least one playable segment.
+    useEffect(() => {
+        if (!refVideo.current || !mpd || manifestStatus !== 'ready') return;
 
         const player = MediaPlayer().create();
         refPlayer.current = player;
@@ -116,12 +206,12 @@ export function DashPlayer() {
             try { player.reset(); } catch { /* ignore */ }
             refPlayer.current = null;
         };
-    }, [mpd, token, autoplay]);
+    }, [mpd, token, autoplay, manifestStatus]);
 
     // Detect MSE codec/container support before/while initializing
     useEffect(() => {
         (async () => {
-            if (!mpd) return;
+            if (!mpd || manifestStatus !== 'ready') return;
             try {
                 const url = getSegmentUrl(mpd);
                 const headers: Record<string, string> = {};
@@ -154,7 +244,7 @@ export function DashPlayer() {
                 console.warn('[DASH Player] Failed to detect codec support:', err);
             }
         })();
-    }, [mpd, token]);
+    }, [mpd, token, manifestStatus]);
 
     // Retry autoplay when tab becomes visible (some browsers pause background video to save power)
     useEffect(() => {
@@ -343,6 +433,15 @@ export function DashPlayer() {
                     playsInline
                     onClick={togglePlay}
                 />
+                {manifestStatus !== 'ready' && (
+                    <div className="status-panel">
+                        {!mpd
+                            ? 'No MPD selected.'
+                            : manifestStatus === 'error'
+                                ? 'Waiting for the recording manifest...'
+                                : 'Preparing recording playback...'}
+                    </div>
+                )}
 
                 {/* Controls */}
                 <div className="controls">
@@ -409,4 +508,3 @@ export function DashPlayer() {
         </div>
     );
 }
-

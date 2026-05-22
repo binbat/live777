@@ -276,20 +276,14 @@ impl CodecAdapter for H265Adapter {
             let nal_type = (body[0] >> 1) & 0x3F;
 
             match nal_type {
-                32 => {
-                    if Self::store_nalu(&mut self.vps, body) {
-                        cfg_updated = true;
-                    }
+                32 if Self::store_nalu(&mut self.vps, body) => {
+                    cfg_updated = true;
                 }
-                33 => {
-                    if Self::store_nalu(&mut self.sps, body) {
-                        cfg_updated = true;
-                    }
+                33 if Self::store_nalu(&mut self.sps, body) => {
+                    cfg_updated = true;
                 }
-                34 => {
-                    if Self::store_nalu(&mut self.pps, body) {
-                        cfg_updated = true;
-                    }
+                34 if Self::store_nalu(&mut self.pps, body) => {
+                    cfg_updated = true;
                 }
                 16..=21 => {
                     random_access = true;
