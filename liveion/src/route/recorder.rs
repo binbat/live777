@@ -177,9 +177,7 @@ async fn list_playback_entries(
 }
 
 #[cfg(not(feature = "recorder"))]
-async fn list_playback_entries(
-    Path(_stream): Path<String>,
-) -> crate::result::Result<Response> {
+async fn list_playback_entries(Path(_stream): Path<String>) -> crate::result::Result<Response> {
     Ok(recorder_not_enabled())
 }
 

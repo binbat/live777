@@ -99,7 +99,10 @@ export default function Player(props: {
                     <Show when={statsNerds()}>
                         {(stats) => (
                             <div class="stats-container" id="stats">
-                                <Stats stats={stats()} onClose={stopSyncStats} />
+                                <Stats
+                                    stats={stats()}
+                                    onClose={stopSyncStats}
+                                />
                             </div>
                         )}
                     </Show>
