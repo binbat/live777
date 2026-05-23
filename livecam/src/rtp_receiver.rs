@@ -9,12 +9,15 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{error, info, trace, warn};
-use webrtc::rtp::packet::Packet;
+use rtc::rtp::packet::Packet;
 #[cfg(riscv_mode)]
-use webrtc::rtp::{codecs::h264::H264Payloader, packetizer::Payloader};
-use webrtc::track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP};
+use rtc::rtp::codec::h264::H264Payloader;
+#[cfg(riscv_mode)]
+use rtc::rtp::packetizer::Payloader;
+use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+use webrtc::media_stream::track_local::TrackLocal;
 #[cfg(not(riscv_mode))]
-use webrtc::util::Unmarshal;
+use rtc::shared::marshal::Unmarshal;
 
 #[cfg(riscv_mode)]
 const DEFAULT_WIDTH: u32 = 1280;
@@ -66,7 +69,7 @@ async fn rtsp_mode(
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::net::UdpSocket;
     use tokio::process::Command;
-    use webrtc::util::Unmarshal;
+    use rtc::shared::marshal::Unmarshal;
 
     info!("=== RTSP Mode (Internal Server) Starting ===");
     info!(
@@ -180,7 +183,7 @@ async fn rtsp_mode(
 
                         match Packet::unmarshal(&mut &buffer[..size]) {
                             Ok(rtp_packet) => {
-                                if let Err(e) = track.write_rtp(&rtp_packet).await {
+                                if let Err(e) = track.write_rtp(rtp_packet).await {
                                     error!("Failed to write RTP packet: {}", e);
                                     break;
                                 }
@@ -395,7 +398,7 @@ async fn send_rtp(
                     },
                     payload,
                 };
-                track.write_rtp(&packet).await?;
+                track.write_rtp(packet).await?;
                 *sequence_number = sequence_number.wrapping_add(1);
             }
             Ok(())
@@ -432,7 +435,7 @@ async fn normal_mode(
 
                         match Packet::unmarshal(&mut &buffer[..size]) {
                             Ok(rtp_packet) => {
-                                if let Err(e) = track.write_rtp(&rtp_packet).await {
+                                if let Err(e) = track.write_rtp(rtp_packet).await {
                                     error!("Failed to write RTP packet: {}", e);
                                     break;
                                 }

@@ -5,7 +5,8 @@ pub mod cloudflare;
 pub mod coturn;
 
 use serde::{Deserialize, Serialize};
-use webrtc::{Error, ice, ice_transport::ice_server::RTCIceServer};
+use webrtc::error::Error;
+use rtc::peer_connection::transport::RTCIceServer;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IceServer {
@@ -17,10 +18,9 @@ pub struct IceServer {
     pub credential: String,
 }
 
-// from https://github.com/webrtc-rs/webrtc/blob/71157ba2153a891a8cfd819f3cf1441a7a0808d8/webrtc/src/ice_transport/ice_server.rs
 impl IceServer {
-    pub(crate) fn parse_url(&self, url_str: &str) -> webrtc::error::Result<ice::url::Url> {
-        Ok(ice::url::Url::parse_url(url_str)?)
+    pub(crate) fn parse_url(&self, url_str: &str) -> webrtc::error::Result<rtc_ice::url::Url> {
+        Ok(rtc_ice::url::Url::parse_url(url_str)?)
     }
 
     pub fn validate(&self) -> webrtc::error::Result<()> {
@@ -28,12 +28,12 @@ impl IceServer {
         Ok(())
     }
 
-    fn urls(&self) -> webrtc::error::Result<Vec<ice::url::Url>> {
+    fn urls(&self) -> webrtc::error::Result<Vec<rtc_ice::url::Url>> {
         let mut urls = vec![];
 
         for url_str in &self.urls {
             let mut url = self.parse_url(url_str)?;
-            if url.scheme == ice::url::SchemeType::Turn || url.scheme == ice::url::SchemeType::Turns
+            if url.scheme == rtc_ice::url::SchemeType::Turn || url.scheme == rtc_ice::url::SchemeType::Turns
             {
                 // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.2)
                 if self.username.is_empty() || self.credential.is_empty() {

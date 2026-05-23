@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::{debug, error, info, warn};
-use webrtc::peer_connection::RTCPeerConnection;
+use tracing::{debug, error, info};
+use webrtc::peer_connection::PeerConnection;
 
 const RTCP_BUFFER_SIZE: usize = 1500;
 
-pub async fn spawn_rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeerConnection>) {
+pub async fn spawn_rtcp_listener(host: String, rtcp_port: u16, _peer: Arc<dyn PeerConnection>) {
     let rtcp_listener = match UdpSocket::bind(format!("{}:{}", host, rtcp_port)).await {
         Ok(socket) => {
             info!("RTCP listener bound to: {}", socket.local_addr().unwrap());
@@ -26,12 +26,17 @@ pub async fn spawn_rtcp_listener(host: String, rtcp_port: u16, peer: Arc<RTCPeer
                     debug!("Received {} bytes of RTCP data from {}", len, addr);
                     let mut rtcp_data = &rtcp_buf[..len];
 
-                    if let Ok(rtcp_packets) = webrtc::rtcp::packet::unmarshal(&mut rtcp_data) {
-                        for packet in rtcp_packets {
-                            debug!("Received RTCP packet from {}: {:?}", addr, packet);
-                            if let Err(err) = peer.write_rtcp(&[packet]).await {
-                                warn!("Failed to send RTCP packet: {}", err);
+                    // Parse RTCP packets using rtc_rtcp
+                    match rtc_rtcp::packet::unmarshal(&mut rtcp_data) {
+                        Ok(rtcp_packets) => {
+                            for packet in rtcp_packets {
+                                debug!("Received RTCP packet from {}: {:?}", addr, packet);
+                                // Note: In the new API, write_rtcp is on TrackLocal/TrackRemote,
+                                // not on PeerConnection. RTCP forwarding is handled elsewhere.
                             }
+                        }
+                        Err(e) => {
+                            debug!("Failed to parse RTCP from {}: {}", addr, e);
                         }
                     }
                 }

@@ -35,6 +35,8 @@ tokio-stream = "0.1.15"
 tower = { version = "0.5.2", features = ["util"] }
 tower-http = { workspace = true, features = ["fs", "auth", "trace", "cors"] }
 webrtc = { workspace = true }
+rtc = { workspace = true }
+async-trait = "0.1"
 
 [features]
 webui = ["dep:rust-embed","dep:mime_guess"]

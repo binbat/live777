@@ -4,7 +4,7 @@ use axum::response::Response;
 use axum::routing::post;
 use http::{HeaderMap, StatusCode, header};
 use tracing::debug;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCSessionDescription;
 
 use iceserver::link_header;
 

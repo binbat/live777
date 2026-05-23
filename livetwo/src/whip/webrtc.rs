@@ -2,18 +2,14 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Notify, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
-use webrtc::{
-    api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*},
-    ice_transport::ice_server::RTCIceServer,
-    interceptor::registry::Registry,
-    peer_connection::{RTCPeerConnection, configuration::RTCConfiguration},
-    rtcp::payload_feedbacks::{
-        full_intra_request::FullIntraRequest, picture_loss_indication::PictureLossIndication,
-    },
+use tracing::debug;
+use webrtc::peer_connection::{
+    PeerConnectionBuilder, PeerConnection, RTCIceServer,
+    RTCConfigurationBuilder, Registry, MediaEngine,
 };
+use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
 
 use crate::utils;
 use crate::utils::stats::RtcpStats;
@@ -25,126 +21,58 @@ pub async fn setup_whip_peer(
     media_info: &rtsp::MediaInfo,
     input_id: String,
 ) -> Result<(
-    Arc<RTCPeerConnection>,
+    Arc<dyn PeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
     Arc<RtcpStats>,
 )> {
-    let (peer, video_sender, audio_sender) = create_peer(ct.clone(), media_info, input_id).await?;
+    let gather_complete = Arc::new(Notify::new());
+    let (peer, video_sender, audio_sender) = create_peer(ct.clone(), media_info, input_id, gather_complete.clone()).await?;
 
-    utils::webrtc::setup_connection(peer.clone(), client).await?;
+    utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
 
     let stats = Arc::new(RtcpStats::new());
 
-    setup_rtcp_listener_for_senders(peer.clone(), stats.clone()).await;
-
-    utils::webrtc::setup_handlers(ct, peer.clone()).await;
-
     Ok((peer, video_sender, audio_sender, stats))
-}
-
-async fn setup_rtcp_listener_for_senders(peer: Arc<RTCPeerConnection>, stats: Arc<RtcpStats>) {
-    let senders = peer.get_senders().await;
-
-    for sender in senders {
-        if let Some(track) = sender.track().await {
-            let track_kind = track.kind();
-            let stats_clone = stats.clone();
-
-            tokio::spawn(async move {
-                debug!("Started RTCP listener for {} sender", track_kind);
-
-                loop {
-                    match sender.read_rtcp().await {
-                        Ok((packets, _)) => {
-                            for packet in packets {
-                                if let Some(pli) =
-                                    packet.as_any().downcast_ref::<PictureLossIndication>()
-                                {
-                                    stats_clone.increment_pli();
-                                    debug!(
-                                        "WHIP: Received PLI from browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_pli_count()
-                                    );
-                                    debug!("PLI details: media_ssrc={}", pli.media_ssrc);
-                                }
-
-                                if let Some(fir) =
-                                    packet.as_any().downcast_ref::<FullIntraRequest>()
-                                {
-                                    stats_clone.increment_fir();
-                                    debug!(
-                                        "WHIP: Received FIR from browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_fir_count()
-                                    );
-                                    debug!("FIR details: media_ssrc={}", fir.media_ssrc);
-                                }
-
-                                if packet
-                                    .as_any()
-                                    .downcast_ref::<webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack>()
-                                    .is_some()
-                                {
-                                    stats_clone.increment_nack();
-                                    debug!(
-                                        "WHIP: Received NACK from browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_nack_count()
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("WHIP: Error reading RTCP from {} sender: {}", track_kind, e);
-                            break;
-                        }
-                    }
-                }
-
-                info!("WHIP: RTCP listener stopped for {} sender", track_kind);
-            });
-        }
-    }
 }
 
 async fn create_peer(
     ct: CancellationToken,
     media_info: &rtsp::MediaInfo,
     input_id: String,
+    gather_complete: Arc<Notify>,
 ) -> Result<(
-    Arc<RTCPeerConnection>,
+    Arc<dyn PeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
 )> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
 
-    let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut m)?;
+    let registry = Registry::new();
+    let registry = register_default_interceptors(registry, &mut m)?;
 
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry)
-        .build();
+    let handler = utils::webrtc::create_event_handler(ct, gather_complete);
 
-    let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
+    let config = RTCConfigurationBuilder::new()
+        .with_ice_servers(vec![RTCIceServer {
             urls: vec!["stun:stun.l.google.com:19302".to_string()],
             username: "".to_string(),
             credential: "".to_string(),
-        }],
-        ..Default::default()
-    };
+        }])
+        .build();
 
-    let peer = Arc::new(
-        api.new_peer_connection(config)
+    let peer: Arc<dyn PeerConnection> = Arc::new(
+        PeerConnectionBuilder::new()
+            .with_media_engine(m)
+            .with_interceptor_registry(registry)
+            .with_handler(handler)
+            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .with_configuration(config)
+            .build()
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
-
-    utils::webrtc::setup_handlers(ct, peer.clone()).await;
 
     let video_tx = if let Some(ref video_codec_params) = media_info.video_codec {
         track::setup_video_track(peer.clone(), video_codec_params, input_id.clone()).await?

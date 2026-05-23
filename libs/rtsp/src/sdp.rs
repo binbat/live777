@@ -4,7 +4,7 @@ use sdp::SessionDescription;
 use sdp::description::common::Attribute;
 use std::io::Cursor;
 use tracing::{debug, warn};
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 use crate::constants::media_type;
 use crate::types::{AudioCodecParams, MediaInfo, VideoCodecParams};

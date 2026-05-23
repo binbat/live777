@@ -1,10 +1,8 @@
-use webrtc::{
-    rtp_transceiver::{
-        PayloadType, RTCPFeedback,
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
-    },
-    sdp::{Error, MediaDescription, SessionDescription},
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
 };
+use sdp::{MediaDescription, SessionDescription};
+use rtc::rtp_transceiver::PayloadType;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MediaInfo {
@@ -34,9 +32,9 @@ impl TryFrom<SessionDescription> for MediaInfo {
                 has_data_channel = true;
             }
             let media = md.media_name.media.clone();
-            let update = match RTPCodecType::from(media.as_str()) {
-                RTPCodecType::Video => &mut video_transceiver,
-                RTPCodecType::Audio => &mut audio_transceiver,
+            let update = match RtpCodecKind::from(media.as_str()) {
+                RtpCodecKind::Video => &mut video_transceiver,
+                RtpCodecKind::Audio => &mut audio_transceiver,
                 _ => {
                     continue;
                 }
@@ -73,7 +71,7 @@ impl TryFrom<SessionDescription> for MediaInfo {
 // from https://github.com/webrtc-rs/webrtc/blob/master/webrtc/src/peer_connection/sdp/mod.rs
 pub fn codecs_from_media_description(
     m: &MediaDescription,
-) -> Result<Vec<RTCRtpCodecParameters>, Error> {
+) -> anyhow::Result<Vec<RTCRtpCodecParameters>> {
     let s = SessionDescription {
         media_descriptions: vec![m.clone()],
         ..Default::default()
@@ -88,7 +86,7 @@ pub fn codecs_from_media_description(
                 if payload_type == 0 {
                     continue;
                 }
-                return Err(err);
+                return Err(err.into());
             }
         };
 
@@ -114,7 +112,7 @@ pub fn codecs_from_media_description(
         }
 
         out.push(RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
+            rtp_codec: RTCRtpCodec {
                 mime_type: m.media_name.media.clone() + "/" + codec.name.as_str(),
                 clock_rate: codec.clock_rate,
                 channels,
@@ -122,7 +120,6 @@ pub fn codecs_from_media_description(
                 rtcp_feedback: feedback,
             },
             payload_type,
-            stats_id: String::new(),
         })
     }
 

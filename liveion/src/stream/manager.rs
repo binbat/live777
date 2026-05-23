@@ -15,7 +15,7 @@ use std::vec;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace};
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCSessionDescription;
 
 use crate::forward::PeerForward;
 use crate::forward::message::Layer;

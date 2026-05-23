@@ -12,6 +12,8 @@ crate-type = ["lib"]
 serde = { workspace = true, features = ["serde_derive"] }
 serde_json = { workspace = true }
 webrtc = { workspace = true }
+rtc = { workspace = true }
+rtc-ice = "0.20.0-alpha.1"
 
 hmac = { version = "0.12", optional = true }
 sha1 = { version = "0.10", optional = true }

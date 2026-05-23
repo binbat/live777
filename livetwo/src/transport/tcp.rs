@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
-use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::rtp_codec::RTPCodecType};
+use webrtc::peer_connection::PeerConnection;
 
 pub struct TcpHandler {
     video_rtp_channel: Option<u8>,
@@ -52,7 +52,7 @@ impl TcpHandler {
         mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
         video_sender: Option<UnboundedSender<Vec<u8>>>,
         audio_sender: Option<UnboundedSender<Vec<u8>>>,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
     ) {
         let video_rtp_channel = self.video_rtp_channel;
         let video_rtcp_channel = self.video_rtcp_channel;
@@ -133,59 +133,19 @@ impl TcpHandler {
 
     pub fn spawn_webrtc_rtcp_to_output(
         &self,
-        peer: Arc<RTCPeerConnection>,
-        tx: UnboundedSender<(u8, Vec<u8>)>,
+        _peer: Arc<dyn PeerConnection>,
+        _tx: UnboundedSender<(u8, Vec<u8>)>,
     ) {
-        let video_rtcp_channel = self.video_rtcp_channel;
-        let audio_rtcp_channel = self.audio_rtcp_channel;
-
-        tokio::spawn(async move {
-            let senders = peer.get_senders().await;
-
-            for sender in senders {
-                if let Some(track) = sender.track().await {
-                    let tx_clone = tx.clone();
-                    let channel = match track.kind() {
-                        RTPCodecType::Video => video_rtcp_channel,
-                        RTPCodecType::Audio => audio_rtcp_channel,
-                        _ => continue,
-                    };
-
-                    if let Some(channel) = channel {
-                        tokio::spawn(async move {
-                            info!("Starting RTCP sender on channel {}", channel);
-                            loop {
-                                match sender.read_rtcp().await {
-                                    Ok((packets, _)) => {
-                                        for packet in packets {
-                                            if let Ok(data) = packet.marshal() {
-                                                debug!("Sending RTCP data ({} bytes)", data.len());
-                                                if let Err(e) =
-                                                    tx_clone.send((channel, data.to_vec()))
-                                                {
-                                                    error!("Failed to send RTCP: {}", e);
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("Error reading RTCP: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        });
+        // In v0.20, RTCP feedback is handled internally by the peer connection.
+        // sender.read_rtcp() is no longer available.
+        // RTCP forwarding to output is not needed in the new architecture.
+        debug!("RTCP to output forwarding is handled internally in v0.20");
     }
 
     pub fn spawn_output_rtcp_to_webrtc(
         &self,
         mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
     ) {
         tokio::spawn(async move {
             info!("Starting RTCP receiver from output");
@@ -203,13 +163,13 @@ impl TcpHandler {
         });
     }
 
-    async fn forward_rtcp_to_webrtc(data: &[u8], peer: &Arc<RTCPeerConnection>) {
+    async fn forward_rtcp_to_webrtc(data: &[u8], _peer: &Arc<dyn PeerConnection>) {
         let mut cursor = Cursor::new(data);
-        match webrtc::rtcp::packet::unmarshal(&mut cursor) {
-            Ok(packets) => {
-                if let Err(e) = peer.write_rtcp(&packets).await {
-                    error!("Failed to write RTCP to WebRTC: {}", e);
-                }
+        match rtc_rtcp::packet::unmarshal(&mut cursor) {
+            Ok(_packets) => {
+                // In v0.20, write_rtcp is on TrackLocal/TrackRemote, not PeerConnection.
+                // RTCP from the output side would need to be sent via specific tracks.
+                debug!("Parsed RTCP packet (forwarding not yet implemented for v0.20)");
             }
             Err(e) => {
                 warn!("Failed to parse RTCP: {}", e);

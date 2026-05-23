@@ -2,29 +2,39 @@ use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tracing::{debug, error, trace, warn};
-use webrtc::{
-    api::media_engine::*,
-    peer_connection::RTCPeerConnection,
-    rtp::packet::Packet,
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
-    track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP},
-    util::Unmarshal,
-};
+use rtc::peer_connection::configuration::media_engine::*;
+use rtc::rtp::packet::Packet;
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpEncodingParameters, RTCRtpCodingParameters, RtpCodecKind};
+use rtc::media_stream::MediaStreamTrack;
+use rtc_shared::marshal::Unmarshal;
+use webrtc::peer_connection::PeerConnection;
+use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+use webrtc::media_stream::track_local::TrackLocal;
 
 use crate::payload::{Forward, RePayload, RePayloadCodec};
 
 pub async fn setup_video_track(
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
     video_codec_params: &rtsp::VideoCodecParams,
     input_id: String,
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
-    let video_codec: RTCRtpCodecCapability = video_codec_params.clone().into();
+    let video_codec: RTCRtpCodec = video_codec_params.clone().into();
     let video_track_id = format!("{}-video", input_id);
-    let video_track = Arc::new(TrackLocalStaticRTP::new(
-        video_codec.clone(),
-        video_track_id.to_owned(),
-        input_id.to_owned(),
-    ));
+    let media_track = MediaStreamTrack::new(
+        input_id.clone(),
+        video_track_id.clone(),
+        video_track_id.clone(),
+        RtpCodecKind::Video,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(rand::random::<u32>()),
+                ..Default::default()
+            },
+            codec: video_codec.clone(),
+            ..Default::default()
+        }],
+    );
+    let video_track = Arc::new(TrackLocalStaticRTP::new(media_track));
 
     peer.add_track(video_track.clone())
         .await
@@ -87,7 +97,7 @@ pub async fn setup_video_track(
                         packet.header.marker
                     );
 
-                    if let Err(e) = video_track.write_rtp(&packet).await {
+                    if let Err(e) = video_track.write_rtp(packet).await {
                         error!("Failed to write RTP: {}", e);
                     }
                 }
@@ -99,17 +109,27 @@ pub async fn setup_video_track(
 }
 
 pub async fn setup_audio_track(
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
     audio_codec_params: &rtsp::AudioCodecParams,
     input_id: String,
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
-    let audio_codec: RTCRtpCodecCapability = audio_codec_params.clone().into();
+    let audio_codec: RTCRtpCodec = audio_codec_params.clone().into();
     let audio_track_id = format!("{}-audio", input_id);
-    let audio_track = Arc::new(TrackLocalStaticRTP::new(
-        audio_codec.clone(),
-        audio_track_id.to_owned(),
-        input_id.to_owned(),
-    ));
+    let media_track = MediaStreamTrack::new(
+        input_id.clone(),
+        audio_track_id.clone(),
+        audio_track_id.clone(),
+        RtpCodecKind::Audio,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(rand::random::<u32>()),
+                ..Default::default()
+            },
+            codec: audio_codec.clone(),
+            ..Default::default()
+        }],
+    );
+    let audio_track = Arc::new(TrackLocalStaticRTP::new(media_track));
 
     peer.add_track(audio_track.clone())
         .await
@@ -126,12 +146,14 @@ pub async fn setup_audio_track(
 
         while let Some(data) = audio_rx.recv().await {
             if audio_codec.mime_type == MIME_TYPE_G722 {
-                let _ = audio_track.write(&data).await;
+                // In v0.20, TrackLocalStaticRTP only accepts RTP packets.
+                // G722 raw data needs to be wrapped in RTP packets first.
+                warn!("G722 raw write not yet supported in v0.20");
             } else if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
                 trace!("Received audio packet: {}", packet);
                 for packet in handler.payload(packet) {
                     trace!("Sending audio packet: {}", packet);
-                    let _ = audio_track.write_rtp(&packet).await;
+                    let _ = audio_track.write_rtp(packet).await;
                 }
             }
         }

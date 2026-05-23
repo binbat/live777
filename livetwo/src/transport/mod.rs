@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::debug;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::PeerConnection;
 
 use crate::whep::OutputTarget;
 use crate::whip::InputSource;
@@ -20,7 +20,7 @@ pub async fn connect_input_to_webrtc(
     mut input_source: InputSource,
     video_sender: Option<UnboundedSender<Vec<u8>>>,
     audio_sender: Option<UnboundedSender<Vec<u8>>>,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
 ) -> Result<JoinHandle<()>> {
     let handle = if let Some((tx, rx)) = input_source.take_channels() {
         debug!("Setting up TCP interleaved transport");
@@ -76,7 +76,7 @@ pub async fn connect_webrtc_to_output(
     video_recv: UnboundedReceiver<Vec<u8>>,
     audio_recv: UnboundedReceiver<Vec<u8>>,
     mut output_target: OutputTarget,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
 ) {
     if let Some((tx, rx)) = output_target.take_channels() {
         debug!("Setting up TCP interleaved transport");

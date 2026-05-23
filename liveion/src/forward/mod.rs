@@ -1,16 +1,14 @@
 use std::io::Cursor;
 use std::sync::Arc;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, Notify, broadcast};
 #[cfg(feature = "source")]
 use tracing::{debug, trace, warn};
-use tracing::{error, info};
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::sdp::SessionDescription;
+use tracing::error;
+use webrtc::peer_connection::{
+    PeerConnection, RTCIceCandidateInit, RTCIceServer,
+    RTCSessionDescription,
+};
+use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 
 use libwish::Client;
 
@@ -23,9 +21,9 @@ use crate::{AppError, constant};
 #[cfg(feature = "source")]
 pub use bridge::SourceBridge;
 #[cfg(feature = "source")]
-use webrtc::rtp::packet::Packet;
+use rtc::rtp::packet::Packet;
 #[cfg(feature = "source")]
-use webrtc::util::Unmarshal;
+use rtc::shared::marshal::Unmarshal;
 
 use self::media::MediaInfo;
 use self::message::{CascadeInfo, ForwardEvent};
@@ -50,9 +48,9 @@ pub mod bridge;
 #[cfg(feature = "source")]
 pub mod track;
 
-pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
+pub(crate) fn get_peer_id(peer: &Arc<dyn PeerConnection>) -> String {
     let mut hasher = Md5::new();
-    hasher.update(peer.get_stats_id());
+    hasher.update(format!("{:?}", Arc::as_ptr(peer)));
     let digest = hasher.finalize();
     format!("{digest:x}")
 }
@@ -119,7 +117,7 @@ impl PeerForward {
     }
 
     #[cfg(feature = "source")]
-    pub async fn get_subscribe_peer(&self, session_id: &str) -> Option<Arc<RTCPeerConnection>> {
+    pub async fn get_subscribe_peer(&self, session_id: &str) -> Option<Arc<dyn PeerConnection>> {
         let subscribe_group = self.internal.subscribe_group.read().await;
         for subscribe in subscribe_group.iter() {
             if subscribe.id == session_id {
@@ -151,10 +149,10 @@ impl PeerForward {
             ));
         }
 
-        let media_info = MediaInfo::try_from(offer.unmarshal()?)?;
-        let peer = self.new_publish_peer(media_info).await?;
+        let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
+        let (peer, gather_complete) = self.new_publish_peer(media_info).await?;
 
-        let description = peer_complete(offer, peer.clone()).await?;
+        let description = peer_complete(offer, peer.clone(), gather_complete).await?;
 
         self.internal.set_publish(peer.clone(), None).await?;
 
@@ -178,7 +176,7 @@ impl PeerForward {
             ));
         }
 
-        let peer = self
+        let (peer, gather_complete) = self
             .new_publish_peer(MediaInfo {
                 _codec: vec![],
                 video_transceiver: (1, 0, false),
@@ -188,9 +186,8 @@ impl PeerForward {
             .await?;
 
         let offer = peer.create_offer(None).await?;
-        let mut gather_complete = peer.gathering_complete_promise().await;
         peer.set_local_description(offer).await?;
-        let _ = gather_complete.recv().await;
+        gather_complete.notified().await;
 
         let description = peer
             .pending_local_description()
@@ -225,57 +222,8 @@ impl PeerForward {
         }
     }
 
-    async fn new_publish_peer(&self, media_info: MediaInfo) -> Result<Arc<RTCPeerConnection>> {
-        let peer = self.internal.new_publish_peer(media_info).await?;
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    info!(
-                        "[{}] [publish] [{}] connection state changed: {}",
-                        internal.stream,
-                        get_peer_id(&pc),
-                        s
-                    );
-                    match s {
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            let _ = pc.close().await;
-                        }
-                        RTCPeerConnectionState::Closed => {
-                            let _ = internal.remove_publish(pc).await;
-                        }
-                        _ => {}
-                    };
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_track(Box::new(move |track, _, _| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    let _ = internal.publish_track_up(pc, track).await;
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_data_channel(Box::new(move |dc| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    let _ = internal.publish_data_channel(pc, dc).await;
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        Ok(peer)
+    async fn new_publish_peer(&self, media_info: MediaInfo) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
+        self.internal.new_publish_peer(media_info, Arc::downgrade(&self.internal)).await
     }
 
     pub async fn layers(&self) -> Result<Vec<Layer>> {
@@ -300,20 +248,24 @@ impl PeerForward {
     #[cfg(feature = "recorder")]
     pub async fn first_audio_track_info(&self) -> Option<AudioTrackInfo> {
         let tracks = self.internal.publish_tracks.read().await;
-        tracks.iter().find_map(|track| match track {
-            track::PublishTrackRemote::Real { track, .. }
-                if track.kind() == RTPCodecType::Audio =>
-            {
-                let params = track.codec();
-                Some(AudioTrackInfo {
-                    clock_rate: params.capability.clock_rate,
-                    channels: params.capability.channels,
-                    codec_mime: params.capability.mime_type.clone(),
-                    fmtp: params.capability.sdp_fmtp_line.clone(),
-                })
+        for track in tracks.iter() {
+            if let track::PublishTrackRemote::Real { track, .. } = track {
+                let kind = track.kind().await;
+                if kind == RtpCodecKind::Audio {
+                    let ssrcs = track.ssrcs().await;
+                    let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+                    if let Some(params) = track.codec(first_ssrc).await {
+                        return Some(AudioTrackInfo {
+                            clock_rate: params.clock_rate,
+                            channels: params.channels,
+                            codec_mime: params.mime_type.clone(),
+                            fmtp: params.sdp_fmtp_line.clone(),
+                        });
+                    }
+                }
             }
-            _ => None,
-        })
+        }
+        None
     }
 
     #[cfg(feature = "recorder")]
@@ -322,7 +274,7 @@ impl PeerForward {
     }
 
     #[cfg(feature = "recorder")]
-    pub async fn first_video_track(&self) -> Option<Arc<webrtc::track::track_remote::TrackRemote>> {
+    pub async fn first_video_track(&self) -> Option<Arc<dyn webrtc::media_stream::track_remote::TrackRemote>> {
         self.internal.first_video_track().await
     }
 
@@ -337,7 +289,7 @@ impl PeerForward {
     ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
         let tracks = self.internal.publish_tracks.read().await;
         for t in tracks.iter() {
-            if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
+            if t.kind() == RtpCodecKind::Audio {
                 return Some(t.subscribe());
             }
         }
@@ -351,11 +303,11 @@ impl PeerForward {
         &self,
         offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        let media_info = MediaInfo::try_from(offer.unmarshal()?)?;
-        let peer = self.new_subscription_peer(media_info.clone()).await?;
+        let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
+        let (peer, gather_complete) = self.new_subscription_peer(media_info.clone()).await?;
 
         let (sdp, session) = (
-            peer_complete(offer, peer.clone()).await?,
+            peer_complete(offer, peer.clone(), gather_complete).await?,
             get_peer_id(&peer),
         );
 
@@ -375,12 +327,11 @@ impl PeerForward {
             has_data_channel: false,
         };
 
-        let peer = self.new_subscription_peer(media_info.clone()).await?;
+        let (peer, gather_complete) = self.new_subscription_peer(media_info.clone()).await?;
 
         let offer: RTCSessionDescription = peer.create_offer(None).await?;
-        let mut gather_complete = peer.gathering_complete_promise().await;
         peer.set_local_description(offer).await?;
-        let _ = gather_complete.recv().await;
+        gather_complete.notified().await;
 
         let description = peer
             .pending_local_description()
@@ -417,46 +368,8 @@ impl PeerForward {
         }
     }
 
-    async fn new_subscription_peer(&self, media_info: MediaInfo) -> Result<Arc<RTCPeerConnection>> {
-        let peer = self.internal.new_subscription_peer(media_info).await?;
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    info!(
-                        "[{}] [subscribe] [{}] connection state changed: {}",
-                        internal.stream,
-                        get_peer_id(&pc),
-                        s
-                    );
-                    match s {
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            let _ = pc.close().await;
-                        }
-                        RTCPeerConnectionState::Closed => {
-                            let _ = internal.remove_subscribe(pc).await;
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_data_channel(Box::new(move |dc| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    let _ = internal.subscribe_data_channel(pc, dc).await;
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        Ok(peer)
+    async fn new_subscription_peer(&self, media_info: MediaInfo) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
+        self.internal.new_subscription_peer(media_info, Arc::downgrade(&self.internal)).await
     }
 
     pub async fn select_layer(&self, session: String, layer: Option<Layer>) -> Result<()> {
@@ -467,7 +380,7 @@ impl PeerForward {
         };
 
         self.internal
-            .select_kind_rid(session, RTPCodecType::Video, rid)
+            .select_kind_rid(session, RtpCodecKind::Video, rid)
             .await
     }
 
@@ -476,8 +389,8 @@ impl PeerForward {
         session: String,
         (kind, enabled): (String, bool),
     ) -> Result<()> {
-        let codec_type = RTPCodecType::from(kind.as_str());
-        if codec_type == RTPCodecType::Unspecified {
+        let codec_type = RtpCodecKind::from(kind.as_str());
+        if codec_type == RtpCodecKind::Unspecified {
             return Err(AppError::throw("kind unspecified"));
         }
 
@@ -498,7 +411,7 @@ impl PeerForward {
     ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
         let tracks = self.internal.publish_tracks.read().await;
         for t in tracks.iter() {
-            if t.kind() == RTPCodecType::Video {
+            if t.kind() == RtpCodecKind::Video {
                 return Some(t.subscribe());
             }
         }
@@ -508,13 +421,25 @@ impl PeerForward {
 
 async fn peer_complete(
     offer: RTCSessionDescription,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
+    gather_complete: Arc<Notify>,
 ) -> Result<RTCSessionDescription> {
     peer.set_remote_description(offer).await?;
     let answer = peer.create_answer(None).await?;
-    let mut gather_complete = peer.gathering_complete_promise().await;
     peer.set_local_description(answer).await?;
-    let _ = gather_complete.recv().await;
+
+    // Wait for ICE gathering to complete with a timeout.
+    // If gathering never completes (e.g. STUN servers unreachable),
+    // fall back to the current partial description after timeout.
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        gather_complete.notified(),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("ICE gathering timed out after 3s, using partial description");
+    }
 
     let description = peer
         .local_description()
@@ -524,10 +449,15 @@ async fn peer_complete(
     Ok(description)
 }
 
+fn unmarshal_sdp(sdp_str: &str) -> Result<sdp::SessionDescription> {
+    let mut reader = Cursor::new(sdp_str);
+    Ok(sdp::SessionDescription::unmarshal(&mut reader)?)
+}
+
 fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
     let content = format!("v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{content}");
     let mut reader = Cursor::new(content);
-    let session_desc = SessionDescription::unmarshal(&mut reader)?;
+    let session_desc = sdp::SessionDescription::unmarshal(&mut reader)?;
 
     let mut ice_candidates = Vec::new();
 
@@ -555,6 +485,7 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
                     sdp_mid: Some(mid.clone()),
                     sdp_mline_index: Some(mline_index),
                     username_fragment: None,
+                    url: None,
                 });
             }
         }
@@ -568,8 +499,8 @@ impl PeerForward {
     #[cfg(feature = "source")]
     pub async fn add_virtual_track(
         &self,
-        kind: RTPCodecType,
-        codec_params: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters,
+        kind: RtpCodecKind,
+        codec_params: rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters,
     ) -> Result<()> {
         use crate::forward::track::{PublishTrackRemote, VirtualPublishTrack};
 
@@ -612,7 +543,7 @@ impl PeerForward {
 
         let tracks = self.internal.publish_tracks.read().await;
 
-        let video_track = tracks.iter().find(|t| t.kind() == RTPCodecType::Video);
+        let video_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Video);
 
         match video_track {
             Some(track) => match track.inject_rtp(Arc::new(packet)) {
@@ -656,7 +587,7 @@ impl PeerForward {
 
         let tracks = self.internal.publish_tracks.read().await;
 
-        let audio_track = tracks.iter().find(|t| t.kind() == RTPCodecType::Audio);
+        let audio_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Audio);
 
         match audio_track {
             Some(track) => match track.inject_rtp(Arc::new(packet)) {

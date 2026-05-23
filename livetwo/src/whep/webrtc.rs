@@ -2,20 +2,17 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Mutex, Notify, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
-use webrtc::{
-    peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription},
-    rtcp::payload_feedbacks::{
-        full_intra_request::FullIntraRequest, picture_loss_indication::PictureLossIndication,
-    },
-    rtp_transceiver::{
-        RTCRtpTransceiverInit, rtp_codec::RTPCodecType,
-        rtp_transceiver_direction::RTCRtpTransceiverDirection,
-    },
-    util::MarshalSize,
+use tracing::{debug, info, warn};
+use webrtc::peer_connection::{
+    PeerConnection, PeerConnectionEventHandler, RTCSessionDescription,
+    RTCPeerConnectionState, RTCIceGatheringState,
 };
+use webrtc::rtp_transceiver::{RTCRtpTransceiverInit, RTCRtpTransceiverDirection};
+use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+use rtc::shared::marshal::{Marshal, MarshalSize};
+use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 
 use crate::utils;
 use crate::utils::stats::RtcpStats;
@@ -25,15 +22,16 @@ pub async fn setup_whep_peer(
     client: &mut Client,
     video_send: UnboundedSender<Vec<u8>>,
     audio_send: UnboundedSender<Vec<u8>>,
-    codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
+    codec_info: Arc<Mutex<rtsp::CodecInfo>>,
 ) -> Result<(
-    Arc<RTCPeerConnection>,
+    Arc<dyn PeerConnection>,
     RTCSessionDescription,
     Arc<RtcpStats>,
 )> {
-    let peer = create_peer(ct, video_send, audio_send, codec_info.clone()).await?;
+    let gather_complete = Arc::new(Notify::new());
+    let peer = create_peer(ct, video_send, audio_send, codec_info.clone(), gather_complete.clone()).await?;
 
-    utils::webrtc::setup_connection(peer.clone(), client).await?;
+    utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
 
     let answer = peer
         .remote_description()
@@ -42,74 +40,114 @@ pub async fn setup_whep_peer(
 
     let stats = Arc::new(RtcpStats::new());
 
-    setup_rtcp_listener_for_senders(peer.clone(), stats.clone()).await;
-
     Ok((peer, answer, stats))
 }
 
-async fn setup_rtcp_listener_for_senders(peer: Arc<RTCPeerConnection>, stats: Arc<RtcpStats>) {
-    let senders = peer.get_senders().await;
+#[derive(Clone)]
+struct WhepTrackHandler {
+    ct: CancellationToken,
+    gather_complete: Arc<Notify>,
+    video_send: UnboundedSender<Vec<u8>>,
+    audio_send: UnboundedSender<Vec<u8>>,
+    codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+}
 
-    for sender in senders {
-        if let Some(track) = sender.track().await {
-            let track_kind = track.kind();
-            let stats_clone = stats.clone();
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for WhepTrackHandler {
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        info!("WHEP connection state changed: {}", state);
+        match state {
+            RTCPeerConnectionState::Failed => {
+                self.ct.cancel();
+                warn!("WHEP connection closed due to failure");
+            }
+            RTCPeerConnectionState::Closed => {
+                self.ct.cancel();
+                info!("WHEP connection closed normally");
+            }
+            _ => debug!("WHEP connection state: {}", state),
+        }
+    }
 
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        let kind = track.kind().await;
+        let ssrcs = track.ssrcs().await;
+        let track_id = track.track_id().await;
+        info!("WHEP on_track: kind={}, ssrcs={:?}, id={}", kind, ssrcs, track_id);
+
+        // Extract codec info from the track
+        let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+        if let Some(codec) = track.codec(first_ssrc).await {
+            let codec_params = rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+                rtp_codec: codec.clone(),
+                payload_type: 0, // Will be negotiated
+            };
+            let mut info = self.codec_info.lock().await;
+            match kind {
+                RtpCodecKind::Video => {
+                    debug!("WHEP updating video codec: {:?}", codec);
+                    info.video_codec = Some(codec_params);
+                }
+                RtpCodecKind::Audio => {
+                    debug!("WHEP updating audio codec: {:?}", codec);
+                    info.audio_codec = Some(codec_params);
+                }
+                _ => {}
+            }
+        }
+
+        // Select the appropriate sender channel
+        let sender = match kind {
+            RtpCodecKind::Video => Some(self.video_send.clone()),
+            RtpCodecKind::Audio => Some(self.audio_send.clone()),
+            _ => None,
+        };
+
+        if let Some(sender) = sender {
+            let track_clone = track.clone();
             tokio::spawn(async move {
-                info!("WHEP: Started RTCP monitor for {} sender", track_kind);
-
+                let mut buf = [0u8; 1500];
                 loop {
-                    match sender.read_rtcp().await {
-                        Ok((packets, _)) => {
-                            for packet in packets {
-                                // PLI - Picture Loss Indication
-                                if packet
-                                    .as_any()
-                                    .downcast_ref::<PictureLossIndication>()
-                                    .is_some()
-                                {
-                                    stats_clone.increment_pli();
-                                    debug!(
-                                        "WHEP: Sent PLI to browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_pli_count()
-                                    );
-                                }
-
-                                // FIR - Full Intra Request
-                                if packet.as_any().downcast_ref::<FullIntraRequest>().is_some() {
-                                    stats_clone.increment_fir();
-                                    debug!(
-                                        "WHEP: Sent FIR to browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_fir_count()
-                                    );
-                                }
-
-                                // NACK
-                                if packet
-                                    .as_any()
-                                    .downcast_ref::<webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack>()
-                                    .is_some()
-                                {
-                                    stats_clone.increment_nack();
-                                    debug!(
-                                        "WHEP: Sent NACK to browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_nack_count()
-                                    );
-                                }
+                    match track_clone.poll().await {
+                        Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
+                            let size = rtp_packet.marshal_size();
+                            if size > buf.len() {
+                                warn!("WHEP: RTP packet too large ({} bytes)", size);
+                                continue;
+                            }
+                            if let Err(e) = rtp_packet.marshal_to(&mut buf[..size]) {
+                                warn!("WHEP: Failed to marshal RTP packet: {}", e);
+                                continue;
+                            }
+                            if sender.send(buf[..size].to_vec()).is_err() {
+                                debug!("WHEP: {} channel receiver dropped, stopping", kind);
+                                break;
                             }
                         }
-                        Err(e) => {
-                            warn!("WHEP: Error reading RTCP from {} sender: {}", track_kind, e);
+                        Some(TrackRemoteEvent::OnEnded) => {
+                            info!("WHEP: {} track ended", kind);
                             break;
                         }
+                        Some(TrackRemoteEvent::OnRtcpPacket(packets)) => {
+                            // Forward RTCP packets for stats tracking
+                            debug!("WHEP: Received {} RTCP packets for {}", packets.len(), kind);
+                        }
+                        None => {
+                            debug!("WHEP: {} track poll returned None", kind);
+                            break;
+                        }
+                        _ => {}
                     }
                 }
-
-                info!("WHEP: RTCP monitor stopped for {} sender", track_kind);
+                info!("WHEP: {} RTP reader stopped", kind);
             });
+        }
+    }
+
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            info!("WHEP ICE gathering complete");
+            self.gather_complete.notify_one();
         }
     }
 }
@@ -118,21 +156,33 @@ async fn create_peer(
     ct: CancellationToken,
     video_send: UnboundedSender<Vec<u8>>,
     audio_send: UnboundedSender<Vec<u8>>,
-    codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
-) -> Result<Arc<RTCPeerConnection>> {
-    let (api, config) = utils::webrtc::create_api().await?;
+    codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    gather_complete: Arc<Notify>,
+) -> Result<Arc<dyn PeerConnection>> {
+    let (builder, config) = utils::webrtc::create_peer_connection_builder()?;
+    let handler = Arc::new(WhepTrackHandler {
+        ct,
+        gather_complete,
+        video_send,
+        audio_send,
+        codec_info,
+    });
 
-    let peer = Arc::new(
-        api.build()
-            .new_peer_connection(config)
+    let peer: Arc<dyn PeerConnection> = Arc::new(
+        builder
+            .with_configuration(config)
+            .with_handler(handler)
+            .with_udp_addrs(vec!["0.0.0.0:0".parse().unwrap()])
+            .build()
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
 
     peer.add_transceiver_from_kind(
-        RTPCodecType::Video,
+        RtpCodecKind::Video,
         Some(RTCRtpTransceiverInit {
             direction: RTCRtpTransceiverDirection::Recvonly,
+            streams: vec![],
             send_encodings: vec![],
         }),
     )
@@ -140,57 +190,15 @@ async fn create_peer(
     .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 
     peer.add_transceiver_from_kind(
-        RTPCodecType::Audio,
+        RtpCodecKind::Audio,
         Some(RTCRtpTransceiverInit {
             direction: RTCRtpTransceiverDirection::Recvonly,
+            streams: vec![],
             send_encodings: vec![],
         }),
     )
     .await
     .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
-
-    utils::webrtc::setup_handlers(ct, peer.clone()).await;
-
-    peer.on_track(Box::new({
-        let codec_info = codec_info.clone();
-        move |track, _, _| {
-            let video_sender = video_send.clone();
-            let audio_sender = audio_send.clone();
-            let codec = track.codec().clone();
-            let track_kind = track.kind();
-
-            let codec_info = codec_info.clone();
-            tokio::spawn(async move {
-                let mut codec_info = codec_info.lock().await;
-                if track_kind == RTPCodecType::Video {
-                    debug!("Updating video codec info: {:?}", codec);
-                    codec_info.video_codec = Some(codec.clone());
-                } else if track_kind == RTPCodecType::Audio {
-                    debug!("Updating audio codec info: {:?}", codec);
-                    codec_info.audio_codec = Some(codec.clone());
-                }
-            });
-
-            let sender = match track_kind {
-                RTPCodecType::Video => Some(video_sender),
-                RTPCodecType::Audio => Some(audio_sender),
-                _ => None,
-            };
-
-            if let Some(sender) = sender {
-                tokio::spawn(async move {
-                    let mut b = [0u8; 1500];
-                    while let Ok((rtp_packet, _)) = track.read(&mut b).await {
-                        trace!("Received RTP packet: {:?}", rtp_packet);
-                        let size = rtp_packet.marshal_size();
-                        let data = b[0..size].to_vec();
-                        let _ = sender.send(data);
-                    }
-                });
-            }
-            Box::pin(async {})
-        }
-    }));
 
     Ok(peer)
 }

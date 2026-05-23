@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 use tracing::{debug, info, trace};
-use webrtc::rtp::packet::Packet;
+use rtc::rtp::packet::Packet;
 
 #[cfg(feature = "source")]
 use tracing::error;
 #[cfg(feature = "source")]
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::track::track_remote::TrackRemote;
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
+use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+use webrtc::media_stream::track_remote::TrackRemote;
 
 #[cfg(feature = "source")]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -19,10 +19,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::message::Codec;
 use crate::new_broadcast_channel;
 
-fn codec_string(params: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters) -> String {
+fn codec_string(params: &rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters) -> String {
     format!(
         "{}[{}],{}",
-        params.capability.mime_type, params.payload_type, params.capability.sdp_fmtp_line,
+        params.rtp_codec.mime_type, params.payload_type, params.rtp_codec.sdp_fmtp_line,
     )
 }
 
@@ -32,8 +32,9 @@ pub(crate) type ForwardData = Arc<Packet>;
 pub(crate) enum PublishTrackRemote {
     Real {
         rid: String,
-        kind: RTPCodecType,
-        track: Arc<TrackRemote>,
+        kind: RtpCodecKind,
+        codec: Codec,
+        track: Arc<dyn TrackRemote>,
         rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
     },
     #[cfg(feature = "source")]
@@ -41,10 +42,27 @@ pub(crate) enum PublishTrackRemote {
 }
 
 impl PublishTrackRemote {
-    pub async fn new(stream: String, id: String, track: Arc<TrackRemote>) -> Self {
+    pub async fn new(stream: String, id: String, track: Arc<dyn TrackRemote>) -> Self {
         let rtp_sender = new_broadcast_channel!(128);
-        let rid = track.rid().to_owned();
-        let kind = track.kind();
+        let ssrcs = track.ssrcs().await;
+        let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+        let rid = track.rid(first_ssrc).await
+            .map(|r| r.to_string())
+            .unwrap_or_default();
+        let kind = track.kind().await;
+
+        let raw_codec = track.codec(first_ssrc).await.unwrap_or_default();
+        let media: Vec<String> = raw_codec
+            .mime_type
+            .to_lowercase()
+            .split('/')
+            .map(|s| s.to_string())
+            .collect();
+        let codec = Codec {
+            kind: media.first().cloned().unwrap_or_default(),
+            codec: media.get(1).cloned().unwrap_or_default(),
+            fmtp: raw_codec.sdp_fmtp_line,
+        };
 
         tokio::spawn(Self::track_forward(
             stream,
@@ -56,6 +74,7 @@ impl PublishTrackRemote {
         Self::Real {
             rid,
             kind,
+            codec,
             track,
             rtp_broadcast: Arc::new(rtp_sender),
         }
@@ -64,25 +83,25 @@ impl PublishTrackRemote {
     async fn track_forward(
         stream: String,
         id: String,
-        track: Arc<TrackRemote>,
+        track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
     ) {
-        info!(
-            "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {}, codec: {} start forward",
-            stream,
-            id,
-            track.kind(),
-            track.rid(),
-            track.ssrc(),
-            codec_string(track.codec()),
-        );
-        trace!("codec: {:?}", track.codec());
+        let kind = track.kind().await;
+        let ssrcs = track.ssrcs().await;
+        let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+        let rid = track.rid(first_ssrc).await
+            .map(|r| r.to_string())
+            .unwrap_or_default();
+        let codec = track.codec(first_ssrc).await;
 
-        let mut b = vec![0u8; 1500];
+        info!(
+            "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {:?}, codec: {:?} start forward",
+            stream, id, kind, rid, ssrcs, codec,
+        );
 
         loop {
-            match track.read(&mut b).await {
-                Ok((rtp_packet, _)) => {
+            match track.poll().await {
+                Some(webrtc::media_stream::track_remote::TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
                     trace!(
                         "RTP packet - SSRC: {}, SeqNum: {}, Timestamp: {}",
                         rtp_packet.header.ssrc,
@@ -93,23 +112,23 @@ impl PublishTrackRemote {
                     if let Err(err) = rtp_sender.send(Arc::new(rtp_packet)) {
                         debug!(
                             "[{}] [{}] [track] kind: {:?}, rid: {}, rtp broadcast error : {}",
-                            stream,
-                            id,
-                            track.kind(),
-                            track.rid(),
-                            err
+                            stream, id, kind, rid, err
                         );
                         break;
                     }
                 }
-                Err(err) => {
+                Some(webrtc::media_stream::track_remote::TrackRemoteEvent::OnEnded) => {
                     debug!(
-                        "[{}] [{}] [track] kind: {:?}, {} read error : {}",
-                        stream,
-                        id,
-                        track.kind(),
-                        track.rid(),
-                        err
+                        "[{}] [{}] [track] kind: {:?}, track ended",
+                        stream, id, kind,
+                    );
+                    break;
+                }
+                Some(_) => {}
+                None => {
+                    debug!(
+                        "[{}] [{}] [track] kind: {:?}, poll returned None",
+                        stream, id, kind,
                     );
                     break;
                 }
@@ -117,16 +136,12 @@ impl PublishTrackRemote {
         }
 
         info!(
-            "[{}] [{}] [track] kind: {:?}, rid :{}, ssrc: {} stop forward",
-            stream,
-            id,
-            track.kind(),
-            track.rid(),
-            track.ssrc()
+            "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {:?} stop forward",
+            stream, id, kind, rid, ssrcs,
         );
     }
 
-    pub(crate) fn kind(&self) -> RTPCodecType {
+    pub(crate) fn kind(&self) -> RtpCodecKind {
         match self {
             Self::Real { kind, .. } => *kind,
             #[cfg(feature = "source")]
@@ -152,23 +167,7 @@ impl PublishTrackRemote {
 
     pub(crate) fn codec(&self) -> Codec {
         match self {
-            Self::Real { track, .. } => {
-                let codec = track.codec();
-                let media: Vec<String> = codec
-                    .capability
-                    .mime_type
-                    .clone()
-                    .to_lowercase()
-                    .split('/')
-                    .map(|s| s.to_string())
-                    .collect();
-
-                Codec {
-                    kind: media.first().cloned().unwrap(),
-                    codec: media.get(1).cloned().unwrap(),
-                    fmtp: codec.capability.sdp_fmtp_line,
-                }
-            }
+            Self::Real { codec, .. } => codec.clone(),
             #[cfg(feature = "source")]
             Self::Virtual(v) => v.codec(),
         }
@@ -185,7 +184,7 @@ impl PublishTrackRemote {
     #[cfg(feature = "source")]
     pub(crate) fn generate_sender_report(
         &self,
-    ) -> Option<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> {
+    ) -> Option<Box<dyn rtc_rtcp::packet::Packet + Send + Sync>> {
         match self {
             Self::Virtual(v) => v.generate_sender_report(),
             Self::Real { .. } => None,
@@ -196,7 +195,7 @@ impl PublishTrackRemote {
 #[cfg(feature = "source")]
 pub struct VirtualPublishTrack {
     pub rid: String,
-    pub kind: RTPCodecType,
+    pub kind: RtpCodecKind,
     pub codec_params: RTCRtpCodecParameters,
     pub rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
     stream_id: String,
@@ -211,14 +210,14 @@ pub struct VirtualPublishTrack {
 
 #[cfg(feature = "source")]
 impl VirtualPublishTrack {
-    pub fn new(stream_id: String, kind: RTPCodecType, codec_params: RTCRtpCodecParameters) -> Self {
+    pub fn new(stream_id: String, kind: RtpCodecKind, codec_params: RTCRtpCodecParameters) -> Self {
         let rtp_sender = new_broadcast_channel!(128);
 
         debug!(
             "[{}] Created virtual {:?} track with codec: {}",
             stream_id,
             kind,
-            codec_string(codec_params.clone()),
+            codec_string(&codec_params),
         );
 
         Self {
@@ -232,7 +231,7 @@ impl VirtualPublishTrack {
             bytes_sent: Arc::new(AtomicU64::new(0)),
             last_ntp_time_ms: Arc::new(AtomicU64::new(0)),
             sequence_number: Arc::new(AtomicU32::new(rand::random::<u16>() as u32)),
-            clock_rate: codec_params.capability.clock_rate,
+            clock_rate: codec_params.rtp_codec.clock_rate,
             start_time: SystemTime::now(),
         }
     }
@@ -244,7 +243,7 @@ impl VirtualPublishTrack {
     pub fn codec(&self) -> Codec {
         let media: Vec<String> = self
             .codec_params
-            .capability
+            .rtp_codec
             .mime_type
             .clone()
             .to_lowercase()
@@ -253,9 +252,9 @@ impl VirtualPublishTrack {
             .collect();
 
         Codec {
-            kind: media.first().cloned().unwrap(),
-            codec: media.get(1).cloned().unwrap(),
-            fmtp: self.codec_params.capability.sdp_fmtp_line.clone(),
+            kind: media.first().cloned().unwrap_or_default(),
+            codec: media.get(1).cloned().unwrap_or_default(),
+            fmtp: self.codec_params.rtp_codec.sdp_fmtp_line.clone(),
         }
     }
 
@@ -322,7 +321,7 @@ impl VirtualPublishTrack {
 
     pub fn generate_sender_report(
         &self,
-    ) -> Option<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> {
+    ) -> Option<Box<dyn rtc_rtcp::packet::Packet + Send + Sync>> {
         let ssrc = self.actual_ssrc.load(Ordering::Relaxed);
         if ssrc == 0 {
             return None;
@@ -341,7 +340,7 @@ impl VirtualPublishTrack {
             .unwrap_or_default();
         let rtp_time = (elapsed.as_secs_f64() * self.clock_rate as f64) as u32;
 
-        Some(Box::new(webrtc::rtcp::sender_report::SenderReport {
+        Some(Box::new(rtc_rtcp::sender_report::SenderReport {
             ssrc,
             ntp_time: system_time_to_ntp(ntp_time),
             rtp_time,

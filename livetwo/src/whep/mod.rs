@@ -9,7 +9,7 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use ::webrtc::peer_connection::RTCPeerConnection;
+use ::webrtc::peer_connection::PeerConnection;
 use cli::create_child;
 use libwish::Client;
 use tokio::sync::Notify;
@@ -244,7 +244,7 @@ fn start_initial_transport_task(
     mut video_rx: broadcast::Receiver<Vec<u8>>,
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
     mut output_target: OutputTarget,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
 ) -> InitialTransportHandle {
     let port_update_rx = output_target.take_port_update_rx();
 
@@ -343,7 +343,7 @@ fn start_transport_task(
     mut video_rx: broadcast::Receiver<Vec<u8>>,
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
     media_info: rtsp::MediaInfo,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!("Transport task #{} started", connection_id);

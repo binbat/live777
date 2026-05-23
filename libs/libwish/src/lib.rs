@@ -5,10 +5,7 @@ use reqwest::{
 };
 use std::str::FromStr;
 use url::Url;
-use webrtc::{
-    ice_transport::ice_server::RTCIceServer,
-    peer_connection::sdp::session_description::RTCSessionDescription,
-};
+use webrtc::peer_connection::{RTCIceServer, RTCSessionDescription};
 
 #[derive(Clone)]
 pub struct Client {

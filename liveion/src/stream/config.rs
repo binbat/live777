@@ -2,7 +2,7 @@
 use crate::config::Channel;
 use crate::config::Config;
 
-use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::RTCIceServer;
 
 #[derive(Clone)]
 pub struct ManagerConfig {

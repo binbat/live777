@@ -10,10 +10,10 @@ use tracing::{debug, error, info, trace, warn};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "source")]
-use webrtc::rtp_transceiver::RTCPFeedback;
+use rtc::rtp_transceiver::rtp_sender::RTCPFeedback;
 
 #[cfg(feature = "source")]
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
 #[cfg(feature = "source")]
 type RtcpSender = Arc<RwLock<Option<mpsc::UnboundedSender<(u8, Vec<u8>)>>>>;
@@ -421,7 +421,7 @@ impl RtspSource {
                 clock_rate,
                 ..
             } => RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
+                rtp_codec: RTCRtpCodec {
                     mime_type: "video/H264".to_string(),
                     clock_rate: *clock_rate,
                     channels: 0,
@@ -448,14 +448,13 @@ impl RtspSource {
                     ],
                 },
                 payload_type: *payload_type,
-                stats_id: String::new(),
             },
             VideoCodecParams::H265 {
                 payload_type,
                 clock_rate,
                 ..
             } => RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
+                rtp_codec: RTCRtpCodec {
                     mime_type: "video/H265".to_string(),
                     clock_rate: *clock_rate,
                     channels: 0,
@@ -480,13 +479,12 @@ impl RtspSource {
                     ],
                 },
                 payload_type: *payload_type,
-                stats_id: String::new(),
             },
             VideoCodecParams::VP8 {
                 payload_type,
                 clock_rate,
             } => RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
+                rtp_codec: RTCRtpCodec {
                     mime_type: "video/VP8".to_string(),
                     clock_rate: *clock_rate,
                     channels: 0,
@@ -511,13 +509,12 @@ impl RtspSource {
                     ],
                 },
                 payload_type: *payload_type,
-                stats_id: String::new(),
             },
             VideoCodecParams::VP9 {
                 payload_type,
                 clock_rate,
             } => RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
+                rtp_codec: RTCRtpCodec {
                     mime_type: "video/VP9".to_string(),
                     clock_rate: *clock_rate,
                     channels: 0,
@@ -542,7 +539,6 @@ impl RtspSource {
                     ],
                 },
                 payload_type: *payload_type,
-                stats_id: String::new(),
             },
         }
     }
@@ -552,7 +548,7 @@ impl RtspSource {
         let mime_type = format!("audio/{}", codec.codec.to_uppercase());
 
         RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
+            rtp_codec: RTCRtpCodec {
                 mime_type,
                 clock_rate: codec.clock_rate,
                 channels: codec.channels,
@@ -564,7 +560,6 @@ impl RtspSource {
                 rtcp_feedback: vec![],
             },
             payload_type: codec.payload_type,
-            stats_id: String::new(),
         }
     }
 }

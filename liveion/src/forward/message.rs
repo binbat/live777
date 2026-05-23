@@ -1,4 +1,4 @@
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::RTCPeerConnectionState;
 
 #[derive(Clone, Debug)]
 pub struct Layer {

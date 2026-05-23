@@ -122,8 +122,8 @@ impl TransportInfo {
 
 #[derive(Debug, Default, Clone)]
 pub struct CodecInfo {
-    pub video_codec: Option<webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters>,
-    pub audio_codec: Option<webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters>,
+    pub video_codec: Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters>,
+    pub audio_codec: Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters>,
 }
 
 impl CodecInfo {
@@ -205,11 +205,11 @@ impl From<cli::Codec> for AudioCodecParams {
     }
 }
 
-impl From<VideoCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
     fn from(params: VideoCodecParams) -> Self {
         match params {
             VideoCodecParams::H264 { clock_rate, .. } => {
-                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     mime_type: "video/H264".to_string(),
                     clock_rate,
                     channels: 0,
@@ -220,7 +220,7 @@ impl From<VideoCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecC
                 }
             }
             VideoCodecParams::H265 { clock_rate, .. } => {
-                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     mime_type: "video/H265".to_string(),
                     clock_rate,
                     channels: 0,
@@ -229,7 +229,7 @@ impl From<VideoCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecC
                 }
             }
             VideoCodecParams::VP8 { clock_rate, .. } => {
-                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     mime_type: "video/VP8".to_string(),
                     clock_rate,
                     channels: 0,
@@ -238,7 +238,7 @@ impl From<VideoCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecC
                 }
             }
             VideoCodecParams::VP9 { clock_rate, .. } => {
-                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     mime_type: "video/VP9".to_string(),
                     clock_rate,
                     channels: 0,
@@ -250,9 +250,9 @@ impl From<VideoCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecC
     }
 }
 
-impl From<AudioCodecParams> for webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+impl From<AudioCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
     fn from(params: AudioCodecParams) -> Self {
-        webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+        rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
             mime_type: format!("audio/{}", params.codec),
             clock_rate: params.clock_rate,
             channels: params.channels,

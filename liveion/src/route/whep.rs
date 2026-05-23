@@ -3,8 +3,8 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::post;
 use http::{HeaderMap, StatusCode, header};
-use tracing::debug;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use tracing::{debug, error};
+use webrtc::peer_connection::RTCSessionDescription;
 
 use iceserver::link_header;
 
@@ -29,10 +29,17 @@ async fn whep(
     let filtered_sdp = maybe_filter_codecs(&body, &state.config.sdp.disable_codecs)?;
     let offer = RTCSessionDescription::offer(filtered_sdp)?;
     debug!("offer: {}", offer.sdp);
-    let (answer, session) = state
+    let (answer, session) = match state
         .stream_manager
         .subscribe(stream.clone(), offer)
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            error!(stream = %stream, error = ?e, "WHEP subscribe failed");
+            return Err(e);
+        }
+    };
     debug!("answer: {}", answer.sdp);
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
