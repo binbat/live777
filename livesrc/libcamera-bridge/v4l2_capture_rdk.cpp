@@ -313,3 +313,16 @@ const char* v4l2cap_get_error(V4L2CaptureHandle handle) {
 }
 
 } // extern "C"
+
+// ---------------------------------------------------------------------------
+// Factory for CaptureBackend (RDK X5 V4L2)
+// ---------------------------------------------------------------------------
+std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg) {
+    auto impl = std::make_unique<V4L2CaptureImpl>();
+    std::string err;
+    if (!impl->init(cfg, &err)) {
+        fprintf(stderr, "[RDKCaptureFactory] init failed: %s\n", err.c_str());
+        return nullptr;
+    }
+    return impl;
+}

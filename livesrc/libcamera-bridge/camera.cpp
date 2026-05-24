@@ -320,3 +320,16 @@ const char* camera_get_error(CameraHandle handle) {
 }
 
 } // extern "C"
+
+// ---------------------------------------------------------------------------
+// Factory for CaptureBackend (libcamera)
+// ---------------------------------------------------------------------------
+std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg) {
+    auto impl = std::make_unique<PiCameraImpl>();
+    std::string err;
+    if (!impl->init(cfg, &err)) {
+        fprintf(stderr, "[CameraFactory] init failed: %s\n", err.c_str());
+        return nullptr;
+    }
+    return impl;
+}

@@ -54,3 +54,7 @@ public:
     /// Returns true if the backend is currently streaming.
     virtual bool isRunning() const = 0;
 };
+
+/// Factory: creates the appropriate CaptureBackend for the given config.
+/// Implemented in each platform's capture .cpp file.
+std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg);
