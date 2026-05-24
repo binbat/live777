@@ -148,7 +148,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "api"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "serde",
  "serde_html_form 0.4.0",
@@ -276,7 +276,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "api",
@@ -809,7 +809,7 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "cli"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1818,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "http-log"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "axum 0.8.8",
  "http-body-util",
@@ -1954,7 +1954,7 @@ dependencies = [
 
 [[package]]
 name = "iceserver"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "libwish"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "http 1.4.0",
@@ -2334,7 +2334,7 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
 name = "live777"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "api",
@@ -2364,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "livecam"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "liveion"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "api",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "liveman"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "api",
@@ -2482,7 +2482,7 @@ dependencies = [
 
 [[package]]
 name = "livetwo"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "net4mqtt"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "kcp",
@@ -3839,7 +3839,7 @@ checksum = "d4ed274a5b3d36c4434cff6a4de1b42f43e64ae326b1cfa72d13d9037a314355"
 
 [[package]]
 name = "rtsp"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4521,7 +4521,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signal"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "tokio",
 ]
@@ -4879,7 +4879,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
