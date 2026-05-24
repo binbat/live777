@@ -82,7 +82,12 @@ source-sdp = ["source"]
 source-rtsp = ["source"]
 source-rtp = ["source"]
 source-libcamera = ["source"]
-source-all = ["source-sdp", "source-rtsp", "source-rtp", "source-libcamera"]
+source-v4l2 = ["source"]
+source-all = ["source-sdp", "source-rtsp", "source-rtp", "source-libcamera", "source-v4l2"]
+
+# --- backend/platform features ---
+backend-rdk-x5 = []
+encoder-rdk-x5 = ["backend-rdk-x5"]
 
 [dev-dependencies]
 tempfile = "3.26"

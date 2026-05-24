@@ -19,11 +19,14 @@ use super::rtp_listener::RtpListenerSource;
 use super::libcamera_source::LibcameraSource;
 
 /// Creates a `StreamSource` from a connection URL.
-/// 
+///
 /// Intercepts new URL schemes (rtp://, exec://) and delegates
 /// everything else to the existing `create_source_from_url` function.
 #[cfg(feature = "source")]
-pub async fn create_source_extended(url: &str, config: &SourceConfig) -> Result<Box<dyn StreamSource>> {
+pub async fn create_source_extended(
+    url: &str,
+    config: &SourceConfig,
+) -> Result<Box<dyn StreamSource>> {
     let url_lower = url.to_lowercase();
 
     // Check for RTP Listener scheme
@@ -48,21 +51,23 @@ pub async fn create_source_extended(url: &str, config: &SourceConfig) -> Result<
         }
         #[cfg(not(feature = "source-libcamera"))]
         {
-            anyhow::bail!("Libcamera source feature not enabled. Recompile with feature 'source-libcamera'");
+            anyhow::bail!(
+                "Libcamera source feature not enabled. Recompile with feature 'source-libcamera'"
+            );
         }
     }
 
     // Check for V4L2 Direct Capture scheme
     if url_lower.starts_with("v4l2://") {
-        #[cfg(feature = "source-libcamera")]
+        #[cfg(feature = "source-v4l2")]
         {
             use super::v4l2_source::V4L2Source;
             let source = V4L2Source::from_url(url, config)?;
             return Ok(Box::new(source));
         }
-        #[cfg(not(feature = "source-libcamera"))]
+        #[cfg(not(feature = "source-v4l2"))]
         {
-            anyhow::bail!("V4L2 source requires feature 'source-libcamera' (shared hardware encoder)");
+            anyhow::bail!("V4L2 source requires feature 'source-v4l2'");
         }
     }
 
@@ -71,6 +76,9 @@ pub async fn create_source_extended(url: &str, config: &SourceConfig) -> Result<
 }
 
 #[cfg(not(feature = "source"))]
-pub async fn create_source_extended(_url: &str, _config: &crate::config::SourceConfig) -> Result<Box<dyn StreamSource>> {
+pub async fn create_source_extended(
+    _url: &str,
+    _config: &crate::config::SourceConfig,
+) -> Result<Box<dyn StreamSource>> {
     anyhow::bail!("Source feature not enabled")
 }

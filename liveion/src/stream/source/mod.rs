@@ -1,34 +1,34 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use tokio::sync::broadcast;
 use bytes::Bytes;
+use tokio::sync::broadcast;
 
 #[cfg(feature = "source-rtsp")]
 mod rtsp_source;
 #[cfg(feature = "source-sdp")]
 mod sdp_source;
 
-pub mod lifecycle;
-pub mod stream_config_v2;
 pub mod h264_utils;
+pub mod lifecycle;
 pub mod source_router;
+pub mod stream_config_v2;
 
-#[cfg(feature = "source-rtp")]
-pub mod rtp_listener;
 #[cfg(feature = "source-libcamera")]
 pub mod libcamera_source;
-#[cfg(feature = "source-libcamera")]
+#[cfg(feature = "source-rtp")]
+pub mod rtp_listener;
+#[cfg(feature = "source-v4l2")]
 pub mod v4l2_source;
 
 pub mod manager;
 
+#[cfg(feature = "source-libcamera")]
+pub use libcamera_source::LibcameraSource;
 #[cfg(feature = "source-rtsp")]
 pub use rtsp_source::RtspSource;
 #[cfg(feature = "source-sdp")]
 pub use sdp_source::SdpSource;
-#[cfg(feature = "source-libcamera")]
-pub use libcamera_source::LibcameraSource;
-#[cfg(feature = "source-libcamera")]
+#[cfg(feature = "source-v4l2")]
 pub use v4l2_source::V4L2Source;
 
 pub use manager::SourceManager;
