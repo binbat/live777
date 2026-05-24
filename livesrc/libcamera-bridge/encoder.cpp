@@ -485,3 +485,11 @@ void Encoder::stop() {
     pImpl->running_ = false;
     pImpl->cleanup();
 }
+
+// ---------------------------------------------------------------------------
+// Factory for EncoderBackend (V4L2 M2M)
+// ---------------------------------------------------------------------------
+std::unique_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg) {
+    (void)cfg;
+    return std::make_unique<Encoder::Impl>();
+}

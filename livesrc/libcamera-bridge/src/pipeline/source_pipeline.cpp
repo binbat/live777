@@ -136,17 +136,21 @@ SourcePipelineHandle* source_pipeline_create(
     }
 
     // Wire the FFI callback: C++ EncodedPacket → pure-C EncodedPacketFFI
+    // Copy cb and user_data by value so the lambda owns them independently
+    // of the stack-local *hooks pointer.
     if (hooks && hooks->on_packet) {
+        auto cb = hooks->on_packet;
+        auto ud = hooks->user_data;
         pipeline->setPacketCallback(
-            [hooks](const EncodedPacket& pkt) {
-                EncodedPacketFFI ffi_pkt;
+            [cb, ud](const EncodedPacket& pkt) {
+                EncodedPacketFFI ffi_pkt{};
                 ffi_pkt.codec = static_cast<uint32_t>(pkt.codec);
                 ffi_pkt.data = pkt.data;
                 ffi_pkt.size = pkt.size;
                 ffi_pkt.pts_us = pkt.pts_us;
                 ffi_pkt.dts_us = pkt.dts_us;
                 ffi_pkt.flags = pkt.flags;
-                hooks->on_packet(&ffi_pkt, hooks->user_data);
+                cb(&ffi_pkt, ud);
             });
     }
 
