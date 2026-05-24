@@ -312,14 +312,9 @@ void Encoder::encodeShared(int dma_fd, size_t size, uint64_t timestamp) {
 // ---------------------------------------------------------------------------
 // Factory for EncoderBackend (RDK X5)
 // ---------------------------------------------------------------------------
-std::unique_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg) {
-    auto impl = std::make_unique<Encoder::Impl>();
-    std::string err;
-    if (!impl->init(cfg, &err)) {
-        fprintf(stderr, "[RDKEncoderFactory] init failed: %s\n", err.c_str());
-        return nullptr;
-    }
-    return impl;
+std::unique_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg) {
+    (void)cfg;
+    return std::make_unique<Encoder::Impl>();
 }
 
 void Encoder::stop() {

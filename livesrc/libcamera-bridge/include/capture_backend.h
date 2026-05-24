@@ -13,6 +13,7 @@
 #pragma once
 #include "media_types.h"
 #include <functional>
+#include <memory>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,12 @@ public:
     virtual bool isRunning() const = 0;
 };
 
-/// Factory: creates the appropriate CaptureBackend for the given config.
-/// Implemented in each platform's capture .cpp file.
+/// Platform-specific capture factories — defined in backend .cpp files.
+/// Callers should use create_capture_backend() (the dispatcher in backend_factory.cpp).
+std::unique_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
+std::unique_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
+std::unique_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
+
+/// Dispatcher: selects the right backend based on cfg.backend.
+/// Defined exactly once in src/pipeline/backend_factory.cpp.
 std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg);

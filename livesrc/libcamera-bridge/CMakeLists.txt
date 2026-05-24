@@ -53,10 +53,27 @@ if(ENABLE_BACKEND_RDK_X5)
 endif()
 
 # SourcePipeline (platform-neutral, always built)
-list(APPEND SOURCES src/pipeline/source_pipeline.cpp)
+list(APPEND SOURCES src/pipeline/source_pipeline.cpp src/pipeline/backend_factory.cpp)
 
 # --- Static library ---
 add_library(cambridge STATIC ${SOURCES})
+
+# Feature compile definitions for conditional compilation in backend_factory.cpp
+if(ENABLE_CAPTURE_LIBCAMERA)
+    target_compile_definitions(cambridge PRIVATE ENABLE_CAPTURE_LIBCAMERA=1)
+endif()
+if(ENABLE_CAPTURE_V4L2)
+    target_compile_definitions(cambridge PRIVATE ENABLE_CAPTURE_V4L2=1)
+endif()
+if(ENABLE_BACKEND_RDK_X5)
+    target_compile_definitions(cambridge PRIVATE ENABLE_BACKEND_RDK_X5=1)
+endif()
+if(ENABLE_ENCODER_V4L2_M2M)
+    target_compile_definitions(cambridge PRIVATE ENABLE_ENCODER_V4L2_M2M=1)
+endif()
+if(ENABLE_ENCODER_RDK_X5)
+    target_compile_definitions(cambridge PRIVATE ENABLE_ENCODER_RDK_X5=1)
+endif()
 
 target_include_directories(cambridge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
