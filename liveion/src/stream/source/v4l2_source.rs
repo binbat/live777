@@ -3,17 +3,17 @@
 //! Direct integration with USB cameras via V4L2 + V4L2 M2M hardware encoder.
 //! Features auto-reconnect and device discovery logic.
 
-use super::h264_utils::{H264Packetizer, AnnexBParser, parse_profile_level_id};
+use super::h264_utils::{AnnexBParser, H264Packetizer, parse_profile_level_id};
 use super::stream_config_v2::parse_v4l2_url;
 use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast, mpsc};
-use tracing::{info, warn, error};
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::{RwLock, broadcast, mpsc};
+use tracing::{error, info, warn};
 
 #[cfg(feature = "source")]
 use webrtc::rtp_transceiver::RTCPFeedback;
@@ -24,7 +24,9 @@ const CHANNEL_VIDEO_RTP: u8 = 0;
 
 // --- FFI Bindings ---
 #[repr(C)]
-struct V4L2BridgeContext { _private: [u8; 0] }
+struct V4L2BridgeContext {
+    _private: [u8; 0],
+}
 
 #[derive(Clone, Copy)]
 pub struct V4L2BridgePtr(pub *mut V4L2BridgeContext);
@@ -36,16 +38,31 @@ struct SendPtr(pub *mut c_void);
 unsafe impl Send for SendPtr {}
 unsafe impl Sync for SendPtr {}
 
-type V4L2NALCallbackFFI = unsafe extern "C" fn(data: *const u8, size: usize, is_keyframe: c_int, timestamp: u64, user_data: *mut c_void);
+type V4L2NALCallbackFFI = unsafe extern "C" fn(
+    data: *const u8,
+    size: usize,
+    is_keyframe: c_int,
+    timestamp: u64,
+    user_data: *mut c_void,
+);
 
 unsafe extern "C" {
-    fn v4l2_bridge_init(device: *const c_char, width: c_int, height: c_int, fps: c_int, bitrate: c_int) -> *mut V4L2BridgeContext;
-    fn v4l2_bridge_set_callback(ctx: *mut V4L2BridgeContext, callback: V4L2NALCallbackFFI, user_data: *mut c_void);
+    fn v4l2_bridge_init(
+        device: *const c_char,
+        width: c_int,
+        height: c_int,
+        fps: c_int,
+        bitrate: c_int,
+    ) -> *mut V4L2BridgeContext;
+    fn v4l2_bridge_set_callback(
+        ctx: *mut V4L2BridgeContext,
+        callback: V4L2NALCallbackFFI,
+        user_data: *mut c_void,
+    );
     fn v4l2_bridge_start(ctx: *mut V4L2BridgeContext) -> bool;
     fn v4l2_bridge_stop(ctx: *mut V4L2BridgeContext);
     fn v4l2_bridge_is_running(ctx: *mut V4L2BridgeContext) -> bool;
     fn v4l2_bridge_request_keyframe(ctx: *mut V4L2BridgeContext);
-    fn v4l2_bridge_get_error(ctx: *mut V4L2BridgeContext) -> *const c_char;
     fn v4l2_bridge_free(ctx: *mut V4L2BridgeContext);
 }
 
@@ -109,36 +126,83 @@ impl V4L2Source {
         })
     }
 
-    async fn set_state(state_arc: &Arc<RwLock<StreamSourceState>>, state_tx: &broadcast::Sender<StateChangeEvent>, stream_id: &str, new_state: StreamSourceState, error: Option<String>) {
+    async fn set_state(
+        state_arc: &Arc<RwLock<StreamSourceState>>,
+        state_tx: &broadcast::Sender<StateChangeEvent>,
+        stream_id: &str,
+        new_state: StreamSourceState,
+        error: Option<String>,
+    ) {
         let mut state = state_arc.write().await;
         let old_state = *state;
         if old_state != new_state {
             *state = new_state;
-            let _ = state_tx.send(StateChangeEvent { old_state, new_state, error: error.clone() });
-            info!("[{}] V4L2 state: {:?} -> {:?}{}", stream_id, old_state, new_state, error.map(|e| format!(" ({})", e)).unwrap_or_default());
+            let _ = state_tx.send(StateChangeEvent {
+                old_state,
+                new_state,
+                error: error.clone(),
+            });
+            info!(
+                "[{}] V4L2 state: {:?} -> {:?}{}",
+                stream_id,
+                old_state,
+                new_state,
+                error.map(|e| format!(" ({})", e)).unwrap_or_default()
+            );
         }
     }
 
-    unsafe extern "C" fn nal_callback(data: *const u8, size: usize, _is_kf: c_int, ts: u64, user_data: *mut c_void) {
-        if user_data.is_null() { return; }
-        let tx = &*(user_data as *const mpsc::UnboundedSender<NALMessage>);
-        let buf = std::slice::from_raw_parts(data, size);
-        let _ = tx.send(NALMessage { data: buf.to_vec(), timestamp_us: ts });
+    unsafe extern "C" fn nal_callback(
+        data: *const u8,
+        size: usize,
+        _is_kf: c_int,
+        ts: u64,
+        user_data: *mut c_void,
+    ) {
+        if user_data.is_null() {
+            return;
+        }
+
+        unsafe {
+            let tx = &*(user_data as *const mpsc::UnboundedSender<NALMessage>);
+            let buf = std::slice::from_raw_parts(data, size);
+            let _ = tx.send(NALMessage {
+                data: buf.to_vec(),
+                timestamp_us: ts,
+            });
+        }
     }
 
     #[cfg(feature = "source")]
     async fn build_video_codec_params(&self) -> RTCRtpCodecParameters {
-        let profile = self.dynamic_profile.read().await.clone().unwrap_or_else(|| self.profile.clone());
+        let profile = self
+            .dynamic_profile
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| self.profile.clone());
         RTCRtpCodecParameters {
             capability: RTCRtpCodecCapability {
                 mime_type: "video/H264".to_string(),
                 clock_rate: self.clock_rate,
                 channels: 0,
-                sdp_fmtp_line: format!("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}", profile),
+                sdp_fmtp_line: format!(
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
+                    profile
+                ),
                 rtcp_feedback: vec![
-                    RTCPFeedback { typ: "goog-remb".into(), parameter: "".into() },
-                    RTCPFeedback { typ: "nack".into(), parameter: "".into() },
-                    RTCPFeedback { typ: "nack".into(), parameter: "pli".into() },
+                    RTCPFeedback {
+                        typ: "goog-remb".into(),
+                        parameter: "".into(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".into(),
+                        parameter: "".into(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".into(),
+                        parameter: "pli".into(),
+                    },
                 ],
             },
             payload_type: self.payload_type,
@@ -149,15 +213,21 @@ impl V4L2Source {
 
 #[async_trait]
 impl StreamSource for V4L2Source {
-    fn stream_id(&self) -> &str { &self.config.stream_id }
-    fn state(&self) -> StreamSourceState { *self.state.blocking_read() }
+    fn stream_id(&self) -> &str {
+        &self.config.stream_id
+    }
+    fn state(&self) -> StreamSourceState {
+        *self.state.blocking_read()
+    }
 
     async fn start(&mut self) -> Result<()> {
-        if self.shutdown_tx.is_some() { anyhow::bail!("Already started"); }
+        if self.shutdown_tx.is_some() {
+            anyhow::bail!("Already started");
+        }
 
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<BridgeCommand>();
-        
+
         self.shutdown_tx = Some(shutdown_tx);
         self.cmd_tx = Some(cmd_tx);
 
@@ -180,7 +250,7 @@ impl StreamSource for V4L2Source {
             let mut parser = AnnexBParser::new();
             let start_inst = Instant::now();
             let mut last_rtp_ts: u32 = 0;
-            
+
             loop {
                 info!("[{}] Attempting to open V4L2 device: {}", stream_id, device_path);
                 Self::set_state(&state_arc, &state_tx, &stream_id, StreamSourceState::Initializing, None).await;
@@ -224,10 +294,10 @@ impl StreamSource for V4L2Source {
                 }
 
                 Self::set_state(&state_arc, &state_tx, &stream_id, StreamSourceState::Connected, None).await;
-                
+
                 let mut health_check = tokio::time::interval(std::time::Duration::from_secs(1));
                 let mut session_active = true;
-                
+
                 while session_active {
                     tokio::select! {
                         _ = shutdown_rx.recv() => {
@@ -289,7 +359,7 @@ impl StreamSource for V4L2Source {
                     v4l2_bridge_free(ctx.0);
                     let _ = Box::from_raw(wrapper.0 as *mut mpsc::UnboundedSender<NALMessage>);
                 }
-                
+
                 if shutdown_rx.try_recv().is_ok() { break; }
                 Self::set_state(&state_arc, &state_tx, &stream_id, StreamSourceState::Error, Some("Session lost, retrying...".into())).await;
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -300,24 +370,40 @@ impl StreamSource for V4L2Source {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        if let Some(tx) = self.shutdown_tx.take() { let _ = tx.send(()); }
-        for h in self.task_handles.drain(..) { let _ = h.await; }
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        for h in self.task_handles.drain(..) {
+            let _ = h.await;
+        }
         self.cmd_tx = None;
         let old_state = *self.state.read().await;
         if old_state != StreamSourceState::Disconnected {
             let mut state = self.state.write().await;
             *state = StreamSourceState::Disconnected;
-            let _ = self.state_tx.send(StateChangeEvent { old_state, new_state: StreamSourceState::Disconnected, error: None });
+            let _ = self.state_tx.send(StateChangeEvent {
+                old_state,
+                new_state: StreamSourceState::Disconnected,
+                error: None,
+            });
         }
         Ok(())
     }
 
-    fn subscribe_rtp(&self) -> broadcast::Receiver<MediaPacket> { self.rtp_tx.subscribe() }
-    fn subscribe_state(&self) -> broadcast::Receiver<StateChangeEvent> { self.state_tx.subscribe() }
+    fn subscribe_rtp(&self) -> broadcast::Receiver<MediaPacket> {
+        self.rtp_tx.subscribe()
+    }
+    fn subscribe_state(&self) -> broadcast::Receiver<StateChangeEvent> {
+        self.state_tx.subscribe()
+    }
     #[cfg(feature = "source")]
-    async fn get_video_codec(&self) -> Option<RTCRtpCodecParameters> { Some(self.build_video_codec_params().await) }
+    async fn get_video_codec(&self) -> Option<RTCRtpCodecParameters> {
+        Some(self.build_video_codec_params().await)
+    }
     #[cfg(feature = "source")]
-    async fn get_audio_codec(&self) -> Option<RTCRtpCodecParameters> { None }
+    async fn get_audio_codec(&self) -> Option<RTCRtpCodecParameters> {
+        None
+    }
 
     #[cfg(feature = "source")]
     async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
