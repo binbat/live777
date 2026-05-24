@@ -50,7 +50,8 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v6
+      - name: Setup Nodejs
+        uses: actions/setup-node@v6
         with:
           node-version: latest
 
