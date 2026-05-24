@@ -52,6 +52,9 @@ if(ENABLE_BACKEND_RDK_X5)
     list(APPEND SOURCES v4l2_capture_rdk.cpp bridge_v4l2_rdk_ffi.cpp)
 endif()
 
+# SourcePipeline (platform-neutral, always built)
+list(APPEND SOURCES src/pipeline/source_pipeline.cpp)
+
 # --- Static library ---
 add_library(cambridge STATIC ${SOURCES})
 
