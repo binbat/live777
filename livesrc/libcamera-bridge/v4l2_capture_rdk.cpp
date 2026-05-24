@@ -1,4 +1,5 @@
 #include "v4l2_capture.h"
+#include "include/capture_backend.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <utility>
 
 #define BUFFER_COUNT 16
 
@@ -21,11 +23,11 @@ struct Buffer {
     int dbuf_fd; // The DMA-BUF File Descriptor
 };
 
-class V4L2CaptureImpl {
+class V4L2CaptureImpl : public CaptureBackend {
 public:
     int fd = -1;
     std::string error_msg;
-    uint32_t width, height, fps;
+    uint32_t width = 0, height = 0, fps = 0;
     std::vector<Buffer> buffers;
     std::thread cap_thread;
     std::atomic<bool> running{false};
@@ -33,6 +35,9 @@ public:
     V4L2FrameCallback callback = nullptr;
     V4L2FDFrameCallback fd_callback = nullptr;
     void* user_data = nullptr;
+
+    CaptureFrameCallback capture_cb_;
+    uint64_t seq_ = 0;
 
     ~V4L2CaptureImpl() {
         stop();
@@ -53,8 +58,98 @@ public:
             }
             buffers.clear();
         }
+        capture_cb_ = nullptr;
     }
+
+    // --- CaptureBackend overrides ---
+    bool init(const CaptureConfig& cfg, std::string* err) override;
+    bool start(CaptureFrameCallback cb, std::string* err) override;
+    bool isRunning() const override;
 };
+
+// ---------------------------------------------------------------------------
+// CaptureBackend implementation
+// ---------------------------------------------------------------------------
+bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
+    width = cfg.width;
+    height = cfg.height;
+    fps = cfg.fps;
+
+    fd = ::open(cfg.device.c_str(), O_RDWR);
+    if (fd < 0) {
+        if (err) *err = "Failed to open device: " + std::string(strerror(errno));
+        return false;
+    }
+
+    struct v4l2_format fmt = {};
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.width = cfg.width;
+    fmt.fmt.pix.height = cfg.height;
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    fmt.fmt.pix.field = V4L2_FIELD_ANY;
+
+    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+        if (err) *err = "S_FMT failed";
+        return false;
+    }
+
+    struct v4l2_requestbuffers req = {};
+    req.count = BUFFER_COUNT;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_MMAP;
+
+    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+        if (err) *err = "REQBUFS failed";
+        return false;
+    }
+
+    for (uint32_t i = 0; i < req.count; ++i) {
+        struct v4l2_buffer buf = {};
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+
+        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) return false;
+
+        Buffer b;
+        b.length = buf.length;
+        b.start = mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
+        if (b.start == MAP_FAILED) {
+            if (err) *err = "mmap failed";
+            return false;
+        }
+
+        struct v4l2_exportbuffer expbuf = {};
+        expbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        expbuf.index = i;
+        if (ioctl(fd, VIDIOC_EXPBUF, &expbuf) < 0) {
+            b.dbuf_fd = -1;
+        } else {
+            b.dbuf_fd = expbuf.fd;
+        }
+
+        buffers.push_back(b);
+        ioctl(fd, VIDIOC_QBUF, &buf);
+    }
+
+    return true;
+}
+
+// Forward declaration — defined after extern "C" block
+static void capture_loop(V4L2CaptureImpl* impl);
+
+bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
+    (void)err;
+    capture_cb_ = std::move(cb);
+    if (running) return true;
+    running = true;
+    cap_thread = std::thread(capture_loop, this);
+    return true;
+}
+
+bool V4L2CaptureImpl::isRunning() const {
+    return running.load();
+}
 
 extern "C" {
 
@@ -114,7 +209,11 @@ bool v4l2cap_init(V4L2CaptureHandle handle, const V4L2CaptureParams* params) {
         Buffer b;
         b.length = buf.length;
         b.start = mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, impl->fd, buf.m.offset);
-        
+        if (b.start == MAP_FAILED) {
+            impl->error_msg = "mmap failed";
+            return false;
+        }
+
         // --- THE ZERO-COPY KEY: Export FD ---
         struct v4l2_exportbuffer expbuf = {};
         expbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -148,10 +247,33 @@ static void capture_loop(V4L2CaptureImpl* impl) {
         // Path A: Low Latency / Zero Copy (RDK Path)
         if (impl->fd_callback && impl->buffers[buf.index].dbuf_fd >= 0) {
             impl->fd_callback(impl->buffers[buf.index].dbuf_fd, buf.bytesused, ts, impl->user_data);
-        } 
+        }
         // Path B: Legacy CPU Copy (Fallback)
         else if (impl->callback) {
             impl->callback((uint8_t*)impl->buffers[buf.index].start, buf.bytesused, ts, impl->user_data);
+        }
+
+        // Dispatch to CaptureBackend callback (new path)
+        if (impl->capture_cb_) {
+            RawFrame f{};
+            f.format = RawPixelFormat::Yuyv422;
+            f.width = impl->width;
+            f.height = impl->height;
+            f.pts_us = ts;
+            f.seq = ++impl->seq_;
+            f.plane_count = 1;
+
+            if (impl->buffers[buf.index].dbuf_fd >= 0) {
+                f.kind = BufferKind::DmaBuf;
+                f.planes[0] = {nullptr, 0, buf.bytesused,
+                               impl->buffers[buf.index].dbuf_fd, 0};
+            } else {
+                f.kind = BufferKind::Cpu;
+                f.planes[0] = {
+                    static_cast<const uint8_t*>(impl->buffers[buf.index].start),
+                    impl->width, buf.bytesused, -1, 0};
+            }
+            impl->capture_cb_(f);
         }
 
         ioctl(impl->fd, VIDIOC_QBUF, &buf);
