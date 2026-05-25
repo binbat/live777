@@ -34,6 +34,8 @@ ice_udp_addrs = ["auto"]
 
 [stream]
 
+# ---- Path A: Legacy URL examples ----
+
 # Need enabled `--features=source`
 # [[stream.sources]]
 # stream_id = "test-source"
@@ -44,34 +46,89 @@ ice_udp_addrs = ["auto"]
 # - RTSP: rtsp://username:password@host:port/path
 # url = "rtsp://username:password@host:port/path"
 
-# 核心测试：使用原生 libcamera-bridge 方案 (普适性标准方案)
+# libcamera-bridge via legacy URL (requires --features=source-libcamera)
 [[stream.sources]]
 stream_id = "pi_cam"
 url = "libcamera://0?width=640&height=480&fps=30"
 
-# Structured source config (推荐新格式, 替代 URL query 方式)
+# V4L2 via legacy URL (requires --features=source-v4l2)
 # [[stream.sources]]
-# stream_id = "usbcam"
+# stream_id = "usbcam_legacy"
+# url = "v4l2:///dev/video0?width=640&height=480&fps=30&bitrate=1000000"
+
+# ---- Path B: Structured native examples ----
+
+# libcamera structured (requires --features=source-libcamera)
+# [[stream.sources_v2]]
+# stream_id = "pi_cam_v2"
+# kind = "libcamera"
+#
+# [stream.sources_v2.capture]
+# backend = "libcamera"
+# device = "0"
+# width = 640
+# height = 480
+# fps = 30
+# pixel_format = "yuv420"
+#
+# [stream.sources_v2.encoder]
+# backend = "v4l2_m2m"
+# codec = "h264"
+# bitrate = 1_000_000
+# profile = "42001f"
+# gop = 60
+#
+# [stream.sources_v2.output]
+# payload_type = 96
+# clock_rate = 90000
+
+# V4L2 structured (requires --features=source-v4l2)
+# [[stream.sources_v2]]
+# stream_id = "usbcam_v2"
 # kind = "v4l2"
 #
-# [stream.sources.capture]
+# [stream.sources_v2.capture]
 # backend = "v4l2"
 # device = "/dev/video0"
 # width = 640
 # height = 480
 # fps = 30
 # pixel_format = "yuyv"
-# prefer_dmabuf = false
 #
-# [stream.sources.encoder]
-# backend = "rdk_x5"
+# [stream.sources_v2.encoder]
+# backend = "v4l2_m2m"
 # codec = "h264"
-# bitrate = 1_500_000
+# bitrate = 1_000_000
 # profile = "42001f"
 # gop = 60
-# prefer_dmabuf = false
 #
-# [stream.sources.output]
+# [stream.sources_v2.output]
+# payload_type = 96
+# clock_rate = 90000
+
+# RDK X5 structured (requires --features=source-v4l2,backend-rdk-x5,encoder-rdk-x5)
+# Note: capture.backend is "rdk-x5" (hyphen), encoder.backend is "rdk_x5" (underscore).
+# The RDK encoder expects YUYV input and converts YUYV→NV12 internally.
+# [[stream.sources_v2]]
+# stream_id = "rdk_cam"
+# kind = "v4l2"
+#
+# [stream.sources_v2.capture]
+# backend = "rdk-x5"
+# device = "/dev/video0"
+# width = 1920
+# height = 1080
+# fps = 30
+# pixel_format = "yuyv"
+#
+# [stream.sources_v2.encoder]
+# backend = "rdk_x5"
+# codec = "h265"
+# bitrate = 4_000_000
+# profile = "42001f"
+# gop = 60
+#
+# [stream.sources_v2.output]
 # payload_type = 96
 # clock_rate = 90000
 
