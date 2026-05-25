@@ -92,7 +92,7 @@ static CaptureConfig to_capture_config(const CaptureConfigFFI* ffi) {
     cfg.height = ffi->height;
     cfg.fps = ffi->fps;
     cfg.pixel_format = static_cast<RawPixelFormat>(ffi->pixel_format);
-    cfg.prefer_dmabuf = ffi->prefer_dmabuf;
+    cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
     return cfg;
 }
 
@@ -106,7 +106,7 @@ static EncoderConfig to_encoder_config(const EncoderConfigFFI* ffi) {
     cfg.bitrate = ffi->bitrate;
     cfg.profile = ffi->profile ? ffi->profile : "42001f";
     cfg.gop = ffi->gop;
-    cfg.prefer_dmabuf = ffi->prefer_dmabuf;
+    cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
     return cfg;
 }
 

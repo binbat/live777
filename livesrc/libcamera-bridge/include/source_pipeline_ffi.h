@@ -2,7 +2,7 @@
 //!
 //! This header defines the FFI boundary between C++ and Rust.
 //! All structs use ONLY C ABI-safe types:
-//!   const char*, uint32_t, bool, enum values.
+//!   const char*, uint32_t, uint8_t, enum values.
 //! No std::string, std::function, unique_ptr, or C++ classes are exposed.
 //!
 //! Data flow (C++ internal):
@@ -31,7 +31,7 @@ typedef struct {
     uint32_t height;
     uint32_t fps;
     uint32_t pixel_format;   // RawPixelFormat enum value
-    bool prefer_dmabuf;
+    uint8_t prefer_dmabuf;   // 0 = false, 1 = true
 } CaptureConfigFFI;
 
 typedef struct {
@@ -43,7 +43,7 @@ typedef struct {
     uint32_t bitrate;
     const char* profile;     // "42001f"
     uint32_t gop;
-    bool prefer_dmabuf;
+    uint8_t prefer_dmabuf;   // 0 = false, 1 = true
 } EncoderConfigFFI;
 
 typedef struct {

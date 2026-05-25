@@ -11,6 +11,8 @@ mod sdp_source;
 pub mod h264_utils;
 pub mod legacy_url;
 pub mod lifecycle;
+pub mod native_encoded_source;
+pub mod native_ffi;
 pub mod source_router;
 pub mod stream_config_v2;
 
