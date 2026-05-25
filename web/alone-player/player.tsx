@@ -2,6 +2,7 @@ import { WHEPClient } from "@binbat/whip-whep/whep.js";
 import { PlayerSurface } from "player-core";
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import "player-core/style.css";
+import "./style.css";
 
 export default () => {
     const [streamId, setStreamId] = createSignal("");

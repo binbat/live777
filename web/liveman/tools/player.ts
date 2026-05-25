@@ -1,2 +1,2 @@
 import 'alone-player';
-import 'player-core/style.css';
+import 'alone-player/style.css';
