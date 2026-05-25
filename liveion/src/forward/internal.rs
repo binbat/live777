@@ -1,7 +1,5 @@
 use std::borrow::ToOwned;
 use std::sync::Arc;
-#[cfg(feature = "source")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
 use libwish::Client;
@@ -69,8 +67,6 @@ pub(crate) struct PeerForwardInternal {
     event_sender: broadcast::Sender<ForwardEvent>,
     #[cfg(feature = "source")]
     channel: Channel,
-    #[cfg(feature = "source")]
-    channel_started: AtomicBool,
 }
 
 impl PeerForwardInternal {
@@ -97,7 +93,6 @@ impl PeerForwardInternal {
             ice_server,
             event_sender: new_broadcast_channel!(16),
             channel,
-            channel_started: AtomicBool::new(false),
         }
     }
 
@@ -246,17 +241,8 @@ impl PeerForwardInternal {
     }
 
     /// Initialize the UDP <-> DataChannel bridge for this stream, if configured.
-    /// Idempotent: subsequent calls are no-ops (guarded by AtomicBool).
     #[cfg(feature = "source")]
     pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
-        if self
-            .channel_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_err()
-        {
-            return Ok(());
-        }
-
         if let Some(stream_cfg) = self.channel.streams.get(&self.stream).cloned() {
             let dc_rx = self.data_channel_forward.publish.subscribe();
             let dc_tx = self.data_channel_forward.subscribe.clone();

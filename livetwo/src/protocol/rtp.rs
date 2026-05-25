@@ -109,17 +109,9 @@ pub async fn setup_rtp_output(
         }
     }
 
-    let video_port = if video_codec.is_some() {
-        video_port.or(Some(5004))
-    } else {
-        None
-    };
+    let video_port = video_port.and_then(|p| if video_codec.is_some() { Some(p) } else { None });
 
-    let audio_port = if audio_codec.is_some() {
-        audio_port.or(Some(5006))
-    } else {
-        None
-    };
+    let audio_port = audio_port.and_then(|p| if audio_codec.is_some() { Some(p) } else { None });
 
     let media_info = rtsp::MediaInfo {
         video_transport: video_port.map(|port| rtsp::TransportInfo::Udp {
