@@ -2,7 +2,7 @@
 //!
 //! Supports two coexisting configuration formats:
 //!
-//! 1. **Structured TOML** (recommended): `[[stream.sources]]` with explicit
+//! 1. **Structured TOML** (recommended): `[[stream.sources_v2]]` with explicit
 //!    `capture`, `encoder`, and `output` sections.
 //!
 //! 2. **Legacy URL** (deprecated): URL-based config with query parameters.
@@ -12,11 +12,11 @@
 //!
 //! ```toml
 //! [stream]
-//! [[stream.sources]]
+//! [[stream.sources_v2]]
 //! stream_id = "usbcam"
 //! kind = "v4l2"
 //!
-//! [stream.sources.capture]
+//! [stream.sources_v2.capture]
 //! backend = "v4l2"
 //! device = "/dev/video0"
 //! width = 640
@@ -24,14 +24,14 @@
 //! fps = 30
 //! pixel_format = "yuyv"
 //!
-//! [stream.sources.encoder]
+//! [stream.sources_v2.encoder]
 //! backend = "rdk_x5"
 //! codec = "h264"
 //! bitrate = 1_500_000
 //! profile = "42001f"
 //! gop = 60
 //!
-//! [stream.sources.output]
+//! [stream.sources_v2.output]
 //! payload_type = 96
 //! clock_rate = 90000
 //! ```
@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::lifecycle::DaemonPolicy;
+use super::native_encoded_source::NativeSourceParams;
 
 // ---------------------------------------------------------------------------
 // Re-export legacy URL parsers for backward compatibility
@@ -174,6 +175,12 @@ impl SourceSpec {
         if self.encoder.bitrate == 0 {
             anyhow::bail!("encoder.bitrate must be non-zero");
         }
+        // Validate pixel_format and codec strings early so config errors
+        // surface during validation rather than at source creation time.
+        pixel_format_to_u32(&self.capture.pixel_format)
+            .map_err(|e| anyhow::anyhow!("capture.pixel_format: {}", e))?;
+        codec_to_u32(&self.encoder.codec)
+            .map_err(|e| anyhow::anyhow!("encoder.codec: {}", e))?;
         Ok(())
     }
 
@@ -226,6 +233,66 @@ impl SourceSpec {
             stream_id: self.stream_id.clone(),
             url,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Structured → NativeSourceParams conversion
+// ---------------------------------------------------------------------------
+
+/// Map a pixel format string to its `RawPixelFormat` numeric value.
+///
+/// Used when converting structured `CaptureSpec` into `NativeSourceParams`.
+pub fn pixel_format_to_u32(s: &str) -> anyhow::Result<u32> {
+    match s.to_lowercase().as_str() {
+        "yuyv" | "yuyv422" => Ok(0), // Yuyv422
+        "nv12" => Ok(1),              // Nv12
+        "yuv420" | "yuv420p" => Ok(2), // Yuv420p
+        "mjpeg" => Ok(3),             // Mjpeg
+        "rgb888" | "rgb" => Ok(4),    // Rgb888
+        other => anyhow::bail!("unsupported pixel_format: '{}'. Supported: yuyv, nv12, yuv420, mjpeg, rgb888", other),
+    }
+}
+
+/// Map a codec string to its `VideoCodec` numeric value.
+///
+/// Used when converting structured `EncoderSpec` into `NativeSourceParams`.
+pub fn codec_to_u32(s: &str) -> anyhow::Result<u32> {
+    match s.to_lowercase().as_str() {
+        "h264" => Ok(100),            // H264
+        "h265" | "hevc" => Ok(101),   // H265
+        "av1" => Ok(102),             // Av1
+        "vp8" => Ok(103),             // Vp8
+        "vp9" => Ok(104),             // Vp9
+        other => anyhow::bail!("unsupported codec: '{}'. Supported: h264, h265, av1, vp8, vp9", other),
+    }
+}
+
+impl SourceSpec {
+    /// Build `NativeSourceParams` directly from a structured `SourceSpec`.
+    ///
+    /// This is the direct path — no legacy URL roundtrip.
+    /// Returns an error if `pixel_format` or `codec` strings are unrecognised.
+    pub fn to_native_params(&self) -> anyhow::Result<NativeSourceParams> {
+        Ok(NativeSourceParams {
+            capture_backend: self.capture.backend.clone(),
+            capture_device: self.capture.device.clone(),
+            width: self.capture.width,
+            height: self.capture.height,
+            fps: self.capture.fps,
+            capture_pixel_format: pixel_format_to_u32(&self.capture.pixel_format)?,
+            encoder_backend: self.encoder.backend.clone(),
+            codec: codec_to_u32(&self.encoder.codec)?,
+            bitrate: self.encoder.bitrate,
+            profile: self.encoder.profile.clone(),
+            gop: self.encoder.gop,
+            payload_type: self.output.payload_type as u32,
+            clock_rate: self.output.clock_rate,
+            #[cfg(feature = "source")]
+            codec_name: self.encoder.codec.to_uppercase(),
+            #[cfg(feature = "source")]
+            default_profile: self.encoder.profile.clone(),
+        })
     }
 }
 
@@ -327,7 +394,7 @@ impl StreamEntryConfig {
 /// Top-level streams configuration.
 ///
 /// Supports both the legacy `[streams.<id>]` format and the new
-/// structured `[[stream.sources]]` format in the same TOML file.
+/// structured `[[stream.sources_v2]]` format in the same TOML file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamsConfigV2 {
     /// Map of stream_id -> stream configuration (legacy format).
@@ -577,5 +644,144 @@ mod tests {
         let legacy = config.to_legacy_configs();
         assert_eq!(legacy.len(), 1);
         assert_eq!(legacy[0].stream_id, "cam1");
+    }
+
+    // --- pixel_format / codec mapping tests ---
+
+    #[test]
+    fn test_pixel_format_to_u32_valid() {
+        assert_eq!(pixel_format_to_u32("yuyv").unwrap(), 0);
+        assert_eq!(pixel_format_to_u32("YUYV422").unwrap(), 0);
+        assert_eq!(pixel_format_to_u32("nv12").unwrap(), 1);
+        assert_eq!(pixel_format_to_u32("yuv420").unwrap(), 2);
+        assert_eq!(pixel_format_to_u32("yuv420p").unwrap(), 2);
+        assert_eq!(pixel_format_to_u32("mjpeg").unwrap(), 3);
+        assert_eq!(pixel_format_to_u32("rgb888").unwrap(), 4);
+        assert_eq!(pixel_format_to_u32("rgb").unwrap(), 4);
+    }
+
+    #[test]
+    fn test_pixel_format_to_u32_invalid() {
+        assert!(pixel_format_to_u32("yyyv").is_err());
+        assert!(pixel_format_to_u32("").is_err());
+        assert!(pixel_format_to_u32("h264").is_err());
+    }
+
+    #[test]
+    fn test_codec_to_u32_valid() {
+        assert_eq!(codec_to_u32("h264").unwrap(), 100);
+        assert_eq!(codec_to_u32("H264").unwrap(), 100);
+        assert_eq!(codec_to_u32("h265").unwrap(), 101);
+        assert_eq!(codec_to_u32("hevc").unwrap(), 101);
+        assert_eq!(codec_to_u32("av1").unwrap(), 102);
+        assert_eq!(codec_to_u32("vp8").unwrap(), 103);
+        assert_eq!(codec_to_u32("vp9").unwrap(), 104);
+    }
+
+    #[test]
+    fn test_codec_to_u32_invalid() {
+        assert!(codec_to_u32("h266").is_err());
+        assert!(codec_to_u32("").is_err());
+        assert!(codec_to_u32("mjpeg").is_err());
+    }
+
+    #[test]
+    fn test_to_native_params_valid() {
+        let spec = SourceSpec {
+            stream_id: "cam1".into(),
+            kind: SourceKind::V4l2,
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: "/dev/video0".into(),
+                width: 1920,
+                height: 1080,
+                fps: 60,
+                pixel_format: "nv12".into(),
+                prefer_dmabuf: true,
+            },
+            encoder: EncoderSpec {
+                backend: "rdk_x5".into(),
+                codec: "h265".into(),
+                bitrate: 4_000_000,
+                profile: "42001f".into(),
+                gop: 30,
+                prefer_dmabuf: false,
+            },
+            output: OutputSpec {
+                payload_type: 97,
+                clock_rate: 90000,
+            },
+        };
+
+        let params = spec.to_native_params().unwrap();
+        assert_eq!(params.capture_backend, "v4l2");
+        assert_eq!(params.capture_device, "/dev/video0");
+        assert_eq!(params.width, 1920);
+        assert_eq!(params.height, 1080);
+        assert_eq!(params.fps, 60);
+        assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.encoder_backend, "rdk_x5");
+        assert_eq!(params.codec, 101); // h265
+        assert_eq!(params.bitrate, 4_000_000);
+        assert_eq!(params.profile, "42001f");
+        assert_eq!(params.gop, 30);
+        assert_eq!(params.payload_type, 97);
+        assert_eq!(params.clock_rate, 90000);
+    }
+
+    #[test]
+    fn test_to_native_params_invalid_pixel_format() {
+        let spec = SourceSpec {
+            stream_id: "bad".into(),
+            kind: SourceKind::V4l2,
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: "/dev/video0".into(),
+                width: 640,
+                height: 480,
+                fps: 30,
+                pixel_format: "bad_format".into(),
+                prefer_dmabuf: false,
+            },
+            encoder: EncoderSpec {
+                backend: "v4l2_m2m".into(),
+                codec: "h264".into(),
+                bitrate: 1_000_000,
+                profile: "42001f".into(),
+                gop: 60,
+                prefer_dmabuf: false,
+            },
+            output: OutputSpec::default(),
+        };
+
+        assert!(spec.to_native_params().is_err());
+    }
+
+    #[test]
+    fn test_to_native_params_invalid_codec() {
+        let spec = SourceSpec {
+            stream_id: "bad".into(),
+            kind: SourceKind::V4l2,
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: "/dev/video0".into(),
+                width: 640,
+                height: 480,
+                fps: 30,
+                pixel_format: "yuyv".into(),
+                prefer_dmabuf: false,
+            },
+            encoder: EncoderSpec {
+                backend: "v4l2_m2m".into(),
+                codec: "h266".into(),
+                bitrate: 1_000_000,
+                profile: "42001f".into(),
+                gop: 60,
+                prefer_dmabuf: false,
+            },
+            output: OutputSpec::default(),
+        };
+
+        assert!(spec.to_native_params().is_err());
     }
 }

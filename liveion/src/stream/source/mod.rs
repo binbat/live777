@@ -125,6 +125,20 @@ pub async fn create_source_from_url(
     source_router::create_source_extended(url, config).await
 }
 
+#[cfg(feature = "source")]
+pub async fn create_source_from_spec(
+    spec: &stream_config_v2::SourceSpec,
+) -> Result<Box<dyn StreamSource>> {
+    source_router::create_source_from_spec(spec).await
+}
+
+#[cfg(not(feature = "source"))]
+pub async fn create_source_from_spec(
+    _spec: &stream_config_v2::SourceSpec,
+) -> Result<Box<dyn StreamSource>> {
+    anyhow::bail!("Source feature not enabled")
+}
+
 pub(crate) async fn create_legacy_source_from_url(
     url: &str,
     config: &crate::config::SourceConfig,

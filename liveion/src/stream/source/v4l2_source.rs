@@ -5,6 +5,7 @@
 //! `capture_backend = "v4l2"` from the legacy URL parameters.
 
 use super::native_encoded_source::{NativeEncodedSource, NativeSourceParams};
+use super::stream_config_v2::SourceSpec;
 use super::{MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -43,6 +44,17 @@ impl V4L2Source {
 
         Ok(Self {
             inner: NativeEncodedSource::new(config.stream_id.clone(), native_params),
+        })
+    }
+
+    /// Create a `V4L2Source` directly from a structured `SourceSpec`.
+    ///
+    /// This bypasses the legacy URL roundtrip — `capture.backend`, `encoder.*`,
+    /// and `output.*` fields map directly to `NativeSourceParams`.
+    pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
+        let native_params = spec.to_native_params()?;
+        Ok(Self {
+            inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params),
         })
     }
 }

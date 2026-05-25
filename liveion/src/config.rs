@@ -308,6 +308,13 @@ impl Config {
                 .validate()
                 .map_err(|e| anyhow::anyhow!("source config error: {}", e))?;
         }
+
+        #[cfg(feature = "source")]
+        for source in &self.stream.sources_v2 {
+            source
+                .validate()
+                .map_err(|e| anyhow::anyhow!("structured source config error: {}", e))?;
+        }
         Ok(())
     }
 }
@@ -430,8 +437,16 @@ fn default_upload_concurrency() -> usize {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamConfig {
+    /// Legacy URL-based source configurations.
+    /// TOML: `[[stream.sources]]` with `url` field.
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
+
+    /// Structured source specifications (v2, recommended).
+    /// TOML: `[[stream.sources_v2]]` with `kind`, `capture`, `encoder`, `output`.
+    #[cfg(feature = "source")]
+    #[serde(default)]
+    pub sources_v2: Vec<crate::stream::source::stream_config_v2::SourceSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

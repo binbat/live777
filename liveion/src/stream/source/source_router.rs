@@ -12,6 +12,9 @@ use anyhow::Result;
 #[cfg(feature = "source")]
 use crate::config::SourceConfig;
 
+#[cfg(feature = "source")]
+use super::stream_config_v2::SourceSpec;
+
 #[cfg(feature = "source-rtp")]
 use super::rtp_listener::RtpListenerSource;
 
@@ -79,6 +82,49 @@ pub async fn create_source_extended(
 pub async fn create_source_extended(
     _url: &str,
     _config: &crate::config::SourceConfig,
+) -> Result<Box<dyn StreamSource>> {
+    anyhow::bail!("Source feature not enabled")
+}
+
+/// Create a `StreamSource` directly from a structured [`SourceSpec`],
+/// bypassing the legacy URL roundtrip.
+///
+/// Routes based on `spec.kind`:
+/// - `V4l2` → `V4L2Source::from_spec()`
+/// - `Libcamera` → `LibcameraSource::from_spec()`
+/// - `Rtp`, `Rtsp`, `Sdp` → fall back to legacy URL conversion.
+#[cfg(feature = "source")]
+pub async fn create_source_from_spec(spec: &SourceSpec) -> Result<Box<dyn StreamSource>> {
+    match spec.kind {
+        super::stream_config_v2::SourceKind::V4l2 => {
+            #[cfg(feature = "source-v4l2")]
+            {
+                use super::v4l2_source::V4L2Source;
+                return Ok(Box::new(V4L2Source::from_spec(spec)?));
+            }
+            #[cfg(not(feature = "source-v4l2"))]
+            anyhow::bail!("V4L2 source requires feature 'source-v4l2'");
+        }
+        super::stream_config_v2::SourceKind::Libcamera => {
+            #[cfg(feature = "source-libcamera")]
+            {
+                return Ok(Box::new(LibcameraSource::from_spec(spec)?));
+            }
+            #[cfg(not(feature = "source-libcamera"))]
+            anyhow::bail!("Libcamera source requires feature 'source-libcamera'");
+        }
+        // For Rtp, Rtsp, Sdp: fall back through the extended router so
+        // that rtp:// is handled before delegating to the legacy path.
+        _ => {
+            let config = spec.to_legacy_source_config();
+            create_source_extended(&config.url, &config).await
+        }
+    }
+}
+
+#[cfg(not(feature = "source"))]
+pub async fn create_source_from_spec(
+    _spec: &super::stream_config_v2::SourceSpec,
 ) -> Result<Box<dyn StreamSource>> {
     anyhow::bail!("Source feature not enabled")
 }

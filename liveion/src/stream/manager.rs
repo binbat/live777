@@ -511,16 +511,21 @@ impl Manager {
         &self,
         sources_config: &crate::config::StreamConfig,
     ) -> Result<()> {
-        if sources_config.sources.is_empty() {
+        let legacy_count = sources_config.sources.len();
+        let v2_count = sources_config.sources_v2.len();
+
+        if legacy_count == 0 && v2_count == 0 {
             tracing::info!("No sources configured, skipping auto-start");
             return Ok(());
         }
 
         tracing::info!(
-            "Auto-starting {} configured sources",
-            sources_config.sources.len()
+            "Auto-starting {} legacy + {} structured sources",
+            legacy_count,
+            v2_count
         );
 
+        // Process legacy URL-based sources
         for source_cfg in &sources_config.sources {
             tracing::info!(
                 "Auto-starting source: {} from {}",
@@ -536,65 +541,92 @@ impl Manager {
                 }
             };
 
-            if let Err(e) = self.source_manager.add_source(source).await {
-                tracing::error!("Failed to start source {}: {}", source_cfg.stream_id, e);
-                continue;
-            }
+            self.start_single_source(source, &source_cfg.stream_id).await;
+        }
 
-            let codec_ready = self
-                .wait_for_source_codec(&source_cfg.stream_id, 10000)
-                .await;
+        // Process structured sources (direct path, no URL roundtrip)
+        for spec in &sources_config.sources_v2 {
+            tracing::info!(
+                "Auto-starting structured source: {} (kind={:?}, backend={})",
+                spec.stream_id,
+                spec.kind,
+                spec.capture.backend
+            );
 
-            if !codec_ready {
-                tracing::warn!(
-                    "Codec not ready for source: {} after 10s, continuing anyway",
-                    source_cfg.stream_id
-                );
-            }
-
-            let forward = self.get_or_create_forward(&source_cfg.stream_id).await;
-
-            let mut retry_count = 0;
-            let max_retries = 3;
-
-            loop {
-                match self
-                    .source_manager
-                    .create_bridge(&source_cfg.stream_id, forward.clone())
-                    .await
-                {
-                    Ok(_) => {
-                        tracing::info!("Successfully started source: {}", source_cfg.stream_id);
-                        break;
-                    }
-                    Err(e) => {
-                        retry_count += 1;
-                        if retry_count >= max_retries {
-                            tracing::error!(
-                                "Failed to create bridge for {} after {} retries: {}",
-                                source_cfg.stream_id,
-                                max_retries,
-                                e
-                            );
-                            break;
-                        }
-
-                        tracing::warn!(
-                            "Failed to create bridge for {} (attempt {}/{}): {}, retrying...",
-                            source_cfg.stream_id,
-                            retry_count,
-                            max_retries,
-                            e
-                        );
-
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    }
+            let source = match create_source_from_spec(spec).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to create source {}: {}", spec.stream_id, e);
+                    continue;
                 }
-            }
+            };
+
+            self.start_single_source(source, &spec.stream_id).await;
         }
 
         tracing::info!("Auto-start sources completed");
         Ok(())
+    }
+
+    #[cfg(feature = "source")]
+    async fn start_single_source(
+        &self,
+        source: Box<dyn crate::stream::source::StreamSource>,
+        stream_id: &str,
+    ) {
+        if let Err(e) = self.source_manager.add_source(source).await {
+            tracing::error!("Failed to start source {}: {}", stream_id, e);
+            return;
+        }
+
+        let codec_ready = self.wait_for_source_codec(stream_id, 10000).await;
+
+        if !codec_ready {
+            tracing::warn!(
+                "Codec not ready for source: {} after 10s, continuing anyway",
+                stream_id
+            );
+        }
+
+        let forward = self.get_or_create_forward(stream_id).await;
+
+        let mut retry_count = 0;
+        let max_retries = 3;
+
+        loop {
+            match self
+                .source_manager
+                .create_bridge(stream_id, forward.clone())
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!("Successfully started source: {}", stream_id);
+                    break;
+                }
+                Err(e) => {
+                    retry_count += 1;
+                    if retry_count >= max_retries {
+                        tracing::error!(
+                            "Failed to create bridge for {} after {} retries: {}",
+                            stream_id,
+                            max_retries,
+                            e
+                        );
+                        break;
+                    }
+
+                    tracing::warn!(
+                        "Failed to create bridge for {} (attempt {}/{}): {}, retrying...",
+                        stream_id,
+                        retry_count,
+                        max_retries,
+                        e
+                    );
+
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            }
+        }
     }
 
     #[cfg(feature = "source")]
