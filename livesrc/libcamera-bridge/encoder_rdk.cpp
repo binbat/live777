@@ -179,9 +179,15 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
 
         hb_mm_mc_queue_output_buffer(context, &output_buf, 100);
 
-        if (++frame_count % 150 == 0) {
-            printf("[V4L2-RDK] Encoding flow stable. Frames: %ld\n",
-                   frame_count);
+        if (++frame_count % 60 == 0) {
+            fprintf(stderr,
+                    "[RDK Encoder] submit frame=%ld kind=%s bytes=%u "
+                    "encoded=%u keyframe=%d\n",
+                    frame_count,
+                    frame.kind == BufferKind::DmaBuf ? "DmaBuf" : "CPU",
+                    frame.planes[0].bytes,
+                    out_len,
+                    (flags & static_cast<uint32_t>(EncodedKeyframe)) ? 1 : 0);
         }
     }
     return true;
@@ -296,8 +302,12 @@ void Encoder::encode(const uint8_t* data, size_t size, uint64_t timestamp) {
 
         hb_mm_mc_queue_output_buffer(pImpl->context, &output_buf, 100);
 
-        if (++pImpl->frame_count % 150 == 0) {
-            printf("[V4L2-RDK] Encoding flow stable. Frames: %ld\n", pImpl->frame_count);
+        if (++pImpl->frame_count % 60 == 0) {
+            fprintf(stderr,
+                    "[RDK Encoder] encoded packet=%ld bytes=%zu keyframe=%d\n",
+                    pImpl->frame_count,
+                    out_len,
+                    is_kf);
         }
     }
 }

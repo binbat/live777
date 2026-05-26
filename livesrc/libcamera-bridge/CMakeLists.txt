@@ -26,9 +26,22 @@ if(ENABLE_CAPTURE_LIBCAMERA)
     list(APPEND SOURCES camera.cpp)
 endif()
 
+# V4L2 capture: RDK and generic paths are mutually exclusive — they define
+# the same V4L2CaptureImpl class and C ABI symbols.
 if(ENABLE_CAPTURE_V4L2)
-    message(STATUS "cambridge: V4L2 capture enabled")
-    list(APPEND SOURCES v4l2_capture.cpp)
+  if(ENABLE_BACKEND_RDK_X5)
+    list(APPEND SOURCES
+      v4l2_capture_rdk.cpp
+      bridge_v4l2_rdk_ffi.cpp
+    )
+    message(STATUS "cambridge: RDK X5 V4L2 capture enabled")
+  else()
+    list(APPEND SOURCES
+      v4l2_capture.cpp
+      bridge_v4l2_ffi.cpp
+    )
+    message(STATUS "cambridge: generic V4L2 capture enabled")
+  endif()
 endif()
 
 if(ENABLE_ENCODER_V4L2_M2M)
@@ -43,13 +56,12 @@ endif()
 
 if(ENABLE_BACKEND_PI)
     message(STATUS "cambridge: Raspberry Pi backend enabled")
-    list(APPEND SOURCES bridge_ffi.cpp bridge_v4l2_ffi.cpp)
+    list(APPEND SOURCES bridge_ffi.cpp)
 endif()
 
 if(ENABLE_BACKEND_RDK_X5)
     message(STATUS "cambridge: RDK X5 backend enabled")
     add_definitions(-DPLATFORM_RDK)
-    list(APPEND SOURCES v4l2_capture_rdk.cpp bridge_v4l2_rdk_ffi.cpp)
 endif()
 
 # SourcePipeline (platform-neutral, always built)

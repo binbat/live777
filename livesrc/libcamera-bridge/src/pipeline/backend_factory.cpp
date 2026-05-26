@@ -19,12 +19,12 @@
 std::unique_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
 #endif
 
-#if ENABLE_CAPTURE_V4L2
-std::unique_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
-#endif
-
+// V4L2 capture: RDK and generic are mutually exclusive at compile time.
+// Only declare the factory that actually exists in the current build.
 #if ENABLE_BACKEND_RDK_X5
 std::unique_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
+#elif ENABLE_CAPTURE_V4L2
+std::unique_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
 #endif
 
 #if ENABLE_ENCODER_V4L2_M2M
@@ -43,11 +43,12 @@ std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg)
 #if ENABLE_CAPTURE_LIBCAMERA
     if (cfg.backend == "libcamera") return create_libcamera_capture_backend(cfg);
 #endif
-#if ENABLE_CAPTURE_V4L2
-    if (cfg.backend == "v4l2")     return create_v4l2_capture_backend(cfg);
-#endif
 #if ENABLE_BACKEND_RDK_X5
+    // RDK build: both "v4l2" and "rdk-x5" resolve to the RDK V4L2 impl
+    if (cfg.backend == "v4l2")     return create_rdk_v4l2_capture_backend(cfg);
     if (cfg.backend == "rdk-x5")   return create_rdk_v4l2_capture_backend(cfg);
+#elif ENABLE_CAPTURE_V4L2
+    if (cfg.backend == "v4l2")     return create_v4l2_capture_backend(cfg);
 #endif
     return nullptr;
 }

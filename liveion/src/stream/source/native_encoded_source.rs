@@ -16,6 +16,7 @@ use super::{MediaPacket, StateChangeEvent, StreamSourceState};
 use anyhow::Result;
 use std::ffi::{c_char, CString};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::info;
@@ -145,6 +146,17 @@ unsafe extern "C" fn on_encoded_packet(
     } else {
         return;
     };
+
+    // Debug: log every 60 encoded packets received from C++
+    static DBG_COUNT: AtomicU64 = AtomicU64::new(0);
+    let n = DBG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % 60 == 0 {
+        tracing::info!(
+            "[NativeEncodedSource] encoded packet received  bytes={}  count={}",
+            data.len(),
+            n
+        );
+    }
 
     let pts_us = pkt.pts_us;
     let ctx = unsafe { &*(user_data as *const CallbackCtx) };

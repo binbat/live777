@@ -38,6 +38,7 @@ public:
 
     CaptureFrameCallback capture_cb_;
     uint64_t seq_ = 0;
+    bool prefer_dmabuf = false;
 
     ~V4L2CaptureImpl() {
         stop();
@@ -74,6 +75,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
     width = cfg.width;
     height = cfg.height;
     fps = cfg.fps;
+    prefer_dmabuf = cfg.prefer_dmabuf;
 
     fd = ::open(cfg.device.c_str(), O_RDWR);
     if (fd < 0) {
@@ -135,7 +137,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
     return true;
 }
 
-// Forward declaration — defined after extern "C" block
+// Forward declaration — defined before extern "C" block
 static void capture_loop(V4L2CaptureImpl* impl);
 
 bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
@@ -149,6 +151,72 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
 
 bool V4L2CaptureImpl::isRunning() const {
     return running.load();
+}
+
+// ---- capture_loop (C++ linkage, private helper) ----
+
+static void capture_loop(V4L2CaptureImpl* impl) {
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    ioctl(impl->fd, VIDIOC_STREAMON, &type);
+
+    uint64_t dbg_count = 0;
+
+    while (impl->running) {
+        struct v4l2_buffer buf = {};
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+
+        if (ioctl(impl->fd, VIDIOC_DQBUF, &buf) < 0) continue;
+
+        uint64_t ts = (uint64_t)buf.timestamp.tv_sec * 1000000 + buf.timestamp.tv_usec;
+
+        // Path A: Low Latency / Zero Copy (RDK Path)
+        if (impl->fd_callback && impl->buffers[buf.index].dbuf_fd >= 0) {
+            impl->fd_callback(impl->buffers[buf.index].dbuf_fd, buf.bytesused, ts, impl->user_data);
+        }
+        // Path B: Legacy CPU Copy (Fallback)
+        else if (impl->callback) {
+            impl->callback((uint8_t*)impl->buffers[buf.index].start, buf.bytesused, ts, impl->user_data);
+        }
+
+        // Dispatch to CaptureBackend callback (new path)
+        if (impl->capture_cb_) {
+            RawFrame f{};
+            f.format = RawPixelFormat::Yuyv422;
+            f.width = impl->width;
+            f.height = impl->height;
+            f.pts_us = ts;
+            f.seq = ++impl->seq_;
+            f.plane_count = 1;
+
+            // Only emit DmaBuf when prefer_dmabuf is true AND export succeeded.
+            // Otherwise always emit Cpu (the RDK encoder CPU path expects YUYV).
+            bool use_dmabuf = impl->prefer_dmabuf
+                              && impl->buffers[buf.index].dbuf_fd >= 0;
+            if (use_dmabuf) {
+                f.kind = BufferKind::DmaBuf;
+                f.planes[0] = {nullptr, 0, buf.bytesused,
+                               impl->buffers[buf.index].dbuf_fd, 0};
+            } else {
+                f.kind = BufferKind::Cpu;
+                // YUYV422 stride = width * 2 bytes
+                f.planes[0] = {
+                    static_cast<const uint8_t*>(impl->buffers[buf.index].start),
+                    impl->width * 2, buf.bytesused, -1, 0};
+            }
+            impl->capture_cb_(f);
+
+            dbg_count++;
+            if (dbg_count % 60 == 0) {
+                fprintf(stderr, "[RDK Capture] frame=%lu kind=%s bytes=%u\n",
+                        (unsigned long)impl->seq_,
+                        use_dmabuf ? "DmaBuf" : "CPU",
+                        buf.bytesused);
+            }
+        }
+
+        ioctl(impl->fd, VIDIOC_QBUF, &buf);
+    }
 }
 
 extern "C" {
@@ -229,55 +297,6 @@ bool v4l2cap_init(V4L2CaptureHandle handle, const V4L2CaptureParams* params) {
     }
 
     return true;
-}
-
-static void capture_loop(V4L2CaptureImpl* impl) {
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    ioctl(impl->fd, VIDIOC_STREAMON, &type);
-
-    while (impl->running) {
-        struct v4l2_buffer buf = {};
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-
-        if (ioctl(impl->fd, VIDIOC_DQBUF, &buf) < 0) continue;
-
-        uint64_t ts = (uint64_t)buf.timestamp.tv_sec * 1000000 + buf.timestamp.tv_usec;
-
-        // Path A: Low Latency / Zero Copy (RDK Path)
-        if (impl->fd_callback && impl->buffers[buf.index].dbuf_fd >= 0) {
-            impl->fd_callback(impl->buffers[buf.index].dbuf_fd, buf.bytesused, ts, impl->user_data);
-        }
-        // Path B: Legacy CPU Copy (Fallback)
-        else if (impl->callback) {
-            impl->callback((uint8_t*)impl->buffers[buf.index].start, buf.bytesused, ts, impl->user_data);
-        }
-
-        // Dispatch to CaptureBackend callback (new path)
-        if (impl->capture_cb_) {
-            RawFrame f{};
-            f.format = RawPixelFormat::Yuyv422;
-            f.width = impl->width;
-            f.height = impl->height;
-            f.pts_us = ts;
-            f.seq = ++impl->seq_;
-            f.plane_count = 1;
-
-            if (impl->buffers[buf.index].dbuf_fd >= 0) {
-                f.kind = BufferKind::DmaBuf;
-                f.planes[0] = {nullptr, 0, buf.bytesused,
-                               impl->buffers[buf.index].dbuf_fd, 0};
-            } else {
-                f.kind = BufferKind::Cpu;
-                f.planes[0] = {
-                    static_cast<const uint8_t*>(impl->buffers[buf.index].start),
-                    impl->width, buf.bytesused, -1, 0};
-            }
-            impl->capture_cb_(f);
-        }
-
-        ioctl(impl->fd, VIDIOC_QBUF, &buf);
-    }
 }
 
 bool v4l2cap_start(V4L2CaptureHandle handle) {
