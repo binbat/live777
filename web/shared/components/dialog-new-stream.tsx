@@ -55,22 +55,30 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
         }
     }
 
+    const closeDialog = () => {
+        const activeElement = document.activeElement;
+        if (activeElement instanceof HTMLElement && refDialog.current?.contains(activeElement)) {
+            activeElement.blur();
+        }
+        refDialog.current?.close();
+    };
+
     const onConfirmNewStreamId = async (_e: Event) => {
         if (!streamId.trim()) {
             window.alert('Please enter a valid Stream ID');
             return;
         }
 
-        props.onNewStreamId(streamId);
         const success = await handleCreateStream(streamId);
         if (success) {
+            closeDialog();
+            props.onNewStreamId(streamId);
             props.onStreamCreated();
-            refDialog.current?.close();
         }
     };
 
     return (
-        <Modal ref={refDialog} className="max-w-md">
+        <Modal ref={refDialog} className="max-w-md" ariaHidden={false}>
             <Modal.Header className="mb-2">
                 <h3 className="font-bold">New Stream</h3>
             </Modal.Header>
@@ -82,8 +90,8 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
             </Modal.Body>
             <Modal.Actions>
                 <form method="dialog" className="flex gap-2">
-                    <Button onClick={onConfirmNewStreamId}>Confirm</Button>
-                    <Button onClick={() => refDialog.current?.close()}>Cancel</Button>
+                    <Button type="button" onClick={onConfirmNewStreamId}>Confirm</Button>
+                    <Button type="button" onClick={closeDialog}>Cancel</Button>
                 </form>
             </Modal.Actions>
         </Modal>
