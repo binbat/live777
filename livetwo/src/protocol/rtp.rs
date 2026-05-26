@@ -176,6 +176,18 @@ pub async fn setup_rtp_output(
         }
     }
 
+    // Remove media sections that have no corresponding transport mapping.
+    // Prevents WebRTC virtual ports (< 1024) from leaking into the output SDP.
+    session.media_descriptions.retain(|media| {
+        if media.media_name.media == media_type::VIDEO {
+            media_info.video_transport.is_some()
+        } else if media.media_name.media == media_type::AUDIO {
+            media_info.audio_transport.is_some()
+        } else {
+            false
+        }
+    });
+
     let sdp = session.marshal();
     let file_path = sdp_filename.unwrap_or_else(|| "output.sdp".to_string());
     debug!("SDP written to {:?}", file_path);

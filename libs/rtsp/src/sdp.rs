@@ -352,6 +352,8 @@ pub fn filter_sdp(
                     value: Some("streamid=1".to_string()),
                 });
             }
+        } else {
+            return false;
         }
 
         true

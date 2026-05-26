@@ -9,6 +9,7 @@ use tracing::info;
 use crate::protocol;
 use crate::utils;
 use crate::{SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
+use rtsp::constants::media_type;
 
 #[derive(Debug)]
 pub enum OutputScheme {
@@ -70,11 +71,24 @@ pub async fn setup_output_target(
     let (target_host, listen_host) = utils::host::parse_host(&input);
     info!("Target host: {}, Listen host: {}", target_host, listen_host);
 
-    let filtered_sdp = rtsp::filter_sdp(
-        answer_sdp,
-        codec_info.video_codec.as_ref(),
-        codec_info.audio_codec.as_ref(),
-    )?;
+    let has_video_param = input.query_pairs().any(|(k, _)| k == media_type::VIDEO);
+    let has_audio_param = input.query_pairs().any(|(k, _)| k == media_type::AUDIO);
+    let has_any_media_param = has_video_param || has_audio_param;
+
+    // Only include codecs the user explicitly requested.
+    // If neither is specified (e.g. rtp://host), include all available.
+    let video_codec_filter = if has_any_media_param && !has_video_param {
+        None
+    } else {
+        codec_info.video_codec.as_ref()
+    };
+    let audio_codec_filter = if has_any_media_param && !has_audio_param {
+        None
+    } else {
+        codec_info.audio_codec.as_ref()
+    };
+
+    let filtered_sdp = rtsp::filter_sdp(answer_sdp, video_codec_filter, audio_codec_filter)?;
 
     let scheme = match input.scheme() {
         SCHEME_RTSP_SERVER => OutputScheme::RtspServer,
