@@ -152,9 +152,9 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
                     && out_data[i + 2] == 0 && out_data[i + 3] == 1) {
                     int nal_type = out_data[i + 4] & 0x1F;
                     if (nal_type == 5)
-                        flags |= EncodedKeyframe;
+                        flags |= static_cast<uint32_t>(EncodedKeyframe);
                     else if (nal_type == 7 || nal_type == 8)
-                        flags |= EncodedConfig;
+                        flags |= static_cast<uint32_t>(EncodedConfig);
                 }
             }
         }
@@ -173,7 +173,7 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
 
         // Dispatch via legacy callback for bridge compatibility
         if (p_callback) {
-            int is_kf = (flags & EncodedKeyframe) ? 1 : 0;
+            int is_kf = (flags & static_cast<uint32_t>(EncodedKeyframe)) ? 1 : 0;
             p_callback(out_data, out_len, is_kf, frame.pts_us, user_data);
         }
 
@@ -283,7 +283,7 @@ void Encoder::encode(const uint8_t* data, size_t size, uint64_t timestamp) {
 
         // Also dispatch via new EncoderBackend callback
         if (pImpl->encoded_cb_) {
-            uint32_t flags = (is_kf ? EncodedKeyframe : 0);
+            uint32_t flags = (is_kf ? static_cast<uint32_t>(EncodedKeyframe) : 0u);
             EncodedPacket pkt{};
             pkt.codec = VideoCodec::H264;
             pkt.data = out_data;
@@ -312,9 +312,14 @@ void Encoder::encodeShared(int dma_fd, size_t size, uint64_t timestamp) {
 // ---------------------------------------------------------------------------
 // Factory for EncoderBackend (RDK X5)
 // ---------------------------------------------------------------------------
+
+std::unique_ptr<EncoderBackend> Encoder::createRdkX5Backend() {
+    return std::make_unique<Impl>();
+}
+
 std::unique_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg) {
     (void)cfg;
-    return std::make_unique<Encoder::Impl>();
+    return Encoder::createRdkX5Backend();
 }
 
 void Encoder::stop() {

@@ -170,7 +170,7 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
             uint8_t* raw = static_cast<uint8_t*>(outputBuffers[buf_out.index].start);
             size_t len = planes_out[0].bytesused;
             uint32_t flags = 0;
-            if (buf_out.flags & V4L2_BUF_FLAG_KEYFRAME) flags |= EncodedKeyframe;
+            if (buf_out.flags & V4L2_BUF_FLAG_KEYFRAME) flags |= static_cast<uint32_t>(EncodedKeyframe);
 
             EncodedPacket pkt{};
             pkt.codec = VideoCodec::H264;
@@ -407,7 +407,7 @@ void Encoder::encode(const uint8_t* data, size_t size, uint64_t timestamp) {
 
         // Also dispatch via new EncoderBackend callback
         if (pImpl->encoded_cb_) {
-            uint32_t flags = is_keyframe ? EncodedKeyframe : 0;
+            uint32_t flags = is_keyframe ? static_cast<uint32_t>(EncodedKeyframe) : 0u;
             EncodedPacket pkt{};
             pkt.codec = VideoCodec::H264;
             pkt.data = encoded_data;
@@ -489,7 +489,12 @@ void Encoder::stop() {
 // ---------------------------------------------------------------------------
 // Factory for EncoderBackend (V4L2 M2M)
 // ---------------------------------------------------------------------------
+
+std::unique_ptr<EncoderBackend> Encoder::createV4L2M2MBackend() {
+    return std::make_unique<Impl>();
+}
+
 std::unique_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg) {
     (void)cfg;
-    return std::make_unique<Encoder::Impl>();
+    return Encoder::createV4L2M2MBackend();
 }

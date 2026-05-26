@@ -314,59 +314,65 @@ impl NativeEncodedSource {
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(1);
         self.shutdown_tx = Some(shutdown_tx);
 
-        let (ffi_cfg, cstrs) = Self::build_ffi_config(&self.params);
-        self._cstrs = Some(cstrs);
+        // Scope all FFI raw-pointer locals so they are dropped before the
+        // first .await — otherwise the future is !Send and async_trait
+        // callers (e.g. tokio::spawn) will reject it.
+        {
+            let (ffi_cfg, cstrs) = Self::build_ffi_config(&self.params);
+            // CStrings must outlive source_pipeline_create (C++ copies the
+            // strings into internal std::string configs during the call).
+            let _keep_cstrs = cstrs;
 
-        let ctx = Box::new(CallbackCtx {
-            rtp_tx: self.rtp_tx.clone(),
-            payload_type: self.params.payload_type as u8,
-            clock_rate: self.params.clock_rate,
-            start_instant: Instant::now(),
-            parser: Mutex::new(AnnexBParser::new()),
-            packetizer: Mutex::new(H264Packetizer::new(
-                1400,
-                self.params.payload_type as u8,
-                self.params.clock_rate,
-            )),
-            last_rtp_ts: Mutex::new(None),
-            #[cfg(feature = "source")]
-            dynamic_profile: self.dynamic_profile.clone(),
-        });
-        let user_data = Box::into_raw(ctx) as *mut std::ffi::c_void;
+            let ctx = Box::new(CallbackCtx {
+                rtp_tx: self.rtp_tx.clone(),
+                payload_type: self.params.payload_type as u8,
+                clock_rate: self.params.clock_rate,
+                start_instant: Instant::now(),
+                parser: Mutex::new(AnnexBParser::new()),
+                packetizer: Mutex::new(H264Packetizer::new(
+                    1400,
+                    self.params.payload_type as u8,
+                    self.params.clock_rate,
+                )),
+                last_rtp_ts: Mutex::new(None),
+                #[cfg(feature = "source")]
+                dynamic_profile: self.dynamic_profile.clone(),
+            });
+            let ctx_ptr = Box::into_raw(ctx);
+            let user_data = ctx_ptr as *mut std::ffi::c_void;
 
-        let hooks = SourcePipelineHooksFFI {
-            on_packet: Some(on_encoded_packet),
-            user_data,
-        };
+            let hooks = SourcePipelineHooksFFI {
+                on_packet: Some(on_encoded_packet),
+                user_data,
+            };
 
-        let mut errbuf: [c_char; ERR_BUF_LEN] = [0; ERR_BUF_LEN];
+            let mut errbuf: [c_char; ERR_BUF_LEN] = [0; ERR_BUF_LEN];
 
-        let raw_handle = unsafe {
-            source_pipeline_create(
-                &ffi_cfg as *const _,
-                &hooks as *const _,
-                errbuf.as_mut_ptr(),
-                ERR_BUF_LEN,
-            )
-        };
+            let raw_handle = unsafe {
+                source_pipeline_create(
+                    &ffi_cfg as *const _,
+                    &hooks as *const _,
+                    errbuf.as_mut_ptr(),
+                    ERR_BUF_LEN,
+                )
+            };
 
-        self._cstrs = None;
+            if raw_handle.is_null() {
+                unsafe { drop(Box::from_raw(ctx_ptr)); }
+                let err_str = unsafe { std::ffi::CStr::from_ptr(errbuf.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned();
+                anyhow::bail!("source_pipeline_create failed: {}", err_str);
+            }
 
-        if raw_handle.is_null() {
-            unsafe { drop(Box::from_raw(user_data as *mut CallbackCtx)); }
-            let err_str = unsafe { std::ffi::CStr::from_ptr(errbuf.as_ptr()) }
-                .to_string_lossy()
-                .into_owned();
-            anyhow::bail!("source_pipeline_create failed: {}", err_str);
-        }
+            self.handle.set(raw_handle);
+            self.callback_ctx = Some(ctx_ptr);
 
-        self.handle.set(raw_handle);
-        self.callback_ctx = Some(user_data as *mut CallbackCtx);
-
-        if !unsafe { source_pipeline_start(raw_handle) } {
-            self.cleanup_pipeline();
-            anyhow::bail!("source_pipeline_start failed");
-        }
+            if !unsafe { source_pipeline_start(raw_handle) } {
+                self.cleanup_pipeline();
+                anyhow::bail!("source_pipeline_start failed");
+            }
+        } // ffi_cfg, hooks, user_data, cstrs, errbuf all dropped here
 
         self.set_state(StreamSourceState::Connected, None).await;
         Ok(())
