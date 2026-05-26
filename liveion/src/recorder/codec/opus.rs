@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bytes::BytesMut;
-use webrtc::rtp::packet::Packet;
+use rtc_rtp::packet::Packet;
 
 /// Very simple RTP parser for Opus.
 /// For Opus over RTP we normally have exactly one complete Opus frame per RTP packet
@@ -41,7 +41,7 @@ impl crate::recorder::codec::RtpParser for OpusRtpParser {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use webrtc::rtp::packet::Packet;
+    use rtc_rtp::packet::Packet;
 
     #[test]
     fn test_opus_parser_pass_through() {

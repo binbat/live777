@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
-use webrtc::peer_connection::{
-    PeerConnectionBuilder, PeerConnection, PeerConnectionEventHandler,
-    RTCIceServer, RTCConfigurationBuilder, RTCPeerConnectionState, RTCSessionDescription,
-    RTCIceCandidateInit, RTCIceGatheringState, Registry, MediaEngine, SettingEngine,
-};
 use webrtc::media_stream::track_local::TrackLocal;
+use webrtc::peer_connection::{
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceGatheringState, RTCIceServer,
+    RTCPeerConnectionState, RTCSessionDescription, Registry, SettingEngine,
+};
 
 use super::auth::{AppState, Claims};
 
@@ -154,10 +154,7 @@ async fn whep_handler(
         }
     };
 
-    if let Err(e) = peer
-        .add_track(track.clone() as Arc<dyn TrackLocal>)
-        .await
-    {
+    if let Err(e) = peer.add_track(track.clone() as Arc<dyn TrackLocal>).await {
         error!(stream_id, error = %e, "Failed to add track.");
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -188,17 +185,20 @@ async fn whep_handler(
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    debug!(stream_id, "Local description set, waiting for ICE gathering...");
+    debug!(
+        stream_id,
+        "Local description set, waiting for ICE gathering..."
+    );
 
     // Wait for ICE gathering to complete with a timeout.
-    if tokio::time::timeout(
-        Duration::from_secs(3),
-        gather_complete.notified(),
-    )
-    .await
-    .is_err()
+    if tokio::time::timeout(Duration::from_secs(3), gather_complete.notified())
+        .await
+        .is_err()
     {
-        warn!(stream_id, "ICE gathering timed out after 3s, using partial description");
+        warn!(
+            stream_id,
+            "ICE gathering timed out after 3s, using partial description"
+        );
     }
 
     let local_desc = match peer.local_description().await {

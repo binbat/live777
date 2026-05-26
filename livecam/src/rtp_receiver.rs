@@ -2,6 +2,13 @@
 use anyhow::anyhow;
 #[cfg(riscv_mode)]
 use bytes::Bytes;
+#[cfg(riscv_mode)]
+use rtc::rtp::codec::h264::H264Payloader;
+use rtc::rtp::packet::Packet;
+#[cfg(riscv_mode)]
+use rtc::rtp::packetizer::Payloader;
+#[cfg(not(riscv_mode))]
+use rtc::shared::marshal::Unmarshal;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(not(riscv_mode))]
@@ -9,15 +16,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{error, info, trace, warn};
-use rtc::rtp::packet::Packet;
-#[cfg(riscv_mode)]
-use rtc::rtp::codec::h264::H264Payloader;
-#[cfg(riscv_mode)]
-use rtc::rtp::packetizer::Payloader;
-use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 use webrtc::media_stream::track_local::TrackLocal;
-#[cfg(not(riscv_mode))]
-use rtc::shared::marshal::Unmarshal;
+use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 
 #[cfg(riscv_mode)]
 const DEFAULT_WIDTH: u32 = 1280;
@@ -66,10 +66,10 @@ async fn rtsp_mode(
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
     use milkv_libs::rtsp::{RtspParams, RtspServer};
+    use rtc::shared::marshal::Unmarshal;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::net::UdpSocket;
     use tokio::process::Command;
-    use rtc::shared::marshal::Unmarshal;
 
     info!("=== RTSP Mode (Internal Server) Starting ===");
     info!(

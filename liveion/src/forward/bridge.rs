@@ -3,11 +3,11 @@ use crate::forward::rtcp::RtcpMessage;
 use crate::stream::source::{MediaPacket, StateChangeEvent};
 use anyhow::Result;
 use anyhow::anyhow;
+use rtc::shared::marshal::Marshal;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace, warn};
-use rtc::shared::marshal::Marshal;
 
 const LOG_PACKET_INTERVAL: u64 = 100;
 

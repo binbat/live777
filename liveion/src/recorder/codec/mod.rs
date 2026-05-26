@@ -16,7 +16,7 @@ pub use vp9::Vp9RtpParser;
 
 use anyhow::Result;
 use bytes::Bytes;
-use webrtc::rtp::packet::Packet;
+use rtc_rtp::packet::Packet;
 
 /// Track category for a given adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

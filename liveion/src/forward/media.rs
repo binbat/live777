@@ -1,8 +1,8 @@
+use rtc::rtp_transceiver::PayloadType;
 use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
 };
 use sdp::{MediaDescription, SessionDescription};
-use rtc::rtp_transceiver::PayloadType;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MediaInfo {

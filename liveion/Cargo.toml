@@ -39,6 +39,7 @@ tracing = { workspace = true }
 webrtc = { workspace = true }
 rtc = { workspace = true }
 sdp = { workspace = true }
+rtc-rtp = "0.20.0-alpha.1"
 rtc-rtcp = "0.20.0-alpha.1"
 uuid = { workspace = true }
 

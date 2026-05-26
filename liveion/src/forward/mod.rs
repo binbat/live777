@@ -1,14 +1,13 @@
+use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast};
+use tracing::error;
 #[cfg(feature = "source")]
 use tracing::{debug, trace, warn};
-use tracing::error;
 use webrtc::peer_connection::{
-    PeerConnection, RTCIceCandidateInit, RTCIceServer,
-    RTCSessionDescription,
+    PeerConnection, RTCIceCandidateInit, RTCIceServer, RTCSessionDescription,
 };
-use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 
 use libwish::Client;
 
@@ -222,8 +221,13 @@ impl PeerForward {
         }
     }
 
-    async fn new_publish_peer(&self, media_info: MediaInfo) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
-        self.internal.new_publish_peer(media_info, Arc::downgrade(&self.internal)).await
+    async fn new_publish_peer(
+        &self,
+        media_info: MediaInfo,
+    ) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
+        self.internal
+            .new_publish_peer(media_info, Arc::downgrade(&self.internal))
+            .await
     }
 
     pub async fn layers(&self) -> Result<Vec<Layer>> {
@@ -274,7 +278,9 @@ impl PeerForward {
     }
 
     #[cfg(feature = "recorder")]
-    pub async fn first_video_track(&self) -> Option<Arc<dyn webrtc::media_stream::track_remote::TrackRemote>> {
+    pub async fn first_video_track(
+        &self,
+    ) -> Option<Arc<dyn webrtc::media_stream::track_remote::TrackRemote>> {
         self.internal.first_video_track().await
     }
 
@@ -368,8 +374,13 @@ impl PeerForward {
         }
     }
 
-    async fn new_subscription_peer(&self, media_info: MediaInfo) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
-        self.internal.new_subscription_peer(media_info, Arc::downgrade(&self.internal)).await
+    async fn new_subscription_peer(
+        &self,
+        media_info: MediaInfo,
+    ) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
+        self.internal
+            .new_subscription_peer(media_info, Arc::downgrade(&self.internal))
+            .await
     }
 
     pub async fn select_layer(&self, session: String, layer: Option<Layer>) -> Result<()> {

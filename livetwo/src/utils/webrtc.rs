@@ -5,12 +5,15 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::peer_connection::{
-    PeerConnectionBuilder, PeerConnection, PeerConnectionEventHandler, RTCIceServer,
-    RTCConfiguration, RTCConfigurationBuilder, RTCPeerConnectionState, RTCSessionDescription,
-    RTCIceGatheringState, Registry, MediaEngine,
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfiguration, RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer,
+    RTCPeerConnectionState, RTCSessionDescription, Registry,
 };
 
-pub fn create_peer_connection_builder() -> Result<(PeerConnectionBuilder<std::net::SocketAddr>, RTCConfiguration)> {
+pub fn create_peer_connection_builder() -> Result<(
+    PeerConnectionBuilder<std::net::SocketAddr>,
+    RTCConfiguration,
+)> {
     debug!("Creating WebRTC API");
     let m = MediaEngine::default();
 
@@ -55,9 +58,7 @@ pub async fn setup_connection(
 
     let local_desc = peer.local_description().await.unwrap();
 
-    let (answer, ice_servers) = client
-        .wish(local_desc.sdp)
-        .await?;
+    let (answer, ice_servers) = client.wish(local_desc.sdp).await?;
 
     debug!("ICE servers from response: {:?}", ice_servers);
 
@@ -76,8 +77,14 @@ pub async fn setup_connection(
     Ok(answer)
 }
 
-pub fn create_event_handler(ct: CancellationToken, gather_complete: Arc<Notify>) -> Arc<dyn PeerConnectionEventHandler> {
-    Arc::new(Handler { ct, gather_complete })
+pub fn create_event_handler(
+    ct: CancellationToken,
+    gather_complete: Arc<Notify>,
+) -> Arc<dyn PeerConnectionEventHandler> {
+    Arc::new(Handler {
+        ct,
+        gather_complete,
+    })
 }
 
 #[derive(Clone)]

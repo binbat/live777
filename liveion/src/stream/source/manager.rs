@@ -138,10 +138,7 @@ impl SourceManager {
             );
 
             if let Err(e) = forward
-                .add_virtual_track(
-                    rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Video,
-                    codec,
-                )
+                .add_virtual_track(rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Video, codec)
                 .await
             {
                 warn!("Failed to add video track: {:?}", e);
@@ -155,10 +152,7 @@ impl SourceManager {
             );
 
             if let Err(e) = forward
-                .add_virtual_track(
-                    rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Audio,
-                    codec,
-                )
+                .add_virtual_track(rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Audio, codec)
                 .await
             {
                 warn!("Failed to add audio track: {:?}", e);

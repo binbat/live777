@@ -4,9 +4,9 @@ pub mod cloudflare;
 #[cfg(feature = "coturn")]
 pub mod coturn;
 
+use rtc::peer_connection::transport::RTCIceServer;
 use serde::{Deserialize, Serialize};
 use webrtc::error::Error;
-use rtc::peer_connection::transport::RTCIceServer;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IceServer {
@@ -33,7 +33,8 @@ impl IceServer {
 
         for url_str in &self.urls {
             let mut url = self.parse_url(url_str)?;
-            if url.scheme == rtc_ice::url::SchemeType::Turn || url.scheme == rtc_ice::url::SchemeType::Turns
+            if url.scheme == rtc_ice::url::SchemeType::Turn
+                || url.scheme == rtc_ice::url::SchemeType::Turns
             {
                 // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.2)
                 if self.username.is_empty() || self.credential.is_empty() {

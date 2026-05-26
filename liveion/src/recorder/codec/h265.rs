@@ -4,13 +4,13 @@ use super::{CodecAdapter, TrackKind};
 use crate::recorder::fmp4::nalu_to_avcc;
 use anyhow::{Result, anyhow};
 use bytes::{Bytes, BytesMut};
+use rtc_rtp::codec::h265::{H265Packet, H265Payload};
+use rtc_rtp::packet::Packet;
+use rtc_rtp::packetizer::Depacketizer;
 use scuffle_h265::{
     ConstantFrameRate, HEVCDecoderConfigurationRecord, NALUnitType, NumTemporalLayers,
     ParallelismType, ProfileAdditionalFlags, SpsNALUnit,
 };
-use webrtc::rtp::codecs::h265::{H265Packet, H265Payload};
-use webrtc::rtp::packet::Packet;
-use webrtc::rtp::packetizer::Depacketizer;
 
 /// HEVC adapter that collects VPS/SPS/PPS and converts Annex-B to length-prefixed samples.
 pub struct H265Adapter {

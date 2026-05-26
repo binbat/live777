@@ -2,6 +2,10 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::IntoResponse;
+use rtc::media_stream::MediaStreamTrack;
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, RwLock};
@@ -11,12 +15,8 @@ use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
-use webrtc::peer_connection::PeerConnection;
 use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
-use rtc::media_stream::MediaStreamTrack;
-use rtc::rtp_transceiver::rtp_sender::{
-    RtpCodecKind, RTCRtpCodec, RTCRtpEncodingParameters, RTCRtpCodingParameters,
-};
+use webrtc::peer_connection::PeerConnection;
 
 #[cfg(feature = "webui")]
 use axum::http::Uri;
@@ -136,7 +136,11 @@ pub struct LiveCamManager {
     whep_sessions: Arc<Mutex<HashMap<String, Arc<dyn PeerConnection>>>>,
 }
 
-fn codec_config_to_track(codec: &config::CodecConfig, stream_id: &str, label: &str) -> TrackLocalStaticRTP {
+fn codec_config_to_track(
+    codec: &config::CodecConfig,
+    stream_id: &str,
+    label: &str,
+) -> TrackLocalStaticRTP {
     let kind = if codec.mime_type.to_lowercase().starts_with("audio") {
         RtpCodecKind::Audio
     } else {
@@ -237,7 +241,11 @@ impl LiveCamManager {
             };
             drop(config_read);
 
-            let track = Arc::new(codec_config_to_track(&cam_config.codec, stream_id, "livecam-dynamic-stream"));
+            let track = Arc::new(codec_config_to_track(
+                &cam_config.codec,
+                stream_id,
+                "livecam-dynamic-stream",
+            ));
             let new_state = StreamState {
                 subscriber_count: 0,
                 track: track.clone(),

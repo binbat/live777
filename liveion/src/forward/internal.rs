@@ -6,26 +6,6 @@ use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tracing::trace;
 use tracing::{debug, info};
 
-use webrtc::peer_connection::{
-    PeerConnectionBuilder, PeerConnection, PeerConnectionEventHandler,
-    RTCIceCandidateInit, RTCIceServer,
-    RTCConfigurationBuilder, RTCPeerConnectionState,
-    RTCIceGatheringState, Registry, MediaEngine, SettingEngine,
-};
-use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
-use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
-use webrtc::data_channel::DataChannel;
-use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
-use webrtc::media_stream::track_remote::TrackRemote;
-use webrtc::rtp_transceiver::{
-    RTCRtpTransceiverDirection, RTCRtpTransceiverInit, RtpSender,
-};
-use rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpEncodingParameters, RTCRtpCodingParameters, RtpCodecKind, RTCPFeedback,
-    RTCRtpHeaderExtensionCapability,
-};
-use rtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
-use rtc::media_stream::MediaStreamTrack;
 use crate::AppError;
 #[cfg(feature = "source")]
 use crate::config::Channel;
@@ -34,6 +14,23 @@ use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
 use crate::result::Result;
 use crate::{metrics, new_broadcast_channel};
+use rtc::media_stream::MediaStreamTrack;
+use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
+use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters,
+    RTCRtpHeaderExtensionCapability, RtpCodecKind,
+};
+use rtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
+use webrtc::data_channel::DataChannel;
+use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+use webrtc::media_stream::track_remote::TrackRemote;
+use webrtc::peer_connection::{
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceGatheringState, RTCIceServer,
+    RTCPeerConnectionState, Registry, SettingEngine,
+};
+use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, RtpSender};
 
 use super::media::MediaInfo;
 use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
@@ -57,7 +54,12 @@ struct PublishPeerHandler {
 impl PeerConnectionEventHandler for PublishPeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         if let Some(internal) = self.internal.upgrade() {
-            let pc = internal.publish_peer_ref.lock().await.clone().and_then(|w| w.upgrade());
+            let pc = internal
+                .publish_peer_ref
+                .lock()
+                .await
+                .clone()
+                .and_then(|w| w.upgrade());
             if let Some(pc) = pc {
                 info!(
                     "[{}] [publish] connection state changed: {}",
@@ -81,7 +83,12 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
 
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
         if let Some(internal) = self.internal.upgrade() {
-            let pc = internal.publish_peer_ref.lock().await.clone().and_then(|w| w.upgrade());
+            let pc = internal
+                .publish_peer_ref
+                .lock()
+                .await
+                .clone()
+                .and_then(|w| w.upgrade());
             if let Some(pc) = pc {
                 let _ = internal.publish_track_up(pc, track).await;
             }
@@ -90,7 +97,12 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
 
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         if let Some(internal) = self.internal.upgrade() {
-            let pc = internal.publish_peer_ref.lock().await.clone().and_then(|w| w.upgrade());
+            let pc = internal
+                .publish_peer_ref
+                .lock()
+                .await
+                .clone()
+                .and_then(|w| w.upgrade());
             if let Some(pc) = pc {
                 let _ = internal.publish_data_channel(pc, dc).await;
             }
@@ -154,7 +166,10 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
             let ssrcs = track.ssrcs().await;
             info!(
                 "[{}] [subscribe] on_track: kind={}, ssrcs={:?}, id={}",
-                internal.stream, kind, ssrcs, track.track_id().await
+                internal.stream,
+                kind,
+                ssrcs,
+                track.track_id().await
             );
             // Subscribe peer is sendonly — incoming tracks from the remote
             // are unexpected but logged for debugging.
@@ -272,19 +287,18 @@ impl PeerForwardInternal {
             None => None,
         };
 
-        let effective_publish_session_info = if publish_session_info.is_none()
-            && has_virtual_publisher
-        {
-            Some(SessionInfo {
-            id: "virtual-source".to_string(),
-            create_at: self.create_at,
-            state: RTCPeerConnectionState::Connected,
-            cascade: None,
-            has_data_channel: false,
-        })
-        } else {
-            publish_session_info
-        };
+        let effective_publish_session_info =
+            if publish_session_info.is_none() && has_virtual_publisher {
+                Some(SessionInfo {
+                    id: "virtual-source".to_string(),
+                    create_at: self.create_at,
+                    state: RTCPeerConnectionState::Connected,
+                    cascade: None,
+                    has_data_channel: false,
+                })
+            } else {
+                publish_session_info
+            };
 
         ForwardInfo {
             id: self.stream.clone(),
@@ -559,7 +573,10 @@ impl PeerForwardInternal {
             .build();
 
         let gather_complete = Arc::new(Notify::new());
-        let handler = PublishPeerHandler { internal: internal_weak, gather_complete: gather_complete.clone() };
+        let handler = PublishPeerHandler {
+            internal: internal_weak,
+            gather_complete: gather_complete.clone(),
+        };
         let peer: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
                 .with_media_engine(m)
@@ -659,14 +676,10 @@ impl PeerForwardInternal {
     }
 
     #[cfg(feature = "recorder")]
-    pub(crate) async fn first_video_track(
-        &self,
-    ) -> Option<Arc<dyn TrackRemote>> {
+    pub(crate) async fn first_video_track(&self) -> Option<Arc<dyn TrackRemote>> {
         let publish_tracks = self.publish_tracks.read().await;
         publish_tracks.iter().find_map(|track| match track {
-            PublishTrackRemote::Real { track, kind, .. }
-                if *kind == RtpCodecKind::Video =>
-            {
+            PublishTrackRemote::Real { track, kind, .. } if *kind == RtpCodecKind::Video => {
                 Some(track.clone())
             }
             _ => None,
@@ -730,8 +743,20 @@ impl PeerForwardInternal {
         let video_codec = self.publisher_codec(RtpCodecKind::Video).await;
         let audio_codec = self.publisher_codec(RtpCodecKind::Audio).await;
 
-        Self::new_sender(&peer, RtpCodecKind::Video, media_info.video_transceiver.1, video_codec).await?;
-        Self::new_sender(&peer, RtpCodecKind::Audio, media_info.audio_transceiver.1, audio_codec).await?;
+        Self::new_sender(
+            &peer,
+            RtpCodecKind::Video,
+            media_info.video_transceiver.1,
+            video_codec,
+        )
+        .await?;
+        Self::new_sender(
+            &peer,
+            RtpCodecKind::Audio,
+            media_info.audio_transceiver.1,
+            audio_codec,
+        )
+        .await?;
 
         Ok((peer, gather_complete))
     }
@@ -805,7 +830,9 @@ impl PeerForwardInternal {
                 )
                 .await?;
 
-            let sender = transceiver.sender().await
+            let sender = transceiver
+                .sender()
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to get sender: {}", e))?
                 .ok_or_else(|| anyhow::anyhow!("No sender found"))?;
 
@@ -830,13 +857,19 @@ impl PeerForwardInternal {
 
             let _ = sender.replace_track(track).await;
 
-            let params = sender.get_parameters().await
+            let params = sender
+                .get_parameters()
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to get parameters: {}", e))?;
             info!(
                 "[{}] new sender , kind : {}, ssrc : {}",
                 get_peer_id(peer),
                 kind,
-                params.encodings.first().map(|e| e.rtp_coding_parameters.ssrc.unwrap_or(0)).unwrap_or(0),
+                params
+                    .encodings
+                    .first()
+                    .map(|e| e.rtp_coding_parameters.ssrc.unwrap_or(0))
+                    .unwrap_or(0),
             );
 
             Some(sender)
@@ -857,9 +890,13 @@ impl PeerForwardInternal {
         let mut audio_sender = None;
 
         for transceiver in transceivers {
-            let sender = transceiver.sender().await
+            let sender = transceiver
+                .sender()
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to get sender: {}", e))?;
-            let _kind = transceiver.current_direction().await
+            let _kind = transceiver
+                .current_direction()
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to get direction: {}", e))?;
             // Determine kind from the sender's track
             if let Some(ref s) = sender {

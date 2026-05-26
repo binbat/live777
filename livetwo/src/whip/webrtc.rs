@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
+use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
 use tokio::sync::{Notify, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use webrtc::peer_connection::{
-    PeerConnectionBuilder, PeerConnection, RTCIceServer,
-    RTCConfigurationBuilder, Registry, MediaEngine,
+    MediaEngine, PeerConnection, PeerConnectionBuilder, RTCConfigurationBuilder, RTCIceServer,
+    Registry,
 };
-use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
 
 use crate::utils;
 use crate::utils::stats::RtcpStats;
@@ -27,7 +27,8 @@ pub async fn setup_whip_peer(
     Arc<RtcpStats>,
 )> {
     let gather_complete = Arc::new(Notify::new());
-    let (peer, video_sender, audio_sender) = create_peer(ct.clone(), media_info, input_id, gather_complete.clone()).await?;
+    let (peer, video_sender, audio_sender) =
+        create_peer(ct.clone(), media_info, input_id, gather_complete.clone()).await?;
 
     utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
 

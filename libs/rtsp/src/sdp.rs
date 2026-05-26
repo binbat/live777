@@ -1,10 +1,10 @@
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 use sdp::SessionDescription;
 use sdp::description::common::Attribute;
 use std::io::Cursor;
 use tracing::{debug, warn};
-use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 use crate::constants::media_type;
 use crate::types::{AudioCodecParams, MediaInfo, VideoCodecParams};

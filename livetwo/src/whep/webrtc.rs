@@ -2,17 +2,17 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
+use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio::sync::{Mutex, Notify, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use webrtc::peer_connection::{
-    PeerConnection, PeerConnectionEventHandler, RTCSessionDescription,
-    RTCPeerConnectionState, RTCIceGatheringState,
-};
-use webrtc::rtp_transceiver::{RTCRtpTransceiverInit, RTCRtpTransceiverDirection};
-use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
-use rtc::shared::marshal::{Marshal, MarshalSize};
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
+use webrtc::peer_connection::{
+    PeerConnection, PeerConnectionEventHandler, RTCIceGatheringState, RTCPeerConnectionState,
+    RTCSessionDescription,
+};
+use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
 use crate::utils;
 use crate::utils::stats::RtcpStats;
@@ -29,7 +29,14 @@ pub async fn setup_whep_peer(
     Arc<RtcpStats>,
 )> {
     let gather_complete = Arc::new(Notify::new());
-    let peer = create_peer(ct, video_send, audio_send, codec_info.clone(), gather_complete.clone()).await?;
+    let peer = create_peer(
+        ct,
+        video_send,
+        audio_send,
+        codec_info.clone(),
+        gather_complete.clone(),
+    )
+    .await?;
 
     utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
 
@@ -73,7 +80,10 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
         let kind = track.kind().await;
         let ssrcs = track.ssrcs().await;
         let track_id = track.track_id().await;
-        info!("WHEP on_track: kind={}, ssrcs={:?}, id={}", kind, ssrcs, track_id);
+        info!(
+            "WHEP on_track: kind={}, ssrcs={:?}, id={}",
+            kind, ssrcs, track_id
+        );
 
         // Extract codec info from the track
         let first_ssrc = ssrcs.first().copied().unwrap_or(0);

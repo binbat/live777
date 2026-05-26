@@ -115,7 +115,14 @@ impl RtcpStats {
         self.packets_lost.store(count, Ordering::Relaxed);
     }
 
-    pub fn update_from_inbound_stats(&self, bytes_received: u64, packets_received: u64, fir: Option<u64>, pli: Option<u64>, nack: u64) {
+    pub fn update_from_inbound_stats(
+        &self,
+        bytes_received: u64,
+        packets_received: u64,
+        fir: Option<u64>,
+        pli: Option<u64>,
+        nack: u64,
+    ) {
         self.set_bytes_received(bytes_received);
         self.set_packets_received(packets_received);
 
@@ -128,7 +135,14 @@ impl RtcpStats {
         self.nack_count.store(nack, Ordering::Relaxed);
     }
 
-    pub fn update_from_outbound_stats(&self, bytes_sent: u64, packets_sent: u64, fir: Option<u64>, pli: Option<u64>, nack: u64) {
+    pub fn update_from_outbound_stats(
+        &self,
+        bytes_sent: u64,
+        packets_sent: u64,
+        fir: Option<u64>,
+        pli: Option<u64>,
+        nack: u64,
+    ) {
         self.set_bytes_sent(bytes_sent);
         self.set_packets_sent(packets_sent);
 

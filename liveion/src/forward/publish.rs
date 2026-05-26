@@ -33,7 +33,8 @@ impl PublishRTCPeerConnection {
     ) -> Result<Self> {
         let id = get_peer_id(&peer);
         let peer_weak = Arc::downgrade(&peer);
-        let remote_desc = peer.remote_description()
+        let remote_desc = peer
+            .remote_description()
             .await
             .ok_or(anyhow!("not set remote_description"))?;
         let mut reader = Cursor::new(remote_desc.sdp.as_bytes());
@@ -46,18 +47,27 @@ impl PublishRTCPeerConnection {
             media_info,
             create_at: Utc::now().timestamp_millis(),
             cascade,
-            connection_state: std::sync::RwLock::new(webrtc::peer_connection::RTCPeerConnectionState::New),
+            connection_state: std::sync::RwLock::new(
+                webrtc::peer_connection::RTCPeerConnectionState::New,
+            ),
         })
     }
 
-    pub(crate) fn set_connection_state(&self, state: webrtc::peer_connection::RTCPeerConnectionState) {
+    pub(crate) fn set_connection_state(
+        &self,
+        state: webrtc::peer_connection::RTCPeerConnectionState,
+    ) {
         if let Ok(mut s) = self.connection_state.write() {
             *s = state;
         }
     }
 
     pub(crate) async fn info(&self) -> SessionInfo {
-        let state = self.connection_state.read().map(|s| *s).unwrap_or(webrtc::peer_connection::RTCPeerConnectionState::New);
+        let state = self
+            .connection_state
+            .read()
+            .map(|s| *s)
+            .unwrap_or(webrtc::peer_connection::RTCPeerConnectionState::New);
         SessionInfo {
             id: self.id.clone(),
             create_at: self.create_at,
@@ -90,11 +100,18 @@ impl PublishRTCPeerConnection {
                 let ssrcs = track.ssrcs().await;
                 if ssrcs.contains(&media_ssrc) {
                     found = true;
-                    if track.write_rtcp(vec![rtcp_message.to_rtcp_packet(media_ssrc)]).await.is_err() {
-                        debug!(
-                            "[{}] [{}] Failed to write RTCP for ssrc {}",
-                            path, id, media_ssrc
-                        );
+                    match track
+                        .write_rtcp(vec![rtcp_message.to_rtcp_packet(media_ssrc)])
+                        .await
+                    {
+                        Ok(()) => debug!(
+                            "[{}] [{}] wrote RTCP {:?} for ssrc {}",
+                            path, id, rtcp_message, media_ssrc
+                        ),
+                        Err(err) => debug!(
+                            "[{}] [{}] Failed to write RTCP for ssrc {}: {}",
+                            path, id, media_ssrc, err
+                        ),
                     }
                     break;
                 }

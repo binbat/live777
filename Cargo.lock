@@ -2478,6 +2478,7 @@ dependencies = [
  "reqwest",
  "rtc",
  "rtc-rtcp",
+ "rtc-rtp",
  "rtsp",
  "rust-embed",
  "scuffle-h265",

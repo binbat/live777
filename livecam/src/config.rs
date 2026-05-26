@@ -1,8 +1,8 @@
 use base64::{Engine as _, engine::general_purpose};
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodec;
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, str::FromStr};
 use tracing::{info, warn};
-use rtc::rtp_transceiver::rtp_sender::RTCRtpCodec;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Config {

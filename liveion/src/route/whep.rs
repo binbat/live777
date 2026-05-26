@@ -29,11 +29,7 @@ async fn whep(
     let filtered_sdp = maybe_filter_codecs(&body, &state.config.sdp.disable_codecs)?;
     let offer = RTCSessionDescription::offer(filtered_sdp)?;
     debug!("offer: {}", offer.sdp);
-    let (answer, session) = match state
-        .stream_manager
-        .subscribe(stream.clone(), offer)
-        .await
-    {
+    let (answer, session) = match state.stream_manager.subscribe(stream.clone(), offer).await {
         Ok(r) => r,
         Err(e) => {
             error!(stream = %stream, error = ?e, "WHEP subscribe failed");
