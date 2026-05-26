@@ -240,6 +240,17 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    /// Initialize the UDP <-> DataChannel bridge for this stream, if configured.
+    #[cfg(feature = "source")]
+    pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
+        if let Some(stream_cfg) = self.channel.streams.get(&self.stream).cloned() {
+            let dc_rx = self.data_channel_forward.publish.subscribe();
+            let dc_tx = self.data_channel_forward.subscribe.clone();
+            super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;
+        }
+        Ok(())
+    }
+
     async fn data_channel_forward(
         dc: Arc<RTCDataChannel>,
         sender: broadcast::Sender<Vec<u8>>,
@@ -493,17 +504,6 @@ impl PeerForwardInternal {
     ) -> Result<()> {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
-        // DataChannel ↔ UDP bidirectional forwarding (feature=source only).
-        // Messages from the WHIP publisher arrive on the subscribe channel.
-        #[cfg(feature = "source")]
-        if let Some(stream_cfg) = self.channel.streams.get(&self.stream).cloned() {
-            // UDP acts as a member of the WHIP group:
-            // - dc_rx: receive messages from WHEP group (publish channel)
-            // - dc_tx: send messages to WHEP group (subscribe channel)
-            let dc_rx = self.data_channel_forward.publish.subscribe();
-            let dc_tx = self.data_channel_forward.subscribe.clone();
-            super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;
-        }
         Self::data_channel_forward(dc, sender, receiver).await;
         Ok(())
     }

@@ -2349,6 +2349,7 @@ dependencies = [
  "livetwo",
  "net4mqtt",
  "opendal",
+ "portpicker",
  "reqwest",
  "serde",
  "serde_json",

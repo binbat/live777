@@ -91,6 +91,11 @@ impl PeerForward {
             internal: Arc::new(PeerForwardInternal::new(stream, ice_server)),
         }
     }
+    #[cfg(feature = "source")]
+    pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
+        self.internal.try_init_udp_channel().await
+    }
+
     pub fn subscribe_event(&self) -> broadcast::Receiver<ForwardEvent> {
         self.internal.subscribe_event()
     }

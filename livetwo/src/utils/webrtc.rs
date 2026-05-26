@@ -4,7 +4,10 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::{
-    api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*},
+    api::{
+        APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*,
+        setting_engine::SettingEngine,
+    },
     ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
     peer_connection::{
@@ -22,9 +25,13 @@ pub async fn create_api() -> Result<(APIBuilder, RTCConfiguration)> {
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
 
+    let mut s = SettingEngine::default();
+    s.detach_data_channels();
+
     let api = APIBuilder::new()
         .with_media_engine(m)
-        .with_interceptor_registry(registry);
+        .with_interceptor_registry(registry)
+        .with_setting_engine(s);
 
     let config = RTCConfiguration {
         ice_servers: vec![RTCIceServer {
