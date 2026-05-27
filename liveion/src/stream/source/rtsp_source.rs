@@ -434,6 +434,10 @@ impl RtspSource {
                             parameter: "".to_owned(),
                         },
                         RTCPFeedback {
+                            typ: "transport-cc".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
                             typ: "ccm".to_owned(),
                             parameter: "fir".to_owned(),
                         },
@@ -462,6 +466,10 @@ impl RtspSource {
                     rtcp_feedback: vec![
                         RTCPFeedback {
                             typ: "goog-remb".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "transport-cc".to_owned(),
                             parameter: "".to_owned(),
                         },
                         RTCPFeedback {
@@ -495,6 +503,10 @@ impl RtspSource {
                             parameter: "".to_owned(),
                         },
                         RTCPFeedback {
+                            typ: "transport-cc".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
                             typ: "ccm".to_owned(),
                             parameter: "fir".to_owned(),
                         },
@@ -522,6 +534,10 @@ impl RtspSource {
                     rtcp_feedback: vec![
                         RTCPFeedback {
                             typ: "goog-remb".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "transport-cc".to_owned(),
                             parameter: "".to_owned(),
                         },
                         RTCPFeedback {

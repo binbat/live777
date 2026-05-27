@@ -122,6 +122,11 @@ impl PeerConnectionEventHandler for Handler {
 mod tests {
     use super::*;
 
+    #[derive(Clone)]
+    struct NoopHandler;
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for NoopHandler {}
+
     #[tokio::test]
     async fn test_create_peer_connection() {
         let (builder, config) = create_peer_connection_builder().unwrap();
@@ -132,11 +137,11 @@ mod tests {
         );
         let peer = builder
             .with_configuration(config)
+            .with_handler(Arc::new(NoopHandler))
             .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
             .build()
             .await
             .unwrap();
-        // connection_state() is not on PeerConnection trait in v0.20; just verify build succeeded
         let _ = peer;
     }
 }

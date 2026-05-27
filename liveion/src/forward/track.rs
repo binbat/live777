@@ -1,8 +1,12 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use rtc::rtp::packet::Packet;
+use rtc::shared::marshal::Unmarshal;
 use tokio::sync::broadcast;
-use tracing::{debug, info, trace};
+use tokio::time::Duration;
+use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "source")]
 use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
@@ -43,7 +47,12 @@ pub(crate) enum PublishTrackRemote {
 }
 
 impl PublishTrackRemote {
-    pub async fn new(stream: String, id: String, track: Arc<dyn TrackRemote>) -> Self {
+    pub async fn new(
+        stream: String,
+        id: String,
+        track: Arc<dyn TrackRemote>,
+        twcc_ext_id: u8,
+    ) -> Self {
         let rtp_sender = new_broadcast_channel!(4096);
         let ssrcs = track.ssrcs().await;
         let first_ssrc = ssrcs.first().copied().unwrap_or(0);
@@ -72,6 +81,7 @@ impl PublishTrackRemote {
             id.clone(),
             track.clone(),
             rtp_sender.clone(),
+            twcc_ext_id,
         ));
 
         Self::Real {
@@ -88,6 +98,7 @@ impl PublishTrackRemote {
         id: String,
         track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
+        twcc_ext_id: u8,
     ) {
         let kind = track.kind().await;
         let ssrcs = track.ssrcs().await;
@@ -104,6 +115,20 @@ impl PublishTrackRemote {
             stream, id, kind, rid, ssrcs, codec,
         );
 
+        // TWCC inbound probe: monitors transport-wide-cc header extension on
+        // incoming RTP from the publisher, using the negotiated extmap ID.
+        let twcc_ext_id = twcc_ext_id;
+        let twcc_seen = AtomicBool::new(false);
+        let twcc_missing_count = AtomicU64::new(0);
+        let packets_total = AtomicU64::new(0);
+        let last_twcc_seq = AtomicU64::new(0);
+        let probe_start = Instant::now();
+        let mut probe_tick = Instant::now();
+        info!(
+            "[{}] [{}] [twcc-probe] negotiated_twcc_ext_id={}",
+            stream, id, twcc_ext_id,
+        );
+
         loop {
             match track.poll().await {
                 Some(webrtc::media_stream::track_remote::TrackRemoteEvent::OnRtpPacket(
@@ -116,12 +141,70 @@ impl PublishTrackRemote {
                         rtp_packet.header.timestamp
                     );
 
-                    if let Err(err) = rtp_sender.send(Arc::new(rtp_packet)) {
-                        debug!(
-                            "[{}] [{}] [track] kind: {:?}, rid: {}, rtp broadcast error : {}",
-                            stream, id, kind, rid, err
-                        );
-                        break;
+                    // --- TWCC inbound probe ---
+                    let total = packets_total.fetch_add(1, Ordering::Relaxed) + 1;
+                    let packet_ext_ids: Vec<u8> =
+                        rtp_packet.header.extensions.iter().map(|e| e.id).collect();
+                    let mut found_twcc = false;
+                    // Only inspect the negotiated TWCC extension — avoids mis-parsing
+                    // unrelated extensions as TransportCcExtension.
+                    if twcc_ext_id != 0 {
+                        let mut raw = rtp_packet.header.get_extension(twcc_ext_id);
+                        if let Some(ref mut data) = raw {
+                            if let Ok(tcc) = rtc::rtp::extension::transport_cc_extension::TransportCcExtension::unmarshal(data) {
+                                found_twcc = true;
+                                if !twcc_seen.swap(true, Ordering::Relaxed) {
+                                    info!(
+                                        "[{}] [{}] [twcc-probe] first TWCC ext seen: ext_id={}, transport_seq={}, ssrc={}",
+                                        stream,
+                                        id,
+                                        twcc_ext_id,
+                                        tcc.transport_sequence,
+                                        rtp_packet.header.ssrc,
+                                    );
+                                }
+                                last_twcc_seq
+                                    .store(tcc.transport_sequence as u64, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    if !found_twcc {
+                        twcc_missing_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // Log periodic stats every 5 seconds
+                    if probe_tick.elapsed() >= Duration::from_secs(5) {
+                        probe_tick = Instant::now();
+                        let twcc_present = twcc_seen.load(Ordering::Relaxed);
+                        let missing = twcc_missing_count.load(Ordering::Relaxed);
+                        let seq = last_twcc_seq.load(Ordering::Relaxed);
+                        if twcc_present {
+                            debug!(
+                                "[{}] [{}] [twcc-probe] total={}, twcc_present=true, last_twcc_seq={}, missing_since_last={}, packet_ext_ids={:?}",
+                                stream, id, total, seq, missing, packet_ext_ids,
+                            );
+                        } else if total > 50 && !twcc_present {
+                            warn!(
+                                "[{}] [{}] [twcc-probe] total={}, twcc_present=false, missing={}, packet_ext_ids={:?} — NO TWCC ext_id={} seen in {} packets over {:?}",
+                                stream,
+                                id,
+                                total,
+                                missing,
+                                packet_ext_ids,
+                                twcc_ext_id,
+                                total,
+                                probe_start.elapsed(),
+                            );
+                        }
+                    }
+                    // --- end TWCC probe ---
+
+                    // Forward via bounded send; drop if channel is full to avoid
+                    // backpressure from a slow subscriber stalling the publisher read loop.
+                    // The publisher RTP read loop MUST drain continuously so the
+                    // TwccReceiver interceptor keeps processing packets and generating
+                    // TWCC feedback.
+                    if rtp_sender.receiver_count() > 0 {
+                        let _ = rtp_sender.send(Arc::new(rtp_packet));
                     }
                 }
                 Some(webrtc::media_stream::track_remote::TrackRemoteEvent::OnEnded) => {

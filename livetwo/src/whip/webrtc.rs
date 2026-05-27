@@ -2,10 +2,18 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
-use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
+use rtc::peer_connection::configuration::interceptor_registry::{
+    configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers, configure_twcc,
+};
+use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+use rtc_rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
+use rtc_rtcp::receiver_report::ReceiverReport;
+use rtc_rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
+use rtc_rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
 use tokio::sync::{Notify, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, info};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, RTCConfigurationBuilder, RTCIceServer,
     Registry,
@@ -51,7 +59,11 @@ async fn create_peer(
     m.register_default_codecs()?;
 
     let registry = Registry::new();
-    let registry = register_default_interceptors(registry, &mut m)?;
+    let registry = configure_nack(registry, &mut m);
+    let registry = configure_rtcp_reports(registry);
+    configure_simulcast_extension_headers(&mut m)?;
+    let registry = configure_twcc(registry, &mut m)?;
+    info!("WHIP peer configured with NACK, RTCP reports, and full TWCC");
 
     let handler = utils::webrtc::create_event_handler(ct, gather_complete);
 
@@ -100,4 +112,27 @@ async fn create_peer(
 
 fn is_supported_audio_codec(codec: &str) -> bool {
     matches!(codec.to_uppercase().as_str(), "OPUS" | "G722")
+}
+
+pub(crate) fn log_rtcp_feedback_packet(source: &str, packet: &dyn rtc_rtcp::packet::Packet) {
+    let any = packet.as_any();
+    if any.downcast_ref::<TransportLayerCc>().is_some() {
+        debug!("{source}: received RTCP transport-cc feedback");
+    } else if let Some(remb) = any.downcast_ref::<ReceiverEstimatedMaximumBitrate>() {
+        debug!(
+            "{source}: received RTCP goog-remb feedback: {} bps",
+            remb.bitrate
+        );
+    } else if let Some(rr) = any.downcast_ref::<ReceiverReport>() {
+        debug!(
+            "{source}: received RTCP receiver report with {} report blocks",
+            rr.reports.len()
+        );
+    } else if any.downcast_ref::<PictureLossIndication>().is_some() {
+        debug!("{source}: received RTCP PLI");
+    } else if any.downcast_ref::<FullIntraRequest>().is_some() {
+        debug!("{source}: received RTCP FIR");
+    } else if any.downcast_ref::<TransportLayerNack>().is_some() {
+        debug!("{source}: received RTCP NACK");
+    }
 }

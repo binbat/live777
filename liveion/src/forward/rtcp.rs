@@ -42,3 +42,55 @@ impl RtcpMessage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
+    use rtc::rtcp::receiver_report::ReceiverReport;
+    use rtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
+
+    #[test]
+    fn bridge_accepts_keyframe_feedback() {
+        assert!(matches!(
+            RtcpMessage::_from_rtcp_packet(Box::new(PictureLossIndication {
+                sender_ssrc: 1,
+                media_ssrc: 2,
+            })),
+            Some(RtcpMessage::PictureLossIndication)
+        ));
+        assert!(matches!(
+            RtcpMessage::_from_rtcp_packet(Box::new(FullIntraRequest {
+                sender_ssrc: 1,
+                media_ssrc: 2,
+                fir: vec![],
+            })),
+            Some(RtcpMessage::_FullIntraRequest)
+        ));
+        assert!(matches!(
+            RtcpMessage::_from_rtcp_packet(Box::new(SliceLossIndication {
+                sender_ssrc: 1,
+                media_ssrc: 2,
+                sli_entries: vec![],
+            })),
+            Some(RtcpMessage::_SliceLossIndication)
+        ));
+    }
+
+    #[test]
+    fn bridge_rejects_path_specific_bandwidth_feedback() {
+        assert!(
+            RtcpMessage::_from_rtcp_packet(Box::new(TransportLayerCc::default())).is_none(),
+            "downstream TWCC is path-specific and must not be bridged to the publisher"
+        );
+        assert!(
+            RtcpMessage::_from_rtcp_packet(Box::new(ReceiverEstimatedMaximumBitrate::default()))
+                .is_none(),
+            "downstream REMB is path-specific and must not be bridged to the publisher"
+        );
+        assert!(
+            RtcpMessage::_from_rtcp_packet(Box::new(ReceiverReport::default())).is_none(),
+            "downstream RR is path-specific and must not be bridged to the publisher"
+        );
+    }
+}

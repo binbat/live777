@@ -24,7 +24,6 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
 
     cfg.log("started");
     const pc = new RTCPeerConnection();
-    let statsTimer: number | undefined;
 
     // NOTE:
     // 1. Live777 Don't support label
@@ -52,26 +51,11 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
     try {
         cfg.log("http begined");
         await whep.view(pc, cfg.url, cfg.token);
-        statsTimer = window.setInterval(async () => {
-            const stats = await pc.getStats();
-            stats.forEach((stat) => {
-                if (stat.type !== "inbound-rtp" || stat.kind !== "video") {
-                    return;
-                }
-                cfg.log(
-                    `video inbound: packets=${stat.packetsReceived ?? 0}, bytes=${stat.bytesReceived ?? 0}, framesDecoded=${stat.framesDecoded ?? 0}, keyFrames=${stat.keyFramesDecoded ?? 0}, size=${stat.frameWidth ?? ""}x${stat.frameHeight ?? ""}`,
-                );
-            });
-        }, 2000);
     } catch (e) {
         cfg.log(`ERROR: ${e}`);
     }
 
     const stop = async () => {
-        if (statsTimer !== undefined) {
-            window.clearInterval(statsTimer);
-            statsTimer = undefined;
-        }
         try {
             await whep.stop();
         } catch (e) {

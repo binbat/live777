@@ -31,6 +31,10 @@ impl From<Codec> for RTCRtpCodec {
                 parameter: "".to_owned(),
             },
             RTCPFeedback {
+                typ: "transport-cc".to_owned(),
+                parameter: "".to_owned(),
+            },
+            RTCPFeedback {
                 typ: "ccm".to_owned(),
                 parameter: "fir".to_owned(),
             },
@@ -171,4 +175,24 @@ pub fn create_child(command: Option<String>) -> Result<Option<ChildGuard>> {
         }
         None => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_codecs_include_transport_cc_feedback() {
+        for codec in [Codec::Vp8, Codec::Vp9, Codec::H264, Codec::H265, Codec::AV1] {
+            let rtp_codec = RTCRtpCodec::from(codec);
+
+            assert!(
+                rtp_codec.rtcp_feedback.iter().any(|feedback| {
+                    feedback.typ == "transport-cc" && feedback.parameter.is_empty()
+                }),
+                "{codec:?} missing transport-cc feedback: {:?}",
+                rtp_codec.rtcp_feedback
+            );
+        }
+    }
 }

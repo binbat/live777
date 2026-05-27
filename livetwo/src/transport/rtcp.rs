@@ -31,6 +31,10 @@ pub async fn spawn_rtcp_listener(host: String, rtcp_port: u16, _peer: Arc<dyn Pe
                         Ok(rtcp_packets) => {
                             for packet in rtcp_packets {
                                 debug!("Received RTCP packet from {}: {:?}", addr, packet);
+                                crate::whip::log_rtcp_feedback_packet(
+                                    "UDP output RTCP",
+                                    packet.as_ref(),
+                                );
                                 // Note: In the new API, write_rtcp is on TrackLocal/TrackRemote,
                                 // not on PeerConnection. RTCP forwarding is handled elsewhere.
                             }

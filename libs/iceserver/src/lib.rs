@@ -20,7 +20,7 @@ pub struct IceServer {
 
 impl IceServer {
     pub(crate) fn parse_url(&self, url_str: &str) -> webrtc::error::Result<rtc_ice::url::Url> {
-        Ok(rtc_ice::url::Url::parse_url(url_str)?)
+        rtc_ice::url::Url::parse_url(url_str)
     }
 
     pub fn validate(&self) -> webrtc::error::Result<()> {

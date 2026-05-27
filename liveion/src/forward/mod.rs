@@ -128,6 +128,27 @@ impl PeerForward {
     }
 }
 
+/// Parse the transport-wide-cc RTP header extension ID from an SDP.
+/// Returns 0 if not found.
+const TWCC_URI: &str = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+
+fn parse_twcc_ext_id_from_sdp(sdp: &str) -> u8 {
+    for line in sdp.lines() {
+        let line = line.trim();
+        if line.starts_with("a=extmap:") && line.contains(TWCC_URI) {
+            // Format: a=extmap:<id> <URI>
+            if let Some(id_part) = line.strip_prefix("a=extmap:") {
+                if let Some(id_str) = id_part.split_whitespace().next() {
+                    if let Ok(id) = id_str.parse::<u8>() {
+                        return id;
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+
 // publish
 impl PeerForward {
     pub async fn set_publish(
@@ -149,6 +170,13 @@ impl PeerForward {
         }
 
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
+
+        // Parse negotiated TWCC extmap ID from the publisher's SDP offer.
+        // This ID is used by the inbound RTP probe to correctly identify the
+        // transport-wide-cc header extension (instead of guessing).
+        let twcc_ext_id = parse_twcc_ext_id_from_sdp(&offer.sdp);
+        self.internal.set_twcc_ext_id(twcc_ext_id);
+
         let (peer, gather_complete) = self.new_publish_peer(media_info).await?;
 
         let description = peer_complete(offer, peer.clone(), gather_complete).await?;
@@ -621,7 +649,29 @@ impl PeerForward {
 
 #[cfg(test)]
 mod test {
+    use crate::forward::PeerForward;
     use crate::forward::parse_ice_candidate;
+    use rtc::media_stream::MediaStreamTrack;
+    use rtc::peer_connection::configuration::interceptor_registry::{
+        configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers,
+        configure_twcc_sender_only,
+    };
+    use rtc::peer_connection::configuration::media_engine::MIME_TYPE_VP8;
+    use rtc::rtp_transceiver::rtp_sender::{
+        RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    };
+    use sdp::extmap::TRANSPORT_CC_URI;
+    use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+    use webrtc::peer_connection::{
+        MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+        RTCConfigurationBuilder, Registry,
+    };
+
+    #[derive(Clone)]
+    struct TestPeerHandler;
+
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for TestPeerHandler {}
 
     #[test]
     fn test_parse_ice_candidate() -> crate::result::Result<()> {
@@ -636,6 +686,75 @@ a=candidate:2154773085 1 tcp 1518214911 198.51.100.2 9 typ host tcptype active g
 a=end-of-candidates";
 
         parse_ice_candidate(body.to_owned())?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn whip_publish_answer_advertises_bwe_feedback_contract() -> crate::result::Result<()> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+        let registry = Registry::new();
+        let registry = configure_nack(registry, &mut media_engine);
+        let registry = configure_rtcp_reports(registry);
+        configure_simulcast_extension_headers(&mut media_engine)?;
+        let registry = configure_twcc_sender_only(registry, &mut media_engine)?;
+
+        let offer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(media_engine)
+                .with_interceptor_registry(registry)
+                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        let media_track = MediaStreamTrack::new(
+            "bwe-contract-test".to_owned(),
+            "video".to_owned(),
+            "video".to_owned(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(1),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                ..Default::default()
+            }],
+        );
+        offer_peer
+            .add_track(std::sync::Arc::new(TrackLocalStaticRTP::new(media_track)))
+            .await?;
+
+        let offer = offer_peer.create_offer(None).await?;
+        let forward = PeerForward::new("bwe-contract-test", vec![]);
+        let (answer, session) = forward.set_publish(offer).await?;
+
+        let has_transport_cc_feedback = answer
+            .sdp
+            .lines()
+            .any(|line| line.starts_with("a=rtcp-fb:") && line.contains(" transport-cc"));
+        let has_transport_cc_extmap = answer
+            .sdp
+            .lines()
+            .any(|line| line.starts_with("a=extmap:") && line.contains(TRANSPORT_CC_URI));
+        let has_remb_fallback = answer.sdp.contains(" goog-remb");
+
+        assert!(
+            (has_transport_cc_feedback && has_transport_cc_extmap) || has_remb_fallback,
+            "WHIP answer must advertise transport-cc with TWCC extmap, or goog-remb fallback:\n{}",
+            answer.sdp
+        );
+
+        forward.remove_peer(session).await?;
+        offer_peer.close().await?;
         Ok(())
     }
 }

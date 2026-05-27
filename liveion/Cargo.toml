@@ -41,6 +41,9 @@ rtc = { workspace = true }
 sdp = { workspace = true }
 rtc-rtp = "0.20.0-alpha.1"
 rtc-rtcp = "0.20.0-alpha.1"
+sansio = "1.0"
+rtc-interceptor = "0.20.0-alpha.1"
+rtc-shared = "0.20.0-alpha.1"
 uuid = { workspace = true }
 
 async-trait = "0.1"

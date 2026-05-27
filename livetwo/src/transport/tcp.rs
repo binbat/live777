@@ -166,7 +166,10 @@ impl TcpHandler {
     async fn forward_rtcp_to_webrtc(data: &[u8], _peer: &Arc<dyn PeerConnection>) {
         let mut cursor = Cursor::new(data);
         match rtc_rtcp::packet::unmarshal(&mut cursor) {
-            Ok(_packets) => {
+            Ok(packets) => {
+                for packet in packets {
+                    crate::whip::log_rtcp_feedback_packet("TCP output RTCP", packet.as_ref());
+                }
                 // In v0.20, write_rtcp is on TrackLocal/TrackRemote, not PeerConnection.
                 // RTCP from the output side would need to be sent via specific tracks.
                 debug!("Parsed RTCP packet (forwarding not yet implemented for v0.20)");

@@ -216,7 +216,7 @@ impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     sdp_fmtp_line:
                         "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
                             .to_string(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: video_rtcp_feedback(),
                 }
             }
             VideoCodecParams::H265 { clock_rate, .. } => {
@@ -225,7 +225,7 @@ impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     clock_rate,
                     channels: 0,
                     sdp_fmtp_line: "".to_string(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: video_rtcp_feedback(),
                 }
             }
             VideoCodecParams::VP8 { clock_rate, .. } => {
@@ -234,7 +234,7 @@ impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     clock_rate,
                     channels: 0,
                     sdp_fmtp_line: "".to_string(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: video_rtcp_feedback(),
                 }
             }
             VideoCodecParams::VP9 { clock_rate, .. } => {
@@ -243,11 +243,36 @@ impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     clock_rate,
                     channels: 0,
                     sdp_fmtp_line: "profile-id=0".to_string(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: video_rtcp_feedback(),
                 }
             }
         }
     }
+}
+
+fn video_rtcp_feedback() -> Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback> {
+    vec![
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "goog-remb".to_string(),
+            parameter: "".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "transport-cc".to_string(),
+            parameter: "".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "ccm".to_string(),
+            parameter: "fir".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "pli".to_string(),
+        },
+    ]
 }
 
 impl From<AudioCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
@@ -340,5 +365,47 @@ mod tests {
         assert!(udp_transport.is_udp());
         assert!(!udp_transport.is_tcp());
         assert_eq!(udp_transport.tcp_channels(), None);
+    }
+
+    #[test]
+    fn video_codec_params_include_transport_cc_feedback() {
+        let codecs = [
+            VideoCodecParams::VP8 {
+                payload_type: 96,
+                clock_rate: 90000,
+            },
+            VideoCodecParams::VP9 {
+                payload_type: 96,
+                clock_rate: 90000,
+            },
+            VideoCodecParams::H264 {
+                payload_type: 96,
+                clock_rate: 90000,
+                profile_level_id: None,
+                sps: vec![],
+                pps: vec![],
+            },
+            VideoCodecParams::H265 {
+                payload_type: 96,
+                clock_rate: 90000,
+                vps: vec![],
+                sps: vec![],
+                pps: vec![],
+            },
+        ];
+
+        for codec in codecs {
+            let rtp_codec = rtc::rtp_transceiver::rtp_sender::RTCRtpCodec::from(codec);
+
+            assert!(
+                rtp_codec
+                    .rtcp_feedback
+                    .iter()
+                    .any(|feedback| feedback.typ == "transport-cc" && feedback.parameter.is_empty()),
+                "{} missing transport-cc feedback: {:?}",
+                rtp_codec.mime_type,
+                rtp_codec.rtcp_feedback
+            );
+        }
     }
 }

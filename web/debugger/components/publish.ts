@@ -14,12 +14,12 @@ const layers = [
 
 export function getVideoSendEncodings(layer: string) {
     if (layer === "f") {
-        return [{ scaleResolutionDownBy: 1.0, maxBitrate: 2_500_000 }];
+        return [{ scaleResolutionDownBy: 1.0 }];
     }
 
     const index = layers.findIndex((i) => i.rid === layer);
     if (index < 0) {
-        return [{ scaleResolutionDownBy: 1.0, maxBitrate: 2_500_000 }];
+        return [{ scaleResolutionDownBy: 1.0 }];
     }
 
     return layers.slice(0 - (layers.length - index));
@@ -80,7 +80,6 @@ export default async function startWhip(
     cfg.onStream(stream);
 
     const pc = new RTCPeerConnection();
-    let statsTimer: number | undefined;
 
     // NOTE:
     // 1. Live777 Don't support label
@@ -101,11 +100,10 @@ export default async function startWhip(
         stream.getVideoTracks()[0],
         videoTransceiverInit,
     );
-    cfg.log(`video send encodings: ${JSON.stringify(sendEncodings)}`);
+    cfg.log(`video send encodings: ${JSON.stringify(sendEncodings)} (maxBitrate: unlimited)`);
     const videoSenderParams = videoTransceiver.sender.getParameters();
     if (videoSenderParams.encodings?.[0]) {
         videoSenderParams.encodings[0].scaleResolutionDownBy = 1.0;
-        videoSenderParams.encodings[0].maxBitrate ??= 2_500_000;
         (
             videoSenderParams as RTCRtpSendParameters & {
                 degradationPreference?: string;
@@ -135,26 +133,11 @@ export default async function startWhip(
     try {
         cfg.log("http begined");
         await whip.publish(pc, cfg.url, cfg.token);
-        statsTimer = window.setInterval(async () => {
-            const stats = await pc.getStats();
-            stats.forEach((stat) => {
-                if (stat.type !== "outbound-rtp" || stat.kind !== "video") {
-                    return;
-                }
-                cfg.log(
-                    `video outbound: packets=${stat.packetsSent ?? 0}, bytes=${stat.bytesSent ?? 0}, framesEncoded=${stat.framesEncoded ?? 0}, keyFrames=${stat.keyFramesEncoded ?? 0}, fps=${stat.framesPerSecond ?? ""}, size=${stat.frameWidth ?? ""}x${stat.frameHeight ?? ""}, targetBitrate=${stat.targetBitrate ?? ""}, quality=${stat.qualityLimitationReason ?? ""}, pli=${stat.pliCount ?? ""}, fir=${stat.firCount ?? ""}, nack=${stat.nackCount ?? ""}`,
-                );
-            });
-        }, 2000);
     } catch (e) {
         cfg.log(`ERROR: ${e}`);
     }
 
     const stop = async () => {
-        if (statsTimer !== undefined) {
-            window.clearInterval(statsTimer);
-            statsTimer = undefined;
-        }
         await whip.stop();
         cfg.log("stopped");
         stream.getTracks().map((track) => track.stop());

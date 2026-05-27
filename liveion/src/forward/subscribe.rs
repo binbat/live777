@@ -29,6 +29,7 @@ use super::track::ForwardData;
 use super::track::PublishTrackRemote;
 
 type SelectLayerBody = (RtpCodecKind, String);
+type OptionalRtpSender = Option<Arc<dyn RtpSender>>;
 
 struct BoundPublishTrack {
     recv: broadcast::Receiver<ForwardData>,
@@ -61,7 +62,7 @@ impl SubscribeRTCPeerConnection {
             Arc<RwLock<Vec<PublishTrackRemote>>>,
             broadcast::Sender<()>, // use subscribe
         ),
-        (video_sender, audio_sender): (Option<Arc<dyn RtpSender>>, Option<Arc<dyn RtpSender>>),
+        (video_sender, audio_sender): (OptionalRtpSender, OptionalRtpSender),
     ) -> Self {
         let select_layer_sender = new_broadcast_channel!(1);
         let id = get_peer_id(&peer);
@@ -110,6 +111,7 @@ impl SubscribeRTCPeerConnection {
     }
 
     /// Try to bind to an existing publish track. Returns (new_recv, new_track) if successful.
+    #[allow(clippy::too_many_arguments)]
     async fn try_bind_publish_track(
         stream: &str,
         id: &str,
@@ -330,7 +332,7 @@ impl SubscribeRTCPeerConnection {
                 .encodings
                 .first()
                 .and_then(|e| e.rtp_coding_parameters.ssrc)
-                .unwrap_or_else(|| rand::random::<u32>()),
+                .unwrap_or_else(rand::random::<u32>),
             Err(_) => rand::random::<u32>(),
         };
 

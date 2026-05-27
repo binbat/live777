@@ -147,17 +147,13 @@ impl H264Processor {
                 }
 
                 match nal_type {
-                    nal_type::NAL_SPS => {
-                        if self.sps.is_none() {
-                            self.sps = Some(data[nal_start..nal_end].to_vec());
-                            trace!("Extracted SPS from stream: {} bytes", nal_end - nal_start);
-                        }
+                    nal_type::NAL_SPS if self.sps.is_none() => {
+                        self.sps = Some(data[nal_start..nal_end].to_vec());
+                        trace!("Extracted SPS from stream: {} bytes", nal_end - nal_start);
                     }
-                    nal_type::NAL_PPS => {
-                        if self.pps.is_none() {
-                            self.pps = Some(data[nal_start..nal_end].to_vec());
-                            trace!("Extracted PPS from stream: {} bytes", nal_end - nal_start);
-                        }
+                    nal_type::NAL_PPS if self.pps.is_none() => {
+                        self.pps = Some(data[nal_start..nal_end].to_vec());
+                        trace!("Extracted PPS from stream: {} bytes", nal_end - nal_start);
                     }
                     _ => {}
                 }
