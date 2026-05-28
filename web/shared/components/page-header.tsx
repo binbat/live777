@@ -13,6 +13,7 @@ interface PageHeaderProps {
         debugger?: boolean;
         player?: boolean;
         dash?: boolean;
+        recordings?: boolean;
     };
 }
 
@@ -22,6 +23,7 @@ export function PageHeader({ currentView, onNavigate, enabledTools }: PageHeader
         debugger: true,
         player: true,
         dash: true,
+        recordings: true,
         ...enabledTools,
     };
 
@@ -54,6 +56,7 @@ export function PageHeader({ currentView, onNavigate, enabledTools }: PageHeader
         { key: 'dash', label: 'DASH Player', onClick: handleOpenDashPage, hidden: !tools.dash },
     ];
     const visibleItems = toolItems.filter(item => !item.hidden);
+    const showNavigation = onNavigate && tools.recordings;
 
     return (
         <Navbar className="bg-base-300 px-0">
@@ -67,7 +70,7 @@ export function PageHeader({ currentView, onNavigate, enabledTools }: PageHeader
                 </div>
 
                 {/* Navigation Tabs */}
-                {onNavigate && (
+                {showNavigation ? (
                     <div className="flex-1 flex justify-center">
                         <Tabs variant="boxed" size="sm">
                             <Tabs.Tab
@@ -77,16 +80,18 @@ export function PageHeader({ currentView, onNavigate, enabledTools }: PageHeader
                                 <Monitor className="w-4 h-4 mr-2" />
                                 Streams
                             </Tabs.Tab>
-                            <Tabs.Tab
-                                active={currentView === 'recordings'}
-                                onClick={() => onNavigate('recordings')}
-                            >
-                                <Calendar className="w-4 h-4 mr-2" />
-                                Recordings
-                            </Tabs.Tab>
+                            {tools.recordings ? (
+                                <Tabs.Tab
+                                    active={currentView === 'recordings'}
+                                    onClick={() => onNavigate('recordings')}
+                                >
+                                    <Calendar className="w-4 h-4 mr-2" />
+                                    Recordings
+                                </Tabs.Tab>
+                            ) : null}
                         </Tabs>
                     </div>
-                )}
+                ) : null}
 
                 {visibleItems.length > 0 ? (
                     <Dropdown end>

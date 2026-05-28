@@ -32,8 +32,22 @@ body,
 .player-video {
     width: 100%;
     max-height: 80dvh;
+    min-height: 360px;
     background: black;
     display: block;
+}
+
+.status-panel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    color: #eee;
+    background: rgba(0, 0, 0, .62);
+    font-size: 14px;
+    text-align: center;
 }
 
 .controls {

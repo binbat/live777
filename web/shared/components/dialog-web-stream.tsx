@@ -7,6 +7,7 @@ import { TokenContext } from '../context';
 import { formatVideoTrackResolution } from '../utils';
 import { useLogger } from '../hooks/use-logger';
 import { QRCodeStream } from '../qrcode-stream';
+import convertSessionDescription from '../sdp-codec';
 
 interface Props {
     getWhipUrl?: (streamId: string) => string;
@@ -72,7 +73,13 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         refWhipClient.current = whip;
         whip.onOffer = sdp => {
             logger.log('http offer sent');
-            return sdp;
+            try {
+                return convertSessionDescription(sdp, '', 'h264');
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'H264 is not available';
+                logger.log(message);
+                throw error;
+            }
         };
         whip.onAnswer = sdp => {
             logger.log('http answer received');

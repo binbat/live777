@@ -124,18 +124,14 @@ impl CodecAdapter for H264Adapter {
             let nal_type = nalu[header_idx] & 0x1F;
 
             match nal_type {
-                7 => {
-                    if self.sps.is_none() {
-                        self.sps = Some(nalu[header_idx..].to_vec());
-                        self.parse_dimensions(&nalu[header_idx..]);
-                        cfg_updated = true;
-                    }
+                7 if self.sps.is_none() => {
+                    self.sps = Some(nalu[header_idx..].to_vec());
+                    self.parse_dimensions(&nalu[header_idx..]);
+                    cfg_updated = true;
                 }
-                8 => {
-                    if self.pps.is_none() {
-                        self.pps = Some(nalu[header_idx..].to_vec());
-                        cfg_updated = true;
-                    }
+                8 if self.pps.is_none() => {
+                    self.pps = Some(nalu[header_idx..].to_vec());
+                    cfg_updated = true;
                 }
                 5 => {
                     is_idr = true;

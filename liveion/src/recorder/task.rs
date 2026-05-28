@@ -13,6 +13,7 @@ use anyhow::{Result, anyhow};
 use api::recorder::RecordingStatus;
 use bytes::Bytes;
 use chrono::Utc;
+use opendal::Operator;
 use rtc::peer_connection::configuration::media_engine::{
     MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP9,
 };
@@ -24,7 +25,8 @@ pub struct RecordingTask {
     pub info: RecordingInfo,
     started_at: Instant,
     base_dir_override: Option<String>,
-    handle: JoinHandle<()>,
+    op: Operator,
+    handle: JoinHandle<bool>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -97,7 +99,7 @@ impl RecordingTask {
 
         // Initialize Segmenter
         let mut segmenter = match Segmenter::new(
-            op,
+            op.clone(),
             stream_name.clone(),
             path_prefix.clone(),
             uploader,
@@ -171,6 +173,13 @@ impl RecordingTask {
                 stream_name,
                 codec
             );
+            if !is_supported_video_codec(codec) {
+                tracing::warn!(
+                    "[recorder] stream {} video codec {} is not supported by recorder; recording will only succeed if audio is written",
+                    stream_name,
+                    codec
+                );
+            }
         } else {
             tracing::info!("[recorder] stream {} is audio-only (Opus)", stream_name);
         }
@@ -202,11 +211,15 @@ impl RecordingTask {
         let forward_clone = forward.clone();
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
+        let manifest_path = format!("{}/manifest.mpd", path_prefix);
+        let op_for_task = op.clone();
+
         let handle = tokio::spawn(async move {
             let mut segmenter = segmenter;
             let mut video_rx_opt = video_receiver_opt;
             let mut audio_rx_opt = audio_receiver_opt;
             let mut codec_mime_opt = codec_mime_opt;
+            let mut unsupported_video_codec_logged = false;
 
             let mut parser_h264 = H264RtpParser::new();
             let mut parser_h265 = H265RtpParser::new();
@@ -317,6 +330,15 @@ impl RecordingTask {
                                         tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
                                     }
                                     frame_cnt_video += 1;
+                                } else if !is_supported_video_codec(codec_mime)
+                                    && !unsupported_video_codec_logged
+                                {
+                                    tracing::warn!(
+                                        "[recorder] {} unsupported video codec {}; skip video packets",
+                                        stream_name_cloned,
+                                        codec_mime
+                                    );
+                                    unsupported_video_codec_logged = true;
                                 }
                             }
                             None => {
@@ -369,6 +391,13 @@ impl RecordingTask {
                                     stream_name_cloned,
                                     codec
                                 );
+                                if !is_supported_video_codec(codec) {
+                                    tracing::warn!(
+                                        "[recorder] stream {} video codec {} is not supported by recorder",
+                                        stream_name_cloned,
+                                        codec
+                                    );
+                                }
                             }
                         }
 
@@ -426,6 +455,27 @@ impl RecordingTask {
             if let Err(e) = segmenter.flush().await {
                 tracing::debug!("[recorder] {} flush error: {}", stream_name_cloned, e);
             }
+
+            match op_for_task.exists(&manifest_path).await {
+                Ok(true) => true,
+                Ok(false) => {
+                    tracing::warn!(
+                        "[recorder] {} no media manifest written at {}; mark recording as failed",
+                        stream_name_cloned,
+                        manifest_path
+                    );
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[recorder] {} failed to verify media manifest at {}: {}; mark recording as failed",
+                        stream_name_cloned,
+                        manifest_path,
+                        e
+                    );
+                    false
+                }
+            }
         });
 
         let info = RecordingInfo {
@@ -439,6 +489,7 @@ impl RecordingTask {
             info,
             started_at: Instant::now(),
             base_dir_override,
+            op,
             handle,
             shutdown_tx: Some(shutdown_tx),
         })
@@ -458,9 +509,38 @@ impl RecordingTask {
         }
 
         let status = match self.handle.await {
-            Ok(()) => {
-                tracing::info!("[recorder] recording task for stream {} completed", stream);
-                RecordingStatus::Completed
+            Ok(true) => {
+                let manifest_path = format!("{}/manifest.mpd", self.info.record_dir);
+                match self.op.exists(&manifest_path).await {
+                    Ok(true) => {
+                        tracing::info!("[recorder] recording task for stream {} completed", stream);
+                        RecordingStatus::Completed
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            "[recorder] recording task for stream {} ended without manifest {}; mark failed",
+                            stream,
+                            manifest_path
+                        );
+                        RecordingStatus::Failed
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[recorder] recording task for stream {} could not verify manifest {}: {}; mark failed",
+                            stream,
+                            manifest_path,
+                            e
+                        );
+                        RecordingStatus::Failed
+                    }
+                }
+            }
+            Ok(false) => {
+                tracing::warn!(
+                    "[recorder] recording task for stream {} completed without media samples",
+                    stream
+                );
+                RecordingStatus::Failed
             }
             Err(e) => {
                 if e.is_cancelled() {
@@ -488,6 +568,13 @@ impl RecordingTask {
             duration_ms,
         }
     }
+}
+
+fn is_supported_video_codec(codec_mime: &str) -> bool {
+    codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264)
+        || codec_mime.eq_ignore_ascii_case(MIME_TYPE_HEVC)
+        || codec_mime.eq_ignore_ascii_case(MIME_TYPE_AV1)
+        || codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9)
 }
 
 impl RecordingTask {

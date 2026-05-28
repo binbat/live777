@@ -3,6 +3,7 @@ use crate::recorder::fmp4::{Fmp4Writer, Mp4Sample};
 use crate::recorder::pli_backoff::PliBackoff;
 use anyhow::Result;
 use bytes::Bytes;
+use chrono::{SecondsFormat, Utc};
 use opendal::Operator;
 use tracing::info;
 
@@ -24,6 +25,7 @@ const DEFAULT_AUDIO_CODEC: &str = "opus";
 
 const VIDEO_TRACK_ID: u32 = 1;
 const AUDIO_TRACK_ID: u32 = 2;
+const MANIFEST_UPDATE_PERIOD_SECS: u64 = 2;
 
 /// Represents a completed segment with its actual duration
 #[derive(Debug, Clone)]
@@ -38,6 +40,7 @@ pub struct Segmenter {
     path_prefix: String,
     uploader: Option<std::sync::Arc<crate::recorder::uploader::UploadManager>>,
     local_dir: Option<std::path::PathBuf>,
+    manifest_start_time: chrono::DateTime<Utc>,
     timescale: u32,
     // Length of each segment (in timescale units) for fast comparison
     seg_duration_ticks: u64,
@@ -122,6 +125,7 @@ impl Segmenter {
             path_prefix: root_prefix,
             uploader,
             local_dir: local_dir.map(std::path::PathBuf::from),
+            manifest_start_time: Utc::now(),
             timescale: 90_000,
             seg_duration_ticks: 90_000u64 * DEFAULT_SEG_DURATION,
             video_seg_index: 0,
@@ -310,7 +314,7 @@ impl Segmenter {
         self.total_bytes += sample_len;
         self.total_ticks += dur as u64;
 
-        let fps_cur = if dur > 0 { self.timescale / dur } else { 0 };
+        let fps_cur = self.timescale.checked_div(dur).unwrap_or(0);
         if fps_cur > 0 && (self.frame_rate == 0 || fps_cur > self.frame_rate) {
             self.frame_rate = fps_cur;
         }
@@ -403,6 +407,7 @@ impl Segmenter {
     pub async fn flush(&mut self) -> Result<()> {
         self.roll_segment().await?;
         self.roll_audio_segment(true).await?;
+        self.write_manifest(false).await?;
         Ok(())
     }
 
@@ -476,7 +481,7 @@ impl Segmenter {
         info!("[segmenter] {} init.m4s written", self.stream);
 
         // Generate or update the MPD manifest
-        self.write_manifest().await?;
+        self.write_manifest(true).await?;
 
         // Start a new segment: reset timers and caches
         self.open_new_segment().await?;
@@ -530,7 +535,7 @@ impl Segmenter {
         self.audio_seg_start_pts = self.audio_current_pts;
 
         tracing::info!("[segmenter] {} audio_init.m4s written", self.stream);
-        self.write_manifest().await?;
+        self.write_manifest(true).await?;
         Ok(())
     }
 
@@ -584,7 +589,7 @@ impl Segmenter {
         self.open_new_segment().await?;
 
         // Update the MPD manifest
-        self.write_manifest().await?;
+        self.write_manifest(true).await?;
         Ok(())
     }
 
@@ -635,11 +640,11 @@ impl Segmenter {
         self.audio_samples.clear();
         self.audio_seg_start_pts = self.audio_current_pts;
 
-        self.write_manifest().await?;
+        self.write_manifest(true).await?;
         Ok(())
     }
 
-    async fn write_manifest(&self) -> Result<()> {
+    async fn write_manifest(&self, is_active: bool) -> Result<()> {
         let video_track_ready = self.video_track_id.is_some();
         let audio_track_ready = self.audio_writer.is_some();
 
@@ -689,13 +694,16 @@ impl Segmenter {
             media_duration_secs = max_segment_duration_secs;
         }
 
-        let media_presentation_duration = format!("PT{media_duration_secs:.3}S");
         let max_segment_duration = format!("PT{max_segment_duration_secs:.3}S");
         let min_buffer_time = if max_segment_duration_secs * 3.0 > 0.0 {
             format!("PT{:.3}S", max_segment_duration_secs * 3.0)
         } else {
             "PT1S".to_string()
         };
+        let publish_time = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        let availability_start_time = self
+            .manifest_start_time
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
 
         let mut adaptation_sets = String::new();
 
@@ -725,10 +733,14 @@ impl Segmenter {
                     h = w % h;
                     w = tmp;
                 }
-                if w == 0 {
-                    "1:1".to_string()
-                } else {
-                    format!("{}:{}", self.video_width / w, self.video_height / w)
+                match (
+                    self.video_width.checked_div(w),
+                    self.video_height.checked_div(w),
+                ) {
+                    (Some(video_width), Some(video_height)) => {
+                        format!("{video_width}:{video_height}")
+                    }
+                    _ => "1:1".to_string(),
                 }
             } else {
                 "1:1".to_string()
@@ -779,8 +791,32 @@ impl Segmenter {
             adaptation_sets.push_str(&audio_section);
         }
 
-        let mpd_body = format!(
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+        let mpd_body = if is_active {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+<MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
+     xmlns=\"urn:mpeg:dash:schema:mpd:2011\"\n\
+     xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n\
+     xsi:schemaLocation=\"urn:mpeg:DASH:schema:MPD:2011 http://standards.iso.org/ittf/PubliclyAvailableStandards/MPEG-DASH_schema_files/DASH-MPD.xsd\"\n\
+     profiles=\"urn:mpeg:dash:profile:isoff-live:2011\"\n\
+     type=\"dynamic\"\n\
+     availabilityStartTime=\"{availability_start_time}\"\n\
+     publishTime=\"{publish_time}\"\n\
+     minimumUpdatePeriod=\"PT{minimum_update_period}S\"\n\
+     maxSegmentDuration=\"{max_seg_dur}\"\n\
+     minBufferTime=\"{min_buf}\">\n\
+    <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n{adapt_sets}    </Period>\n</MPD>\n",
+                availability_start_time = availability_start_time,
+                publish_time = publish_time,
+                minimum_update_period = MANIFEST_UPDATE_PERIOD_SECS,
+                max_seg_dur = max_segment_duration,
+                min_buf = min_buffer_time,
+                adapt_sets = adaptation_sets,
+            )
+        } else {
+            let media_presentation_duration = format!("PT{media_duration_secs:.3}S");
+            format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n\
      xmlns=\"urn:mpeg:dash:schema:mpd:2011\"\n\
      xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n\
@@ -791,11 +827,12 @@ impl Segmenter {
      maxSegmentDuration=\"{max_seg_dur}\"\n\
      minBufferTime=\"{min_buf}\">\n\
     <ProgramInformation/>\n    <ServiceDescription id=\"0\"/>\n    <Period id=\"0\" start=\"PT0.0S\">\n{adapt_sets}    </Period>\n</MPD>\n",
-            media_duration = media_presentation_duration,
-            max_seg_dur = max_segment_duration,
-            min_buf = min_buffer_time,
-            adapt_sets = adaptation_sets,
-        );
+                media_duration = media_presentation_duration,
+                max_seg_dur = max_segment_duration,
+                min_buf = min_buffer_time,
+                adapt_sets = adaptation_sets,
+            )
+        };
 
         self.store_file(MANIFEST_FILENAME, mpd_body.into_bytes())
             .await
@@ -840,6 +877,10 @@ impl Segmenter {
             data_size,
             self.stream
         );
+
+        if name == MANIFEST_FILENAME {
+            return self.store_file_now(path, data).await;
+        }
 
         if let Some(uploader) = self.uploader.as_ref()
             && let Some(local_dir) = self.local_dir.as_ref()
@@ -903,6 +944,25 @@ impl Segmenter {
 
         // Return immediately. The caller does not need to wait for persistence; worst-case we
         // lose one fragment, which is acceptable for live streaming.
+        Ok(())
+    }
+
+    async fn store_file_now(&self, path: String, data: Vec<u8>) -> Result<()> {
+        if let Some(uploader) = self.uploader.as_ref()
+            && let Some(local_dir) = self.local_dir.as_ref()
+        {
+            let local_path = local_dir.join(&path);
+            if let Some(parent) = local_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(&local_path, data).await?;
+            uploader
+                .enqueue(path, local_path.to_string_lossy().to_string())
+                .await?;
+        } else {
+            self.op.write(&path, data).await?;
+        }
+
         Ok(())
     }
 }

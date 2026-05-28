@@ -240,6 +240,12 @@ export default function Publisher() {
     const start = async () => {
         setDisabled(true);
         clear();
+        const streamId = ((searchParams.id as string) || "").trim();
+        if (!streamId) {
+            setLogs("Stream ID is required before publishing.");
+            setDisabled(false);
+            return;
+        }
 
         const isDesktopMode = sourceMode() === "desktop";
         const isQrMode = sourceMode() === "qrtime";
@@ -267,7 +273,7 @@ export default function Publisher() {
         }
 
         stop = await publish({
-            url: `${location.origin}/whip/${searchParams.id || "-"}`,
+            url: `${location.origin}/whip/${encodeURIComponent(streamId)}`,
             token: (searchParams.token as string) || "",
             sourceMode: sourceMode(),
             inputStream,

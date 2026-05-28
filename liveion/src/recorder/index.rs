@@ -133,7 +133,7 @@ impl RecordingsIndex {
         }
 
         rows.retain(|r| !matches!(r.status, RecordingStatus::Acked));
-        rows.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        rows.sort_by_key(|a| a.updated_at);
         if rows.len() > limit {
             rows.truncate(limit);
         }
@@ -153,6 +153,36 @@ impl RecordingsIndex {
             .collect();
 
         (sessions, last_ts)
+    }
+
+    pub async fn list_streams(&self) -> Vec<String> {
+        let mut streams: Vec<String> = {
+            let map = self.entries.read().await;
+            map.values().map(|entry| entry.stream.clone()).collect()
+        };
+
+        streams.sort();
+        streams.dedup();
+        streams
+    }
+
+    pub async fn list_playback_entries(&self, stream: &str) -> Vec<super::PlaybackIndexEntry> {
+        let mut rows: Vec<RecordingIndexEntry> = {
+            let map = self.entries.read().await;
+            map.values()
+                .filter(|entry| entry.stream == stream)
+                .cloned()
+                .collect()
+        };
+
+        rows.sort_by(|a, b| a.record.cmp(&b.record));
+        rows.into_iter()
+            .map(|entry| super::PlaybackIndexEntry {
+                record: entry.record,
+                mpd_path: entry.mpd_path,
+                duration_ms: entry.duration_ms,
+            })
+            .collect()
     }
 
     pub async fn ack(&self, req: AckRecordingsRequest) -> Result<usize> {

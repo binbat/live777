@@ -127,11 +127,35 @@ export async function probeRecorderFeature(force = false): Promise<CapabilityPro
             return 'unauthorized';
         }
 
-        const status: CapabilityProbeStatus = response.ok ? 'available' : 'unavailable';
+        if (!response.ok) {
+            recorderProbeCache = 'unavailable';
+            return 'unavailable';
+        }
+
+        const payload = await response.json().catch(() => null) as { available?: boolean } | null;
+        const status: CapabilityProbeStatus = payload?.available === false ? 'unavailable' : 'available';
         recorderProbeCache = status;
         return status;
     } catch {
         recorderProbeCache = 'unavailable';
         return 'unavailable';
     }
+}
+
+export function getSegmentUrl(path: string) {
+    return `/api/record/object/${encodeURI(path)}`;
+}
+
+export interface RecordingIndexEntry {
+    record: string;
+    mpd_path: string;
+    duration_ms?: number | null;
+}
+
+export function getRecordingIndexStreams() {
+    return w.url('/api/playback').get().json<string[]>();
+}
+
+export function getRecordingIndexByStream(stream: string) {
+    return w.url(`/api/playback/${encodeURIComponent(stream)}`).get().json<RecordingIndexEntry[]>();
 }

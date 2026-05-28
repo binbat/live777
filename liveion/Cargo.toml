@@ -28,7 +28,7 @@ anyhow = { workspace = true, features = ["backtrace"] }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
 http-body = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 rand = "0.10"
 serde = { workspace = true, features = ["serde_derive"] }
 serde_json = { workspace = true }

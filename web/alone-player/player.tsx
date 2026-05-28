@@ -1,8 +1,9 @@
 import { WHEPClient } from "@binbat/whip-whep/whep.js";
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import type { StatsNerds } from "./types";
-import "./player.css";
 import Stats from "./stats";
+import type { StatsNerds } from "./types";
+import { collectWebRtcStats } from "./webrtc-stats";
+import "./player.css";
 
 export default () => {
     const [streamId, setStreamId] = createSignal("");
@@ -17,7 +18,6 @@ export default () => {
     let videoRef: HTMLVideoElement | undefined;
     let peerConnectionRef: RTCPeerConnection | null = null;
     let whepClientRef: WHEPClient | null = null;
-
     let statsInterval: ReturnType<typeof setInterval> | null = null;
 
     createEffect(() => {
@@ -103,73 +103,37 @@ export default () => {
         }
     };
 
-    onCleanup(() => {
-        handleStop();
-        statsInterval && clearInterval(statsInterval);
-    });
+    const stopSyncStats = () => {
+        if (statsInterval) {
+            clearInterval(statsInterval);
+            statsInterval = null;
+        }
+        setStatsNerds(null);
+    };
+
+    const syncStats = async () => {
+        if (!peerConnectionRef) return;
+
+        const stats = await collectWebRtcStats(peerConnectionRef);
+        stats.muted = videoRef?.muted;
+        setStatsNerds(stats);
+    };
+
+    const startSyncStats = () => {
+        if (statsInterval) return;
+        syncStats();
+        statsInterval = setInterval(syncStats, 1000);
+    };
 
     onMount(() => {
         videoRef?.addEventListener("contextmenu", startSyncStats);
     });
 
     onCleanup(() => {
+        handleStop();
         videoRef?.removeEventListener("contextmenu", startSyncStats);
+        stopSyncStats();
     });
-
-    function startSyncStats() {
-        statsInterval = setInterval(async () => {
-            if (!peerConnectionRef) return;
-
-            const tmpStats: StatsNerds = {
-                bytesReceived: 0,
-                bytesSent: 0,
-                currentRoundTripTime: 0,
-            };
-
-            const stats = await peerConnectionRef?.getStats();
-            stats.forEach((report) => {
-                if (report.type === "transport") {
-                    tmpStats.bytesReceived = report.bytesReceived ?? 0;
-                    tmpStats.bytesSent = report.bytesSent ?? 0;
-                } else if (report.type === "codec") {
-                    const [kind, codec] = report.mimeType
-                        .toLowerCase()
-                        .split("/");
-                    if (kind === "video") {
-                        tmpStats.vcodec = `${codec}@${report.sdpFmtpLine ?? ""}`;
-                    } else if (kind === "audio") {
-                        tmpStats.acodec = `${codec}@${report.sdpFmtpLine ?? ""}`;
-                    } else {
-                        console.log("Unknown mimeType", report.mimeType);
-                    }
-                } else if (
-                    report.type === "candidate-pair" &&
-                    report.nominated
-                ) {
-                    tmpStats.currentRoundTripTime =
-                        report.currentRoundTripTime ?? 0;
-                }
-
-                if (report.type === "inbound-rtp" && report.kind === "video") {
-                    tmpStats.frameWidth = report.frameWidth;
-                    tmpStats.frameHeight = report.frameHeight;
-                    tmpStats.framesPerSecond = report.framesPerSecond;
-                }
-
-                if (report.type === "inbound-rtp" && report.kind === "audio") {
-                    tmpStats.audioLevel = report.audioLevel;
-                }
-            });
-            setStatsNerds(tmpStats);
-        }, 1000);
-    }
-
-    function stopSyncStats() {
-        if (statsInterval) {
-            clearInterval(statsInterval);
-        }
-        setStatsNerds(null);
-    }
 
     return (
         <div id="player" class="player-wrapper">

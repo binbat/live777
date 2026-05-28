@@ -48,6 +48,13 @@ pub struct RecordingInfo {
     pub start_ts_micros: i64,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PlaybackIndexEntry {
+    pub record: String,
+    pub mpd_path: String,
+    pub duration_ms: Option<i32>,
+}
+
 /// Initialize recorder event listener.
 #[cfg(feature = "recorder")]
 pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
@@ -310,6 +317,64 @@ pub async fn delete_recordings(
 
     let deleted = index.delete_acked(req).await?;
     Ok(DeleteRecordingsResponse { deleted })
+}
+
+pub async fn list_playback_streams() -> anyhow::Result<Vec<String>> {
+    let Some(index) = get_index().await else {
+        return Ok(Vec::new());
+    };
+
+    let streams = index.list_streams().await;
+    let mut playable_streams = Vec::with_capacity(streams.len());
+    for stream in streams {
+        if !list_playback_entries(&stream).await?.is_empty() {
+            playable_streams.push(stream);
+        }
+    }
+
+    Ok(playable_streams)
+}
+
+pub async fn list_playback_entries(stream: &str) -> anyhow::Result<Vec<PlaybackIndexEntry>> {
+    let Some(index) = get_index().await else {
+        return Ok(Vec::new());
+    };
+
+    let mut entries = index.list_playback_entries(stream).await;
+    if let Some(operator) = STORAGE.read().await.as_ref().cloned() {
+        let mut playable_entries = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match operator.exists(&entry.mpd_path).await {
+                Ok(true) => playable_entries.push(entry),
+                Ok(false) => {
+                    tracing::warn!(
+                        "[recorder] skip playback entry without manifest: {}",
+                        entry.mpd_path
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[recorder] skip playback entry after manifest check failed: {} ({})",
+                        entry.mpd_path,
+                        e
+                    );
+                }
+            }
+        }
+        entries = playable_entries;
+    }
+
+    Ok(entries)
+}
+
+pub async fn read_object(path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    let storage = STORAGE.read().await;
+    let Some(operator) = storage.as_ref() else {
+        return Ok(None);
+    };
+
+    let bytes = operator.read(path).await?;
+    Ok(Some(bytes.to_vec()))
 }
 
 fn record_key(info: &RecordingInfo) -> String {

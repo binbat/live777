@@ -10,6 +10,7 @@ export interface PageLayoutProps extends PropsWithChildren<ITokenContext> {
         debugger?: boolean;
         player?: boolean;
         dash?: boolean;
+        recordings?: boolean;
     };
 }
 
