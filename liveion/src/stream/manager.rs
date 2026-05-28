@@ -235,7 +235,7 @@ impl Manager {
         metrics::STREAM.inc();
         let _ = self.event_sender.send(Event::Stream(StreamEvent {
             stream: Stream {
-                stream,
+                stream: stream.clone(),
                 session: None,
                 publish: 1,
                 subscribe: 0,
@@ -243,6 +243,10 @@ impl Manager {
             },
             r#type: StreamEventType::Up,
         }));
+        #[cfg(feature = "source")]
+        if let Err(e) = forward.try_init_udp_channel().await {
+            tracing::warn!("Failed to init UDP channel for stream {}: {:?}", stream, e);
+        }
         forward
     }
 
@@ -616,6 +620,14 @@ impl Manager {
             stream_map.insert(stream_id.to_string(), forward.clone());
 
             tracing::info!("Created PeerForward for source: {}", stream_id);
+            #[cfg(feature = "source")]
+            if let Err(e) = forward.try_init_udp_channel().await {
+                tracing::warn!(
+                    "Failed to init UDP channel for source {}: {:?}",
+                    stream_id,
+                    e
+                );
+            }
             Arc::new(forward)
         }
     }

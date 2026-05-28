@@ -62,7 +62,6 @@ pub async fn setup_connection(
 
     debug!("ICE servers from response: {:?}", ice_servers);
 
-    let _current_config = peer.get_configuration().await;
     let new_config = RTCConfigurationBuilder::new()
         .with_ice_servers(ice_servers)
         .build();
@@ -130,9 +129,9 @@ mod tests {
     #[tokio::test]
     async fn test_create_peer_connection() {
         let (builder, config) = create_peer_connection_builder().unwrap();
-        assert_eq!(config.ice_servers().len(), 1);
+        assert_eq!(config.ice_servers.len(), 1);
         assert_eq!(
-            config.ice_servers()[0].urls,
+            config.ice_servers[0].urls,
             vec!["stun:stun.l.google.com:19302"]
         );
         let peer = builder

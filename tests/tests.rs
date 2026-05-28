@@ -181,6 +181,7 @@ a=rtpmap:96 VP8/90000
         Some(tmp_path.clone()),
         None,
         None,
+        None,
     ));
 
     let mut result = None;

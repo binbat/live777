@@ -620,6 +620,7 @@ async fn start_stream_a_whep(
         None,
         None,
         None,
+        None,
     ))
 }
 
@@ -682,6 +683,7 @@ async fn start_stream_b_whep(
         None,
         None,
         None,
+        None,
     ))
 }
 
@@ -697,6 +699,7 @@ async fn start_stream_c_whep(
         ct,
         format!("{}://{}", livetwo::SCHEME_RTSP_SERVER, rtsp_addr),
         format!("http://{server_addr}{}", api::path::whep(stream_id)),
+        None,
         None,
         None,
         None,
