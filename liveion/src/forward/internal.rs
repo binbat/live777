@@ -350,7 +350,8 @@ mod rtcp_egress_probe {
                         self.remb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     None => {
-                        self.other.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        self.other
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -358,16 +359,28 @@ mod rtcp_egress_probe {
 
         pub fn snapshot(&self) -> EgressSnapshot {
             EgressSnapshot {
-                twcc: self.transport_layer_cc.load(std::sync::atomic::Ordering::Relaxed),
-                rr: self.receiver_report.load(std::sync::atomic::Ordering::Relaxed),
-                sr: self.sender_report.load(std::sync::atomic::Ordering::Relaxed),
+                twcc: self
+                    .transport_layer_cc
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                rr: self
+                    .receiver_report
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                sr: self
+                    .sender_report
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 pli: self.pli.load(std::sync::atomic::Ordering::Relaxed),
                 fir: self.fir.load(std::sync::atomic::Ordering::Relaxed),
                 nack: self.nack.load(std::sync::atomic::Ordering::Relaxed),
                 remb: self.remb.load(std::sync::atomic::Ordering::Relaxed),
-                poll_write_calls: self.poll_write_calls.load(std::sync::atomic::Ordering::Relaxed),
-                poll_write_non_empty: self.poll_write_non_empty.load(std::sync::atomic::Ordering::Relaxed),
-                poll_write_rtp: self.poll_write_rtp.load(std::sync::atomic::Ordering::Relaxed),
+                poll_write_calls: self
+                    .poll_write_calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                poll_write_non_empty: self
+                    .poll_write_non_empty
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                poll_write_rtp: self
+                    .poll_write_rtp
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 other: self.other.load(std::sync::atomic::Ordering::Relaxed),
                 last_twcc: self.last_twcc_time.lock().unwrap().map(|t| t.elapsed()),
             }
@@ -949,8 +962,22 @@ impl PeerForwardInternal {
 
         let s = SettingEngine::default();
 
+        let ice_servers = self.ice_server.clone();
+        info!(
+            "ICE servers for publish: count={}, urls=[{}], has_username={}, has_credential={}",
+            ice_servers.len(),
+            ice_servers
+                .iter()
+                .flat_map(|s| s.urls.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            ice_servers.iter().any(|s| !s.username.is_empty()),
+            ice_servers.iter().any(|s| !s.credential.is_empty()),
+        );
+
         let config = RTCConfigurationBuilder::new()
-            .with_ice_servers(self.ice_server.clone())
+            .with_ice_servers(ice_servers)
             .build();
 
         let gather_complete = Arc::new(Notify::new());
@@ -1108,8 +1135,22 @@ impl PeerForwardInternal {
 
         let s = SettingEngine::default();
 
+        let ice_servers = self.ice_server.clone();
+        info!(
+            "ICE servers for subscribe: count={}, urls=[{}], has_username={}, has_credential={}",
+            ice_servers.len(),
+            ice_servers
+                .iter()
+                .flat_map(|s| s.urls.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            ice_servers.iter().any(|s| !s.username.is_empty()),
+            ice_servers.iter().any(|s| !s.credential.is_empty()),
+        );
+
         let config = RTCConfigurationBuilder::new()
-            .with_ice_servers(self.ice_server.clone())
+            .with_ice_servers(ice_servers)
             .build();
 
         let gather_complete = Arc::new(Notify::new());

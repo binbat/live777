@@ -100,7 +100,6 @@ export default async function startWhip(
         stream.getVideoTracks()[0],
         videoTransceiverInit,
     );
-    cfg.log(`video send encodings: ${JSON.stringify(sendEncodings)} (maxBitrate: unlimited)`);
     const videoSenderParams = videoTransceiver.sender.getParameters();
     if (videoSenderParams.encodings?.[0]) {
         videoSenderParams.encodings[0].scaleResolutionDownBy = 1.0;

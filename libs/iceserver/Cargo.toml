@@ -11,6 +11,7 @@ crate-type = ["lib"]
 [dependencies]
 serde = { workspace = true, features = ["serde_derive"] }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 webrtc = { workspace = true }
 rtc = { workspace = true }
 rtc-ice = "0.20.0-alpha.1"
