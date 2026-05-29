@@ -85,6 +85,7 @@ struct DataChannelForward {
 struct PublishPeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
     gather_complete: Arc<Notify>,
+    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
 }
 
 #[async_trait::async_trait]
@@ -102,8 +103,8 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                     "[{}] [publish] connection state changed: {}",
                     internal.stream, state
                 );
-                if let Some(publish) = internal.publish.read().await.as_ref() {
-                    publish.set_connection_state(state);
+                if let Ok(mut s) = self.connection_state.write() {
+                    *s = state;
                 }
                 match state {
                     RTCPeerConnectionState::Failed => {
@@ -159,14 +160,20 @@ struct SubscribePeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
     peer: Arc<Mutex<Option<std::sync::Weak<dyn PeerConnection>>>>,
     gather_complete: Arc<Notify>,
+    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
 }
 
 impl SubscribePeerHandler {
-    fn new(internal: std::sync::Weak<PeerForwardInternal>, gather_complete: Arc<Notify>) -> Self {
+    fn new(
+        internal: std::sync::Weak<PeerForwardInternal>,
+        gather_complete: Arc<Notify>,
+        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    ) -> Self {
         Self {
             internal,
             peer: Arc::new(Mutex::new(None)),
             gather_complete,
+            connection_state,
         }
     }
 
@@ -178,6 +185,9 @@ impl SubscribePeerHandler {
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for SubscribePeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        if let Ok(mut s) = self.connection_state.write() {
+            *s = state;
+        }
         let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
         if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
             info!(
@@ -484,23 +494,20 @@ mod rtcp_egress_probe {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
             let out = self.inner.poll_write();
-            match &out {
-                Some(tagged) => {
-                    self.counters
-                        .poll_write_non_empty
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    match &tagged.message {
-                        Packet::Rtcp(pkts) => {
-                            self.counters.tally(pkts, &self.stream);
-                        }
-                        Packet::Rtp(_) => {
-                            self.counters
-                                .poll_write_rtp
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
+            if let Some(tagged) = &out {
+                self.counters
+                    .poll_write_non_empty
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                match &tagged.message {
+                    Packet::Rtcp(pkts) => {
+                        self.counters.tally(pkts, &self.stream);
+                    }
+                    Packet::Rtp(_) => {
+                        self.counters
+                            .poll_write_rtp
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
-                None => {}
             }
             // Log probe activity every 300th poll_write call
             if cnt % 300 == 1 {
@@ -835,6 +842,7 @@ impl PeerForwardInternal {
         &self,
         peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
+        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
     ) -> Result<()> {
         {
             let mut publish = self.publish.write().await;
@@ -849,6 +857,7 @@ impl PeerForwardInternal {
                 peer.clone(),
                 self.publish_rtcp_channel.subscribe(),
                 cascade,
+                connection_state,
             )
             .await?;
 
@@ -942,7 +951,11 @@ impl PeerForwardInternal {
         &self,
         media_info: MediaInfo,
         internal_weak: std::sync::Weak<PeerForwardInternal>,
-    ) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
+    ) -> Result<(
+        Arc<dyn PeerConnection>,
+        Arc<Notify>,
+        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    )> {
         if media_info.video_transceiver.0 > 1 && media_info.audio_transceiver.0 > 1 {
             return Err(AppError::throw("sendonly is more than 1"));
         }
@@ -992,9 +1005,11 @@ impl PeerForwardInternal {
             .build();
 
         let gather_complete = Arc::new(Notify::new());
+        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
         let handler = PublishPeerHandler {
             internal: internal_weak,
             gather_complete: gather_complete.clone(),
+            connection_state: connection_state.clone(),
         };
         let peer: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
@@ -1031,7 +1046,7 @@ impl PeerForwardInternal {
                 .await?;
         }
 
-        Ok((peer, gather_complete))
+        Ok((peer, gather_complete, connection_state))
     }
 
     pub(crate) fn set_twcc_ext_id(&self, ext_id: u8) {
@@ -1119,7 +1134,11 @@ impl PeerForwardInternal {
         &self,
         media_info: MediaInfo,
         internal_weak: std::sync::Weak<PeerForwardInternal>,
-    ) -> Result<(Arc<dyn PeerConnection>, Arc<Notify>)> {
+    ) -> Result<(
+        Arc<dyn PeerConnection>,
+        Arc<Notify>,
+        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    )> {
         if media_info.video_transceiver.1 > 1 && media_info.audio_transceiver.1 > 1 {
             return Err(AppError::throw("recvonly is more than 1"));
         }
@@ -1154,7 +1173,12 @@ impl PeerForwardInternal {
             .build();
 
         let gather_complete = Arc::new(Notify::new());
-        let handler = SubscribePeerHandler::new(internal_weak, gather_complete.clone());
+        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
+        let handler = SubscribePeerHandler::new(
+            internal_weak,
+            gather_complete.clone(),
+            connection_state.clone(),
+        );
         let peer: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
                 .with_media_engine(m)
@@ -1189,7 +1213,7 @@ impl PeerForwardInternal {
         )
         .await?;
 
-        Ok((peer, gather_complete))
+        Ok((peer, gather_complete, connection_state))
     }
 
     async fn new_sender(
@@ -1300,6 +1324,7 @@ impl PeerForwardInternal {
         peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
         media_info: MediaInfo,
+        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
     ) -> Result<()> {
         let transceivers = peer.get_transceivers().await;
 
@@ -1337,6 +1362,7 @@ impl PeerForwardInternal {
                     self.publish_tracks_change.clone(),
                 ),
                 (video_sender, audio_sender),
+                connection_state,
             )
             .await;
 

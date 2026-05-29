@@ -10,6 +10,8 @@ use webrtc::peer_connection::{
     RTCPeerConnectionState, RTCSessionDescription, Registry,
 };
 
+const OFFER_ICE_GATHERING_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
 pub fn create_peer_connection_builder() -> Result<(
     PeerConnectionBuilder<std::net::SocketAddr>,
     RTCConfiguration,
@@ -46,14 +48,11 @@ pub async fn setup_connection(
     peer.set_local_description(offer).await?;
 
     // Wait for ICE gathering to complete with a timeout.
-    if tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        gather_complete.notified(),
-    )
-    .await
-    .is_err()
+    if tokio::time::timeout(OFFER_ICE_GATHERING_TIMEOUT, gather_complete.notified())
+        .await
+        .is_err()
     {
-        warn!("ICE gathering timed out after 3s, using partial description");
+        warn!("ICE gathering timed out, using partial description");
     }
 
     let local_desc = peer.local_description().await.unwrap();
@@ -129,9 +128,9 @@ mod tests {
     #[tokio::test]
     async fn test_create_peer_connection() {
         let (builder, config) = create_peer_connection_builder().unwrap();
-        assert_eq!(config.ice_servers.len(), 1);
+        assert_eq!(config.ice_servers().len(), 1);
         assert_eq!(
-            config.ice_servers[0].urls,
+            config.ice_servers()[0].urls,
             vec!["stun:stun.l.google.com:19302"]
         );
         let peer = builder

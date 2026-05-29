@@ -4,11 +4,21 @@ type SessionDescriptionLike = string | RTCSessionDescriptionInit;
 // @params {string} audioCodec
 // @params {string} videoCodec
 // @return {string | RTCSessionDescriptionInit} SDP
-function convertSessionDescription<T extends SessionDescriptionLike>(
-    sdp: T,
+function convertSessionDescription(
+    sdp: string,
     audioCodec: string,
     videoCodec: string,
-): T {
+): string;
+function convertSessionDescription(
+    sdp: RTCSessionDescriptionInit,
+    audioCodec: string,
+    videoCodec: string,
+): RTCSessionDescriptionInit;
+function convertSessionDescription(
+    sdp: SessionDescriptionLike,
+    audioCodec: string,
+    videoCodec: string,
+): SessionDescriptionLike {
     const rawSdp = typeof sdp === "string" ? sdp : sdp.sdp;
     if (!rawSdp) {
         throw new Error("SDP is empty");
@@ -16,13 +26,13 @@ function convertSessionDescription<T extends SessionDescriptionLike>(
 
     const converted = convertSdp(rawSdp, audioCodec, videoCodec);
     if (typeof sdp === "string") {
-        return converted as T;
+        return converted;
     }
 
     return {
         ...sdp,
         sdp: converted,
-    } as T;
+    };
 }
 
 function convertSdp(sdp: string, audioCodec: string, videoCodec: string): string {

@@ -1,5 +1,18 @@
 import { WHEPClient } from "@binbat/whip-whep/whep.js";
 
+export type WhepMute = {
+    kind: "audio" | "video";
+    enabled: boolean;
+};
+
+type WhepLayer = {
+    encodingId: string;
+};
+
+type WHEPClientWithLayer = WHEPClient & {
+    selectLayer(layer: WhepLayer): Promise<void>;
+};
+
 type startWhepConfig = {
     url: string;
     token: string;
@@ -9,11 +22,12 @@ type startWhepConfig = {
     log: (msg: string) => void;
 };
 
-export default async function startWhep(cfg: startWhepConfig): Promise<
+export default async function startWhep(
+    cfg: startWhepConfig,
+): Promise<
     [
         () => Promise<void>,
-        // biome-ignore lint/suspicious/noExplicitAny: This whip-whep.js use any type
-        (muted: any) => Promise<void>,
+        (muted: WhepMute) => Promise<void>,
         (layer: string) => Promise<void>,
     ]
 > {
@@ -48,7 +62,7 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
         // https://github.com/w3c/mediacapture-main/issues/517
         cfg.onStream(ms);
     };
-    const whep = new WHEPClient();
+    const whep = new WHEPClient() as WHEPClientWithLayer;
 
     try {
         cfg.log("http begined");
@@ -71,19 +85,17 @@ export default async function startWhep(cfg: startWhepConfig): Promise<
         cfg.onPeerConnection?.(null);
     };
 
-    // biome-ignore lint/suspicious/noExplicitAny: This whip-whep.js use any type
-    const mute = async (muted: any) => {
+    const mute = async (muted: WhepMute) => {
         cfg.log(`mute: ${JSON.stringify(muted)}`);
         await whep.mute(muted);
     };
 
     const selectLayer = async (layer: string) => {
-        !layer
-            ? await whep.unselectLayer()
-            : //@ts-expect-error
-              await whep
-                  .selectLayer({ encodingId: layer })
-                  .catch((e) => cfg.log(e));
+        if (!layer) {
+            await whep.unselectLayer();
+            return;
+        }
+        await whep.selectLayer({ encodingId: layer }).catch((e) => cfg.log(e));
     };
 
     return [stop, mute, selectLayer];

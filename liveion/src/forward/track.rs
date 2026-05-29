@@ -16,7 +16,7 @@ use tracing::error;
 use webrtc::media_stream::track_remote::TrackRemote;
 
 #[cfg(feature = "source")]
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU32;
 #[cfg(feature = "source")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -117,7 +117,6 @@ impl PublishTrackRemote {
 
         // TWCC inbound probe: monitors transport-wide-cc header extension on
         // incoming RTP from the publisher, using the negotiated extmap ID.
-        let twcc_ext_id = twcc_ext_id;
         let twcc_seen = AtomicBool::new(false);
         let twcc_missing_count = AtomicU64::new(0);
         let packets_total = AtomicU64::new(0);
@@ -150,8 +149,9 @@ impl PublishTrackRemote {
                     // unrelated extensions as TransportCcExtension.
                     if twcc_ext_id != 0 {
                         let mut raw = rtp_packet.header.get_extension(twcc_ext_id);
-                        if let Some(ref mut data) = raw {
-                            if let Ok(tcc) = rtc::rtp::extension::transport_cc_extension::TransportCcExtension::unmarshal(data) {
+                        if let Some(ref mut data) = raw
+                            && let Ok(tcc) = rtc::rtp::extension::transport_cc_extension::TransportCcExtension::unmarshal(data)
+                        {
                                 found_twcc = true;
                                 if !twcc_seen.swap(true, Ordering::Relaxed) {
                                     info!(
@@ -165,7 +165,6 @@ impl PublishTrackRemote {
                                 }
                                 last_twcc_seq
                                     .store(tcc.transport_sequence as u64, Ordering::Relaxed);
-                            }
                         }
                     }
                     if !found_twcc {

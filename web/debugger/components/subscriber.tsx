@@ -5,7 +5,7 @@ import { createLogger } from "../primitive/logger";
 import Datachannel from "./datachannel";
 import Player from "./player";
 
-import subscribe from "./subscribe";
+import subscribe, { type WhepMute } from "./subscribe";
 
 const WhepLayerOptions = [
     { value: "", text: "AUTO" },
@@ -35,8 +35,7 @@ export default function Subscriber() {
     let videoRef: HTMLVideoElement | undefined;
     let decoder: QRCodeStreamDecoder | null = null;
     let stop: () => Promise<void> | undefined;
-    // biome-ignore lint/suspicious/noExplicitAny: This whip-whep.js use any type
-    let mute: (muted: any) => Promise<void> | undefined;
+    let mute: (muted: WhepMute) => Promise<void> | undefined;
     let selectLayer: (layer: string) => Promise<void> | undefined;
 
     onCleanup(() => {

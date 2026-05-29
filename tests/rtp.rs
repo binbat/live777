@@ -14,6 +14,8 @@ struct Detect {
     video: Option<(u16, u16)>,
 }
 
+const CONNECTION_WAIT_ATTEMPTS: usize = 100;
+
 #[tokio::test]
 async fn test_livetwo_rtp_vp8() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -244,7 +246,7 @@ async fn test_livetwo_rtp_vp8_opus() {
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let vcodec = "-vcodec libvpx -pix_fmt yuv420p -g 30 -keyint_min 30 -deadline realtime -speed 4 -b:v 2000k -maxrate 2500k -bufsize 5000k";
     let prefix = format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an"
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an"
     );
 
     helper_livetwo_rtp(
@@ -275,7 +277,7 @@ async fn test_livetwo_rtp_h264_g722() {
     let acodec = "-acodec g722";
     let vcodec = "-vcodec libx264 -pix_fmt yuv420p -g 30 -keyint_min 30 -crf 23 -preset ultrafast -tune zerolatency -profile:v main -level 4.1";
     let prefix = format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an",
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an",
     );
 
     helper_livetwo_rtp(
@@ -331,19 +333,26 @@ async fn helper_livetwo_rtp(
         .to_string();
 
     let ct = CancellationToken::new();
+    let whip_command = format!(
+        "{prefix} -f rtp 'rtp://{}' -sdp_file {tmp_path}",
+        SocketAddr::new(ip, whip_port)
+    );
     let handle_whip = tokio::spawn(livetwo::whip::into(
         ct.clone(),
         tmp_path.clone(),
         format!("http://{addr}{}", api::path::whip("-")),
         None,
-        Some(format!(
-            "{prefix} -f rtp 'rtp://{}' -sdp_file {tmp_path}",
-            SocketAddr::new(ip, whip_port)
-        )),
+        Some(whip_command),
     ));
 
     let mut result = None;
-    for _ in 0..100 {
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
+        if handle_whip.is_finished() {
+            panic!(
+                "whip task exited before publish connected: {:?}",
+                handle_whip.await
+            );
+        }
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();
@@ -409,7 +418,13 @@ async fn helper_livetwo_rtp(
     ));
 
     let mut result = None;
-    for _ in 0..100 {
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
+        if handle_whep.is_finished() {
+            panic!(
+                "whep task exited before subscribe connected: {:?}",
+                handle_whep.await
+            );
+        }
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();

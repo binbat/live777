@@ -93,7 +93,7 @@ export default function Player(props: {
                 </select>
             </label>
             <br />
-            <div style={{ width: displayWidth() }}>
+            <div style={{ width: displayWidth(), margin: "0 auto" }}>
                 <div id="player" class="player-wrapper">
                     <video ref={ref} autoplay muted controls />
                     <Show when={statsNerds()}>

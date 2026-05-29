@@ -201,11 +201,11 @@ fn setup_data_channel_loop(
         loop {
             tokio::select! {
                 event = dc.poll() => match event {
-                    Some(DataChannelEvent::OnMessage(msg)) => {
-                        if dc_recv_tx.send(msg.data.to_vec()).is_err() {
-                            debug!("whepfrom: DataChannel recv channel closed");
-                            break;
-                        }
+                    Some(DataChannelEvent::OnMessage(msg))
+                        if dc_recv_tx.send(msg.data.to_vec()).is_err() =>
+                    {
+                        debug!("whepfrom: DataChannel recv channel closed");
+                        break;
                     }
                     Some(DataChannelEvent::OnClose) => {
                         info!("whepfrom: DataChannel closed");

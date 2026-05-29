@@ -50,6 +50,7 @@ pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) create_at: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
     pub(crate) media_info: MediaInfo,
+    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
 }
 
 impl SubscribeRTCPeerConnection {
@@ -63,6 +64,7 @@ impl SubscribeRTCPeerConnection {
             broadcast::Sender<()>, // use subscribe
         ),
         (video_sender, audio_sender): (OptionalRtpSender, OptionalRtpSender),
+        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
     ) -> Self {
         let select_layer_sender = new_broadcast_channel!(1);
         let id = get_peer_id(&peer);
@@ -97,14 +99,20 @@ impl SubscribeRTCPeerConnection {
             create_at: Utc::now().timestamp_millis(),
             select_layer_sender,
             media_info,
+            connection_state,
         }
     }
 
     pub(crate) async fn info(&self) -> SessionInfo {
+        let state = self
+            .connection_state
+            .read()
+            .map(|s| *s)
+            .unwrap_or(RTCPeerConnectionState::New);
         SessionInfo {
             id: self.id.clone(),
             create_at: self.create_at,
-            state: RTCPeerConnectionState::New, // Track state via handler
+            state,
             cascade: self.cascade.clone(),
             has_data_channel: self.media_info.has_data_channel,
         }

@@ -58,9 +58,6 @@ export default async function startWhip(
     cfg.log(
         `video width: ${!videoSize.width ? "default" : videoSize.width}, height: ${!videoSize.height ? "default" : videoSize.height}`,
     );
-    cfg.log(`audio device: ${!cfg.audio.device ? "none" : cfg.audio.device}`);
-    cfg.log(`video device: ${!cfg.video.device ? "none" : cfg.video.device}`);
-
     const stream = cfg.inputStream
         ? cfg.inputStream
         : cfg.sourceMode === "desktop"
@@ -125,8 +122,7 @@ export default async function startWhip(
     cfg.log(`video codec: ${!cfg.video.codec ? "default" : cfg.video.codec}`);
 
     const whip = new WHIPClient();
-    // biome-ignore lint/suspicious/noExplicitAny: This whip-whep.js use any type
-    whip.onAnswer = (answer: any) =>
+    whip.onAnswer = (answer: RTCSessionDescriptionInit) =>
         convertSessionDescription(answer, cfg.audio.codec, cfg.video.codec);
 
     try {

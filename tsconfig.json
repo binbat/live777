@@ -26,9 +26,16 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["web"],
+  "include": [
+    "web/liveion",
+    "web/liveman",
+    "web/livecam",
+    "web/shared",
+    "web/vite-env.d.ts"
+  ],
   "exclude": [
-    "./web/**/vite.config.ts"
+    "./web/**/vite.config.ts",
+    "./web/**/dist"
   ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

@@ -33,8 +33,10 @@ export class QRCodeStream {
     private frameRequestCallback: FrameRequestCallback;
 
     private capturing: MediaStream | null = null;
+    public canvas: HTMLCanvasElement;
 
-    constructor(public canvas: HTMLCanvasElement) {
+    constructor(canvas: HTMLCanvasElement) {
+        this.canvas = canvas;
         this.encoder = new Encoder({ level: 'L' });
         const { width, height } = canvas;
         this.width = width;
@@ -145,9 +147,11 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
     private videoFrameCallback: VideoFrameRequestCallback;
 
     private seq = 0;
+    public video: HTMLVideoElement;
 
-    constructor(public video: HTMLVideoElement) {
+    constructor(video: HTMLVideoElement) {
         super();
+        this.video = video;
         this.detector = new Detector();
         this.decoder = new Decoder();
         this.canvas = new OffscreenCanvas(video.width, video.height);
