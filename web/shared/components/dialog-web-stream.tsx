@@ -156,7 +156,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     };
 
     return (
-        <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]">
+        <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]" ariaHidden={false}>
             <Modal.Header className="mb-6">
                 <h3 className="font-bold">Web Stream {streamId} {videoResolution}</h3>
             </Modal.Header>

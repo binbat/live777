@@ -4,6 +4,8 @@
     "includes": [
       "web/alone-player/**",
       "!web/alone-player/dist",
+      "web/player-core/**",
+      "!web/player-core/dist",
       "web/debugger/**",
       "!web/debugger/dist"
     ]

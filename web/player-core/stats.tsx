@@ -1,6 +1,5 @@
 import type { Component } from "solid-js";
 import type { StatsNerds } from "./types";
-import "./stats.css";
 
 interface Props {
     stats: StatsNerds;

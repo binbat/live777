@@ -18,6 +18,9 @@
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "dependencies": {
+    "player-core": "workspace:*"
+  },
   "devDependencies": {
     "solid-js": "^1.9.10"
   }
