@@ -60,4 +60,4 @@ Example:
 - Junxiang Yu，@Yuaii2004，2025/12/13
 - Yilong Hu，@yingchuan8985，2026/04/09
 - Kun Che, @CK-bantang, 2026/04/25
-- fangming, @syzp3, 2026/05/30
+- Ming Fang, @syzp3, 2026/05/30
