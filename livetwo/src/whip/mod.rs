@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use std::process::ExitStatus;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -147,30 +148,38 @@ pub async fn into(
     }
 
     if child.as_ref().is_some() {
-        let child_clone = child.clone();
-        let ct_clone = ct.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        if let Some(child_guard_wrapper) = child_clone.as_ref()
-                            && let Ok(mut child_guard) = child_guard_wrapper.lock()
-                            && let Ok(Some(status)) = child_guard.try_wait() {
-                                info!("Child process exited with status: {:?}", status);
-                                ct_clone.cancel();
-                                break;
-                            }
-                    }
-                    _ = ct_clone.cancelled() => {
-                        break;
-                    }
-                }
+        tokio::select! {
+            _ = ct.cancelled() => {
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                Ok(())
             }
-        });
+            status = wait_for_child_exit(child.clone()) => {
+                let status = status?;
+                info!("Child process exited with status: {:?}", status);
+                ct.cancel();
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                Err(anyhow!("WHIP child process exited before shutdown: {status}"))
+            }
+        }
+    } else {
+        ct.cancelled().await;
+        graceful_shutdown("WHIP", &mut client, peer).await;
+        Ok(())
     }
+}
 
-    ct.cancelled().await;
-    graceful_shutdown("WHIP", &mut client, peer).await;
+async fn wait_for_child_exit(child: Arc<Option<cli::ChildGuard>>) -> Result<ExitStatus> {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-    Ok(())
+        if let Some(child_guard_wrapper) = child.as_ref() {
+            let status = child_guard_wrapper
+                .lock()
+                .map_err(|_| anyhow!("WHIP child process mutex poisoned"))?
+                .try_wait()?;
+            if let Some(status) = status {
+                return Ok(status);
+            }
+        }
+    }
 }
