@@ -78,8 +78,7 @@ pub async fn from(
         }
     });
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let codec_info = codec_info.lock().await;
+    let codec_info = wait_for_codec_info(codec_info.clone()).await;
     debug!("Codec info: {:?}", codec_info);
 
     let (video_broadcast_tx, _) = broadcast::channel::<Vec<u8>>(1000);
@@ -239,6 +238,27 @@ pub async fn from(
     graceful_shutdown("WHEP", &mut client, peer).await;
 
     Ok(())
+}
+
+async fn wait_for_codec_info(
+    codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
+) -> rtsp::CodecInfo {
+    const CODEC_WAIT_ATTEMPTS: usize = 300;
+
+    for _ in 0..CODEC_WAIT_ATTEMPTS {
+        let info = codec_info.lock().await.clone();
+        if info.video_codec.is_some() || info.audio_codec.is_some() {
+            return info;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let info = codec_info.lock().await.clone();
+    warn!(
+        "No WHEP media codec observed after {}ms; continuing with empty codec info",
+        CODEC_WAIT_ATTEMPTS * 100
+    );
+    info
 }
 
 struct InitialTransportHandle {

@@ -48,6 +48,13 @@ impl Transport {
             Transport::Tcp => "-rtsp_transport tcp",
         }
     }
+
+    fn ffprobe_args(&self) -> &[&str] {
+        match self {
+            Transport::Udp => &[],
+            Transport::Tcp => &["-rtsp_transport", "tcp"],
+        }
+    }
 }
 
 struct Ports {
@@ -72,7 +79,7 @@ struct TestConfig {
 }
 
 const CONNECTION_CHECK_INTERVAL_MS: u64 = 100;
-const MAX_CONNECTION_ATTEMPTS: u32 = 100;
+const MAX_CONNECTION_ATTEMPTS: u32 = 300;
 const STREAM_STABILIZATION_MS: u64 = 1000;
 const INTER_STREAM_DELAY_MS: u64 = 3000;
 const FFPROBE_PREPARATION_MS: u64 = 7000;
@@ -515,6 +522,7 @@ async fn run_rtsp_cycle_test(config: TestConfig) {
 
     let handle_b_whep = start_stream_b_whep(ct.clone(), &config, &server_addr, &stream_b).await;
     wait_for_subscribe_connected(&server_addr, &stream_b).await;
+    wait_for_publish_connected(&server_addr, &stream_c).await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
     // Stream C → RTSP server → ffprobe
@@ -735,6 +743,8 @@ async fn wait_for_connection_state<F, G>(
     F: Fn(&api::response::Stream) -> bool,
     G: Fn(&api::response::Stream) -> api::response::RTCPeerConnectionState,
 {
+    let mut last_state = None;
+    let mut last_codecs = Vec::new();
     for attempt in 0..MAX_CONNECTION_ATTEMPTS {
         let res = reqwest::get(format!("http://{server_addr}{}", api::path::streams("")))
             .await
@@ -749,15 +759,19 @@ async fn wait_for_connection_state<F, G>(
 
         if let Some(stream) = body.into_iter().find(|s| s.id == stream_id)
             && has_sessions(&stream)
-            && get_state(&stream) == api::response::RTCPeerConnectionState::Connected
         {
-            return;
+            let state = get_state(&stream);
+            last_state = Some(state);
+            last_codecs = stream.codecs.clone();
+            if state == api::response::RTCPeerConnectionState::Connected {
+                return;
+            }
         }
 
         if attempt == MAX_CONNECTION_ATTEMPTS - 1 {
             panic!(
-                "Stream '{}' did not reach connected state after {} attempts",
-                stream_id, MAX_CONNECTION_ATTEMPTS
+                "Stream '{}' did not reach connected state after {} attempts; last_state={:?}, last_codecs={:?}",
+                stream_id, MAX_CONNECTION_ATTEMPTS, last_state, last_codecs
             );
         }
 
@@ -767,16 +781,16 @@ async fn wait_for_connection_state<F, G>(
 
 async fn verify_stream_with_ffprobe(config: &TestConfig) {
     let rtsp_url = format!(
-        "{}://{}{}",
+        "{}://{}",
         livetwo::SCHEME_RTSP_CLIENT,
-        SocketAddr::new(config.ip, config.ports.whep),
-        config.transport.as_query_param()
+        SocketAddr::new(config.ip, config.ports.whep)
     );
 
     let mut last_error = None;
 
     for attempt in 0..FFPROBE_MAX_RETRIES {
         let output = Command::new("ffprobe")
+            .args(config.transport.ffprobe_args())
             .args([
                 "-v",
                 "error",

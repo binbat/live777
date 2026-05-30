@@ -457,13 +457,13 @@ impl SourceBridge {
                                 for transceiver in peer.get_transceivers().await {
                                     if let Ok(Some(sender)) = transceiver.sender().await {
                                         let track_local = sender.track();
-                                        if let Some(sr) = track.generate_sender_report() {
-                                            if track_local.write_rtcp(vec![sr]).await.is_err() {
-                                                debug!(
-                                                    "[{}] Failed to send SR to {}",
-                                                    source_id, subscribe_info.id
-                                                );
-                                            }
+                                        if let Some(sr) = track.generate_sender_report()
+                                            && track_local.write_rtcp(vec![sr]).await.is_err()
+                                        {
+                                            debug!(
+                                                "[{}] Failed to send SR to {}",
+                                                source_id, subscribe_info.id
+                                            );
                                         }
                                     }
                                 }

@@ -11,8 +11,9 @@ use tracing::{debug, info, warn};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use webrtc::peer_connection::{
-    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
-    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, RTCSessionDescription,
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState,
+    RTCSessionDescription,
 };
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
@@ -127,11 +128,35 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
 
         if let Some(sender) = sender {
             let track_clone = track.clone();
+            let codec_info = self.codec_info.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
+                let mut first_packet = true;
                 loop {
                     match track_clone.poll().await {
                         Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
+                            if first_packet {
+                                let first_packet_codec =
+                                    track_clone.codec(rtp_packet.header.ssrc).await;
+                                if let Some(codec) = first_packet_codec {
+                                    let codec_params =
+                                        rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+                                            rtp_codec: codec.clone(),
+                                            payload_type: rtp_packet.header.payload_type,
+                                        };
+                                    let mut info = codec_info.lock().await;
+                                    match kind {
+                                        RtpCodecKind::Video => {
+                                            info.video_codec = Some(codec_params);
+                                        }
+                                        RtpCodecKind::Audio => {
+                                            info.audio_codec = Some(codec_params);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                first_packet = false;
+                            }
                             let size = rtp_packet.marshal_size();
                             if size > buf.len() {
                                 warn!("WHEP: RTP packet too large ({} bytes)", size);
@@ -243,6 +268,9 @@ async fn create_peer(
     dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
     dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> Result<Arc<dyn PeerConnection>> {
+    let mut media_engine = MediaEngine::default();
+    media_engine.register_default_codecs()?;
+
     let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(WhepTrackHandler {
         ct,
         gather_complete,
@@ -261,6 +289,7 @@ async fn create_peer(
 
     let peer: Arc<dyn PeerConnection> = Arc::new(
         PeerConnectionBuilder::<std::net::SocketAddr>::new()
+            .with_media_engine(media_engine)
             .with_handler(handler)
             .with_udp_addrs(vec!["0.0.0.0:0".parse().unwrap()])
             .with_configuration(config)

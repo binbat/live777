@@ -22,6 +22,7 @@ pub async fn setup_video_track(
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
     let video_codec: RTCRtpCodec = video_codec_params.clone().into();
     let video_track_id = format!("{}-video", input_id);
+    let video_ssrc = rand::random::<u32>();
     let media_track = MediaStreamTrack::new(
         input_id.clone(),
         video_track_id.clone(),
@@ -29,7 +30,7 @@ pub async fn setup_video_track(
         RtpCodecKind::Video,
         vec![RTCRtpEncodingParameters {
             rtp_coding_parameters: RTCRtpCodingParameters {
-                ssrc: Some(rand::random::<u32>()),
+                ssrc: Some(video_ssrc),
                 ..Default::default()
             },
             codec: video_codec.clone(),
@@ -91,7 +92,7 @@ pub async fn setup_video_track(
                     packet.header.sequence_number, packet.header.timestamp, packet.header.marker
                 );
 
-                for packet in handler.payload(packet) {
+                for mut packet in handler.payload(packet) {
                     trace!(
                         "Sending video packet: seq={}, ts={}, marker={}",
                         packet.header.sequence_number,
@@ -99,6 +100,7 @@ pub async fn setup_video_track(
                         packet.header.marker
                     );
 
+                    packet.header.ssrc = video_ssrc;
                     if let Err(e) = video_track.write_rtp(packet).await {
                         error!("Failed to write RTP: {}", e);
                     }
@@ -117,6 +119,7 @@ pub async fn setup_audio_track(
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
     let audio_codec: RTCRtpCodec = audio_codec_params.clone().into();
     let audio_track_id = format!("{}-audio", input_id);
+    let audio_ssrc = rand::random::<u32>();
     let media_track = MediaStreamTrack::new(
         input_id.clone(),
         audio_track_id.clone(),
@@ -124,7 +127,7 @@ pub async fn setup_audio_track(
         RtpCodecKind::Audio,
         vec![RTCRtpEncodingParameters {
             rtp_coding_parameters: RTCRtpCodingParameters {
-                ssrc: Some(rand::random::<u32>()),
+                ssrc: Some(audio_ssrc),
                 ..Default::default()
             },
             codec: audio_codec.clone(),
@@ -147,14 +150,11 @@ pub async fn setup_audio_track(
         };
 
         while let Some(data) = audio_rx.recv().await {
-            if audio_codec.mime_type == MIME_TYPE_G722 {
-                // In v0.20, TrackLocalStaticRTP only accepts RTP packets.
-                // G722 raw data needs to be wrapped in RTP packets first.
-                warn!("G722 raw write not yet supported in v0.20");
-            } else if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
+            if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
                 trace!("Received audio packet: {}", packet);
-                for packet in handler.payload(packet) {
+                for mut packet in handler.payload(packet) {
                     trace!("Sending audio packet: {}", packet);
+                    packet.header.ssrc = audio_ssrc;
                     let _ = audio_track.write_rtp(packet).await;
                 }
             }

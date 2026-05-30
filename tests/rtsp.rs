@@ -13,10 +13,10 @@ enum Transport {
 }
 
 impl Transport {
-    fn as_str(&self) -> &str {
+    fn ffprobe_args(&self) -> &[&str] {
         match self {
-            Transport::Udp => "",
-            Transport::Tcp => "?transport=tcp",
+            Transport::Udp => &[],
+            Transport::Tcp => &["-rtsp_transport", "tcp"],
         }
     }
 }
@@ -26,6 +26,8 @@ struct Detect {
     // (width, height)
     video: Option<(u16, u16)>,
 }
+
+const CONNECTION_WAIT_ATTEMPTS: usize = 300;
 
 #[tokio::test]
 async fn test_livetwo_rtsp_h264_udp() {
@@ -530,7 +532,9 @@ async fn helper_livetwo_rtsp(
     ));
 
     let mut result = None;
-    for _ in 0..100 {
+    let mut last_state = None;
+    let mut last_codecs = Vec::new();
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();
@@ -543,7 +547,9 @@ async fn helper_livetwo_rtsp(
             && !r.publish.sessions.is_empty()
         {
             let s = r.publish.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
+            last_state = Some(s.state);
+            last_codecs = r.codecs.clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected && !r.codecs.is_empty() {
                 result = Some(s);
                 break;
             }
@@ -552,7 +558,11 @@ async fn helper_livetwo_rtsp(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    assert!(result.is_some());
+    assert!(
+        result.is_some(),
+        "Publish session did not reach Connected state with codecs within {}ms: whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}",
+        CONNECTION_WAIT_ATTEMPTS * 100,
+    );
 
     // TODO: publish.state == connected is not ready
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
@@ -572,7 +582,8 @@ async fn helper_livetwo_rtsp(
     ));
 
     let mut result = None;
-    for _ in 0..100 {
+    let mut last_state = None;
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();
@@ -585,6 +596,7 @@ async fn helper_livetwo_rtsp(
             && !r.subscribe.sessions.is_empty()
         {
             let s = r.subscribe.sessions[0].clone();
+            last_state = Some(s.state);
             if s.state == api::response::RTCPeerConnectionState::Connected {
                 result = Some(s);
                 break;
@@ -594,22 +606,27 @@ async fn helper_livetwo_rtsp(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    assert!(result.is_some());
+    assert!(
+        result.is_some(),
+        "Subscribe session did not reach Connected state within {}ms: whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}",
+        CONNECTION_WAIT_ATTEMPTS * 100,
+    );
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
+    let input_url = format!(
+        "{}://{}",
+        livetwo::SCHEME_RTSP_CLIENT,
+        SocketAddr::new(ip, whep_port)
+    );
     let output = Command::new("ffprobe")
-        .args(vec![
+        .args(transport.ffprobe_args())
+        .args([
             "-v",
             "error",
             "-hide_banner",
             "-i",
-            &format!(
-                "{}://{}{}",
-                livetwo::SCHEME_RTSP_CLIENT,
-                SocketAddr::new(ip, whep_port),
-                transport.as_str()
-            ),
+            &input_url,
             "-show_streams",
             "-of",
             "json",
