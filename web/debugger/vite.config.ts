@@ -15,6 +15,9 @@ export default defineConfig({
             fileName: "index",
             formats: ["es"],
         },
+        rollupOptions: {
+            external: ["solid-js", "solid-js/web"],
+        },
         minify: true,
         outDir: "dist",
     },

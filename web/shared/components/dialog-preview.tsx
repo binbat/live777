@@ -49,6 +49,10 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     });
 
     const handleCloseDialog = () => {
+        const activeElement = document.activeElement;
+        if (activeElement instanceof HTMLElement && refDialog.current?.contains(activeElement)) {
+            activeElement.blur();
+        }
         refDialog.current?.close();
     };
 
@@ -176,7 +180,7 @@ export const PreviewDialog = forwardRef<IPreviewDialog, Props>((props, ref) => {
     };
 
     return (
-        <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]">
+        <Modal ref={refDialog} className="min-w-md max-w-[unset] w-[unset]" ariaHidden={false}>
             <Modal.Header className="mb-6">
                 <h3 className="font-bold">Preview {streamId} {videoResolution}</h3>
             </Modal.Header>
