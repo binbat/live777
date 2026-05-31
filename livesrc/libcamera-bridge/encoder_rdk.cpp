@@ -33,9 +33,10 @@ static void yuyv_to_nv12_neon(const uint8_t* yuyv, uint8_t* nv12_y, uint8_t* nv1
 
 struct Encoder::Impl : public EncoderBackend {
     media_codec_context_t* context = nullptr;
-    CameraParams params;
-    NALCallbackFFI p_callback = nullptr;
-    void* user_data = nullptr;
+    int width = 0;
+    int height = 0;
+    int fps = 0;
+    int bitrate = 0;
     long frame_count = 0;
     bool running_ = false;
 
@@ -69,10 +70,10 @@ struct Encoder::Impl : public EncoderBackend {
 // ---------------------------------------------------------------------------
 bool Encoder::Impl::init(const EncoderConfig& cfg, std::string* err) {
     (void)err;
-    params.width = static_cast<int>(cfg.width);
-    params.height = static_cast<int>(cfg.height);
-    params.fps = static_cast<int>(cfg.fps);
-    params.bitrate = static_cast<int>(cfg.bitrate);
+    width = static_cast<int>(cfg.width);
+    height = static_cast<int>(cfg.height);
+    fps = static_cast<int>(cfg.fps);
+    bitrate = static_cast<int>(cfg.bitrate);
 
     context = (media_codec_context_t*)malloc(sizeof(media_codec_context_t));
     memset(context, 0, sizeof(media_codec_context_t));
@@ -83,11 +84,11 @@ bool Encoder::Impl::init(const EncoderConfig& cfg, std::string* err) {
                                                     : MEDIA_CODEC_ID_H264;
 
     auto* v_params = &ctx->video_enc_params;
-    v_params->width = params.width;
-    v_params->height = params.height;
+    v_params->width = width;
+    v_params->height = height;
     v_params->pix_fmt = MC_PIXEL_FORMAT_NV12;
     v_params->bitstream_buf_size =
-        (params.width * params.height * 3 / 2 + 4095) & ~4095;
+        (width * height * 3 / 2 + 4095) & ~4095;
     v_params->frame_buf_count = 5;
     v_params->bitstream_buf_count = 5;
     v_params->gop_params.gop_preset_idx = 1;
@@ -97,8 +98,8 @@ bool Encoder::Impl::init(const EncoderConfig& cfg, std::string* err) {
     hb_mm_mc_get_rate_control_config(ctx, &v_params->rc_params);
     v_params->rc_params.h264_cbr_params.intra_period =
         static_cast<int>(cfg.gop);
-    v_params->rc_params.h264_cbr_params.frame_rate = params.fps;
-    v_params->rc_params.h264_cbr_params.bit_rate = params.bitrate / 1000;
+    v_params->rc_params.h264_cbr_params.frame_rate = fps;
+    v_params->rc_params.h264_cbr_params.bit_rate = bitrate / 1000;
 
     if (hb_mm_mc_initialize(ctx) != 0) return false;
     if (hb_mm_mc_configure(ctx) != 0) return false;
@@ -132,8 +133,8 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
     if (hb_mm_mc_dequeue_input_buffer(context, &input_buf, 100) == 0) {
         yuyv_to_nv12_neon(frame.planes[0].data,
                           input_buf.vframe_buf.vir_ptr[0],
-                          input_buf.vframe_buf.vir_ptr[1], params.width,
-                          params.height);
+                          input_buf.vframe_buf.vir_ptr[1], width,
+                          height);
         input_buf.vframe_buf.pts = frame.pts_us / 1000;
         hb_mm_mc_queue_input_buffer(context, &input_buf, 100);
     }
@@ -169,12 +170,6 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
             pkt.dts_us = frame.pts_us;
             pkt.flags = flags;
             encoded_cb_(pkt);
-        }
-
-        // Dispatch via legacy callback for bridge compatibility
-        if (p_callback) {
-            int is_kf = (flags & static_cast<uint32_t>(EncodedKeyframe)) ? 1 : 0;
-            p_callback(out_data, out_len, is_kf, frame.pts_us, user_data);
         }
 
         hb_mm_mc_queue_output_buffer(context, &output_buf, 100);
@@ -216,109 +211,6 @@ void Encoder::Impl::setCallback(EncodedPacketCallback cb) {
 Encoder::Encoder() : pImpl(std::make_unique<Impl>()) {}
 Encoder::~Encoder() = default;
 
-bool Encoder::init(const CameraParams& params) {
-    pImpl->params = params;
-    pImpl->context = (media_codec_context_t*)malloc(sizeof(media_codec_context_t));
-    memset(pImpl->context, 0, sizeof(media_codec_context_t));
-
-    auto* ctx = pImpl->context;
-    ctx->encoder = true;
-    ctx->codec_id = MEDIA_CODEC_ID_H264;
-
-    auto* v_params = &ctx->video_enc_params;
-    v_params->width = params.width;
-    v_params->height = params.height;
-    v_params->pix_fmt = MC_PIXEL_FORMAT_NV12;
-    v_params->bitstream_buf_size = (params.width * params.height * 3 / 2 + 4095) & ~4095;
-    v_params->frame_buf_count = 5;
-    v_params->bitstream_buf_count = 5;
-    v_params->gop_params.gop_preset_idx = 1;
-    v_params->enable_user_pts = 1;
-
-    v_params->rc_params.mode = MC_AV_RC_MODE_H264CBR;
-    hb_mm_mc_get_rate_control_config(ctx, &v_params->rc_params);
-    v_params->rc_params.h264_cbr_params.intra_period = 30;
-    v_params->rc_params.h264_cbr_params.frame_rate = params.fps;
-    v_params->rc_params.h264_cbr_params.bit_rate = params.bitrate / 1000;
-
-    if (hb_mm_mc_initialize(ctx) != 0) return false;
-    if (hb_mm_mc_configure(ctx) != 0) return false;
-
-    mc_av_codec_startup_params_t startup_params;
-    memset(&startup_params, 0, sizeof(startup_params));
-    if (hb_mm_mc_start(ctx, &startup_params) != 0) return false;
-    pImpl->running_ = true;
-    return true;
-}
-
-void Encoder::encode(const uint8_t* data, size_t size, uint64_t timestamp) {
-    if (!pImpl->context) return;
-
-    media_codec_buffer_t input_buf;
-    memset(&input_buf, 0, sizeof(media_codec_buffer_t));
-    if (hb_mm_mc_dequeue_input_buffer(pImpl->context, &input_buf, 100) == 0) {
-        yuyv_to_nv12_neon(data, input_buf.vframe_buf.vir_ptr[0], input_buf.vframe_buf.vir_ptr[1], pImpl->params.width, pImpl->params.height);
-        input_buf.vframe_buf.pts = timestamp / 1000;
-        hb_mm_mc_queue_input_buffer(pImpl->context, &input_buf, 100);
-    }
-
-    media_codec_buffer_t output_buf;
-    memset(&output_buf, 0, sizeof(media_codec_buffer_t));
-    if (hb_mm_mc_dequeue_output_buffer(pImpl->context, &output_buf, NULL, 0) == 0) {
-        uint8_t* out_data = (uint8_t*)output_buf.vstream_buf.vir_ptr;
-        uint32_t out_len = output_buf.vstream_buf.size;
-
-        // Detect keyframe / config NALs (Annex-B start code 00 00 00 01)
-        int is_kf = 0;
-        if (out_len > 5) {
-            for (uint32_t i = 0; i < out_len - 4; ++i) {
-                if (out_data[i] == 0 && out_data[i+1] == 0 && out_data[i+2] == 0 && out_data[i+3] == 1) {
-                    int nal_type = out_data[i+4] & 0x1F;
-                    if (nal_type == 5 || nal_type == 7 || nal_type == 8) {
-                        is_kf = 1;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Legacy callback
-        if (pImpl->p_callback) {
-            pImpl->p_callback(out_data, out_len, is_kf, timestamp, pImpl->user_data);
-        }
-
-        // Also dispatch via new EncoderBackend callback
-        if (pImpl->encoded_cb_) {
-            uint32_t flags = (is_kf ? static_cast<uint32_t>(EncodedKeyframe) : 0u);
-            EncodedPacket pkt{};
-            pkt.codec = VideoCodec::H264;
-            pkt.data = out_data;
-            pkt.size = out_len;
-            pkt.pts_us = timestamp;
-            pkt.dts_us = timestamp;
-            pkt.flags = flags;
-            pImpl->encoded_cb_(pkt);
-        }
-
-        hb_mm_mc_queue_output_buffer(pImpl->context, &output_buf, 100);
-
-        if (++pImpl->frame_count % 60 == 0) {
-            fprintf(stderr,
-                    "[RDK Encoder] encoded packet=%ld bytes=%zu keyframe=%d\n",
-                    pImpl->frame_count,
-                    out_len,
-                    is_kf);
-        }
-    }
-}
-
-void Encoder::encodeShared(int dma_fd, size_t size, uint64_t timestamp) {
-    (void)dma_fd;
-    (void)size;
-    (void)timestamp;
-    // DMA-BUF path not yet implemented
-}
-
 // ---------------------------------------------------------------------------
 // Factory for EncoderBackend (RDK X5)
 // ---------------------------------------------------------------------------
@@ -330,23 +222,4 @@ std::unique_ptr<EncoderBackend> Encoder::createRdkX5Backend() {
 std::unique_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg) {
     (void)cfg;
     return Encoder::createRdkX5Backend();
-}
-
-void Encoder::stop() {
-    if (pImpl->context) {
-        hb_mm_mc_stop(pImpl->context);
-    }
-}
-
-void Encoder::setNALCallback(NALCallbackFFI cb, void* user_data) {
-    pImpl->p_callback = cb;
-    pImpl->user_data = user_data;
-}
-
-void Encoder::requestKeyframe() {
-    // RDK 会根据 intra_period 自动下发
-}
-
-const char* Encoder::getError() const {
-    return "Encoder error";
 }

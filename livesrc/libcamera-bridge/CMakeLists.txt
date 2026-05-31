@@ -8,13 +8,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # These are set by liveion/build.rs via cmake_config.define().
 # They MUST NOT be inferred from TARGET or system architecture.
 
-option(ENABLE_BACKEND_PI "Enable Raspberry Pi backend" ON)
+option(ENABLE_BACKEND_PI "Enable Raspberry Pi backend" OFF)
 option(ENABLE_BACKEND_RDK_X5 "Enable RDK X5 backend" OFF)
 
-option(ENABLE_CAPTURE_LIBCAMERA "Enable libcamera capture backend" ON)
-option(ENABLE_CAPTURE_V4L2 "Enable V4L2 capture backend" ON)
+option(ENABLE_CAPTURE_LIBCAMERA "Enable libcamera capture backend" OFF)
+option(ENABLE_CAPTURE_V4L2 "Enable V4L2 capture backend" OFF)
 
-option(ENABLE_ENCODER_V4L2_M2M "Enable V4L2 M2M encoder backend" ON)
+option(ENABLE_ENCODER_V4L2_M2M "Enable V4L2 M2M encoder backend" OFF)
 option(ENABLE_ENCODER_RDK_X5 "Enable RDK X5 encoder backend" OFF)
 
 # --- Collect sources based on enabled options ---
@@ -30,16 +30,10 @@ endif()
 # the same V4L2CaptureImpl class and C ABI symbols.
 if(ENABLE_CAPTURE_V4L2)
   if(ENABLE_BACKEND_RDK_X5)
-    list(APPEND SOURCES
-      v4l2_capture_rdk.cpp
-      bridge_v4l2_rdk_ffi.cpp
-    )
+    list(APPEND SOURCES v4l2_capture_rdk.cpp)
     message(STATUS "cambridge: RDK X5 V4L2 capture enabled")
   else()
-    list(APPEND SOURCES
-      v4l2_capture.cpp
-      bridge_v4l2_ffi.cpp
-    )
+    list(APPEND SOURCES v4l2_capture.cpp)
     message(STATUS "cambridge: generic V4L2 capture enabled")
   endif()
 endif()
@@ -56,7 +50,6 @@ endif()
 
 if(ENABLE_BACKEND_PI)
     message(STATUS "cambridge: Raspberry Pi backend enabled")
-    list(APPEND SOURCES bridge_ffi.cpp)
 endif()
 
 if(ENABLE_BACKEND_RDK_X5)
