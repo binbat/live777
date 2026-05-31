@@ -13,8 +13,7 @@ use tracing::{debug, info, warn};
 /// - WebRTC DataChannel SCTP max: 1024 * 64 = 65536 bytes
 /// - RFC 8831 WebRTC DataChannel max: < 1024 * 16 = 16384 bytes
 /// - IP UDP MTU: 1500 bytes
-/// - Recommended single payload: < 1200 bytes
-const UDP_BUF_SIZE: usize = 1024;
+const UDP_BUF_SIZE: usize = 1500;
 
 /// Parse UDP URL into (listen_host, listen_port, target_host, target_port)
 pub fn parse_channel_url(url: &str) -> Option<(String, u16, String, u16)> {
