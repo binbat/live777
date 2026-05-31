@@ -18,8 +18,13 @@ use super::stream_config_v2::SourceSpec;
 #[cfg(feature = "source-rtp")]
 use super::rtp_listener::RtpListenerSource;
 
-#[cfg(feature = "source-libcamera")]
-use super::libcamera_source::LibcameraSource;
+#[cfg(any(
+    feature = "livesrc-libcamera",
+    feature = "source-libcamera",
+    feature = "livesrc-v4l2",
+    feature = "source-v4l2"
+))]
+use super::native_source::NativeSource;
 
 /// Creates a `StreamSource` from a connection URL.
 ///
@@ -47,30 +52,29 @@ pub async fn create_source_extended(
 
     // Check for Libcamera-Bridge scheme
     if url_lower.starts_with("libcamera://") {
-        #[cfg(feature = "source-libcamera")]
+        #[cfg(any(feature = "livesrc-libcamera", feature = "source-libcamera"))]
         {
-            let source = LibcameraSource::from_url(url, config)?;
+            let source = NativeSource::from_url(url, config)?;
             return Ok(Box::new(source));
         }
-        #[cfg(not(feature = "source-libcamera"))]
+        #[cfg(not(any(feature = "livesrc-libcamera", feature = "source-libcamera")))]
         {
             anyhow::bail!(
-                "Libcamera source feature not enabled. Recompile with feature 'source-libcamera'"
+                "Libcamera source feature not enabled. Recompile with feature 'livesrc-libcamera'"
             );
         }
     }
 
     // Check for V4L2 Direct Capture scheme
     if url_lower.starts_with("v4l2://") {
-        #[cfg(feature = "source-v4l2")]
+        #[cfg(any(feature = "livesrc-v4l2", feature = "source-v4l2"))]
         {
-            use super::v4l2_source::V4L2Source;
-            let source = V4L2Source::from_url(url, config)?;
+            let source = NativeSource::from_url(url, config)?;
             return Ok(Box::new(source));
         }
-        #[cfg(not(feature = "source-v4l2"))]
+        #[cfg(not(any(feature = "livesrc-v4l2", feature = "source-v4l2")))]
         {
-            anyhow::bail!("V4L2 source requires feature 'source-v4l2'");
+            anyhow::bail!("V4L2 source requires feature 'livesrc-v4l2'");
         }
     }
 
@@ -97,21 +101,20 @@ pub async fn create_source_extended(
 pub async fn create_source_from_spec(spec: &SourceSpec) -> Result<Box<dyn StreamSource>> {
     match spec.kind {
         super::stream_config_v2::SourceKind::V4l2 => {
-            #[cfg(feature = "source-v4l2")]
+            #[cfg(any(feature = "livesrc-v4l2", feature = "source-v4l2"))]
             {
-                use super::v4l2_source::V4L2Source;
-                return Ok(Box::new(V4L2Source::from_spec(spec)?));
+                return Ok(Box::new(NativeSource::from_spec(spec)?));
             }
-            #[cfg(not(feature = "source-v4l2"))]
-            anyhow::bail!("V4L2 source requires feature 'source-v4l2'");
+            #[cfg(not(any(feature = "livesrc-v4l2", feature = "source-v4l2")))]
+            anyhow::bail!("V4L2 source requires feature 'livesrc-v4l2'");
         }
         super::stream_config_v2::SourceKind::Libcamera => {
-            #[cfg(feature = "source-libcamera")]
+            #[cfg(any(feature = "livesrc-libcamera", feature = "source-libcamera"))]
             {
-                return Ok(Box::new(LibcameraSource::from_spec(spec)?));
+                return Ok(Box::new(NativeSource::from_spec(spec)?));
             }
-            #[cfg(not(feature = "source-libcamera"))]
-            anyhow::bail!("Libcamera source requires feature 'source-libcamera'");
+            #[cfg(not(any(feature = "livesrc-libcamera", feature = "source-libcamera")))]
+            anyhow::bail!("Libcamera source requires feature 'livesrc-libcamera'");
         }
         // For Rtp, Rtsp, Sdp: fall back through the extended router so
         // that rtp:// is handled before delegating to the legacy path.

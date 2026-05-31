@@ -11,28 +11,34 @@ mod sdp_source;
 pub mod h264_utils;
 pub mod legacy_url;
 pub mod lifecycle;
+#[cfg(feature = "native-source")]
 pub mod native_encoded_source;
-pub mod native_ffi;
 pub mod source_router;
 pub mod stream_config_v2;
 
-#[cfg(feature = "source-libcamera")]
-pub mod libcamera_source;
+#[cfg(any(
+    feature = "livesrc-libcamera",
+    feature = "source-libcamera",
+    feature = "livesrc-v4l2",
+    feature = "source-v4l2"
+))]
+pub mod native_source;
 #[cfg(feature = "source-rtp")]
 pub mod rtp_listener;
-#[cfg(feature = "source-v4l2")]
-pub mod v4l2_source;
 
 pub mod manager;
 
-#[cfg(feature = "source-libcamera")]
-pub use libcamera_source::LibcameraSource;
+#[cfg(any(
+    feature = "livesrc-libcamera",
+    feature = "source-libcamera",
+    feature = "livesrc-v4l2",
+    feature = "source-v4l2"
+))]
+pub use native_source::NativeSource;
 #[cfg(feature = "source-rtsp")]
 pub use rtsp_source::RtspSource;
 #[cfg(feature = "source-sdp")]
 pub use sdp_source::SdpSource;
-#[cfg(feature = "source-v4l2")]
-pub use v4l2_source::V4L2Source;
 
 pub use manager::SourceManager;
 

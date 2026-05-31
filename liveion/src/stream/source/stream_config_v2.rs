@@ -25,7 +25,7 @@
 //! pixel_format = "yuyv"
 //!
 //! [stream.sources_v2.encoder]
-//! backend = "rdk_x5"
+//! backend = "rdk"
 //! codec = "h264"
 //! bitrate = 1_500_000
 //! profile = "42001f"
@@ -48,7 +48,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::lifecycle::DaemonPolicy;
-use super::native_encoded_source::NativeSourceParams;
+#[cfg(feature = "native-source")]
+use livesrc::NativeSourceParams;
 
 // ---------------------------------------------------------------------------
 // Re-export legacy URL parsers for backward compatibility
@@ -76,7 +77,7 @@ pub enum SourceKind {
 /// Capture (input device) specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureSpec {
-    /// Capture backend: `"v4l2"` or `"libcamera"`.
+    /// Capture backend: `"libcamera"` or `"v4l2"`.
     pub backend: String,
     /// Device path, e.g. `"/dev/video0"`.
     pub device: String,
@@ -93,7 +94,8 @@ pub struct CaptureSpec {
 /// Encoder specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncoderSpec {
-    /// Encoder backend: `"v4l2_m2m"` or `"rdk_x5"`.
+    /// Encoder backend: `"v4l2-m2m"` or `"rdk"`.
+    /// Legacy values `"v4l2_m2m"` and `"rdk_x5"` are still accepted.
     pub backend: String,
     /// Video codec: `"h264"` or `"h265"`.
     pub codec: String,
@@ -273,6 +275,7 @@ impl SourceSpec {
     ///
     /// This is the direct path — no legacy URL roundtrip.
     /// Returns an error if `pixel_format` or `codec` strings are unrecognised.
+    #[cfg(feature = "native-source")]
     pub fn to_native_params(&self) -> anyhow::Result<NativeSourceParams> {
         Ok(NativeSourceParams {
             capture_backend: self.capture.backend.clone(),
@@ -288,9 +291,9 @@ impl SourceSpec {
             gop: self.encoder.gop,
             payload_type: self.output.payload_type as u32,
             clock_rate: self.output.clock_rate,
-            #[cfg(feature = "source")]
+            capture_prefer_dmabuf: self.capture.prefer_dmabuf as u8,
+            encoder_prefer_dmabuf: self.encoder.prefer_dmabuf as u8,
             codec_name: self.encoder.codec.to_uppercase(),
-            #[cfg(feature = "source")]
             default_profile: self.encoder.profile.clone(),
         })
     }
@@ -504,7 +507,7 @@ mod tests {
                 prefer_dmabuf: false,
             },
             encoder: EncoderSpec {
-                backend: "v4l2_m2m".into(),
+                backend: "v4l2-m2m".into(),
                 codec: "h264".into(),
                 bitrate: 1_500_000,
                 profile: "42001f".into(),
@@ -531,7 +534,7 @@ mod tests {
                 prefer_dmabuf: false,
             },
             encoder: EncoderSpec {
-                backend: "v4l2_m2m".into(),
+                backend: "v4l2-m2m".into(),
                 codec: "h264".into(),
                 bitrate: 1_000_000,
                 profile: "42001f".into(),
@@ -558,7 +561,7 @@ mod tests {
                 prefer_dmabuf: false,
             },
             encoder: EncoderSpec {
-                backend: "v4l2_m2m".into(),
+                backend: "v4l2-m2m".into(),
                 codec: "h264".into(),
                 bitrate: 1_000_000,
                 profile: "42001f".into(),
@@ -630,7 +633,7 @@ mod tests {
                     prefer_dmabuf: false,
                 },
                 encoder: EncoderSpec {
-                    backend: "v4l2_m2m".into(),
+                    backend: "v4l2-m2m".into(),
                     codec: "h264".into(),
                     bitrate: 1_000_000,
                     profile: "42001f".into(),
@@ -700,7 +703,7 @@ mod tests {
                 prefer_dmabuf: true,
             },
             encoder: EncoderSpec {
-                backend: "rdk_x5".into(),
+                backend: "rdk".into(),
                 codec: "h265".into(),
                 bitrate: 4_000_000,
                 profile: "42001f".into(),
@@ -720,13 +723,43 @@ mod tests {
         assert_eq!(params.height, 1080);
         assert_eq!(params.fps, 60);
         assert_eq!(params.capture_pixel_format, 1); // nv12
-        assert_eq!(params.encoder_backend, "rdk_x5");
+        assert_eq!(params.encoder_backend, "rdk");
         assert_eq!(params.codec, 101); // h265
         assert_eq!(params.bitrate, 4_000_000);
         assert_eq!(params.profile, "42001f");
         assert_eq!(params.gop, 30);
         assert_eq!(params.payload_type, 97);
         assert_eq!(params.clock_rate, 90000);
+    }
+
+    #[test]
+    fn test_to_native_params_legacy_backend_compat() {
+        // Legacy values are still accepted — they pass through unchanged.
+        // Normalization happens in C++ backend_factory.cpp.
+        let spec = SourceSpec {
+            stream_id: "cam1".into(),
+            kind: SourceKind::V4l2,
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: "/dev/video0".into(),
+                width: 640,
+                height: 480,
+                fps: 30,
+                pixel_format: "yuyv".into(),
+                prefer_dmabuf: false,
+            },
+            encoder: EncoderSpec {
+                backend: "rdk_x5".into(),
+                codec: "h264".into(),
+                bitrate: 1_000_000,
+                profile: "42001f".into(),
+                gop: 60,
+                prefer_dmabuf: false,
+            },
+            output: OutputSpec::default(),
+        };
+        let params = spec.to_native_params().unwrap();
+        assert_eq!(params.encoder_backend, "rdk_x5"); // legacy value passed through
     }
 
     #[test]
@@ -744,7 +777,7 @@ mod tests {
                 prefer_dmabuf: false,
             },
             encoder: EncoderSpec {
-                backend: "v4l2_m2m".into(),
+                backend: "v4l2-m2m".into(),
                 codec: "h264".into(),
                 bitrate: 1_000_000,
                 profile: "42001f".into(),
@@ -772,7 +805,7 @@ mod tests {
                 prefer_dmabuf: false,
             },
             encoder: EncoderSpec {
-                backend: "v4l2_m2m".into(),
+                backend: "v4l2-m2m".into(),
                 codec: "h266".into(),
                 bitrate: 1_000_000,
                 profile: "42001f".into(),
