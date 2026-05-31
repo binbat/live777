@@ -1,6 +1,6 @@
 [package]
 name = "livesrc"
-description = "Lightweight camera source with WHEP streaming for edge devices"
+description = "Native capture / encoder backend for liveion"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,31 +9,24 @@ repository.workspace = true
 [lib]
 crate-type = ["lib"]
 
-[[bin]]
-name = "livesrc"
-path = "src/bin/livesrc.rs"
-
 [dependencies]
-cli = { path = "../libs/cli" }
-
 anyhow = { workspace = true }
-axum = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-serde = { workspace = true, features = ["serde_derive"] }
-tokio = { workspace = true, features = ["full"] }
-tower-http = { workspace = true, features = ["trace", "cors"] }
-tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-webrtc = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
-toml = "0.9"
-reqwest = { workspace = true }
-rand = "0.8"  # For RTP SSRC/sequence generation
-
-# V4L2 support (optional)
-v4l = { version = "0.14", optional = true }
-bytes = "1"
+[build-dependencies]
+cmake = "0.1"
+pkg-config = "0.3"
 
 [features]
 default = []
-v4l2 = ["dep:v4l"]
+
+# --- capture backends (C++ libcamera-bridge) ---
+capture-libcamera = []
+capture-v4l2 = []
+
+# --- encoder backends (C++ libcamera-bridge) ---
+encoder-v4l2-m2m = []
+encoder-rdk = []
+
+# future
+# encoded-source-waybeam-venc = []

@@ -150,8 +150,24 @@ recorder = ["liveion/recorder", "liveman/recorder"]
 source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
 source-rtp = ["liveion/source-rtp"]
+source-all = ["liveion/source-all"]
+
+# --- livesrc / liveenc semantic features ---
+livesrc-libcamera = ["liveion/livesrc-libcamera"]
+livesrc-v4l2 = ["liveion/livesrc-v4l2"]
+liveenc-v4l2-m2m = ["liveion/liveenc-v4l2-m2m"]
+liveenc-rdk = ["liveion/liveenc-rdk"]
+
+# (future) livesrc-encoded-source = ["liveion/livesrc-encoded-source"]
+
+# Platform presets (recommended for users)
+# native-rpi: Pi CSI (libcamera) + Pi USB (V4L2), both with V4L2 M2M encoder
+native-rpi = ["liveion/native-rpi"]
+native-generic-v4l2 = ["liveion/native-generic-v4l2"]
+native-rdk = ["liveion/native-rdk"]
+
+# --- deprecated aliases (1:1, will be removed) ---
 source-libcamera = ["liveion/source-libcamera"]
 source-v4l2 = ["liveion/source-v4l2"]
-source-all = ["liveion/source-all"]
 backend-rdk-x5 = ["liveion/backend-rdk-x5"]
 encoder-rdk-x5 = ["liveion/encoder-rdk-x5"]

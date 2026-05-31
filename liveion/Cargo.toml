@@ -18,6 +18,7 @@ libwish = { path = "../libs/libwish" }
 storage = { path = "../libs/storage", optional = true }
 rtsp = { path = "../libs/rtsp", optional = true }
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
+livesrc = { path = "../livesrc", optional = true }
 
 axum = { workspace = true, features = ["multipart", "tracing"] }
 axum-extra = { workspace = true, features = ["query"] }
@@ -81,13 +82,32 @@ source = ["dep:rtsp", "dep:url"]
 source-sdp = ["source"]
 source-rtsp = ["source"]
 source-rtp = ["source"]
-source-libcamera = ["source"]
-source-v4l2 = ["source"]
-source-all = ["source-sdp", "source-rtsp", "source-rtp", "source-libcamera", "source-v4l2"]
 
-# --- backend/platform features ---
-backend-rdk-x5 = []
-encoder-rdk-x5 = ["backend-rdk-x5"]
+native-source = ["dep:livesrc"]
+
+# --- native source / encoder features ---
+# Each enables native-source (→ livesrc crate) + the corresponding
+# livesrc capture-* / encoder-* feature.
+livesrc-libcamera = ["source", "native-source", "livesrc/capture-libcamera"]
+livesrc-v4l2 = ["source", "native-source", "livesrc/capture-v4l2"]
+liveenc-v4l2-m2m = ["native-source", "livesrc/encoder-v4l2-m2m"]
+liveenc-rdk = ["native-source", "livesrc/encoder-rdk"]
+
+# (future) livesrc-encoded-source = ["native-source", "livesrc/encoded-source-waybeam-venc"]
+
+# Platform presets (recommended for users)
+# native-rpi: 同时编译 libcamera 和 V4L2 source。
+#   Pi CSI 摄像头走 capture-libcamera，Pi USB 摄像头走 capture-v4l2。
+native-rpi = ["livesrc-libcamera", "livesrc-v4l2", "liveenc-v4l2-m2m"]
+native-generic-v4l2 = ["livesrc-v4l2", "liveenc-v4l2-m2m"]
+native-rdk = ["livesrc-v4l2", "liveenc-rdk"]
+
+# --- deprecated aliases (1:1, will be removed) ---
+source-libcamera = ["livesrc-libcamera"]
+source-v4l2 = ["livesrc-v4l2"]
+backend-rdk-x5 = ["liveenc-rdk"]
+encoder-rdk-x5 = ["liveenc-rdk"]
+source-all = ["source-sdp", "source-rtsp", "source-rtp", "source-libcamera", "source-v4l2"]
 
 [dev-dependencies]
 tempfile = "3.26"

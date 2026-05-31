@@ -1,8 +1,11 @@
-//! Rust FFI bindings for the pure-C source_pipeline_* API.
+//! Crate-private FFI bindings for the pure-C source_pipeline_* API.
 //!
-//! Mirrors `livesrc/libcamera-bridge/include/source_pipeline_ffi.h`.
+//! Mirrors `libcamera-bridge/include/source_pipeline_ffi.h`.
 //! All structs are `#[repr(C)]` and use only C ABI-safe types.
 //! C `bool` is mapped to Rust `u8` (0 = false, non-0 = true).
+//!
+//! This module is **not** public — livesrc exposes only `NativePipeline`,
+//! `NativeSourceParams`, and `EncodedPacket`.
 
 use std::os::raw::{c_char, c_void};
 
@@ -11,31 +14,31 @@ use std::os::raw::{c_char, c_void};
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
-pub struct CaptureConfigFFI {
-    pub backend: *const c_char,  // "libcamera" or "v4l2"
-    pub device: *const c_char,   // "/dev/video0" or camera_id
+pub(crate) struct CaptureConfigFFI {
+    pub backend: *const c_char,
+    pub device: *const c_char,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    pub pixel_format: u32,       // RawPixelFormat enum value
+    pub pixel_format: u32,
     pub prefer_dmabuf: u8,
 }
 
 #[repr(C)]
-pub struct EncoderConfigFFI {
-    pub backend: *const c_char,  // "v4l2_m2m" or "rdk_x5"
-    pub codec: u32,              // VideoCodec enum value
+pub(crate) struct EncoderConfigFFI {
+    pub backend: *const c_char,
+    pub codec: u32,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
     pub bitrate: u32,
-    pub profile: *const c_char,  // "42001f"
+    pub profile: *const c_char,
     pub gop: u32,
     pub prefer_dmabuf: u8,
 }
 
 #[repr(C)]
-pub struct SourcePipelineConfigFFI {
+pub(crate) struct SourcePipelineConfigFFI {
     pub capture: CaptureConfigFFI,
     pub encoder: EncoderConfigFFI,
     pub payload_type: u32,
@@ -43,28 +46,28 @@ pub struct SourcePipelineConfigFFI {
 }
 
 // ---------------------------------------------------------------------------
-// EncodedPacketFFI — the only data crossing to Rust
+// EncodedPacketFFI — the only data crossing from C++ to Rust
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
-pub struct EncodedPacketFFI {
-    pub codec: u32,          // VideoCodec enum value
+pub(crate) struct EncodedPacketFFI {
+    pub codec: u32,
     pub data: *const u8,     // valid only during callback
     pub size: usize,
     pub pts_us: u64,
     pub dts_us: u64,
-    pub flags: u32,          // EncodedFlags bitmask
+    pub flags: u32,
 }
 
 // ---------------------------------------------------------------------------
 // Callback and hooks
 // ---------------------------------------------------------------------------
 
-pub type EncodedPacketCallbackFFI =
+pub(crate) type EncodedPacketCallbackFFI =
     unsafe extern "C" fn(packet: *const EncodedPacketFFI, user_data: *mut c_void);
 
 #[repr(C)]
-pub struct SourcePipelineHooksFFI {
+pub(crate) struct SourcePipelineHooksFFI {
     pub on_packet: Option<EncodedPacketCallbackFFI>,
     pub user_data: *mut c_void,
 }
@@ -74,7 +77,7 @@ pub struct SourcePipelineHooksFFI {
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
-pub struct SourcePipelineHandle {
+pub(crate) struct SourcePipelineHandle {
     _private: [u8; 0],
 }
 
