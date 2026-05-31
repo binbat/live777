@@ -1,11 +1,11 @@
-/// Benchmark: DataChannel <-> UDP forwarding throughput and latency.
-///
-/// Usage:
-///   cargo test --features source --release --test channel_bench -- --nocapture
-///
-/// Custom params (env vars):
-///   BENCH_PACKET_SIZE=1400  BENCH_PACKET_COUNT=5000  cargo test ...
-///   BENCH_LATENCY_ROUNDS=500                           cargo test ...
+//! Benchmark: DataChannel <-> UDP forwarding throughput and latency.
+//!
+//! Usage:
+//!   cargo test --features source --release --test channel_bench -- --nocapture
+//!
+//! Custom params (env vars):
+//!   BENCH_PACKET_SIZE=1400  BENCH_PACKET_COUNT=5000  cargo test ...
+//!   BENCH_LATENCY_ROUNDS=500                           cargo test ...
 
 #[cfg(feature = "source")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -256,7 +256,7 @@ async fn bench_datachannel_throughput() {
     let stream_id = "bench-dc-tp";
     let (pkt_size, pkt_count, warmup) = bench_params();
     // Window sized to keep ~64KB in-flight (safe for default UDP buffers)
-    let window = (65536 / pkt_size.max(1)).min(128).max(1);
+    let window = (65536 / pkt_size.max(1)).clamp(1, 128);
 
     println!("\n══════════════════════════════════════════════");
     println!("  DataChannel UDP Throughput Benchmark");
@@ -438,7 +438,7 @@ async fn bench_datachannel_latency() {
 async fn bench_datachannel_bidirectional() {
     let stream_id = "bench-dc-bidi";
     let (pkt_size, pkt_count, warmup) = bench_params();
-    let window = (65536 / pkt_size.max(1)).min(128).max(1);
+    let window = (65536 / pkt_size.max(1)).clamp(1, 128);
 
     println!("\n══════════════════════════════════════════════");
     println!("  DataChannel UDP Bidirectional Benchmark");
