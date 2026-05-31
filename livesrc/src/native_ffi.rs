@@ -95,6 +95,7 @@ unsafe extern "C" {
 
     pub fn source_pipeline_start(h: *mut SourcePipelineHandle) -> bool;
     pub fn source_pipeline_stop(h: *mut SourcePipelineHandle);
+    #[allow(dead_code)]
     pub fn source_pipeline_is_running(h: *mut SourcePipelineHandle) -> bool;
     pub fn source_pipeline_request_keyframe(h: *mut SourcePipelineHandle);
     pub fn source_pipeline_free(h: *mut SourcePipelineHandle);

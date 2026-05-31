@@ -1,91 +1,23 @@
-//! NativeEncodedSource — shared Rust consumer of the C++ SourcePipeline FFI.
-//!
-//! Both `LibcameraSource` and `V4L2Source` are thin wrappers around this type.
-//! The only difference is the `NativeSourceParams` they provide.
+//! NativeEncodedSource — consumes `livesrc::NativePipeline` and bridges
+//! encoded packets into the liveion RTP / WHEP infrastructure.
 //!
 //! Data flow:
-//!   C++ SourcePipeline → EncodedPacketFFI callback → copy → Annex-B parse →
-//!   SPS profile detect → H264 packetize → RTP broadcast
+//!   C++ SourcePipeline → livesrc FFI → EncodedPacket channel →
+//!   Annex-B parse → SPS profile detect → H264 packetize → RTP broadcast
 //!
-//! The `EncodedPacketFFI.data` pointer is valid only within the FFI callback.
-//! Data is immediately copied into a `Vec<u8>` before any processing.
+//! livesrc handles all C++ FFI — this module only sees `EncodedPacket`
+//! through an mpsc channel.
 
 use super::h264_utils::{AnnexBParser, H264Packetizer, NalType, parse_profile_level_id};
-use super::native_ffi::*;
 use super::{MediaPacket, StateChangeEvent, StreamSourceState};
 use anyhow::Result;
-use std::ffi::{c_char, CString};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::info;
 
 const CHANNEL_VIDEO_RTP: u8 = 0;
-const ERR_BUF_LEN: usize = 256;
-
-// ---------------------------------------------------------------------------
-// Shared pipeline handle — safe to clone across tokio tasks
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct SharedPipelineHandle {
-    inner: Arc<Mutex<Option<*mut SourcePipelineHandle>>>,
-}
-
-unsafe impl Send for SharedPipelineHandle {}
-unsafe impl Sync for SharedPipelineHandle {}
-
-impl SharedPipelineHandle {
-    fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(None)) }
-    }
-
-    fn set(&self, h: *mut SourcePipelineHandle) {
-        *self.inner.lock().unwrap() = Some(h);
-    }
-
-    fn take(&self) -> Option<*mut SourcePipelineHandle> {
-        self.inner.lock().unwrap().take()
-    }
-
-    fn is_some(&self) -> bool {
-        self.inner.lock().unwrap().is_some()
-    }
-
-    /// Call source_pipeline_request_keyframe while holding the lock so
-    /// that cleanup_pipeline() cannot free the handle concurrently.
-    fn request_keyframe(&self) {
-        let guard = self.inner.lock().unwrap();
-        if let Some(h) = *guard {
-            unsafe { source_pipeline_request_keyframe(h); }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Parameters
-// ---------------------------------------------------------------------------
-
-pub struct NativeSourceParams {
-    pub capture_backend: String,
-    pub capture_device: String,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u32,
-    pub capture_pixel_format: u32,
-    pub encoder_backend: String,
-    pub codec: u32,
-    pub bitrate: u32,
-    pub profile: String,
-    pub gop: u32,
-    pub payload_type: u32,
-    pub clock_rate: u32,
-    #[cfg(feature = "source")]
-    pub codec_name: String,
-    #[cfg(feature = "source")]
-    pub default_profile: String,
-}
 
 // ---------------------------------------------------------------------------
 // NativeEncodedSource
@@ -93,14 +25,13 @@ pub struct NativeSourceParams {
 
 pub struct NativeEncodedSource {
     stream_id: String,
-    params: NativeSourceParams,
+    params: livesrc::NativeSourceParams,
     state: Arc<RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     shutdown_tx: Option<broadcast::Sender<()>>,
-    handle: SharedPipelineHandle,
-    _cstrs: Option<Vec<CString>>,
-    callback_ctx: Option<*mut CallbackCtx>,
+    pipeline: Option<livesrc::NativePipeline>,
+    keyframe_handle: Option<livesrc::KeyframeHandle>,
     #[cfg(feature = "source")]
     dynamic_profile: Arc<RwLock<Option<String>>>,
 }
@@ -108,121 +39,8 @@ pub struct NativeEncodedSource {
 unsafe impl Send for NativeEncodedSource {}
 unsafe impl Sync for NativeEncodedSource {}
 
-// ---------------------------------------------------------------------------
-// FFI callback context — state that persists across callbacks
-// ---------------------------------------------------------------------------
-
-struct CallbackCtx {
-    rtp_tx: broadcast::Sender<MediaPacket>,
-    payload_type: u8,
-    clock_rate: u32,
-    start_instant: Instant,
-    parser: Mutex<AnnexBParser>,
-    packetizer: Mutex<H264Packetizer>,
-    /// Last RTP timestamp emitted.  Used to compute deltas so each encoded
-    /// packet gets a monotonic timestamp that does not regress.
-    last_rtp_ts: Mutex<Option<u32>>,
-    #[cfg(feature = "source")]
-    dynamic_profile: Arc<RwLock<Option<String>>>,
-}
-
-// ---------------------------------------------------------------------------
-// FFI callback — invoked from C++ encoder thread
-// ---------------------------------------------------------------------------
-
-unsafe extern "C" fn on_encoded_packet(
-    pkt: *const EncodedPacketFFI,
-    user_data: *mut std::ffi::c_void,
-) {
-    if pkt.is_null() || user_data.is_null() {
-        return;
-    }
-
-    let pkt = unsafe { &*pkt };
-
-    // Copy immediately — pkt.data is invalid after return
-    let data = if pkt.size > 0 && !pkt.data.is_null() {
-        unsafe { std::slice::from_raw_parts(pkt.data, pkt.size) }.to_vec()
-    } else {
-        return;
-    };
-
-    // Debug: log every 60 encoded packets received from C++
-    static DBG_COUNT: AtomicU64 = AtomicU64::new(0);
-    let n = DBG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if n % 60 == 0 {
-        tracing::info!(
-            "[NativeEncodedSource] encoded packet received  bytes={}  count={}",
-            data.len(),
-            n
-        );
-    }
-
-    let pts_us = pkt.pts_us;
-    let ctx = unsafe { &*(user_data as *const CallbackCtx) };
-
-    // FFI us → RTP 90kHz
-    let rtp_ts = if pts_us > 0 {
-        (pts_us * 9 / 100) as u32
-    } else {
-        (ctx.start_instant.elapsed().as_micros() * 9 / 100) as u32
-    };
-
-    // Delta across callbacks: monotonic, no backward steps.
-    // Stores the effective timestamp so the next callback sees a
-    // monotonically-increasing baseline.
-    let delta = {
-        let mut last = ctx.last_rtp_ts.lock().unwrap();
-        let (effective_ts, d) = match *last {
-            Some(prev) if rtp_ts > prev => (rtp_ts, rtp_ts - prev),
-            Some(prev) => {
-                let next = prev.wrapping_add(3000);
-                (next, 3000)
-            }
-            None => (rtp_ts, 0),
-        };
-        *last = Some(effective_ts);
-        d
-    };
-
-    // Parse Annex-B
-    let nals = {
-        let mut parser = ctx.parser.lock().unwrap();
-        parser.push(&data);
-        parser.extract_nals()
-    };
-
-    // Packetize: advance once per encoded packet, then packetize all NALs
-    let mut packetizer = ctx.packetizer.lock().unwrap();
-    packetizer.advance_timestamp(delta);
-
-    for nal in &nals {
-        #[cfg(feature = "source")]
-        if nal.nal_type == NalType::Sps {
-            if let Some(profile) = parse_profile_level_id(&nal.data) {
-                let mut guard = ctx.dynamic_profile.blocking_write();
-                if guard.as_ref() != Some(&profile) {
-                    *guard = Some(profile);
-                }
-            }
-        }
-
-        let rtp_packets = packetizer.packetize(nal);
-        for packet in rtp_packets {
-            let _ = ctx.rtp_tx.send(MediaPacket::Rtp {
-                channel: CHANNEL_VIDEO_RTP,
-                data: packet.to_bytes(),
-            });
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// impl NativeEncodedSource
-// ---------------------------------------------------------------------------
-
 impl NativeEncodedSource {
-    pub fn new(stream_id: String, params: NativeSourceParams) -> Self {
+    pub fn new(stream_id: String, params: livesrc::NativeSourceParams) -> Self {
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
 
@@ -233,9 +51,8 @@ impl NativeEncodedSource {
             rtp_tx,
             state_tx,
             shutdown_tx: None,
-            handle: SharedPipelineHandle::new(),
-            _cstrs: None,
-            callback_ctx: None,
+            pipeline: None,
+            keyframe_handle: None,
             #[cfg(feature = "source")]
             dynamic_profile: Arc::new(RwLock::new(None)),
         }
@@ -261,47 +78,6 @@ impl NativeEncodedSource {
         }
     }
 
-    fn build_ffi_config(params: &NativeSourceParams) -> (SourcePipelineConfigFFI, Vec<CString>) {
-        let mut cstrs = Vec::new();
-
-        let cap_backend = CString::new(params.capture_backend.as_str()).unwrap();
-        let cap_device = CString::new(params.capture_device.as_str()).unwrap();
-        let enc_backend = CString::new(params.encoder_backend.as_str()).unwrap();
-        let profile = CString::new(params.profile.as_str()).unwrap();
-
-        let cfg = SourcePipelineConfigFFI {
-            capture: CaptureConfigFFI {
-                backend: cap_backend.as_ptr(),
-                device: cap_device.as_ptr(),
-                width: params.width,
-                height: params.height,
-                fps: params.fps,
-                pixel_format: params.capture_pixel_format,
-                prefer_dmabuf: 0,
-            },
-            encoder: EncoderConfigFFI {
-                backend: enc_backend.as_ptr(),
-                codec: params.codec,
-                width: params.width,
-                height: params.height,
-                fps: params.fps,
-                bitrate: params.bitrate,
-                profile: profile.as_ptr(),
-                gop: params.gop,
-                prefer_dmabuf: 0,
-            },
-            payload_type: params.payload_type,
-            clock_rate: params.clock_rate,
-        };
-
-        cstrs.push(cap_backend);
-        cstrs.push(cap_device);
-        cstrs.push(enc_backend);
-        cstrs.push(profile);
-
-        (cfg, cstrs)
-    }
-
     pub fn stream_id(&self) -> &str {
         &self.stream_id
     }
@@ -319,72 +95,99 @@ impl NativeEncodedSource {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        if self.handle.is_some() {
+        if self.pipeline.is_some() {
             anyhow::bail!("Already started");
         }
 
-        let (shutdown_tx, _shutdown_rx) = broadcast::channel(1);
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         self.shutdown_tx = Some(shutdown_tx);
 
-        // Scope all FFI raw-pointer locals so they are dropped before the
-        // first .await — otherwise the future is !Send and async_trait
-        // callers (e.g. tokio::spawn) will reject it.
-        {
-            let (ffi_cfg, cstrs) = Self::build_ffi_config(&self.params);
-            // CStrings must outlive source_pipeline_create (C++ copies the
-            // strings into internal std::string configs during the call).
-            let _keep_cstrs = cstrs;
+        let mut pipeline = livesrc::NativePipeline::new(&self.params)?;
+        let keyframe_handle = pipeline.keyframe_handle();
+        let mut rx = pipeline.start()?;
 
-            let ctx = Box::new(CallbackCtx {
-                rtp_tx: self.rtp_tx.clone(),
-                payload_type: self.params.payload_type as u8,
-                clock_rate: self.params.clock_rate,
-                start_instant: Instant::now(),
-                parser: Mutex::new(AnnexBParser::new()),
-                packetizer: Mutex::new(H264Packetizer::new(
-                    1400,
-                    self.params.payload_type as u8,
-                    self.params.clock_rate,
-                )),
-                last_rtp_ts: Mutex::new(None),
-                #[cfg(feature = "source")]
-                dynamic_profile: self.dynamic_profile.clone(),
-            });
-            let ctx_ptr = Box::into_raw(ctx);
-            let user_data = ctx_ptr as *mut std::ffi::c_void;
+        // Spawn processing task: EncodedPacket → Annex-B → H264 → RTP
+        let rtp_tx = self.rtp_tx.clone();
+        let payload_type = self.params.payload_type as u8;
+        let clock_rate = self.params.clock_rate;
+        #[cfg(feature = "source")]
+        let dynamic_profile = self.dynamic_profile.clone();
 
-            let hooks = SourcePipelineHooksFFI {
-                on_packet: Some(on_encoded_packet),
-                user_data,
-            };
+        tokio::spawn(async move {
+            let mut parser = AnnexBParser::new();
+            let mut packetizer =
+                H264Packetizer::new(1400, payload_type, clock_rate);
+            let mut last_rtp_ts: Option<u32> = None;
+            let start_instant = Instant::now();
 
-            let mut errbuf: [c_char; ERR_BUF_LEN] = [0; ERR_BUF_LEN];
+            static DBG_COUNT: AtomicU64 = AtomicU64::new(0);
 
-            let raw_handle = unsafe {
-                source_pipeline_create(
-                    &ffi_cfg as *const _,
-                    &hooks as *const _,
-                    errbuf.as_mut_ptr(),
-                    ERR_BUF_LEN,
-                )
-            };
+            loop {
+                tokio::select! {
+                    pkt = rx.recv() => {
+                        let Some(pkt) = pkt else { break };
 
-            if raw_handle.is_null() {
-                unsafe { drop(Box::from_raw(ctx_ptr)); }
-                let err_str = unsafe { std::ffi::CStr::from_ptr(errbuf.as_ptr()) }
-                    .to_string_lossy()
-                    .into_owned();
-                anyhow::bail!("source_pipeline_create failed: {}", err_str);
+                        let n = DBG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n % 60 == 0 {
+                            tracing::info!(
+                                "[NativeEncodedSource] packet bytes={} count={}",
+                                pkt.data.len(), n
+                            );
+                        }
+
+                        // RTP 90 kHz timestamp
+                        let rtp_ts = if pkt.pts_us > 0 {
+                            (pkt.pts_us * 9 / 100) as u32
+                        } else {
+                            (start_instant.elapsed().as_micros() * 9 / 100) as u32
+                        };
+
+                        let delta = {
+                            let (effective_ts, d) = match last_rtp_ts {
+                                Some(prev) if rtp_ts > prev => (rtp_ts, rtp_ts - prev),
+                                Some(prev) => (prev.wrapping_add(3000), 3000),
+                                None => (rtp_ts, 0),
+                            };
+                            last_rtp_ts = Some(effective_ts);
+                            d
+                        };
+
+                        let nals = {
+                            parser.push(&pkt.data);
+                            parser.extract_nals()
+                        };
+
+                        packetizer.advance_timestamp(delta);
+
+                        for nal in &nals {
+                            #[cfg(feature = "source")]
+                            if nal.nal_type == NalType::Sps {
+                                if let Some(profile) = parse_profile_level_id(&nal.data) {
+                                    let mut guard = dynamic_profile.write().await;
+                                    if guard.as_ref() != Some(&profile) {
+                                        *guard = Some(profile);
+                                    }
+                                }
+                            }
+
+                            let rtp_packets = packetizer.packetize(nal);
+                            for packet in rtp_packets {
+                                let _ = rtp_tx.send(MediaPacket::Rtp {
+                                    channel: CHANNEL_VIDEO_RTP,
+                                    data: packet.to_bytes(),
+                                });
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
             }
+        });
 
-            self.handle.set(raw_handle);
-            self.callback_ctx = Some(ctx_ptr);
-
-            if !unsafe { source_pipeline_start(raw_handle) } {
-                self.cleanup_pipeline();
-                anyhow::bail!("source_pipeline_start failed");
-            }
-        } // ffi_cfg, hooks, user_data, cstrs, errbuf all dropped here
+        self.pipeline = Some(pipeline);
+        self.keyframe_handle = Some(keyframe_handle);
 
         self.set_state(StreamSourceState::Connected, None).await;
         Ok(())
@@ -394,26 +197,9 @@ impl NativeEncodedSource {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-        self.cleanup_pipeline();
+        self.pipeline = None; // Drop → stops and frees C++ resources
+        self.keyframe_handle = None;
         self.set_state(StreamSourceState::Disconnected, None).await;
-    }
-
-    /// 1. Take the raw handle out of the shared Arc → RTCP tasks see None.
-    /// 2. Stop + free SourcePipeline (no more callbacks).
-    /// 3. Free CallbackCtx.
-    fn cleanup_pipeline(&mut self) {
-        let raw_handle = self.handle.take();
-
-        if let Some(h) = raw_handle {
-            unsafe {
-                source_pipeline_stop(h);
-                source_pipeline_free(h);
-            }
-        }
-
-        if let Some(ctx_ptr) = self.callback_ctx.take() {
-            unsafe { drop(Box::from_raw(ctx_ptr as *mut CallbackCtx)); }
-        }
     }
 
     #[cfg(feature = "source")]
@@ -460,7 +246,7 @@ impl NativeEncodedSource {
 
     #[cfg(feature = "source")]
     pub async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
-        let handle = self.handle.clone();
+        let kh = self.keyframe_handle.clone()?;
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         tokio::spawn(async move {
             while let Some(data) = rx.recv().await {
@@ -471,18 +257,12 @@ impl NativeEncodedSource {
                             .downcast_ref::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
                             .is_some()
                         {
-                            handle.request_keyframe();
+                            kh.request_keyframe();
                         }
                     }
                 }
             }
         });
         Some(tx)
-    }
-}
-
-impl Drop for NativeEncodedSource {
-    fn drop(&mut self) {
-        self.cleanup_pipeline();
     }
 }
