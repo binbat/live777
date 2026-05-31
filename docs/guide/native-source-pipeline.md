@@ -5,37 +5,45 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Rust (liveion)                                          │
-│                                                         │
-│  LibcameraSource / V4L2Source  (thin wrappers)          │
-│         │                                               │
-│         ▼                                               │
-│  NativeEncodedSource  (shared impl)                     │
-│         │                                               │
-│         ▼  pure-C FFI                                   │
-│  SourcePipeline FFI  (source_pipeline_ffi.h)            │
-│         │                                               │
-│         ▼                                               │
-│  C++ (libcamera-bridge / cambridge)                     │
-│                                                         │
-│  SourcePipeline                                         │
-│    ├─ CaptureBackend  →  RawFrame  (C++ internal)       │
-│    └─ EncoderBackend  →  EncodedPacket                  │
-│                              │                          │
-│                              ▼  FFI callback            │
-│  on_encoded_packet()  ← EncodedPacketFFI                │
-│         │                                               │
-│         ▼  data copied immediately                      │
-│  Annex-B parse → SPS profile detect                     │
-│  → H264 packetize (RFC 6184) → RTP broadcast            │
-│                                                         │
-│  RTCP PLI → request_keyframe() → FFI → C++ encoder      │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ liveion (RTP / WHEP / source manager)                    │
+│                                                          │
+│  NativeSource  (unified thin wrapper)                    │
+│         │                                                │
+│         ▼                                                │
+│  NativeEncodedSource                                     │
+│    Annex-B parse → SPS profile detect                    │
+│    → H264 packetize (RFC 6184) → RTP broadcast           │
+│         │                                                │
+│  RTCP PLI → request_keyframe()                           │
+│         │                                                │
+│─────────│─ optional dep boundary ────────────────────────│
+│         ▼                                                │
+│ livesrc (native backend crate)                           │
+│                                                          │
+│  NativePipeline  (safe Rust wrapper)                     │
+│         │                                                │
+│         ▼  crate-private FFI                             │
+│  native_ffi.rs  →  source_pipeline_ffi.h                 │
+│         │                                                │
+│         ▼                                                │
+│ C++ (libcamera-bridge / cambridge)                       │
+│                                                          │
+│  SourcePipeline                                          │
+│    ├─ CaptureBackend  →  RawFrame  (C++ internal)        │
+│    └─ EncoderBackend  →  EncodedPacket                   │
+│                              │                           │
+│                              ▼  FFI callback             │
+│  on_encoded_packet()  ← EncodedPacketFFI                 │
+│         │                                                │
+│         ▼  data copied immediately → mpsc channel        │
+│  EncodedPacket → liveion NativeEncodedSource             │
+└──────────────────────────────────────────────────────────┘
 ```
 
 - **RawFrame** is C++-internal and never crosses the FFI boundary.
-- **EncodedPacket** crosses FFI via a pure-C callback; Rust copies data immediately.
+- **EncodedPacket** crosses FFI via a pure-C callback inside `livesrc`; data is copied immediately and sent through an mpsc channel to `liveion`.
+- All FFI details are crate-private in `livesrc`; `liveion` only sees `EncodedPacket` through the channel.
 - **DMA-BUF** fds do not cross FFI; the zero-copy path (WIP) stays within C++.
 
 ## Config paths
@@ -70,7 +78,7 @@ fps = 30
 pixel_format = "yuv420"
 
 [stream.sources_v2.encoder]
-backend = "v4l2_m2m"
+backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
 profile = "42001f"
@@ -83,6 +91,15 @@ clock_rate = 90000
 
 This path maps directly to `NativeEncodedSource` — no legacy URL roundtrip.
 `pixel_format` and `codec` values are validated at startup (unknown values error early).
+
+### Backend naming
+
+| Layer | Canonical value | Legacy aliases (still accepted) |
+|-------|----------------|-------------------------------|
+| `capture.backend` | `"v4l2"`, `"libcamera"` | `"rdk-x5"`, `"rdk_x5"` → `"v4l2"` |
+| `encoder.backend` | `"v4l2-m2m"`, `"rdk"` | `"v4l2_m2m"` → `"v4l2-m2m"`, `"rdk_x5"` → `"rdk"` |
+
+Legacy values are normalized in the C++ `backend_factory.cpp` dispatcher.
 
 ### pixel_format values
 
@@ -104,6 +121,50 @@ This path maps directly to `NativeEncodedSource` — no legacy URL roundtrip.
 | `vp8` | Vp8 | 103 |
 | `vp9` | Vp9 | 104 |
 
+## Feature flags
+
+The feature system is split into image-source (`livesrc-*`) and encoder (`liveenc-*`) layers:
+
+| Cargo feature | Enables |
+|---|---|
+| `livesrc-libcamera` | libcamera capture backend |
+| `livesrc-v4l2` | V4L2 capture backend |
+| `liveenc-v4l2-m2m` | V4L2 M2M hardware encoder |
+| `liveenc-rdk` | RDK X5 hardware encoder |
+| `webui` | Embedded web frontend |
+
+Platform presets (convenience combinations):
+
+| Preset | Expands to |
+|--------|-----------|
+| `native-rpi` | `livesrc-libcamera, livesrc-v4l2, liveenc-v4l2-m2m` |
+| `native-generic-v4l2` | `livesrc-v4l2, liveenc-v4l2-m2m` |
+| `native-rdk` | `livesrc-v4l2, liveenc-rdk` |
+
+Deprecated aliases are **capture/encoder-only** (1:1 mapping).  They do **not**
+include a corresponding encoder.  Using `source-v4l2` alone will compile the
+capture backend but no encoder — the pipeline will fail at runtime when
+`create_encoder_backend()` finds no matching backend.
+
+Always use a **preset** for a runnable pipeline:
+
+```bash
+# Wrong — capture only, no encoder compiled
+cargo build --features source-v4l2
+
+# Correct — preset includes both capture and encoder
+cargo build --features native-generic-v4l2
+```
+
+Deprecated aliases (1:1 mapping, will be removed):
+
+| Deprecated | Use instead |
+|-----------|-------------|
+| `source-libcamera` | `livesrc-libcamera` |
+| `source-v4l2` | `livesrc-v4l2` |
+| `backend-rdk-x5` | `liveenc-rdk` |
+| `encoder-rdk-x5` | `liveenc-rdk` |
+
 ## Build
 
 ### Prerequisites
@@ -112,23 +173,13 @@ This path maps directly to `NativeEncodedSource` — no legacy URL roundtrip.
 - A C++17 compiler (gcc or clang)
 - Platform SDK as needed (libcamera, RDK sysroot)
 
-### Feature flags
-
-| Cargo feature | Enables |
-|---|---|
-| `source-libcamera` | libcamera capture (Pi) |
-| `source-v4l2` | V4L2 direct capture |
-| `backend-rdk-x5` | RDK X5 platform paths |
-| `encoder-rdk-x5` | RDK X5 hardware encoder (implies `backend-rdk-x5`) |
-| `webui` | Embedded web frontend |
-
 ### Raspberry Pi (libcamera)
 
 ```bash
 LIVE777_NATIVE_BACKEND=rpi \
 cargo build --bin live777 --release \
   --target armv7-unknown-linux-gnueabihf \
-  --features source-libcamera,webui
+  --features native-rpi,webui
 ```
 
 Requires the Pi sysroot with libcamera-dev. Set `PI_SYSROOT` if the sysroot
@@ -139,10 +190,10 @@ is not at the default path.
 ```bash
 LIVE777_NATIVE_BACKEND=generic-v4l2 \
 cargo build --bin live777 --release \
-  --features source-v4l2,webui
+  --features native-generic-v4l2,webui
 ```
 
-`LIVE777_NATIVE_BACKEND` is **required** when building with only `source-v4l2`.
+`LIVE777_NATIVE_BACKEND` is **required** when building with only `livesrc-v4l2`.
 The build will panic at configure time if it is not set.
 
 ### RDK X5
@@ -150,7 +201,7 @@ The build will panic at configure time if it is not set.
 ```bash
 LIVE777_NATIVE_BACKEND=rdk-x5 \
 cargo build --bin live777 --release \
-  --features source-v4l2,backend-rdk-x5,encoder-rdk-x5,webui
+  --features native-rdk,webui
 ```
 
 Requires the RDK sysroot with `hb_media_codec` libraries.
@@ -165,44 +216,37 @@ CMake native builds are skipped when no native source features are active:
 
 ```bash
 cargo check --no-default-features
-cargo check -p liveion --features source
+cargo check --features native-rpi
 ```
 
-> **Caution:** Do not enable `source-libcamera` or `source-v4l2` on macOS
+> **Caution:** Do not enable `livesrc-*` or `liveenc-*` features on macOS
 > unless the native C++ dependencies (libcamera, V4L2 headers, CMake) are
-> installed.  Those features invoke CMake and will fail on a stock macOS
+> installed. Those features invoke CMake and will fail on a stock macOS
 > system.
 
 ## Backend selection (build-time)
 
 The build system **never** infers the backend from `TARGET`.  Selection is
 explicit, via Cargo features and the `LIVE777_NATIVE_BACKEND` environment
-variable:
+variable.  CMake options are driven by feature flags, not hardcoded per
+platform:
 
-| `LIVE777_NATIVE_BACKEND` | CMake defines (ON) |
-|---|---|
-| `rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
-| `rdk-x5` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
-| `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` | 
+| Feature | CMake define |
+|---------|-------------|
+| `livesrc-libcamera` | `ENABLE_CAPTURE_LIBCAMERA` |
+| `livesrc-v4l2` | `ENABLE_CAPTURE_V4L2` |
+| `liveenc-v4l2-m2m` | `ENABLE_ENCODER_V4L2_M2M` |
+| `liveenc-rdk` | `ENABLE_ENCODER_RDK_X5` |
 
-When no native source feature is enabled (`source-libcamera`, `source-v4l2`,
-`backend-rdk-x5`), CMake is skipped entirely.
+`LIVE777_NATIVE_BACKEND` only selects sysroot paths and platform-specific
+link libraries (`rpi`, `rdk-x5`, `generic-v4l2`).
 
-## Commit series (for reviewers)
+When no `livesrc-*` feature is enabled, CMake is skipped entirely.
+Encoder-only features (`liveenc-*` without `livesrc-*`) do **not** trigger a
+CMake build — the SourcePipeline requires a capture backend.
 
-| PR | Title | Summary |
-|----|-------|---------|
-| PR1A | Feature & build gate cleanup | Decoupled `source-v4l2` from `source-libcamera`; explicit `LIVE777_NATIVE_BACKEND`; no more `aarch64` inference |
-| PR1B | Structured source config | `SourceSpec` / `CaptureSpec` / `EncoderSpec` / `OutputSpec` with serde; legacy URL fallback |
-| PR2 | CaptureBackend abstraction | `RawFrame` + `CaptureBackend` (pure C++); libcamera and V4L2 backends |
-| PR3 | EncoderBackend abstraction | `EncodedPacket` + `EncoderBackend` (pure C++); V4L2 M2M and RDK X5 backends |
-| PR4A | C++ SourcePipeline FFI | Pure-C ABI (`source_pipeline_ffi.h`); `SourcePipeline` class connecting capture → encode |
-| PR4B | Rust NativeEncodedSource | FFI bindings + shared Annex-B parse / H264 packetize / RTCP PLI impl |
-| PR5 | Structured config direct path | `sources_v2` → `create_source_from_spec()` bypasses legacy URL for native sources |
-| PR6 | Docs & config cleanup | Updated `conf/live777.toml`, this document |
+## What was NOT removed
 
-### What was NOT removed
-
-- Old `bridge_ffi.cpp` / `bridge_v4l2_ffi.cpp` / `bridge_v4l2_rdk_ffi.cpp` — kept for compatibility.
 - `legacy_url.rs` and its `parse_libcamera_url()` / `parse_v4l2_url()` / `parse_rtp_url()` — still used by Path A configs.
 - Legacy `libcamera://` and `v4l2://` URL support — fully functional.
+- Old bridge files and legacy C ABI wrappers removed in PR6A/6B cleanup.
