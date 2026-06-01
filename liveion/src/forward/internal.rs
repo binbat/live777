@@ -16,7 +16,6 @@ use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
 use crate::result::Result;
 use crate::{metrics, new_broadcast_channel};
-use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::configuration::interceptor_registry::{
     configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers,
     configure_twcc_receiver_only, configure_twcc_sender_only,
@@ -26,7 +25,6 @@ use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
 use webrtc::data_channel::DataChannel;
-use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 use webrtc::media_stream::track_remote::TrackRemote;
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -74,6 +72,13 @@ fn ensure_video_rtcp_feedback(codec: &mut RTCRtpCodec) {
             codec.rtcp_feedback.push(feedback);
         }
     }
+}
+
+fn format_codec_for_log(codec: &RTCRtpCodec) -> String {
+    format!(
+        "{}/{}/channels={}/fmtp={}",
+        codec.mime_type, codec.clock_rate, codec.channels, codec.sdp_fmtp_line
+    )
 }
 
 fn ice_udp_addrs() -> Vec<SocketAddr> {
@@ -1311,33 +1316,14 @@ impl PeerForwardInternal {
                 .map_err(|e| anyhow::anyhow!("Failed to get sender: {}", e))?
                 .ok_or_else(|| anyhow::anyhow!("No sender found"))?;
 
-            // Create a replacement track with the SAME SSRC as the encoding.
-            // add_transceiver_from_kind already created a track, but we replace it
-            // to ensure the track object is under our control for future replace_track calls.
-            let media_track = MediaStreamTrack::new(
-                "webrtc".to_string(),
-                format!("{}-{}", "webrtc", kind),
-                "webrtc".to_string(),
-                kind,
-                vec![RTCRtpEncodingParameters {
-                    rtp_coding_parameters: RTCRtpCodingParameters {
-                        ssrc: Some(ssrc),
-                        ..Default::default()
-                    },
-                    codec,
-                    ..Default::default()
-                }],
-            );
-            let track = Arc::new(TrackLocalStaticRTP::new(media_track));
-
-            let _ = sender.replace_track(track).await;
-
             let params = sender
                 .get_parameters()
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get parameters: {}", e))?;
+            let sender_track = sender.track();
+            let track_codec = sender_track.codec(ssrc).await;
             info!(
-                "[{}] new sender , kind : {}, ssrc : {}",
+                "[{}] new sender, kind={}, ssrc={}, requested_codec={}, track_codec={}",
                 get_peer_id(peer),
                 kind,
                 params
@@ -1345,6 +1331,11 @@ impl PeerForwardInternal {
                     .first()
                     .map(|e| e.rtp_coding_parameters.ssrc.unwrap_or(0))
                     .unwrap_or(0),
+                format_codec_for_log(&codec),
+                track_codec
+                    .as_ref()
+                    .map(format_codec_for_log)
+                    .unwrap_or_else(|| "<none>".to_string()),
             );
 
             Some(sender)

@@ -36,8 +36,10 @@ const TRACK_BIND_RETRY_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct BoundPublishTrack {
     recv: broadcast::Receiver<ForwardData>,
-    track: Arc<TrackLocalStaticRTP>,
+    track: Arc<dyn TrackLocal>,
     payload_type: Option<PayloadType>,
+    source_codec: RTCRtpCodec,
+    selected_codec: RTCRtpCodec,
 }
 
 struct SubscribeForwardChannel {
@@ -164,61 +166,100 @@ impl SubscribeRTCPeerConnection {
             };
 
             let (codec, payload_type) =
-                Self::select_sender_codec(stream, id, kind, sender, publisher_codec).await;
+                Self::select_sender_codec(stream, id, kind, sender, publisher_codec.clone()).await;
 
-            let new_track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
-                "webrtc".to_string(),
-                format!("{}-{}", "webrtc", kind),
-                "webrtc".to_string(),
-                kind,
-                vec![RTCRtpEncodingParameters {
-                    rtp_coding_parameters: RTCRtpCodingParameters {
-                        ssrc: Some(sender_ssrc),
+            let sender_track = sender.track();
+            let sender_track_codec = sender_track.codec(sender_ssrc).await;
+            let track: Arc<dyn TrackLocal> = if sender_track_codec.as_ref().is_some_and(
+                |sender_track_codec| Self::rtp_codecs_match(sender_track_codec, &codec),
+            ) {
+                info!(
+                    "[{}] [{}] {} subscribe reusing bound sender track: sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                    stream,
+                    id,
+                    kind,
+                    Self::format_codec(sender_track_codec.as_ref().expect("checked above")),
+                    Self::format_codec(&codec),
+                    payload_type,
+                    sender_ssrc,
+                );
+                sender_track
+            } else {
+                let new_track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
+                    "webrtc".to_string(),
+                    format!("{}-{}", "webrtc", kind),
+                    "webrtc".to_string(),
+                    kind,
+                    vec![RTCRtpEncodingParameters {
+                        rtp_coding_parameters: RTCRtpCodingParameters {
+                            ssrc: Some(sender_ssrc),
+                            ..Default::default()
+                        },
+                        codec: codec.clone(),
                         ..Default::default()
-                    },
-                    codec,
-                    ..Default::default()
-                }],
-            )));
+                    }],
+                )));
 
-            match sender
-                .replace_track(
-                    new_track.clone() as Arc<dyn webrtc::media_stream::track_local::TrackLocal>
-                )
-                .await
-            {
-                Ok(_) => {
-                    debug!("[{}] [{}] {} track replace ok", stream, id, kind);
-                    let new_recv = publish_track.subscribe();
-
-                    let ssrc = match publish_track {
-                        PublishTrackRemote::Real { track, .. } => {
-                            let ssrcs = track.ssrcs().await;
-                            ssrcs.first().copied().unwrap_or(0)
-                        }
-                        #[cfg(feature = "source")]
-                        PublishTrackRemote::Virtual(v) => v.ssrc(),
-                    };
-
-                    let _ = forward_channel
-                        .publish_rtcp_sender
-                        .send((RtcpMessage::PictureLossIndication, ssrc));
-
-                    track_binding_publish_rid
-                        .insert(kind.to_string(), publish_track.rid().to_string());
-                    return Some(BoundPublishTrack {
-                        recv: new_recv,
-                        track: new_track,
-                        payload_type,
-                    });
-                }
-                Err(e) => {
+                if let Err(e) = sender.replace_track(new_track.clone()).await {
                     debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
+                    break;
                 }
-            }
-            break;
+
+                info!(
+                    "[{}] [{}] {} subscribe replaced sender track: previous_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                    stream,
+                    id,
+                    kind,
+                    sender_track_codec
+                        .as_ref()
+                        .map(Self::format_codec)
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    Self::format_codec(&codec),
+                    payload_type,
+                    sender_ssrc,
+                );
+                new_track
+            };
+
+            let new_recv = publish_track.subscribe();
+
+            let ssrc = match publish_track {
+                PublishTrackRemote::Real { track, .. } => {
+                    let ssrcs = track.ssrcs().await;
+                    ssrcs.first().copied().unwrap_or(0)
+                }
+                #[cfg(feature = "source")]
+                PublishTrackRemote::Virtual(v) => v.ssrc(),
+            };
+
+            let _ = forward_channel
+                .publish_rtcp_sender
+                .send((RtcpMessage::PictureLossIndication, ssrc));
+
+            track_binding_publish_rid.insert(kind.to_string(), publish_track.rid().to_string());
+            return Some(BoundPublishTrack {
+                recv: new_recv,
+                track,
+                payload_type,
+                source_codec: publisher_codec,
+                selected_codec: codec,
+            });
         }
         None
+    }
+
+    fn format_codec(codec: &RTCRtpCodec) -> String {
+        format!(
+            "{}/{}/channels={}/fmtp={}",
+            codec.mime_type, codec.clock_rate, codec.channels, codec.sdp_fmtp_line
+        )
+    }
+
+    fn rtp_codecs_match(left: &RTCRtpCodec, right: &RTCRtpCodec) -> bool {
+        left.mime_type.eq_ignore_ascii_case(&right.mime_type)
+            && left.clock_rate == right.clock_rate
+            && left.channels == right.channels
+            && left.sdp_fmtp_line == right.sdp_fmtp_line
     }
 
     async fn select_sender_codec(
@@ -374,6 +415,8 @@ impl SubscribeRTCPeerConnection {
         let mut track = None;
         let mut first_packet = true;
         let mut transient_write_error_since = None;
+        let mut source_codec = None;
+        let mut selected_codec = None;
 
         // Check for existing publish tracks immediately at startup,
         // so we don't depend on a potentially-missed publish_track_change event.
@@ -395,6 +438,8 @@ impl SubscribeRTCPeerConnection {
             recv = bound.recv;
             track = Some(bound.track);
             payload_type = bound.payload_type;
+            source_codec = Some(bound.source_codec);
+            selected_codec = Some(bound.selected_codec);
             transient_write_error_since = None;
         }
 
@@ -417,6 +462,8 @@ impl SubscribeRTCPeerConnection {
                             recv = virtual_sender.subscribe();
                             track = None;
                             payload_type = None;
+                            source_codec = None;
+                            selected_codec = None;
                             pre_rid = None;
 
                             if current_rid.is_some() && current_rid.cloned().unwrap() != constant::RID_DISABLE {
@@ -441,6 +488,8 @@ impl SubscribeRTCPeerConnection {
                         recv = bound.recv;
                         track = Some(bound.track);
                         payload_type = bound.payload_type;
+                        source_codec = Some(bound.source_codec);
+                        selected_codec = Some(bound.selected_codec);
                         transient_write_error_since = None;
                     }
                 }
@@ -453,6 +502,7 @@ impl SubscribeRTCPeerConnection {
                                 Some(ref track) => {
                                     let mut packet = packet.as_ref().clone();
                                     let source_ssrc = packet.header.ssrc;
+                                    let input_payload_type = packet.header.payload_type;
                                     // Rewrite SSRC to match the sender's SSRC.
                                     // The rtc-layer write_rtp validates that packet.ssrc
                                     // is in sender.track().ssrcs(), so it must match.
@@ -460,6 +510,7 @@ impl SubscribeRTCPeerConnection {
                                     if let Some(payload_type) = payload_type {
                                         packet.header.payload_type = payload_type;
                                     }
+                                    let outgoing_payload_type = packet.header.payload_type;
                                     // Header extension ids are negotiated per PeerConnection.
                                     // Publisher-side MID/RID/TWCC extension ids may not match
                                     // the WHEP subscriber's extmap, while the subscriber already
@@ -486,12 +537,24 @@ impl SubscribeRTCPeerConnection {
                                             }
                                             if elapsed >= TRACK_BIND_RETRY_TIMEOUT {
                                                 warn!(
-                                                    "[{}] [{}] {} track write still not ready after {}ms, state={}: {}",
+                                                    "[{}] [{}] {} track write still not ready after {}ms, state={}, source_codec={}, selected_codec={}, payload_type={:?}, input_payload_type={}, outgoing_payload_type={}, ssrc={}: {}",
                                                     stream,
                                                     id,
                                                     kind,
                                                     elapsed.as_millis(),
                                                     state,
+                                                    source_codec
+                                                        .as_ref()
+                                                        .map(Self::format_codec)
+                                                        .unwrap_or_else(|| "<none>".to_string()),
+                                                    selected_codec
+                                                        .as_ref()
+                                                        .map(Self::format_codec)
+                                                        .unwrap_or_else(|| "<none>".to_string()),
+                                                    payload_type,
+                                                    input_payload_type,
+                                                    outgoing_payload_type,
+                                                    sender_ssrc,
                                                     err
                                                 );
                                                 break;
@@ -513,7 +576,23 @@ impl SubscribeRTCPeerConnection {
                                     }
                                     transient_write_error_since = None;
                                     if first_packet {
-                                        info!("[{}] [{}] {} first RTP packet written successfully", stream, id, kind);
+                                        info!(
+                                            "[{}] [{}] {} first RTP packet written successfully: source_codec={}, selected_codec={}, payload_type={:?}, outgoing_payload_type={}, ssrc={}",
+                                            stream,
+                                            id,
+                                            kind,
+                                            source_codec
+                                                .as_ref()
+                                                .map(Self::format_codec)
+                                                .unwrap_or_else(|| "<none>".to_string()),
+                                            selected_codec
+                                                .as_ref()
+                                                .map(Self::format_codec)
+                                                .unwrap_or_else(|| "<none>".to_string()),
+                                            payload_type,
+                                            outgoing_payload_type,
+                                            sender_ssrc,
+                                        );
                                         if kind == RtpCodecKind::Video {
                                             let _ = forward_channel
                                                 .publish_rtcp_sender
@@ -609,7 +688,7 @@ impl SubscribeRTCPeerConnection {
                                         PublishTrackRemote::Virtual(v) => v.codec_params.rtp_codec.clone(),
                                     };
                                     let (codec, new_payload_type) =
-                                        Self::select_sender_codec(&stream, &id, kind, &sender, publisher_codec).await;
+                                        Self::select_sender_codec(&stream, &id, kind, &sender, publisher_codec.clone()).await;
                                     let new_track = Arc::new(TrackLocalStaticRTP::new(
                                         MediaStreamTrack::new(
                                             "webrtc".to_string(),
@@ -621,7 +700,7 @@ impl SubscribeRTCPeerConnection {
                                                     ssrc: Some(sender_ssrc),
                                                     ..Default::default()
                                                 },
-                                                codec,
+                                                codec: codec.clone(),
                                                 ..Default::default()
                                             }],
                                         ),
@@ -633,6 +712,8 @@ impl SubscribeRTCPeerConnection {
                                             recv = publish_track.subscribe();
                                             track = Some(new_track);
                                             payload_type = new_payload_type;
+                                            source_codec = Some(publisher_codec);
+                                            selected_codec = Some(codec);
                                             transient_write_error_since = None;
 
                                             let ssrc = match publish_track {
@@ -688,6 +769,29 @@ mod tests {
     fn track_not_binding_yet_is_a_transient_track_write_error() {
         assert!(SubscribeRTCPeerConnection::is_transient_track_write_error(
             &"track is not binding yet"
+        ));
+    }
+
+    #[test]
+    fn g722_codec_match_ignores_case_and_compares_clock_rate() {
+        let track_codec = RTCRtpCodec {
+            mime_type: "audio/G722".to_string(),
+            clock_rate: 8000,
+            channels: 0,
+            sdp_fmtp_line: "".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "audio/g722".to_string(),
+            clock_rate: 8000,
+            channels: 0,
+            sdp_fmtp_line: "".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(SubscribeRTCPeerConnection::rtp_codecs_match(
+            &track_codec,
+            &selected_codec
         ));
     }
 }
