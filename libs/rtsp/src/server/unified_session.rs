@@ -375,7 +375,12 @@ impl RtspServerSession {
         let sdp = sdp_types::Session::parse(sdp_bytes)
             .map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
 
-        parse_codecs_from_sdp(&sdp)
+        let codecs = parse_codecs_from_sdp(&sdp)?;
+        info!(
+            "RTSP parsed codecs: video={:?}, audio={:?}",
+            codecs.0, codecs.1
+        );
+        Ok(codecs)
     }
 
     async fn send_response(&mut self, response: &Response<Vec<u8>>) -> Result<()> {

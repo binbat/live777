@@ -1,3 +1,5 @@
+use rtc::rtp::packet::Packet;
+use rtc_shared::marshal::Unmarshal;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -61,12 +63,18 @@ impl TcpHandler {
 
         tokio::spawn(async move {
             info!("TCP input to WebRTC forwarder started");
+            let mut first_video_rtp = true;
+            let mut first_audio_rtp = true;
 
             while let Some((channel, data)) = rx.recv().await {
                 trace!("Received data on channel {}: {} bytes", channel, data.len());
 
                 if Some(channel) == video_rtp_channel {
                     if let Some(ref sender) = video_sender {
+                        if first_video_rtp {
+                            log_first_rtp_packet("video", channel, &data);
+                            first_video_rtp = false;
+                        }
                         trace!("Forwarding video RTP to WebRTC");
                         if let Err(e) = sender.send(data) {
                             error!("Failed to forward video RTP: {}", e);
@@ -78,6 +86,10 @@ impl TcpHandler {
                     Self::forward_rtcp_to_webrtc(&data, &peer).await;
                 } else if Some(channel) == audio_rtp_channel {
                     if let Some(ref sender) = audio_sender {
+                        if first_audio_rtp {
+                            log_first_rtp_packet("audio", channel, &data);
+                            first_audio_rtp = false;
+                        }
                         trace!("Forwarding audio RTP to WebRTC");
                         if let Err(e) = sender.send(data) {
                             error!("Failed to forward audio RTP: {}", e);
@@ -178,5 +190,26 @@ impl TcpHandler {
                 warn!("Failed to parse RTCP: {}", e);
             }
         }
+    }
+}
+
+fn log_first_rtp_packet(kind: &str, channel: u8, data: &[u8]) {
+    let mut cursor = data;
+    match Packet::unmarshal(&mut cursor) {
+        Ok(packet) => info!(
+            "First RTSP TCP {kind} RTP packet received: channel={}, payload_type={}, sequence_number={}, timestamp={}, ssrc={}, payload_len={}",
+            channel,
+            packet.header.payload_type,
+            packet.header.sequence_number,
+            packet.header.timestamp,
+            packet.header.ssrc,
+            packet.payload.len()
+        ),
+        Err(error) => warn!(
+            "First RTSP TCP {kind} RTP packet on channel {} failed to parse: {} bytes, error={}",
+            channel,
+            data.len(),
+            error
+        ),
     }
 }

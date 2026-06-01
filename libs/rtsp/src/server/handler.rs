@@ -77,6 +77,10 @@ impl Handler {
         if let Ok(sdp_str) = std::str::from_utf8(&sdp_content) {
             debug!("Received SDP:\n{}", sdp_str);
         }
+        info!(
+            "RTSP ANNOUNCE SDP media summary: {}",
+            summarize_sdp_media(&sdp_content)
+        );
         self.sdp_content = Some(sdp_content);
 
         let session_id = self.get_or_create_session().await;
@@ -264,4 +268,37 @@ impl Handler {
             self.cseq = cseq_header.as_str().parse().unwrap_or(0);
         }
     }
+}
+
+fn summarize_sdp_media(sdp: &[u8]) -> String {
+    let Ok(session) = sdp_types::Session::parse(sdp) else {
+        return "<failed to parse SDP>".to_string();
+    };
+
+    session
+        .medias
+        .iter()
+        .map(|media| {
+            let formats = media.fmt.clone();
+            let attrs = media
+                .attributes
+                .iter()
+                .filter_map(|attr| match attr.attribute.as_str() {
+                    "rtpmap" | "fmtp" | "control" => Some(format!(
+                        "a={}:{}",
+                        attr.attribute,
+                        attr.value.as_deref().unwrap_or("")
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            format!(
+                "m={} {} {} {} [{}]",
+                media.media, media.port, media.proto, formats, attrs
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
