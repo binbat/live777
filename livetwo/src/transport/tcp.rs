@@ -65,6 +65,9 @@ impl TcpHandler {
             info!("TCP input to WebRTC forwarder started");
             let mut first_video_rtp = true;
             let mut first_audio_rtp = true;
+            let mut video_pkt_count: u64 = 0;
+            let mut audio_pkt_count: u64 = 0;
+            let mut last_error: Option<String> = None;
 
             while let Some((channel, data)) = rx.recv().await {
                 trace!("Received data on channel {}: {} bytes", channel, data.len());
@@ -77,9 +80,11 @@ impl TcpHandler {
                         }
                         trace!("Forwarding video RTP to WebRTC");
                         if let Err(e) = sender.send(data) {
+                            last_error = Some(format!("video RTP send: {e}"));
                             error!("Failed to forward video RTP: {}", e);
                             break;
                         }
+                        video_pkt_count += 1;
                     }
                 } else if Some(channel) == video_rtcp_channel {
                     trace!("Processing video RTCP from input");
@@ -92,9 +97,11 @@ impl TcpHandler {
                         }
                         trace!("Forwarding audio RTP to WebRTC");
                         if let Err(e) = sender.send(data) {
+                            last_error = Some(format!("audio RTP send: {e}"));
                             error!("Failed to forward audio RTP: {}", e);
                             break;
                         }
+                        audio_pkt_count += 1;
                     }
                 } else if Some(channel) == audio_rtcp_channel {
                     trace!("Processing audio RTCP from input");
@@ -102,7 +109,16 @@ impl TcpHandler {
                 }
             }
 
-            warn!("TCP input to WebRTC forwarder stopped");
+            warn!(
+                video_rtp_ch = ?video_rtp_channel,
+                video_rtcp_ch = ?video_rtcp_channel,
+                audio_rtp_ch = ?audio_rtp_channel,
+                audio_rtcp_ch = ?audio_rtcp_channel,
+                video_pkts = video_pkt_count,
+                audio_pkts = audio_pkt_count,
+                last_error = ?last_error,
+                "TCP input to WebRTC forwarder stopped (sender dropped or error)"
+            );
         });
     }
 
