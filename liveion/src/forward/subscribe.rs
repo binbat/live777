@@ -6,7 +6,8 @@ use chrono::Utc;
 use rtc::media_stream::MediaStreamTrack;
 use rtc::rtp_transceiver::PayloadType;
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
+    RtpCodecKind,
 };
 use tokio::sync::{RwLock, broadcast};
 use tokio::time::{Duration, Instant, sleep};
@@ -277,21 +278,18 @@ impl SubscribeRTCPeerConnection {
             return (publisher_codec, None);
         }
 
-        let matched = params
-            .rtp_parameters
-            .codecs
-            .iter()
-            .find(|c| {
-                c.rtp_codec.mime_type.to_lowercase() == publisher_codec.mime_type.to_lowercase()
-            })
-            .cloned();
+        let matched =
+            Self::select_compatible_codec(kind, &publisher_codec, &params.rtp_parameters.codecs);
 
         let selected = match matched {
             Some(c) => c,
             None => {
-                debug!(
-                    "[{}] [{}] {} publisher codec {} not in send_codecs, using first available",
-                    stream, id, kind, publisher_codec.mime_type
+                warn!(
+                    "[{}] [{}] {} publisher codec {} not exactly in send_codecs, falling back to first media codec",
+                    stream,
+                    id,
+                    kind,
+                    Self::format_codec(&publisher_codec)
                 );
                 params
                     .rtp_parameters
@@ -326,6 +324,42 @@ impl SubscribeRTCPeerConnection {
         }
 
         (selected.rtp_codec, Some(selected.payload_type))
+    }
+
+    fn select_compatible_codec(
+        kind: RtpCodecKind,
+        publisher_codec: &RTCRtpCodec,
+        codecs: &[RTCRtpCodecParameters],
+    ) -> Option<RTCRtpCodecParameters> {
+        codecs
+            .iter()
+            .find(|candidate| Self::rtp_codecs_match(&candidate.rtp_codec, publisher_codec))
+            .cloned()
+            .or_else(|| {
+                codecs
+                    .iter()
+                    .find(|candidate| {
+                        candidate
+                            .rtp_codec
+                            .mime_type
+                            .eq_ignore_ascii_case(&publisher_codec.mime_type)
+                            && candidate.rtp_codec.clock_rate == publisher_codec.clock_rate
+                    })
+                    .cloned()
+            })
+            .or_else(|| {
+                codecs
+                    .iter()
+                    .find(|candidate| {
+                        let mime = candidate.rtp_codec.mime_type.to_lowercase();
+                        match kind {
+                            RtpCodecKind::Video => mime.starts_with("video/"),
+                            RtpCodecKind::Audio => mime.starts_with("audio/"),
+                            _ => false,
+                        }
+                    })
+                    .cloned()
+            })
     }
 
     fn is_transient_track_write_error(err: &impl Display) -> bool {
@@ -793,5 +827,43 @@ mod tests {
             &track_codec,
             &selected_codec
         ));
+    }
+
+    #[test]
+    fn h264_codec_selection_prefers_matching_fmtp_over_first_h264() {
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/H264".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
+                .to_string(),
+            rtcp_feedback: vec![],
+        };
+        let high_profile = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/H264".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640032"
+                        .to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 123,
+        };
+        let baseline_profile = RTCRtpCodecParameters {
+            rtp_codec: source_codec.clone(),
+            payload_type: 102,
+        };
+
+        let selected = SubscribeRTCPeerConnection::select_compatible_codec(
+            RtpCodecKind::Video,
+            &source_codec,
+            &[high_profile, baseline_profile],
+        )
+        .expect("matching H264 codec should be selected");
+
+        assert_eq!(selected.payload_type, 102);
+        assert_eq!(selected.rtp_codec.sdp_fmtp_line, source_codec.sdp_fmtp_line);
     }
 }
