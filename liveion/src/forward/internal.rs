@@ -546,7 +546,7 @@ mod rtcp_egress_probe {
             // Log probe activity every 300th poll_write call
             if cnt % 300 == 1 {
                 let snap = self.counters.snapshot();
-                tracing::info!(
+                tracing::debug!(
                     "[{}] [rtcp-egress-probe] poll_write_calls={} non_empty={} rtp={} twcc={} rr={} sr={} pli={} fir={} nack={} remb={} other={}",
                     self.stream,
                     snap.poll_write_calls,
@@ -594,7 +594,7 @@ mod rtcp_egress_probe {
                 .rtp_header_extensions
                 .iter()
                 .any(|e| e.uri.contains("transport-wide-cc"));
-            tracing::info!(
+            tracing::debug!(
                 "[{}] [rtcp-egress-probe] bind_remote_stream ssrc={} pt={} mime={} twcc_ext={} ext_count={}",
                 self.stream,
                 info.ssrc,
@@ -606,7 +606,7 @@ mod rtcp_egress_probe {
             self.inner.bind_remote_stream(info);
         }
         fn unbind_remote_stream(&mut self, info: &StreamInfo) {
-            tracing::info!(
+            tracing::debug!(
                 "[{}] [rtcp-egress-probe] unbind_remote_stream ssrc={}",
                 self.stream,
                 info.ssrc,
