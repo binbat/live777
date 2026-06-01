@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Once,
+};
 
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -28,6 +31,48 @@ struct Detect {
 }
 
 const CONNECTION_WAIT_ATTEMPTS: usize = 300;
+const WEBRTC_ICE_UDP_ADDRS: &str = "127.0.0.1:0";
+
+static TRACING_INIT: Once = Once::new();
+
+fn init_rtsp_test_environment() {
+    TRACING_INIT.call_once(|| {
+        // These tests run both WebRTC peers locally. Pin ICE candidates to
+        // loopback so CI runners cannot choose an unroutable host interface.
+        unsafe {
+            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", WEBRTC_ICE_UDP_ADDRS);
+        }
+
+        let filter = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .try_init();
+    });
+}
+
+#[test]
+fn rtsp_test_environment_pins_webrtc_ice_to_loopback() {
+    init_rtsp_test_environment();
+
+    assert_eq!(
+        std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDRS").as_deref(),
+        Ok(WEBRTC_ICE_UDP_ADDRS)
+    );
+    assert_eq!(
+        livetwo::utils::webrtc::ice_udp_addrs(),
+        vec![WEBRTC_ICE_UDP_ADDRS.parse::<SocketAddr>().unwrap()]
+    );
+}
+
+fn rtsp_ice_candidate_override_hint(text: &str) -> &'static str {
+    if text.contains("a=candidate:") && (text.contains(" 0.0.0.0 ") || text.contains(" :: ")) {
+        " RTSP test ICE candidate override did not apply: SDP candidate contains an unspecified address; expected LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0 before PeerConnection creation."
+    } else {
+        ""
+    }
+}
 
 async fn pick_tcp_port(ip: IpAddr) -> u16 {
     let listener = TcpListener::bind(SocketAddr::new(ip, 0))
@@ -502,6 +547,8 @@ async fn helper_livetwo_rtsp(
     detect: Detect,
     transport: Transport,
 ) {
+    init_rtsp_test_environment();
+
     let whip_port = if whip_port == 0 {
         pick_tcp_port(ip).await
     } else {
@@ -578,8 +625,10 @@ async fn helper_livetwo_rtsp(
 
         if handle_whip.is_finished() {
             let result_whip = handle_whip.await.unwrap();
+            let result_whip_debug = format!("{result_whip:?}");
+            let ice_hint = rtsp_ice_candidate_override_hint(&result_whip_debug);
             panic!(
-                "WHIP task exited before publish connected: result={result_whip:?}, whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}"
+                "WHIP task exited before publish connected: result={result_whip_debug}, whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}.{ice_hint}"
             );
         }
 
