@@ -969,21 +969,27 @@ impl PeerForwardInternal {
     }
 
     pub(crate) async fn publisher_codec(&self, kind: RtpCodecKind) -> Option<RTCRtpCodec> {
-        let publish_tracks = self.publish_tracks.read().await;
-        for t in publish_tracks.iter() {
-            if t.kind() == kind {
-                return Some(match t {
-                    PublishTrackRemote::Real { track, .. } => {
-                        let ssrcs = track.ssrcs().await;
-                        let first_ssrc = ssrcs.first().copied().unwrap_or(0);
-                        track.codec(first_ssrc).await.unwrap_or_default()
-                    }
-                    #[cfg(feature = "source")]
-                    PublishTrackRemote::Virtual(v) => v.codec_params.rtp_codec.clone(),
-                });
+        {
+            let publish_tracks = self.publish_tracks.read().await;
+            for t in publish_tracks.iter() {
+                if t.kind() == kind {
+                    return Some(match t {
+                        PublishTrackRemote::Real { track, .. } => {
+                            let ssrcs = track.ssrcs().await;
+                            let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+                            track.codec(first_ssrc).await.unwrap_or_default()
+                        }
+                        #[cfg(feature = "source")]
+                        PublishTrackRemote::Virtual(v) => v.codec_params.rtp_codec.clone(),
+                    });
+                }
             }
         }
-        None
+
+        let publish = self.publish.read().await;
+        publish
+            .as_ref()
+            .and_then(|publish| publish.media_info.codec_for_kind(kind))
     }
 
     pub(crate) async fn new_publish_peer(
