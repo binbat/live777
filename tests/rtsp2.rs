@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Once;
 use std::time::Duration;
 
 use tokio::net::TcpListener;
@@ -27,6 +28,59 @@ use common::shutdown_signal;
 //
 // - whep from rtsp server
 // - ffprobe
+
+const WEBRTC_ICE_UDP_ADDRS: &str = "127.0.0.1:0";
+
+static TRACING_INIT: Once = Once::new();
+
+fn init_rtsp2_test_environment() {
+    TRACING_INIT.call_once(|| {
+        // These tests run both WebRTC peers locally. Pin ICE candidates to
+        // loopback so CI runners cannot choose an unroutable host interface.
+        unsafe {
+            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", WEBRTC_ICE_UDP_ADDRS);
+        }
+
+        let filter = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .try_init();
+    });
+}
+
+#[test]
+fn rtsp2_test_environment_pins_webrtc_ice_to_loopback() {
+    init_rtsp2_test_environment();
+
+    assert_eq!(
+        std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDRS").as_deref(),
+        Ok(WEBRTC_ICE_UDP_ADDRS)
+    );
+    assert_eq!(
+        livetwo::utils::webrtc::ice_udp_addrs(),
+        vec![WEBRTC_ICE_UDP_ADDRS.parse::<SocketAddr>().unwrap()]
+    );
+}
+
+fn rtsp2_ice_candidate_hint(text: &str) -> &'static str {
+    if text.contains("a=candidate:") && (text.contains(" 0.0.0.0 ") || text.contains(" :: ")) {
+        " RTSP2 test ICE candidate override did not apply: SDP candidate contains an unspecified address; expected LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0 before PeerConnection creation."
+    } else {
+        ""
+    }
+}
+
+async fn pick_tcp_port(ip: IpAddr) -> u16 {
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0))
+        .await
+        .expect("Failed to reserve temporary TCP port");
+    listener
+        .local_addr()
+        .expect("Failed to read temporary TCP port")
+        .port()
+}
 
 #[derive(Clone, Copy)]
 enum Transport {
@@ -72,7 +126,6 @@ struct MediaExpectation {
 struct TestConfig {
     ip: IpAddr,
     server_port: u16,
-    ports: Ports,
     ffmpeg_command: String,
     media: MediaExpectation,
     transport: Transport,
@@ -92,12 +145,6 @@ async fn test_livetwo_cycle_rtsp_h264_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 8000,
-            p_ab: 8010,
-            p_bc: 8020,
-            whep: 8030,
-        },
         ffmpeg_command: build_h264_command(1280, 720, Transport::Udp),
         media: MediaExpectation {
             audio_channels: None,
@@ -113,12 +160,6 @@ async fn test_livetwo_cycle_rtsp_h264_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7360,
-            p_ab: 7365,
-            p_bc: 7370,
-            whep: 7375,
-        },
         ffmpeg_command: build_h264_command(1280, 720, Transport::Tcp),
         media: MediaExpectation {
             audio_channels: None,
@@ -134,12 +175,6 @@ async fn test_livetwo_cycle_rtsp_h265_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7160,
-            p_ab: 7165,
-            p_bc: 7170,
-            whep: 7175,
-        },
         ffmpeg_command: build_h265_command(1280, 720, Transport::Udp),
         media: MediaExpectation {
             audio_channels: None,
@@ -155,12 +190,6 @@ async fn test_livetwo_cycle_rtsp_h265_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7380,
-            p_ab: 7385,
-            p_bc: 7390,
-            whep: 7395,
-        },
         ffmpeg_command: build_h265_command(1280, 720, Transport::Tcp),
         media: MediaExpectation {
             audio_channels: None,
@@ -176,12 +205,6 @@ async fn test_livetwo_cycle_rtsp_vp8_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7020,
-            p_ab: 7025,
-            p_bc: 7030,
-            whep: 7035,
-        },
         ffmpeg_command: build_vp8_command(1280, 720, Transport::Udp),
         media: MediaExpectation {
             audio_channels: None,
@@ -197,12 +220,6 @@ async fn test_livetwo_cycle_rtsp_vp8_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7220,
-            p_ab: 7225,
-            p_bc: 7230,
-            whep: 7235,
-        },
         ffmpeg_command: build_vp8_command(1280, 720, Transport::Tcp),
         media: MediaExpectation {
             audio_channels: None,
@@ -218,12 +235,6 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7040,
-            p_ab: 7045,
-            p_bc: 7050,
-            whep: 7055,
-        },
         ffmpeg_command: build_vp8_command(1280, 720, Transport::Udp),
         media: MediaExpectation {
             audio_channels: None,
@@ -239,12 +250,6 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7240,
-            p_ab: 7245,
-            p_bc: 7250,
-            whep: 7255,
-        },
         ffmpeg_command: build_vp8_command(1280, 720, Transport::Tcp),
         media: MediaExpectation {
             audio_channels: None,
@@ -260,12 +265,6 @@ async fn test_livetwo_cycle_rtsp_vp9_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7060,
-            p_ab: 7065,
-            p_bc: 7070,
-            whep: 7075,
-        },
         ffmpeg_command: build_vp9_command(1280, 720, Transport::Udp),
         media: MediaExpectation {
             audio_channels: None,
@@ -281,12 +280,6 @@ async fn test_livetwo_cycle_rtsp_vp9_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7260,
-            p_ab: 7265,
-            p_bc: 7270,
-            whep: 7275,
-        },
         ffmpeg_command: build_vp9_command(1280, 720, Transport::Tcp),
         media: MediaExpectation {
             audio_channels: None,
@@ -302,12 +295,6 @@ async fn test_livetwo_cycle_rtsp_opus_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7080,
-            p_ab: 7085,
-            p_bc: 7090,
-            whep: 7095,
-        },
         ffmpeg_command: build_opus_command(Transport::Udp),
         media: MediaExpectation {
             audio_channels: Some(2),
@@ -323,12 +310,6 @@ async fn test_livetwo_cycle_rtsp_opus_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7280,
-            p_ab: 7285,
-            p_bc: 7290,
-            whep: 7295,
-        },
         ffmpeg_command: build_opus_command(Transport::Tcp),
         media: MediaExpectation {
             audio_channels: Some(2),
@@ -344,12 +325,6 @@ async fn test_livetwo_cycle_rtsp_g722_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7120,
-            p_ab: 7125,
-            p_bc: 7130,
-            whep: 7135,
-        },
         ffmpeg_command: build_g722_command(Transport::Udp),
         media: MediaExpectation {
             audio_channels: Some(1),
@@ -365,12 +340,6 @@ async fn test_livetwo_cycle_rtsp_g722_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7320,
-            p_ab: 7325,
-            p_bc: 7330,
-            whep: 7335,
-        },
         ffmpeg_command: build_g722_command(Transport::Tcp),
         media: MediaExpectation {
             audio_channels: Some(1),
@@ -386,12 +355,6 @@ async fn test_livetwo_cycle_rtsp_vp8_opus_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7140,
-            p_ab: 7145,
-            p_bc: 7150,
-            whep: 7155,
-        },
         ffmpeg_command: build_vp8_opus_command(1280, 720, Transport::Udp),
         media: MediaExpectation {
             audio_channels: Some(2),
@@ -407,12 +370,6 @@ async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         server_port: 0,
-        ports: Ports {
-            whip: 7340,
-            p_ab: 7345,
-            p_bc: 7350,
-            whep: 7355,
-        },
         ffmpeg_command: build_vp8_opus_command(1280, 720, Transport::Tcp),
         media: MediaExpectation {
             audio_channels: Some(2),
@@ -495,6 +452,16 @@ fn build_vp8_opus_command(width: u16, height: u16, transport: Transport) -> Stri
 }
 
 async fn run_rtsp_cycle_test(config: TestConfig) {
+    init_rtsp2_test_environment();
+
+    // Allocate all ports dynamically to avoid conflicts under nextest parallel execution.
+    let ports = Ports {
+        whip: pick_tcp_port(config.ip).await,
+        p_ab: pick_tcp_port(config.ip).await,
+        p_bc: pick_tcp_port(config.ip).await,
+        whep: pick_tcp_port(config.ip).await,
+    };
+
     let server_addr = setup_liveion_server(config.ip, config.server_port).await;
     let ct = CancellationToken::new();
 
@@ -502,36 +469,49 @@ async fn run_rtsp_cycle_test(config: TestConfig) {
 
     // Stream A: ffmpeg → RTSP server → WebRTC
     let stream_a = stream_id("a");
-    let handle_a_whip = start_stream_a_whip(ct.clone(), &config, &server_addr, &stream_a).await;
-    wait_for_publish_connected(&server_addr, &stream_a).await;
+    let mut handle_a_whip =
+        start_stream_a_whip(ct.clone(), &config, &ports, &server_addr, &stream_a).await;
+    wait_for_publish_connected_with_diagnostics(
+        &server_addr,
+        &stream_a,
+        &mut handle_a_whip,
+        ports.whip,
+        server_addr,
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(STREAM_STABILIZATION_MS)).await;
 
     // Stream A → RTSP server → Stream B
-    let handle_a_whep = start_stream_a_whep(ct.clone(), &config, &server_addr, &stream_a).await;
+    let handle_a_whep =
+        start_stream_a_whep(ct.clone(), &config, &ports, &server_addr, &stream_a).await;
     wait_for_subscribe_connected(&server_addr, &stream_a).await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
     // Stream B: RTSP client → WebRTC
     let stream_b = stream_id("b");
-    let handle_b_whip = start_stream_b_whip(ct.clone(), &config, &server_addr, &stream_b).await;
+    let handle_b_whip =
+        start_stream_b_whip(ct.clone(), &config, &ports, &server_addr, &stream_b).await;
     wait_for_publish_connected(&server_addr, &stream_b).await;
 
     // Stream C: Stream B → RTSP server
     let stream_c = stream_id("c");
-    let handle_c_whip = start_stream_c_whip(ct.clone(), &config, &server_addr, &stream_c).await;
+    let handle_c_whip =
+        start_stream_c_whip(ct.clone(), &config, &ports, &server_addr, &stream_c).await;
 
-    let handle_b_whep = start_stream_b_whep(ct.clone(), &config, &server_addr, &stream_b).await;
+    let handle_b_whep =
+        start_stream_b_whep(ct.clone(), &config, &ports, &server_addr, &stream_b).await;
     wait_for_subscribe_connected(&server_addr, &stream_b).await;
     wait_for_publish_connected(&server_addr, &stream_c).await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
     // Stream C → RTSP server → ffprobe
-    let handle_c_whep = start_stream_c_whep(ct.clone(), &config, &server_addr, &stream_c).await;
+    let handle_c_whep =
+        start_stream_c_whep(ct.clone(), &config, &ports, &server_addr, &stream_c).await;
     wait_for_subscribe_connected(&server_addr, &stream_c).await;
     tokio::time::sleep(Duration::from_millis(FFPROBE_PREPARATION_MS)).await;
 
     // Verify with ffprobe
-    verify_stream_with_ffprobe(&config).await;
+    verify_stream_with_ffprobe(&config, &ports).await;
 
     ct.cancel();
 
@@ -598,10 +578,11 @@ async fn create_default_stream(server_addr: &SocketAddr) {
 async fn start_stream_a_whip(
     ct: CancellationToken,
     config: &TestConfig,
+    ports: &Ports,
     server_addr: &SocketAddr,
     stream_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, config.ports.whip);
+    let rtsp_addr = SocketAddr::new(config.ip, ports.whip);
     let ffmpeg_cmd = config.ffmpeg_command.replace("{}", &rtsp_addr.to_string());
 
     tokio::spawn(livetwo::whip::into(
@@ -616,10 +597,11 @@ async fn start_stream_a_whip(
 async fn start_stream_a_whep(
     ct: CancellationToken,
     config: &TestConfig,
+    ports: &Ports,
     server_addr: &SocketAddr,
     stream_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, config.ports.p_ab);
+    let rtsp_addr = SocketAddr::new(config.ip, ports.p_ab);
 
     tokio::spawn(livetwo::whep::from(
         ct,
@@ -635,10 +617,11 @@ async fn start_stream_a_whep(
 async fn start_stream_b_whip(
     ct: CancellationToken,
     config: &TestConfig,
+    ports: &Ports,
     server_addr: &SocketAddr,
     stream_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, config.ports.p_ab);
+    let rtsp_addr = SocketAddr::new(config.ip, ports.p_ab);
 
     tokio::spawn(livetwo::whip::into(
         ct,
@@ -657,10 +640,11 @@ async fn start_stream_b_whip(
 async fn start_stream_c_whip(
     ct: CancellationToken,
     config: &TestConfig,
+    ports: &Ports,
     server_addr: &SocketAddr,
     stream_c_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, config.ports.p_bc);
+    let rtsp_addr = SocketAddr::new(config.ip, ports.p_bc);
 
     tokio::spawn(livetwo::whip::into(
         ct.clone(),
@@ -674,10 +658,11 @@ async fn start_stream_c_whip(
 async fn start_stream_b_whep(
     ct: CancellationToken,
     config: &TestConfig,
+    ports: &Ports,
     server_addr: &SocketAddr,
     stream_b_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, config.ports.p_bc);
+    let rtsp_addr = SocketAddr::new(config.ip, ports.p_bc);
 
     tokio::spawn(livetwo::whep::from(
         ct,
@@ -698,10 +683,11 @@ async fn start_stream_b_whep(
 async fn start_stream_c_whep(
     ct: CancellationToken,
     config: &TestConfig,
+    ports: &Ports,
     server_addr: &SocketAddr,
     stream_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, config.ports.whep);
+    let rtsp_addr = SocketAddr::new(config.ip, ports.whep);
 
     tokio::spawn(livetwo::whep::from(
         ct,
@@ -712,6 +698,61 @@ async fn start_stream_c_whep(
         None,
         None,
     ))
+}
+
+async fn wait_for_publish_connected_with_diagnostics(
+    server_addr: &SocketAddr,
+    stream_id: &str,
+    handle_whip: &mut JoinHandle<anyhow::Result<()>>,
+    whip_port: u16,
+    liveion_addr: SocketAddr,
+) {
+    let mut last_state = None;
+    let mut last_codecs = Vec::new();
+    for attempt in 0..MAX_CONNECTION_ATTEMPTS {
+        if handle_whip.is_finished() {
+            let result = handle_whip.await.unwrap();
+            let result_debug = format!("{:?}", result);
+            let ice_hint = rtsp2_ice_candidate_hint(&result_debug);
+            panic!(
+                "WHIP task exited before publish connected: result={result_debug}, \
+                 whip_port={whip_port}, liveion={liveion_addr}, stream={stream_id}, \
+                 last_state={last_state:?}, last_codecs={last_codecs:?}.{ice_hint}"
+            );
+        }
+
+        let res = reqwest::get(format!("http://{server_addr}{}", api::path::streams("")))
+            .await
+            .expect("Failed to get streams");
+
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        let body = res
+            .json::<Vec<api::response::Stream>>()
+            .await
+            .expect("Failed to parse streams response");
+
+        if let Some(stream) = body.into_iter().find(|s| s.id == stream_id)
+            && !stream.publish.sessions.is_empty()
+        {
+            let state = stream.publish.sessions[0].state;
+            last_state = Some(state);
+            last_codecs = stream.codecs.clone();
+            if state == api::response::RTCPeerConnectionState::Connected {
+                return;
+            }
+        }
+
+        if attempt == MAX_CONNECTION_ATTEMPTS - 1 {
+            panic!(
+                "Stream '{}' did not reach connected state after {} attempts; \
+                 whip_port={whip_port}, liveion={liveion_addr}, last_state={:?}, last_codecs={:?}",
+                stream_id, MAX_CONNECTION_ATTEMPTS, last_state, last_codecs
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(CONNECTION_CHECK_INTERVAL_MS)).await;
+    }
 }
 
 async fn wait_for_publish_connected(server_addr: &SocketAddr, stream_id: &str) {
@@ -779,11 +820,11 @@ async fn wait_for_connection_state<F, G>(
     }
 }
 
-async fn verify_stream_with_ffprobe(config: &TestConfig) {
+async fn verify_stream_with_ffprobe(config: &TestConfig, ports: &Ports) {
     let rtsp_url = format!(
         "{}://{}",
         livetwo::SCHEME_RTSP_CLIENT,
-        SocketAddr::new(config.ip, config.ports.whep)
+        SocketAddr::new(config.ip, ports.whep)
     );
 
     let mut last_error = None;
