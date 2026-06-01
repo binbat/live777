@@ -5,6 +5,8 @@ use libwish::Client;
 use rtc::peer_connection::configuration::interceptor_registry::{
     configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers, configure_twcc,
 };
+use rtc::statistics::StatsSelector;
+use rtc::statistics::report::RTCStatsReportEntry;
 use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
 use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use rtc_rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
@@ -42,6 +44,16 @@ pub async fn setup_whip_peer(
         create_peer(ct.clone(), media_info, input_id, gather_complete.clone()).await?;
 
     utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
+    diagnostics.set_sdp_summaries(
+        peer.local_description()
+            .await
+            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+            .unwrap_or_else(|| "<no local description>".to_string()),
+        peer.remote_description()
+            .await
+            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+            .unwrap_or_else(|| "<no remote description>".to_string()),
+    );
 
     let stats = Arc::new(RtcpStats::new());
 
@@ -99,7 +111,7 @@ async fn create_peer(
             .with_media_engine(m)
             .with_interceptor_registry(registry)
             .with_handler(handler)
-            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .with_udp_addrs(utils::webrtc::ice_udp_addrs())
             .with_configuration(config)
             .build()
             .await
@@ -142,16 +154,29 @@ pub struct WhipPeerDiagnostics {
     ice_connection_states: Mutex<Vec<String>>,
     ice_gathering_states: Mutex<Vec<String>>,
     signaling_states: Mutex<Vec<String>>,
+    local_sdp_summary: Mutex<Option<String>>,
+    remote_sdp_summary: Mutex<Option<String>>,
 }
 
 impl WhipPeerDiagnostics {
+    pub fn set_sdp_summaries(&self, local: String, remote: String) {
+        if let Ok(mut summary) = self.local_sdp_summary.lock() {
+            *summary = Some(local);
+        }
+        if let Ok(mut summary) = self.remote_sdp_summary.lock() {
+            *summary = Some(remote);
+        }
+    }
+
     pub fn format(&self) -> String {
         format!(
-            "connection_states=[{}], ice_connection_states=[{}], ice_gathering_states=[{}], signaling_states=[{}]",
+            "connection_states=[{}], ice_connection_states=[{}], ice_gathering_states=[{}], signaling_states=[{}], local_sdp_summary=[{}], remote_sdp_summary=[{}]",
             join_states(&self.connection_states),
             join_states(&self.ice_connection_states),
             join_states(&self.ice_gathering_states),
             join_states(&self.signaling_states),
+            optional_summary(&self.local_sdp_summary),
+            optional_summary(&self.remote_sdp_summary),
         )
     }
 }
@@ -166,6 +191,18 @@ fn join_states(states: &Mutex<Vec<String>>) -> String {
     states
         .lock()
         .map(|states| states.join(" -> "))
+        .unwrap_or_else(|_| "<poisoned>".to_string())
+}
+
+fn optional_summary(summary: &Mutex<Option<String>>) -> String {
+    summary
+        .lock()
+        .map(|summary| {
+            summary
+                .as_deref()
+                .unwrap_or("<not captured>")
+                .replace('\n', " | ")
+        })
         .unwrap_or_else(|_| "<poisoned>".to_string())
 }
 
@@ -221,5 +258,68 @@ pub(crate) fn log_rtcp_feedback_packet(source: &str, packet: &dyn rtc_rtcp::pack
         debug!("{source}: received RTCP FIR");
     } else if any.downcast_ref::<TransportLayerNack>().is_some() {
         debug!("{source}: received RTCP NACK");
+    }
+}
+
+pub async fn format_ice_stats(peer: Arc<dyn PeerConnection>) -> String {
+    let report = peer
+        .get_stats(std::time::Instant::now(), StatsSelector::None)
+        .await;
+    let mut lines = Vec::new();
+
+    for entry in report.iter() {
+        match entry {
+            RTCStatsReportEntry::IceCandidatePair(pair) => {
+                lines.push(format!(
+                    "candidate_pair id={} local={} remote={} state={:?} nominated={} packets_sent={} packets_received={} bytes_sent={} bytes_received={} requests_sent={} requests_received={} responses_sent={} responses_received={}",
+                    pair.stats.id,
+                    pair.local_candidate_id,
+                    pair.remote_candidate_id,
+                    pair.state,
+                    pair.nominated,
+                    pair.packets_sent,
+                    pair.packets_received,
+                    pair.bytes_sent,
+                    pair.bytes_received,
+                    pair.requests_sent,
+                    pair.requests_received,
+                    pair.responses_sent,
+                    pair.responses_received,
+                ));
+            }
+            RTCStatsReportEntry::LocalCandidate(candidate) => {
+                lines.push(format!(
+                    "local_candidate id={} address={} port={} protocol={} type={:?} foundation={} related={}:{}",
+                    candidate.stats.id,
+                    candidate.address.as_deref().unwrap_or("<redacted>"),
+                    candidate.port,
+                    candidate.protocol,
+                    candidate.candidate_type,
+                    candidate.foundation,
+                    candidate.related_address,
+                    candidate.related_port,
+                ));
+            }
+            RTCStatsReportEntry::RemoteCandidate(candidate) => {
+                lines.push(format!(
+                    "remote_candidate id={} address={} port={} protocol={} type={:?} foundation={} related={}:{}",
+                    candidate.stats.id,
+                    candidate.address.as_deref().unwrap_or("<redacted>"),
+                    candidate.port,
+                    candidate.protocol,
+                    candidate.candidate_type,
+                    candidate.foundation,
+                    candidate.related_address,
+                    candidate.related_port,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if lines.is_empty() {
+        "<no ice candidate stats>".to_string()
+    } else {
+        lines.join("; ")
     }
 }

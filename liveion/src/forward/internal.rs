@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -72,6 +73,39 @@ fn ensure_video_rtcp_feedback(codec: &mut RTCRtpCodec) {
         }) {
             codec.rtcp_feedback.push(feedback);
         }
+    }
+}
+
+fn ice_udp_addrs() -> Vec<SocketAddr> {
+    const DEFAULT_ADDR: &str = "0.0.0.0:0";
+
+    let configured = std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDRS")
+        .or_else(|_| std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDR"))
+        .unwrap_or_else(|_| DEFAULT_ADDR.to_string());
+
+    let addrs = configured
+        .split(',')
+        .filter_map(|addr| {
+            let addr = addr.trim();
+            if addr.is_empty() {
+                return None;
+            }
+            match addr.parse::<SocketAddr>() {
+                Ok(addr) => Some(addr),
+                Err(error) => {
+                    tracing::warn!(
+                        "Ignoring invalid LIVE777_WEBRTC_ICE_UDP_ADDRS entry '{addr}': {error}"
+                    );
+                    None
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if addrs.is_empty() {
+        vec![DEFAULT_ADDR.parse().expect("default ICE UDP addr is valid")]
+    } else {
+        addrs
     }
 }
 
@@ -1017,7 +1051,7 @@ impl PeerForwardInternal {
                 .with_interceptor_registry(registry)
                 .with_setting_engine(s)
                 .with_handler(Arc::new(handler))
-                .with_udp_addrs(vec!["0.0.0.0:0".parse().unwrap()])
+                .with_udp_addrs(ice_udp_addrs())
                 .with_configuration(config)
                 .build()
                 .await?,
@@ -1185,7 +1219,7 @@ impl PeerForwardInternal {
                 .with_interceptor_registry(registry)
                 .with_setting_engine(s)
                 .with_handler(Arc::new(handler.clone()))
-                .with_udp_addrs(vec!["0.0.0.0:0".parse().unwrap()])
+                .with_udp_addrs(ice_udp_addrs())
                 .with_configuration(config)
                 .build()
                 .await?,

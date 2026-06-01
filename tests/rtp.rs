@@ -26,6 +26,12 @@ static TRACING_INIT: Once = Once::new();
 
 fn init_tracing() {
     TRACING_INIT.call_once(|| {
+        // These tests run both WebRTC peers locally. Pin ICE candidates to
+        // loopback so CI runners cannot choose an unroutable host interface.
+        unsafe {
+            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", "127.0.0.1:0");
+        }
+
         let filter = std::env::var("RUST_LOG")
             .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
         let _ = tracing_subscriber::fmt()

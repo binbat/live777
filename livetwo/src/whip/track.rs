@@ -15,6 +15,54 @@ use webrtc::peer_connection::PeerConnection;
 
 use crate::payload::{Forward, RePayload, RePayloadCodec};
 
+struct RtpPacketLog {
+    payload_type: u8,
+    sequence_number: u16,
+    timestamp: u32,
+    ssrc: u32,
+    payload_len: usize,
+}
+
+impl From<&Packet> for RtpPacketLog {
+    fn from(packet: &Packet) -> Self {
+        Self {
+            payload_type: packet.header.payload_type,
+            sequence_number: packet.header.sequence_number,
+            timestamp: packet.header.timestamp,
+            ssrc: packet.header.ssrc,
+            payload_len: packet.payload.len(),
+        }
+    }
+}
+
+fn log_write_rtp_error(kind: &str, packet: &RtpPacketLog, error: &dyn std::fmt::Display) {
+    let error = error.to_string();
+    let error_kind = if error.contains("Disconnected") {
+        "disconnected"
+    } else if error.contains("Full") {
+        "channel_full"
+    } else if error.contains("track is not binding yet") {
+        "track_not_bound"
+    } else {
+        "write_failed"
+    };
+
+    let message = format!(
+        "Failed to write {kind} RTP: error_kind={error_kind}, payload_type={}, sequence_number={}, timestamp={}, ssrc={}, payload_len={}",
+        packet.payload_type,
+        packet.sequence_number,
+        packet.timestamp,
+        packet.ssrc,
+        packet.payload_len,
+    );
+
+    if error_kind == "disconnected" {
+        debug!("{message}");
+    } else {
+        error!("{message}");
+    }
+}
+
 pub async fn setup_video_track(
     peer: Arc<dyn PeerConnection>,
     video_codec_params: &rtsp::VideoCodecParams,
@@ -102,8 +150,9 @@ pub async fn setup_video_track(
                     );
 
                     packet.header.ssrc = video_ssrc;
+                    let packet_log = RtpPacketLog::from(&packet);
                     if let Err(e) = video_track.write_rtp(packet).await {
-                        error!("Failed to write RTP: {}", e);
+                        log_write_rtp_error("video", &packet_log, &e);
                     } else if first_write {
                         info!("First video RTP packet written to WebRTC sender");
                         first_write = false;
@@ -160,13 +209,14 @@ pub async fn setup_audio_track(
                 for mut packet in handler.payload(packet) {
                     trace!("Sending audio packet: {}", packet);
                     packet.header.ssrc = audio_ssrc;
+                    let packet_log = RtpPacketLog::from(&packet);
                     match audio_track.write_rtp(packet).await {
                         Ok(()) if first_write => {
                             info!("First audio RTP packet written to WebRTC sender");
                             first_write = false;
                         }
                         Ok(()) => {}
-                        Err(e) => error!("Failed to write audio RTP: {}", e),
+                        Err(e) => log_write_rtp_error("audio", &packet_log, &e),
                     }
                 }
             }

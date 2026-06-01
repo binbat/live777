@@ -156,7 +156,7 @@ pub async fn into(
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 Ok(())
             }
-            result = wait_for_unexpected_peer_end(peer_state_rx, peer_diagnostics) => {
+            result = wait_for_unexpected_peer_end(peer.clone(), peer_state_rx, peer_diagnostics) => {
                 ct.cancel();
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 result
@@ -175,7 +175,7 @@ pub async fn into(
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 Ok(())
             }
-            result = wait_for_unexpected_peer_end(peer_state_rx, peer_diagnostics) => {
+            result = wait_for_unexpected_peer_end(peer.clone(), peer_state_rx, peer_diagnostics) => {
                 ct.cancel();
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 result
@@ -185,6 +185,7 @@ pub async fn into(
 }
 
 async fn wait_for_unexpected_peer_end(
+    peer: Arc<dyn ::webrtc::peer_connection::PeerConnection>,
     mut state_rx: watch::Receiver<RTCPeerConnectionState>,
     diagnostics: Arc<webrtc::WhipPeerDiagnostics>,
 ) -> Result<()> {
@@ -207,9 +208,11 @@ async fn wait_for_unexpected_peer_end(
                 | RTCPeerConnectionState::Closed
                 | RTCPeerConnectionState::Disconnected
         ) {
+            let ice_stats = webrtc::format_ice_stats(peer.clone()).await;
             return Err(anyhow!(
-                "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}, {}",
-                diagnostics.format()
+                "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}, {}, ice_stats=[{}]",
+                diagnostics.format(),
+                ice_stats
             ));
         }
     }

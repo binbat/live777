@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use libwish::Client;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -38,6 +39,37 @@ pub fn create_peer_connection_builder() -> Result<(
     Ok((builder, config))
 }
 
+pub fn ice_udp_addrs() -> Vec<SocketAddr> {
+    const DEFAULT_ADDR: &str = "0.0.0.0:0";
+
+    let configured = std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDRS")
+        .or_else(|_| std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDR"))
+        .unwrap_or_else(|_| DEFAULT_ADDR.to_string());
+
+    let addrs = configured
+        .split(',')
+        .filter_map(|addr| {
+            let addr = addr.trim();
+            if addr.is_empty() {
+                return None;
+            }
+            match addr.parse::<SocketAddr>() {
+                Ok(addr) => Some(addr),
+                Err(error) => {
+                    warn!("Ignoring invalid LIVE777_WEBRTC_ICE_UDP_ADDRS entry '{addr}': {error}");
+                    None
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if addrs.is_empty() {
+        vec![DEFAULT_ADDR.parse().expect("default ICE UDP addr is valid")]
+    } else {
+        addrs
+    }
+}
+
 pub async fn setup_connection(
     peer: Arc<dyn PeerConnection>,
     client: &mut Client,
@@ -49,10 +81,16 @@ pub async fn setup_connection(
     peer.set_local_description(offer).await?;
 
     let local_desc = wait_for_local_ice_candidate(peer.clone(), gather_complete).await?;
-    debug!("WHIP local SDP offer:\n{}", local_desc.sdp);
+    info!(
+        "WebRTC local SDP offer summary:\n{}",
+        summarize_sdp(&local_desc.sdp)
+    );
 
     let (answer, ice_servers) = client.wish(local_desc.sdp).await?;
-    debug!("WHIP remote SDP answer:\n{}", answer.sdp);
+    info!(
+        "WebRTC remote SDP answer summary:\n{}",
+        summarize_sdp(&answer.sdp)
+    );
 
     debug!("ICE servers from response: {:?}", ice_servers);
 
@@ -118,7 +156,7 @@ fn sdp_has_ice_candidate(sdp: &str) -> bool {
     sdp.lines().any(|line| line.starts_with("a=candidate:"))
 }
 
-fn summarize_sdp(sdp: &str) -> String {
+pub fn summarize_sdp(sdp: &str) -> String {
     let mut lines = Vec::new();
     for line in sdp.lines() {
         if line.starts_with("m=")

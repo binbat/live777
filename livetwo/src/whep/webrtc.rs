@@ -291,7 +291,7 @@ async fn create_peer(
         PeerConnectionBuilder::<std::net::SocketAddr>::new()
             .with_media_engine(media_engine)
             .with_handler(handler)
-            .with_udp_addrs(vec!["0.0.0.0:0".parse().unwrap()])
+            .with_udp_addrs(utils::webrtc::ice_udp_addrs())
             .with_configuration(config)
             .build()
             .await
