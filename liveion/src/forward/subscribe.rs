@@ -183,7 +183,7 @@ impl SubscribeRTCPeerConnection {
                     payload_type,
                     sender_ssrc,
                 );
-                sender_track
+                sender_track.clone()
             } else {
                 let new_track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
                     "webrtc".to_string(),
