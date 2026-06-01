@@ -11,12 +11,12 @@ use rtc_rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEst
 use rtc_rtcp::receiver_report::ReceiverReport;
 use rtc_rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
 use rtc_rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
-use tokio::sync::{Notify, mpsc::UnboundedSender};
+use tokio::sync::{Notify, mpsc::UnboundedSender, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use webrtc::peer_connection::{
-    MediaEngine, PeerConnection, PeerConnectionBuilder, RTCConfigurationBuilder, RTCIceServer,
-    Registry,
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, Registry,
 };
 
 use crate::utils;
@@ -33,16 +33,17 @@ pub async fn setup_whip_peer(
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
     Arc<RtcpStats>,
+    watch::Receiver<RTCPeerConnectionState>,
 )> {
     let gather_complete = Arc::new(Notify::new());
-    let (peer, video_sender, audio_sender) =
+    let (peer, video_sender, audio_sender, state_rx) =
         create_peer(ct.clone(), media_info, input_id, gather_complete.clone()).await?;
 
     utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
 
     let stats = Arc::new(RtcpStats::new());
 
-    Ok((peer, video_sender, audio_sender, stats))
+    Ok((peer, video_sender, audio_sender, stats, state_rx))
 }
 
 async fn create_peer(
@@ -54,6 +55,7 @@ async fn create_peer(
     Arc<dyn PeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
+    watch::Receiver<RTCPeerConnectionState>,
 )> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -65,7 +67,12 @@ async fn create_peer(
     let registry = configure_twcc(registry, &mut m)?;
     info!("WHIP peer configured with NACK, RTCP reports, and full TWCC");
 
-    let handler = utils::webrtc::create_event_handler(ct, gather_complete);
+    let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+    let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(WhipPeerHandler {
+        _ct: ct,
+        gather_complete,
+        state_tx,
+    });
 
     let config = RTCConfigurationBuilder::new()
         .with_ice_servers(vec![RTCIceServer {
@@ -107,7 +114,28 @@ async fn create_peer(
         None
     };
 
-    Ok((peer, video_tx, audio_tx))
+    Ok((peer, video_tx, audio_tx, state_rx))
+}
+
+struct WhipPeerHandler {
+    _ct: CancellationToken,
+    gather_complete: Arc<Notify>,
+    state_tx: watch::Sender<RTCPeerConnectionState>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for WhipPeerHandler {
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        info!("WHIP connection state changed: {}", state);
+        let _ = self.state_tx.send(state);
+    }
+
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            info!("WHIP ICE gathering complete");
+            self.gather_complete.notify_one();
+        }
+    }
 }
 
 fn is_supported_audio_codec(codec: &str) -> bool {

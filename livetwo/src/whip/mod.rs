@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::webrtc::peer_connection::RTCPeerConnectionState;
 use anyhow::{Result, anyhow};
 use std::process::ExitStatus;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -43,7 +45,7 @@ pub async fn into(
 
     let port_update_rx = input_source.take_port_update_rx();
 
-    let (peer, video_sender, audio_sender, stats) = webrtc::setup_whip_peer(
+    let (peer, video_sender, audio_sender, stats, peer_state_rx) = webrtc::setup_whip_peer(
         ct.clone(),
         &mut client,
         input_source.media_info(),
@@ -153,6 +155,11 @@ pub async fn into(
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 Ok(())
             }
+            result = wait_for_unexpected_peer_end(peer_state_rx) => {
+                ct.cancel();
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                result
+            }
             status = wait_for_child_exit(child.clone()) => {
                 let status = status?;
                 info!("Child process exited with status: {:?}", status);
@@ -162,9 +169,46 @@ pub async fn into(
             }
         }
     } else {
-        ct.cancelled().await;
-        graceful_shutdown("WHIP", &mut client, peer).await;
-        Ok(())
+        tokio::select! {
+            _ = ct.cancelled() => {
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                Ok(())
+            }
+            result = wait_for_unexpected_peer_end(peer_state_rx) => {
+                ct.cancel();
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                result
+            }
+        }
+    }
+}
+
+async fn wait_for_unexpected_peer_end(
+    mut state_rx: watch::Receiver<RTCPeerConnectionState>,
+) -> Result<()> {
+    let mut saw_connected = *state_rx.borrow() == RTCPeerConnectionState::Connected;
+
+    loop {
+        state_rx
+            .changed()
+            .await
+            .map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
+
+        let state = *state_rx.borrow();
+        if state == RTCPeerConnectionState::Connected {
+            saw_connected = true;
+        }
+
+        if matches!(
+            state,
+            RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected
+        ) {
+            return Err(anyhow!(
+                "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}"
+            ));
+        }
     }
 }
 
