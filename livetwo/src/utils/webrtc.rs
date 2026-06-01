@@ -10,7 +10,8 @@ use webrtc::peer_connection::{
     RTCPeerConnectionState, RTCSessionDescription, Registry,
 };
 
-const OFFER_ICE_GATHERING_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const OFFER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const OFFER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 pub fn create_peer_connection_builder() -> Result<(
     PeerConnectionBuilder<std::net::SocketAddr>,
@@ -47,17 +48,11 @@ pub async fn setup_connection(
 
     peer.set_local_description(offer).await?;
 
-    // Wait for ICE gathering to complete with a timeout.
-    if tokio::time::timeout(OFFER_ICE_GATHERING_TIMEOUT, gather_complete.notified())
-        .await
-        .is_err()
-    {
-        warn!("ICE gathering timed out, using partial description");
-    }
-
-    let local_desc = peer.local_description().await.unwrap();
+    let local_desc = wait_for_local_ice_candidate(peer.clone(), gather_complete).await?;
+    debug!("WHIP local SDP offer:\n{}", local_desc.sdp);
 
     let (answer, ice_servers) = client.wish(local_desc.sdp).await?;
+    debug!("WHIP remote SDP answer:\n{}", answer.sdp);
 
     debug!("ICE servers from response: {:?}", ice_servers);
 
@@ -73,6 +68,82 @@ pub async fn setup_connection(
 
     debug!("Remote description set successfully");
     Ok(answer)
+}
+
+async fn wait_for_local_ice_candidate(
+    peer: Arc<dyn PeerConnection>,
+    gather_complete: Arc<Notify>,
+) -> Result<RTCSessionDescription> {
+    let deadline = tokio::time::sleep(OFFER_ICE_CANDIDATE_TIMEOUT);
+    tokio::pin!(deadline);
+    let mut poll = tokio::time::interval(OFFER_ICE_CANDIDATE_POLL_INTERVAL);
+
+    loop {
+        if let Some(desc) = peer.local_description().await
+            && sdp_has_ice_candidate(&desc.sdp)
+        {
+            return Ok(desc);
+        }
+
+        tokio::select! {
+            _ = gather_complete.notified() => {
+                if let Some(desc) = peer.local_description().await {
+                    if sdp_has_ice_candidate(&desc.sdp) {
+                        return Ok(desc);
+                    }
+                    return Err(anyhow!(
+                        "WHIP local SDP offer has no ICE candidates after ICE gathering completed:\n{}",
+                        summarize_sdp(&desc.sdp)
+                    ));
+                }
+            }
+            _ = poll.tick() => {}
+            _ = &mut deadline => {
+                let summary = peer
+                    .local_description()
+                    .await
+                    .map(|desc| summarize_sdp(&desc.sdp))
+                    .unwrap_or_else(|| "<no local description>".to_string());
+                return Err(anyhow!(
+                    "WHIP local SDP offer has no ICE candidates within {}ms:\n{}",
+                    OFFER_ICE_CANDIDATE_TIMEOUT.as_millis(),
+                    summary
+                ));
+            }
+        }
+    }
+}
+
+fn sdp_has_ice_candidate(sdp: &str) -> bool {
+    sdp.lines().any(|line| line.starts_with("a=candidate:"))
+}
+
+fn summarize_sdp(sdp: &str) -> String {
+    let mut lines = Vec::new();
+    for line in sdp.lines() {
+        if line.starts_with("m=")
+            || line.starts_with("a=rtpmap:")
+            || line.starts_with("a=fmtp:")
+            || line.starts_with("a=sendonly")
+            || line.starts_with("a=recvonly")
+            || line.starts_with("a=sendrecv")
+            || line.starts_with("a=inactive")
+            || line.starts_with("a=setup:")
+            || line.starts_with("a=fingerprint:")
+            || line.starts_with("a=ice-ufrag:")
+            || line.starts_with("a=ice-pwd:")
+            || line.starts_with("a=rtcp-mux")
+            || line.starts_with("a=candidate:")
+        {
+            lines.push(line.to_string());
+        }
+    }
+
+    if lines.is_empty() {
+        "<no relevant SDP lines>".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 pub fn create_event_handler(
@@ -141,5 +212,26 @@ mod tests {
             .await
             .unwrap();
         let _ = peer;
+    }
+
+    #[test]
+    fn sdp_candidate_detection_checks_actual_candidate_lines() {
+        assert!(sdp_has_ice_candidate(
+            "v=0\na=candidate:1 1 udp 1 127.0.0.1 1 typ host\n"
+        ));
+        assert!(!sdp_has_ice_candidate("v=0\na=end-of-candidates\n"));
+    }
+
+    #[test]
+    fn sdp_summary_keeps_connection_relevant_lines() {
+        let summary = summarize_sdp(
+            "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 9\r\na=rtpmap:9 G722/8000\r\na=sendonly\r\na=ice-ufrag:abc\r\na=candidate:1 1 udp 1 127.0.0.1 1 typ host\r\na=msid:ignored\r\n",
+        );
+
+        assert!(summary.contains("m=audio"));
+        assert!(summary.contains("a=rtpmap:9 G722/8000"));
+        assert!(summary.contains("a=ice-ufrag:abc"));
+        assert!(summary.contains("a=candidate:1"));
+        assert!(!summary.contains("msid"));
     }
 }

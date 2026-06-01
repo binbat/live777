@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
-    sync::{LazyLock, Mutex},
+    sync::{LazyLock, Mutex, Once},
 };
 
 use tokio::net::TcpListener;
@@ -22,6 +22,18 @@ const CONNECTION_WAIT_ATTEMPTS: usize = 300;
 
 static ALLOCATED_UDP_PORTS: LazyLock<Mutex<HashSet<u16>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+static TRACING_INIT: Once = Once::new();
+
+fn init_tracing() {
+    TRACING_INIT.call_once(|| {
+        let filter = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .try_init();
+    });
+}
 
 /// Allocate UDP ports for RTP tests and reserve the chosen port numbers in this
 /// test process so concurrent `cargo test --test rtp` cases cannot reuse them.
@@ -261,6 +273,8 @@ async fn test_livetwo_rtp_h264_g722() {
 }
 
 async fn helper_livetwo_rtp(ip: IpAddr, prefix: &str, detect: Detect) {
+    init_tracing();
+
     let whip_port = alloc_udp_ports(ip, 1);
     let whep_port = if detect.audio.is_some() && detect.video.is_some() {
         alloc_udp_ports(ip, 3)

@@ -45,13 +45,14 @@ pub async fn into(
 
     let port_update_rx = input_source.take_port_update_rx();
 
-    let (peer, video_sender, audio_sender, stats, peer_state_rx) = webrtc::setup_whip_peer(
-        ct.clone(),
-        &mut client,
-        input_source.media_info(),
-        target_url.clone(),
-    )
-    .await?;
+    let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
+        webrtc::setup_whip_peer(
+            ct.clone(),
+            &mut client,
+            input_source.media_info(),
+            target_url.clone(),
+        )
+        .await?;
     info!("WebRTC peer connection established");
 
     start_stats_monitor(ct.clone(), peer.clone(), stats.clone()).await;
@@ -155,7 +156,7 @@ pub async fn into(
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 Ok(())
             }
-            result = wait_for_unexpected_peer_end(peer_state_rx) => {
+            result = wait_for_unexpected_peer_end(peer_state_rx, peer_diagnostics) => {
                 ct.cancel();
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 result
@@ -174,7 +175,7 @@ pub async fn into(
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 Ok(())
             }
-            result = wait_for_unexpected_peer_end(peer_state_rx) => {
+            result = wait_for_unexpected_peer_end(peer_state_rx, peer_diagnostics) => {
                 ct.cancel();
                 graceful_shutdown("WHIP", &mut client, peer).await;
                 result
@@ -185,6 +186,7 @@ pub async fn into(
 
 async fn wait_for_unexpected_peer_end(
     mut state_rx: watch::Receiver<RTCPeerConnectionState>,
+    diagnostics: Arc<webrtc::WhipPeerDiagnostics>,
 ) -> Result<()> {
     let mut saw_connected = *state_rx.borrow() == RTCPeerConnectionState::Connected;
 
@@ -206,7 +208,8 @@ async fn wait_for_unexpected_peer_end(
                 | RTCPeerConnectionState::Disconnected
         ) {
             return Err(anyhow!(
-                "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}"
+                "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}, {}",
+                diagnostics.format()
             ));
         }
     }

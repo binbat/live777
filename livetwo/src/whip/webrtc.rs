@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
@@ -16,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
-    RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, Registry,
+    RTCConfigurationBuilder, RTCIceConnectionState, RTCIceGatheringState, RTCIceServer,
+    RTCPeerConnectionState, RTCSignalingState, Registry,
 };
 
 use crate::utils;
@@ -34,16 +35,24 @@ pub async fn setup_whip_peer(
     Option<UnboundedSender<Vec<u8>>>,
     Arc<RtcpStats>,
     watch::Receiver<RTCPeerConnectionState>,
+    Arc<WhipPeerDiagnostics>,
 )> {
     let gather_complete = Arc::new(Notify::new());
-    let (peer, video_sender, audio_sender, state_rx) =
+    let (peer, video_sender, audio_sender, state_rx, diagnostics) =
         create_peer(ct.clone(), media_info, input_id, gather_complete.clone()).await?;
 
     utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
 
     let stats = Arc::new(RtcpStats::new());
 
-    Ok((peer, video_sender, audio_sender, stats, state_rx))
+    Ok((
+        peer,
+        video_sender,
+        audio_sender,
+        stats,
+        state_rx,
+        diagnostics,
+    ))
 }
 
 async fn create_peer(
@@ -56,6 +65,7 @@ async fn create_peer(
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
     watch::Receiver<RTCPeerConnectionState>,
+    Arc<WhipPeerDiagnostics>,
 )> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -68,10 +78,12 @@ async fn create_peer(
     info!("WHIP peer configured with NACK, RTCP reports, and full TWCC");
 
     let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+    let diagnostics = Arc::new(WhipPeerDiagnostics::default());
     let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(WhipPeerHandler {
         _ct: ct,
         gather_complete,
         state_tx,
+        diagnostics: diagnostics.clone(),
     });
 
     let config = RTCConfigurationBuilder::new()
@@ -114,27 +126,74 @@ async fn create_peer(
         None
     };
 
-    Ok((peer, video_tx, audio_tx, state_rx))
+    Ok((peer, video_tx, audio_tx, state_rx, diagnostics))
 }
 
 struct WhipPeerHandler {
     _ct: CancellationToken,
     gather_complete: Arc<Notify>,
     state_tx: watch::Sender<RTCPeerConnectionState>,
+    diagnostics: Arc<WhipPeerDiagnostics>,
+}
+
+#[derive(Default)]
+pub struct WhipPeerDiagnostics {
+    connection_states: Mutex<Vec<String>>,
+    ice_connection_states: Mutex<Vec<String>>,
+    ice_gathering_states: Mutex<Vec<String>>,
+    signaling_states: Mutex<Vec<String>>,
+}
+
+impl WhipPeerDiagnostics {
+    pub fn format(&self) -> String {
+        format!(
+            "connection_states=[{}], ice_connection_states=[{}], ice_gathering_states=[{}], signaling_states=[{}]",
+            join_states(&self.connection_states),
+            join_states(&self.ice_connection_states),
+            join_states(&self.ice_gathering_states),
+            join_states(&self.signaling_states),
+        )
+    }
+}
+
+fn push_state(states: &Mutex<Vec<String>>, state: impl std::fmt::Display) {
+    if let Ok(mut states) = states.lock() {
+        states.push(state.to_string());
+    }
+}
+
+fn join_states(states: &Mutex<Vec<String>>) -> String {
+    states
+        .lock()
+        .map(|states| states.join(" -> "))
+        .unwrap_or_else(|_| "<poisoned>".to_string())
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for WhipPeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         info!("WHIP connection state changed: {}", state);
+        push_state(&self.diagnostics.connection_states, state);
         let _ = self.state_tx.send(state);
     }
 
+    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+        info!("WHIP ICE connection state changed: {}", state);
+        push_state(&self.diagnostics.ice_connection_states, state);
+    }
+
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        info!("WHIP ICE gathering state changed: {}", state);
+        push_state(&self.diagnostics.ice_gathering_states, state);
         if state == RTCIceGatheringState::Complete {
             info!("WHIP ICE gathering complete");
             self.gather_complete.notify_one();
         }
+    }
+
+    async fn on_signaling_state_change(&self, state: RTCSignalingState) {
+        info!("WHIP signaling state changed: {}", state);
+        push_state(&self.diagnostics.signaling_states, state);
     }
 }
 

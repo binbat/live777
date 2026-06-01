@@ -186,10 +186,18 @@ impl UdpHandler {
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; RTP_BUFFER_SIZE];
+            let mut first_packet = true;
 
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((n, addr)) => {
+                        if first_packet {
+                            info!(
+                                "First {} RTP packet received from {}: {} bytes",
+                                media_type, addr, n
+                            );
+                            first_packet = false;
+                        }
                         trace!("Received {} RTP from {}: {} bytes", media_type, addr, n);
 
                         if let Err(e) = sender.send(buf[..n].to_vec()) {

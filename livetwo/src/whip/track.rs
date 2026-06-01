@@ -8,7 +8,7 @@ use rtc::rtp_transceiver::rtp_sender::{
 use rtc_shared::marshal::Unmarshal;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 use webrtc::peer_connection::PeerConnection;
@@ -48,6 +48,7 @@ pub async fn setup_video_track(
 
     tokio::spawn(async move {
         debug!("Video codec: {}", video_codec.mime_type);
+        let mut first_write = true;
 
         let mut handler: Box<dyn RePayload + Send> = match video_codec.mime_type.as_str() {
             MIME_TYPE_VP8 | MIME_TYPE_VP9 => {
@@ -103,6 +104,9 @@ pub async fn setup_video_track(
                     packet.header.ssrc = video_ssrc;
                     if let Err(e) = video_track.write_rtp(packet).await {
                         error!("Failed to write RTP: {}", e);
+                    } else if first_write {
+                        info!("First video RTP packet written to WebRTC sender");
+                        first_write = false;
                     }
                 }
             }
@@ -144,6 +148,7 @@ pub async fn setup_audio_track(
 
     tokio::spawn(async move {
         debug!("Audio codec: {}", audio_codec.mime_type);
+        let mut first_write = true;
         let mut handler: Box<dyn RePayload + Send> = match audio_codec.mime_type.as_str() {
             MIME_TYPE_OPUS => Box::new(RePayloadCodec::new(audio_codec.mime_type.clone())),
             _ => Box::new(Forward::new()),
@@ -155,7 +160,14 @@ pub async fn setup_audio_track(
                 for mut packet in handler.payload(packet) {
                     trace!("Sending audio packet: {}", packet);
                     packet.header.ssrc = audio_ssrc;
-                    let _ = audio_track.write_rtp(packet).await;
+                    match audio_track.write_rtp(packet).await {
+                        Ok(()) if first_write => {
+                            info!("First audio RTP packet written to WebRTC sender");
+                            first_write = false;
+                        }
+                        Ok(()) => {}
+                        Err(e) => error!("Failed to write audio RTP: {}", e),
+                    }
                 }
             }
         }
