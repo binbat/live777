@@ -39,11 +39,11 @@ tracing = { workspace = true }
 webrtc = { workspace = true }
 rtc = { workspace = true }
 sdp = { workspace = true }
-rtc-rtp = "0.20.0-alpha.1"
-rtc-rtcp = "0.20.0-alpha.1"
+rtc-rtp = { workspace = true }
+rtc-rtcp = { workspace = true }
 sansio = "1.0"
-rtc-interceptor = "0.20.0-alpha.1"
-rtc-shared = "0.20.0-alpha.1"
+rtc-interceptor = { workspace = true }
+rtc-shared = { workspace = true }
 uuid = { workspace = true }
 
 async-trait = "0.1"
@@ -82,3 +82,4 @@ source-all = ["source-sdp", "source-rtsp"]
 
 [dev-dependencies]
 tempfile = "3.26"
+toml = "1.0"

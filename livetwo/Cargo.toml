@@ -13,6 +13,7 @@ crate-type = ["lib"]
 cli = { path = "../libs/cli" }
 rtsp = { path = "../libs/rtsp" }
 libwish = { path = "../libs/libwish" }
+api = { path = "../libs/api" }
 
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -31,5 +32,5 @@ portpicker = "0.1.1"
 sdp-types = "0.1"
 async-trait = "0.1"
 rand = "0.10"
-rtc-rtcp = "0.20.0-alpha.1"
-rtc-shared = "0.20.0-alpha.1"
+rtc-rtcp = { workspace = true }
+rtc-shared = { workspace = true }

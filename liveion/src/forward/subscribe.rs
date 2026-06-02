@@ -285,26 +285,13 @@ impl SubscribeRTCPeerConnection {
             Some(c) => c,
             None => {
                 warn!(
-                    "[{}] [{}] {} publisher codec {} not exactly in send_codecs, falling back to first media codec",
+                    "[{}] [{}] {} publisher codec {} is not compatible with subscriber send_codecs",
                     stream,
                     id,
                     kind,
                     Self::format_codec(&publisher_codec)
                 );
-                params
-                    .rtp_parameters
-                    .codecs
-                    .iter()
-                    .find(|c| {
-                        let mime = c.rtp_codec.mime_type.to_lowercase();
-                        match kind {
-                            RtpCodecKind::Video => mime.starts_with("video/"),
-                            RtpCodecKind::Audio => mime.starts_with("audio/"),
-                            _ => false,
-                        }
-                    })
-                    .cloned()
-                    .unwrap_or_default()
+                return (publisher_codec, None);
             }
         };
 
@@ -327,7 +314,7 @@ impl SubscribeRTCPeerConnection {
     }
 
     fn select_compatible_codec(
-        kind: RtpCodecKind,
+        _kind: RtpCodecKind,
         publisher_codec: &RTCRtpCodec,
         codecs: &[RTCRtpCodecParameters],
     ) -> Option<RTCRtpCodecParameters> {
@@ -344,19 +331,6 @@ impl SubscribeRTCPeerConnection {
                             .mime_type
                             .eq_ignore_ascii_case(&publisher_codec.mime_type)
                             && candidate.rtp_codec.clock_rate == publisher_codec.clock_rate
-                    })
-                    .cloned()
-            })
-            .or_else(|| {
-                codecs
-                    .iter()
-                    .find(|candidate| {
-                        let mime = candidate.rtp_codec.mime_type.to_lowercase();
-                        match kind {
-                            RtpCodecKind::Video => mime.starts_with("video/"),
-                            RtpCodecKind::Audio => mime.starts_with("audio/"),
-                            _ => false,
-                        }
                     })
                     .cloned()
             })
@@ -865,5 +839,35 @@ mod tests {
 
         assert_eq!(selected.payload_type, 102);
         assert_eq!(selected.rtp_codec.sdp_fmtp_line, source_codec.sdp_fmtp_line);
+    }
+
+    #[test]
+    fn video_codec_selection_does_not_fallback_to_different_codec_family() {
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "level-id=186;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let subscriber_vp8 = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 96,
+        };
+
+        assert!(
+            SubscribeRTCPeerConnection::select_compatible_codec(
+                RtpCodecKind::Video,
+                &source_codec,
+                &[subscriber_vp8],
+            )
+            .is_none()
+        );
     }
 }

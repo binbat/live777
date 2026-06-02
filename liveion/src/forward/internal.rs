@@ -81,39 +81,6 @@ fn format_codec_for_log(codec: &RTCRtpCodec) -> String {
     )
 }
 
-fn ice_udp_addrs() -> Vec<SocketAddr> {
-    const DEFAULT_ADDR: &str = "0.0.0.0:0";
-
-    let configured = std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDRS")
-        .or_else(|_| std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDR"))
-        .unwrap_or_else(|_| DEFAULT_ADDR.to_string());
-
-    let addrs = configured
-        .split(',')
-        .filter_map(|addr| {
-            let addr = addr.trim();
-            if addr.is_empty() {
-                return None;
-            }
-            match addr.parse::<SocketAddr>() {
-                Ok(addr) => Some(addr),
-                Err(error) => {
-                    tracing::warn!(
-                        "Ignoring invalid LIVE777_WEBRTC_ICE_UDP_ADDRS entry '{addr}': {error}"
-                    );
-                    None
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    if addrs.is_empty() {
-        vec![DEFAULT_ADDR.parse().expect("default ICE UDP addr is valid")]
-    } else {
-        addrs
-    }
-}
-
 #[derive(Clone)]
 struct DataChannelForward {
     publish: broadcast::Sender<Vec<u8>>,
@@ -633,6 +600,7 @@ pub(crate) struct PeerForwardInternal {
     pub(crate) subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
+    ice_udp_addrs: Vec<SocketAddr>,
     event_sender: broadcast::Sender<ForwardEvent>,
     /// Weak reference to the publish peer, set before signaling via `set_publish_peer_ref`
     publish_peer_ref: Mutex<Option<std::sync::Weak<dyn PeerConnection>>>,
@@ -649,6 +617,7 @@ impl PeerForwardInternal {
     pub(crate) fn new(
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
         channel: Channel,
     ) -> Self {
         PeerForwardInternal {
@@ -666,6 +635,7 @@ impl PeerForwardInternal {
                 subscribe: new_broadcast_channel!(1024),
             },
             ice_server,
+            ice_udp_addrs,
             event_sender: new_broadcast_channel!(16),
             publish_peer_ref: Mutex::new(None),
             negotiated_twcc_ext_id: AtomicU8::new(0),
@@ -675,7 +645,11 @@ impl PeerForwardInternal {
     }
 
     #[cfg(not(feature = "source"))]
-    pub(crate) fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
+    pub(crate) fn new(
+        stream: impl ToString,
+        ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
+    ) -> Self {
         PeerForwardInternal {
             stream: stream.to_string(),
             create_at: Utc::now().timestamp_millis(),
@@ -691,6 +665,7 @@ impl PeerForwardInternal {
                 subscribe: new_broadcast_channel!(1024),
             },
             ice_server,
+            ice_udp_addrs,
             event_sender: new_broadcast_channel!(16),
             publish_peer_ref: Mutex::new(None),
             negotiated_twcc_ext_id: AtomicU8::new(0),
@@ -1062,7 +1037,7 @@ impl PeerForwardInternal {
                 .with_interceptor_registry(registry)
                 .with_setting_engine(s)
                 .with_handler(Arc::new(handler))
-                .with_udp_addrs(ice_udp_addrs())
+                .with_udp_addrs(self.ice_udp_addrs.clone())
                 .with_configuration(config)
                 .build()
                 .await?,
@@ -1230,7 +1205,7 @@ impl PeerForwardInternal {
                 .with_interceptor_registry(registry)
                 .with_setting_engine(s)
                 .with_handler(Arc::new(handler.clone()))
-                .with_udp_addrs(ice_udp_addrs())
+                .with_udp_addrs(self.ice_udp_addrs.clone())
                 .with_configuration(config)
                 .build()
                 .await?,

@@ -1,5 +1,6 @@
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::io::Cursor;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast};
 use tracing::error;
@@ -73,20 +74,34 @@ pub struct AudioTrackInfo {
 
 impl PeerForward {
     #[cfg(feature = "source")]
-    pub fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>, channel: Channel) -> Self {
+    pub fn new(
+        stream: impl ToString,
+        ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
+        channel: Channel,
+    ) -> Self {
         PeerForward {
             stream: stream.to_string(),
             publish_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(stream, ice_server, channel)),
+            internal: Arc::new(PeerForwardInternal::new(
+                stream,
+                ice_server,
+                ice_udp_addrs,
+                channel,
+            )),
         }
     }
 
     #[cfg(not(feature = "source"))]
-    pub fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
+    pub fn new(
+        stream: impl ToString,
+        ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
+    ) -> Self {
         PeerForward {
             stream: stream.to_string(),
             publish_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(stream, ice_server)),
+            internal: Arc::new(PeerForwardInternal::new(stream, ice_server, ice_udp_addrs)),
         }
     }
     #[cfg(feature = "source")]
@@ -757,10 +772,15 @@ a=end-of-candidates";
         let forward = PeerForward::new(
             "bwe-contract-test",
             vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(None),
             crate::config::Channel::default(),
         );
         #[cfg(not(feature = "source"))]
-        let forward = PeerForward::new("bwe-contract-test", vec![]);
+        let forward = PeerForward::new(
+            "bwe-contract-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(None),
+        );
         let (answer, session) = forward.set_publish(offer).await?;
 
         let has_transport_cc_feedback = answer
@@ -773,6 +793,16 @@ a=end-of-candidates";
             .any(|line| line.starts_with("a=extmap:") && line.contains(TRANSPORT_CC_URI));
         let has_remb_fallback = answer.sdp.contains(" goog-remb");
 
+        assert!(
+            answer.sdp.contains(" 127.0.0.1 "),
+            "expected loopback ICE candidate in liveion answer SDP:\n{}",
+            answer.sdp
+        );
+        assert!(
+            !answer.sdp.contains(" 0.0.0.0 "),
+            "unspecified ICE candidate leaked into liveion answer SDP:\n{}",
+            answer.sdp
+        );
         assert!(
             (has_transport_cc_feedback && has_transport_cc_extmap) || has_remb_fallback,
             "WHIP answer must advertise transport-cc with TWCC extmap, or goog-remb fallback:\n{}",

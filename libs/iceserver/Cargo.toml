@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 webrtc = { workspace = true }
 rtc = { workspace = true }
-rtc-ice = "0.20.0-alpha.1"
+rtc-ice = { workspace = true }
 
 hmac = { version = "0.12", optional = true }
 sha1 = { version = "0.10", optional = true }
@@ -27,4 +27,3 @@ reqwest = { workspace = true, features = ["json"], optional = true }
 [features]
 coturn = ["dep:hmac", "dep:sha1", "dep:base64"]
 cloudflare = ["dep:anyhow", "dep:http", "dep:reqwest"]
-

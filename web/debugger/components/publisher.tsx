@@ -95,6 +95,8 @@ export default function Publisher() {
     let qrStream: QRCodeStream | null = null;
     let desktopStreamCleanupInProgress = false;
 
+    const selectedVideoCodec = () => (searchParams.vcodec as string) || "vp8";
+
     const updatePreviewStream = (currentStream: MediaStream | null) => {
         setAudioTrackCount(
             currentStream ? currentStream.getAudioTracks().length : 0,
@@ -284,7 +286,7 @@ export default function Publisher() {
             },
             video: {
                 device: isDesktopMode || isQrMode ? "" : selectVideoDevice(),
-                codec: mapCodec[(searchParams.vcodec as string) || ""],
+                codec: mapCodec[selectedVideoCodec()],
                 layer: selectVideoLayer(),
                 width: parseInt(selectVideoWidth(), 10) || null,
                 height: parseInt(selectVideoHeight(), 10) || null,
@@ -406,7 +408,7 @@ export default function Publisher() {
                                 setSearchParams({ vcodec: e.target.value });
                             }}
                             disabled={disabled()}
-                            value={(searchParams.vcodec as string) || ""}
+                            value={selectedVideoCodec()}
                         >
                             {VideoCodecOptions.map((o) => (
                                 <option value={o.value}>{o.text}</option>

@@ -40,34 +40,7 @@ pub fn create_peer_connection_builder() -> Result<(
 }
 
 pub fn ice_udp_addrs() -> Vec<SocketAddr> {
-    const DEFAULT_ADDR: &str = "0.0.0.0:0";
-
-    let configured = std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDRS")
-        .or_else(|_| std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDR"))
-        .unwrap_or_else(|_| DEFAULT_ADDR.to_string());
-
-    let addrs = configured
-        .split(',')
-        .filter_map(|addr| {
-            let addr = addr.trim();
-            if addr.is_empty() {
-                return None;
-            }
-            match addr.parse::<SocketAddr>() {
-                Ok(addr) => Some(addr),
-                Err(error) => {
-                    warn!("Ignoring invalid LIVE777_WEBRTC_ICE_UDP_ADDRS entry '{addr}': {error}");
-                    None
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    if addrs.is_empty() {
-        vec![DEFAULT_ADDR.parse().expect("default ICE UDP addr is valid")]
-    } else {
-        addrs
-    }
+    api::webrtc::resolve_webrtc_ice_udp_addrs(None)
 }
 
 pub async fn setup_connection(
@@ -250,6 +223,46 @@ mod tests {
             .await
             .unwrap();
         let _ = peer;
+    }
+
+    #[tokio::test]
+    async fn offer_sdp_does_not_advertise_unspecified_candidate_addr() {
+        let (builder, config) = create_peer_connection_builder().unwrap();
+        let gather_complete = Arc::new(Notify::new());
+        let peer = builder
+            .with_configuration(config)
+            .with_handler(create_event_handler(
+                CancellationToken::new(),
+                gather_complete.clone(),
+            ))
+            .with_udp_addrs(api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec![
+                "0.0.0.0:0".to_string(),
+            ])))
+            .build()
+            .await
+            .unwrap();
+
+        let peer: Arc<dyn PeerConnection> = Arc::new(peer);
+        peer.create_data_channel("ice-candidate-test", None)
+            .await
+            .unwrap();
+
+        let offer = peer.create_offer(None).await.unwrap();
+        peer.set_local_description(offer).await.unwrap();
+        let local_desc = wait_for_local_ice_candidate(peer, gather_complete)
+            .await
+            .unwrap();
+
+        assert!(
+            local_desc.sdp.contains(" 127.0.0.1 "),
+            "expected loopback ICE candidate in SDP:\n{}",
+            summarize_sdp(&local_desc.sdp)
+        );
+        assert!(
+            !local_desc.sdp.contains(" 0.0.0.0 "),
+            "unspecified ICE candidate leaked into SDP:\n{}",
+            summarize_sdp(&local_desc.sdp)
+        );
     }
 
     #[test]
