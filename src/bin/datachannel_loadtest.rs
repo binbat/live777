@@ -1,11 +1,14 @@
-//! Benchmark: DataChannel <-> UDP forwarding throughput and latency.
+//! Load test: DataChannel <-> UDP forwarding throughput, latency and bidirectional traffic.
 //!
 //! Usage:
-//!   cargo test --features source --release --test channel_bench -- --nocapture
+//!   cargo run --release --features source --bin datachannel_loadtest -- all
+//!   cargo run --release --features source --bin datachannel_loadtest -- throughput
+//!   cargo run --release --features source --bin datachannel_loadtest -- latency
+//!   cargo run --release --features source --bin datachannel_loadtest -- bidirectional
 //!
 //! Custom params (env vars):
-//!   BENCH_PACKET_SIZE=1400  BENCH_PACKET_COUNT=5000  cargo test ...
-//!   BENCH_LATENCY_ROUNDS=500                           cargo test ...
+//!   LOADTEST_PACKET_SIZE=1400  LOADTEST_PACKET_COUNT=10000  cargo run ...
+//!   LOADTEST_LATENCY_ROUNDS=200                              cargo run ...
 
 #[cfg(feature = "source")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -21,12 +24,67 @@ use tokio::sync::Semaphore;
 #[cfg(feature = "source")]
 use tokio_util::sync::CancellationToken;
 
+// ── CLI / env helpers ───────────────────────────────────────────────────────────
+
 #[cfg(feature = "source")]
-mod common;
+#[derive(Debug, Clone)]
+struct LoadtestArgs {
+    mode: String,
+    packet_size: usize,
+    packet_count: usize,
+    warmup_packets: usize,
+    latency_rounds: usize,
+    window: Option<usize>,
+    bind_host: String,
+    target_host: String,
+}
+
 #[cfg(feature = "source")]
-use common::shutdown_signal;
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+#[cfg(feature = "source")]
+impl LoadtestArgs {
+    fn from_env() -> Self {
+        let mode = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
+
+        Self {
+            mode,
+            packet_size: env_usize("LOADTEST_PACKET_SIZE").unwrap_or(1400),
+            packet_count: env_usize("LOADTEST_PACKET_COUNT").unwrap_or(10000),
+            warmup_packets: env_usize("LOADTEST_WARMUP_PKTS").unwrap_or(3),
+            latency_rounds: env_usize("LOADTEST_LATENCY_ROUNDS").unwrap_or(200),
+            window: env_usize("LOADTEST_WINDOW"),
+            bind_host: std::env::var("LOADTEST_BIND_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
+            target_host: std::env::var("LOADTEST_TARGET_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".into()),
+        }
+    }
+}
+
+#[cfg(feature = "source")]
+fn print_environment_hint(args: &LoadtestArgs) {
+    println!("══════════════════════════════════════════════");
+    println!("  DataChannel UDP Load Test");
+    println!("  Mode: {}", args.mode);
+    println!("  Packet size: {} bytes", args.packet_size);
+    println!("  Packet count: {}", args.packet_count);
+    println!("  Warmup packets: {}", args.warmup_packets);
+    println!("  Latency rounds: {}", args.latency_rounds);
+    println!("  Bind host: {}", args.bind_host);
+    println!("  Target host: {}", args.target_host);
+    println!("  Build: release recommended");
+    println!("  Feature: source required");
+    println!("══════════════════════════════════════════════");
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "source")]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
 
 #[cfg(feature = "source")]
 async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool {
@@ -87,27 +145,8 @@ async fn recv_udp_with_timeout(
 }
 
 #[cfg(feature = "source")]
-fn bench_params() -> (usize, usize, usize) {
-    let pkt_size: usize = std::env::var("BENCH_PACKET_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        // Keep the default below the current UDP forward buffer size (1500).
-        .unwrap_or(1400);
-    let pkt_count: usize = std::env::var("BENCH_PACKET_COUNT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10000);
-    let warmup: usize = std::env::var("BENCH_WARMUP_PKTS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        // This is only a readiness probe. A large warmup can make a broken path
-        // look like a hang because every lost probe waits for recv timeout.
-        .unwrap_or(3);
-    (pkt_size, pkt_count, warmup)
-}
-
-#[cfg(feature = "source")]
 async fn setup_topology(
+    args: &LoadtestArgs,
     stream_id: &str,
     whepfrom_ch_listen: u16,
     whepfrom_ch_target: u16,
@@ -127,7 +166,8 @@ async fn setup_topology(
         stream_id.to_string(),
         liveion::config::ChannelStream {
             url: format!(
-                "udp://0.0.0.0:{liveion_ch_listen}?host=127.0.0.1&port={liveion_ch_target}"
+                "udp://0.0.0.0:{liveion_ch_listen}?host={}&port={liveion_ch_target}",
+                args.target_host
             ),
         },
     );
@@ -142,8 +182,10 @@ async fn setup_topology(
         .unwrap();
 
     let ct = CancellationToken::new();
-    let whep_channel_url =
-        format!("udp://0.0.0.0:{whepfrom_ch_listen}?host=127.0.0.1&port={whepfrom_ch_target}");
+    let whep_channel_url = format!(
+        "udp://0.0.0.0:{whepfrom_ch_listen}?host={}&port={whepfrom_ch_target}",
+        args.target_host
+    );
     tokio::spawn(livetwo::whep::from(
         ct.clone(),
         format!("rtp://{ip}"),
@@ -159,13 +201,15 @@ async fn setup_topology(
         "WHEP subscriber failed to connect"
     );
 
-    let whepfrom_target = UdpSocket::bind(format!("127.0.0.1:{whepfrom_ch_target}"))
+    let whepfrom_target = UdpSocket::bind(format!("{}:{whepfrom_ch_target}", args.bind_host))
         .await
         .unwrap();
-    let liveion_target = UdpSocket::bind(format!("127.0.0.1:{liveion_ch_target}"))
+    let liveion_target = UdpSocket::bind(format!("{}:{liveion_ch_target}", args.bind_host))
         .await
         .unwrap();
-    let udp_sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let udp_sender = UdpSocket::bind(format!("{}:0", args.bind_host))
+        .await
+        .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
@@ -248,18 +292,20 @@ async fn measure_throughput(
     }
 }
 
-// ── Throughput Benchmark ────────────────────────────────────────────────────────
+// ── Throughput Load Test ─────────────────────────────────────────────────────────
 
 #[cfg(feature = "source")]
-#[tokio::test]
-async fn bench_datachannel_throughput() {
-    let stream_id = "bench-dc-tp";
-    let (pkt_size, pkt_count, warmup) = bench_params();
-    // Window sized to keep ~64KB in-flight (safe for default UDP buffers)
-    let window = (65536 / pkt_size.max(1)).clamp(1, 128);
+async fn run_throughput(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let stream_id = "loadtest-dc-tp";
+    let pkt_size = args.packet_size;
+    let pkt_count = args.packet_count;
+    let warmup = args.warmup_packets;
+    let window = args
+        .window
+        .unwrap_or_else(|| (65536 / pkt_size.max(1)).clamp(1, 128));
 
     println!("\n══════════════════════════════════════════════");
-    println!("  DataChannel UDP Throughput Benchmark");
+    println!("  DataChannel UDP Throughput Load Test");
     println!(
         "  Packet size: {} bytes, Count: {}, Window: {}",
         pkt_size, pkt_count, window
@@ -267,7 +313,7 @@ async fn bench_datachannel_throughput() {
     println!("══════════════════════════════════════════════\n");
 
     let (_addr, ct, whepfrom_target, liveion_target, udp_sender) =
-        setup_topology(stream_id, 8700, 8701, 8702, 8703).await;
+        setup_topology(args, stream_id, 8700, 8701, 8702, 8703).await;
 
     let sender = Arc::new(udp_sender);
     let payload = Arc::new(vec![0xABu8; pkt_size]);
@@ -277,7 +323,7 @@ async fn bench_datachannel_throughput() {
     let res_a = measure_throughput(
         sender.clone(),
         whepfrom_target,
-        "127.0.0.1:8702",
+        &format!("{}:8702", args.target_host),
         payload.clone(),
         pkt_count,
         warmup,
@@ -298,7 +344,7 @@ async fn bench_datachannel_throughput() {
     let res_b = measure_throughput(
         sender.clone(),
         liveion_target,
-        "127.0.0.1:8700",
+        &format!("{}:8700", args.target_host),
         payload.clone(),
         pkt_count,
         warmup,
@@ -329,30 +375,24 @@ async fn bench_datachannel_throughput() {
     println!("──────────────────────────────────────────────\n");
 
     ct.cancel();
+    Ok(())
 }
 
-// ── Latency Benchmark ───────────────────────────────────────────────────────────
+// ── Latency Load Test ────────────────────────────────────────────────────────────
 
 #[cfg(feature = "source")]
-#[tokio::test]
-async fn bench_datachannel_latency() {
-    let stream_id = "bench-dc-lat";
-    let pkt_size: usize = std::env::var("BENCH_PACKET_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1400);
-    let rounds: usize = std::env::var("BENCH_LATENCY_ROUNDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(200);
+async fn run_latency(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let stream_id = "loadtest-dc-lat";
+    let pkt_size = args.packet_size;
+    let rounds = args.latency_rounds;
 
     println!("\n══════════════════════════════════════════════");
-    println!("  DataChannel UDP Latency Benchmark");
+    println!("  DataChannel UDP Latency Load Test");
     println!("  Packet size: {} bytes, Rounds: {}", pkt_size, rounds);
     println!("══════════════════════════════════════════════\n");
 
     let (_addr, ct, whepfrom_target, liveion_target, sender) =
-        setup_topology(stream_id, 8704, 8705, 8706, 8707).await;
+        setup_topology(args, stream_id, 8704, 8705, 8706, 8707).await;
 
     let sender = Arc::new(sender);
     let payload = Arc::new(vec![0x00u8; pkt_size]);
@@ -367,7 +407,9 @@ async fn bench_datachannel_latency() {
     let p = payload.clone();
     for _ in 0..rounds {
         let ts_send = Instant::now();
-        s.send_to(&p, "127.0.0.1:8706").await.unwrap();
+        s.send_to(&p, format!("{}:8706", args.target_host))
+            .await
+            .unwrap();
         if recv_udp_with_timeout(&whepfrom_target, &mut recv_buf, Duration::from_secs(2))
             .await
             .is_some()
@@ -385,7 +427,9 @@ async fn bench_datachannel_latency() {
     let p = payload.clone();
     for _ in 0..rounds {
         let ts_send = Instant::now();
-        s.send_to(&p, "127.0.0.1:8704").await.unwrap();
+        s.send_to(&p, format!("{}:8704", args.target_host))
+            .await
+            .unwrap();
         if recv_udp_with_timeout(&liveion_target, &mut recv_buf, Duration::from_secs(2))
             .await
             .is_some()
@@ -429,19 +473,23 @@ async fn bench_datachannel_latency() {
     println!("──────────────────────────────────────────────────\n");
 
     ct.cancel();
+    Ok(())
 }
 
-// ── Bidirectional Throughput ────────────────────────────────────────────────────
+// ── Bidirectional Load Test ──────────────────────────────────────────────────────
 
 #[cfg(feature = "source")]
-#[tokio::test]
-async fn bench_datachannel_bidirectional() {
-    let stream_id = "bench-dc-bidi";
-    let (pkt_size, pkt_count, warmup) = bench_params();
-    let window = (65536 / pkt_size.max(1)).clamp(1, 128);
+async fn run_bidirectional(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let stream_id = "loadtest-dc-bidi";
+    let pkt_size = args.packet_size;
+    let pkt_count = args.packet_count;
+    let warmup = args.warmup_packets;
+    let window = args
+        .window
+        .unwrap_or_else(|| (65536 / pkt_size.max(1)).clamp(1, 128));
 
     println!("\n══════════════════════════════════════════════");
-    println!("  DataChannel UDP Bidirectional Benchmark");
+    println!("  DataChannel UDP Bidirectional Load Test");
     println!(
         "  Packet size: {} bytes, Count: {} (each dir), Window: {}",
         pkt_size, pkt_count, window
@@ -449,19 +497,23 @@ async fn bench_datachannel_bidirectional() {
     println!("══════════════════════════════════════════════\n");
 
     let (_addr, ct, whepfrom_target, liveion_target, sender_a) =
-        setup_topology(stream_id, 8708, 8709, 8710, 8711).await;
-    let sender_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        setup_topology(args, stream_id, 8708, 8709, 8710, 8711).await;
+    let sender_b = UdpSocket::bind(format!("{}:0", args.bind_host))
+        .await
+        .unwrap();
 
     let sender_a = Arc::new(sender_a);
     let sender_b = Arc::new(sender_b);
     let payload = Arc::new(vec![0xABu8; pkt_size]);
 
     let start = Instant::now();
+    let dest_a = format!("{}:8710", args.target_host);
+    let dest_b = format!("{}:8708", args.target_host);
     let (res_a, res_b) = tokio::join!(
         measure_throughput(
             sender_a.clone(),
             whepfrom_target,
-            "127.0.0.1:8710",
+            &dest_a,
             payload.clone(),
             pkt_count,
             warmup,
@@ -470,7 +522,7 @@ async fn bench_datachannel_bidirectional() {
         measure_throughput(
             sender_b.clone(),
             liveion_target,
-            "127.0.0.1:8708",
+            &dest_b,
             payload.clone(),
             pkt_count,
             warmup,
@@ -505,4 +557,33 @@ async fn bench_datachannel_bidirectional() {
     println!("──────────────────────────────────────────────\n");
 
     ct.cancel();
+    Ok(())
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "source")]
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = LoadtestArgs::from_env();
+
+    print_environment_hint(&args);
+
+    match args.mode.as_str() {
+        "all" => {
+            run_latency(&args).await?;
+            run_throughput(&args).await?;
+            run_bidirectional(&args).await?;
+        }
+        "throughput" => run_throughput(&args).await?,
+        "latency" => run_latency(&args).await?,
+        "bidirectional" => run_bidirectional(&args).await?,
+        other => {
+            eprintln!("unknown mode: {other}");
+            eprintln!("usage: datachannel_loadtest [all|throughput|latency|bidirectional]");
+            std::process::exit(2);
+        }
+    }
+
+    Ok(())
 }
