@@ -45,6 +45,8 @@ path = "src/net4mqtt.rs"
 name = "datachannel_loadtest"
 path = "src/bin/datachannel_loadtest.rs"
 required-features = ["source"]
+test = false
+bench = false
 
 [workspace]
 members = [
