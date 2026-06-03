@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use chrono::Utc;
 use libwish::Client;
@@ -262,6 +262,8 @@ mod rtcp_egress_probe {
     use rtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
     use rtc_shared::error::Error;
     use sansio::Protocol;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU64;
 
     pub(crate) struct Counters {
@@ -452,14 +454,21 @@ mod rtcp_egress_probe {
         inner: P,
         stream: String,
         counters: std::sync::Arc<Counters>,
+        native_twcc_bound: Arc<AtomicBool>,
     }
 
     impl<P> RtcpEgressProbe<P> {
-        pub fn new(inner: P, stream: String, counters: std::sync::Arc<Counters>) -> Self {
+        pub fn new(
+            inner: P,
+            stream: String,
+            counters: std::sync::Arc<Counters>,
+            native_twcc_bound: Arc<AtomicBool>,
+        ) -> Self {
             Self {
                 inner,
                 stream,
                 counters,
+                native_twcc_bound,
             }
         }
     }
@@ -566,6 +575,10 @@ mod rtcp_egress_probe {
                 .rtp_header_extensions
                 .iter()
                 .any(|e| e.uri.contains("transport-wide-cc"));
+            if has_twcc {
+                self.native_twcc_bound
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             tracing::debug!(
                 "[{}] [rtcp-egress-probe] bind_remote_stream ssrc={} pt={} mime={} twcc_ext={} ext_count={}",
                 self.stream,
@@ -608,6 +621,8 @@ pub(crate) struct PeerForwardInternal {
     negotiated_twcc_ext_id: std::sync::atomic::AtomicU8,
     /// RTCP egress counters from the probe interceptor (None until publish peer created)
     rtcp_egress_counters: std::sync::Mutex<Option<std::sync::Arc<rtcp_egress_probe::Counters>>>,
+    /// Set by the publish interceptor once native TWCC receiver binding is active.
+    native_twcc_bound: Arc<AtomicBool>,
     #[cfg(feature = "source")]
     channel: Channel,
 }
@@ -640,6 +655,7 @@ impl PeerForwardInternal {
             publish_peer_ref: Mutex::new(None),
             negotiated_twcc_ext_id: AtomicU8::new(0),
             rtcp_egress_counters: std::sync::Mutex::new(None),
+            native_twcc_bound: Arc::new(AtomicBool::new(false)),
             channel,
         }
     }
@@ -670,6 +686,7 @@ impl PeerForwardInternal {
             publish_peer_ref: Mutex::new(None),
             negotiated_twcc_ext_id: AtomicU8::new(0),
             rtcp_egress_counters: std::sync::Mutex::new(None),
+            native_twcc_bound: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1000,8 +1017,11 @@ impl PeerForwardInternal {
         let stream = self.stream.clone();
         let egress_counters = std::sync::Arc::new(rtcp_egress_probe::Counters::new());
         let c = egress_counters.clone();
-        let registry =
-            registry.with(move |inner| rtcp_egress_probe::RtcpEgressProbe::new(inner, stream, c));
+        let native_twcc_bound = self.native_twcc_bound.clone();
+        native_twcc_bound.store(false, Ordering::Relaxed);
+        let registry = registry.with(move |inner| {
+            rtcp_egress_probe::RtcpEgressProbe::new(inner, stream, c, native_twcc_bound)
+        });
         *self.rtcp_egress_counters.lock().unwrap() = Some(egress_counters);
 
         let s = SettingEngine::default();
@@ -1079,9 +1099,14 @@ impl PeerForwardInternal {
         track: Arc<dyn TrackRemote>,
     ) -> Result<()> {
         let twcc_ext_id = self.negotiated_twcc_ext_id.load(Ordering::Relaxed);
-        let publish_track_remote =
-            PublishTrackRemote::new(self.stream.clone(), get_peer_id(&peer), track, twcc_ext_id)
-                .await;
+        let publish_track_remote = PublishTrackRemote::new(
+            self.stream.clone(),
+            get_peer_id(&peer),
+            track,
+            twcc_ext_id,
+            self.native_twcc_bound.clone(),
+        )
+        .await;
 
         let mut publish_tracks = self.publish_tracks.write().await;
         publish_tracks.push(publish_track_remote);

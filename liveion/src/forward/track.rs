@@ -2,8 +2,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
+use rtc::rtcp::transport_feedbacks::transport_layer_cc::{
+    PacketStatusChunk, RecvDelta, RunLengthChunk, StatusChunkTypeTcc, StatusVectorChunk,
+    SymbolSizeTypeTcc, SymbolTypeTcc, TransportLayerCc,
+};
 use rtc::rtp::packet::Packet;
 use rtc::shared::marshal::Unmarshal;
+use std::collections::BTreeMap;
 use tokio::sync::broadcast;
 use tokio::time::Duration;
 use tracing::{debug, info, trace, warn};
@@ -33,6 +38,184 @@ fn codec_string(params: &rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters
 
 pub(crate) type ForwardData = Arc<Packet>;
 
+const MANUAL_TWCC_INTERVAL: Duration = Duration::from_millis(100);
+const MANUAL_TWCC_MAX_STATUS_COUNT: u16 = 512;
+const TYPE_TCC_DELTA_SCALE_FACTOR_US: i64 = 250;
+
+struct ManualTwccFeedback {
+    sender_ssrc: u32,
+    media_ssrc: u32,
+    native_twcc_bound: Option<Arc<AtomicBool>>,
+    start: Option<Instant>,
+    next_flush: Option<Instant>,
+    fb_pkt_count: u8,
+    base_sequence_number: Option<u16>,
+    arrivals_us: BTreeMap<u16, i64>,
+}
+
+impl ManualTwccFeedback {
+    fn new(_twcc_ext_id: u8, native_twcc_bound: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            sender_ssrc: rand::random(),
+            media_ssrc: 0,
+            native_twcc_bound,
+            start: None,
+            next_flush: None,
+            fb_pkt_count: 0,
+            base_sequence_number: None,
+            arrivals_us: BTreeMap::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        media_ssrc: u32,
+        transport_sequence: u16,
+        now: Instant,
+    ) -> Vec<Box<dyn rtc::rtcp::Packet>> {
+        if self
+            .native_twcc_bound
+            .as_ref()
+            .is_some_and(|native| native.load(Ordering::Relaxed))
+        {
+            self.arrivals_us.clear();
+            self.base_sequence_number = None;
+            return Vec::new();
+        }
+
+        self.media_ssrc = media_ssrc;
+        let start = *self.start.get_or_insert(now);
+        self.next_flush.get_or_insert(now + MANUAL_TWCC_INTERVAL);
+
+        if self.base_sequence_number.is_none() {
+            self.base_sequence_number = Some(transport_sequence);
+        } else if let Some(base) = self.base_sequence_number {
+            let distance = transport_sequence.wrapping_sub(base);
+            if distance > MANUAL_TWCC_MAX_STATUS_COUNT {
+                let packets = self.flush(now);
+                self.base_sequence_number = Some(transport_sequence);
+                self.arrivals_us.insert(
+                    transport_sequence,
+                    now.duration_since(start).as_micros() as i64,
+                );
+                return packets;
+            }
+        }
+
+        self.arrivals_us
+            .entry(transport_sequence)
+            .or_insert_with(|| now.duration_since(start).as_micros() as i64);
+
+        if self.next_flush.is_some_and(|deadline| now >= deadline) {
+            self.flush(now)
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn flush(&mut self, now: Instant) -> Vec<Box<dyn rtc::rtcp::Packet>> {
+        let Some(base_sequence_number) = self.base_sequence_number else {
+            return Vec::new();
+        };
+        if self.arrivals_us.is_empty() {
+            return Vec::new();
+        }
+
+        let max_distance = self
+            .arrivals_us
+            .keys()
+            .map(|seq| seq.wrapping_sub(base_sequence_number))
+            .filter(|distance| *distance <= MANUAL_TWCC_MAX_STATUS_COUNT)
+            .max()
+            .unwrap_or(0);
+        let packet_status_count = max_distance + 1;
+
+        let first_arrival_us = *self
+            .arrivals_us
+            .get(&base_sequence_number)
+            .or_else(|| self.arrivals_us.values().next())
+            .unwrap_or(&0);
+        let reference_time = first_arrival_us / 64_000;
+        let mut last_timestamp_us = reference_time * 64_000;
+        let mut symbols = Vec::with_capacity(packet_status_count as usize);
+        let mut recv_deltas = Vec::new();
+
+        for offset in 0..packet_status_count {
+            let seq = base_sequence_number.wrapping_add(offset);
+            if let Some(arrival_us) = self.arrivals_us.get(&seq) {
+                let delta_250us = ((*arrival_us - last_timestamp_us)
+                    + TYPE_TCC_DELTA_SCALE_FACTOR_US / 2)
+                    / TYPE_TCC_DELTA_SCALE_FACTOR_US;
+                let delta_250us = delta_250us.clamp(i16::MIN as i64, i16::MAX as i64);
+                let delta_us_rounded = delta_250us * TYPE_TCC_DELTA_SCALE_FACTOR_US;
+                let symbol = if (0..=u8::MAX as i64).contains(&delta_250us) {
+                    SymbolTypeTcc::PacketReceivedSmallDelta
+                } else {
+                    SymbolTypeTcc::PacketReceivedLargeDelta
+                };
+                symbols.push(symbol);
+                recv_deltas.push(RecvDelta {
+                    type_tcc_packet: symbol,
+                    delta: delta_us_rounded,
+                });
+                last_timestamp_us += delta_us_rounded;
+            } else {
+                symbols.push(SymbolTypeTcc::PacketNotReceived);
+            }
+        }
+
+        let packet_chunks = encode_twcc_status_chunks(&symbols);
+        let packet = TransportLayerCc {
+            sender_ssrc: self.sender_ssrc,
+            media_ssrc: self.media_ssrc,
+            base_sequence_number,
+            packet_status_count,
+            reference_time: reference_time as u32,
+            fb_pkt_count: self.fb_pkt_count,
+            packet_chunks,
+            recv_deltas,
+        };
+
+        self.fb_pkt_count = self.fb_pkt_count.wrapping_add(1);
+        self.arrivals_us.clear();
+        self.base_sequence_number = None;
+        self.next_flush = Some(now + MANUAL_TWCC_INTERVAL);
+
+        vec![Box::new(packet)]
+    }
+}
+
+fn encode_twcc_status_chunks(symbols: &[SymbolTypeTcc]) -> Vec<PacketStatusChunk> {
+    let mut chunks = Vec::new();
+    let mut i = 0;
+    while i < symbols.len() {
+        let remaining = &symbols[i..];
+        let same_run_len = remaining
+            .iter()
+            .take_while(|symbol| **symbol == remaining[0])
+            .count();
+        if same_run_len >= 7 {
+            let run_length = same_run_len.min(0x1fff);
+            chunks.push(PacketStatusChunk::RunLengthChunk(RunLengthChunk {
+                type_tcc: StatusChunkTypeTcc::RunLengthChunk,
+                packet_status_symbol: remaining[0],
+                run_length: run_length as u16,
+            }));
+            i += run_length;
+            continue;
+        }
+
+        let count = remaining.len().min(7);
+        chunks.push(PacketStatusChunk::StatusVectorChunk(StatusVectorChunk {
+            type_tcc: StatusChunkTypeTcc::StatusVectorChunk,
+            symbol_size: SymbolSizeTypeTcc::TwoBit,
+            symbol_list: remaining[..count].to_vec(),
+        }));
+        i += count;
+    }
+    chunks
+}
+
 #[derive(Clone)]
 pub(crate) enum PublishTrackRemote {
     Real {
@@ -52,6 +235,7 @@ impl PublishTrackRemote {
         id: String,
         track: Arc<dyn TrackRemote>,
         twcc_ext_id: u8,
+        native_twcc_bound: Arc<AtomicBool>,
     ) -> Self {
         let rtp_sender = new_broadcast_channel!(4096);
         let ssrcs = track.ssrcs().await;
@@ -82,6 +266,7 @@ impl PublishTrackRemote {
             track.clone(),
             rtp_sender.clone(),
             twcc_ext_id,
+            native_twcc_bound,
         ));
 
         Self::Real {
@@ -99,6 +284,7 @@ impl PublishTrackRemote {
         track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
         twcc_ext_id: u8,
+        native_twcc_bound: Arc<AtomicBool>,
     ) {
         let kind = track.kind().await;
         let ssrcs = track.ssrcs().await;
@@ -123,6 +309,8 @@ impl PublishTrackRemote {
         let last_twcc_seq = AtomicU64::new(0);
         let probe_start = Instant::now();
         let mut probe_tick = Instant::now();
+        let mut manual_twcc = (twcc_ext_id != 0)
+            .then(|| ManualTwccFeedback::new(twcc_ext_id, Some(native_twcc_bound)));
         info!(
             "[{}] [{}] [twcc-probe] negotiated_twcc_ext_id={}",
             stream, id, twcc_ext_id,
@@ -165,6 +353,26 @@ impl PublishTrackRemote {
                                 }
                                 last_twcc_seq
                                     .store(tcc.transport_sequence as u64, Ordering::Relaxed);
+                                if let Some(feedback) = manual_twcc.as_mut() {
+                                    let packets = feedback.record(
+                                        rtp_packet.header.ssrc,
+                                        tcc.transport_sequence,
+                                        Instant::now(),
+                                    );
+                                    if !packets.is_empty() {
+                                        let count = packets.len();
+                                        match track.write_rtcp(packets).await {
+                                            Ok(()) => debug!(
+                                                "[{}] [{}] [twcc-probe] wrote manual TWCC feedback packets={}",
+                                                stream, id, count,
+                                            ),
+                                            Err(err) => warn!(
+                                                "[{}] [{}] [twcc-probe] failed to write manual TWCC feedback: {}",
+                                                stream, id, err,
+                                            ),
+                                        }
+                                    }
+                                }
                         }
                     }
                     if !found_twcc {
@@ -278,6 +486,49 @@ impl PublishTrackRemote {
             Self::Virtual(v) => v.generate_sender_report(),
             Self::Real { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod manual_twcc_tests {
+    use super::*;
+
+    #[test]
+    fn manual_twcc_feedback_marks_missing_packets() {
+        let start = Instant::now();
+        let mut feedback = ManualTwccFeedback::new(4, None);
+
+        assert!(feedback.record(99, 10, start).is_empty());
+        assert!(
+            feedback
+                .record(99, 12, start + Duration::from_millis(20))
+                .is_empty()
+        );
+        let packets = feedback.flush(start + Duration::from_millis(120));
+
+        assert_eq!(packets.len(), 1);
+        let tcc = packets[0]
+            .as_any()
+            .downcast_ref::<rtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc>()
+            .expect("manual feedback must generate TransportLayerCc");
+        assert_eq!(tcc.media_ssrc, 99);
+        assert_eq!(tcc.base_sequence_number, 10);
+        assert_eq!(tcc.packet_status_count, 3);
+        assert_eq!(tcc.recv_deltas.len(), 2);
+    }
+
+    #[test]
+    fn manual_twcc_feedback_is_disabled_when_native_twcc_is_bound() {
+        let start = Instant::now();
+        let native_twcc_bound = Arc::new(AtomicBool::new(true));
+        let mut feedback = ManualTwccFeedback::new(4, Some(native_twcc_bound));
+
+        assert!(feedback.record(99, 10, start).is_empty());
+        assert!(
+            feedback
+                .flush(start + Duration::from_millis(120))
+                .is_empty()
+        );
     }
 }
 
