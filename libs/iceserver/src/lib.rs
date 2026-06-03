@@ -6,6 +6,7 @@ pub mod coturn;
 
 use rtc::peer_connection::transport::RTCIceServer;
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use tracing::warn;
 use webrtc::error::Error;
 
@@ -72,11 +73,48 @@ impl IceServer {
         }
         result
     }
+
+    fn rtc_urls(&self) -> Vec<String> {
+        self.normalized_urls()
+            .into_iter()
+            .filter(|url_str| match self.parse_url(url_str) {
+                Ok(url) if ice_server_host_resolves_to_benchmarking_ip(&url) => {
+                    warn!(
+                        "ICE server: skipping URL '{url_str}' because host resolves to 198.18.0.0/15, likely a proxy/VPN fake-ip address"
+                    );
+                    false
+                }
+                _ => true,
+            })
+            .collect()
+    }
+}
+
+fn ice_server_host_resolves_to_benchmarking_ip(url: &rtc_ice::url::Url) -> bool {
+    match (url.host.as_str(), url.port).to_socket_addrs() {
+        Ok(addrs) => {
+            let addrs = addrs.collect::<Vec<_>>();
+            !addrs.is_empty() && addrs.iter().all(|addr| is_benchmarking_ip(addr.ip()))
+        }
+        Err(_) => false,
+    }
+}
+
+fn is_benchmarking_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_benchmarking_ipv4(ip),
+        IpAddr::V6(_) => false,
+    }
+}
+
+fn is_benchmarking_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
 }
 
 impl From<IceServer> for RTCIceServer {
     fn from(val: IceServer) -> Self {
-        let urls = val.normalized_urls();
+        let urls = val.rtc_urls();
         RTCIceServer {
             urls,
             username: val.username,
@@ -323,6 +361,35 @@ mod tests {
     }
 
     #[test]
+    fn normalized_urls_skips_benchmarking_fake_ip() {
+        let server = IceServer {
+            urls: vec![
+                "stun:198.18.0.19:19302".into(),
+                "stun:stun.example.com:3478".into(),
+            ],
+            ..Default::default()
+        };
+        let urls = server.normalized_urls();
+        assert_eq!(
+            urls,
+            vec!["stun:198.18.0.19:19302", "stun:stun.example.com:3478"]
+        );
+    }
+
+    #[test]
+    fn rtc_urls_skip_benchmarking_fake_ip() {
+        let server = IceServer {
+            urls: vec![
+                "stun:198.18.0.19:19302".into(),
+                "stun:203.0.113.1:3478".into(),
+            ],
+            ..Default::default()
+        };
+        let urls = server.rtc_urls();
+        assert_eq!(urls, vec!["stun:203.0.113.1:3478"]);
+    }
+
+    #[test]
     fn empty_urls_produces_empty_result() {
         let server = IceServer {
             urls: vec![],
@@ -336,12 +403,12 @@ mod tests {
     #[test]
     fn from_ice_server_preserves_credentials() {
         let server = IceServer {
-            urls: vec!["turn:turn.example.com:3478?transport=tcp".into()],
+            urls: vec!["turn:203.0.113.1:3478?transport=tcp".into()],
             username: "myuser".into(),
             credential: "mysecret".into(),
         };
         let rtc: RTCIceServer = server.into();
-        assert_eq!(rtc.urls, vec!["turn:turn.example.com:3478?transport=tcp"]);
+        assert_eq!(rtc.urls, vec!["turn:203.0.113.1:3478?transport=tcp"]);
         assert_eq!(rtc.username, "myuser");
         assert_eq!(rtc.credential, "mysecret");
     }
@@ -349,16 +416,13 @@ mod tests {
     #[test]
     fn from_ice_server_normalizes_urls() {
         let server = IceServer {
-            urls: vec![
-                "stun:stun.22333.fun".into(),
-                "stun:stun.l.google.com:19302".into(),
-            ],
+            urls: vec!["stun:203.0.113.1".into(), "stun:203.0.113.2:19302".into()],
             ..Default::default()
         };
         let rtc: RTCIceServer = server.into();
         assert_eq!(rtc.urls.len(), 2);
-        assert_eq!(rtc.urls[0], "stun:stun.22333.fun:3478");
-        assert_eq!(rtc.urls[1], "stun:stun.l.google.com:19302");
+        assert_eq!(rtc.urls[0], "stun:203.0.113.1:3478");
+        assert_eq!(rtc.urls[1], "stun:203.0.113.2:19302");
         assert!(rtc.username.is_empty());
         assert!(rtc.credential.is_empty());
     }

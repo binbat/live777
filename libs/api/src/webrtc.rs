@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 pub const DEFAULT_WEBRTC_ICE_UDP_ADDR: &str = "auto";
 const LOOPBACK_WEBRTC_ICE_UDP_ADDR: &str = "127.0.0.1:0";
@@ -57,7 +57,7 @@ fn discover_webrtc_ice_udp_addrs() -> Vec<SocketAddr> {
     ]
     .into_iter()
     .flatten()
-    .filter(|addr| !addr.ip().is_unspecified() && !addr.ip().is_loopback())
+    .filter(|addr| is_usable_auto_candidate_ip(addr.ip()))
     .map(|addr| SocketAddr::new(addr.ip(), 0))
     .collect::<Vec<_>>();
 
@@ -76,6 +76,23 @@ fn discover_local_addr(remote: &str) -> Option<SocketAddr> {
     let socket = std::net::UdpSocket::bind(bind_addr).ok()?;
     socket.connect(remote).ok()?;
     socket.local_addr().ok()
+}
+
+fn is_usable_auto_candidate_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && !is_benchmarking_ipv4(ip)
+        }
+        IpAddr::V6(ip) => !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast(),
+    }
+}
+
+fn is_benchmarking_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
 }
 
 fn fallback_webrtc_ice_udp_addrs() -> Vec<SocketAddr> {
@@ -127,12 +144,14 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_auto_non_loopback_udp_addr_without_config_or_env() {
+    fn defaults_to_auto_without_benchmarking_udp_addr_without_config_or_env() {
         with_clean_env(|| {
             let addrs = resolve_webrtc_ice_udp_addrs(None);
             assert!(
-                addrs.iter().all(|addr| !addr.ip().is_loopback()),
-                "default WebRTC ICE UDP addrs must not advertise loopback-only candidates: {addrs:?}"
+                addrs
+                    .iter()
+                    .all(|addr| !matches!(addr.ip(), IpAddr::V4(ip) if is_benchmarking_ipv4(ip))),
+                "default WebRTC ICE UDP addrs must not advertise benchmarking candidates: {addrs:?}"
             );
         });
     }
@@ -219,5 +238,12 @@ mod tests {
             assert_eq!(addrs, fallback_webrtc_ice_udp_addrs());
             assert!(!addrs.iter().any(|addr| addr.ip().is_unspecified()));
         });
+    }
+
+    #[test]
+    fn benchmarking_ipv4_addr_is_not_usable_auto_candidate() {
+        let ip = "198.18.0.1".parse().unwrap();
+
+        assert!(!is_usable_auto_candidate_ip(ip));
     }
 }

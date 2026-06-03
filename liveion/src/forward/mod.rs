@@ -1,6 +1,6 @@
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::io::Cursor;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast};
 use tracing::error;
@@ -173,7 +173,7 @@ fn parse_twcc_ext_id_from_sdp(sdp: &str) -> u8 {
 impl PeerForward {
     pub async fn set_publish(
         &self,
-        offer: RTCSessionDescription,
+        mut offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if self.internal.publish_is_some().await {
             return Err(AppError::stream_already_exists(
@@ -189,6 +189,7 @@ impl PeerForward {
             ));
         }
 
+        offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
 
         // Parse negotiated TWCC extmap ID from the publisher's SDP offer.
@@ -362,8 +363,9 @@ impl PeerForward {
 impl PeerForward {
     pub async fn add_subscribe(
         &self,
-        offer: RTCSessionDescription,
+        mut offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
+        offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
         let (peer, gather_complete, connection_state) =
             self.new_subscription_peer(media_info.clone()).await?;
@@ -527,6 +529,49 @@ fn unmarshal_sdp(sdp_str: &str) -> Result<sdp::SessionDescription> {
     Ok(sdp::SessionDescription::unmarshal(&mut reader)?)
 }
 
+fn strip_unusable_remote_ice_candidates(sdp: &str) -> String {
+    sdp.lines()
+        .filter(|line| {
+            let unusable = is_unusable_remote_ice_candidate_line(line);
+            if unusable {
+                tracing::warn!("Skipping unusable remote ICE candidate in SDP offer: {line}");
+            }
+            !unusable
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_unusable_remote_ice_candidate_line(line: &str) -> bool {
+    let Some(candidate) = line
+        .trim()
+        .strip_prefix("a=candidate:")
+        .or_else(|| line.trim().strip_prefix("candidate:"))
+    else {
+        return false;
+    };
+
+    let Some(addr) = candidate.split_whitespace().nth(4) else {
+        return false;
+    };
+
+    addr.parse::<IpAddr>()
+        .map(is_unusable_remote_candidate_ip)
+        .unwrap_or(false)
+}
+
+fn is_unusable_remote_candidate_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_benchmarking_ipv4(ip),
+        IpAddr::V6(_) => false,
+    }
+}
+
+fn is_benchmarking_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
+}
+
 fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
     let content = format!("v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{content}");
     let mut reader = Cursor::new(content);
@@ -553,6 +598,10 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
             if attr.is_ice_candidate()
                 && let Some(value) = attr.value
             {
+                if is_unusable_remote_ice_candidate_line(&format!("candidate:{value}")) {
+                    tracing::warn!("Skipping unusable remote ICE candidate: {value}");
+                    continue;
+                }
                 ice_candidates.push(RTCIceCandidateInit {
                     candidate: value,
                     sdp_mid: Some(mid.clone()),
@@ -685,6 +734,7 @@ impl PeerForward {
 mod test {
     use crate::forward::PeerForward;
     use crate::forward::parse_ice_candidate;
+    use crate::forward::strip_unusable_remote_ice_candidates;
     use rtc::media_stream::MediaStreamTrack;
     use rtc::peer_connection::configuration::interceptor_registry::{
         configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers,
@@ -721,6 +771,42 @@ a=end-of-candidates";
 
         parse_ice_candidate(body.to_owned())?;
         Ok(())
+    }
+
+    #[test]
+    fn parse_ice_candidate_skips_benchmarking_fake_ip_candidates() -> crate::result::Result<()> {
+        let body = "a=ice-ufrag:EsAw
+a=ice-pwd:P2uYro0UCOQ4zxjKXaWCBui1
+m=audio 9 RTP/AVP 0
+a=mid:0
+a=candidate:1 1 udp 2122260223 198.18.0.1 55964 typ host generation 0 ufrag EsAw network-id 1
+a=candidate:2 1 udp 2122260223 192.0.2.1 61764 typ host generation 0 ufrag EsAw network-id 1
+a=end-of-candidates";
+
+        let candidates = parse_ice_candidate(body.to_owned())?;
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].candidate.contains("192.0.2.1"));
+        Ok(())
+    }
+
+    #[test]
+    fn sdp_sanitizer_removes_benchmarking_fake_ip_candidates() {
+        let sdp = "v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+a=mid:0
+a=candidate:1 1 udp 2122260223 198.18.0.1 55964 typ host generation 0 ufrag abc network-id 1
+a=candidate:2 1 udp 2122260223 192.0.2.1 61764 typ host generation 0 ufrag abc network-id 1
+a=end-of-candidates";
+
+        let sanitized = strip_unusable_remote_ice_candidates(sdp);
+
+        assert!(!sanitized.contains("198.18.0.1"));
+        assert!(sanitized.contains("192.0.2.1"));
+        assert!(sanitized.contains("a=end-of-candidates"));
     }
 
     #[tokio::test]

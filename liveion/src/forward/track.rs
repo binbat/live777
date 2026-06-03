@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rtc::rtcp::transport_feedbacks::transport_layer_cc::{
@@ -65,6 +65,13 @@ impl ManualTwccFeedback {
             base_sequence_number: None,
             arrivals_us: BTreeMap::new(),
         }
+    }
+
+    fn new_shared(
+        twcc_ext_id: u8,
+        native_twcc_bound: Option<Arc<AtomicBool>>,
+    ) -> SharedManualTwccFeedback {
+        SharedManualTwccFeedback::new(twcc_ext_id, native_twcc_bound)
     }
 
     fn record(
@@ -185,6 +192,42 @@ impl ManualTwccFeedback {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct SharedManualTwccFeedback {
+    inner: Arc<Mutex<ManualTwccFeedback>>,
+}
+
+impl SharedManualTwccFeedback {
+    pub(crate) fn new(twcc_ext_id: u8, native_twcc_bound: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ManualTwccFeedback::new(
+                twcc_ext_id,
+                native_twcc_bound,
+            ))),
+        }
+    }
+
+    fn record(
+        &self,
+        media_ssrc: u32,
+        transport_sequence: u16,
+        now: Instant,
+    ) -> Vec<Box<dyn rtc::rtcp::Packet>> {
+        self.inner
+            .lock()
+            .expect("manual TWCC feedback lock poisoned")
+            .record(media_ssrc, transport_sequence, now)
+    }
+
+    #[cfg(test)]
+    fn flush(&self, now: Instant) -> Vec<Box<dyn rtc::rtcp::Packet>> {
+        self.inner
+            .lock()
+            .expect("manual TWCC feedback lock poisoned")
+            .flush(now)
+    }
+}
+
 fn encode_twcc_status_chunks(symbols: &[SymbolTypeTcc]) -> Vec<PacketStatusChunk> {
     let mut chunks = Vec::new();
     let mut i = 0;
@@ -236,6 +279,7 @@ impl PublishTrackRemote {
         track: Arc<dyn TrackRemote>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
+        manual_twcc_feedback: Option<SharedManualTwccFeedback>,
     ) -> Self {
         let rtp_sender = new_broadcast_channel!(4096);
         let ssrcs = track.ssrcs().await;
@@ -267,6 +311,7 @@ impl PublishTrackRemote {
             rtp_sender.clone(),
             twcc_ext_id,
             native_twcc_bound,
+            manual_twcc_feedback,
         ));
 
         Self::Real {
@@ -285,6 +330,7 @@ impl PublishTrackRemote {
         rtp_sender: broadcast::Sender<ForwardData>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
+        manual_twcc_feedback: Option<SharedManualTwccFeedback>,
     ) {
         let kind = track.kind().await;
         let ssrcs = track.ssrcs().await;
@@ -309,8 +355,10 @@ impl PublishTrackRemote {
         let last_twcc_seq = AtomicU64::new(0);
         let probe_start = Instant::now();
         let mut probe_tick = Instant::now();
-        let mut manual_twcc = (twcc_ext_id != 0)
-            .then(|| ManualTwccFeedback::new(twcc_ext_id, Some(native_twcc_bound)));
+        let manual_twcc = manual_twcc_feedback.or_else(|| {
+            (twcc_ext_id != 0)
+                .then(|| ManualTwccFeedback::new_shared(twcc_ext_id, Some(native_twcc_bound)))
+        });
         info!(
             "[{}] [{}] [twcc-probe] negotiated_twcc_ext_id={}",
             stream, id, twcc_ext_id,
@@ -353,7 +401,7 @@ impl PublishTrackRemote {
                                 }
                                 last_twcc_seq
                                     .store(tcc.transport_sequence as u64, Ordering::Relaxed);
-                                if let Some(feedback) = manual_twcc.as_mut() {
+                                if let Some(feedback) = manual_twcc.as_ref() {
                                     let packets = feedback.record(
                                         rtp_packet.header.ssrc,
                                         tcc.transport_sequence,
@@ -700,5 +748,33 @@ mod manual_twcc_tests {
                 .flush(start + Duration::from_millis(120))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn shared_manual_twcc_feedback_aggregates_interleaved_media_sequences() {
+        let start = Instant::now();
+        let feedback = ManualTwccFeedback::new_shared(4, None);
+
+        assert!(feedback.record(100, 10, start).is_empty());
+        assert!(
+            feedback
+                .record(200, 11, start + Duration::from_millis(10))
+                .is_empty()
+        );
+        assert!(
+            feedback
+                .record(100, 12, start + Duration::from_millis(20))
+                .is_empty()
+        );
+        let packets = feedback.flush(start + Duration::from_millis(120));
+
+        assert_eq!(packets.len(), 1);
+        let tcc = packets[0]
+            .as_any()
+            .downcast_ref::<rtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc>()
+            .expect("manual feedback must generate TransportLayerCc");
+        assert_eq!(tcc.base_sequence_number, 10);
+        assert_eq!(tcc.packet_status_count, 3);
+        assert_eq!(tcc.recv_deltas.len(), 3);
     }
 }

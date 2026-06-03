@@ -22,8 +22,6 @@ url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
 
 [[ice_servers]]
 urls = [
-    "stun:stun.22333.fun",
-    "stun:cn.22333.fun",
     "stun:stun.l.google.com:19302",
 ]
 

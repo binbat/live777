@@ -37,7 +37,7 @@ use super::media::MediaInfo;
 use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
-use super::track::PublishTrackRemote;
+use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
 fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
     vec![
@@ -623,6 +623,8 @@ pub(crate) struct PeerForwardInternal {
     rtcp_egress_counters: std::sync::Mutex<Option<std::sync::Arc<rtcp_egress_probe::Counters>>>,
     /// Set by the publish interceptor once native TWCC receiver binding is active.
     native_twcc_bound: Arc<AtomicBool>,
+    /// Shared manual TWCC fallback for all tracks in a publish peer.
+    manual_twcc_feedback: std::sync::Mutex<Option<SharedManualTwccFeedback>>,
     #[cfg(feature = "source")]
     channel: Channel,
 }
@@ -656,6 +658,7 @@ impl PeerForwardInternal {
             negotiated_twcc_ext_id: AtomicU8::new(0),
             rtcp_egress_counters: std::sync::Mutex::new(None),
             native_twcc_bound: Arc::new(AtomicBool::new(false)),
+            manual_twcc_feedback: std::sync::Mutex::new(None),
             channel,
         }
     }
@@ -687,6 +690,7 @@ impl PeerForwardInternal {
             negotiated_twcc_ext_id: AtomicU8::new(0),
             rtcp_egress_counters: std::sync::Mutex::new(None),
             native_twcc_bound: Arc::new(AtomicBool::new(false)),
+            manual_twcc_feedback: std::sync::Mutex::new(None),
         }
     }
 
@@ -1019,6 +1023,7 @@ impl PeerForwardInternal {
         let c = egress_counters.clone();
         let native_twcc_bound = self.native_twcc_bound.clone();
         native_twcc_bound.store(false, Ordering::Relaxed);
+        *self.manual_twcc_feedback.lock().unwrap() = None;
         let registry = registry.with(move |inner| {
             rtcp_egress_probe::RtcpEgressProbe::new(inner, stream, c, native_twcc_bound)
         });
@@ -1099,12 +1104,28 @@ impl PeerForwardInternal {
         track: Arc<dyn TrackRemote>,
     ) -> Result<()> {
         let twcc_ext_id = self.negotiated_twcc_ext_id.load(Ordering::Relaxed);
+        let manual_twcc_feedback = if twcc_ext_id != 0 {
+            let mut shared = self.manual_twcc_feedback.lock().unwrap();
+            Some(
+                shared
+                    .get_or_insert_with(|| {
+                        SharedManualTwccFeedback::new(
+                            twcc_ext_id,
+                            Some(self.native_twcc_bound.clone()),
+                        )
+                    })
+                    .clone(),
+            )
+        } else {
+            None
+        };
         let publish_track_remote = PublishTrackRemote::new(
             self.stream.clone(),
             get_peer_id(&peer),
             track,
             twcc_ext_id,
             self.native_twcc_bound.clone(),
+            manual_twcc_feedback,
         )
         .await;
 
