@@ -25,7 +25,7 @@ use crate::config::ChannelStream;
 /// - Recommended single payload: < 1200 bytes
 ///
 /// Control messages (e.g. PTZ commands) are well within this limit.
-const UDP_BUF_SIZE: usize = 1024;
+const UDP_BUF_SIZE: usize = 1500;
 
 /// Spawn bidirectional forwarding tasks.
 pub async fn spawn_channel(

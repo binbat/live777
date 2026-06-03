@@ -41,6 +41,13 @@ path = "src/livevod.rs"
 name = "net4mqtt"
 path = "src/net4mqtt.rs"
 
+[[bin]]
+name = "datachannel_loadtest"
+path = "src/bin/datachannel_loadtest.rs"
+required-features = ["source"]
+test = false
+bench = false
+
 [workspace]
 members = [
     ".",
@@ -115,6 +122,7 @@ storage = { path = "libs/storage" }
 api = { path = "libs/api" }
 
 clap = { workspace = true, features = ["derive"] }
+reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["process"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
