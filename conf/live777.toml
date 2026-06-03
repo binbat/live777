@@ -30,8 +30,9 @@ urls = [
 [webrtc]
 # UDP bind addresses used by WebRTC ICE host candidates.
 # Env override priority: LIVE777_WEBRTC_ICE_UDP_ADDRS > LIVE777_WEBRTC_ICE_UDP_ADDR > LIVETWO_WEBRTC_ICE_UDP_ADDR > config > default.
-# 0.0.0.0 can bind sockets, but it is not a usable advertised ICE candidate address.
-ice_udp_addrs = ["127.0.0.1:0"]
+# Use "auto" to advertise a non-loopback local address. Use "127.0.0.1:0" only when the browser runs on the same machine.
+# 0.0.0.0 can bind sockets, but it is not a usable advertised ICE candidate address and will be ignored.
+ice_udp_addrs = ["auto"]
 
 [stream]
 

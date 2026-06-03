@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
-pub const DEFAULT_WEBRTC_ICE_UDP_ADDR: &str = "127.0.0.1:0";
+pub const DEFAULT_WEBRTC_ICE_UDP_ADDR: &str = "auto";
+const LOOPBACK_WEBRTC_ICE_UDP_ADDR: &str = "127.0.0.1:0";
 const WEBRTC_ICE_UDP_ADDRS_ENV: &str = "LIVE777_WEBRTC_ICE_UDP_ADDRS";
 const LEGACY_WEBRTC_ICE_UDP_ADDR_ENV: &str = "LIVE777_WEBRTC_ICE_UDP_ADDR";
 const LEGACY_LIVETWO_WEBRTC_ICE_UDP_ADDR_ENV: &str = "LIVETWO_WEBRTC_ICE_UDP_ADDR";
@@ -17,12 +18,15 @@ pub fn resolve_webrtc_ice_udp_addrs(configured: Option<Vec<String>>) -> Vec<Sock
     let addrs = raw_addrs
         .iter()
         .flat_map(|value| value.split(','))
-        .filter_map(|addr| {
+        .flat_map(|addr| {
             let addr = addr.trim();
             if addr.is_empty() {
-                return None;
+                return Vec::new();
             }
-            match addr.parse::<SocketAddr>() {
+            if addr.eq_ignore_ascii_case("auto") {
+                return discover_webrtc_ice_udp_addrs();
+            }
+            let parsed = match addr.parse::<SocketAddr>() {
                 Ok(addr) if addr.ip().is_unspecified() => {
                     tracing::warn!(
                         "Ignoring unspecified WebRTC ICE UDP address '{addr}': unspecified address is not suitable as an ICE candidate address"
@@ -34,19 +38,55 @@ pub fn resolve_webrtc_ice_udp_addrs(configured: Option<Vec<String>>) -> Vec<Sock
                     tracing::warn!("Ignoring invalid WebRTC ICE UDP address '{addr}': {error}");
                     None
                 }
-            }
+            };
+            parsed.into_iter().collect()
         })
         .collect::<Vec<_>>();
 
     if addrs.is_empty() {
-        vec![
-            DEFAULT_WEBRTC_ICE_UDP_ADDR
-                .parse()
-                .expect("default WebRTC ICE UDP addr is valid"),
-        ]
+        fallback_webrtc_ice_udp_addrs()
     } else {
         addrs
     }
+}
+
+fn discover_webrtc_ice_udp_addrs() -> Vec<SocketAddr> {
+    let mut addrs = [
+        discover_local_addr("8.8.8.8:80"),
+        discover_local_addr("[2001:4860:4860::8888]:80"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|addr| !addr.ip().is_unspecified() && !addr.ip().is_loopback())
+    .map(|addr| SocketAddr::new(addr.ip(), 0))
+    .collect::<Vec<_>>();
+
+    addrs.sort_unstable();
+    addrs.dedup();
+    addrs
+}
+
+fn discover_local_addr(remote: &str) -> Option<SocketAddr> {
+    let remote = remote.parse::<SocketAddr>().ok()?;
+    let bind_addr = if remote.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = std::net::UdpSocket::bind(bind_addr).ok()?;
+    socket.connect(remote).ok()?;
+    socket.local_addr().ok()
+}
+
+fn fallback_webrtc_ice_udp_addrs() -> Vec<SocketAddr> {
+    tracing::warn!(
+        "No non-loopback WebRTC ICE UDP address discovered; falling back to {LOOPBACK_WEBRTC_ICE_UDP_ADDR}. Remote browsers may fail unless ice_udp_addrs is configured explicitly."
+    );
+    vec![
+        LOOPBACK_WEBRTC_ICE_UDP_ADDR
+            .parse()
+            .expect("loopback WebRTC ICE UDP addr is valid"),
+    ]
 }
 
 #[cfg(test)]
@@ -87,11 +127,12 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_loopback_udp_addr_without_config_or_env() {
+    fn defaults_to_auto_non_loopback_udp_addr_without_config_or_env() {
         with_clean_env(|| {
-            assert_eq!(
-                resolve_webrtc_ice_udp_addrs(None),
-                vec![DEFAULT_WEBRTC_ICE_UDP_ADDR.parse::<SocketAddr>().unwrap()]
+            let addrs = resolve_webrtc_ice_udp_addrs(None);
+            assert!(
+                addrs.iter().all(|addr| !addr.ip().is_loopback()),
+                "default WebRTC ICE UDP addrs must not advertise loopback-only candidates: {addrs:?}"
             );
         });
     }
@@ -155,7 +196,7 @@ mod tests {
         with_clean_env(|| {
             assert_eq!(
                 resolve_webrtc_ice_udp_addrs(Some(vec!["not-a-socket".to_string()])),
-                vec![DEFAULT_WEBRTC_ICE_UDP_ADDR.parse::<SocketAddr>().unwrap()]
+                fallback_webrtc_ice_udp_addrs()
             );
         });
     }
@@ -165,10 +206,7 @@ mod tests {
         with_clean_env(|| {
             let addrs = resolve_webrtc_ice_udp_addrs(Some(vec!["0.0.0.0:0".to_string()]));
 
-            assert_eq!(
-                addrs,
-                vec![DEFAULT_WEBRTC_ICE_UDP_ADDR.parse::<SocketAddr>().unwrap()]
-            );
+            assert_eq!(addrs, fallback_webrtc_ice_udp_addrs());
             assert!(!addrs.iter().any(|addr| addr.ip().is_unspecified()));
         });
     }
@@ -178,10 +216,7 @@ mod tests {
         with_clean_env(|| {
             let addrs = resolve_webrtc_ice_udp_addrs(Some(vec!["[::]:0".to_string()]));
 
-            assert_eq!(
-                addrs,
-                vec![DEFAULT_WEBRTC_ICE_UDP_ADDR.parse::<SocketAddr>().unwrap()]
-            );
+            assert_eq!(addrs, fallback_webrtc_ice_udp_addrs());
             assert!(!addrs.iter().any(|addr| addr.ip().is_unspecified()));
         });
     }

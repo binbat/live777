@@ -772,14 +772,14 @@ a=end-of-candidates";
         let forward = PeerForward::new(
             "bwe-contract-test",
             vec![],
-            api::webrtc::resolve_webrtc_ice_udp_addrs(None),
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
             crate::config::Channel::default(),
         );
         #[cfg(not(feature = "source"))]
         let forward = PeerForward::new(
             "bwe-contract-test",
             vec![],
-            api::webrtc::resolve_webrtc_ice_udp_addrs(None),
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
         );
         let (answer, session) = forward.set_publish(offer).await?;
 
