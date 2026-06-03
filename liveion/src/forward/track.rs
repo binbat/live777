@@ -489,49 +489,6 @@ impl PublishTrackRemote {
     }
 }
 
-#[cfg(test)]
-mod manual_twcc_tests {
-    use super::*;
-
-    #[test]
-    fn manual_twcc_feedback_marks_missing_packets() {
-        let start = Instant::now();
-        let mut feedback = ManualTwccFeedback::new(4, None);
-
-        assert!(feedback.record(99, 10, start).is_empty());
-        assert!(
-            feedback
-                .record(99, 12, start + Duration::from_millis(20))
-                .is_empty()
-        );
-        let packets = feedback.flush(start + Duration::from_millis(120));
-
-        assert_eq!(packets.len(), 1);
-        let tcc = packets[0]
-            .as_any()
-            .downcast_ref::<rtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc>()
-            .expect("manual feedback must generate TransportLayerCc");
-        assert_eq!(tcc.media_ssrc, 99);
-        assert_eq!(tcc.base_sequence_number, 10);
-        assert_eq!(tcc.packet_status_count, 3);
-        assert_eq!(tcc.recv_deltas.len(), 2);
-    }
-
-    #[test]
-    fn manual_twcc_feedback_is_disabled_when_native_twcc_is_bound() {
-        let start = Instant::now();
-        let native_twcc_bound = Arc::new(AtomicBool::new(true));
-        let mut feedback = ManualTwccFeedback::new(4, Some(native_twcc_bound));
-
-        assert!(feedback.record(99, 10, start).is_empty());
-        assert!(
-            feedback
-                .flush(start + Duration::from_millis(120))
-                .is_empty()
-        );
-    }
-}
-
 #[cfg(feature = "source")]
 pub struct VirtualPublishTrack {
     pub rid: String,
@@ -701,4 +658,47 @@ fn system_time_to_ntp(time: SystemTime) -> u64 {
     let fraction = ((duration.subsec_nanos() as u64) << 32) / 1_000_000_000;
 
     (seconds << 32) | fraction
+}
+
+#[cfg(test)]
+mod manual_twcc_tests {
+    use super::*;
+
+    #[test]
+    fn manual_twcc_feedback_marks_missing_packets() {
+        let start = Instant::now();
+        let mut feedback = ManualTwccFeedback::new(4, None);
+
+        assert!(feedback.record(99, 10, start).is_empty());
+        assert!(
+            feedback
+                .record(99, 12, start + Duration::from_millis(20))
+                .is_empty()
+        );
+        let packets = feedback.flush(start + Duration::from_millis(120));
+
+        assert_eq!(packets.len(), 1);
+        let tcc = packets[0]
+            .as_any()
+            .downcast_ref::<rtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc>()
+            .expect("manual feedback must generate TransportLayerCc");
+        assert_eq!(tcc.media_ssrc, 99);
+        assert_eq!(tcc.base_sequence_number, 10);
+        assert_eq!(tcc.packet_status_count, 3);
+        assert_eq!(tcc.recv_deltas.len(), 2);
+    }
+
+    #[test]
+    fn manual_twcc_feedback_is_disabled_when_native_twcc_is_bound() {
+        let start = Instant::now();
+        let native_twcc_bound = Arc::new(AtomicBool::new(true));
+        let mut feedback = ManualTwccFeedback::new(4, Some(native_twcc_bound));
+
+        assert!(feedback.record(99, 10, start).is_empty());
+        assert!(
+            feedback
+                .flush(start + Duration::from_millis(120))
+                .is_empty()
+        );
+    }
 }
