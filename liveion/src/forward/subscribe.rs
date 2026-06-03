@@ -263,6 +263,45 @@ impl SubscribeRTCPeerConnection {
             && left.sdp_fmtp_line == right.sdp_fmtp_line
     }
 
+    fn fmtp_param(fmtp: &str, key: &str) -> Option<String> {
+        fmtp.split(';').find_map(|part| {
+            let (param_key, value) = part.trim().split_once('=')?;
+            param_key
+                .trim()
+                .eq_ignore_ascii_case(key)
+                .then(|| value.trim().to_ascii_lowercase())
+        })
+    }
+
+    fn is_h265_codec(codec: &RTCRtpCodec) -> bool {
+        codec.mime_type.eq_ignore_ascii_case("video/H265")
+    }
+
+    fn h265_codecs_are_compatible(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
+        if !Self::is_h265_codec(candidate) || !Self::is_h265_codec(publisher) {
+            return false;
+        }
+
+        if candidate.clock_rate != publisher.clock_rate || candidate.channels != publisher.channels
+        {
+            return false;
+        }
+
+        for key in ["profile-id", "tier-flag", "tx-mode"] {
+            match (
+                Self::fmtp_param(&publisher.sdp_fmtp_line, key),
+                Self::fmtp_param(&candidate.sdp_fmtp_line, key),
+            ) {
+                (Some(publisher_value), Some(candidate_value))
+                    if publisher_value == candidate_value => {}
+                (Some(_), _) => return false,
+                _ => {}
+            }
+        }
+
+        true
+    }
+
     async fn select_sender_codec(
         stream: &str,
         id: &str,
@@ -318,22 +357,34 @@ impl SubscribeRTCPeerConnection {
         publisher_codec: &RTCRtpCodec,
         codecs: &[RTCRtpCodecParameters],
     ) -> Option<RTCRtpCodecParameters> {
-        codecs
+        let exact_match = codecs
             .iter()
             .find(|candidate| Self::rtp_codecs_match(&candidate.rtp_codec, publisher_codec))
-            .cloned()
-            .or_else(|| {
-                codecs
-                    .iter()
-                    .find(|candidate| {
-                        candidate
-                            .rtp_codec
-                            .mime_type
-                            .eq_ignore_ascii_case(&publisher_codec.mime_type)
-                            && candidate.rtp_codec.clock_rate == publisher_codec.clock_rate
-                    })
-                    .cloned()
+            .cloned();
+
+        if exact_match.is_some() {
+            return exact_match;
+        }
+
+        if Self::is_h265_codec(publisher_codec) {
+            return codecs
+                .iter()
+                .find(|candidate| {
+                    Self::h265_codecs_are_compatible(&candidate.rtp_codec, publisher_codec)
+                })
+                .cloned();
+        }
+
+        codecs
+            .iter()
+            .find(|candidate| {
+                candidate
+                    .rtp_codec
+                    .mime_type
+                    .eq_ignore_ascii_case(&publisher_codec.mime_type)
+                    && candidate.rtp_codec.clock_rate == publisher_codec.clock_rate
             })
+            .cloned()
     }
 
     fn is_transient_track_write_error(err: &impl Display) -> bool {
@@ -839,6 +890,47 @@ mod tests {
 
         assert_eq!(selected.payload_type, 102);
         assert_eq!(selected.rtp_codec.sdp_fmtp_line, source_codec.sdp_fmtp_line);
+    }
+
+    #[test]
+    fn h265_codec_selection_prefers_matching_profile_over_first_h265() {
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "level-id=123;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let main_10_profile = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/H265".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-id=180;profile-id=2;tier-flag=0;tx-mode=SRST".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 51,
+        };
+        let main_profile = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/H265".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 49,
+        };
+
+        let selected = SubscribeRTCPeerConnection::select_compatible_codec(
+            RtpCodecKind::Video,
+            &source_codec,
+            &[main_10_profile, main_profile],
+        )
+        .expect("matching H265 profile should be selected");
+
+        assert_eq!(selected.payload_type, 49);
+        assert!(selected.rtp_codec.sdp_fmtp_line.contains("profile-id=1"));
     }
 
     #[test]
