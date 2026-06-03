@@ -95,7 +95,7 @@ export default function Publisher() {
     let qrStream: QRCodeStream | null = null;
     let desktopStreamCleanupInProgress = false;
 
-    const selectedVideoCodec = () => (searchParams.vcodec as string) || "vp8";
+    const selectedVideoCodec = () => (searchParams.vcodec as string) || "";
 
     const updatePreviewStream = (currentStream: MediaStream | null) => {
         setAudioTrackCount(
