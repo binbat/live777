@@ -5,12 +5,9 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use clap::ValueEnum;
-use webrtc::{
-    api::media_engine::*,
-    rtp_transceiver::{
-        RTCPFeedback,
-        rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
-    },
+use rtc::{
+    peer_connection::configuration::media_engine::*,
+    rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RtpCodecKind},
 };
 
 #[derive(Copy, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -26,11 +23,15 @@ pub enum Codec {
     PCMA,
 }
 
-impl From<Codec> for RTCRtpCodecCapability {
+impl From<Codec> for RTCRtpCodec {
     fn from(val: Codec) -> Self {
         let video_rtcp_feedback = vec![
             RTCPFeedback {
                 typ: "goog-remb".to_owned(),
+                parameter: "".to_owned(),
+            },
+            RTCPFeedback {
+                typ: "transport-cc".to_owned(),
                 parameter: "".to_owned(),
             },
             RTCPFeedback {
@@ -47,21 +48,21 @@ impl From<Codec> for RTCRtpCodecCapability {
             },
         ];
         match val {
-            Codec::Vp8 => RTCRtpCodecCapability {
+            Codec::Vp8 => RTCRtpCodec {
                 mime_type: MIME_TYPE_VP8.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line: "".to_owned(),
                 rtcp_feedback: video_rtcp_feedback,
             },
-            Codec::Vp9 => RTCRtpCodecCapability {
+            Codec::Vp9 => RTCRtpCodec {
                 mime_type: MIME_TYPE_VP9.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line: "profile-id=0".to_owned(),
                 rtcp_feedback: video_rtcp_feedback,
             },
-            Codec::H264 => RTCRtpCodecCapability {
+            Codec::H264 => RTCRtpCodec {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
@@ -70,42 +71,42 @@ impl From<Codec> for RTCRtpCodecCapability {
                         .to_owned(),
                 rtcp_feedback: video_rtcp_feedback,
             },
-            Codec::H265 => RTCRtpCodecCapability {
+            Codec::H265 => RTCRtpCodec {
                 mime_type: MIME_TYPE_HEVC.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line: "".to_owned(),
                 rtcp_feedback: video_rtcp_feedback,
             },
-            Codec::AV1 => RTCRtpCodecCapability {
+            Codec::AV1 => RTCRtpCodec {
                 mime_type: MIME_TYPE_AV1.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line: "profile-id=0".to_owned(),
                 rtcp_feedback: video_rtcp_feedback,
             },
-            Codec::Opus => RTCRtpCodecCapability {
+            Codec::Opus => RTCRtpCodec {
                 mime_type: MIME_TYPE_OPUS.to_owned(),
                 clock_rate: 48000,
                 channels: 2,
                 sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
                 rtcp_feedback: vec![],
             },
-            Codec::G722 => RTCRtpCodecCapability {
+            Codec::G722 => RTCRtpCodec {
                 mime_type: MIME_TYPE_G722.to_owned(),
                 clock_rate: 8000,
                 channels: 0,
                 sdp_fmtp_line: "".to_owned(),
                 rtcp_feedback: vec![],
             },
-            Codec::PCMU => RTCRtpCodecCapability {
+            Codec::PCMU => RTCRtpCodec {
                 mime_type: MIME_TYPE_PCMU.to_owned(),
                 clock_rate: 8000,
                 channels: 0,
                 sdp_fmtp_line: "".to_owned(),
                 rtcp_feedback: vec![],
             },
-            Codec::PCMA => RTCRtpCodecCapability {
+            Codec::PCMA => RTCRtpCodec {
                 mime_type: MIME_TYPE_PCMA.to_owned(),
                 clock_rate: 8000,
                 channels: 0,
@@ -129,14 +130,14 @@ pub fn codec_from_str(s: &str) -> Result<Codec> {
     }
 }
 
-pub fn get_codec_type(codec: &RTCRtpCodecCapability) -> RTPCodecType {
+pub fn get_codec_type(codec: &RTCRtpCodec) -> RtpCodecKind {
     let mime_type = &codec.mime_type;
     if mime_type.starts_with("video") {
-        RTPCodecType::Video
+        RtpCodecKind::Video
     } else if mime_type.starts_with("audio") {
-        RTPCodecType::Audio
+        RtpCodecKind::Audio
     } else {
-        RTPCodecType::Unspecified
+        RtpCodecKind::Unspecified
     }
 }
 
@@ -174,4 +175,24 @@ pub fn create_child(command: Option<String>) -> Result<Option<ChildGuard>> {
         }
         None => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_codecs_include_transport_cc_feedback() {
+        for codec in [Codec::Vp8, Codec::Vp9, Codec::H264, Codec::H265, Codec::AV1] {
+            let rtp_codec = RTCRtpCodec::from(codec);
+
+            assert!(
+                rtp_codec.rtcp_feedback.iter().any(|feedback| {
+                    feedback.typ == "transport-cc" && feedback.parameter.is_empty()
+                }),
+                "{codec:?} missing transport-cc feedback: {:?}",
+                rtp_codec.rtcp_feedback
+            );
+        }
+    }
 }

@@ -5,10 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
-use webrtc::{
-    peer_connection::RTCPeerConnection,
-    stats::{InboundRTPStats, OutboundRTPStats, StatsReportType},
-};
+use webrtc::peer_connection::PeerConnection;
 pub struct RtcpStats {
     pub fir_count: AtomicU64,
     pub pli_count: AtomicU64,
@@ -118,30 +115,44 @@ impl RtcpStats {
         self.packets_lost.store(count, Ordering::Relaxed);
     }
 
-    pub fn update_from_inbound_stats(&self, stats: &InboundRTPStats) {
-        self.set_bytes_received(stats.bytes_received);
-        self.set_packets_received(stats.packets_received);
+    pub fn update_from_inbound_stats(
+        &self,
+        bytes_received: u64,
+        packets_received: u64,
+        fir: Option<u64>,
+        pli: Option<u64>,
+        nack: u64,
+    ) {
+        self.set_bytes_received(bytes_received);
+        self.set_packets_received(packets_received);
 
-        if let Some(fir) = stats.fir_count {
+        if let Some(fir) = fir {
             self.fir_count.store(fir, Ordering::Relaxed);
         }
-        if let Some(pli) = stats.pli_count {
+        if let Some(pli) = pli {
             self.pli_count.store(pli, Ordering::Relaxed);
         }
-        self.nack_count.store(stats.nack_count, Ordering::Relaxed);
+        self.nack_count.store(nack, Ordering::Relaxed);
     }
 
-    pub fn update_from_outbound_stats(&self, stats: &OutboundRTPStats) {
-        self.set_bytes_sent(stats.bytes_sent);
-        self.set_packets_sent(stats.packets_sent);
+    pub fn update_from_outbound_stats(
+        &self,
+        bytes_sent: u64,
+        packets_sent: u64,
+        fir: Option<u64>,
+        pli: Option<u64>,
+        nack: u64,
+    ) {
+        self.set_bytes_sent(bytes_sent);
+        self.set_packets_sent(packets_sent);
 
-        if let Some(fir) = stats.fir_count {
+        if let Some(fir) = fir {
             self.fir_count.store(fir, Ordering::Relaxed);
         }
-        if let Some(pli) = stats.pli_count {
+        if let Some(pli) = pli {
             self.pli_count.store(pli, Ordering::Relaxed);
         }
-        self.nack_count.store(stats.nack_count, Ordering::Relaxed);
+        self.nack_count.store(nack, Ordering::Relaxed);
     }
 
     pub async fn get_send_bitrate(&self) -> f64 {
@@ -346,8 +357,8 @@ Rates:
 
 pub async fn start_stats_monitor(
     ct: CancellationToken,
-    peer: Arc<RTCPeerConnection>,
-    stats: Arc<RtcpStats>,
+    _peer: Arc<dyn PeerConnection>,
+    _stats: Arc<RtcpStats>,
 ) {
     tokio::spawn(async move {
         info!("WebRTC stats monitor started");
@@ -356,37 +367,10 @@ pub async fn start_stats_monitor(
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let stats_report = peer.get_stats().await;
-
-                    for report in stats_report.reports.values() {
-                        match report {
-                            StatsReportType::InboundRTP(inbound) => {
-                                stats.update_from_inbound_stats(inbound);
-                                debug!(
-                                    "InboundRTP - SSRC: {}, bytes: {}, packets: {}, FIR: {:?}, PLI: {:?}, NACK: {}",
-                                    inbound.ssrc,
-                                    inbound.bytes_received,
-                                    inbound.packets_received,
-                                    inbound.fir_count,
-                                    inbound.pli_count,
-                                    inbound.nack_count
-                                );
-                            }
-                            StatsReportType::OutboundRTP(outbound) => {
-                                stats.update_from_outbound_stats(outbound);
-                                debug!(
-                                    "OutboundRTP - SSRC: {}, bytes: {}, packets: {}, FIR: {:?}, PLI: {:?}, NACK: {}",
-                                    outbound.ssrc,
-                                    outbound.bytes_sent,
-                                    outbound.packets_sent,
-                                    outbound.fir_count,
-                                    outbound.pli_count,
-                                    outbound.nack_count
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
+                    // In the new API, stats are accessed via get_stats(now, selector)
+                    // which returns RTCStatsReport. This needs to be re-implemented
+                    // with the new stats API.
+                    debug!("Stats tick (not yet implemented for new API)");
                 }
                 _ = ct.cancelled() => {
                     info!("WebRTC stats monitor shutting down");

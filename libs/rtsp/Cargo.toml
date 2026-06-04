@@ -15,6 +15,7 @@ tracing = { workspace = true }
 base64 = { workspace = true }
 
 webrtc = { workspace = true }
+rtc = { workspace = true }
 sdp = { workspace = true }
 serde = { workspace = true }
 

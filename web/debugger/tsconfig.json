@@ -15,6 +15,10 @@
     "noEmit": true,
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["web/*"]
+    },
 
     /* Linting */
     "strict": true,

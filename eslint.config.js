@@ -1,34 +1,24 @@
 import js from '@eslint/js';
 import ts from 'typescript-eslint';
 
-import stylisticJs from '@stylistic/eslint-plugin-js';
-
 export default ts.config(
     {
         ignores: [
             'assets/',
             'docs/.vitepress/cache/',
             'docs/.vitepress/dist/',
+            'node_modules/',
+            'target/',
+            'web/**/dist/',
             'web/shared/tools/debugger/**/*.js'
         ]
     },
     js.configs.recommended,
-    {
-        // js options
-        plugins: {
-            '@stylistic/js': stylisticJs
-        },
-        rules: {
-            '@stylistic/js/semi': ['warn', 'always'],
-            '@stylistic/js/quotes': ['error', 'single', { 'avoidEscape': true }],
-            '@stylistic/js/indent': ['warn', 4, { 'SwitchCase': 1 }],
-            '@stylistic/js/jsx-quotes': ['error', 'prefer-double']
-        }
-    },
     ...ts.configs.recommended,
     {
         // ts options
         rules: {
+            'no-undef': 'off',
             '@typescript-eslint/no-unused-vars': [
                 'error',
                 {

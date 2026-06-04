@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use ::webrtc::peer_connection::RTCPeerConnectionState;
+use anyhow::{Result, anyhow};
+use std::process::ExitStatus;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -18,6 +21,7 @@ use crate::utils::shutdown::graceful_shutdown;
 use crate::utils::stats::start_stats_monitor;
 
 pub use input::InputSource;
+pub(crate) use webrtc::log_rtcp_feedback_packet;
 pub use webrtc::setup_whip_peer;
 
 pub async fn into(
@@ -41,13 +45,14 @@ pub async fn into(
 
     let port_update_rx = input_source.take_port_update_rx();
 
-    let (peer, video_sender, audio_sender, stats) = webrtc::setup_whip_peer(
-        ct.clone(),
-        &mut client,
-        input_source.media_info(),
-        target_url.clone(),
-    )
-    .await?;
+    let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
+        webrtc::setup_whip_peer(
+            ct.clone(),
+            &mut client,
+            input_source.media_info(),
+            target_url.clone(),
+        )
+        .await?;
     info!("WebRTC peer connection established");
 
     start_stats_monitor(ct.clone(), peer.clone(), stats.clone()).await;
@@ -146,30 +151,85 @@ pub async fn into(
     }
 
     if child.as_ref().is_some() {
-        let child_clone = child.clone();
-        let ct_clone = ct.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        if let Some(child_guard_wrapper) = child_clone.as_ref()
-                            && let Ok(mut child_guard) = child_guard_wrapper.lock()
-                            && let Ok(Some(status)) = child_guard.try_wait() {
-                                info!("Child process exited with status: {:?}", status);
-                                ct_clone.cancel();
-                                break;
-                            }
-                    }
-                    _ = ct_clone.cancelled() => {
-                        break;
-                    }
-                }
+        tokio::select! {
+            _ = ct.cancelled() => {
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                Ok(())
             }
-        });
+            result = wait_for_unexpected_peer_end(peer.clone(), peer_state_rx, peer_diagnostics) => {
+                ct.cancel();
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                result
+            }
+            status = wait_for_child_exit(child.clone()) => {
+                let status = status?;
+                info!("Child process exited with status: {:?}", status);
+                ct.cancel();
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                Err(anyhow!("WHIP child process exited before shutdown: {status}"))
+            }
+        }
+    } else {
+        tokio::select! {
+            _ = ct.cancelled() => {
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                Ok(())
+            }
+            result = wait_for_unexpected_peer_end(peer.clone(), peer_state_rx, peer_diagnostics) => {
+                ct.cancel();
+                graceful_shutdown("WHIP", &mut client, peer).await;
+                result
+            }
+        }
     }
+}
 
-    ct.cancelled().await;
-    graceful_shutdown("WHIP", &mut client, peer).await;
+async fn wait_for_unexpected_peer_end(
+    peer: Arc<dyn ::webrtc::peer_connection::PeerConnection>,
+    mut state_rx: watch::Receiver<RTCPeerConnectionState>,
+    diagnostics: Arc<webrtc::WhipPeerDiagnostics>,
+) -> Result<()> {
+    let mut saw_connected = *state_rx.borrow() == RTCPeerConnectionState::Connected;
 
-    Ok(())
+    loop {
+        state_rx
+            .changed()
+            .await
+            .map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
+
+        let state = *state_rx.borrow();
+        if state == RTCPeerConnectionState::Connected {
+            saw_connected = true;
+        }
+
+        if matches!(
+            state,
+            RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected
+        ) {
+            let ice_stats = webrtc::format_ice_stats(peer.clone()).await;
+            return Err(anyhow!(
+                "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}, {}, ice_stats=[{}]",
+                diagnostics.format(),
+                ice_stats
+            ));
+        }
+    }
+}
+
+async fn wait_for_child_exit(child: Arc<Option<cli::ChildGuard>>) -> Result<ExitStatus> {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        if let Some(child_guard_wrapper) = child.as_ref() {
+            let status = child_guard_wrapper
+                .lock()
+                .map_err(|_| anyhow!("WHIP child process mutex poisoned"))?
+                .try_wait()?;
+            if let Some(status) = status {
+                return Ok(status);
+            }
+        }
+    }
 }

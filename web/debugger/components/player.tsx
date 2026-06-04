@@ -46,7 +46,7 @@ export default function Player(props: {
                 </select>
             </label>
             <br />
-            <div style={{ width: displayWidth() }}>
+            <div style={{ width: displayWidth(), margin: "0 auto" }}>
                 <PlayerSurface
                     stream={props.stream}
                     autoplay

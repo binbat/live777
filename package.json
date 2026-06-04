@@ -20,7 +20,8 @@
     "preview:liveman": "pnpm --filter liveman preview",
     "preview:livecam": "pnpm --filter livecam preview",
     "check": "biome check",
-    "lint": "eslint && tsc --noEmit",
+    "lint": "eslint && pnpm run typecheck",
+    "typecheck": "tsc --noEmit && pnpm --filter alone-player exec tsc --noEmit && pnpm --filter debugger exec tsc --noEmit",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"

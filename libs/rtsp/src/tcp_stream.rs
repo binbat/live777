@@ -93,13 +93,22 @@ where
                     buffer.drain(..consumed);
                 }
 
-                if !buffer.is_empty()
-                    && buffer[0] != b'$'
-                    && let Some(consumed) = try_parse_rtsp_message(&buffer)?
-                {
-                    debug!("Received RTSP control message, closing session");
-                    buffer.drain(..consumed);
-                    break;
+                if !buffer.is_empty() && buffer[0] != b'$' {
+                    match try_parse_rtsp_message(&buffer)? {
+                        Some((consumed, true)) => {
+                            info!("Received TEARDOWN in data stream, closing session");
+                            buffer.drain(..consumed);
+                            break;
+                        }
+                        Some((consumed, false)) => {
+                            debug!(
+                                "Skipping non-TEARDOWN RTSP message in data stream ({} bytes)",
+                                consumed
+                            );
+                            buffer.drain(..consumed);
+                        }
+                        None => {}
+                    }
                 }
 
                 if buffer.len() > buffer::MAX_BUFFER_SIZE / 2 {
@@ -160,22 +169,24 @@ fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>
     Ok(Some((channel, data, total_size)))
 }
 
-fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<usize>> {
+/// Parse an RTSP message from the buffer. Returns `Ok(Some((consumed, is_teardown)))`
+/// where `is_teardown` is true only for TEARDOWN requests. Non-TEARDOWN messages are
+/// consumed (drained) but do NOT break the read loop.
+fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<(usize, bool)>> {
     match rtsp_types::Message::<Vec<u8>>::parse(buffer) {
         Ok((msg, consumed)) => {
             if let rtsp_types::Message::Request(req) = msg
                 && matches!(req.method(), rtsp_types::Method::Teardown)
             {
-                info!("Received TEARDOWN in data stream");
-                return Ok(Some(consumed));
+                return Ok(Some((consumed, true)));
             }
 
-            Ok(Some(consumed))
+            Ok(Some((consumed, false)))
         }
         Err(rtsp_types::ParseError::Incomplete(_)) => Ok(None),
         Err(e) => {
             warn!("Failed to parse RTSP message: {:?}, skipping byte", e);
-            Ok(Some(1))
+            Ok(Some((1, false)))
         }
     }
 }

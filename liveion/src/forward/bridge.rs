@@ -3,11 +3,11 @@ use crate::forward::rtcp::RtcpMessage;
 use crate::stream::source::{MediaPacket, StateChangeEvent};
 use anyhow::Result;
 use anyhow::anyhow;
+use rtc::shared::marshal::Marshal;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace, warn};
-use webrtc::util::Marshal;
 
 const LOG_PACKET_INTERVAL: u64 = 100;
 
@@ -352,7 +352,7 @@ impl SourceBridge {
                                 continue;
                             };
 
-                            let pli = webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
+                            let pli = rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
                                 sender_ssrc: 0,
                                 media_ssrc: ssrc,
                             };
@@ -377,7 +377,7 @@ impl SourceBridge {
                             }
                         }
 
-                        RtcpMessage::FullIntraRequest => {
+                        RtcpMessage::_FullIntraRequest => {
                             info!(
                                 "[{}] Received FIR for SSRC {}, requesting keyframe",
                                 source_id, ssrc
@@ -391,7 +391,7 @@ impl SourceBridge {
                                 continue;
                             };
 
-                            let fir = webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest {
+                            let fir = rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest {
                                 sender_ssrc: 0,
                                 media_ssrc: ssrc,
                                 fir: vec![],
@@ -417,7 +417,7 @@ impl SourceBridge {
                             }
                         }
 
-                        RtcpMessage::SliceLossIndication => {
+                        RtcpMessage::_SliceLossIndication => {
                             debug!(
                                 "[{}] Received SLI for SSRC {} (not forwarded)",
                                 source_id, ssrc
@@ -450,26 +450,31 @@ impl SourceBridge {
                     let tracks = forward.internal.publish_tracks.read().await;
 
                     for track in tracks.iter() {
-                        if let Some(sr) = track.generate_sender_report() {
-                            let forward_info = forward.info().await;
+                        let forward_info = forward.info().await;
 
-                            for subscribe_info in &forward_info.subscribe_session_infos {
-                                if let Some(peer) = forward.get_subscribe_peer(&subscribe_info.id).await
-                                    && let Err(e) = peer.write_rtcp(std::slice::from_ref(&sr)).await {
-                                        debug!(
-                                            "[{}] Failed to send SR to {}: {}",
-                                            source_id, subscribe_info.id, e
-                                        );
+                        for subscribe_info in &forward_info.subscribe_session_infos {
+                            if let Some(peer) = forward.get_subscribe_peer(&subscribe_info.id).await {
+                                for transceiver in peer.get_transceivers().await {
+                                    if let Ok(Some(sender)) = transceiver.sender().await {
+                                        let track_local = sender.track();
+                                        if let Some(sr) = track.generate_sender_report()
+                                            && track_local.write_rtcp(vec![sr]).await.is_err()
+                                        {
+                                            debug!(
+                                                "[{}] Failed to send SR to {}",
+                                                source_id, subscribe_info.id
+                                            );
+                                        }
                                     }
-
+                                }
                             }
-
-                            trace!(
-                                "[{}] Sent SR to {} subscribers",
-                                source_id,
-                                forward_info.subscribe_session_infos.len()
-                            );
                         }
+
+                        trace!(
+                            "[{}] Sent SR to {} subscribers",
+                            source_id,
+                            forward_info.subscribe_session_infos.len()
+                        );
                     }
                 }
             }

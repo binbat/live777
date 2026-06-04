@@ -15,7 +15,7 @@ use std::vec;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace};
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCSessionDescription;
 
 use crate::forward::PeerForward;
 use crate::forward::message::Layer;
@@ -221,10 +221,15 @@ impl Manager {
         let forward = PeerForward::new(
             stream.clone(),
             self.config.ice_servers.clone(),
+            self.config.ice_udp_addrs.clone(),
             self.config.channel.clone(),
         );
         #[cfg(not(feature = "source"))]
-        let forward = PeerForward::new(stream.clone(), self.config.ice_servers.clone());
+        let forward = PeerForward::new(
+            stream.clone(),
+            self.config.ice_servers.clone(),
+            self.config.ice_udp_addrs.clone(),
+        );
         let subscribe_event = forward.subscribe_event();
         tokio::spawn(Self::forward_event_handler(
             subscribe_event,
@@ -610,6 +615,7 @@ impl Manager {
             let forward = crate::forward::PeerForward::new(
                 stream_id.to_string(),
                 self.config.ice_servers.clone(),
+                self.config.ice_udp_addrs.clone(),
                 self.config.channel.clone(),
             );
 

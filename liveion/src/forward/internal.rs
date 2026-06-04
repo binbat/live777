@@ -1,33 +1,12 @@
-use std::borrow::ToOwned;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use chrono::Utc;
 use libwish::Client;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tracing::trace;
 use tracing::{debug, info};
-
-use webrtc::api::APIBuilder;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8, MediaEngine};
-use webrtc::api::setting_engine::SettingEngine;
-use webrtc::data::data_channel::DataChannel;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice::mdns::MulticastDnsMode;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
-};
-use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
-use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpTransceiverInit};
-use webrtc::sdp::extmap::{SDES_MID_URI, SDES_RTP_STREAM_ID_URI};
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_remote::TrackRemote;
 
 use crate::AppError;
 #[cfg(feature = "source")]
@@ -37,19 +16,589 @@ use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
 use crate::result::Result;
 use crate::{metrics, new_broadcast_channel};
+use rtc::peer_connection::configuration::interceptor_registry::{
+    configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers,
+    configure_twcc_receiver_only, configure_twcc_sender_only,
+};
+use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+};
+use webrtc::data_channel::DataChannel;
+use webrtc::media_stream::track_remote::TrackRemote;
+use webrtc::peer_connection::{
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceGatheringState, RTCIceServer,
+    RTCPeerConnectionState, Registry, SettingEngine,
+};
+use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, RtpSender};
 
 use super::media::MediaInfo;
 use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
-use super::track::PublishTrackRemote;
+use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
-const MESSAGE_SIZE: usize = 1024 * 16;
+fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
+    vec![
+        RTCPFeedback {
+            typ: "goog-remb".to_owned(),
+            parameter: "".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "transport-cc".to_owned(),
+            parameter: "".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "ccm".to_owned(),
+            parameter: "fir".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "pli".to_owned(),
+        },
+    ]
+}
+
+fn ensure_video_rtcp_feedback(codec: &mut RTCRtpCodec) {
+    for feedback in video_rtcp_feedback() {
+        if !codec.rtcp_feedback.iter().any(|existing| {
+            existing.typ == feedback.typ && existing.parameter == feedback.parameter
+        }) {
+            codec.rtcp_feedback.push(feedback);
+        }
+    }
+}
+
+fn format_codec_for_log(codec: &RTCRtpCodec) -> String {
+    format!(
+        "{}/{}/channels={}/fmtp={}",
+        codec.mime_type, codec.clock_rate, codec.channels, codec.sdp_fmtp_line
+    )
+}
 
 #[derive(Clone)]
 struct DataChannelForward {
     publish: broadcast::Sender<Vec<u8>>,
     subscribe: broadcast::Sender<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct PublishPeerHandler {
+    internal: std::sync::Weak<PeerForwardInternal>,
+    gather_complete: Arc<Notify>,
+    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for PublishPeerHandler {
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        if let Some(internal) = self.internal.upgrade() {
+            let pc = internal
+                .publish_peer_ref
+                .lock()
+                .await
+                .clone()
+                .and_then(|w| w.upgrade());
+            if let Some(pc) = pc {
+                info!(
+                    "[{}] [publish] connection state changed: {}",
+                    internal.stream, state
+                );
+                if let Ok(mut s) = self.connection_state.write() {
+                    *s = state;
+                }
+                match state {
+                    RTCPeerConnectionState::Failed => {
+                        let _ = pc.close().await;
+                    }
+                    RTCPeerConnectionState::Closed => {
+                        let _ = internal.remove_publish(pc).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        if let Some(internal) = self.internal.upgrade() {
+            let pc = internal
+                .publish_peer_ref
+                .lock()
+                .await
+                .clone()
+                .and_then(|w| w.upgrade());
+            if let Some(pc) = pc {
+                let _ = internal.publish_track_up(pc, track).await;
+            }
+        }
+    }
+
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        if let Some(internal) = self.internal.upgrade() {
+            let pc = internal
+                .publish_peer_ref
+                .lock()
+                .await
+                .clone()
+                .and_then(|w| w.upgrade());
+            if let Some(pc) = pc {
+                let _ = internal.publish_data_channel(pc, dc).await;
+            }
+        }
+    }
+
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            info!("publish ICE gathering complete");
+            self.gather_complete.notify_one();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SubscribePeerHandler {
+    internal: std::sync::Weak<PeerForwardInternal>,
+    peer: Arc<Mutex<Option<std::sync::Weak<dyn PeerConnection>>>>,
+    gather_complete: Arc<Notify>,
+    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+}
+
+impl SubscribePeerHandler {
+    fn new(
+        internal: std::sync::Weak<PeerForwardInternal>,
+        gather_complete: Arc<Notify>,
+        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    ) -> Self {
+        Self {
+            internal,
+            peer: Arc::new(Mutex::new(None)),
+            gather_complete,
+            connection_state,
+        }
+    }
+
+    async fn set_peer(&self, peer: std::sync::Weak<dyn PeerConnection>) {
+        *self.peer.lock().await = Some(peer);
+    }
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for SubscribePeerHandler {
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        if let Ok(mut s) = self.connection_state.write() {
+            *s = state;
+        }
+        let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
+        if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
+            info!(
+                "[{}] [subscribe] connection state changed: {}",
+                internal.stream, state
+            );
+            match state {
+                RTCPeerConnectionState::Failed => {
+                    let _ = pc.close().await;
+                }
+                RTCPeerConnectionState::Closed => {
+                    let _ = internal.remove_subscribe(pc).await;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
+        if let (Some(internal), Some(_pc)) = (self.internal.upgrade(), pc) {
+            let kind = track.kind().await;
+            let ssrcs = track.ssrcs().await;
+            info!(
+                "[{}] [subscribe] on_track: kind={}, ssrcs={:?}, id={}",
+                internal.stream,
+                kind,
+                ssrcs,
+                track.track_id().await
+            );
+            // Subscribe peer is sendonly — incoming tracks from the remote
+            // are unexpected but logged for debugging.
+        }
+    }
+
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
+        if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
+            let _ = internal.subscribe_data_channel(pc, dc).await;
+        }
+    }
+
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            info!("subscribe ICE gathering complete");
+            self.gather_complete.notify_one();
+        }
+    }
+}
+
+// RtcpEgressProbeInterceptor: counts outgoing RTCP packet types from the
+// interceptor chain (TwccReceiver, RtcpReports, NackResponder).  This probe
+// answers the question: "is liveion really sending TransportLayerCC feedback
+// back to the WHIP publisher?"  It is registered as the outermost interceptor
+// layer in the publish peer chain so it sees every RTCP packet before it hits
+// the wire (ICE/DTLS/SRTP).
+mod rtcp_egress_probe {
+    use rtc::interceptor::StreamInfo;
+    use rtc::interceptor::{Packet, TaggedPacket};
+    use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+    use rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+    use rtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
+    use rtc::rtcp::receiver_report::ReceiverReport;
+    use rtc::rtcp::sender_report::SenderReport;
+    use rtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
+    use rtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
+    use rtc_shared::error::Error;
+    use sansio::Protocol;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicU64;
+
+    pub(crate) struct Counters {
+        pub transport_layer_cc: AtomicU64,
+        pub receiver_report: AtomicU64,
+        pub sender_report: AtomicU64,
+        pub pli: AtomicU64,
+        pub fir: AtomicU64,
+        pub nack: AtomicU64,
+        pub remb: AtomicU64,
+        pub poll_write_calls: AtomicU64,
+        pub poll_write_non_empty: AtomicU64,
+        pub poll_write_rtp: AtomicU64,
+        pub other: AtomicU64,
+        pub last_twcc_time: std::sync::Mutex<Option<std::time::Instant>>,
+    }
+
+    impl Counters {
+        pub fn new() -> Self {
+            Self {
+                transport_layer_cc: AtomicU64::new(0),
+                receiver_report: AtomicU64::new(0),
+                sender_report: AtomicU64::new(0),
+                pli: AtomicU64::new(0),
+                fir: AtomicU64::new(0),
+                nack: AtomicU64::new(0),
+                remb: AtomicU64::new(0),
+                poll_write_calls: AtomicU64::new(0),
+                poll_write_non_empty: AtomicU64::new(0),
+                poll_write_rtp: AtomicU64::new(0),
+                other: AtomicU64::new(0),
+                last_twcc_time: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn classify(pkt: &dyn rtc::rtcp::packet::Packet) -> Option<RtcpType> {
+            let any = pkt.as_any();
+            if let Some(twcc) = any.downcast_ref::<TransportLayerCc>() {
+                Some(RtcpType::Twcc(TwccInfo {
+                    sender_ssrc: twcc.sender_ssrc,
+                    media_ssrc: twcc.media_ssrc,
+                    base_seq: twcc.base_sequence_number,
+                    status_count: twcc.packet_status_count,
+                }))
+            } else if any.downcast_ref::<ReceiverReport>().is_some() {
+                Some(RtcpType::ReceiverReport)
+            } else if any.downcast_ref::<SenderReport>().is_some() {
+                Some(RtcpType::SenderReport)
+            } else if any.downcast_ref::<PictureLossIndication>().is_some() {
+                Some(RtcpType::Pli)
+            } else if any.downcast_ref::<FullIntraRequest>().is_some() {
+                Some(RtcpType::Fir)
+            } else if any.downcast_ref::<TransportLayerNack>().is_some() {
+                Some(RtcpType::Nack)
+            } else if any
+                .downcast_ref::<ReceiverEstimatedMaximumBitrate>()
+                .is_some()
+            {
+                Some(RtcpType::Remb)
+            } else {
+                None
+            }
+        }
+
+        pub fn tally(&self, pkts: &[Box<dyn rtc::rtcp::packet::Packet>], stream: &str) {
+            for pkt in pkts {
+                match Self::classify(pkt.as_ref()) {
+                    Some(RtcpType::Twcc(info)) => {
+                        let cnt = self
+                            .transport_layer_cc
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
+                        *self.last_twcc_time.lock().unwrap() = Some(std::time::Instant::now());
+                        tracing::debug!(
+                            "[{}] [rtcp-egress-probe] outgoing TWCC feedback count={} sender_ssrc={} media_ssrc={} base_seq={} status_count={}",
+                            stream,
+                            cnt,
+                            info.sender_ssrc,
+                            info.media_ssrc,
+                            info.base_seq,
+                            info.status_count,
+                        );
+                    }
+                    Some(RtcpType::ReceiverReport) => {
+                        self.receiver_report
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Some(RtcpType::SenderReport) => {
+                        self.sender_report
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Some(RtcpType::Pli) => {
+                        self.pli.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Some(RtcpType::Fir) => {
+                        self.fir.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Some(RtcpType::Nack) => {
+                        self.nack.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Some(RtcpType::Remb) => {
+                        self.remb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    None => {
+                        self.other
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+
+        pub fn snapshot(&self) -> EgressSnapshot {
+            EgressSnapshot {
+                twcc: self
+                    .transport_layer_cc
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                rr: self
+                    .receiver_report
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                sr: self
+                    .sender_report
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                pli: self.pli.load(std::sync::atomic::Ordering::Relaxed),
+                fir: self.fir.load(std::sync::atomic::Ordering::Relaxed),
+                nack: self.nack.load(std::sync::atomic::Ordering::Relaxed),
+                remb: self.remb.load(std::sync::atomic::Ordering::Relaxed),
+                poll_write_calls: self
+                    .poll_write_calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                poll_write_non_empty: self
+                    .poll_write_non_empty
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                poll_write_rtp: self
+                    .poll_write_rtp
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                other: self.other.load(std::sync::atomic::Ordering::Relaxed),
+                last_twcc: self.last_twcc_time.lock().unwrap().map(|t| t.elapsed()),
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) struct EgressSnapshot {
+        pub twcc: u64,
+        pub rr: u64,
+        pub sr: u64,
+        pub pli: u64,
+        pub fir: u64,
+        pub nack: u64,
+        pub remb: u64,
+        pub poll_write_calls: u64,
+        pub poll_write_non_empty: u64,
+        pub poll_write_rtp: u64,
+        pub other: u64,
+        pub last_twcc: Option<std::time::Duration>,
+    }
+
+    enum RtcpType {
+        Twcc(TwccInfo),
+        ReceiverReport,
+        SenderReport,
+        Pli,
+        Fir,
+        Nack,
+        Remb,
+    }
+
+    struct TwccInfo {
+        sender_ssrc: u32,
+        media_ssrc: u32,
+        base_seq: u16,
+        status_count: u16,
+    }
+
+    /// RtcpEgressProbe sits as the outermost interceptor in the publish
+    /// peer chain.  Its poll_write sees every RTCP packet that inner
+    /// interceptors (notably TwccReceiver) produce before the packets
+    /// go to the network.
+    ///
+    /// This interceptor is implemented manually (without derive macros)
+    /// because rtc-interceptor-derive's proc macros generate references to
+    /// crate-internal paths (shared::error::Error, sansio::Protocol) that
+    /// require sansio + rtc-interceptor as direct dependencies.  We already
+    /// add those deps, but the generated code can still have path resolution
+    /// issues in external crates.  The manual impl is minimal and avoids
+    /// the derive dependency entirely.
+    pub(crate) struct RtcpEgressProbe<P> {
+        inner: P,
+        stream: String,
+        counters: std::sync::Arc<Counters>,
+        native_twcc_bound: Arc<AtomicBool>,
+    }
+
+    impl<P> RtcpEgressProbe<P> {
+        pub fn new(
+            inner: P,
+            stream: String,
+            counters: std::sync::Arc<Counters>,
+            native_twcc_bound: Arc<AtomicBool>,
+        ) -> Self {
+            Self {
+                inner,
+                stream,
+                counters,
+                native_twcc_bound,
+            }
+        }
+    }
+
+    // --- sansio::Protocol impl (manual delegation) ---
+    impl<
+        P: Protocol<
+                TaggedPacket,
+                TaggedPacket,
+                (),
+                Rout = TaggedPacket,
+                Wout = TaggedPacket,
+                Eout = (),
+                Time = std::time::Instant,
+                Error = Error,
+            >,
+    > Protocol<TaggedPacket, TaggedPacket, ()> for RtcpEgressProbe<P>
+    {
+        type Rout = TaggedPacket;
+        type Wout = TaggedPacket;
+        type Eout = ();
+        type Time = std::time::Instant;
+        type Error = Error;
+
+        fn handle_read(&mut self, msg: TaggedPacket) -> Result<(), Error> {
+            self.inner.handle_read(msg)
+        }
+        fn poll_read(&mut self) -> Option<TaggedPacket> {
+            self.inner.poll_read()
+        }
+        fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Error> {
+            self.inner.handle_write(msg)
+        }
+        fn poll_write(&mut self) -> Option<TaggedPacket> {
+            let cnt = self
+                .counters
+                .poll_write_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            let out = self.inner.poll_write();
+            if let Some(tagged) = &out {
+                self.counters
+                    .poll_write_non_empty
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                match &tagged.message {
+                    Packet::Rtcp(pkts) => {
+                        self.counters.tally(pkts, &self.stream);
+                    }
+                    Packet::Rtp(_) => {
+                        self.counters
+                            .poll_write_rtp
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+            // Log probe activity every 300th poll_write call
+            if cnt % 300 == 1 {
+                let snap = self.counters.snapshot();
+                tracing::debug!(
+                    "[{}] [rtcp-egress-probe] poll_write_calls={} non_empty={} rtp={} twcc={} rr={} sr={} pli={} fir={} nack={} remb={} other={}",
+                    self.stream,
+                    snap.poll_write_calls,
+                    snap.poll_write_non_empty,
+                    snap.poll_write_rtp,
+                    snap.twcc,
+                    snap.rr,
+                    snap.sr,
+                    snap.pli,
+                    snap.fir,
+                    snap.nack,
+                    snap.remb,
+                    snap.other,
+                );
+            }
+            out
+        }
+        fn handle_event(&mut self, evt: ()) -> Result<(), Error> {
+            self.inner.handle_event(evt)
+        }
+        fn poll_event(&mut self) -> Option<()> {
+            self.inner.poll_event()
+        }
+        fn handle_timeout(&mut self, now: std::time::Instant) -> Result<(), Error> {
+            self.inner.handle_timeout(now)
+        }
+        fn poll_timeout(&mut self) -> Option<std::time::Instant> {
+            self.inner.poll_timeout()
+        }
+        fn close(&mut self) -> Result<(), Error> {
+            self.inner.close()
+        }
+    }
+
+    // --- Interceptor impl (manual delegation) ---
+    impl<P: rtc::interceptor::Interceptor> rtc::interceptor::Interceptor for RtcpEgressProbe<P> {
+        fn bind_local_stream(&mut self, info: &StreamInfo) {
+            self.inner.bind_local_stream(info);
+        }
+        fn unbind_local_stream(&mut self, info: &StreamInfo) {
+            self.inner.unbind_local_stream(info);
+        }
+        fn bind_remote_stream(&mut self, info: &StreamInfo) {
+            let has_twcc = info
+                .rtp_header_extensions
+                .iter()
+                .any(|e| e.uri.contains("transport-wide-cc"));
+            if has_twcc {
+                self.native_twcc_bound
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            tracing::debug!(
+                "[{}] [rtcp-egress-probe] bind_remote_stream ssrc={} pt={} mime={} twcc_ext={} ext_count={}",
+                self.stream,
+                info.ssrc,
+                info.payload_type,
+                info.mime_type,
+                has_twcc,
+                info.rtp_header_extensions.len(),
+            );
+            self.inner.bind_remote_stream(info);
+        }
+        fn unbind_remote_stream(&mut self, info: &StreamInfo) {
+            tracing::debug!(
+                "[{}] [rtcp-egress-probe] unbind_remote_stream ssrc={}",
+                self.stream,
+                info.ssrc,
+            );
+            self.inner.unbind_remote_stream(info);
+        }
+    }
 }
 
 pub(crate) struct PeerForwardInternal {
@@ -64,7 +613,18 @@ pub(crate) struct PeerForwardInternal {
     pub(crate) subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
+    ice_udp_addrs: Vec<SocketAddr>,
     event_sender: broadcast::Sender<ForwardEvent>,
+    /// Weak reference to the publish peer, set before signaling via `set_publish_peer_ref`
+    publish_peer_ref: Mutex<Option<std::sync::Weak<dyn PeerConnection>>>,
+    /// Negotiated transport-wide-cc RTP header extension ID (0 = unknown/missing)
+    negotiated_twcc_ext_id: std::sync::atomic::AtomicU8,
+    /// RTCP egress counters from the probe interceptor (None until publish peer created)
+    rtcp_egress_counters: std::sync::Mutex<Option<std::sync::Arc<rtcp_egress_probe::Counters>>>,
+    /// Set by the publish interceptor once native TWCC receiver binding is active.
+    native_twcc_bound: Arc<AtomicBool>,
+    /// Shared manual TWCC fallback for all tracks in a publish peer.
+    manual_twcc_feedback: std::sync::Mutex<Option<SharedManualTwccFeedback>>,
     #[cfg(feature = "source")]
     channel: Channel,
 }
@@ -74,6 +634,7 @@ impl PeerForwardInternal {
     pub(crate) fn new(
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
         channel: Channel,
     ) -> Self {
         PeerForwardInternal {
@@ -91,13 +652,23 @@ impl PeerForwardInternal {
                 subscribe: new_broadcast_channel!(1024),
             },
             ice_server,
+            ice_udp_addrs,
             event_sender: new_broadcast_channel!(16),
+            publish_peer_ref: Mutex::new(None),
+            negotiated_twcc_ext_id: AtomicU8::new(0),
+            rtcp_egress_counters: std::sync::Mutex::new(None),
+            native_twcc_bound: Arc::new(AtomicBool::new(false)),
+            manual_twcc_feedback: std::sync::Mutex::new(None),
             channel,
         }
     }
 
     #[cfg(not(feature = "source"))]
-    pub(crate) fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
+    pub(crate) fn new(
+        stream: impl ToString,
+        ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
+    ) -> Self {
         PeerForwardInternal {
             stream: stream.to_string(),
             create_at: Utc::now().timestamp_millis(),
@@ -113,7 +684,13 @@ impl PeerForwardInternal {
                 subscribe: new_broadcast_channel!(1024),
             },
             ice_server,
+            ice_udp_addrs,
             event_sender: new_broadcast_channel!(16),
+            publish_peer_ref: Mutex::new(None),
+            negotiated_twcc_ext_id: AtomicU8::new(0),
+            rtcp_egress_counters: std::sync::Mutex::new(None),
+            native_twcc_bound: Arc::new(AtomicBool::new(false)),
+            manual_twcc_feedback: std::sync::Mutex::new(None),
         }
     }
 
@@ -139,26 +716,23 @@ impl PeerForwardInternal {
         #[cfg(not(feature = "source"))]
         let has_virtual_publisher = false;
 
-        let publish_session_info = self
-            .publish
-            .read()
-            .await
-            .as_ref()
-            .map(|publish| publish.info());
-
-        let effective_publish_session_info = if publish_session_info.is_none()
-            && has_virtual_publisher
-        {
-            Some(SessionInfo {
-            id: "virtual-source".to_string(),
-            create_at: self.create_at,
-            state: webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected,
-            cascade: None,
-            has_data_channel: false,
-        })
-        } else {
-            publish_session_info
+        let publish_session_info = match self.publish.read().await.as_ref() {
+            Some(publish) => Some(publish.info().await),
+            None => None,
         };
+
+        let effective_publish_session_info =
+            if publish_session_info.is_none() && has_virtual_publisher {
+                Some(SessionInfo {
+                    id: "virtual-source".to_string(),
+                    create_at: self.create_at,
+                    state: RTCPeerConnectionState::Connected,
+                    cascade: None,
+                    has_data_channel: false,
+                })
+            } else {
+                publish_session_info
+            };
 
         ForwardInfo {
             id: self.stream.clone(),
@@ -252,65 +826,43 @@ impl PeerForwardInternal {
     }
 
     async fn data_channel_forward(
-        dc: Arc<RTCDataChannel>,
+        dc: Arc<dyn DataChannel>,
         sender: broadcast::Sender<Vec<u8>>,
         receiver: broadcast::Receiver<Vec<u8>>,
     ) {
-        let dc2 = dc.clone();
-        dc.on_open(Box::new(move || {
-            tokio::spawn(async move {
-                let raw = match dc2.detach().await {
-                    Ok(raw) => raw,
-                    Err(err) => {
-                        debug!("detach err: {}", err);
+        let dc_rx = dc.clone();
+        let dc_tx = dc.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match dc_rx.poll().await {
+                    Some(webrtc::data_channel::DataChannelEvent::OnMessage(data)) => {
+                        if let Err(err) = sender.send(data.data.to_vec()) {
+                            info!("send data channel err: {}", err);
+                            return;
+                        }
+                    }
+                    Some(webrtc::data_channel::DataChannelEvent::OnOpen) => {
+                        debug!("Data channel opened");
+                    }
+                    Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
+                        info!("Datachannel closed; Exit the read_loop");
                         return;
                     }
-                };
+                    _ => {}
+                }
+            }
+        });
 
-                let r = Arc::clone(&raw);
-                tokio::spawn(Self::data_channel_read_loop(r, sender));
-                tokio::spawn(Self::data_channel_write_loop(raw, receiver));
-            });
-
-            Box::pin(async {})
-        }));
-    }
-
-    async fn data_channel_read_loop(d: Arc<DataChannel>, sender: broadcast::Sender<Vec<u8>>) {
-        let mut buffer = vec![0u8; MESSAGE_SIZE];
-
-        loop {
-            let n = match d.read(&mut buffer).await {
-                Ok(n) => n,
-                Err(err) => {
-                    info!("Datachannel closed; Exit the read_loop: {err}");
+        tokio::spawn(async move {
+            let mut receiver = receiver;
+            while let Ok(msg) = receiver.recv().await {
+                if let Err(err) = dc_tx.send(bytes::BytesMut::from(&msg[..])).await {
+                    info!("write data channel err: {}", err);
                     return;
                 }
-            };
-
-            trace!("Read {} bytes from data channel", n);
-
-            if n == 0 {
-                break;
             }
-
-            if let Err(err) = sender.send(buffer[..n].to_vec()) {
-                info!("send data channel err: {}", err);
-                return;
-            };
-        }
-    }
-
-    async fn data_channel_write_loop(
-        d: Arc<DataChannel>,
-        mut receiver: broadcast::Receiver<Vec<u8>>,
-    ) {
-        while let Ok(msg) = receiver.recv().await {
-            if let Err(err) = d.write(&msg.into()).await {
-                info!("write data channel err: {}", err);
-                return;
-            };
-        }
+        });
     }
 }
 
@@ -323,8 +875,9 @@ impl PeerForwardInternal {
 
     pub(crate) async fn set_publish(
         &self,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
+        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
     ) -> Result<()> {
         {
             let mut publish = self.publish.write().await;
@@ -339,6 +892,7 @@ impl PeerForwardInternal {
                 peer.clone(),
                 self.publish_rtcp_channel.subscribe(),
                 cascade,
+                connection_state,
             )
             .await?;
 
@@ -358,7 +912,7 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    pub(crate) async fn remove_publish(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
+    pub(crate) async fn remove_publish(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
         {
             let mut publish = self.publish.write().await;
             if publish.is_none() {
@@ -404,16 +958,45 @@ impl PeerForwardInternal {
         let publish_tracks = self.publish_tracks.read().await;
         let rids = publish_tracks
             .iter()
-            .filter(|t| t.kind() == RTPCodecType::Video)
+            .filter(|t| t.kind() == RtpCodecKind::Video)
             .map(|t| t.rid().to_string())
             .collect::<Vec<_>>();
         Ok(rids)
     }
 
+    pub(crate) async fn publisher_codec(&self, kind: RtpCodecKind) -> Option<RTCRtpCodec> {
+        {
+            let publish_tracks = self.publish_tracks.read().await;
+            for t in publish_tracks.iter() {
+                if t.kind() == kind {
+                    return Some(match t {
+                        PublishTrackRemote::Real { track, .. } => {
+                            let ssrcs = track.ssrcs().await;
+                            let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+                            track.codec(first_ssrc).await.unwrap_or_default()
+                        }
+                        #[cfg(feature = "source")]
+                        PublishTrackRemote::Virtual(v) => v.codec_params.rtp_codec.clone(),
+                    });
+                }
+            }
+        }
+
+        let publish = self.publish.read().await;
+        publish
+            .as_ref()
+            .and_then(|publish| publish.media_info.codec_for_kind(kind))
+    }
+
     pub(crate) async fn new_publish_peer(
         &self,
         media_info: MediaInfo,
-    ) -> Result<Arc<RTCPeerConnection>> {
+        internal_weak: std::sync::Weak<PeerForwardInternal>,
+    ) -> Result<(
+        Arc<dyn PeerConnection>,
+        Arc<Notify>,
+        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    )> {
         if media_info.video_transceiver.0 > 1 && media_info.audio_transceiver.0 > 1 {
             return Err(AppError::throw("sendonly is more than 1"));
         }
@@ -421,48 +1004,78 @@ impl PeerForwardInternal {
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
 
-        m.register_header_extension(
-            RTCRtpHeaderExtensionCapability {
-                uri: SDES_MID_URI.to_owned(),
-            },
-            RTPCodecType::Video,
-            Some(RTCRtpTransceiverDirection::Recvonly),
-        )?;
+        let registry = Registry::new();
+        let registry = configure_nack(registry, &mut m);
+        let registry = configure_rtcp_reports(registry);
+        configure_simulcast_extension_headers(&mut m)?;
+        // WHIP publishers need a clear upstream BWE contract: the browser adds
+        // transport-wide sequence numbers and liveion returns TWCC feedback for
+        // the publisher->liveion path. Downstream WHEP TWCC/REMB/RR is not
+        // bridged back because it describes a different network path.
+        let registry = configure_twcc_receiver_only(registry, &mut m)?;
 
-        m.register_header_extension(
-            RTCRtpHeaderExtensionCapability {
-                uri: SDES_RTP_STREAM_ID_URI.to_owned(),
-            },
-            RTPCodecType::Video,
-            Some(RTCRtpTransceiverDirection::Recvonly),
-        )?;
+        // Wrap the interceptor chain with an RTCP egress probe.  This probe
+        // is the outermost layer, so it sees every RTCP packet produced by
+        // inner interceptors (TwccReceiver, RtcpReports, NackChain) before
+        // the packets are written to the network.
+        let stream = self.stream.clone();
+        let egress_counters = std::sync::Arc::new(rtcp_egress_probe::Counters::new());
+        let c = egress_counters.clone();
+        let native_twcc_bound = self.native_twcc_bound.clone();
+        native_twcc_bound.store(false, Ordering::Relaxed);
+        *self.manual_twcc_feedback.lock().unwrap() = None;
+        let registry = registry.with(move |inner| {
+            rtcp_egress_probe::RtcpEgressProbe::new(inner, stream, c, native_twcc_bound)
+        });
+        *self.rtcp_egress_counters.lock().unwrap() = Some(egress_counters);
 
-        let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut m)?;
+        let s = SettingEngine::default();
 
-        let mut s = SettingEngine::default();
-        s.detach_data_channels();
-        s.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+        let ice_servers = self.ice_server.clone();
+        info!(
+            "ICE servers for publish: count={}, urls=[{}], has_username={}, has_credential={}",
+            ice_servers.len(),
+            ice_servers
+                .iter()
+                .flat_map(|s| s.urls.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            ice_servers.iter().any(|s| !s.username.is_empty()),
+            ice_servers.iter().any(|s| !s.credential.is_empty()),
+        );
 
-        let api = APIBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(registry)
-            .with_setting_engine(s)
+        let config = RTCConfigurationBuilder::new()
+            .with_ice_servers(ice_servers)
             .build();
 
-        let config = RTCConfiguration {
-            ice_servers: self.ice_server.clone(),
-            ..Default::default()
+        let gather_complete = Arc::new(Notify::new());
+        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
+        let handler = PublishPeerHandler {
+            internal: internal_weak,
+            gather_complete: gather_complete.clone(),
+            connection_state: connection_state.clone(),
         };
-
-        let peer = Arc::new(api.new_peer_connection(config).await?);
+        let peer: Arc<dyn PeerConnection> = Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(m)
+                .with_interceptor_registry(registry)
+                .with_setting_engine(s)
+                .with_handler(Arc::new(handler))
+                .with_udp_addrs(self.ice_udp_addrs.clone())
+                .with_configuration(config)
+                .build()
+                .await?,
+        );
+        // Store weak ref so the handler can find the peer during events
+        *self.publish_peer_ref.lock().await = Some(Arc::downgrade(&peer));
 
         let mut transceiver_kinds = vec![];
         if media_info.video_transceiver.0 > 0 {
-            transceiver_kinds.push(RTPCodecType::Video);
+            transceiver_kinds.push(RtpCodecKind::Video);
         }
         if media_info.audio_transceiver.0 > 0 {
-            transceiver_kinds.push(RTPCodecType::Audio);
+            transceiver_kinds.push(RtpCodecKind::Audio);
         }
 
         for kind in transceiver_kinds {
@@ -471,22 +1084,50 @@ impl PeerForwardInternal {
                     kind,
                     Some(RTCRtpTransceiverInit {
                         direction: RTCRtpTransceiverDirection::Recvonly,
+                        streams: vec![],
                         send_encodings: Vec::new(),
                     }),
                 )
                 .await?;
         }
 
-        Ok(peer)
+        Ok((peer, gather_complete, connection_state))
+    }
+
+    pub(crate) fn set_twcc_ext_id(&self, ext_id: u8) {
+        self.negotiated_twcc_ext_id.store(ext_id, Ordering::Relaxed);
     }
 
     pub(crate) async fn publish_track_up(
         &self,
-        peer: Arc<RTCPeerConnection>,
-        track: Arc<TrackRemote>,
+        peer: Arc<dyn PeerConnection>,
+        track: Arc<dyn TrackRemote>,
     ) -> Result<()> {
-        let publish_track_remote =
-            PublishTrackRemote::new(self.stream.clone(), get_peer_id(&peer), track).await;
+        let twcc_ext_id = self.negotiated_twcc_ext_id.load(Ordering::Relaxed);
+        let manual_twcc_feedback = if twcc_ext_id != 0 {
+            let mut shared = self.manual_twcc_feedback.lock().unwrap();
+            Some(
+                shared
+                    .get_or_insert_with(|| {
+                        SharedManualTwccFeedback::new(
+                            twcc_ext_id,
+                            Some(self.native_twcc_bound.clone()),
+                        )
+                    })
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let publish_track_remote = PublishTrackRemote::new(
+            self.stream.clone(),
+            get_peer_id(&peer),
+            track,
+            twcc_ext_id,
+            self.native_twcc_bound.clone(),
+            manual_twcc_feedback,
+        )
+        .await;
 
         let mut publish_tracks = self.publish_tracks.write().await;
         publish_tracks.push(publish_track_remote);
@@ -499,8 +1140,8 @@ impl PeerForwardInternal {
 
     pub(crate) async fn publish_data_channel(
         &self,
-        _peer: Arc<RTCPeerConnection>,
-        dc: Arc<RTCDataChannel>,
+        _peer: Arc<dyn PeerConnection>,
+        dc: Arc<dyn DataChannel>,
     ) -> Result<()> {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
@@ -512,7 +1153,7 @@ impl PeerForwardInternal {
     pub(crate) async fn first_publish_video_codec(&self) -> Option<String> {
         let publish_tracks = self.publish_tracks.read().await;
         for t in publish_tracks.iter() {
-            if t.kind() == RTPCodecType::Video {
+            if t.kind() == RtpCodecKind::Video {
                 let c = t.codec();
                 return Some(format!(
                     "{}/{}",
@@ -530,14 +1171,10 @@ impl PeerForwardInternal {
     }
 
     #[cfg(feature = "recorder")]
-    pub(crate) async fn first_video_track(
-        &self,
-    ) -> Option<Arc<webrtc::track::track_remote::TrackRemote>> {
+    pub(crate) async fn first_video_track(&self) -> Option<Arc<dyn TrackRemote>> {
         let publish_tracks = self.publish_tracks.read().await;
         publish_tracks.iter().find_map(|track| match track {
-            PublishTrackRemote::Real { track, .. }
-                if track.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video =>
-            {
+            PublishTrackRemote::Real { track, kind, .. } if *kind == RtpCodecKind::Video => {
                 Some(track.clone())
             }
             _ => None,
@@ -562,7 +1199,12 @@ impl PeerForwardInternal {
     pub(crate) async fn new_subscription_peer(
         &self,
         media_info: MediaInfo,
-    ) -> Result<Arc<RTCPeerConnection>> {
+        internal_weak: std::sync::Weak<PeerForwardInternal>,
+    ) -> Result<(
+        Arc<dyn PeerConnection>,
+        Arc<Notify>,
+        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    )> {
         if media_info.video_transceiver.1 > 1 && media_info.audio_transceiver.1 > 1 {
             return Err(AppError::throw("recvonly is more than 1"));
         }
@@ -570,102 +1212,157 @@ impl PeerForwardInternal {
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
 
-        let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut m)?;
+        let registry = Registry::new();
+        let registry = configure_nack(registry, &mut m);
+        let registry = configure_rtcp_reports(registry);
+        configure_simulcast_extension_headers(&mut m)?;
+        let registry = configure_twcc_sender_only(registry, &mut m)?;
 
-        let mut s = SettingEngine::default();
-        s.detach_data_channels();
-        s.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+        let s = SettingEngine::default();
 
-        let api = APIBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(registry)
-            .with_setting_engine(s)
+        let ice_servers = self.ice_server.clone();
+        info!(
+            "ICE servers for subscribe: count={}, urls=[{}], has_username={}, has_credential={}",
+            ice_servers.len(),
+            ice_servers
+                .iter()
+                .flat_map(|s| s.urls.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            ice_servers.iter().any(|s| !s.username.is_empty()),
+            ice_servers.iter().any(|s| !s.credential.is_empty()),
+        );
+
+        let config = RTCConfigurationBuilder::new()
+            .with_ice_servers(ice_servers)
             .build();
 
-        let config = RTCConfiguration {
-            ice_servers: self.ice_server.clone(),
-            ..Default::default()
-        };
+        let gather_complete = Arc::new(Notify::new());
+        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
+        let handler = SubscribePeerHandler::new(
+            internal_weak,
+            gather_complete.clone(),
+            connection_state.clone(),
+        );
+        let peer: Arc<dyn PeerConnection> = Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(m)
+                .with_interceptor_registry(registry)
+                .with_setting_engine(s)
+                .with_handler(Arc::new(handler.clone()))
+                .with_udp_addrs(self.ice_udp_addrs.clone())
+                .with_configuration(config)
+                .build()
+                .await?,
+        );
+        handler.set_peer(Arc::downgrade(&peer)).await;
 
-        let peer = Arc::new(api.new_peer_connection(config).await?);
+        // Use the publisher's negotiated codec for the subscriber's sender encoding.
+        // This ensures the encoding codec matches what the publisher is actually sending,
+        // so the rtc-layer write_rtp uses the correct payload type.
+        let video_codec = self.publisher_codec(RtpCodecKind::Video).await;
+        let audio_codec = self.publisher_codec(RtpCodecKind::Audio).await;
 
-        Self::new_sender(&peer, RTPCodecType::Video, media_info.video_transceiver.1).await?;
-        Self::new_sender(&peer, RTPCodecType::Audio, media_info.audio_transceiver.1).await?;
+        Self::new_sender(
+            &peer,
+            RtpCodecKind::Video,
+            media_info.video_transceiver.1,
+            video_codec,
+        )
+        .await?;
+        Self::new_sender(
+            &peer,
+            RtpCodecKind::Audio,
+            media_info.audio_transceiver.1,
+            audio_codec,
+        )
+        .await?;
 
-        Ok(peer)
+        Ok((peer, gather_complete, connection_state))
     }
 
     async fn new_sender(
-        peer: &Arc<RTCPeerConnection>,
-        kind: RTPCodecType,
+        peer: &Arc<dyn PeerConnection>,
+        kind: RtpCodecKind,
         recv_sender: u8,
-    ) -> Result<Option<Arc<RTCRtpSender>>> {
+        publisher_codec: Option<RTCRtpCodec>,
+    ) -> Result<Option<Arc<dyn RtpSender>>> {
         Ok(if recv_sender > 0 {
-            let sender = peer
+            let default_codec = if kind == RtpCodecKind::Video {
+                RTCRtpCodec {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: video_rtcp_feedback(),
+                }
+            } else {
+                RTCRtpCodec {
+                    mime_type: MIME_TYPE_OPUS.to_owned(),
+                    clock_rate: 48000,
+                    channels: 2,
+                    sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                    rtcp_feedback: vec![],
+                }
+            };
+            // Use the publisher's negotiated codec if available, otherwise fall back to default.
+            // This ensures the subscriber's sender encoding codec matches the publisher's codec,
+            // so the rtc-layer write_rtp uses the correct payload type.
+            let mut codec = publisher_codec.unwrap_or(default_codec);
+            if kind == RtpCodecKind::Video {
+                ensure_video_rtcp_feedback(&mut codec);
+            }
+
+            // Use a single SSRC for both the encoding and the track.
+            // The rtc-layer write_rtp validates that packet.ssrc matches sender.track().ssrcs(),
+            // so the track's SSRC must match the encoding's SSRC.
+            let ssrc = rand::random::<u32>();
+
+            let transceiver = peer
                 .add_transceiver_from_kind(
                     kind,
                     Some(RTCRtpTransceiverInit {
                         direction: RTCRtpTransceiverDirection::Sendonly,
-                        send_encodings: Vec::new(),
+                        streams: vec![],
+                        send_encodings: vec![RTCRtpEncodingParameters {
+                            rtp_coding_parameters: RTCRtpCodingParameters {
+                                ssrc: Some(ssrc),
+                                ..Default::default()
+                            },
+                            codec: codec.clone(),
+                            ..Default::default()
+                        }],
                     }),
                 )
-                .await?
+                .await?;
+
+            let sender = transceiver
                 .sender()
-                .await;
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get sender: {}", e))?
+                .ok_or_else(|| anyhow::anyhow!("No sender found"))?;
 
-            let track = Arc::new(TrackLocalStaticRTP::new(
-                if kind == RTPCodecType::Video {
-                    RTCRtpCodecCapability {
-                        mime_type: MIME_TYPE_VP8.to_owned(),
-                        clock_rate: 90000,
-                        channels: 0,
-                        sdp_fmtp_line: "".to_owned(),
-                        rtcp_feedback: vec![
-                            RTCPFeedback {
-                                typ: "goog-remb".to_owned(),
-                                parameter: "".to_owned(),
-                            },
-                            RTCPFeedback {
-                                typ: "ccm".to_owned(),
-                                parameter: "fir".to_owned(),
-                            },
-                            RTCPFeedback {
-                                typ: "nack".to_owned(),
-                                parameter: "".to_owned(),
-                            },
-                            RTCPFeedback {
-                                typ: "nack".to_owned(),
-                                parameter: "pli".to_owned(),
-                            },
-                        ],
-                    }
-                } else {
-                    RTCRtpCodecCapability {
-                        mime_type: MIME_TYPE_OPUS.to_owned(),
-                        clock_rate: 48000,
-                        channels: 2,
-                        sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
-                        rtcp_feedback: vec![],
-                    }
-                },
-                "webrtc".to_string(),
-                format!("{}-{}", "webrtc", kind),
-            ));
-
-            let _ = sender.replace_track(Some(track)).await;
-
+            let params = sender
+                .get_parameters()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get parameters: {}", e))?;
+            let sender_track = sender.track();
+            let track_codec = sender_track.codec(ssrc).await;
             info!(
-                "[{}] new sender , kind : {}, ssrc : {}",
+                "[{}] new sender, kind={}, ssrc={}, requested_codec={}, track_codec={}",
                 get_peer_id(peer),
                 kind,
-                sender
-                    .get_parameters()
-                    .await
+                params
                     .encodings
                     .first()
-                    .unwrap()
-                    .ssrc
+                    .map(|e| e.rtp_coding_parameters.ssrc.unwrap_or(0))
+                    .unwrap_or(0),
+                format_codec_for_log(&codec),
+                track_codec
+                    .as_ref()
+                    .map(format_codec_for_log)
+                    .unwrap_or_else(|| "<none>".to_string()),
             );
 
             Some(sender)
@@ -676,9 +1373,10 @@ impl PeerForwardInternal {
 
     pub async fn add_subscribe(
         &self,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
         media_info: MediaInfo,
+        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
     ) -> Result<()> {
         let transceivers = peer.get_transceivers().await;
 
@@ -686,11 +1384,22 @@ impl PeerForwardInternal {
         let mut audio_sender = None;
 
         for transceiver in transceivers {
-            let sender = transceiver.sender().await;
-            match transceiver.kind() {
-                RTPCodecType::Video => video_sender = Some(sender),
-                RTPCodecType::Audio => audio_sender = Some(sender),
-                RTPCodecType::Unspecified => {}
+            let sender = transceiver
+                .sender()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get sender: {}", e))?;
+            let _kind = transceiver
+                .current_direction()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get direction: {}", e))?;
+            // Determine kind from the sender's track
+            if let Some(ref s) = sender {
+                let track_kind = s.track().kind().await;
+                match track_kind {
+                    RtpCodecKind::Video => video_sender = sender,
+                    RtpCodecKind::Audio => audio_sender = sender,
+                    RtpCodecKind::Unspecified => {}
+                }
             }
         }
 
@@ -705,6 +1414,7 @@ impl PeerForwardInternal {
                     self.publish_tracks_change.clone(),
                 ),
                 (video_sender, audio_sender),
+                connection_state,
             )
             .await;
 
@@ -725,7 +1435,7 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    pub async fn remove_subscribe(&self, peer: Arc<RTCPeerConnection>) -> Result<()> {
+    pub async fn remove_subscribe(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
         let mut flag = false;
         let mut reforward_flat = false;
         let session = get_peer_id(&peer);
@@ -778,7 +1488,7 @@ impl PeerForwardInternal {
         }
     }
 
-    pub async fn select_kind_rid(&self, id: String, kind: RTPCodecType, rid: String) -> Result<()> {
+    pub async fn select_kind_rid(&self, id: String, kind: RtpCodecKind, rid: String) -> Result<()> {
         let subscribe_group = self.subscribe_group.read().await;
         for subscribe in subscribe_group.iter() {
             if subscribe.id == id {
@@ -791,8 +1501,8 @@ impl PeerForwardInternal {
 
     pub(crate) async fn subscribe_data_channel(
         &self,
-        _peer: Arc<RTCPeerConnection>,
-        dc: Arc<RTCDataChannel>,
+        _peer: Arc<dyn PeerConnection>,
+        dc: Arc<dyn DataChannel>,
     ) -> Result<()> {
         let sender = self.data_channel_forward.publish.clone();
         let receiver = self.data_channel_forward.subscribe.subscribe();

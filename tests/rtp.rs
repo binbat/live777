@@ -1,4 +1,8 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
+    sync::{LazyLock, Mutex, Once},
+};
 
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -14,13 +18,61 @@ struct Detect {
     video: Option<(u16, u16)>,
 }
 
+const CONNECTION_WAIT_ATTEMPTS: usize = 300;
+
+static ALLOCATED_UDP_PORTS: LazyLock<Mutex<HashSet<u16>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static TRACING_INIT: Once = Once::new();
+
+fn init_tracing() {
+    TRACING_INIT.call_once(|| {
+        // These tests run both WebRTC peers locally. Pin ICE candidates to
+        // loopback so CI runners cannot choose an unroutable host interface.
+        unsafe {
+            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", "127.0.0.1:0");
+        }
+
+        let filter = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .try_init();
+    });
+}
+
+/// Allocate UDP ports for RTP tests and reserve the chosen port numbers in this
+/// test process so concurrent `cargo test --test rtp` cases cannot reuse them.
+fn alloc_udp_ports(ip: IpAddr, count: u16) -> u16 {
+    let mut allocated = ALLOCATED_UDP_PORTS.lock().unwrap();
+
+    for _ in 0..1000 {
+        let socket = UdpSocket::bind(SocketAddr::new(ip, 0)).unwrap();
+        let base_port = socket.local_addr().unwrap().port();
+        drop(socket);
+        if base_port > u16::MAX - count {
+            continue;
+        }
+
+        let ports = base_port..base_port + count;
+        if ports.clone().any(|port| allocated.contains(&port)) {
+            continue;
+        }
+        if ports
+            .clone()
+            .all(|port| UdpSocket::bind(SocketAddr::new(ip, port)).is_ok())
+        {
+            allocated.extend(ports);
+            return base_port;
+        }
+    }
+
+    panic!("failed to allocate {count} available UDP ports for {ip}");
+}
+
 #[tokio::test]
 async fn test_livetwo_rtp_vp8() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5000;
-    let whep_port: u16 = 5005;
 
     let width = 1280;
     let height = 720;
@@ -29,10 +81,7 @@ async fn test_livetwo_rtp_vp8() {
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -44,10 +93,6 @@ async fn test_livetwo_rtp_vp8() {
 #[tokio::test]
 async fn test_livetwo_rtp_vp8_ipv6() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5010;
-    let whep_port: u16 = 5015;
 
     let width = 1280;
     let height = 720;
@@ -56,10 +101,7 @@ async fn test_livetwo_rtp_vp8_ipv6() {
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -71,10 +113,6 @@ async fn test_livetwo_rtp_vp8_ipv6() {
 #[tokio::test]
 async fn test_livetwo_rtp_vp9() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5020;
-    let whep_port: u16 = 5025;
 
     let width = 1280;
     let height = 720;
@@ -85,10 +123,7 @@ async fn test_livetwo_rtp_vp9() {
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -100,10 +135,6 @@ async fn test_livetwo_rtp_vp9() {
 #[tokio::test]
 async fn test_livetwo_rtp_h264() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5030;
-    let whep_port: u16 = 5035;
 
     let width = 1280;
     let height = 720;
@@ -112,10 +143,7 @@ async fn test_livetwo_rtp_h264() {
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -127,10 +155,6 @@ async fn test_livetwo_rtp_h264() {
 #[tokio::test]
 async fn test_livetwo_rtp_h265() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5090;
-    let whep_port: u16 = 5095;
 
     let width = 1280;
     let height = 720;
@@ -139,10 +163,7 @@ async fn test_livetwo_rtp_h265() {
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -154,10 +175,6 @@ async fn test_livetwo_rtp_h265() {
 #[tokio::test]
 async fn test_livetwo_rtp_vp9_4k() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5040;
-    let whep_port: u16 = 5045;
 
     let width = 3840;
     let height = 2160;
@@ -168,10 +185,7 @@ async fn test_livetwo_rtp_vp9_4k() {
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -183,20 +197,13 @@ async fn test_livetwo_rtp_vp9_4k() {
 #[tokio::test]
 async fn test_livetwo_rtp_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5050;
-    let whep_port: u16 = 5055;
 
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(2),
             video: None,
@@ -208,20 +215,13 @@ async fn test_livetwo_rtp_opus() {
 #[tokio::test]
 async fn test_livetwo_rtp_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5060;
-    let whep_port: u16 = 5065;
 
     let acodec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(1),
             video: None,
@@ -233,10 +233,6 @@ async fn test_livetwo_rtp_g722() {
 #[tokio::test]
 async fn test_livetwo_rtp_vp8_opus() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5070;
-    let whep_port: u16 = 5075;
 
     let width = 1280;
     let height = 720;
@@ -244,15 +240,12 @@ async fn test_livetwo_rtp_vp8_opus() {
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let vcodec = "-vcodec libvpx -pix_fmt yuv420p -g 30 -keyint_min 30 -deadline realtime -speed 4 -b:v 2000k -maxrate 2500k -bufsize 5000k";
     let prefix = format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an"
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an"
     );
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(2),
             video: Some((width, height)),
@@ -264,10 +257,6 @@ async fn test_livetwo_rtp_vp8_opus() {
 #[tokio::test]
 async fn test_livetwo_rtp_h264_g722() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let port = 0;
-
-    let whip_port: u16 = 5080;
-    let whep_port: u16 = 5085;
 
     let width = 1280;
     let height = 720;
@@ -275,15 +264,12 @@ async fn test_livetwo_rtp_h264_g722() {
     let acodec = "-acodec g722";
     let vcodec = "-vcodec libx264 -pix_fmt yuv420p -g 30 -keyint_min 30 -crf 23 -preset ultrafast -tune zerolatency -profile:v main -level 4.1";
     let prefix = format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000 -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an",
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an",
     );
 
     helper_livetwo_rtp(
         ip,
-        port,
         &prefix,
-        whip_port,
-        whep_port,
         Detect {
             audio: Some(1),
             video: Some((width, height)),
@@ -292,17 +278,19 @@ async fn test_livetwo_rtp_h264_g722() {
     .await;
 }
 
-async fn helper_livetwo_rtp(
-    ip: IpAddr,
-    port: u16,
-    prefix: &str,
-    whip_port: u16,
-    whep_port: u16,
-    detect: Detect,
-) {
+async fn helper_livetwo_rtp(ip: IpAddr, prefix: &str, detect: Detect) {
+    init_tracing();
+
+    let whip_port = alloc_udp_ports(ip, 1);
+    let whep_port = if detect.audio.is_some() && detect.video.is_some() {
+        alloc_udp_ports(ip, 3)
+    } else {
+        alloc_udp_ports(ip, 1)
+    };
+
     let cfg = liveion::config::Config::default();
 
-    let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
@@ -323,27 +311,31 @@ async fn helper_livetwo_rtp(
 
     assert_eq!(1, body.len());
 
-    let tmp_path = tempfile::tempdir()
-        .unwrap()
-        .path()
-        .to_str()
-        .unwrap()
-        .to_string();
+    let _whip_sdp = tempfile::NamedTempFile::new().unwrap();
+    let tmp_path = _whip_sdp.path().to_str().unwrap().to_string();
 
     let ct = CancellationToken::new();
+    let whip_command = format!(
+        "{prefix} -f rtp 'rtp://{}' -sdp_file {tmp_path}",
+        SocketAddr::new(ip, whip_port)
+    );
     let handle_whip = tokio::spawn(livetwo::whip::into(
         ct.clone(),
         tmp_path.clone(),
         format!("http://{addr}{}", api::path::whip("-")),
         None,
-        Some(format!(
-            "{prefix} -f rtp 'rtp://{}' -sdp_file {tmp_path}",
-            SocketAddr::new(ip, whip_port)
-        )),
+        Some(whip_command),
     ));
 
+    let mut last_state = None;
     let mut result = None;
-    for _ in 0..100 {
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
+        if handle_whip.is_finished() {
+            panic!(
+                "whip task exited before publish connected: {:?}",
+                handle_whip.await
+            );
+        }
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();
@@ -356,6 +348,7 @@ async fn helper_livetwo_rtp(
             && !r.publish.sessions.is_empty()
         {
             let s = r.publish.sessions[0].clone();
+            last_state = Some(s.state);
             if s.state == api::response::RTCPeerConnectionState::Connected {
                 result = Some(s);
                 break;
@@ -365,17 +358,17 @@ async fn helper_livetwo_rtp(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    assert!(result.is_some());
+    assert!(
+        result.is_some(),
+        "Publish session did not reach Connected state within {}ms: whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}",
+        CONNECTION_WAIT_ATTEMPTS * 100,
+    );
 
     // TODO: publish.state == connected is not ready
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
-    let tmp_path = tempfile::tempdir()
-        .unwrap()
-        .path()
-        .to_str()
-        .unwrap()
-        .to_string();
+    let _whep_sdp = tempfile::NamedTempFile::new().unwrap();
+    let tmp_path = _whep_sdp.path().to_str().unwrap().to_string();
 
     // Wrap IPv6 addresses in brackets for a valid URI host segment.
     let ip_str = match ip {
@@ -408,8 +401,15 @@ async fn helper_livetwo_rtp(
         None,
     ));
 
+    let mut last_state = None;
     let mut result = None;
-    for _ in 0..100 {
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
+        if handle_whep.is_finished() {
+            panic!(
+                "whep task exited before subscribe connected: {:?}",
+                handle_whep.await
+            );
+        }
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();
@@ -422,6 +422,7 @@ async fn helper_livetwo_rtp(
             && !r.subscribe.sessions.is_empty()
         {
             let s = r.subscribe.sessions[0].clone();
+            last_state = Some(s.state);
             if s.state == api::response::RTCPeerConnectionState::Connected {
                 result = Some(s);
                 break;
@@ -431,18 +432,13 @@ async fn helper_livetwo_rtp(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    assert!(result.is_some());
+    assert!(
+        result.is_some(),
+        "Subscribe session did not reach Connected state within {}ms: whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}",
+        CONNECTION_WAIT_ATTEMPTS * 100,
+    );
 
-    // Need wait SDP exists
-    let mut tmp_path_ok = false;
-    for _ in 0..100 {
-        if std::path::Path::new(&tmp_path).exists() {
-            tmp_path_ok = true;
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-    assert!(tmp_path_ok, "{tmp_path} is not exists");
+    wait_for_sdp_file(&tmp_path).await;
 
     let output = Command::new("ffprobe")
         .args(vec![
@@ -463,7 +459,7 @@ async fn helper_livetwo_rtp(
 
     assert!(
         output.status.success(),
-        "stdout: {}\r\nstderr: {}",
+        "ffprobe failed: whip_port={whip_port}, whep_port={whep_port}\nstdout: {}\nstderr: {}",
         std::str::from_utf8(output.stdout.as_slice()).unwrap(),
         std::str::from_utf8(output.stderr.as_slice()).unwrap()
     );
@@ -513,4 +509,20 @@ async fn helper_livetwo_rtp(
 
     assert!(result_whip.is_ok());
     assert!(result_whep.is_ok());
+}
+
+async fn wait_for_sdp_file(path: &str) {
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
+        if let Ok(contents) = std::fs::read_to_string(path)
+            && contents.contains("m=")
+        {
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    panic!(
+        "SDP file was not populated within {}ms: {path}",
+        CONNECTION_WAIT_ATTEMPTS * 100
+    );
 }

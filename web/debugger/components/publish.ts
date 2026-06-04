@@ -12,6 +12,19 @@ const layers = [
     { rid: "f", scalabilityMode: "L1T3" },
 ];
 
+export function getVideoSendEncodings(layer: string) {
+    if (layer === "f") {
+        return [{ scaleResolutionDownBy: 1.0 }];
+    }
+
+    const index = layers.findIndex((i) => i.rid === layer);
+    if (index < 0) {
+        return [{ scaleResolutionDownBy: 1.0 }];
+    }
+
+    return layers.slice(0 - (layers.length - index));
+}
+
 type startWhipConfig = {
     url: string;
     token: string;
@@ -45,9 +58,6 @@ export default async function startWhip(
     cfg.log(
         `video width: ${!videoSize.width ? "default" : videoSize.width}, height: ${!videoSize.height ? "default" : videoSize.height}`,
     );
-    cfg.log(`audio device: ${!cfg.audio.device ? "none" : cfg.audio.device}`);
-    cfg.log(`video device: ${!cfg.video.device ? "none" : cfg.video.device}`);
-
     const stream = cfg.inputStream
         ? cfg.inputStream
         : cfg.sourceMode === "desktop"
@@ -78,13 +88,25 @@ export default async function startWhip(
     pc.onconnectionstatechange = () =>
         cfg.log(`connection State: ${pc.connectionState}`);
 
-    const index = layers.findIndex((i) => i.rid === cfg.video.layer);
-
-    const sendEncodings = layers.slice(0 - (layers.length - index));
-    pc.addTransceiver(stream.getVideoTracks()[0], {
+    const videoTransceiverInit: RTCRtpTransceiverInit = {
         direction: "sendonly",
-        sendEncodings: sendEncodings,
-    });
+    };
+    const sendEncodings = getVideoSendEncodings(cfg.video.layer);
+    videoTransceiverInit.sendEncodings = sendEncodings;
+    const videoTransceiver = pc.addTransceiver(
+        stream.getVideoTracks()[0],
+        videoTransceiverInit,
+    );
+    const videoSenderParams = videoTransceiver.sender.getParameters();
+    if (videoSenderParams.encodings?.[0]) {
+        videoSenderParams.encodings[0].scaleResolutionDownBy = 1.0;
+        (
+            videoSenderParams as RTCRtpSendParameters & {
+                degradationPreference?: string;
+            }
+        ).degradationPreference = "maintain-resolution";
+        await videoTransceiver.sender.setParameters(videoSenderParams);
+    }
 
     if (cfg.audio.pseudo) {
         pc.addTransceiver("audio", { direction: "sendonly" });
@@ -100,8 +122,7 @@ export default async function startWhip(
     cfg.log(`video codec: ${!cfg.video.codec ? "default" : cfg.video.codec}`);
 
     const whip = new WHIPClient();
-    // biome-ignore lint/suspicious/noExplicitAny: This whip-whep.js use any type
-    whip.onAnswer = (answer: any) =>
+    whip.onAnswer = (answer: RTCSessionDescriptionInit) =>
         convertSessionDescription(answer, cfg.audio.codec, cfg.video.codec);
 
     try {

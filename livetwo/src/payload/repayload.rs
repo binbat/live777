@@ -1,13 +1,11 @@
 use bytes::Bytes;
-use tracing::{debug, error, trace, warn};
-use webrtc::{
-    api::media_engine::*,
-    rtp::{
-        codecs::*,
-        packet::Packet,
-        packetizer::{Depacketizer, Payloader},
-    },
+use rtc::peer_connection::configuration::media_engine::*;
+use rtc::rtp::{
+    codec::*,
+    packet::Packet,
+    packetizer::{Depacketizer, Payloader},
 };
+use tracing::{debug, error, trace, warn};
 
 use super::{H264Processor, H265Processor};
 use crate::payload::RTP_OUTBOUND_MTU;
@@ -242,7 +240,7 @@ impl RePayloadCodec {
     fn payload_h265_manually(
         &mut self,
         data: &[u8],
-        original_header: &webrtc::rtp::header::Header,
+        original_header: &rtc::rtp::header::Header,
     ) -> Vec<Packet> {
         const MAX_PAYLOAD_SIZE: usize = RTP_OUTBOUND_MTU - 12;
 

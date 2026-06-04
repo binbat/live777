@@ -13,12 +13,14 @@ crate-type = ["lib"]
 cli = { path = "../libs/cli" }
 rtsp = { path = "../libs/rtsp" }
 libwish = { path = "../libs/libwish" }
+api = { path = "../libs/api" }
 
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 webrtc = { workspace = true }
+rtc = { workspace = true }
 sdp = { workspace = true }
 url = { workspace = true }
 base64 = { workspace = true }
@@ -28,3 +30,7 @@ scopeguard = "1.2.0"
 md-5 = "0.10"
 portpicker = "0.1.1"
 sdp-types = "0.1"
+async-trait = "0.1"
+rand = "0.10"
+rtc-rtcp = { workspace = true }
+rtc-shared = { workspace = true }

@@ -12,5 +12,6 @@ crate-type = ["lib"]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 webrtc = { workspace = true }
+rtc = { workspace = true }
 
 shellwords = "1.1.0"

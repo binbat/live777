@@ -134,14 +134,11 @@ impl SourceManager {
         if let Some(codec) = video_codec {
             info!(
                 "Adding video track for {}: {}",
-                stream_id, codec.capability.mime_type
+                stream_id, codec.rtp_codec.mime_type
             );
 
             if let Err(e) = forward
-                .add_virtual_track(
-                    webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video,
-                    codec,
-                )
+                .add_virtual_track(rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Video, codec)
                 .await
             {
                 warn!("Failed to add video track: {:?}", e);
@@ -151,14 +148,11 @@ impl SourceManager {
         if let Some(codec) = audio_codec {
             info!(
                 "Adding audio track for {}: {}",
-                stream_id, codec.capability.mime_type
+                stream_id, codec.rtp_codec.mime_type
             );
 
             if let Err(e) = forward
-                .add_virtual_track(
-                    webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio,
-                    codec,
-                )
+                .add_virtual_track(rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Audio, codec)
                 .await
             {
                 warn!("Failed to add audio track: {:?}", e);

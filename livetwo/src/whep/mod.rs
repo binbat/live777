@@ -10,7 +10,7 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use ::webrtc::peer_connection::RTCPeerConnection;
+use ::webrtc::peer_connection::PeerConnection;
 use cli::create_child;
 use libwish::Client;
 use tokio::sync::Notify;
@@ -78,8 +78,7 @@ pub async fn from(
         }
     });
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let codec_info = codec_info.lock().await;
+    let codec_info = wait_for_codec_info(codec_info.clone()).await;
     debug!("Codec info: {:?}", codec_info);
 
     let (video_broadcast_tx, _) = broadcast::channel::<Vec<u8>>(1000);
@@ -241,6 +240,27 @@ pub async fn from(
     Ok(())
 }
 
+async fn wait_for_codec_info(
+    codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
+) -> rtsp::CodecInfo {
+    const CODEC_WAIT_ATTEMPTS: usize = 300;
+
+    for _ in 0..CODEC_WAIT_ATTEMPTS {
+        let info = codec_info.lock().await.clone();
+        if info.video_codec.is_some() || info.audio_codec.is_some() {
+            return info;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let info = codec_info.lock().await.clone();
+    warn!(
+        "No WHEP media codec observed after {}ms; continuing with empty codec info",
+        CODEC_WAIT_ATTEMPTS * 100
+    );
+    info
+}
+
 struct InitialTransportHandle {
     task_handle: tokio::task::JoinHandle<()>,
     port_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<rtsp::PortUpdate>>,
@@ -252,7 +272,7 @@ fn start_initial_transport_task(
     mut video_rx: broadcast::Receiver<Vec<u8>>,
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
     mut output_target: OutputTarget,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
 ) -> InitialTransportHandle {
     let port_update_rx = output_target.take_port_update_rx();
 
@@ -351,7 +371,7 @@ fn start_transport_task(
     mut video_rx: broadcast::Receiver<Vec<u8>>,
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
     media_info: rtsp::MediaInfo,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!("Transport task #{} started", connection_id);

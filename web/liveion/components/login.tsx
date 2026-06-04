@@ -4,6 +4,7 @@ import { Alert, Button, Loading, Modal } from 'react-daisyui';
 import { WretchError } from 'wretch/resolver';
 
 import * as api from '@/shared/api';
+import { formatHttpError } from '@/shared/utils';
 
 export interface LoginProps {
     show: boolean;
@@ -41,7 +42,7 @@ export function Login({ show, onSuccess }: LoginProps) {
         } catch (e) {
             api.setAuthToken('');
             if (e instanceof WretchError) {
-                setErrMsg(e.json?.error ?? e.text ?? `Status: ${e.status}`);
+                setErrMsg(formatHttpError(e));
             } else if (e instanceof Error) {
                 setErrMsg(e.message);
             } else {

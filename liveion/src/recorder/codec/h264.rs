@@ -3,8 +3,8 @@ use crate::recorder::fmp4::nalu_to_avcc;
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use bytes::BytesMut;
-use webrtc::rtp::packet::Packet;
-use webrtc::rtp::{codecs::h264::H264Packet, packetizer::Depacketizer};
+use rtc_rtp::packet::Packet;
+use rtc_rtp::{codec::h264::H264Packet, packetizer::Depacketizer};
 
 /// Simple H264 Annex-B parser that splits a frame into NALUs and converts to AVCC.
 pub struct H264Adapter {
@@ -248,7 +248,7 @@ impl crate::recorder::codec::RtpParser for H264RtpParser {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use webrtc::rtp::packet::Packet;
+    use rtc_rtp::packet::Packet;
 
     #[test]
     fn test_single_nalu_idr_detection() {
