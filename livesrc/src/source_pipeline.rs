@@ -23,8 +23,8 @@ const ERR_BUF_LEN: usize = 256;
 /// Send/Sync are implemented below with the guarantee that stop/free
 /// are serialized and the handle is not used after being taken.
 #[derive(Clone)]
-#[allow(clippy::arc_with_non_send_sync)]
 struct SharedPipelineHandle {
+    #[allow(clippy::arc_with_non_send_sync)]
     inner: Arc<Mutex<Option<*mut SourcePipelineHandle>>>,
 }
 
