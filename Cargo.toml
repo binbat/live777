@@ -144,6 +144,7 @@ toml = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
+source = ["liveion/source"]
 webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]
