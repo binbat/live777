@@ -19,7 +19,11 @@ const ERR_BUF_LEN: usize = 256;
 // Shared pipeline handle
 // ---------------------------------------------------------------------------
 
+/// The raw FFI handle is only accessed through this mutex.
+/// Send/Sync are implemented below with the guarantee that stop/free
+/// are serialized and the handle is not used after being taken.
 #[derive(Clone)]
+#[allow(clippy::arc_with_non_send_sync)]
 struct SharedPipelineHandle {
     inner: Arc<Mutex<Option<*mut SourcePipelineHandle>>>,
 }
@@ -209,10 +213,10 @@ impl NativePipeline {
             }
         }
         // Drop the sender side so the receiver knows we're done.
-        if let Some(ctx) = self.ctx.take() {
-            if let Ok(mut guard) = ctx.tx.lock() {
-                *guard = None;
-            }
+        if let Some(ctx) = self.ctx.take()
+            && let Ok(mut guard) = ctx.tx.lock()
+        {
+            *guard = None;
         }
     }
 
