@@ -172,7 +172,9 @@ impl SubscribeRTCPeerConnection {
             let sender_track = sender.track();
             let sender_track_codec = sender_track.codec(sender_ssrc).await;
             let track: Arc<dyn TrackLocal> = if sender_track_codec.as_ref().is_some_and(
-                |sender_track_codec| Self::rtp_codecs_match(sender_track_codec, &codec),
+                |sender_track_codec| {
+                    Self::sender_track_codec_compatible(sender_track_codec, &codec)
+                },
             ) {
                 info!(
                     "[{}] [{}] {} subscribe reusing bound sender track: sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
@@ -300,6 +302,14 @@ impl SubscribeRTCPeerConnection {
         }
 
         true
+    }
+
+    fn sender_track_codec_compatible(
+        sender_track_codec: &RTCRtpCodec,
+        selected_codec: &RTCRtpCodec,
+    ) -> bool {
+        Self::rtp_codecs_match(sender_track_codec, selected_codec)
+            || Self::h265_codecs_are_compatible(sender_track_codec, selected_codec)
     }
 
     async fn select_sender_codec(
@@ -931,6 +941,29 @@ mod tests {
 
         assert_eq!(selected.payload_type, 49);
         assert!(selected.rtp_codec.sdp_fmtp_line.contains("profile-id=1"));
+    }
+
+    #[test]
+    fn h265_sender_track_reuse_allows_different_level_with_same_profile() {
+        let sender_track_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "level-id=123;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(SubscribeRTCPeerConnection::sender_track_codec_compatible(
+            &sender_track_codec,
+            &selected_codec
+        ));
     }
 
     #[test]
