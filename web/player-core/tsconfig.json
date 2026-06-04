@@ -27,6 +27,7 @@
     "player-surface.tsx",
     "stats.tsx",
     "types.ts",
-    "webrtc-stats.ts"
+    "webrtc-stats.ts",
+    "whep-playback.ts"
   ]
 }
