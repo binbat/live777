@@ -16,6 +16,33 @@ use tokio::sync::mpsc;
 const ERR_BUF_LEN: usize = 256;
 
 // ---------------------------------------------------------------------------
+// Raw handle wrapper
+// ---------------------------------------------------------------------------
+
+/// Wraps a raw C++ `SourcePipelineHandle` pointer so that the outer
+/// `Arc<Mutex<Option<…>>>` no longer directly contains `*mut ()`.
+///
+/// # Safety
+///
+/// The raw pointer is only accessed while protected by
+/// [`SharedPipelineHandle`]'s mutex.  `stop` / `Drop` take the handle
+/// out of the `Option`, so the pointer is never used after it has been
+/// freed.
+struct PipelineHandlePtr(*mut SourcePipelineHandle);
+
+// Raw pointers are Copy; a Copy wrapper derives Clone trivially.
+impl Copy for PipelineHandlePtr {}
+impl Clone for PipelineHandlePtr {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+// SAFETY: see struct-level doc.
+unsafe impl Send for PipelineHandlePtr {}
+unsafe impl Sync for PipelineHandlePtr {}
+
+// ---------------------------------------------------------------------------
 // Shared pipeline handle
 // ---------------------------------------------------------------------------
 
@@ -24,8 +51,7 @@ const ERR_BUF_LEN: usize = 256;
 /// are serialized and the handle is not used after being taken.
 #[derive(Clone)]
 struct SharedPipelineHandle {
-    #[allow(clippy::arc_with_non_send_sync)]
-    inner: Arc<Mutex<Option<*mut SourcePipelineHandle>>>,
+    inner: Arc<Mutex<Option<PipelineHandlePtr>>>,
 }
 
 unsafe impl Send for SharedPipelineHandle {}
@@ -39,17 +65,17 @@ impl SharedPipelineHandle {
     }
 
     fn set(&self, h: *mut SourcePipelineHandle) {
-        *self.inner.lock().unwrap() = Some(h);
+        *self.inner.lock().unwrap() = Some(PipelineHandlePtr(h));
     }
 
-    fn take(&self) -> Option<*mut SourcePipelineHandle> {
+    fn take(&self) -> Option<PipelineHandlePtr> {
         self.inner.lock().unwrap().take()
     }
 
     fn request_keyframe(&self) {
         let guard = self.inner.lock().unwrap();
-        if let Some(h) = *guard {
-            unsafe { source_pipeline_request_keyframe(h) };
+        if let Some(h) = guard.as_ref() {
+            unsafe { source_pipeline_request_keyframe(h.0) };
         }
     }
 }
@@ -197,7 +223,7 @@ impl NativePipeline {
             guard.ok_or_else(|| anyhow::anyhow!("pipeline not initialised"))?
         };
 
-        if !unsafe { source_pipeline_start(raw_handle) } {
+        if !unsafe { source_pipeline_start(raw_handle.0) } {
             anyhow::bail!("source_pipeline_start failed");
         }
 
@@ -208,8 +234,8 @@ impl NativePipeline {
     pub fn stop(&mut self) {
         if let Some(raw_handle) = self.handle.take() {
             unsafe {
-                source_pipeline_stop(raw_handle);
-                source_pipeline_free(raw_handle);
+                source_pipeline_stop(raw_handle.0);
+                source_pipeline_free(raw_handle.0);
             }
         }
         // Drop the sender side so the receiver knows we're done.
