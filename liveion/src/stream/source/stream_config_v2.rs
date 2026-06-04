@@ -181,8 +181,7 @@ impl SourceSpec {
         // surface during validation rather than at source creation time.
         pixel_format_to_u32(&self.capture.pixel_format)
             .map_err(|e| anyhow::anyhow!("capture.pixel_format: {}", e))?;
-        codec_to_u32(&self.encoder.codec)
-            .map_err(|e| anyhow::anyhow!("encoder.codec: {}", e))?;
+        codec_to_u32(&self.encoder.codec).map_err(|e| anyhow::anyhow!("encoder.codec: {}", e))?;
         Ok(())
     }
 
@@ -247,12 +246,15 @@ impl SourceSpec {
 /// Used when converting structured `CaptureSpec` into `NativeSourceParams`.
 pub fn pixel_format_to_u32(s: &str) -> anyhow::Result<u32> {
     match s.to_lowercase().as_str() {
-        "yuyv" | "yuyv422" => Ok(0), // Yuyv422
-        "nv12" => Ok(1),              // Nv12
+        "yuyv" | "yuyv422" => Ok(0),   // Yuyv422
+        "nv12" => Ok(1),               // Nv12
         "yuv420" | "yuv420p" => Ok(2), // Yuv420p
-        "mjpeg" => Ok(3),             // Mjpeg
-        "rgb888" | "rgb" => Ok(4),    // Rgb888
-        other => anyhow::bail!("unsupported pixel_format: '{}'. Supported: yuyv, nv12, yuv420, mjpeg, rgb888", other),
+        "mjpeg" => Ok(3),              // Mjpeg
+        "rgb888" | "rgb" => Ok(4),     // Rgb888
+        other => anyhow::bail!(
+            "unsupported pixel_format: '{}'. Supported: yuyv, nv12, yuv420, mjpeg, rgb888",
+            other
+        ),
     }
 }
 
@@ -261,12 +263,15 @@ pub fn pixel_format_to_u32(s: &str) -> anyhow::Result<u32> {
 /// Used when converting structured `EncoderSpec` into `NativeSourceParams`.
 pub fn codec_to_u32(s: &str) -> anyhow::Result<u32> {
     match s.to_lowercase().as_str() {
-        "h264" => Ok(100),            // H264
-        "h265" | "hevc" => Ok(101),   // H265
-        "av1" => Ok(102),             // Av1
-        "vp8" => Ok(103),             // Vp8
-        "vp9" => Ok(104),             // Vp9
-        other => anyhow::bail!("unsupported codec: '{}'. Supported: h264, h265, av1, vp8, vp9", other),
+        "h264" => Ok(100),          // H264
+        "h265" | "hevc" => Ok(101), // H265
+        "av1" => Ok(102),           // Av1
+        "vp8" => Ok(103),           // Vp8
+        "vp9" => Ok(104),           // Vp9
+        other => anyhow::bail!(
+            "unsupported codec: '{}'. Supported: h264, h265, av1, vp8, vp9",
+            other
+        ),
     }
 }
 

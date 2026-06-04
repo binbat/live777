@@ -115,8 +115,7 @@ impl NativeEncodedSource {
 
         tokio::spawn(async move {
             let mut parser = AnnexBParser::new();
-            let mut packetizer =
-                H264Packetizer::new(1400, payload_type, clock_rate);
+            let mut packetizer = H264Packetizer::new(1400, payload_type, clock_rate);
             let mut last_rtp_ts: Option<u32> = None;
             let start_instant = Instant::now();
 
@@ -227,9 +226,18 @@ impl NativeEncodedSource {
                     profile
                 ),
                 rtcp_feedback: vec![
-                    RTCPFeedback { typ: "goog-remb".into(), parameter: "".into() },
-                    RTCPFeedback { typ: "nack".into(), parameter: "".into() },
-                    RTCPFeedback { typ: "nack".into(), parameter: "pli".into() },
+                    RTCPFeedback {
+                        typ: "goog-remb".into(),
+                        parameter: "".into(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".into(),
+                        parameter: "".into(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".into(),
+                        parameter: "pli".into(),
+                    },
                 ],
             },
             payload_type: self.params.payload_type as u8,

@@ -9,8 +9,8 @@
 //! rather than an SDP file. It always listens on a single port for
 //! a single video stream.
 
-use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use super::stream_config_v2::parse_rtp_url;
+use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::net::SocketAddr;

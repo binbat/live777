@@ -212,7 +212,11 @@ impl StreamLifecycle {
 
     /// Transition to Failed state, retaining codec info.
     /// Valid from: Connected, Active
-    pub fn on_failed(&mut self, error: String, codec_info: Option<CodecInfo>) -> Option<LifecycleEvent> {
+    pub fn on_failed(
+        &mut self,
+        error: String,
+        codec_info: Option<CodecInfo>,
+    ) -> Option<LifecycleEvent> {
         match self.state {
             StreamLifecycleState::Connected | StreamLifecycleState::Active => {
                 let old = self.state;
@@ -294,13 +298,16 @@ mod tests {
         assert_eq!(lc.state(), StreamLifecycleState::Active);
 
         // Active -> Failed
-        let event = lc.on_failed("test error".to_string(), Some(CodecInfo {
-            video_mime_type: Some("video/H264".to_string()),
-            video_clock_rate: Some(90000),
-            video_sdp_fmtp: None,
-            audio_mime_type: None,
-            audio_clock_rate: None,
-        }));
+        let event = lc.on_failed(
+            "test error".to_string(),
+            Some(CodecInfo {
+                video_mime_type: Some("video/H264".to_string()),
+                video_clock_rate: Some(90000),
+                video_sdp_fmtp: None,
+                audio_mime_type: None,
+                audio_clock_rate: None,
+            }),
+        );
         assert!(event.is_some());
         assert_eq!(lc.state(), StreamLifecycleState::Failed);
         assert!(lc.codec_info().is_some());

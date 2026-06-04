@@ -7,10 +7,10 @@
 
 use super::native_encoded_source::NativeEncodedSource;
 use super::stream_config_v2::SourceSpec;
-use livesrc::NativeSourceParams;
 use super::{MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
+use livesrc::NativeSourceParams;
 use tokio::sync::{broadcast, mpsc};
 
 #[cfg(feature = "source")]
@@ -22,10 +22,7 @@ pub struct NativeSource {
 
 impl NativeSource {
     /// Create from a legacy URL (`libcamera://...` or `v4l2://...`).
-    pub fn from_url(
-        url: &str,
-        config: &crate::config::SourceConfig,
-    ) -> Result<Self> {
+    pub fn from_url(url: &str, config: &crate::config::SourceConfig) -> Result<Self> {
         let native_params = if url.starts_with("libcamera://") {
             let params = super::stream_config_v2::parse_libcamera_url(url)?;
             NativeSourceParams {

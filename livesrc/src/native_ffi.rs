@@ -52,7 +52,7 @@ pub(crate) struct SourcePipelineConfigFFI {
 #[repr(C)]
 pub(crate) struct EncodedPacketFFI {
     pub codec: u32,
-    pub data: *const u8,     // valid only during callback
+    pub data: *const u8, // valid only during callback
     pub size: usize,
     pub pts_us: u64,
     pub dts_us: u64,

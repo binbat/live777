@@ -9,7 +9,7 @@
 use crate::native_ffi::*;
 use crate::types::{EncodedPacket, NativeSourceParams};
 use anyhow::Result;
-use std::ffi::{c_char, CString};
+use std::ffi::{CString, c_char};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 

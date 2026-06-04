@@ -541,7 +541,8 @@ impl Manager {
                 }
             };
 
-            self.start_single_source(source, &source_cfg.stream_id).await;
+            self.start_single_source(source, &source_cfg.stream_id)
+                .await;
         }
 
         // Process structured sources (direct path, no URL roundtrip)

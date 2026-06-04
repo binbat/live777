@@ -118,33 +118,49 @@ fn main() {
         "rpi" => {
             cmake_config.define("ENABLE_BACKEND_PI", "ON");
             cmake_config.define("ENABLE_BACKEND_RDK_X5", "OFF");
-            cmake_config.define("ENABLE_CAPTURE_LIBCAMERA",
-                if has_capture_libcamera { "ON" } else { "OFF" });
-            cmake_config.define("ENABLE_CAPTURE_V4L2",
-                if has_capture_v4l2 { "ON" } else { "OFF" });
-            cmake_config.define("ENABLE_ENCODER_V4L2_M2M",
-                if has_encoder_v4l2_m2m { "ON" } else { "OFF" });
+            cmake_config.define(
+                "ENABLE_CAPTURE_LIBCAMERA",
+                if has_capture_libcamera { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
+                "ENABLE_CAPTURE_V4L2",
+                if has_capture_v4l2 { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
+                "ENABLE_ENCODER_V4L2_M2M",
+                if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
+            );
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
         }
         "rdk-x5" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
             cmake_config.define("ENABLE_BACKEND_RDK_X5", "ON");
             cmake_config.define("ENABLE_CAPTURE_LIBCAMERA", "OFF");
-            cmake_config.define("ENABLE_CAPTURE_V4L2",
-                if has_capture_v4l2 { "ON" } else { "OFF" });
-            cmake_config.define("ENABLE_ENCODER_V4L2_M2M",
-                if has_encoder_v4l2_m2m { "ON" } else { "OFF" });
-            cmake_config.define("ENABLE_ENCODER_RDK_X5",
-                if has_encoder_rdk { "ON" } else { "OFF" });
+            cmake_config.define(
+                "ENABLE_CAPTURE_V4L2",
+                if has_capture_v4l2 { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
+                "ENABLE_ENCODER_V4L2_M2M",
+                if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
+                "ENABLE_ENCODER_RDK_X5",
+                if has_encoder_rdk { "ON" } else { "OFF" },
+            );
         }
         "generic-v4l2" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
             cmake_config.define("ENABLE_BACKEND_RDK_X5", "OFF");
             cmake_config.define("ENABLE_CAPTURE_LIBCAMERA", "OFF");
-            cmake_config.define("ENABLE_CAPTURE_V4L2",
-                if has_capture_v4l2 { "ON" } else { "OFF" });
-            cmake_config.define("ENABLE_ENCODER_V4L2_M2M",
-                if has_encoder_v4l2_m2m { "ON" } else { "OFF" });
+            cmake_config.define(
+                "ENABLE_CAPTURE_V4L2",
+                if has_capture_v4l2 { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
+                "ENABLE_ENCODER_V4L2_M2M",
+                if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
+            );
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
         }
         other => panic!(

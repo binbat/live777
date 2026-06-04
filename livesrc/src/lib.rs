@@ -6,9 +6,9 @@
 //! This crate does **not** handle RTP, WHEP, source management, or any
 //! real-time transport — those responsibilities belong to `liveion`.
 
-pub mod types;
 mod native_ffi; // crate-private
 pub mod source_pipeline;
+pub mod types;
 
-pub use types::{EncodedPacket, NativeSourceParams};
 pub use source_pipeline::{KeyframeHandle, NativePipeline};
+pub use types::{EncodedPacket, NativeSourceParams};
