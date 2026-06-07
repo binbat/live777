@@ -16,7 +16,7 @@ pub async fn setup_server_for_push(
 )> {
     info!("Starting RTSP server mode for push");
 
-    let listen_addr = format!("{}:{}", listen_host, port);
+    let listen_addr = crate::utils::host::format_bind_addr(listen_host, port);
 
     let (media_info, channels, port_update_rx) =
         rtsp::setup_rtsp_server_session(&listen_addr, Vec::new(), rtsp::SessionMode::Push, false)
@@ -43,7 +43,7 @@ pub async fn setup_server_for_pull(
 )> {
     info!("Starting RTSP server mode for pull");
 
-    let listen_addr = format!("{}:{}", listen_host, port);
+    let listen_addr = crate::utils::host::format_bind_addr(listen_host, port);
     let sdp_bytes = filtered_sdp.into_bytes();
 
     let (media_info, channels, port_update_rx) =
@@ -135,4 +135,23 @@ pub async fn setup_client_for_push(
     );
 
     Ok((media_info, channels))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rtsp_server_listen_addr_uses_brackets_for_ipv6() {
+        assert_eq!(
+            crate::utils::host::format_bind_addr("::", 8554),
+            "[::]:8554"
+        );
+        assert_eq!(
+            crate::utils::host::format_bind_addr("::1", 8554),
+            "[::1]:8554"
+        );
+        assert_eq!(
+            crate::utils::host::format_bind_addr("127.0.0.1", 8554),
+            "127.0.0.1:8554"
+        );
+    }
 }
