@@ -1,8 +1,8 @@
 use base64::{Engine as _, engine::general_purpose};
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodec;
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, str::FromStr};
 use tracing::{info, warn};
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Config {
@@ -264,9 +264,9 @@ pub struct CodecConfig {
     pub sdp_fmtp_line: Option<String>,
 }
 
-impl From<CodecConfig> for RTCRtpCodecCapability {
+impl From<CodecConfig> for RTCRtpCodec {
     fn from(val: CodecConfig) -> Self {
-        RTCRtpCodecCapability {
+        RTCRtpCodec {
             mime_type: val.mime_type,
             clock_rate: val.clock_rate,
             channels: val.channels,

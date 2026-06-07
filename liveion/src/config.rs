@@ -21,6 +21,9 @@ pub struct Config {
     #[serde(default)]
     pub sdp: Sdp,
 
+    #[serde(default)]
+    pub webrtc: WebRtc,
+
     #[cfg(feature = "net4mqtt")]
     #[serde(default)]
     pub net4mqtt: Option<Net4mqtt>,
@@ -89,6 +92,29 @@ pub struct Sdp {
     /// Disable specific codecs in SDP negotiation, e.g. ["VP8", "H264"]
     #[serde(default)]
     pub disable_codecs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebRtc {
+    /// UDP bind addresses used by WebRTC ICE host candidates.
+    ///
+    /// Environment variables are still supported and take priority:
+    /// LIVE777_WEBRTC_ICE_UDP_ADDRS, LIVE777_WEBRTC_ICE_UDP_ADDR,
+    /// LIVETWO_WEBRTC_ICE_UDP_ADDR.
+    #[serde(default = "default_webrtc_ice_udp_addrs")]
+    pub ice_udp_addrs: Vec<String>,
+}
+
+fn default_webrtc_ice_udp_addrs() -> Vec<String> {
+    vec![api::webrtc::DEFAULT_WEBRTC_ICE_UDP_ADDR.to_string()]
+}
+
+impl Default for WebRtc {
+    fn default() -> Self {
+        Self {
+            ice_udp_addrs: default_webrtc_ice_udp_addrs(),
+        }
+    }
 }
 
 fn default_http_listen() -> SocketAddr {
@@ -237,6 +263,24 @@ mod tests {
             url: "udp://0.0.0.0:7774".to_string(),
         };
         assert!(s.parse().is_none());
+    }
+}
+
+#[cfg(test)]
+mod webrtc_tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_webrtc_ice_udp_addrs_config() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [webrtc]
+            ice_udp_addrs = ["127.0.0.1:0"]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.webrtc.ice_udp_addrs, vec!["127.0.0.1:0"]);
     }
 }
 

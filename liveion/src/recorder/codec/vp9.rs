@@ -1,8 +1,8 @@
 use super::{CodecAdapter, TrackKind};
 use anyhow::{Result, anyhow};
 use bytes::{Bytes, BytesMut};
-use webrtc::rtp::packet::Packet;
-use webrtc::rtp::{codecs::vp9::Vp9Packet, packetizer::Depacketizer};
+use rtc_rtp::packet::Packet;
+use rtc_rtp::{codec::vp9::Vp9Packet, packetizer::Depacketizer};
 
 /// Minimal VP9 adapter. For fMP4 we carry raw frame bytes into samples.
 pub struct Vp9Adapter {

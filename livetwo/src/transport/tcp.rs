@@ -1,8 +1,10 @@
+use rtc::rtp::packet::Packet;
+use rtc_shared::marshal::Unmarshal;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
-use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::rtp_codec::RTPCodecType};
+use webrtc::peer_connection::PeerConnection;
 
 pub struct TcpHandler {
     video_rtp_channel: Option<u8>,
@@ -52,7 +54,7 @@ impl TcpHandler {
         mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
         video_sender: Option<UnboundedSender<Vec<u8>>>,
         audio_sender: Option<UnboundedSender<Vec<u8>>>,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
     ) {
         let video_rtp_channel = self.video_rtp_channel;
         let video_rtcp_channel = self.video_rtcp_channel;
@@ -61,28 +63,45 @@ impl TcpHandler {
 
         tokio::spawn(async move {
             info!("TCP input to WebRTC forwarder started");
+            let mut first_video_rtp = true;
+            let mut first_audio_rtp = true;
+            let mut video_pkt_count: u64 = 0;
+            let mut audio_pkt_count: u64 = 0;
+            let mut last_error: Option<String> = None;
 
             while let Some((channel, data)) = rx.recv().await {
                 trace!("Received data on channel {}: {} bytes", channel, data.len());
 
                 if Some(channel) == video_rtp_channel {
                     if let Some(ref sender) = video_sender {
+                        if first_video_rtp {
+                            log_first_rtp_packet("video", channel, &data);
+                            first_video_rtp = false;
+                        }
                         trace!("Forwarding video RTP to WebRTC");
                         if let Err(e) = sender.send(data) {
+                            last_error = Some(format!("video RTP send: {e}"));
                             error!("Failed to forward video RTP: {}", e);
                             break;
                         }
+                        video_pkt_count += 1;
                     }
                 } else if Some(channel) == video_rtcp_channel {
                     trace!("Processing video RTCP from input");
                     Self::forward_rtcp_to_webrtc(&data, &peer).await;
                 } else if Some(channel) == audio_rtp_channel {
                     if let Some(ref sender) = audio_sender {
+                        if first_audio_rtp {
+                            log_first_rtp_packet("audio", channel, &data);
+                            first_audio_rtp = false;
+                        }
                         trace!("Forwarding audio RTP to WebRTC");
                         if let Err(e) = sender.send(data) {
+                            last_error = Some(format!("audio RTP send: {e}"));
                             error!("Failed to forward audio RTP: {}", e);
                             break;
                         }
+                        audio_pkt_count += 1;
                     }
                 } else if Some(channel) == audio_rtcp_channel {
                     trace!("Processing audio RTCP from input");
@@ -90,7 +109,16 @@ impl TcpHandler {
                 }
             }
 
-            warn!("TCP input to WebRTC forwarder stopped");
+            warn!(
+                video_rtp_ch = ?video_rtp_channel,
+                video_rtcp_ch = ?video_rtcp_channel,
+                audio_rtp_ch = ?audio_rtp_channel,
+                audio_rtcp_ch = ?audio_rtcp_channel,
+                video_pkts = video_pkt_count,
+                audio_pkts = audio_pkt_count,
+                last_error = ?last_error,
+                "TCP input to WebRTC forwarder stopped (sender dropped or error)"
+            );
         });
     }
 
@@ -133,59 +161,19 @@ impl TcpHandler {
 
     pub fn spawn_webrtc_rtcp_to_output(
         &self,
-        peer: Arc<RTCPeerConnection>,
-        tx: UnboundedSender<(u8, Vec<u8>)>,
+        _peer: Arc<dyn PeerConnection>,
+        _tx: UnboundedSender<(u8, Vec<u8>)>,
     ) {
-        let video_rtcp_channel = self.video_rtcp_channel;
-        let audio_rtcp_channel = self.audio_rtcp_channel;
-
-        tokio::spawn(async move {
-            let senders = peer.get_senders().await;
-
-            for sender in senders {
-                if let Some(track) = sender.track().await {
-                    let tx_clone = tx.clone();
-                    let channel = match track.kind() {
-                        RTPCodecType::Video => video_rtcp_channel,
-                        RTPCodecType::Audio => audio_rtcp_channel,
-                        _ => continue,
-                    };
-
-                    if let Some(channel) = channel {
-                        tokio::spawn(async move {
-                            info!("Starting RTCP sender on channel {}", channel);
-                            loop {
-                                match sender.read_rtcp().await {
-                                    Ok((packets, _)) => {
-                                        for packet in packets {
-                                            if let Ok(data) = packet.marshal() {
-                                                debug!("Sending RTCP data ({} bytes)", data.len());
-                                                if let Err(e) =
-                                                    tx_clone.send((channel, data.to_vec()))
-                                                {
-                                                    error!("Failed to send RTCP: {}", e);
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("Error reading RTCP: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        });
+        // In v0.20, RTCP feedback is handled internally by the peer connection.
+        // sender.read_rtcp() is no longer available.
+        // RTCP forwarding to output is not needed in the new architecture.
+        debug!("RTCP to output forwarding is handled internally in v0.20");
     }
 
     pub fn spawn_output_rtcp_to_webrtc(
         &self,
         mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
     ) {
         tokio::spawn(async move {
             info!("Starting RTCP receiver from output");
@@ -203,17 +191,41 @@ impl TcpHandler {
         });
     }
 
-    async fn forward_rtcp_to_webrtc(data: &[u8], peer: &Arc<RTCPeerConnection>) {
+    async fn forward_rtcp_to_webrtc(data: &[u8], _peer: &Arc<dyn PeerConnection>) {
         let mut cursor = Cursor::new(data);
-        match webrtc::rtcp::packet::unmarshal(&mut cursor) {
+        match rtc_rtcp::packet::unmarshal(&mut cursor) {
             Ok(packets) => {
-                if let Err(e) = peer.write_rtcp(&packets).await {
-                    error!("Failed to write RTCP to WebRTC: {}", e);
+                for packet in packets {
+                    crate::whip::log_rtcp_feedback_packet("TCP output RTCP", packet.as_ref());
                 }
+                // In v0.20, write_rtcp is on TrackLocal/TrackRemote, not PeerConnection.
+                // RTCP from the output side would need to be sent via specific tracks.
+                debug!("Parsed RTCP packet (forwarding not yet implemented for v0.20)");
             }
             Err(e) => {
                 warn!("Failed to parse RTCP: {}", e);
             }
         }
+    }
+}
+
+fn log_first_rtp_packet(kind: &str, channel: u8, data: &[u8]) {
+    let mut cursor = data;
+    match Packet::unmarshal(&mut cursor) {
+        Ok(packet) => info!(
+            "First RTSP TCP {kind} RTP packet received: channel={}, payload_type={}, sequence_number={}, timestamp={}, ssrc={}, payload_len={}",
+            channel,
+            packet.header.payload_type,
+            packet.header.sequence_number,
+            packet.header.timestamp,
+            packet.header.ssrc,
+            packet.payload.len()
+        ),
+        Err(error) => warn!(
+            "First RTSP TCP {kind} RTP packet on channel {} failed to parse: {} bytes, error={}",
+            channel,
+            data.len(),
+            error
+        ),
     }
 }

@@ -97,21 +97,28 @@ pub async fn setup_input_source(ct: CancellationToken, target_url: &str) -> Resu
         _ => InputScheme::Rtp,
     };
 
-    let (media_info, final_host, channels, port_update_rx) = match scheme {
+    let (media_info, final_host, final_listen_host, channels, port_update_rx) = match scheme {
         InputScheme::RtspServer => {
             let video_port = input.port().unwrap_or(0);
             let (media_info, channels, port_update_rx) =
                 protocol::rtsp::setup_server_for_push(ct, &listen_host, video_port).await?;
-            (media_info, target_host, channels, Some(port_update_rx))
+            (
+                media_info,
+                target_host,
+                listen_host,
+                channels,
+                Some(port_update_rx),
+            )
         }
         InputScheme::RtspClient => {
             let (media_info, channels) =
                 protocol::rtsp::setup_client_for_pull(target_url, &target_host).await?;
-            (media_info, target_host, channels, None)
+            (media_info, target_host, listen_host, channels, None)
         }
         InputScheme::Rtp => {
             let (media_info, host) = protocol::rtp::setup_rtp_input(target_url).await?;
-            (media_info, host, None, None)
+            let listen_host = utils::host::derive_listen_host(&host);
+            (media_info, host, listen_host, None, None)
         }
     };
 
@@ -119,7 +126,7 @@ pub async fn setup_input_source(ct: CancellationToken, target_url: &str) -> Resu
         scheme,
         media_info,
         target_host: final_host,
-        listen_host,
+        listen_host: final_listen_host,
         interleaved_channels: channels,
         port_update_rx,
     })

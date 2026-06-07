@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
-use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::rtp_codec::RTPCodecType};
+use webrtc::peer_connection::PeerConnection;
 
 use crate::utils;
 pub struct UdpHandler;
@@ -110,72 +110,13 @@ impl UdpHandler {
 
     pub async fn spawn_webrtc_rtcp_to_output(
         &self,
-        media_info: &rtsp::MediaInfo,
-        target_host: &str,
-        peer: Arc<RTCPeerConnection>,
+        _media_info: &rtsp::MediaInfo,
+        _target_host: &str,
+        _peer: Arc<dyn PeerConnection>,
     ) -> Result<()> {
-        let senders = peer.get_senders().await;
-
-        if let Some(rtsp::TransportInfo::Udp {
-            rtcp_send_port: Some(target_port),
-            server_addr,
-            ..
-        }) = &media_info.video_transport
-        {
-            let bind_host = resolve_target_address(server_addr, target_host);
-            let listen_host = utils::host::derive_listen_host(&bind_host);
-
-            for sender in &senders {
-                if let Some(track) = sender.track().await
-                    && track.kind() == RTPCodecType::Video
-                {
-                    info!(
-                        "Starting video RTCP sender to {}:{}",
-                        bind_host, target_port
-                    );
-                    tokio::spawn(Self::rtcp_sender_task(
-                        sender.clone(),
-                        listen_host.to_string(),
-                        bind_host.clone(),
-                        *target_port,
-                        "video",
-                    ));
-                }
-            }
-        } else {
-            debug!("No video RTCP send port configured");
-        }
-
-        if let Some(rtsp::TransportInfo::Udp {
-            rtcp_send_port: Some(target_port),
-            server_addr,
-            ..
-        }) = &media_info.audio_transport
-        {
-            let bind_host = resolve_target_address(server_addr, target_host);
-            let listen_host = utils::host::derive_listen_host(&bind_host);
-
-            for sender in &senders {
-                if let Some(track) = sender.track().await
-                    && track.kind() == RTPCodecType::Audio
-                {
-                    info!(
-                        "Starting audio RTCP sender to {}:{}",
-                        bind_host, target_port
-                    );
-                    tokio::spawn(Self::rtcp_sender_task(
-                        sender.clone(),
-                        listen_host.to_string(),
-                        bind_host.clone(),
-                        *target_port,
-                        "audio",
-                    ));
-                }
-            }
-        } else {
-            debug!("No audio RTCP send port configured");
-        }
-
+        // In v0.20, RTCP feedback is handled internally by the peer connection.
+        // sender.read_rtcp() is no longer available.
+        debug!("RTCP to output forwarding is handled internally in v0.20");
         Ok(())
     }
 
@@ -183,7 +124,7 @@ impl UdpHandler {
         &self,
         media_info: &rtsp::MediaInfo,
         target_host: &str,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
     ) {
         let mut normalized_info = media_info.clone();
         normalized_info.normalize_audio_only();
@@ -245,10 +186,18 @@ impl UdpHandler {
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; RTP_BUFFER_SIZE];
+            let mut first_packet = true;
 
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((n, addr)) => {
+                        if first_packet {
+                            info!(
+                                "First {} RTP packet received from {}: {} bytes",
+                                media_type, addr, n
+                            );
+                            first_packet = false;
+                        }
                         trace!("Received {} RTP from {}: {} bytes", media_type, addr, n);
 
                         if let Err(e) = sender.send(buf[..n].to_vec()) {
@@ -312,62 +261,7 @@ impl UdpHandler {
         }
     }
 
-    async fn rtcp_sender_task(
-        sender: Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>,
-        listen_host: String,
-        target_host: String,
-        target_port: u16,
-        media_type: &'static str,
-    ) -> Result<()> {
-        let bind_addr = utils::format_bind_addr(&listen_host, 0);
-        let udp_socket = UdpSocket::bind(&bind_addr).await?;
-
-        info!(
-            "{} RTCP sender bound to {} (local)",
-            media_type,
-            udp_socket.local_addr().unwrap()
-        );
-
-        let target_addr = utils::format_bind_addr(&target_host, target_port);
-        info!(
-            "{} RTCP sender ready to send to {} (remote)",
-            media_type, target_addr
-        );
-
-        let mut packet_count = 0;
-        loop {
-            match sender.read_rtcp().await {
-                Ok((packets, _)) => {
-                    for packet in packets {
-                        trace!("Received {} RTCP from WebRTC: {:?}", media_type, packet);
-
-                        if let Ok(data) = packet.marshal() {
-                            packet_count += 1;
-                            if packet_count % 10 == 0 {
-                                debug!(
-                                    "Sent {} {} RTCP packets to {}",
-                                    packet_count, media_type, target_addr
-                                );
-                            }
-
-                            if let Err(err) = udp_socket.send_to(&data, &target_addr).await {
-                                warn!(
-                                    "Failed to send {} RTCP to {}: {}",
-                                    media_type, target_addr, err
-                                );
-                            } else {
-                                trace!("Sent {} RTCP to {}", media_type, target_addr);
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!("Error reading {} RTCP from WebRTC: {}", media_type, err);
-                    break Ok(());
-                }
-            }
-        }
-    }
+    // In v0.20, RTCP is handled internally. This task is no longer needed.
 }
 
 fn resolve_target_address(server_addr: &Option<std::net::SocketAddr>, target_host: &str) -> String {

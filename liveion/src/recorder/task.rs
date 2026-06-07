@@ -14,9 +14,11 @@ use api::recorder::RecordingStatus;
 use bytes::Bytes;
 use chrono::Utc;
 use opendal::Operator;
+use rtc::peer_connection::configuration::media_engine::{
+    MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP9,
+};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP9};
 
 pub struct RecordingTask {
     pub stream: String,
@@ -248,8 +250,9 @@ impl RecordingTask {
                     },
                     _ = keyframe_check_interval.tick(), if video_rx_opt.is_some() => {
                         if segmenter.should_request_keyframe()
-                            && let Some(video_track) = forward_clone.first_video_track().await {
-                            let ssrc = video_track.ssrc();
+                            && let Some(video_track) = forward_clone.first_video_track().await
+                            && let Some(ssrc) = video_track.ssrcs().await.into_iter().next()
+                        {
                             if let Err(e) = forward_clone.send_rtcp_to_publish(
                                 crate::forward::rtcp::RtcpMessage::PictureLossIndication,
                                 ssrc,

@@ -2,11 +2,13 @@
 use crate::config::Channel;
 use crate::config::Config;
 
-use webrtc::ice_transport::ice_server::RTCIceServer;
+use std::net::SocketAddr;
+use webrtc::peer_connection::RTCIceServer;
 
 #[derive(Clone)]
 pub struct ManagerConfig {
     pub ice_servers: Vec<RTCIceServer>,
+    pub ice_udp_addrs: Vec<SocketAddr>,
     pub cascade_push_close_sub: bool,
     pub webhooks: Vec<String>,
     pub auto_create_pub: bool,
@@ -27,6 +29,9 @@ impl ManagerConfig {
             .collect();
         Self {
             ice_servers,
+            ice_udp_addrs: api::webrtc::resolve_webrtc_ice_udp_addrs(Some(
+                cfg.webrtc.ice_udp_addrs.clone(),
+            )),
             cascade_push_close_sub: cfg.strategy.cascade_push_close_sub,
             webhooks: cfg.webhook.webhooks.clone(),
             auto_create_pub: cfg.strategy.auto_create_whip,

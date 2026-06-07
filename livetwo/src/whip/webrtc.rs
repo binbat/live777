@@ -1,18 +1,25 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
-use tokio::sync::mpsc::UnboundedSender;
+use rtc::peer_connection::configuration::interceptor_registry::{
+    configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers, configure_twcc,
+};
+use rtc::statistics::StatsSelector;
+use rtc::statistics::report::RTCStatsReportEntry;
+use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+use rtc_rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
+use rtc_rtcp::receiver_report::ReceiverReport;
+use rtc_rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
+use rtc_rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
+use tokio::sync::{Notify, mpsc::UnboundedSender, watch};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
-use webrtc::{
-    api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::*},
-    ice_transport::ice_server::RTCIceServer,
-    interceptor::registry::Registry,
-    peer_connection::{RTCPeerConnection, configuration::RTCConfiguration},
-    rtcp::payload_feedbacks::{
-        full_intra_request::FullIntraRequest, picture_loss_indication::PictureLossIndication,
-    },
+use tracing::{debug, info};
+use webrtc::peer_connection::{
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceConnectionState, RTCIceGatheringState, RTCIceServer,
+    RTCPeerConnectionState, RTCSignalingState, Registry,
 };
 
 use crate::utils;
@@ -25,126 +32,91 @@ pub async fn setup_whip_peer(
     media_info: &rtsp::MediaInfo,
     input_id: String,
 ) -> Result<(
-    Arc<RTCPeerConnection>,
+    Arc<dyn PeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
     Arc<RtcpStats>,
+    watch::Receiver<RTCPeerConnectionState>,
+    Arc<WhipPeerDiagnostics>,
 )> {
-    let (peer, video_sender, audio_sender) = create_peer(ct.clone(), media_info, input_id).await?;
+    let gather_complete = Arc::new(Notify::new());
+    let (peer, video_sender, audio_sender, state_rx, diagnostics) =
+        create_peer(ct.clone(), media_info, input_id, gather_complete.clone()).await?;
 
-    utils::webrtc::setup_connection(peer.clone(), client).await?;
+    utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
+    diagnostics.set_sdp_summaries(
+        peer.local_description()
+            .await
+            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+            .unwrap_or_else(|| "<no local description>".to_string()),
+        peer.remote_description()
+            .await
+            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+            .unwrap_or_else(|| "<no remote description>".to_string()),
+    );
 
     let stats = Arc::new(RtcpStats::new());
 
-    setup_rtcp_listener_for_senders(peer.clone(), stats.clone()).await;
-
-    utils::webrtc::setup_handlers(ct, peer.clone()).await;
-
-    Ok((peer, video_sender, audio_sender, stats))
-}
-
-async fn setup_rtcp_listener_for_senders(peer: Arc<RTCPeerConnection>, stats: Arc<RtcpStats>) {
-    let senders = peer.get_senders().await;
-
-    for sender in senders {
-        if let Some(track) = sender.track().await {
-            let track_kind = track.kind();
-            let stats_clone = stats.clone();
-
-            tokio::spawn(async move {
-                debug!("Started RTCP listener for {} sender", track_kind);
-
-                loop {
-                    match sender.read_rtcp().await {
-                        Ok((packets, _)) => {
-                            for packet in packets {
-                                if let Some(pli) =
-                                    packet.as_any().downcast_ref::<PictureLossIndication>()
-                                {
-                                    stats_clone.increment_pli();
-                                    debug!(
-                                        "WHIP: Received PLI from browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_pli_count()
-                                    );
-                                    debug!("PLI details: media_ssrc={}", pli.media_ssrc);
-                                }
-
-                                if let Some(fir) =
-                                    packet.as_any().downcast_ref::<FullIntraRequest>()
-                                {
-                                    stats_clone.increment_fir();
-                                    debug!(
-                                        "WHIP: Received FIR from browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_fir_count()
-                                    );
-                                    debug!("FIR details: media_ssrc={}", fir.media_ssrc);
-                                }
-
-                                if packet
-                                    .as_any()
-                                    .downcast_ref::<webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack>()
-                                    .is_some()
-                                {
-                                    stats_clone.increment_nack();
-                                    debug!(
-                                        "WHIP: Received NACK from browser for {} (total: {})",
-                                        track_kind,
-                                        stats_clone.get_nack_count()
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("WHIP: Error reading RTCP from {} sender: {}", track_kind, e);
-                            break;
-                        }
-                    }
-                }
-
-                info!("WHIP: RTCP listener stopped for {} sender", track_kind);
-            });
-        }
-    }
+    Ok((
+        peer,
+        video_sender,
+        audio_sender,
+        stats,
+        state_rx,
+        diagnostics,
+    ))
 }
 
 async fn create_peer(
     ct: CancellationToken,
     media_info: &rtsp::MediaInfo,
     input_id: String,
+    gather_complete: Arc<Notify>,
 ) -> Result<(
-    Arc<RTCPeerConnection>,
+    Arc<dyn PeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
     Option<UnboundedSender<Vec<u8>>>,
+    watch::Receiver<RTCPeerConnectionState>,
+    Arc<WhipPeerDiagnostics>,
 )> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
 
-    let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut m)?;
+    let registry = Registry::new();
+    let registry = configure_nack(registry, &mut m);
+    let registry = configure_rtcp_reports(registry);
+    configure_simulcast_extension_headers(&mut m)?;
+    let registry = configure_twcc(registry, &mut m)?;
+    info!("WHIP peer configured with NACK, RTCP reports, and full TWCC");
 
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry)
-        .build();
+    let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+    let diagnostics = Arc::new(WhipPeerDiagnostics::default());
+    let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(WhipPeerHandler {
+        _ct: ct,
+        gather_complete,
+        state_tx,
+        diagnostics: diagnostics.clone(),
+    });
 
-    let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
+    let config = RTCConfigurationBuilder::new()
+        .with_ice_servers(vec![RTCIceServer {
             urls: vec!["stun:stun.l.google.com:19302".to_string()],
             username: "".to_string(),
             credential: "".to_string(),
-        }],
-        ..Default::default()
-    };
+        }])
+        .build();
 
-    let peer = Arc::new(
-        api.new_peer_connection(config)
+    let peer: Arc<dyn PeerConnection> = Arc::new(
+        PeerConnectionBuilder::new()
+            .with_media_engine(m)
+            .with_interceptor_registry(registry)
+            .with_handler(handler)
+            .with_udp_addrs(utils::webrtc::ice_udp_addrs())
+            .with_configuration(config)
+            .build()
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
-
-    utils::webrtc::setup_handlers(ct, peer.clone()).await;
 
     let video_tx = if let Some(ref video_codec_params) = media_info.video_codec {
         track::setup_video_track(peer.clone(), video_codec_params, input_id.clone()).await?
@@ -166,9 +138,188 @@ async fn create_peer(
         None
     };
 
-    Ok((peer, video_tx, audio_tx))
+    Ok((peer, video_tx, audio_tx, state_rx, diagnostics))
+}
+
+struct WhipPeerHandler {
+    _ct: CancellationToken,
+    gather_complete: Arc<Notify>,
+    state_tx: watch::Sender<RTCPeerConnectionState>,
+    diagnostics: Arc<WhipPeerDiagnostics>,
+}
+
+#[derive(Default)]
+pub struct WhipPeerDiagnostics {
+    connection_states: Mutex<Vec<String>>,
+    ice_connection_states: Mutex<Vec<String>>,
+    ice_gathering_states: Mutex<Vec<String>>,
+    signaling_states: Mutex<Vec<String>>,
+    local_sdp_summary: Mutex<Option<String>>,
+    remote_sdp_summary: Mutex<Option<String>>,
+}
+
+impl WhipPeerDiagnostics {
+    pub fn set_sdp_summaries(&self, local: String, remote: String) {
+        if let Ok(mut summary) = self.local_sdp_summary.lock() {
+            *summary = Some(local);
+        }
+        if let Ok(mut summary) = self.remote_sdp_summary.lock() {
+            *summary = Some(remote);
+        }
+    }
+
+    pub fn format(&self) -> String {
+        format!(
+            "connection_states=[{}], ice_connection_states=[{}], ice_gathering_states=[{}], signaling_states=[{}], local_sdp_summary=[{}], remote_sdp_summary=[{}]",
+            join_states(&self.connection_states),
+            join_states(&self.ice_connection_states),
+            join_states(&self.ice_gathering_states),
+            join_states(&self.signaling_states),
+            optional_summary(&self.local_sdp_summary),
+            optional_summary(&self.remote_sdp_summary),
+        )
+    }
+}
+
+fn push_state(states: &Mutex<Vec<String>>, state: impl std::fmt::Display) {
+    if let Ok(mut states) = states.lock() {
+        states.push(state.to_string());
+    }
+}
+
+fn join_states(states: &Mutex<Vec<String>>) -> String {
+    states
+        .lock()
+        .map(|states| states.join(" -> "))
+        .unwrap_or_else(|_| "<poisoned>".to_string())
+}
+
+fn optional_summary(summary: &Mutex<Option<String>>) -> String {
+    summary
+        .lock()
+        .map(|summary| {
+            summary
+                .as_deref()
+                .unwrap_or("<not captured>")
+                .replace('\n', " | ")
+        })
+        .unwrap_or_else(|_| "<poisoned>".to_string())
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for WhipPeerHandler {
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        info!("WHIP connection state changed: {}", state);
+        push_state(&self.diagnostics.connection_states, state);
+        let _ = self.state_tx.send(state);
+    }
+
+    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+        info!("WHIP ICE connection state changed: {}", state);
+        push_state(&self.diagnostics.ice_connection_states, state);
+    }
+
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        info!("WHIP ICE gathering state changed: {}", state);
+        push_state(&self.diagnostics.ice_gathering_states, state);
+        if state == RTCIceGatheringState::Complete {
+            info!("WHIP ICE gathering complete");
+            self.gather_complete.notify_one();
+        }
+    }
+
+    async fn on_signaling_state_change(&self, state: RTCSignalingState) {
+        info!("WHIP signaling state changed: {}", state);
+        push_state(&self.diagnostics.signaling_states, state);
+    }
 }
 
 fn is_supported_audio_codec(codec: &str) -> bool {
     matches!(codec.to_uppercase().as_str(), "OPUS" | "G722")
+}
+
+pub(crate) fn log_rtcp_feedback_packet(source: &str, packet: &dyn rtc_rtcp::packet::Packet) {
+    let any = packet.as_any();
+    if any.downcast_ref::<TransportLayerCc>().is_some() {
+        debug!("{source}: received RTCP transport-cc feedback");
+    } else if let Some(remb) = any.downcast_ref::<ReceiverEstimatedMaximumBitrate>() {
+        debug!(
+            "{source}: received RTCP goog-remb feedback: {} bps",
+            remb.bitrate
+        );
+    } else if let Some(rr) = any.downcast_ref::<ReceiverReport>() {
+        debug!(
+            "{source}: received RTCP receiver report with {} report blocks",
+            rr.reports.len()
+        );
+    } else if any.downcast_ref::<PictureLossIndication>().is_some() {
+        debug!("{source}: received RTCP PLI");
+    } else if any.downcast_ref::<FullIntraRequest>().is_some() {
+        debug!("{source}: received RTCP FIR");
+    } else if any.downcast_ref::<TransportLayerNack>().is_some() {
+        debug!("{source}: received RTCP NACK");
+    }
+}
+
+pub async fn format_ice_stats(peer: Arc<dyn PeerConnection>) -> String {
+    let report = peer
+        .get_stats(std::time::Instant::now(), StatsSelector::None)
+        .await;
+    let mut lines = Vec::new();
+
+    for entry in report.iter() {
+        match entry {
+            RTCStatsReportEntry::IceCandidatePair(pair) => {
+                lines.push(format!(
+                    "candidate_pair id={} local={} remote={} state={:?} nominated={} packets_sent={} packets_received={} bytes_sent={} bytes_received={} requests_sent={} requests_received={} responses_sent={} responses_received={}",
+                    pair.stats.id,
+                    pair.local_candidate_id,
+                    pair.remote_candidate_id,
+                    pair.state,
+                    pair.nominated,
+                    pair.packets_sent,
+                    pair.packets_received,
+                    pair.bytes_sent,
+                    pair.bytes_received,
+                    pair.requests_sent,
+                    pair.requests_received,
+                    pair.responses_sent,
+                    pair.responses_received,
+                ));
+            }
+            RTCStatsReportEntry::LocalCandidate(candidate) => {
+                lines.push(format!(
+                    "local_candidate id={} address={} port={} protocol={} type={:?} foundation={} related={}:{}",
+                    candidate.stats.id,
+                    candidate.address.as_deref().unwrap_or("<redacted>"),
+                    candidate.port,
+                    candidate.protocol,
+                    candidate.candidate_type,
+                    candidate.foundation,
+                    candidate.related_address,
+                    candidate.related_port,
+                ));
+            }
+            RTCStatsReportEntry::RemoteCandidate(candidate) => {
+                lines.push(format!(
+                    "remote_candidate id={} address={} port={} protocol={} type={:?} foundation={} related={}:{}",
+                    candidate.stats.id,
+                    candidate.address.as_deref().unwrap_or("<redacted>"),
+                    candidate.port,
+                    candidate.protocol,
+                    candidate.candidate_type,
+                    candidate.foundation,
+                    candidate.related_address,
+                    candidate.related_port,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if lines.is_empty() {
+        "<no ice candidate stats>".to_string()
+    } else {
+        lines.join("; ")
+    }
 }

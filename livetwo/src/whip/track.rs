@@ -1,30 +1,91 @@
 use anyhow::{Result, anyhow};
+use rtc::media_stream::MediaStreamTrack;
+use rtc::peer_connection::configuration::media_engine::*;
+use rtc::rtp::packet::Packet;
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+};
+use rtc_shared::marshal::Unmarshal;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-use tracing::{debug, error, trace, warn};
-use webrtc::{
-    api::media_engine::*,
-    peer_connection::RTCPeerConnection,
-    rtp::packet::Packet,
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
-    track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP},
-    util::Unmarshal,
-};
+use tracing::{debug, error, info, trace, warn};
+use webrtc::media_stream::track_local::TrackLocal;
+use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+use webrtc::peer_connection::PeerConnection;
 
 use crate::payload::{Forward, RePayload, RePayloadCodec};
 
+struct RtpPacketLog {
+    payload_type: u8,
+    sequence_number: u16,
+    timestamp: u32,
+    ssrc: u32,
+    payload_len: usize,
+}
+
+impl From<&Packet> for RtpPacketLog {
+    fn from(packet: &Packet) -> Self {
+        Self {
+            payload_type: packet.header.payload_type,
+            sequence_number: packet.header.sequence_number,
+            timestamp: packet.header.timestamp,
+            ssrc: packet.header.ssrc,
+            payload_len: packet.payload.len(),
+        }
+    }
+}
+
+fn log_write_rtp_error(kind: &str, packet: &RtpPacketLog, error: &dyn std::fmt::Display) {
+    let error = error.to_string();
+    let error_kind = if error.contains("Disconnected") {
+        "disconnected"
+    } else if error.contains("Full") {
+        "channel_full"
+    } else if error.contains("track is not binding yet") {
+        "track_not_bound"
+    } else {
+        "write_failed"
+    };
+
+    let message = format!(
+        "Failed to write {kind} RTP: error_kind={error_kind}, payload_type={}, sequence_number={}, timestamp={}, ssrc={}, payload_len={}",
+        packet.payload_type,
+        packet.sequence_number,
+        packet.timestamp,
+        packet.ssrc,
+        packet.payload_len,
+    );
+
+    if error_kind == "disconnected" {
+        debug!("{message}");
+    } else {
+        error!("{message}");
+    }
+}
+
 pub async fn setup_video_track(
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
     video_codec_params: &rtsp::VideoCodecParams,
     input_id: String,
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
-    let video_codec: RTCRtpCodecCapability = video_codec_params.clone().into();
+    let video_codec: RTCRtpCodec = video_codec_params.clone().into();
     let video_track_id = format!("{}-video", input_id);
-    let video_track = Arc::new(TrackLocalStaticRTP::new(
-        video_codec.clone(),
-        video_track_id.to_owned(),
-        input_id.to_owned(),
-    ));
+    let video_ssrc = rand::random::<u32>();
+    let media_track = MediaStreamTrack::new(
+        input_id.clone(),
+        video_track_id.clone(),
+        video_track_id.clone(),
+        RtpCodecKind::Video,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(video_ssrc),
+                ..Default::default()
+            },
+            codec: video_codec.clone(),
+            ..Default::default()
+        }],
+    );
+    let video_track = Arc::new(TrackLocalStaticRTP::new(media_track));
 
     peer.add_track(video_track.clone())
         .await
@@ -35,6 +96,7 @@ pub async fn setup_video_track(
 
     tokio::spawn(async move {
         debug!("Video codec: {}", video_codec.mime_type);
+        let mut first_write = true;
 
         let mut handler: Box<dyn RePayload + Send> = match video_codec.mime_type.as_str() {
             MIME_TYPE_VP8 | MIME_TYPE_VP9 => {
@@ -79,7 +141,7 @@ pub async fn setup_video_track(
                     packet.header.sequence_number, packet.header.timestamp, packet.header.marker
                 );
 
-                for packet in handler.payload(packet) {
+                for mut packet in handler.payload(packet) {
                     trace!(
                         "Sending video packet: seq={}, ts={}, marker={}",
                         packet.header.sequence_number,
@@ -87,8 +149,13 @@ pub async fn setup_video_track(
                         packet.header.marker
                     );
 
-                    if let Err(e) = video_track.write_rtp(&packet).await {
-                        error!("Failed to write RTP: {}", e);
+                    packet.header.ssrc = video_ssrc;
+                    let packet_log = RtpPacketLog::from(&packet);
+                    if let Err(e) = video_track.write_rtp(packet).await {
+                        log_write_rtp_error("video", &packet_log, &e);
+                    } else if first_write {
+                        info!("First video RTP packet written to WebRTC sender");
+                        first_write = false;
                     }
                 }
             }
@@ -99,17 +166,28 @@ pub async fn setup_video_track(
 }
 
 pub async fn setup_audio_track(
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
     audio_codec_params: &rtsp::AudioCodecParams,
     input_id: String,
 ) -> Result<Option<UnboundedSender<Vec<u8>>>> {
-    let audio_codec: RTCRtpCodecCapability = audio_codec_params.clone().into();
+    let audio_codec: RTCRtpCodec = audio_codec_params.clone().into();
     let audio_track_id = format!("{}-audio", input_id);
-    let audio_track = Arc::new(TrackLocalStaticRTP::new(
-        audio_codec.clone(),
-        audio_track_id.to_owned(),
-        input_id.to_owned(),
-    ));
+    let audio_ssrc = rand::random::<u32>();
+    let media_track = MediaStreamTrack::new(
+        input_id.clone(),
+        audio_track_id.clone(),
+        audio_track_id.clone(),
+        RtpCodecKind::Audio,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(audio_ssrc),
+                ..Default::default()
+            },
+            codec: audio_codec.clone(),
+            ..Default::default()
+        }],
+    );
+    let audio_track = Arc::new(TrackLocalStaticRTP::new(media_track));
 
     peer.add_track(audio_track.clone())
         .await
@@ -119,19 +197,27 @@ pub async fn setup_audio_track(
 
     tokio::spawn(async move {
         debug!("Audio codec: {}", audio_codec.mime_type);
+        let mut first_write = true;
         let mut handler: Box<dyn RePayload + Send> = match audio_codec.mime_type.as_str() {
             MIME_TYPE_OPUS => Box::new(RePayloadCodec::new(audio_codec.mime_type.clone())),
             _ => Box::new(Forward::new()),
         };
 
         while let Some(data) = audio_rx.recv().await {
-            if audio_codec.mime_type == MIME_TYPE_G722 {
-                let _ = audio_track.write(&data).await;
-            } else if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
+            if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
                 trace!("Received audio packet: {}", packet);
-                for packet in handler.payload(packet) {
+                for mut packet in handler.payload(packet) {
                     trace!("Sending audio packet: {}", packet);
-                    let _ = audio_track.write_rtp(&packet).await;
+                    packet.header.ssrc = audio_ssrc;
+                    let packet_log = RtpPacketLog::from(&packet);
+                    match audio_track.write_rtp(packet).await {
+                        Ok(()) if first_write => {
+                            info!("First audio RTP packet written to WebRTC sender");
+                            first_write = false;
+                        }
+                        Ok(()) => {}
+                        Err(e) => log_write_rtp_error("audio", &packet_log, &e),
+                    }
                 }
             }
         }

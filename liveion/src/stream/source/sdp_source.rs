@@ -11,10 +11,10 @@ use tracing::{debug, error, info, trace};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "source")]
-use webrtc::rtp_transceiver::RTCPFeedback;
+use rtc::rtp_transceiver::rtp_sender::RTCPFeedback;
 
 #[cfg(feature = "source")]
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
 #[cfg(feature = "source")]
 type RtcpSender = Arc<RwLock<Option<mpsc::UnboundedSender<(SocketAddr, Vec<u8>)>>>>;
@@ -440,7 +440,7 @@ impl SdpSource {
         let mime_type = format!("video/{}", codec.codec_name.to_uppercase());
 
         RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
+            rtp_codec: RTCRtpCodec {
                 mime_type,
                 clock_rate: codec.clock_rate,
                 channels: 0,
@@ -453,6 +453,10 @@ impl SdpSource {
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "goog-remb".to_owned(),
+                        parameter: "".to_owned(),
+                    },
+                    RTCPFeedback {
+                        typ: "transport-cc".to_owned(),
                         parameter: "".to_owned(),
                     },
                     RTCPFeedback {
@@ -470,7 +474,6 @@ impl SdpSource {
                 ],
             },
             payload_type: codec.payload_type,
-            stats_id: String::new(),
         }
     }
 
@@ -479,7 +482,7 @@ impl SdpSource {
         let mime_type = format!("audio/{}", codec.codec_name.to_uppercase());
 
         RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
+            rtp_codec: RTCRtpCodec {
                 mime_type,
                 clock_rate: codec.clock_rate,
                 channels: codec.channels,
@@ -491,7 +494,6 @@ impl SdpSource {
                 rtcp_feedback: vec![],
             },
             payload_type: codec.payload_type,
-            stats_id: String::new(),
         }
     }
 

@@ -81,14 +81,14 @@ pub trait StreamSource: Send + Sync {
     #[cfg(feature = "source")]
     async fn get_video_codec(
         &self,
-    ) -> Option<webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters> {
+    ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
         None
     }
 
     #[cfg(feature = "source")]
     async fn get_audio_codec(
         &self,
-    ) -> Option<webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters> {
+    ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
         None
     }
 

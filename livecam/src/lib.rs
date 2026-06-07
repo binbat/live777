@@ -2,6 +2,10 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::IntoResponse;
+use rtc::media_stream::MediaStreamTrack;
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, RwLock};
@@ -11,12 +15,8 @@ use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
-use webrtc::api::API;
-use webrtc::api::APIBuilder;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+use webrtc::peer_connection::PeerConnection;
 
 #[cfg(feature = "webui")]
 use axum::http::Uri;
@@ -131,14 +131,46 @@ impl PortManager {
 #[derive(Clone)]
 pub struct LiveCamManager {
     streams: Arc<Mutex<HashMap<String, StreamState>>>,
-    pub webrtc_api: Arc<API>,
     config: Arc<RwLock<ConfigRs>>,
     port_manager: PortManager,
-    whep_sessions: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+    whep_sessions: Arc<Mutex<HashMap<String, Arc<dyn PeerConnection>>>>,
+}
+
+fn codec_config_to_track(
+    codec: &config::CodecConfig,
+    stream_id: &str,
+    label: &str,
+) -> TrackLocalStaticRTP {
+    let kind = if codec.mime_type.to_lowercase().starts_with("audio") {
+        RtpCodecKind::Audio
+    } else {
+        RtpCodecKind::Video
+    };
+    let media_stream_track = MediaStreamTrack::new(
+        stream_id.to_string(),
+        format!("{}-track", stream_id),
+        label.to_string(),
+        kind,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(rand::random::<u32>()),
+                ..Default::default()
+            },
+            codec: RTCRtpCodec {
+                mime_type: codec.mime_type.clone(),
+                clock_rate: codec.clock_rate,
+                channels: codec.channels,
+                sdp_fmtp_line: codec.sdp_fmtp_line.clone().unwrap_or_default(),
+                rtcp_feedback: vec![],
+            },
+            ..Default::default()
+        }],
+    );
+    TrackLocalStaticRTP::new(media_stream_track)
 }
 
 impl LiveCamManager {
-    pub fn new(cfg: Arc<RwLock<ConfigRs>>, webrtc_api: Arc<API>) -> Self {
+    pub fn new(cfg: Arc<RwLock<ConfigRs>>) -> Self {
         let mut config_guard = cfg.write().unwrap();
         if let Err(e) = config_guard.validate() {
             error!("Config validation failed: {}", e);
@@ -153,11 +185,7 @@ impl LiveCamManager {
         let streams = cameras
             .into_iter()
             .map(|cam| {
-                let track = Arc::new(TrackLocalStaticRTP::new(
-                    cam.codec.clone().into(),
-                    cam.id.clone(),
-                    "livecam-stream".to_owned(),
-                ));
+                let track = Arc::new(codec_config_to_track(&cam.codec, &cam.id, "livecam-stream"));
                 let state = StreamState {
                     subscriber_count: 0,
                     track,
@@ -175,7 +203,6 @@ impl LiveCamManager {
 
         Self {
             streams: Arc::new(Mutex::new(streams)),
-            webrtc_api,
             config: cfg,
             port_manager: PortManager::new(start_port),
             whep_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -214,10 +241,10 @@ impl LiveCamManager {
             };
             drop(config_read);
 
-            let track = Arc::new(TrackLocalStaticRTP::new(
-                cam_config.codec.clone().into(),
-                stream_id.to_string(),
-                "livecam-dynamic-stream".to_owned(),
+            let track = Arc::new(codec_config_to_track(
+                &cam_config.codec,
+                stream_id,
+                "livecam-dynamic-stream",
             ));
             let new_state = StreamState {
                 subscriber_count: 0,
@@ -373,7 +400,7 @@ impl LiveCamManager {
         info!("shutdown completed.");
     }
 
-    pub fn add_whep_session(&self, stream_id: String, pc: Arc<RTCPeerConnection>) {
+    pub fn add_whep_session(&self, stream_id: String, pc: Arc<dyn PeerConnection>) {
         let mut sessions = self.whep_sessions.lock().unwrap();
         sessions.insert(stream_id, pc);
     }
@@ -383,7 +410,7 @@ impl LiveCamManager {
         sessions.remove(stream_id);
     }
 
-    pub fn get_whep_session(&self, stream_id: &str) -> Option<Arc<RTCPeerConnection>> {
+    pub fn get_whep_session(&self, stream_id: &str) -> Option<Arc<dyn PeerConnection>> {
         let sessions = self.whep_sessions.lock().unwrap();
         sessions.get(stream_id).cloned()
     }
@@ -394,26 +421,7 @@ pub async fn serve(
     listener: TcpListener,
     shutdown_signal: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let mut m = MediaEngine::default();
-    m.register_default_codecs()?;
-
-    use webrtc::api::setting_engine::SettingEngine;
-    let mut setting_engine = SettingEngine::default();
-    setting_engine.set_ice_timeouts(
-        Some(std::time::Duration::from_secs(15)),
-        Some(std::time::Duration::from_secs(30)),
-        Some(std::time::Duration::from_secs(2)),
-    );
-
-    let registry = Registry::new();
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_setting_engine(setting_engine)
-        .with_interceptor_registry(registry)
-        .build();
-    let webrtc_api = Arc::new(api);
-
-    let livecam_manager = LiveCamManager::new(cfg.clone(), webrtc_api.clone());
+    let livecam_manager = LiveCamManager::new(cfg.clone());
 
     let (_shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 

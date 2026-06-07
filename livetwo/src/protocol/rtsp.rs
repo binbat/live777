@@ -18,7 +18,16 @@ pub async fn setup_server_for_push(
 
     let listen_addr = format!("{}:{}", listen_host, port);
 
-    rtsp::setup_rtsp_server_session(&listen_addr, Vec::new(), rtsp::SessionMode::Push, false).await
+    let (media_info, channels, port_update_rx) =
+        rtsp::setup_rtsp_server_session(&listen_addr, Vec::new(), rtsp::SessionMode::Push, false)
+            .await?;
+    info!(
+        "RTSP push input established: media_info={:?}, interleaved={}",
+        media_info,
+        channels.is_some()
+    );
+
+    Ok((media_info, channels, port_update_rx))
 }
 
 pub async fn setup_server_for_pull(
@@ -37,7 +46,16 @@ pub async fn setup_server_for_pull(
     let listen_addr = format!("{}:{}", listen_host, port);
     let sdp_bytes = filtered_sdp.into_bytes();
 
-    rtsp::setup_rtsp_server_session(&listen_addr, sdp_bytes, rtsp::SessionMode::Pull, true).await
+    let (media_info, channels, port_update_rx) =
+        rtsp::setup_rtsp_server_session(&listen_addr, sdp_bytes, rtsp::SessionMode::Pull, true)
+            .await?;
+    info!(
+        "RTSP pull output established: media_info={:?}, interleaved={}",
+        media_info,
+        channels.is_some()
+    );
+
+    Ok((media_info, channels, port_update_rx))
 }
 
 pub async fn setup_client_for_pull(
@@ -62,14 +80,21 @@ pub async fn setup_client_for_pull(
     clean_url.set_query(None);
     let clean_url_str = clean_url.to_string();
 
-    rtsp::setup_rtsp_session(
+    let (media_info, channels) = rtsp::setup_rtsp_session(
         &clean_url_str,
         None,
         target_host,
         rtsp::RtspMode::Pull,
         use_tcp,
     )
-    .await
+    .await?;
+    info!(
+        "RTSP pull input established: media_info={:?}, interleaved={}",
+        media_info,
+        channels.is_some()
+    );
+
+    Ok((media_info, channels))
 }
 
 pub async fn setup_client_for_push(
@@ -95,12 +120,19 @@ pub async fn setup_client_for_push(
     clean_url.set_query(None);
     let clean_url_str = clean_url.to_string();
 
-    rtsp::setup_rtsp_session(
+    let (media_info, channels) = rtsp::setup_rtsp_session(
         &clean_url_str,
         Some(filtered_sdp),
         target_host,
         rtsp::RtspMode::Push,
         use_tcp,
     )
-    .await
+    .await?;
+    info!(
+        "RTSP push output established: media_info={:?}, interleaved={}",
+        media_info,
+        channels.is_some()
+    );
+
+    Ok((media_info, channels))
 }

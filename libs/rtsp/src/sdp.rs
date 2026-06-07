@@ -1,10 +1,10 @@
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 use sdp::SessionDescription;
 use sdp::description::common::Attribute;
 use std::io::Cursor;
 use tracing::{debug, warn};
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
 
 use crate::constants::media_type;
 use crate::types::{AudioCodecParams, MediaInfo, VideoCodecParams};
@@ -115,12 +115,20 @@ fn parse_audio_codec(media: &sdp_types::Media) -> Option<AudioCodecParams> {
     if codec_parts.len() < 2 {
         return None;
     }
+    let codec = codec_parts[0].to_string();
+    let default_channels = match codec.to_uppercase().as_str() {
+        "G722" | "PCMA" | "PCMU" => 1,
+        _ => 2,
+    };
 
     Some(AudioCodecParams {
-        codec: codec_parts[0].to_string(),
+        codec,
         payload_type,
         clock_rate: codec_parts[1].parse().ok()?,
-        channels: codec_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(2),
+        channels: codec_parts
+            .get(2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default_channels),
     })
 }
 
@@ -428,5 +436,25 @@ a=rtpmap:96 VP8/90000
         } else {
             panic!("Expected VP8 codec");
         }
+    }
+
+    #[test]
+    fn test_parse_g722_audio_defaults_to_mono() {
+        let sdp = r#"v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=Test
+c=IN IP4 127.0.0.1
+t=0 0
+m=audio 5004 RTP/AVP 9
+a=rtpmap:9 G722/8000
+"#;
+
+        let session = sdp_types::Session::parse(sdp.as_bytes()).unwrap();
+        let codec = parse_audio_codec(&session.medias[0]).expect("G722 codec should parse");
+
+        assert_eq!(codec.codec, "G722");
+        assert_eq!(codec.payload_type, 9);
+        assert_eq!(codec.clock_rate, 8000);
+        assert_eq!(codec.channels, 1);
     }
 }

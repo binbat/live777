@@ -9,17 +9,14 @@ use axum::{
 };
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
-use webrtc::api::setting_engine::SettingEngine;
-use webrtc::api::{APIBuilder, media_engine::MediaEngine};
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::track::track_local::TrackLocal;
+use webrtc::media_stream::track_local::TrackLocal;
+use webrtc::peer_connection::{
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceGatheringState, RTCIceServer,
+    RTCPeerConnectionState, RTCSessionDescription, Registry, SettingEngine,
+};
 
 use super::auth::{AppState, Claims};
 
@@ -29,6 +26,32 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/whep/:stream_id", patch(whep_patch))
         .route("/api/whep/:stream_id", delete(whep_delete))
         .route("/api/whep/:stream_id", options(whep_options))
+}
+
+#[derive(Clone)]
+struct WhepHandler {
+    manager: crate::LiveCamManager,
+    stream_id: String,
+    gather_complete: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for WhepHandler {
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        debug!(stream_id = %self.stream_id, state = %state, "PeerConnection state changed.");
+        if state == RTCPeerConnectionState::Failed {
+            debug!(stream_id = %self.stream_id, "Cleaning up subscriber and session.");
+            self.manager.remove_subscriber(&self.stream_id);
+            self.manager.remove_whep_session(&self.stream_id);
+        }
+    }
+
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            debug!(stream_id = %self.stream_id, "ICE gathering complete");
+            self.gather_complete.notify_one();
+        }
+    }
 }
 
 async fn whep_handler(
@@ -62,9 +85,9 @@ async fn whep_handler(
         }
     };
 
-    let rtc_config = {
+    let ice_servers = {
         let config = app_state.config.read().unwrap();
-        let ice_servers: Vec<RTCIceServer> = config
+        let servers: Vec<RTCIceServer> = config
             .ice_servers
             .iter()
             .map(|s| RTCIceServer {
@@ -73,19 +96,16 @@ async fn whep_handler(
                 credential: s.credential.clone(),
             })
             .collect();
-        let mut rtc_config = RTCConfiguration {
-            ice_servers,
-            ..Default::default()
-        };
-        if rtc_config.ice_servers.is_empty() {
-            rtc_config.ice_servers = vec![RTCIceServer {
+        if servers.is_empty() {
+            vec![RTCIceServer {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 ..Default::default()
-            }];
+            }]
+        } else {
+            servers
         }
-        debug!(stream_id, "RTC configuration prepared.");
-        rtc_config
     };
+    debug!(stream_id, "RTC configuration prepared.");
 
     let mut m = MediaEngine::default();
     if let Err(e) = m.register_default_codecs() {
@@ -102,13 +122,27 @@ async fn whep_handler(
     );
 
     let registry = Registry::new();
-    let api = APIBuilder::new()
+    let gather_complete = Arc::new(Notify::new());
+    let handler = Arc::new(WhepHandler {
+        manager: manager.clone(),
+        stream_id: stream_id.clone(),
+        gather_complete: gather_complete.clone(),
+    });
+
+    let config = RTCConfigurationBuilder::new()
+        .with_ice_servers(ice_servers)
+        .build();
+
+    let peer: Arc<dyn PeerConnection> = match PeerConnectionBuilder::<std::net::SocketAddr>::new()
         .with_media_engine(m)
         .with_setting_engine(setting_engine)
         .with_interceptor_registry(registry)
-        .build();
-
-    let pc: Arc<RTCPeerConnection> = match api.new_peer_connection(rtc_config).await {
+        .with_handler(handler)
+        .with_udp_addrs(vec!["0.0.0.0:0".parse().unwrap()])
+        .with_configuration(config)
+        .build()
+        .await
+    {
         Ok(pc) => {
             info!(stream_id, "PeerConnection created successfully.");
             Arc::new(pc)
@@ -120,45 +154,21 @@ async fn whep_handler(
         }
     };
 
-    if let Err(e) = pc
-        .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-        .await
-    {
+    if let Err(e) = peer.add_track(track.clone() as Arc<dyn TrackLocal>).await {
         error!(stream_id, error = %e, "Failed to add track.");
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
     debug!(stream_id, "Track added to PeerConnection.");
 
-    let manager_clone = manager.clone();
-    let stream_id_clone = stream_id.clone();
-    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        let stream_id_clone2 = stream_id_clone.clone();
-        let manager_clone2 = manager_clone.clone();
-        Box::pin(async move {
-            debug!(stream_id = stream_id_clone2, state = %s, "PeerConnection state changed.");
-            if s == RTCPeerConnectionState::Closed
-                || s == RTCPeerConnectionState::Disconnected
-                || s == RTCPeerConnectionState::Failed
-            {
-                debug!(
-                    stream_id = stream_id_clone2,
-                    "Cleaning up subscriber and session."
-                );
-                manager_clone2.remove_subscriber(&stream_id_clone2);
-                manager_clone2.remove_whep_session(&stream_id_clone2);
-            }
-        })
-    }));
-
-    if let Err(e) = pc.set_remote_description(offer).await {
+    if let Err(e) = peer.set_remote_description(offer).await {
         error!(stream_id, error = %e, "Failed to set remote description.");
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
     debug!(stream_id, "Remote description set.");
 
-    let answer = match pc.create_answer(None).await {
+    let answer = match peer.create_answer(None).await {
         Ok(a) => {
             debug!(stream_id, "Answer created successfully.");
             a
@@ -170,33 +180,28 @@ async fn whep_handler(
         }
     };
 
-    if let Err(e) = pc.set_local_description(answer).await {
+    if let Err(e) = peer.set_local_description(answer).await {
         error!(stream_id, error = %e, "Failed to set local description.");
         manager.remove_subscriber(&stream_id);
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    debug!(stream_id, "Local description set.");
+    debug!(
+        stream_id,
+        "Local description set, waiting for ICE gathering..."
+    );
 
-    let (tx, rx) = oneshot::channel();
-    let mut tx = Some(tx);
-    pc.on_ice_candidate(Box::new(move |candidate| {
-        if candidate.is_none() {
-            debug!("ICE gathering completed.");
-            if let Some(tx) = tx.take() {
-                let _ = tx.send(());
-            }
-        }
-        Box::pin(async move {})
-    }));
-
-    if tokio::time::timeout(Duration::from_secs(2), rx)
+    // Wait for ICE gathering to complete with a timeout.
+    if tokio::time::timeout(Duration::from_secs(3), gather_complete.notified())
         .await
         .is_err()
     {
-        warn!(stream_id, "ICE gathering timed out, proceeding.");
+        warn!(
+            stream_id,
+            "ICE gathering timed out after 3s, using partial description"
+        );
     }
 
-    let local_desc = match pc.local_description().await {
+    let local_desc = match peer.local_description().await {
         Some(desc) => {
             info!(stream_id, "Local description obtained.");
             desc
@@ -212,7 +217,7 @@ async fn whep_handler(
         }
     };
 
-    manager.add_whep_session(stream_id.clone(), pc.clone());
+    manager.add_whep_session(stream_id.clone(), peer.clone());
     info!(stream_id, "WHEP session added.");
     let config = app_state.config.read().unwrap();
     let server_url = config.http.public.clone();
@@ -272,11 +277,12 @@ async fn whep_patch(
         return (StatusCode::BAD_REQUEST, "Invalid candidate format").into_response();
     };
 
-    let candidate_init = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+    let candidate_init = RTCIceCandidateInit {
         candidate: candidate_line,
         sdp_mid: Some("0".to_string()),
         sdp_mline_index: Some(0),
         username_fragment: None,
+        url: None,
     };
 
     match pc.add_ice_candidate(candidate_init).await {

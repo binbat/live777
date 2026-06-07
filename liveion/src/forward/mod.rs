@@ -1,16 +1,15 @@
+use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::io::Cursor;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, Notify, broadcast};
+use tracing::error;
 #[cfg(feature = "source")]
 use tracing::{debug, trace, warn};
-use tracing::{error, info};
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::sdp::SessionDescription;
+use webrtc::peer_connection::{
+    PeerConnection, RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionState,
+    RTCSessionDescription,
+};
 
 use libwish::Client;
 
@@ -23,9 +22,9 @@ use crate::{AppError, constant};
 #[cfg(feature = "source")]
 pub use bridge::SourceBridge;
 #[cfg(feature = "source")]
-use webrtc::rtp::packet::Packet;
+use rtc::rtp::packet::Packet;
 #[cfg(feature = "source")]
-use webrtc::util::Unmarshal;
+use rtc::shared::marshal::Unmarshal;
 
 use self::media::MediaInfo;
 use self::message::{CascadeInfo, ForwardEvent};
@@ -50,9 +49,9 @@ pub mod bridge;
 #[cfg(feature = "source")]
 pub mod track;
 
-pub(crate) fn get_peer_id(peer: &Arc<RTCPeerConnection>) -> String {
+pub(crate) fn get_peer_id(peer: &Arc<dyn PeerConnection>) -> String {
     let mut hasher = Md5::new();
-    hasher.update(peer.get_stats_id());
+    hasher.update(format!("{:?}", Arc::as_ptr(peer)));
     let digest = hasher.finalize();
     format!("{digest:x}")
 }
@@ -75,20 +74,34 @@ pub struct AudioTrackInfo {
 
 impl PeerForward {
     #[cfg(feature = "source")]
-    pub fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>, channel: Channel) -> Self {
+    pub fn new(
+        stream: impl ToString,
+        ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
+        channel: Channel,
+    ) -> Self {
         PeerForward {
             stream: stream.to_string(),
             publish_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(stream, ice_server, channel)),
+            internal: Arc::new(PeerForwardInternal::new(
+                stream,
+                ice_server,
+                ice_udp_addrs,
+                channel,
+            )),
         }
     }
 
     #[cfg(not(feature = "source"))]
-    pub fn new(stream: impl ToString, ice_server: Vec<RTCIceServer>) -> Self {
+    pub fn new(
+        stream: impl ToString,
+        ice_server: Vec<RTCIceServer>,
+        ice_udp_addrs: Vec<SocketAddr>,
+    ) -> Self {
         PeerForward {
             stream: stream.to_string(),
             publish_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(stream, ice_server)),
+            internal: Arc::new(PeerForwardInternal::new(stream, ice_server, ice_udp_addrs)),
         }
     }
     #[cfg(feature = "source")]
@@ -124,7 +137,7 @@ impl PeerForward {
     }
 
     #[cfg(feature = "source")]
-    pub async fn get_subscribe_peer(&self, session_id: &str) -> Option<Arc<RTCPeerConnection>> {
+    pub async fn get_subscribe_peer(&self, session_id: &str) -> Option<Arc<dyn PeerConnection>> {
         let subscribe_group = self.internal.subscribe_group.read().await;
         for subscribe in subscribe_group.iter() {
             if subscribe.id == session_id {
@@ -136,11 +149,31 @@ impl PeerForward {
     }
 }
 
+/// Parse the transport-wide-cc RTP header extension ID from an SDP.
+/// Returns 0 if not found.
+const TWCC_URI: &str = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+
+fn parse_twcc_ext_id_from_sdp(sdp: &str) -> u8 {
+    for line in sdp.lines() {
+        let line = line.trim();
+        if line.starts_with("a=extmap:") && line.contains(TWCC_URI) {
+            // Format: a=extmap:<id> <URI>
+            if let Some(id_part) = line.strip_prefix("a=extmap:")
+                && let Some(id_str) = id_part.split_whitespace().next()
+                && let Ok(id) = id_str.parse::<u8>()
+            {
+                return id;
+            }
+        }
+    }
+    0
+}
+
 // publish
 impl PeerForward {
     pub async fn set_publish(
         &self,
-        offer: RTCSessionDescription,
+        mut offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
         if self.internal.publish_is_some().await {
             return Err(AppError::stream_already_exists(
@@ -156,12 +189,22 @@ impl PeerForward {
             ));
         }
 
-        let media_info = MediaInfo::try_from(offer.unmarshal()?)?;
-        let peer = self.new_publish_peer(media_info).await?;
+        offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
+        let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
 
-        let description = peer_complete(offer, peer.clone()).await?;
+        // Parse negotiated TWCC extmap ID from the publisher's SDP offer.
+        // This ID is used by the inbound RTP probe to correctly identify the
+        // transport-wide-cc header extension (instead of guessing).
+        let twcc_ext_id = parse_twcc_ext_id_from_sdp(&offer.sdp);
+        self.internal.set_twcc_ext_id(twcc_ext_id);
 
-        self.internal.set_publish(peer.clone(), None).await?;
+        let (peer, gather_complete, connection_state) = self.new_publish_peer(media_info).await?;
+
+        let description = peer_complete(offer, peer.clone(), gather_complete).await?;
+
+        self.internal
+            .set_publish(peer.clone(), None, connection_state)
+            .await?;
 
         let session = get_peer_id(&peer);
 
@@ -183,7 +226,7 @@ impl PeerForward {
             ));
         }
 
-        let peer = self
+        let (peer, gather_complete, connection_state) = self
             .new_publish_peer(MediaInfo {
                 _codec: vec![],
                 video_transceiver: (1, 0, false),
@@ -193,9 +236,8 @@ impl PeerForward {
             .await?;
 
         let offer = peer.create_offer(None).await?;
-        let mut gather_complete = peer.gathering_complete_promise().await;
         peer.set_local_description(offer).await?;
-        let _ = gather_complete.recv().await;
+        gather_complete.notified().await;
 
         let description = peer
             .pending_local_description()
@@ -219,6 +261,7 @@ impl PeerForward {
                             token,
                             session_url: client.session_url,
                         }),
+                        connection_state,
                     )
                     .await?;
                 Ok(())
@@ -230,57 +273,17 @@ impl PeerForward {
         }
     }
 
-    async fn new_publish_peer(&self, media_info: MediaInfo) -> Result<Arc<RTCPeerConnection>> {
-        let peer = self.internal.new_publish_peer(media_info).await?;
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    info!(
-                        "[{}] [publish] [{}] connection state changed: {}",
-                        internal.stream,
-                        get_peer_id(&pc),
-                        s
-                    );
-                    match s {
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            let _ = pc.close().await;
-                        }
-                        RTCPeerConnectionState::Closed => {
-                            let _ = internal.remove_publish(pc).await;
-                        }
-                        _ => {}
-                    };
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_track(Box::new(move |track, _, _| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    let _ = internal.publish_track_up(pc, track).await;
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_data_channel(Box::new(move |dc| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    let _ = internal.publish_data_channel(pc, dc).await;
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        Ok(peer)
+    async fn new_publish_peer(
+        &self,
+        media_info: MediaInfo,
+    ) -> Result<(
+        Arc<dyn PeerConnection>,
+        Arc<Notify>,
+        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    )> {
+        self.internal
+            .new_publish_peer(media_info, Arc::downgrade(&self.internal))
+            .await
     }
 
     pub async fn layers(&self) -> Result<Vec<Layer>> {
@@ -305,20 +308,24 @@ impl PeerForward {
     #[cfg(feature = "recorder")]
     pub async fn first_audio_track_info(&self) -> Option<AudioTrackInfo> {
         let tracks = self.internal.publish_tracks.read().await;
-        tracks.iter().find_map(|track| match track {
-            track::PublishTrackRemote::Real { track, .. }
-                if track.kind() == RTPCodecType::Audio =>
-            {
-                let params = track.codec();
-                Some(AudioTrackInfo {
-                    clock_rate: params.capability.clock_rate,
-                    channels: params.capability.channels,
-                    codec_mime: params.capability.mime_type.clone(),
-                    fmtp: params.capability.sdp_fmtp_line.clone(),
-                })
+        for track in tracks.iter() {
+            if let track::PublishTrackRemote::Real { track, .. } = track {
+                let kind = track.kind().await;
+                if kind == RtpCodecKind::Audio {
+                    let ssrcs = track.ssrcs().await;
+                    let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+                    if let Some(params) = track.codec(first_ssrc).await {
+                        return Some(AudioTrackInfo {
+                            clock_rate: params.clock_rate,
+                            channels: params.channels,
+                            codec_mime: params.mime_type.clone(),
+                            fmtp: params.sdp_fmtp_line.clone(),
+                        });
+                    }
+                }
             }
-            _ => None,
-        })
+        }
+        None
     }
 
     #[cfg(feature = "recorder")]
@@ -327,7 +334,9 @@ impl PeerForward {
     }
 
     #[cfg(feature = "recorder")]
-    pub async fn first_video_track(&self) -> Option<Arc<webrtc::track::track_remote::TrackRemote>> {
+    pub async fn first_video_track(
+        &self,
+    ) -> Option<Arc<dyn webrtc::media_stream::track_remote::TrackRemote>> {
         self.internal.first_video_track().await
     }
 
@@ -342,7 +351,7 @@ impl PeerForward {
     ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
         let tracks = self.internal.publish_tracks.read().await;
         for t in tracks.iter() {
-            if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
+            if t.kind() == RtpCodecKind::Audio {
                 return Some(t.subscribe());
             }
         }
@@ -354,19 +363,21 @@ impl PeerForward {
 impl PeerForward {
     pub async fn add_subscribe(
         &self,
-        offer: RTCSessionDescription,
+        mut offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        let media_info = MediaInfo::try_from(offer.unmarshal()?)?;
-        let peer = self.new_subscription_peer(media_info.clone()).await?;
+        offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
+        let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
+        let (peer, gather_complete, connection_state) =
+            self.new_subscription_peer(media_info.clone()).await?;
 
         let (sdp, session) = (
-            peer_complete(offer, peer.clone()).await?,
+            peer_complete(offer, peer.clone(), gather_complete).await?,
             get_peer_id(&peer),
         );
 
         let _ = self
             .internal
-            .add_subscribe(peer.clone(), None, media_info)
+            .add_subscribe(peer.clone(), None, media_info, connection_state)
             .await;
 
         Ok((sdp, session))
@@ -380,12 +391,12 @@ impl PeerForward {
             has_data_channel: false,
         };
 
-        let peer = self.new_subscription_peer(media_info.clone()).await?;
+        let (peer, gather_complete, connection_state) =
+            self.new_subscription_peer(media_info.clone()).await?;
 
         let offer: RTCSessionDescription = peer.create_offer(None).await?;
-        let mut gather_complete = peer.gathering_complete_promise().await;
         peer.set_local_description(offer).await?;
-        let _ = gather_complete.recv().await;
+        gather_complete.notified().await;
 
         let description = peer
             .pending_local_description()
@@ -409,6 +420,7 @@ impl PeerForward {
                             session_url: client.session_url,
                         }),
                         media_info,
+                        connection_state,
                     )
                     .await?;
                 let _ = peer.set_remote_description(target_sdp).await;
@@ -422,46 +434,17 @@ impl PeerForward {
         }
     }
 
-    async fn new_subscription_peer(&self, media_info: MediaInfo) -> Result<Arc<RTCPeerConnection>> {
-        let peer = self.internal.new_subscription_peer(media_info).await?;
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    info!(
-                        "[{}] [subscribe] [{}] connection state changed: {}",
-                        internal.stream,
-                        get_peer_id(&pc),
-                        s
-                    );
-                    match s {
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            let _ = pc.close().await;
-                        }
-                        RTCPeerConnectionState::Closed => {
-                            let _ = internal.remove_subscribe(pc).await;
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        let internal = Arc::downgrade(&self.internal);
-        let pc = Arc::downgrade(&peer);
-        peer.on_data_channel(Box::new(move |dc| {
-            if let (Some(internal), Some(pc)) = (internal.upgrade(), pc.upgrade()) {
-                tokio::spawn(async move {
-                    let _ = internal.subscribe_data_channel(pc, dc).await;
-                });
-            }
-            Box::pin(async {})
-        }));
-
-        Ok(peer)
+    async fn new_subscription_peer(
+        &self,
+        media_info: MediaInfo,
+    ) -> Result<(
+        Arc<dyn PeerConnection>,
+        Arc<Notify>,
+        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    )> {
+        self.internal
+            .new_subscription_peer(media_info, Arc::downgrade(&self.internal))
+            .await
     }
 
     pub async fn select_layer(&self, session: String, layer: Option<Layer>) -> Result<()> {
@@ -472,7 +455,7 @@ impl PeerForward {
         };
 
         self.internal
-            .select_kind_rid(session, RTPCodecType::Video, rid)
+            .select_kind_rid(session, RtpCodecKind::Video, rid)
             .await
     }
 
@@ -481,8 +464,8 @@ impl PeerForward {
         session: String,
         (kind, enabled): (String, bool),
     ) -> Result<()> {
-        let codec_type = RTPCodecType::from(kind.as_str());
-        if codec_type == RTPCodecType::Unspecified {
+        let codec_type = RtpCodecKind::from(kind.as_str());
+        if codec_type == RtpCodecKind::Unspecified {
             return Err(AppError::throw("kind unspecified"));
         }
 
@@ -503,7 +486,7 @@ impl PeerForward {
     ) -> Option<tokio::sync::broadcast::Receiver<track::ForwardData>> {
         let tracks = self.internal.publish_tracks.read().await;
         for t in tracks.iter() {
-            if t.kind() == RTPCodecType::Video {
+            if t.kind() == RtpCodecKind::Video {
                 return Some(t.subscribe());
             }
         }
@@ -513,13 +496,25 @@ impl PeerForward {
 
 async fn peer_complete(
     offer: RTCSessionDescription,
-    peer: Arc<RTCPeerConnection>,
+    peer: Arc<dyn PeerConnection>,
+    gather_complete: Arc<Notify>,
 ) -> Result<RTCSessionDescription> {
     peer.set_remote_description(offer).await?;
     let answer = peer.create_answer(None).await?;
-    let mut gather_complete = peer.gathering_complete_promise().await;
     peer.set_local_description(answer).await?;
-    let _ = gather_complete.recv().await;
+
+    // Wait for ICE gathering to complete with a timeout.
+    // If gathering never completes (e.g. STUN servers unreachable),
+    // fall back to the current partial description after timeout.
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        gather_complete.notified(),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("ICE gathering timed out after 3s, using partial description");
+    }
 
     let description = peer
         .local_description()
@@ -529,10 +524,58 @@ async fn peer_complete(
     Ok(description)
 }
 
+fn unmarshal_sdp(sdp_str: &str) -> Result<sdp::SessionDescription> {
+    let mut reader = Cursor::new(sdp_str);
+    Ok(sdp::SessionDescription::unmarshal(&mut reader)?)
+}
+
+fn strip_unusable_remote_ice_candidates(sdp: &str) -> String {
+    sdp.lines()
+        .filter(|line| {
+            let unusable = is_unusable_remote_ice_candidate_line(line);
+            if unusable {
+                tracing::warn!("Skipping unusable remote ICE candidate in SDP offer: {line}");
+            }
+            !unusable
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_unusable_remote_ice_candidate_line(line: &str) -> bool {
+    let Some(candidate) = line
+        .trim()
+        .strip_prefix("a=candidate:")
+        .or_else(|| line.trim().strip_prefix("candidate:"))
+    else {
+        return false;
+    };
+
+    let Some(addr) = candidate.split_whitespace().nth(4) else {
+        return false;
+    };
+
+    addr.parse::<IpAddr>()
+        .map(is_unusable_remote_candidate_ip)
+        .unwrap_or(false)
+}
+
+fn is_unusable_remote_candidate_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_benchmarking_ipv4(ip),
+        IpAddr::V6(_) => false,
+    }
+}
+
+fn is_benchmarking_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
+}
+
 fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
     let content = format!("v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n{content}");
     let mut reader = Cursor::new(content);
-    let session_desc = SessionDescription::unmarshal(&mut reader)?;
+    let session_desc = sdp::SessionDescription::unmarshal(&mut reader)?;
 
     let mut ice_candidates = Vec::new();
 
@@ -555,11 +598,16 @@ fn parse_ice_candidate(content: String) -> Result<Vec<RTCIceCandidateInit>> {
             if attr.is_ice_candidate()
                 && let Some(value) = attr.value
             {
+                if is_unusable_remote_ice_candidate_line(&format!("candidate:{value}")) {
+                    tracing::warn!("Skipping unusable remote ICE candidate: {value}");
+                    continue;
+                }
                 ice_candidates.push(RTCIceCandidateInit {
                     candidate: value,
                     sdp_mid: Some(mid.clone()),
                     sdp_mline_index: Some(mline_index),
                     username_fragment: None,
+                    url: None,
                 });
             }
         }
@@ -573,8 +621,8 @@ impl PeerForward {
     #[cfg(feature = "source")]
     pub async fn add_virtual_track(
         &self,
-        kind: RTPCodecType,
-        codec_params: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters,
+        kind: RtpCodecKind,
+        codec_params: rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters,
     ) -> Result<()> {
         use crate::forward::track::{PublishTrackRemote, VirtualPublishTrack};
 
@@ -617,7 +665,7 @@ impl PeerForward {
 
         let tracks = self.internal.publish_tracks.read().await;
 
-        let video_track = tracks.iter().find(|t| t.kind() == RTPCodecType::Video);
+        let video_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Video);
 
         match video_track {
             Some(track) => match track.inject_rtp(Arc::new(packet)) {
@@ -661,7 +709,7 @@ impl PeerForward {
 
         let tracks = self.internal.publish_tracks.read().await;
 
-        let audio_track = tracks.iter().find(|t| t.kind() == RTPCodecType::Audio);
+        let audio_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Audio);
 
         match audio_track {
             Some(track) => match track.inject_rtp(Arc::new(packet)) {
@@ -684,7 +732,30 @@ impl PeerForward {
 
 #[cfg(test)]
 mod test {
+    use crate::forward::PeerForward;
     use crate::forward::parse_ice_candidate;
+    use crate::forward::strip_unusable_remote_ice_candidates;
+    use rtc::media_stream::MediaStreamTrack;
+    use rtc::peer_connection::configuration::interceptor_registry::{
+        configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers,
+        configure_twcc_sender_only,
+    };
+    use rtc::peer_connection::configuration::media_engine::MIME_TYPE_VP8;
+    use rtc::rtp_transceiver::rtp_sender::{
+        RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    };
+    use sdp::extmap::TRANSPORT_CC_URI;
+    use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+    use webrtc::peer_connection::{
+        MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+        RTCConfigurationBuilder, Registry,
+    };
+
+    #[derive(Clone)]
+    struct TestPeerHandler;
+
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for TestPeerHandler {}
 
     #[test]
     fn test_parse_ice_candidate() -> crate::result::Result<()> {
@@ -699,6 +770,133 @@ a=candidate:2154773085 1 tcp 1518214911 198.51.100.2 9 typ host tcptype active g
 a=end-of-candidates";
 
         parse_ice_candidate(body.to_owned())?;
+        Ok(())
+    }
+
+    #[test]
+    fn parse_ice_candidate_skips_benchmarking_fake_ip_candidates() -> crate::result::Result<()> {
+        let body = "a=ice-ufrag:EsAw
+a=ice-pwd:P2uYro0UCOQ4zxjKXaWCBui1
+m=audio 9 RTP/AVP 0
+a=mid:0
+a=candidate:1 1 udp 2122260223 198.18.0.1 55964 typ host generation 0 ufrag EsAw network-id 1
+a=candidate:2 1 udp 2122260223 192.0.2.1 61764 typ host generation 0 ufrag EsAw network-id 1
+a=end-of-candidates";
+
+        let candidates = parse_ice_candidate(body.to_owned())?;
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].candidate.contains("192.0.2.1"));
+        Ok(())
+    }
+
+    #[test]
+    fn sdp_sanitizer_removes_benchmarking_fake_ip_candidates() {
+        let sdp = "v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+a=mid:0
+a=candidate:1 1 udp 2122260223 198.18.0.1 55964 typ host generation 0 ufrag abc network-id 1
+a=candidate:2 1 udp 2122260223 192.0.2.1 61764 typ host generation 0 ufrag abc network-id 1
+a=end-of-candidates";
+
+        let sanitized = strip_unusable_remote_ice_candidates(sdp);
+
+        assert!(!sanitized.contains("198.18.0.1"));
+        assert!(sanitized.contains("192.0.2.1"));
+        assert!(sanitized.contains("a=end-of-candidates"));
+    }
+
+    #[tokio::test]
+    async fn whip_publish_answer_advertises_bwe_feedback_contract() -> crate::result::Result<()> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+        let registry = Registry::new();
+        let registry = configure_nack(registry, &mut media_engine);
+        let registry = configure_rtcp_reports(registry);
+        configure_simulcast_extension_headers(&mut media_engine)?;
+        let registry = configure_twcc_sender_only(registry, &mut media_engine)?;
+
+        let offer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(media_engine)
+                .with_interceptor_registry(registry)
+                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        let media_track = MediaStreamTrack::new(
+            "bwe-contract-test".to_owned(),
+            "video".to_owned(),
+            "video".to_owned(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(1),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                ..Default::default()
+            }],
+        );
+        offer_peer
+            .add_track(std::sync::Arc::new(TrackLocalStaticRTP::new(media_track)))
+            .await?;
+
+        let offer = offer_peer.create_offer(None).await?;
+        #[cfg(feature = "source")]
+        let forward = PeerForward::new(
+            "bwe-contract-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            crate::config::Channel::default(),
+        );
+        #[cfg(not(feature = "source"))]
+        let forward = PeerForward::new(
+            "bwe-contract-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+        );
+        let (answer, session) = forward.set_publish(offer).await?;
+
+        let has_transport_cc_feedback = answer
+            .sdp
+            .lines()
+            .any(|line| line.starts_with("a=rtcp-fb:") && line.contains(" transport-cc"));
+        let has_transport_cc_extmap = answer
+            .sdp
+            .lines()
+            .any(|line| line.starts_with("a=extmap:") && line.contains(TRANSPORT_CC_URI));
+        let has_remb_fallback = answer.sdp.contains(" goog-remb");
+
+        assert!(
+            answer.sdp.contains(" 127.0.0.1 "),
+            "expected loopback ICE candidate in liveion answer SDP:\n{}",
+            answer.sdp
+        );
+        assert!(
+            !answer.sdp.contains(" 0.0.0.0 "),
+            "unspecified ICE candidate leaked into liveion answer SDP:\n{}",
+            answer.sdp
+        );
+        assert!(
+            (has_transport_cc_feedback && has_transport_cc_extmap) || has_remb_fallback,
+            "WHIP answer must advertise transport-cc with TWCC extmap, or goog-remb fallback:\n{}",
+            answer.sdp
+        );
+
+        forward.remove_peer(session).await?;
+        offer_peer.close().await?;
         Ok(())
     }
 }

@@ -5,6 +5,7 @@ import { Alert, Button, Loading, Modal, Tabs } from 'react-daisyui';
 
 import * as livemanApi from '../api';
 import * as sharedApi from '@/shared/api';
+import { formatHttpError } from '@/shared/utils';
 
 enum AuthorizeType {
     Password = 'Password',
@@ -81,7 +82,7 @@ export function Login({ show, onSuccess }: LoginProps) {
             livemanApi.setAuthToken('');
             sharedApi.setAuthToken('');
             if (e instanceof WretchError) {
-                setErrMsg(e.json?.error ?? e.text ?? `Status: ${e.status}`);
+                setErrMsg(formatHttpError(e));
             } else if (e instanceof Error) {
                 setErrMsg(e.message);
             } else {

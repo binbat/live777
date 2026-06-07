@@ -12,20 +12,6 @@ mod tests {
         config
     }
 
-    fn create_test_webrtc_api() -> webrtc::api::API {
-        use webrtc::api::{APIBuilder, media_engine::MediaEngine};
-        use webrtc::interceptor::registry::Registry;
-
-        let mut m = MediaEngine::default();
-        m.register_default_codecs().unwrap();
-        let registry = Registry::new();
-
-        APIBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(registry)
-            .build()
-    }
-
     #[test]
     fn test_password_hash_verification() {
         use argon2::{Argon2, PasswordHash, PasswordVerifier};
@@ -43,7 +29,7 @@ mod tests {
     #[tokio::test]
     async fn test_login_success() {
         let config = Arc::new(RwLock::new(create_test_config()));
-        let manager = LiveCamManager::new(config.clone(), Arc::new(create_test_webrtc_api()));
+        let manager = LiveCamManager::new(config.clone());
 
         let app_state = AppState { config, manager };
         let app = create_auth_router().with_state(app_state);
@@ -65,7 +51,7 @@ mod tests {
     #[tokio::test]
     async fn test_login_invalid_credentials() {
         let config = Arc::new(RwLock::new(create_test_config()));
-        let manager = LiveCamManager::new(config.clone(), Arc::new(create_test_webrtc_api()));
+        let manager = LiveCamManager::new(config.clone());
 
         let app_state = AppState { config, manager };
         let app = create_auth_router().with_state(app_state);
@@ -85,7 +71,7 @@ mod tests {
     #[tokio::test]
     async fn test_change_password() {
         let config = Arc::new(RwLock::new(create_test_config()));
-        let manager = LiveCamManager::new(config.clone(), Arc::new(create_test_webrtc_api()));
+        let manager = LiveCamManager::new(config.clone());
 
         let app_state = AppState {
             config: config.clone(),
@@ -137,28 +123,14 @@ mod integration_tests {
     use axum::http::StatusCode;
     use axum_test::TestServer;
     use std::sync::{Arc, RwLock};
-    use webrtc::api::{APIBuilder, media_engine::MediaEngine};
-    use webrtc::interceptor::registry::Registry;
-
     fn create_test_config() -> Config {
         Config::default()
-    }
-
-    fn create_test_webrtc_api() -> webrtc::api::API {
-        let mut m = MediaEngine::default();
-        m.register_default_codecs().unwrap();
-        let registry = Registry::new();
-
-        APIBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(registry)
-            .build()
     }
 
     #[tokio::test]
     async fn test_health_check() {
         let config = Arc::new(RwLock::new(create_test_config()));
-        let manager = LiveCamManager::new(config.clone(), Arc::new(create_test_webrtc_api()));
+        let manager = LiveCamManager::new(config.clone());
 
         let app_state = AppState { config, manager };
         let app = axum::Router::new()
@@ -181,23 +153,36 @@ mod integration_tests {
 #[cfg(test)]
 mod rtp_receiver_tests {
     use crate::rtp_receiver;
+    use rtc::media_stream::MediaStreamTrack;
+    use rtc::rtp_transceiver::rtp_sender::{
+        RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    };
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+    use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 
     #[tokio::test]
     async fn test_rtp_receiver_shutdown() {
-        let track = Arc::new(TrackLocalStaticRTP::new(
-            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
-                mime_type: "video/H264".to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
+        let track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
             "test".to_string(),
             "test".to_string(),
-        ));
+            "test".to_string(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(1),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: "video/H264".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: String::new(),
+                    rtcp_feedback: vec![],
+                },
+                ..Default::default()
+            }],
+        )));
 
         let (tx, rx) = mpsc::channel(1);
 

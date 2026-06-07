@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Once,
+};
 
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -13,10 +16,10 @@ enum Transport {
 }
 
 impl Transport {
-    fn as_str(&self) -> &str {
+    fn ffprobe_args(&self) -> &[&str] {
         match self {
-            Transport::Udp => "",
-            Transport::Tcp => "?transport=tcp",
+            Transport::Udp => &[],
+            Transport::Tcp => &["-rtsp_transport", "tcp"],
         }
     }
 }
@@ -27,13 +30,67 @@ struct Detect {
     video: Option<(u16, u16)>,
 }
 
+const CONNECTION_WAIT_ATTEMPTS: usize = 300;
+const WEBRTC_ICE_UDP_ADDRS: &str = "127.0.0.1:0";
+
+static TRACING_INIT: Once = Once::new();
+
+fn init_rtsp_test_environment() {
+    TRACING_INIT.call_once(|| {
+        // These tests run both WebRTC peers locally. Pin ICE candidates to
+        // loopback so CI runners cannot choose an unroutable host interface.
+        unsafe {
+            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", WEBRTC_ICE_UDP_ADDRS);
+        }
+
+        let filter = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .try_init();
+    });
+}
+
+#[test]
+fn rtsp_test_environment_pins_webrtc_ice_to_loopback() {
+    init_rtsp_test_environment();
+
+    assert_eq!(
+        std::env::var("LIVE777_WEBRTC_ICE_UDP_ADDRS").as_deref(),
+        Ok(WEBRTC_ICE_UDP_ADDRS)
+    );
+    assert_eq!(
+        livetwo::utils::webrtc::ice_udp_addrs(),
+        vec![WEBRTC_ICE_UDP_ADDRS.parse::<SocketAddr>().unwrap()]
+    );
+}
+
+fn rtsp_ice_candidate_override_hint(text: &str) -> &'static str {
+    if text.contains("a=candidate:") && (text.contains(" 0.0.0.0 ") || text.contains(" :: ")) {
+        " RTSP test ICE candidate override did not apply: SDP candidate contains an unspecified address; expected LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0 before PeerConnection creation."
+    } else {
+        ""
+    }
+}
+
+async fn pick_tcp_port(ip: IpAddr) -> u16 {
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0))
+        .await
+        .expect("Failed to reserve temporary TCP port");
+    listener
+        .local_addr()
+        .expect("Failed to read temporary TCP port")
+        .port()
+}
+
 #[tokio::test]
 async fn test_livetwo_rtsp_h264_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8530;
-    let whep_port: u16 = 8535;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -60,8 +117,8 @@ async fn test_livetwo_rtsp_h264_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8540;
-    let whep_port: u16 = 8545;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -88,8 +145,8 @@ async fn test_livetwo_rtsp_h265_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8670;
-    let whep_port: u16 = 8675;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -116,8 +173,8 @@ async fn test_livetwo_rtsp_h265_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8680;
-    let whep_port: u16 = 8685;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -144,8 +201,8 @@ async fn test_livetwo_rtsp_vp8_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8550;
-    let whep_port: u16 = 8555;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -172,8 +229,8 @@ async fn test_livetwo_rtsp_vp8_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8560;
-    let whep_port: u16 = 8565;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -200,8 +257,8 @@ async fn test_livetwo_rtsp_vp8_ipv6_udp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8570;
-    let whep_port: u16 = 8575;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -228,8 +285,8 @@ async fn test_livetwo_rtsp_vp8_ipv6_tcp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8580;
-    let whep_port: u16 = 8585;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -258,8 +315,8 @@ async fn test_livetwo_rtsp_vp9_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8590;
-    let whep_port: u16 = 8595;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -288,8 +345,8 @@ async fn test_livetwo_rtsp_vp9_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8600;
-    let whep_port: u16 = 8605;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -318,8 +375,8 @@ async fn test_livetwo_rtsp_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8610;
-    let whep_port: u16 = 8615;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
@@ -344,8 +401,8 @@ async fn test_livetwo_rtsp_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8620;
-    let whep_port: u16 = 8625;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec} -rtsp_transport tcp");
@@ -370,8 +427,8 @@ async fn test_livetwo_rtsp_g722_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8630;
-    let whep_port: u16 = 8635;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let acodec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
@@ -396,8 +453,8 @@ async fn test_livetwo_rtsp_g722_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8640;
-    let whep_port: u16 = 8645;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let acodec = "-acodec g722";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec} -rtsp_transport tcp");
@@ -422,8 +479,8 @@ async fn test_livetwo_rtsp_vp8_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8650;
-    let whep_port: u16 = 8655;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -454,8 +511,8 @@ async fn test_livetwo_rtsp_vp8_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let whip_port: u16 = 8660;
-    let whep_port: u16 = 8665;
+    let whip_port: u16 = 0;
+    let whep_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -490,6 +547,19 @@ async fn helper_livetwo_rtsp(
     detect: Detect,
     transport: Transport,
 ) {
+    init_rtsp_test_environment();
+
+    let whip_port = if whip_port == 0 {
+        pick_tcp_port(ip).await
+    } else {
+        whip_port
+    };
+    let whep_port = if whep_port == 0 {
+        pick_tcp_port(ip).await
+    } else {
+        whep_port
+    };
+
     let cfg = liveion::config::Config::default();
 
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
@@ -530,7 +600,9 @@ async fn helper_livetwo_rtsp(
     ));
 
     let mut result = None;
-    for _ in 0..100 {
+    let mut last_state = None;
+    let mut last_codecs = Vec::new();
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();
@@ -543,16 +615,31 @@ async fn helper_livetwo_rtsp(
             && !r.publish.sessions.is_empty()
         {
             let s = r.publish.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
+            last_state = Some(s.state);
+            last_codecs = r.codecs.clone();
+            if s.state == api::response::RTCPeerConnectionState::Connected && !r.codecs.is_empty() {
                 result = Some(s);
                 break;
             }
         };
 
+        if handle_whip.is_finished() {
+            let result_whip = handle_whip.await.unwrap();
+            let result_whip_debug = format!("{result_whip:?}");
+            let ice_hint = rtsp_ice_candidate_override_hint(&result_whip_debug);
+            panic!(
+                "WHIP task exited before publish connected: result={result_whip_debug}, whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}.{ice_hint}"
+            );
+        }
+
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    assert!(result.is_some());
+    assert!(
+        result.is_some(),
+        "Publish session did not reach Connected state with codecs within {}ms: whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}",
+        CONNECTION_WAIT_ATTEMPTS * 100,
+    );
 
     // TODO: publish.state == connected is not ready
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
@@ -572,7 +659,8 @@ async fn helper_livetwo_rtsp(
     ));
 
     let mut result = None;
-    for _ in 0..100 {
+    let mut last_state = None;
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
         let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
             .unwrap();
@@ -585,6 +673,7 @@ async fn helper_livetwo_rtsp(
             && !r.subscribe.sessions.is_empty()
         {
             let s = r.subscribe.sessions[0].clone();
+            last_state = Some(s.state);
             if s.state == api::response::RTCPeerConnectionState::Connected {
                 result = Some(s);
                 break;
@@ -594,22 +683,27 @@ async fn helper_livetwo_rtsp(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    assert!(result.is_some());
+    assert!(
+        result.is_some(),
+        "Subscribe session did not reach Connected state within {}ms: whip_port={whip_port}, whep_port={whep_port}, liveion={addr}, last_state={last_state:?}",
+        CONNECTION_WAIT_ATTEMPTS * 100,
+    );
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
+    let input_url = format!(
+        "{}://{}",
+        livetwo::SCHEME_RTSP_CLIENT,
+        SocketAddr::new(ip, whep_port)
+    );
     let output = Command::new("ffprobe")
-        .args(vec![
+        .args(transport.ffprobe_args())
+        .args([
             "-v",
             "error",
             "-hide_banner",
             "-i",
-            &format!(
-                "{}://{}{}",
-                livetwo::SCHEME_RTSP_CLIENT,
-                SocketAddr::new(ip, whep_port),
-                transport.as_str()
-            ),
+            &input_url,
             "-show_streams",
             "-of",
             "json",

@@ -1,5 +1,5 @@
 use api::response::Codec;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::RTCPeerConnectionState;
 
 impl From<crate::forward::message::Layer> for api::response::Layer {
     fn from(value: crate::forward::message::Layer) -> Self {

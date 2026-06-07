@@ -1,7 +1,7 @@
 use super::{CodecAdapter, TrackKind};
 use anyhow::{Result, anyhow};
 use bytes::{BufMut, Bytes, BytesMut};
-use webrtc::rtp::packet::Packet;
+use rtc_rtp::packet::Packet;
 
 const TIMESCALE: u32 = 90_000;
 const OBU_TYPE_SEQUENCE_HEADER: u8 = 1;
@@ -978,7 +978,7 @@ mod tests {
         read_leb128,
     };
     use bytes::Bytes;
-    use webrtc::rtp::packet::Packet;
+    use rtc_rtp::packet::Packet;
 
     #[test]
     fn leb128_decoding_examples() {

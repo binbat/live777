@@ -3,12 +3,9 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use libwish::Client;
+use webrtc::peer_connection::PeerConnection;
 
-pub async fn graceful_shutdown(
-    name: &str,
-    client: &mut Client,
-    peer: Arc<::webrtc::peer_connection::RTCPeerConnection>,
-) {
+pub async fn graceful_shutdown(name: &str, client: &mut Client, peer: Arc<dyn PeerConnection>) {
     info!("Starting {} graceful shutdown", name);
 
     let shutdown_timeout = Duration::from_secs(5);
