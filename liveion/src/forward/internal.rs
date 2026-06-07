@@ -33,7 +33,7 @@ use webrtc::peer_connection::{
 };
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, RtpSender};
 
-use super::media::MediaInfo;
+use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
 use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
@@ -625,6 +625,8 @@ pub(crate) struct PeerForwardInternal {
     native_twcc_bound: Arc<AtomicBool>,
     /// Shared manual TWCC fallback for all tracks in a publish peer.
     manual_twcc_feedback: std::sync::Mutex<Option<SharedManualTwccFeedback>>,
+    media_generation_id: RwLock<u64>,
+    last_publish_profile: RwLock<Option<MediaProfile>>,
     #[cfg(feature = "source")]
     channel: Channel,
 }
@@ -659,6 +661,8 @@ impl PeerForwardInternal {
             rtcp_egress_counters: std::sync::Mutex::new(None),
             native_twcc_bound: Arc::new(AtomicBool::new(false)),
             manual_twcc_feedback: std::sync::Mutex::new(None),
+            media_generation_id: RwLock::new(0),
+            last_publish_profile: RwLock::new(None),
             channel,
         }
     }
@@ -691,6 +695,8 @@ impl PeerForwardInternal {
             rtcp_egress_counters: std::sync::Mutex::new(None),
             native_twcc_bound: Arc::new(AtomicBool::new(false)),
             manual_twcc_feedback: std::sync::Mutex::new(None),
+            media_generation_id: RwLock::new(0),
+            last_publish_profile: RwLock::new(None),
         }
     }
 
@@ -871,6 +877,65 @@ impl PeerForwardInternal {
     pub(crate) async fn publish_is_some(&self) -> bool {
         let publish = self.publish.read().await;
         publish.is_some()
+    }
+
+    pub(crate) async fn decide_publish_generation(
+        &self,
+        next_profile: &MediaProfile,
+    ) -> MediaGenerationDecision {
+        let current_generation_id = *self.media_generation_id.read().await;
+        let last_profile = self.last_publish_profile.read().await;
+        MediaGenerationDecision::decide(current_generation_id, last_profile.as_ref(), next_profile)
+    }
+
+    pub(crate) async fn apply_publish_generation(
+        &self,
+        decision: &MediaGenerationDecision,
+        next_profile: MediaProfile,
+    ) -> Result<()> {
+        let old_generation_id = *self.media_generation_id.read().await;
+
+        if decision.changed {
+            info!(
+                "[{}] publisher restarted with incompatible codec, rebuilding media generation; old profile: {:?}; new profile: {:?}; generation changed: {} -> {}",
+                self.stream,
+                *self.last_publish_profile.read().await,
+                next_profile,
+                old_generation_id,
+                decision.generation_id,
+            );
+            self.close_subscribers_for_generation_change().await?;
+        } else if self.last_publish_profile.read().await.is_some() {
+            info!(
+                "[{}] publisher restarted with same codec, reusing media generation {}",
+                self.stream, decision.generation_id
+            );
+        }
+
+        *self.media_generation_id.write().await = decision.generation_id;
+        *self.last_publish_profile.write().await = Some(next_profile);
+        Ok(())
+    }
+
+    async fn close_subscribers_for_generation_change(&self) -> Result<()> {
+        let subscribers = {
+            self.subscribe_group
+                .read()
+                .await
+                .iter()
+                .map(|subscribe| (subscribe.id.clone(), subscribe.peer.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        for (id, peer) in subscribers {
+            info!(
+                "[{}] subscriber session marked stale because codec changed: {}",
+                self.stream, id
+            );
+            peer.close().await?;
+        }
+
+        Ok(())
     }
 
     pub(crate) async fn set_publish(
@@ -1103,6 +1168,7 @@ impl PeerForwardInternal {
         peer: Arc<dyn PeerConnection>,
         track: Arc<dyn TrackRemote>,
     ) -> Result<()> {
+        let generation_id = *self.media_generation_id.read().await;
         let twcc_ext_id = self.negotiated_twcc_ext_id.load(Ordering::Relaxed);
         let manual_twcc_feedback = if twcc_ext_id != 0 {
             let mut shared = self.manual_twcc_feedback.lock().unwrap();
@@ -1126,6 +1192,7 @@ impl PeerForwardInternal {
             twcc_ext_id,
             self.native_twcc_bound.clone(),
             manual_twcc_feedback,
+            generation_id,
         )
         .await;
 
@@ -1414,7 +1481,10 @@ impl PeerForwardInternal {
                     self.publish_tracks_change.clone(),
                 ),
                 (video_sender, audio_sender),
-                connection_state,
+                super::subscribe::SubscribeRuntime {
+                    connection_state,
+                    generation_id: *self.media_generation_id.read().await,
+                },
             )
             .await;
 

@@ -191,6 +191,11 @@ impl PeerForward {
 
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
+        let media_profile = media_info.profile();
+        let generation_decision = self
+            .internal
+            .decide_publish_generation(&media_profile)
+            .await;
 
         // Parse negotiated TWCC extmap ID from the publisher's SDP offer.
         // This ID is used by the inbound RTP probe to correctly identify the
@@ -201,6 +206,10 @@ impl PeerForward {
         let (peer, gather_complete, connection_state) = self.new_publish_peer(media_info).await?;
 
         let description = peer_complete(offer, peer.clone(), gather_complete).await?;
+
+        self.internal
+            .apply_publish_generation(&generation_decision, media_profile)
+            .await?;
 
         self.internal
             .set_publish(peer.clone(), None, connection_state)
@@ -226,14 +235,19 @@ impl PeerForward {
             ));
         }
 
-        let (peer, gather_complete, connection_state) = self
-            .new_publish_peer(MediaInfo {
-                _codec: vec![],
-                video_transceiver: (1, 0, false),
-                audio_transceiver: (1, 0),
-                has_data_channel: false,
-            })
-            .await?;
+        let media_info = MediaInfo {
+            _codec: vec![],
+            video_transceiver: (1, 0, false),
+            audio_transceiver: (1, 0),
+            has_data_channel: false,
+        };
+        let media_profile = media_info.profile();
+        let generation_decision = self
+            .internal
+            .decide_publish_generation(&media_profile)
+            .await;
+
+        let (peer, gather_complete, connection_state) = self.new_publish_peer(media_info).await?;
 
         let offer = peer.create_offer(None).await?;
         peer.set_local_description(offer).await?;
@@ -252,6 +266,9 @@ impl PeerForward {
         match client.wish(description.sdp.clone()).await {
             Ok((target_sdp, _)) => {
                 let _ = peer.set_remote_description(target_sdp).await;
+                self.internal
+                    .apply_publish_generation(&generation_decision, media_profile)
+                    .await?;
                 self.internal
                     .set_publish(
                         peer.clone(),

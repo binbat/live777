@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +83,159 @@ pub struct AudioCodecParams {
     pub payload_type: u8,
     pub clock_rate: u32,
     pub channels: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaProfile {
+    pub video: Option<CodecFingerprint>,
+    pub audio: Option<CodecFingerprint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodecFingerprint {
+    pub kind: MediaKind,
+    pub mime_type: String,
+    pub clock_rate: u32,
+    pub channels: Option<u16>,
+    pub fmtp: Option<String>,
+    pub codec_private_hash: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaKind {
+    Video,
+    Audio,
+}
+
+impl MediaProfile {
+    pub fn from_media_info(media_info: &MediaInfo) -> Self {
+        Self {
+            video: media_info
+                .video_codec
+                .as_ref()
+                .map(CodecFingerprint::from_video_codec_params),
+            audio: media_info
+                .audio_codec
+                .as_ref()
+                .map(CodecFingerprint::from_audio_codec_params),
+        }
+    }
+
+    pub fn is_replace_compatible_with(&self, next: &MediaProfile) -> bool {
+        self.video == next.video && self.audio == next.audio
+    }
+}
+
+impl CodecFingerprint {
+    fn from_video_codec_params(params: &VideoCodecParams) -> Self {
+        match params {
+            VideoCodecParams::H264 {
+                clock_rate,
+                profile_level_id,
+                sps,
+                pps,
+                ..
+            } => Self {
+                kind: MediaKind::Video,
+                mime_type: normalize_mime_type("video/H264"),
+                clock_rate: *clock_rate,
+                channels: None,
+                fmtp: h264_fmtp(profile_level_id.as_deref()),
+                codec_private_hash: hash_parts([sps.as_slice(), pps.as_slice()]),
+            },
+            VideoCodecParams::H265 {
+                clock_rate,
+                vps,
+                sps,
+                pps,
+                ..
+            } => Self {
+                kind: MediaKind::Video,
+                mime_type: normalize_mime_type("video/H265"),
+                clock_rate: *clock_rate,
+                channels: None,
+                fmtp: None,
+                codec_private_hash: hash_parts([vps.as_slice(), sps.as_slice(), pps.as_slice()]),
+            },
+            VideoCodecParams::VP8 { clock_rate, .. } => Self {
+                kind: MediaKind::Video,
+                mime_type: normalize_mime_type("video/VP8"),
+                clock_rate: *clock_rate,
+                channels: None,
+                fmtp: None,
+                codec_private_hash: None,
+            },
+            VideoCodecParams::VP9 { clock_rate, .. } => Self {
+                kind: MediaKind::Video,
+                mime_type: normalize_mime_type("video/VP9"),
+                clock_rate: *clock_rate,
+                channels: None,
+                fmtp: Some(normalize_fmtp("profile-id=0")),
+                codec_private_hash: None,
+            },
+        }
+    }
+
+    fn from_audio_codec_params(params: &AudioCodecParams) -> Self {
+        let mime_type = normalize_mime_type(&format!("audio/{}", params.codec));
+        Self {
+            kind: MediaKind::Audio,
+            mime_type,
+            clock_rate: params.clock_rate,
+            channels: Some(params.channels),
+            fmtp: audio_fmtp(&params.codec),
+            codec_private_hash: None,
+        }
+    }
+}
+
+fn normalize_mime_type(mime_type: &str) -> String {
+    mime_type.to_ascii_lowercase()
+}
+
+fn normalize_fmtp(fmtp: &str) -> String {
+    let mut params = fmtp
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    params.sort();
+    params.join(";")
+}
+
+fn h264_fmtp(profile_level_id: Option<&str>) -> Option<String> {
+    let mut parts = vec![
+        "level-asymmetry-allowed=1".to_string(),
+        "packetization-mode=1".to_string(),
+    ];
+    if let Some(profile_level_id) = profile_level_id
+        && !profile_level_id.is_empty()
+    {
+        parts.push(format!(
+            "profile-level-id={}",
+            profile_level_id.to_ascii_lowercase()
+        ));
+    }
+    Some(normalize_fmtp(&parts.join(";")))
+}
+
+fn audio_fmtp(codec: &str) -> Option<String> {
+    codec
+        .eq_ignore_ascii_case("opus")
+        .then(|| normalize_fmtp("minptime=10;useinbandfec=1"))
+}
+
+fn hash_parts<const N: usize>(parts: [&[u8]; N]) -> Option<u64> {
+    if parts.iter().all(|part| part.is_empty()) {
+        return None;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hasher);
+    }
+    Some(hasher.finish())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,6 +449,111 @@ impl From<AudioCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_profile_treats_same_codec_as_replace_compatible() {
+        let media_info = MediaInfo {
+            video_codec: Some(VideoCodecParams::VP8 {
+                payload_type: 96,
+                clock_rate: 90000,
+            }),
+            audio_codec: Some(AudioCodecParams {
+                codec: "opus".to_string(),
+                payload_type: 111,
+                clock_rate: 48000,
+                channels: 2,
+            }),
+            video_transport: None,
+            audio_transport: None,
+        };
+
+        let profile = MediaProfile::from_media_info(&media_info);
+        let next = MediaProfile::from_media_info(&media_info);
+
+        assert!(profile.is_replace_compatible_with(&next));
+    }
+
+    #[test]
+    fn media_profile_rejects_video_codec_family_change() {
+        let vp8 = MediaProfile::from_media_info(&MediaInfo {
+            video_codec: Some(VideoCodecParams::VP8 {
+                payload_type: 96,
+                clock_rate: 90000,
+            }),
+            audio_codec: None,
+            video_transport: None,
+            audio_transport: None,
+        });
+        let vp9 = MediaProfile::from_media_info(&MediaInfo {
+            video_codec: Some(VideoCodecParams::VP9 {
+                payload_type: 98,
+                clock_rate: 90000,
+            }),
+            audio_codec: None,
+            video_transport: None,
+            audio_transport: None,
+        });
+
+        assert!(!vp8.is_replace_compatible_with(&vp9));
+    }
+
+    #[test]
+    fn media_profile_rejects_h264_private_data_change() {
+        let baseline = MediaProfile::from_media_info(&MediaInfo {
+            video_codec: Some(VideoCodecParams::H264 {
+                payload_type: 96,
+                clock_rate: 90000,
+                profile_level_id: Some("42001f".to_string()),
+                sps: vec![1, 2, 3],
+                pps: vec![4, 5],
+            }),
+            audio_codec: None,
+            video_transport: None,
+            audio_transport: None,
+        });
+        let changed_sps = MediaProfile::from_media_info(&MediaInfo {
+            video_codec: Some(VideoCodecParams::H264 {
+                payload_type: 96,
+                clock_rate: 90000,
+                profile_level_id: Some("42001f".to_string()),
+                sps: vec![9, 9, 9],
+                pps: vec![4, 5],
+            }),
+            audio_codec: None,
+            video_transport: None,
+            audio_transport: None,
+        });
+
+        assert!(!baseline.is_replace_compatible_with(&changed_sps));
+    }
+
+    #[test]
+    fn media_profile_rejects_audio_channel_change() {
+        let stereo = MediaProfile::from_media_info(&MediaInfo {
+            video_codec: None,
+            audio_codec: Some(AudioCodecParams {
+                codec: "opus".to_string(),
+                payload_type: 111,
+                clock_rate: 48000,
+                channels: 2,
+            }),
+            video_transport: None,
+            audio_transport: None,
+        });
+        let mono = MediaProfile::from_media_info(&MediaInfo {
+            video_codec: None,
+            audio_codec: Some(AudioCodecParams {
+                codec: "opus".to_string(),
+                payload_type: 111,
+                clock_rate: 48000,
+                channels: 1,
+            }),
+            video_transport: None,
+            audio_transport: None,
+        });
+
+        assert!(!stereo.is_replace_compatible_with(&mono));
+    }
 
     #[test]
     fn test_media_info_is_audio_only() {

@@ -262,6 +262,7 @@ fn encode_twcc_status_chunks(symbols: &[SymbolTypeTcc]) -> Vec<PacketStatusChunk
 #[derive(Clone)]
 pub(crate) enum PublishTrackRemote {
     Real {
+        generation_id: u64,
         rid: String,
         kind: RtpCodecKind,
         codec: Codec,
@@ -280,6 +281,7 @@ impl PublishTrackRemote {
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
         manual_twcc_feedback: Option<SharedManualTwccFeedback>,
+        generation_id: u64,
     ) -> Self {
         let rtp_sender = new_broadcast_channel!(4096);
         let ssrcs = track.ssrcs().await;
@@ -315,6 +317,7 @@ impl PublishTrackRemote {
         ));
 
         Self::Real {
+            generation_id,
             rid,
             kind,
             codec,
@@ -533,6 +536,14 @@ impl PublishTrackRemote {
         match self {
             Self::Virtual(v) => v.generate_sender_report(),
             Self::Real { .. } => None,
+        }
+    }
+
+    pub(crate) fn generation_id(&self) -> u64 {
+        match self {
+            Self::Real { generation_id, .. } => *generation_id,
+            #[cfg(feature = "source")]
+            Self::Virtual(_) => 0,
         }
     }
 }

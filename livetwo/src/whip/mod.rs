@@ -15,6 +15,7 @@ mod webrtc;
 
 use cli::create_child;
 use libwish::Client;
+use rtsp::MediaProfile;
 
 use crate::transport;
 use crate::utils::shutdown::graceful_shutdown;
@@ -44,6 +45,7 @@ pub async fn into(
     let original_config = (original_target.to_string(), original_listen.to_string());
 
     let port_update_rx = input_source.take_port_update_rx();
+    let initial_profile = MediaProfile::from_media_info(input_source.media_info());
 
     let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
         webrtc::setup_whip_peer(
@@ -96,6 +98,7 @@ pub async fn into(
         let peer_clone = peer.clone();
         let config_clone = original_config.clone();
         let ct_clone = ct.clone();
+        let mut current_profile = initial_profile;
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -114,6 +117,26 @@ pub async fn into(
                             handle.abort();
                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                         }
+
+                        let next_profile = MediaProfile::from_media_info(&port_update.media_info);
+                        if !current_profile.is_replace_compatible_with(&next_profile) {
+                            tracing::error!(
+                                "publisher restarted with incompatible codec, rebuilding media generation is required but current WHIP session cannot renegotiate; old profile: {:?}; new profile: {:?}",
+                                current_profile,
+                                next_profile,
+                            );
+                            if let Err(error) = peer_clone.close().await {
+                                tracing::error!("Failed to close incompatible WHIP peer: {}", error);
+                            }
+                            ct_clone.cancel();
+                            break;
+                        }
+
+                        info!(
+                            "publisher restarted with same codec, reusing media generation for WHIP transport restart; profile: {:?}",
+                            next_profile
+                        );
+                        current_profile = next_profile;
 
                         let (target_host, listen_host) = &config_clone;
                         let temp_input_source = InputSource::new_with_media_info(
