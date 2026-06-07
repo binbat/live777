@@ -22,9 +22,13 @@ filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(
 test-group = 'serial-integration'
 
 [[profile.ci.overrides]]
-filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests))'
+filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests) | (package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))))'
 test-group = 'resource-limited'
 
 [[profile.ci.overrides]]
 filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests)'
+test-group = 'serial-integration'
+
+[[profile.ci.overrides]]
+filter = 'package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))'
 test-group = 'serial-integration'
