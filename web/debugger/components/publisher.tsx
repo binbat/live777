@@ -1,6 +1,11 @@
 import { useSearchParams } from "@solidjs/router";
 import { createSignal, onCleanup, Show } from "solid-js";
-import { QRCodeStream } from "../../shared/qrcode-stream";
+import {
+    DefaultQRCodeFrameRate,
+    type QRCodeFrameRate,
+    QRCodeFrameRates,
+    QRCodeStream,
+} from "../../shared/qrcode-stream";
 import { createLogger } from "../primitive/logger";
 import Datachannel from "./datachannel";
 import Device from "./device";
@@ -82,6 +87,8 @@ export default function Publisher() {
     const [selectVideoHeight, setSelectVideoHeight] = createSignal("");
     const [selectAudioPseudo, setSelectAudioPseudo] = createSignal(false);
     const [selectVideoLayer, setSelectVideoLayer] = createSignal("f");
+    const [selectQrFrameRate, setSelectQrFrameRate] =
+        createSignal<QRCodeFrameRate>(DefaultQRCodeFrameRate);
 
     const [audioTrackCount, setAudioTrackCount] = createSignal(0);
     const [videoTrackCount, setVideoTrackCount] = createSignal(0);
@@ -166,7 +173,7 @@ export default function Publisher() {
         qrCanvasRef.width = QrCanvasWidth;
         qrCanvasRef.height = QrCanvasHeight;
         if (!qrStream) {
-            qrStream = new QRCodeStream(qrCanvasRef);
+            qrStream = new QRCodeStream(qrCanvasRef, selectQrFrameRate());
         }
         return qrStream.capture();
     };
@@ -333,6 +340,24 @@ export default function Publisher() {
 
     const useQrTimeSource = () => {
         prepareQrStream();
+    };
+
+    const updateQrFrameRate = (frameRate: QRCodeFrameRate) => {
+        setSelectQrFrameRate(frameRate);
+        if (sourceMode() !== "qrtime" || qrState() !== "previewing") {
+            return;
+        }
+
+        clearQrStream();
+        const inputStream = ensureQrInputStream();
+        if (!inputStream) {
+            setLogs("QRCode Time stream initialization failed.");
+            return;
+        }
+
+        updatePreviewStream(inputStream);
+        setQrState("previewing");
+        setLogs(`QR source updated to ${frameRate} fps.`);
     };
 
     return (
@@ -502,6 +527,28 @@ export default function Publisher() {
                     </section>
                 </Show>
                 <Show when={sourceMode() === "qrtime" && !disabled()}>
+                    <section>
+                        <label>
+                            QR Frame Rate:
+                            <select
+                                value={selectQrFrameRate()}
+                                onChange={(e) => {
+                                    updateQrFrameRate(
+                                        Number.parseInt(
+                                            e.currentTarget.value,
+                                            10,
+                                        ) as QRCodeFrameRate,
+                                    );
+                                }}
+                            >
+                                {QRCodeFrameRates.map((frameRate) => (
+                                    <option value={frameRate}>
+                                        {frameRate} fps
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    </section>
                     <section>
                         <small>
                             {qrState() === "previewing"
