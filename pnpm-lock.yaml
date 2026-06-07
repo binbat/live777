@@ -135,7 +135,10 @@ importers:
         version: link:../player-core
 
   web/player-core:
-    devDependencies:
+    dependencies:
+      '@binbat/whip-whep':
+        specifier: 1.1.1-sdp-trickle-throw
+        version: 1.1.1-sdp-trickle-throw
       solid-js:
         specifier: ^1.9.10
         version: 1.9.10

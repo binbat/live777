@@ -1,11 +1,10 @@
 import { useSearchParams } from "@solidjs/router";
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createWhepPlayback } from "player-core";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
 import { QRCodeStreamDecoder } from "../../shared/qrcode-stream";
 import { createLogger } from "../primitive/logger";
 import Datachannel from "./datachannel";
 import Player from "./player";
-
-import subscribe, { type WhepMute } from "./subscribe";
 
 const WhepLayerOptions = [
     { value: "", text: "AUTO" },
@@ -18,28 +17,34 @@ export default function Subscriber() {
     const [disabled, setDisabled] = createSignal(true);
     const [disabledAudio, setDisabledAudio] = createSignal(false);
     const [disabledVideo, setDisabledVideo] = createSignal(false);
-    const [stream, setStream] = createSignal<MediaStream | null>(null);
-    const [peerConnection, setPeerConnection] =
-        createSignal<RTCPeerConnection | null>(null);
-    const [datachannel, setDatachannel] = createSignal<RTCDataChannel | null>(
-        null,
-    );
     const [logs, setLogs, clear] = createLogger();
 
-    const [audioTrackCount, setAudioTrackCount] = createSignal(0);
-    const [videoTrackCount, setVideoTrackCount] = createSignal(0);
     const [latency, setLatency] = createSignal("");
     const [isMeasuringQrLatency, setIsMeasuringQrLatency] = createSignal(false);
 
     const [searchParams] = useSearchParams();
     let videoRef: HTMLVideoElement | undefined;
     let decoder: QRCodeStreamDecoder | null = null;
-    let stop: () => Promise<void> | undefined;
-    let mute: (muted: WhepMute) => Promise<void> | undefined;
-    let selectLayer: (layer: string) => Promise<void> | undefined;
+
+    const playback = createWhepPlayback({
+        url: () => {
+            const streamId = ((searchParams.id as string) || "").trim();
+            return `${location.origin}/whep/${encodeURIComponent(streamId)}`;
+        },
+        token: () => (searchParams.token as string) || "",
+        createDataChannel: true,
+        log: setLogs,
+    });
 
     onCleanup(() => {
         stopQrLatencyMeasure();
+        void playback.stop({ reconnect: false });
+    });
+
+    createEffect(() => {
+        if (!playback.stream()) {
+            stopQrLatencyMeasure();
+        }
     });
 
     const stopQrLatencyMeasure = () => {
@@ -52,7 +57,7 @@ export default function Subscriber() {
     };
 
     const startQrLatencyMeasure = () => {
-        if (!videoRef || !stream()) {
+        if (!videoRef || !playback.stream()) {
             return;
         }
         stopQrLatencyMeasure();
@@ -73,25 +78,7 @@ export default function Subscriber() {
             setLogs("Stream ID is required before subscribing.");
             return;
         }
-        [stop, mute, selectLayer] = await subscribe({
-            url: `${location.origin}/whep/${encodeURIComponent(streamId)}`,
-            token: (searchParams.token as string) || "",
-            onStream: (stream: MediaStream | null): void => {
-                setAudioTrackCount(stream ? stream.getAudioTracks().length : 0);
-                setVideoTrackCount(stream ? stream.getVideoTracks().length : 0);
-                setStream(stream);
-                if (!stream) {
-                    stopQrLatencyMeasure();
-                }
-            },
-            onChannel: (channel: RTCDataChannel): void => {
-                setDatachannel(channel);
-            },
-            onPeerConnection: (pc: RTCPeerConnection | null): void => {
-                setPeerConnection(pc);
-            },
-            log: setLogs,
-        });
+        await playback.play();
         setDisabled(false);
     };
 
@@ -103,7 +90,7 @@ export default function Subscriber() {
                     SVC Layer:{" "}
                     <select
                         disabled={disabled()}
-                        onChange={(e) => selectLayer(e.target.value)}
+                        onChange={(e) => playback.selectLayer(e.target.value)}
                     >
                         {WhepLayerOptions.map((o) => (
                             <option value={o.value}>{o.text}</option>
@@ -117,7 +104,10 @@ export default function Subscriber() {
                         onClick={() => {
                             const disabled = disabledAudio();
                             setDisabledAudio(!disabled);
-                            mute({ kind: "audio", enabled: disabled });
+                            void playback.mute({
+                                kind: "audio",
+                                enabled: disabled,
+                            });
                         }}
                     >
                         {disabledAudio() ? "Enable" : "Disable"} Audio
@@ -128,7 +118,10 @@ export default function Subscriber() {
                         onClick={() => {
                             const disabled = disabledVideo();
                             setDisabledVideo(!disabled);
-                            mute({ kind: "video", enabled: disabled });
+                            void playback.mute({
+                                kind: "video",
+                                enabled: disabled,
+                            });
                         }}
                     >
                         {disabledVideo() ? "Enable" : "Disable"} Video
@@ -146,7 +139,7 @@ export default function Subscriber() {
                         type="button"
                         onClick={() => {
                             stopQrLatencyMeasure();
-                            stop();
+                            void playback.stop({ reconnect: false });
                             setDisabled(true);
                         }}
                         disabled={disabled()}
@@ -160,7 +153,9 @@ export default function Subscriber() {
                         type="button"
                         onClick={startQrLatencyMeasure}
                         disabled={
-                            disabled() || !stream() || isMeasuringQrLatency()
+                            disabled() ||
+                            !playback.stream() ||
+                            isMeasuringQrLatency()
                         }
                     >
                         Measure QR Latency
@@ -177,25 +172,33 @@ export default function Subscriber() {
                 <section>
                     <h3>WHEP Video:</h3>
                     <h5>
-                        Audio Track Count: {audioTrackCount()}, Video Track
-                        Count: {videoTrackCount()}
+                        Audio Track Count: {playback.audioTrackCount()}, Video
+                        Track Count: {playback.videoTrackCount()}
                         {latency() && ` | Latency: ${latency()}`}
                     </h5>
-                    <Show when={stream()}>
-                        {(s) => (
-                            <Player
-                                stream={s()}
-                                onVideoElement={(video) => {
-                                    videoRef = video;
-                                }}
-                                getPeerConnection={() => peerConnection()}
-                            />
-                        )}
+                    <Show when={playback.stream()}>
+                        {(s) => {
+                            const stream = s();
+                            return (
+                                <Player
+                                    stream={stream}
+                                    onVideoElement={(video) => {
+                                        videoRef = video;
+                                    }}
+                                    getPeerConnection={() =>
+                                        playback.peerConnection()
+                                    }
+                                />
+                            );
+                        }}
                     </Show>
                 </section>
                 <section>
-                    <Show when={datachannel()}>
-                        {(dc) => <Datachannel datachannel={dc()} />}
+                    <Show when={playback.datachannel()}>
+                        {(dc) => {
+                            const datachannel = dc();
+                            return <Datachannel datachannel={datachannel} />;
+                        }}
                     </Show>
                 </section>
                 <section>

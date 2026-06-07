@@ -19,7 +19,8 @@
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "devDependencies": {
+  "dependencies": {
+    "@binbat/whip-whep": "1.1.1-sdp-trickle-throw",
     "solid-js": "^1.9.10"
   }
 }
