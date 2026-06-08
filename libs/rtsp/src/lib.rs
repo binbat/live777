@@ -28,16 +28,17 @@ pub use server::{
 };
 pub use transport_manager::{TransportConfig, TransportManager, UdpPortInfo, UdpSocketPair};
 pub use types::{
-    AudioCodecParams, CodecInfo, MediaInfo, SessionMode, TransportInfo, VideoCodecParams,
+    AudioCodecParams, CodecFingerprint, CodecInfo, MediaInfo, MediaKind, MediaProfile, SessionMode,
+    TransportInfo, VideoCodecParams,
 };
 
 pub mod prelude {
     pub use crate::{
-        AudioCodecParams, AuthParams, CodecInfo, Handler, InterleavedChannel, InterleavedData,
-        MediaInfo, Message, Method, PortUpdate, Request, Response, RtspChannels, RtspMode,
-        RtspServer, RtspSession, ServerConfig, ServerSession, SessionMode, StatusCode,
-        TransportConfig, TransportInfo, TransportManager, UdpPortInfo, Url, Version,
-        VideoCodecParams,
+        AudioCodecParams, AuthParams, CodecFingerprint, CodecInfo, Handler, InterleavedChannel,
+        InterleavedData, MediaInfo, MediaKind, MediaProfile, Message, Method, PortUpdate, Request,
+        Response, RtspChannels, RtspMode, RtspServer, RtspSession, ServerConfig, ServerSession,
+        SessionMode, StatusCode, TransportConfig, TransportInfo, TransportManager, UdpPortInfo,
+        Url, Version, VideoCodecParams,
         constants::{buffer, media_type},
         extract_h264_params, extract_h265_params, filter_sdp, headers, parse_media_info_from_sdp,
         setup_rtsp_server_session, setup_rtsp_session,

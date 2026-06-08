@@ -5,6 +5,11 @@ serial-integration = { max-threads = 1 }
 [profile.default]
 retries = { backoff = "exponential", count = 4, delay = "5s", jitter = true }
 
+[profile.ci]
+slow-timeout = { period = "120s", terminate-after = 3, grace-period = "10s" }
+retries = 1
+fail-fast = false
+
 # Unit tests and lib tests run with limited parallelism.
 [[profile.default.overrides]]
 filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests))'
@@ -14,4 +19,16 @@ test-group = 'resource-limited'
 # to avoid fixed-port and media-resource contention under nextest.
 [[profile.default.overrides]]
 filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests)'
+test-group = 'serial-integration'
+
+[[profile.ci.overrides]]
+filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests) | (package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))))'
+test-group = 'resource-limited'
+
+[[profile.ci.overrides]]
+filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests)'
+test-group = 'serial-integration'
+
+[[profile.ci.overrides]]
+filter = 'package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))'
 test-group = 'serial-integration'

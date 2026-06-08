@@ -26,6 +26,95 @@ impl MediaInfo {
             })
             .map(|codec| codec.rtp_codec.clone())
     }
+
+    pub(crate) fn profile(&self) -> MediaProfile {
+        MediaProfile {
+            video: self
+                .codec_for_kind(RtpCodecKind::Video)
+                .map(|codec| CodecFingerprint::from_rtp_codec(RtpCodecKind::Video, &codec)),
+            audio: self
+                .codec_for_kind(RtpCodecKind::Audio)
+                .map(|codec| CodecFingerprint::from_rtp_codec(RtpCodecKind::Audio, &codec)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MediaProfile {
+    pub(crate) video: Option<CodecFingerprint>,
+    pub(crate) audio: Option<CodecFingerprint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodecFingerprint {
+    pub(crate) kind: RtpCodecKind,
+    pub(crate) mime_type: String,
+    pub(crate) clock_rate: u32,
+    pub(crate) channels: Option<u16>,
+    pub(crate) fmtp: Option<String>,
+    pub(crate) codec_private_hash: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MediaGenerationDecision {
+    pub(crate) generation_id: u64,
+    pub(crate) changed: bool,
+}
+
+impl MediaProfile {
+    pub(crate) fn is_replace_compatible_with(&self, next: &MediaProfile) -> bool {
+        self.video == next.video && self.audio == next.audio
+    }
+}
+
+impl CodecFingerprint {
+    pub(crate) fn from_rtp_codec(kind: RtpCodecKind, codec: &RTCRtpCodec) -> Self {
+        Self {
+            kind,
+            mime_type: codec.mime_type.to_ascii_lowercase(),
+            clock_rate: codec.clock_rate,
+            channels: (kind == RtpCodecKind::Audio).then_some(codec.channels),
+            fmtp: normalize_fmtp(&codec.sdp_fmtp_line),
+            codec_private_hash: None,
+        }
+    }
+}
+
+impl MediaGenerationDecision {
+    pub(crate) fn decide(
+        current_generation_id: u64,
+        previous: Option<&MediaProfile>,
+        next: &MediaProfile,
+    ) -> Self {
+        match previous {
+            Some(previous) if previous.is_replace_compatible_with(next) => Self {
+                generation_id: current_generation_id,
+                changed: false,
+            },
+            Some(_) => Self {
+                generation_id: current_generation_id.saturating_add(1),
+                changed: true,
+            },
+            None => Self {
+                generation_id: current_generation_id,
+                changed: false,
+            },
+        }
+    }
+}
+
+fn normalize_fmtp(fmtp: &str) -> Option<String> {
+    let mut params = fmtp
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if params.is_empty() {
+        return None;
+    }
+    params.sort();
+    Some(params.join(";"))
 }
 
 impl TryFrom<SessionDescription> for MediaInfo {
@@ -170,5 +259,77 @@ mod tests {
 
         assert_eq!(codec.mime_type, "audio/G722");
         assert_eq!(codec.clock_rate, 8000);
+    }
+
+    #[test]
+    fn media_profile_rejects_fmtp_change_for_same_video_codec() {
+        let old = MediaProfile {
+            video: Some(CodecFingerprint::from_rtp_codec(
+                RtpCodecKind::Video,
+                &RTCRtpCodec {
+                    mime_type: "video/H264".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "packetization-mode=1;profile-level-id=42001f".to_string(),
+                    rtcp_feedback: vec![],
+                },
+            )),
+            audio: None,
+        };
+        let new = MediaProfile {
+            video: Some(CodecFingerprint::from_rtp_codec(
+                RtpCodecKind::Video,
+                &RTCRtpCodec {
+                    mime_type: "video/H264".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "packetization-mode=1;profile-level-id=640032".to_string(),
+                    rtcp_feedback: vec![],
+                },
+            )),
+            audio: None,
+        };
+
+        assert!(!old.is_replace_compatible_with(&new));
+    }
+
+    #[test]
+    fn next_generation_reuses_compatible_profile_and_increments_incompatible_profile() {
+        let vp8 = MediaProfile {
+            video: Some(CodecFingerprint::from_rtp_codec(
+                RtpCodecKind::Video,
+                &RTCRtpCodec {
+                    mime_type: "video/VP8".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_string(),
+                    rtcp_feedback: vec![],
+                },
+            )),
+            audio: None,
+        };
+        let vp9 = MediaProfile {
+            video: Some(CodecFingerprint::from_rtp_codec(
+                RtpCodecKind::Video,
+                &RTCRtpCodec {
+                    mime_type: "video/VP9".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-id=0".to_string(),
+                    rtcp_feedback: vec![],
+                },
+            )),
+            audio: None,
+        };
+
+        assert_eq!(
+            MediaGenerationDecision::decide(3, Some(&vp8), &vp8).generation_id,
+            3
+        );
+        assert_eq!(
+            MediaGenerationDecision::decide(3, Some(&vp8), &vp9).generation_id,
+            4
+        );
+        assert!(MediaGenerationDecision::decide(3, Some(&vp8), &vp9).changed);
     }
 }

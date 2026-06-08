@@ -48,6 +48,12 @@ struct SubscribeForwardChannel {
     select_layer_recv: broadcast::Receiver<SelectLayerBody>,
     publish_track_change: broadcast::Receiver<()>,
     connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    generation_id: u64,
+}
+
+pub(crate) struct SubscribeRuntime {
+    pub(crate) connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    pub(crate) generation_id: u64,
 }
 
 pub(crate) struct SubscribeRTCPeerConnection {
@@ -71,10 +77,11 @@ impl SubscribeRTCPeerConnection {
             broadcast::Sender<()>, // use subscribe
         ),
         (video_sender, audio_sender): (OptionalRtpSender, OptionalRtpSender),
-        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        runtime: SubscribeRuntime,
     ) -> Self {
         let select_layer_sender = new_broadcast_channel!(1);
         let id = get_peer_id(&peer);
+        let connection_state = runtime.connection_state;
         let track_binding_publish_rid = Arc::new(RwLock::new(HashMap::new()));
         for (sender, kind) in [
             (video_sender, RtpCodecKind::Video),
@@ -96,6 +103,7 @@ impl SubscribeRTCPeerConnection {
                     select_layer_recv: select_layer_sender.subscribe(),
                     publish_track_change: publish_track_change.subscribe(),
                     connection_state: connection_state.clone(),
+                    generation_id: runtime.generation_id,
                 },
             ));
         }
@@ -154,6 +162,18 @@ impl SubscribeRTCPeerConnection {
         for publish_track in publish_tracks.iter() {
             if publish_track.kind() != kind {
                 continue;
+            }
+
+            if publish_track.generation_id() != forward_channel.generation_id {
+                info!(
+                    "[{}] [{}] {} subscriber session marked stale because codec changed: subscriber_generation={}, publish_generation={}",
+                    stream,
+                    id,
+                    kind,
+                    forward_channel.generation_id,
+                    publish_track.generation_id(),
+                );
+                return None;
             }
 
             let publisher_codec = match publish_track {
@@ -747,6 +767,18 @@ impl SubscribeRTCPeerConnection {
                                 if publish_track.kind() == kind
                                     && (publish_track.rid() == new_rid || new_rid == constant::RID_ENABLE)
                                 {
+                                    if publish_track.generation_id() != forward_channel.generation_id {
+                                        info!(
+                                            "[{}] [{}] {} subscriber session marked stale because codec changed: subscriber_generation={}, publish_generation={}",
+                                            stream,
+                                            id,
+                                            kind,
+                                            forward_channel.generation_id,
+                                            publish_track.generation_id(),
+                                        );
+                                        continue;
+                                    }
+
                                     let publisher_codec = match publish_track {
                                         PublishTrackRemote::Real { track, .. } => {
                                             let ssrcs = track.ssrcs().await;

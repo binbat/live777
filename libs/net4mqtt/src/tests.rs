@@ -116,6 +116,60 @@ use crate::proxy;
 
 const MQTT_TOPIC_PREFIX: &str = "test";
 const DOMAIN_SUFFIX: &str = "test.local";
+const UDP_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const UDP_RECV_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(300);
+
+async fn send_udp_and_wait_for(
+    sock: &UdpSocket,
+    target: SocketAddr,
+    payload: &[u8],
+    expected: &[u8],
+) {
+    let deadline = Instant::now() + UDP_READY_TIMEOUT;
+    let mut buf = [0; MAX_BUFFER_SIZE];
+    let mut attempts = 0u32;
+    let mut last_received = None;
+
+    while Instant::now() < deadline {
+        attempts += 1;
+        sock.send(payload).await.unwrap_or_else(|error| {
+            panic!(
+                "failed to send UDP payload {:?} from {:?} to {target}: {error}",
+                String::from_utf8_lossy(payload),
+                sock.local_addr()
+            )
+        });
+
+        match timeout_at(
+            Instant::now() + UDP_RECV_ATTEMPT_TIMEOUT,
+            sock.recv(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok(len)) if &buf[..len] == expected => return,
+            Ok(Ok(len)) => {
+                last_received = Some(buf[..len].to_vec());
+            }
+            Ok(Err(error)) => {
+                panic!(
+                    "failed to receive UDP response for payload {:?} from {:?} to {target}: {error}",
+                    String::from_utf8_lossy(payload),
+                    sock.local_addr()
+                );
+            }
+            Err(_) => {}
+        }
+    }
+
+    panic!(
+        "timed out waiting for UDP response after {:?}; attempts={attempts}; payload={:?}; expected={:?}; local_addr={:?}; target_addr={target}; last_received={:?}",
+        UDP_READY_TIMEOUT,
+        String::from_utf8_lossy(payload),
+        String::from_utf8_lossy(expected),
+        sock.local_addr(),
+        last_received.map(|data| String::from_utf8_lossy(&data).into_owned())
+    );
+}
 
 struct Config {
     agent: u16,
@@ -266,20 +320,14 @@ async fn test_udp_simple() {
         ..Default::default()
     })
     .await;
-    sleep(Duration::from_millis(10)).await;
 
     let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
     sock.connect(addrs[0]).await.unwrap();
-    let mut buf = [0; MAX_BUFFER_SIZE];
     let test_msg = b"hello, world";
-    sock.send(test_msg).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_msg);
+    send_udp_and_wait_for(&sock, addrs[0], test_msg, test_msg).await;
 
     let test_msg2 = b"hello, world2";
-    sock.send(test_msg2).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_msg2);
+    send_udp_and_wait_for(&sock, addrs[0], test_msg2, test_msg2).await;
 }
 
 #[tokio::test]
@@ -302,20 +350,14 @@ async fn test_udp_add() {
         ..Default::default()
     })
     .await;
-    sleep(Duration::from_millis(10)).await;
 
     let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
     sock.connect(addrs[0]).await.unwrap();
-    let mut buf = [0; MAX_BUFFER_SIZE];
     let test_msg = b"1+2";
-    sock.send(test_msg).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("3"));
+    send_udp_and_wait_for(&sock, addrs[0], test_msg, b"3").await;
 
     let test_msg2 = b"123456+543210";
-    sock.send(test_msg2).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(std::str::from_utf8(&buf[..len]), Ok("666666"));
+    send_udp_and_wait_for(&sock, addrs[0], test_msg2, b"666666").await;
 }
 
 #[tokio::test]
@@ -333,21 +375,15 @@ async fn test_udp_ipv6() {
         ..Default::default()
     })
     .await;
-    sleep(Duration::from_millis(10)).await;
 
     let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
     sock.connect(addrs[0]).await.unwrap();
 
-    let mut buf = [0; MAX_BUFFER_SIZE];
     let test_msg = b"hello, world";
-    sock.send(test_msg).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_msg);
+    send_udp_and_wait_for(&sock, addrs[0], test_msg, test_msg).await;
 
     let test_msg2 = b"hello, world2";
-    sock.send(test_msg2).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_msg2);
+    send_udp_and_wait_for(&sock, addrs[0], test_msg2, test_msg2).await;
 }
 
 #[tokio::test]
@@ -364,37 +400,25 @@ async fn test_udp_two_connect() {
         ..Default::default()
     })
     .await;
-    sleep(Duration::from_millis(10)).await;
 
     let sock = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
     let sock2 = UdpSocket::bind(SocketAddr::new(ip, 0)).await.unwrap();
     sock.connect(addrs[0]).await.unwrap();
     sock2.connect(addrs[0]).await.unwrap();
 
-    let mut buf = [0; MAX_BUFFER_SIZE];
     let test_msg = b"hello, world";
     let test_2_msg = b"hello, world 22222222222222222222";
-    sock.send(test_msg).await.unwrap();
-    sock2.send(test_2_msg).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_msg);
-    let len = timeout_await!(sock2.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_2_msg);
+    send_udp_and_wait_for(&sock, addrs[0], test_msg, test_msg).await;
+    send_udp_and_wait_for(&sock2, addrs[0], test_2_msg, test_2_msg).await;
 
     let test_2_msg2 = b"hello, world yyyyyyyy";
-    sock2.send(test_2_msg2).await.unwrap();
-    let len = timeout_await!(sock2.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_2_msg2);
+    send_udp_and_wait_for(&sock2, addrs[0], test_2_msg2, test_2_msg2).await;
 
     let test_msg2 = b"hello, world2";
-    sock.send(test_msg2).await.unwrap();
-    let len = timeout_await!(sock.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_msg2);
+    send_udp_and_wait_for(&sock, addrs[0], test_msg2, test_msg2).await;
 
     let test_2_msg3 = b"hello, world 333333";
-    sock2.send(test_2_msg3).await.unwrap();
-    let len = timeout_await!(sock2.recv(&mut buf)).unwrap();
-    assert_eq!(&buf[..len], test_2_msg3);
+    send_udp_and_wait_for(&sock2, addrs[0], test_2_msg3, test_2_msg3).await;
 }
 
 #[tokio::test]
