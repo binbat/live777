@@ -2,7 +2,6 @@ use super::{CodecAdapter, TrackKind};
 use anyhow::{Result, anyhow};
 use bytes::{Bytes, BytesMut};
 use rtc_rtp::packet::Packet;
-use rtc_rtp::{codec::vp9::Vp9Packet, packetizer::Depacketizer};
 
 /// Minimal VP9 adapter. For fMP4 we carry raw frame bytes into samples.
 pub struct Vp9Adapter {
@@ -379,7 +378,6 @@ impl<'a> BitReader<'a> {
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 
 pub struct Vp9RtpParser {
-    depacketizer: Vp9Packet,
     fragments: Vec<Bytes>,
     fragments_size: usize,
     fragment_next_seq: Option<u16>,
@@ -395,7 +393,6 @@ impl Default for Vp9RtpParser {
 impl Vp9RtpParser {
     pub fn new() -> Self {
         Self {
-            depacketizer: Vp9Packet::default(),
             fragments: Vec::new(),
             fragments_size: 0,
             fragment_next_seq: None,
@@ -404,16 +401,17 @@ impl Vp9RtpParser {
     }
 
     pub fn push_packet(&mut self, pkt: &Packet) -> Result<Option<BytesMut>> {
-        let payload = match self.depacketizer.depacketize(&pkt.payload) {
+        let descriptor = match Vp9RtpDescriptor::parse(&pkt.payload) {
             Ok(payload) => payload,
             Err(err) => {
                 self.reset_fragments();
-                return Err(anyhow!(err));
+                return Err(err);
             }
         };
 
-        let is_begin = self.depacketizer.b;
-        let is_end = self.depacketizer.e;
+        let payload = descriptor.payload;
+        let is_begin = descriptor.is_begin;
+        let is_end = descriptor.is_end;
 
         if is_begin {
             self.reset_fragments();
@@ -476,9 +474,185 @@ impl Vp9RtpParser {
     }
 }
 
+struct Vp9RtpDescriptor {
+    is_begin: bool,
+    is_end: bool,
+    payload: Bytes,
+}
+
+impl Vp9RtpDescriptor {
+    fn parse(packet: &Bytes) -> Result<Self> {
+        let Some(&first) = packet.first() else {
+            return Err(anyhow!("short VP9 RTP packet"));
+        };
+
+        let i = (first & 0x80) != 0;
+        let p = (first & 0x40) != 0;
+        let l = (first & 0x20) != 0;
+        let f = (first & 0x10) != 0;
+        let is_begin = (first & 0x08) != 0;
+        let is_end = (first & 0x04) != 0;
+        let v = (first & 0x02) != 0;
+
+        let mut payload_index = 1usize;
+
+        if i {
+            payload_index = parse_picture_id(packet, payload_index)?;
+        }
+
+        if l {
+            payload_index = parse_layer_info(packet, payload_index, f)?;
+        }
+
+        if f && p {
+            payload_index = parse_ref_indices(packet, payload_index)?;
+        }
+
+        if v {
+            payload_index = parse_ss_data(packet, payload_index)?;
+        }
+
+        Ok(Self {
+            is_begin,
+            is_end,
+            payload: packet.slice(payload_index..),
+        })
+    }
+}
+
+fn parse_picture_id(packet: &Bytes, mut payload_index: usize) -> Result<usize> {
+    let Some(&picture_id) = packet.get(payload_index) else {
+        return Err(anyhow!("short VP9 RTP packet"));
+    };
+    payload_index += 1;
+
+    if (picture_id & 0x80) != 0 {
+        if packet.get(payload_index).is_none() {
+            return Err(anyhow!("short VP9 RTP packet"));
+        }
+        payload_index += 1;
+    }
+
+    Ok(payload_index)
+}
+
+fn parse_layer_info(
+    packet: &Bytes,
+    mut payload_index: usize,
+    flexible_mode: bool,
+) -> Result<usize> {
+    if packet.get(payload_index).is_none() {
+        return Err(anyhow!("short VP9 RTP packet"));
+    }
+    payload_index += 1;
+
+    if !flexible_mode {
+        if packet.get(payload_index).is_none() {
+            return Err(anyhow!("short VP9 RTP packet"));
+        }
+        payload_index += 1;
+    }
+
+    Ok(payload_index)
+}
+
+fn parse_ref_indices(packet: &Bytes, mut payload_index: usize) -> Result<usize> {
+    let mut ref_count = 0usize;
+    loop {
+        let Some(&reference_index) = packet.get(payload_index) else {
+            return Err(anyhow!("short VP9 RTP packet"));
+        };
+        payload_index += 1;
+        ref_count += 1;
+
+        if ref_count > 3 {
+            return Err(anyhow!("too many PDiff"));
+        }
+
+        if (reference_index & 0x01) == 0 {
+            break;
+        }
+    }
+
+    Ok(payload_index)
+}
+
+fn parse_ss_data(packet: &Bytes, mut payload_index: usize) -> Result<usize> {
+    let Some(&ss_header) = packet.get(payload_index) else {
+        return Err(anyhow!("short VP9 RTP packet"));
+    };
+    payload_index += 1;
+
+    let spatial_layer_count = ((ss_header >> 5) + 1) as usize;
+    let has_resolution = (ss_header & 0x10) != 0;
+    let has_picture_group = ((ss_header >> 1) & 0x07) != 0;
+
+    if has_resolution {
+        let resolution_bytes = 4 * spatial_layer_count;
+        if packet.len().saturating_sub(payload_index) < resolution_bytes {
+            return Err(anyhow!("short VP9 RTP packet"));
+        }
+        payload_index += resolution_bytes;
+    }
+
+    if has_picture_group {
+        let Some(&picture_group_count) = packet.get(payload_index) else {
+            return Err(anyhow!("short VP9 RTP packet"));
+        };
+        payload_index += 1;
+
+        for _ in 0..picture_group_count {
+            let Some(&picture_group_header) = packet.get(payload_index) else {
+                return Err(anyhow!("short VP9 RTP packet"));
+            };
+            payload_index += 1;
+
+            let reference_count = ((picture_group_header >> 2) & 0x03) as usize;
+            if packet.len().saturating_sub(payload_index) < reference_count {
+                return Err(anyhow!("short VP9 RTP packet"));
+            }
+            payload_index += reference_count;
+        }
+    }
+
+    Ok(payload_index)
+}
+
 impl crate::recorder::codec::RtpParser for Vp9RtpParser {
     type Output = BytesMut;
     fn push_packet(&mut self, pkt: &Packet) -> Result<Option<Self::Output>> {
         Vp9RtpParser::push_packet(self, pkt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rtc_rtp::header::Header;
+
+    #[test]
+    fn vp9_rtp_parser_accepts_three_reference_indices() {
+        let mut parser = Vp9RtpParser::new();
+        let packet = Packet {
+            header: Header {
+                sequence_number: 42,
+                marker: true,
+                ..Default::default()
+            },
+            payload: Bytes::from_static(&[
+                0x5c, // P=1,F=1,B=1,E=1
+                0x03, // P_DIFF=1,N=1
+                0x03, // P_DIFF=1,N=1
+                0x02, // P_DIFF=1,N=0
+                0x82, 0x49, 0x83, 0x42,
+            ]),
+        };
+
+        let frame = parser
+            .push_packet(&packet)
+            .expect("three reference indices should be accepted")
+            .expect("single packet should complete a frame");
+
+        assert_eq!(frame.as_ref(), &[0x82, 0x49, 0x83, 0x42]);
     }
 }

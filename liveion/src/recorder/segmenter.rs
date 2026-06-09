@@ -230,16 +230,14 @@ impl Segmenter {
             self.ensure_video_adapter(codec);
         }
         self.expected_video_codec_mime = Some(codec_mime.to_string());
-        if let Some(config) = codec_config {
-            if !config.is_empty() {
-                self.metadata_video_config = Some(config);
-                self.video_config_events_seen += 1;
-                tracing::info!(
-                    "[segmenter] {} video codec config initialized from track metadata ({})",
-                    self.stream,
-                    codec_mime
-                );
-            }
+        if let Some(config) = codec_config.filter(|config| !config.is_empty()) {
+            self.metadata_video_config = Some(config);
+            self.video_config_events_seen += 1;
+            tracing::info!(
+                "[segmenter] {} video codec config initialized from track metadata ({})",
+                self.stream,
+                codec_mime
+            );
         }
         if let Some((width, height)) = dimensions
             && width > 0
