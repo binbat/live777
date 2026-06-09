@@ -7,7 +7,7 @@ use crate::recorder::codec::H265RtpParser;
 use crate::recorder::codec::h264::H264RtpParser;
 use crate::recorder::codec::opus::OpusRtpParser;
 use crate::recorder::codec::vp9::Vp9RtpParser;
-use crate::recorder::segmenter::Segmenter;
+use crate::recorder::segmenter::{RecordingMediaOutcome, Segmenter};
 use crate::stream::manager::Manager;
 use anyhow::{Result, anyhow};
 use api::recorder::RecordingStatus;
@@ -26,7 +26,7 @@ pub struct RecordingTask {
     started_at: Instant,
     base_dir_override: Option<String>,
     op: Operator,
-    handle: JoinHandle<bool>,
+    handle: JoinHandle<RecordingMediaOutcome>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -134,16 +134,20 @@ impl RecordingTask {
         let mut track_change_rx = forward.subscribe_tracks_change();
 
         // Wait for at least one media track (video preferred, audio fallback)
+        let mut video_track_info_opt = None;
         let mut codec_mime_opt: Option<String> = None;
         let mut video_receiver_opt = None;
         let mut audio_receiver_opt = None;
 
         loop {
-            if codec_mime_opt.is_none() {
-                codec_mime_opt = forward.first_video_codec().await;
+            if video_track_info_opt.is_none() {
+                video_track_info_opt = forward.first_video_track_info().await;
+                if let Some(info) = video_track_info_opt.as_ref() {
+                    codec_mime_opt = Some(info.codec_mime.clone());
+                }
             }
 
-            if codec_mime_opt.is_some() && video_receiver_opt.is_none() {
+            if video_track_info_opt.is_some() && video_receiver_opt.is_none() {
                 video_receiver_opt = forward.subscribe_video_rtp().await;
             }
 
@@ -184,6 +188,30 @@ impl RecordingTask {
             tracing::info!("[recorder] stream {} is audio-only (Opus)", stream_name);
         }
 
+        if video_receiver_opt.is_some() {
+            let info = match video_track_info_opt.take() {
+                Some(info) => Some(info),
+                None => forward.first_video_track_info().await,
+            };
+            if let Some(info) = info {
+                codec_mime_opt = Some(info.codec_mime.clone());
+                segmenter.expect_video_track(
+                    info.codec_mime.clone(),
+                    info.payload_type,
+                    info.ssrc,
+                    Some(info.fmtp.as_str()),
+                );
+                segmenter.configure_video_from_track_metadata(&info.codec_mime, None, None);
+                tracing::info!(
+                    "[recorder] stream {} video track detected codec={} payload_type={:?} ssrc={:?}",
+                    stream_name,
+                    info.codec_mime,
+                    info.payload_type,
+                    info.ssrc
+                );
+            }
+        }
+
         if audio_receiver_opt.is_some() {
             tracing::info!("[recorder] stream {} audio track detected", stream_name);
         }
@@ -205,7 +233,12 @@ impl RecordingTask {
             segmenter.configure_audio_track(clock_rate, channels, codec_mime, fmtp_opt);
         }
 
-        tracing::info!("[recorder] subscribed RTP for stream {}", stream_name);
+        tracing::info!(
+            "[recorder] subscribed RTP for stream {} video={} audio={}",
+            stream_name,
+            video_receiver_opt.is_some(),
+            audio_receiver_opt.is_some()
+        );
 
         let stream_name_cloned = stream_name.clone();
         let forward_clone = forward.clone();
@@ -220,6 +253,7 @@ impl RecordingTask {
             let mut audio_rx_opt = audio_receiver_opt;
             let mut codec_mime_opt = codec_mime_opt;
             let mut unsupported_video_codec_logged = false;
+            let mut missing_video_codec_logged = false;
 
             let mut parser_h264 = H264RtpParser::new();
             let mut parser_h265 = H265RtpParser::new();
@@ -232,6 +266,9 @@ impl RecordingTask {
 
             let mut frame_cnt_video: u64 = 0;
             let mut frame_cnt_audio: u64 = 0;
+            let mut rtp_cnt_video: u64 = 0;
+            let mut parser_pending_cnt_video: u64 = 0;
+            let mut parser_error_cnt_video: u64 = 0;
             let mut last_log = Instant::now();
 
             // Timer for checking keyframe request (video only)
@@ -240,6 +277,9 @@ impl RecordingTask {
 
             // Track PLI request success for logging
             let mut last_pli_log = Instant::now();
+            if video_rx_opt.is_some() {
+                request_keyframe(&forward_clone, &stream_name_cloned, &mut segmenter).await;
+            }
 
             loop {
                 tokio::select! {
@@ -249,26 +289,11 @@ impl RecordingTask {
                         break;
                     },
                     _ = keyframe_check_interval.tick(), if video_rx_opt.is_some() => {
-                        if segmenter.should_request_keyframe()
-                            && let Some(video_track) = forward_clone.first_video_track().await
-                            && let Some(ssrc) = video_track.ssrcs().await.into_iter().next()
-                        {
-                            if let Err(e) = forward_clone.send_rtcp_to_publish(
-                                crate::forward::rtcp::RtcpMessage::PictureLossIndication,
-                                ssrc,
-                            ).await {
-                                tracing::warn!("[recorder] {} failed to send PLI: {:?}", stream_name_cloned, e);
-                            } else {
-                                // Record the PLI request in the backoff mechanism
-                                segmenter.record_pli_request();
-
-                                // Log PLI statistics periodically
-                                if last_pli_log.elapsed() >= Duration::from_secs(30) {
-                                    tracing::info!("[recorder] {} PLI stats: {}", stream_name_cloned, segmenter.pli_stats());
-                                    last_pli_log = Instant::now();
-                                } else {
-                                    tracing::debug!("[recorder] {} sent PLI request for keyframe", stream_name_cloned);
-                                }
+                        if segmenter.should_request_keyframe() {
+                            request_keyframe(&forward_clone, &stream_name_cloned, &mut segmenter).await;
+                            if last_pli_log.elapsed() >= Duration::from_secs(30) {
+                                tracing::info!("[recorder] {} PLI stats: {}", stream_name_cloned, segmenter.pli_stats());
+                                last_pli_log = Instant::now();
                             }
                         }
                     },
@@ -281,64 +306,134 @@ impl RecordingTask {
                     }, if video_rx_opt.is_some() => {
                         match result {
                             Some(packet) => {
+                                rtp_cnt_video += 1;
                                 let pkt_ts = packet.header.timestamp;
+                                segmenter.record_video_rtp_packet(
+                                    packet.header.marker,
+                                    pkt_ts,
+                                    packet.payload.len(),
+                                );
 
                                 if codec_mime_opt.is_none() {
-                                    codec_mime_opt = forward_clone.first_video_codec().await;
+                                    codec_mime_opt = forward_clone
+                                        .first_video_track_info()
+                                        .await
+                                        .map(|info| info.codec_mime);
                                 }
 
                                 let Some(codec_mime) = codec_mime_opt.as_ref() else {
+                                    if !missing_video_codec_logged {
+                                        tracing::warn!(
+                                            "[recorder] {} received video RTP but video codec metadata is unavailable; payload_type={} ssrc={}",
+                                            stream_name_cloned,
+                                            packet.header.payload_type,
+                                            packet.header.ssrc
+                                        );
+                                        missing_video_codec_logged = true;
+                                    }
                                     continue;
                                 };
 
-                                if codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264)
-                                    && let Ok(Some((frame, _))) = parser_h264.push_packet(&packet)
-                                {
-                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                    prev_ts_video = Some(pkt_ts);
-                                    if let Err(e) = segmenter.push_h264(Bytes::from(frame), duration_ticks).await {
-                                        tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                                let duration_ticks: u32 = if let Some(prev) = prev_ts_video {
+                                    pkt_ts.wrapping_sub(prev)
+                                } else {
+                                    3_000
+                                };
+
+                                let mut frame_written = false;
+                                let mut attempted_video_parser = false;
+                                if codec_mime.eq_ignore_ascii_case(MIME_TYPE_H264) {
+                                    attempted_video_parser = true;
+                                    match parser_h264.push_packet(&packet) {
+                                        Ok(Some((frame, _))) => {
+                                            prev_ts_video = Some(pkt_ts);
+                                            if let Err(e) = segmenter.push_h264(Bytes::from(frame), duration_ticks).await {
+                                                tracing::warn!("[recorder] {} failed to process H264 frame (storage error?): {}", stream_name_cloned, e);
+                                            }
+                                            frame_written = true;
+                                        }
+                                        Ok(None) => parser_pending_cnt_video += 1,
+                                        Err(e) => {
+                                            parser_error_cnt_video += 1;
+                                            log_video_parser_error(&stream_name_cloned, codec_mime, parser_error_cnt_video, rtp_cnt_video, &packet, &e);
+                                        }
                                     }
-                                    frame_cnt_video += 1;
-                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_HEVC)
-                                    && let Ok(Some((frame, is_keyframe))) = parser_h265.push_packet(&packet)
-                                {
-                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                    prev_ts_video = Some(pkt_ts);
-                                    if let Err(e) = segmenter.push_h265(frame.freeze(), duration_ticks).await {
-                                        tracing::warn!("[recorder] {} failed to process H265 frame: {}", stream_name_cloned, e);
-                                    } else if is_keyframe {
-                                        tracing::trace!("[recorder] {} processed H265 keyframe", stream_name_cloned);
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_HEVC) {
+                                    attempted_video_parser = true;
+                                    match parser_h265.push_packet(&packet) {
+                                        Ok(Some((frame, is_keyframe))) => {
+                                            prev_ts_video = Some(pkt_ts);
+                                            if let Err(e) = segmenter.push_h265(frame.freeze(), duration_ticks).await {
+                                                tracing::warn!("[recorder] {} failed to process H265 frame: {}", stream_name_cloned, e);
+                                            } else if is_keyframe {
+                                                tracing::trace!("[recorder] {} processed H265 keyframe", stream_name_cloned);
+                                            }
+                                            frame_written = true;
+                                        }
+                                        Ok(None) => parser_pending_cnt_video += 1,
+                                        Err(e) => {
+                                            parser_error_cnt_video += 1;
+                                            log_video_parser_error(&stream_name_cloned, codec_mime, parser_error_cnt_video, rtp_cnt_video, &packet, &e);
+                                        }
                                     }
-                                    frame_cnt_video += 1;
-                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_AV1)
-                                    && let Ok(Some(frame)) = parser_av1.push_packet(&packet)
-                                {
-                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                    prev_ts_video = Some(pkt_ts);
-                                    //println!("[recorder][test] {} processed AV1 frame", stream_name_cloned);
-                                    if let Err(e) = segmenter.push_av1(frame.freeze(), duration_ticks).await {
-                                        tracing::warn!("[recorder] {} failed to process AV1 frame: {}", stream_name_cloned, e);
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_AV1) {
+                                    attempted_video_parser = true;
+                                    match parser_av1.push_packet(&packet) {
+                                        Ok(Some(frame)) => {
+                                            prev_ts_video = Some(pkt_ts);
+                                            if let Err(e) = segmenter.push_av1(frame.freeze(), duration_ticks).await {
+                                                tracing::warn!("[recorder] {} failed to process AV1 frame: {}", stream_name_cloned, e);
+                                            }
+                                            frame_written = true;
+                                        }
+                                        Ok(None) => parser_pending_cnt_video += 1,
+                                        Err(e) => {
+                                            parser_error_cnt_video += 1;
+                                            log_video_parser_error(&stream_name_cloned, codec_mime, parser_error_cnt_video, rtp_cnt_video, &packet, &e);
+                                        }
                                     }
-                                    frame_cnt_video += 1;
-                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9)
-                                    && let Ok(Some(frame)) = parser_vp9.push_packet(&packet)
-                                {
-                                    let duration_ticks: u32 = if let Some(prev) = prev_ts_video { pkt_ts.wrapping_sub(prev) } else { 3_000 };
-                                    prev_ts_video = Some(pkt_ts);
-                                    if let Err(e) = segmenter.push_vp9(Bytes::from(frame), duration_ticks).await {
-                                        tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
+                                } else if codec_mime.eq_ignore_ascii_case(MIME_TYPE_VP9) {
+                                    attempted_video_parser = true;
+                                    match parser_vp9.push_packet(&packet) {
+                                        Ok(Some(frame)) => {
+                                            prev_ts_video = Some(pkt_ts);
+                                            if let Err(e) = segmenter.push_vp9(Bytes::from(frame), duration_ticks).await {
+                                                tracing::warn!("[recorder] {} failed to process VP9 frame: {}", stream_name_cloned, e);
+                                            }
+                                            frame_written = true;
+                                        }
+                                        Ok(None) => parser_pending_cnt_video += 1,
+                                        Err(e) => {
+                                            parser_error_cnt_video += 1;
+                                            log_video_parser_error(&stream_name_cloned, codec_mime, parser_error_cnt_video, rtp_cnt_video, &packet, &e);
+                                        }
                                     }
-                                    frame_cnt_video += 1;
-                                } else if !is_supported_video_codec(codec_mime)
-                                    && !unsupported_video_codec_logged
-                                {
+                                } else if !unsupported_video_codec_logged {
                                     tracing::warn!(
                                         "[recorder] {} unsupported video codec {}; skip video packets",
                                         stream_name_cloned,
                                         codec_mime
                                     );
                                     unsupported_video_codec_logged = true;
+                                }
+
+                                if frame_written {
+                                    frame_cnt_video += 1;
+                                } else if attempted_video_parser
+                                    && packet.header.marker
+                                    && parser_error_cnt_video == 0
+                                    && should_log_video_parser_counter(parser_pending_cnt_video)
+                                {
+                                    tracing::warn!(
+                                        "[recorder] {} {} parser has not emitted a frame at marker; rtp_packets={} pending_packets={} last_ts={} payload_type={} payload_len={}",
+                                        stream_name_cloned,
+                                        codec_mime,
+                                        rtp_cnt_video,
+                                        parser_pending_cnt_video,
+                                        pkt_ts,
+                                        packet.header.payload_type,
+                                        packet.payload.len()
+                                    );
                                 }
                             }
                             None => {
@@ -384,7 +479,9 @@ impl RecordingTask {
                         }
 
                         if codec_mime_opt.is_none() {
-                            codec_mime_opt = forward_clone.first_video_codec().await;
+                            if let Some(info) = forward_clone.first_video_track_info().await {
+                                codec_mime_opt = Some(info.codec_mime);
+                            }
                             if let Some(codec) = codec_mime_opt.as_ref() {
                                 tracing::info!(
                                     "[recorder] stream {} detected video codec {}",
@@ -405,11 +502,22 @@ impl RecordingTask {
                             && video_rx_opt.is_none()
                             && let Some(rx) = forward_clone.subscribe_video_rtp().await
                         {
+                            if let Some(info) = forward_clone.first_video_track_info().await {
+                                codec_mime_opt = Some(info.codec_mime.clone());
+                                segmenter.expect_video_track(
+                                    info.codec_mime.clone(),
+                                    info.payload_type,
+                                    info.ssrc,
+                                    Some(info.fmtp.as_str()),
+                                );
+                                segmenter.configure_video_from_track_metadata(&info.codec_mime, None, None);
+                            }
                             tracing::info!(
                                 "[recorder] stream {} video track became available",
                                 stream_name_cloned
                             );
                             video_rx_opt = Some(rx);
+                            request_keyframe(&forward_clone, &stream_name_cloned, &mut segmenter).await;
                         }
                     }
                 }
@@ -454,17 +562,19 @@ impl RecordingTask {
 
             if let Err(e) = segmenter.flush().await {
                 tracing::debug!("[recorder] {} flush error: {}", stream_name_cloned, e);
+                return RecordingMediaOutcome::Failed;
             }
 
+            let outcome = segmenter.media_outcome();
             match op_for_task.exists(&manifest_path).await {
-                Ok(true) => true,
+                Ok(true) => outcome,
                 Ok(false) => {
                     tracing::warn!(
                         "[recorder] {} no media manifest written at {}; mark recording as failed",
                         stream_name_cloned,
                         manifest_path
                     );
-                    false
+                    RecordingMediaOutcome::Failed
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -473,7 +583,7 @@ impl RecordingTask {
                         manifest_path,
                         e
                     );
-                    false
+                    RecordingMediaOutcome::Failed
                 }
             }
         });
@@ -509,7 +619,7 @@ impl RecordingTask {
         }
 
         let status = match self.handle.await {
-            Ok(true) => {
+            Ok(RecordingMediaOutcome::Complete) => {
                 let manifest_path = format!("{}/manifest.mpd", self.info.record_dir);
                 match self.op.exists(&manifest_path).await {
                     Ok(true) => {
@@ -535,7 +645,14 @@ impl RecordingTask {
                     }
                 }
             }
-            Ok(false) => {
+            Ok(RecordingMediaOutcome::Degraded) => {
+                tracing::warn!(
+                    "[recorder] recording task for stream {} completed degraded; expected video was missing from output",
+                    stream
+                );
+                RecordingStatus::Failed
+            }
+            Ok(RecordingMediaOutcome::Failed) => {
                 tracing::warn!(
                     "[recorder] recording task for stream {} completed without media samples",
                     stream
@@ -567,6 +684,80 @@ impl RecordingTask {
             end_ts,
             duration_ms,
         }
+    }
+}
+
+async fn request_keyframe(
+    forward: &crate::forward::PeerForward,
+    stream_name: &str,
+    segmenter: &mut Segmenter,
+) {
+    let Some(video_track) = forward.first_video_track().await else {
+        tracing::warn!(
+            "[recorder] {} cannot request keyframe: video track unavailable",
+            stream_name
+        );
+        return;
+    };
+    let Some(ssrc) = video_track.ssrcs().await.into_iter().next() else {
+        tracing::warn!(
+            "[recorder] {} cannot request keyframe: video SSRC unavailable",
+            stream_name
+        );
+        return;
+    };
+
+    match forward
+        .send_rtcp_to_publish(
+            crate::forward::rtcp::RtcpMessage::PictureLossIndication,
+            ssrc,
+        )
+        .await
+    {
+        Ok(()) => {
+            segmenter.record_pli_request();
+            tracing::debug!(
+                "[recorder] {} sent codec-agnostic PLI request for source ssrc {}",
+                stream_name,
+                ssrc
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "[recorder] {} failed to send PLI for source ssrc {}: {:?}",
+                stream_name,
+                ssrc,
+                e
+            );
+        }
+    }
+}
+
+fn should_log_video_parser_counter(count: u64) -> bool {
+    count <= 3 || count.is_power_of_two() || count.is_multiple_of(500)
+}
+
+fn log_video_parser_error(
+    stream_name: &str,
+    codec_mime: &str,
+    parser_error_count: u64,
+    rtp_packet_count: u64,
+    packet: &rtc::rtp::packet::Packet,
+    error: &anyhow::Error,
+) {
+    if should_log_video_parser_counter(parser_error_count) {
+        tracing::warn!(
+            "[recorder] {} {} parser error {}; rtp_packets={} marker={} timestamp={} payload_type={} payload_len={} error={}",
+            stream_name,
+            codec_mime,
+            parser_error_count,
+            rtp_packet_count,
+            packet.header.marker,
+            packet.header.timestamp,
+            packet.header.payload_type,
+            packet.payload.len(),
+            error
+        );
     }
 }
 

@@ -32,6 +32,7 @@ use common::shutdown_signal;
 const WEBRTC_ICE_UDP_ADDRS: &str = "127.0.0.1:0";
 
 static TRACING_INIT: Once = Once::new();
+static RTSP2_CYCLE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn init_rtsp2_test_environment() {
     TRACING_INIT.call_once(|| {
@@ -552,6 +553,13 @@ fn build_vp8_opus_command(width: u16, height: u16, transport: Transport) -> Stri
 
 async fn run_rtsp_cycle_test(config: TestConfig) {
     init_rtsp2_test_environment();
+    let _guard = RTSP2_CYCLE_TEST_LOCK.lock().await;
+
+    run_rtsp_cycle_test_inner(config).await;
+}
+
+async fn run_rtsp_cycle_test_inner(config: TestConfig) {
+    init_rtsp2_test_environment();
 
     // Allocate all ports dynamically to avoid conflicts under nextest parallel execution.
     let ports = Ports {
@@ -628,7 +636,10 @@ async fn run_rtsp_cycle_test(config: TestConfig) {
 }
 
 async fn run_rtsp_cycle_test_with_timeout(config: TestConfig, hard_timeout: Duration) {
-    match tokio::time::timeout(hard_timeout, run_rtsp_cycle_test(config)).await {
+    init_rtsp2_test_environment();
+    let _guard = RTSP2_CYCLE_TEST_LOCK.lock().await;
+
+    match tokio::time::timeout(hard_timeout, run_rtsp_cycle_test_inner(config)).await {
         Ok(()) => {}
         Err(_) => panic!("RTSP cycle test exceeded hard timeout of {hard_timeout:?}"),
     }

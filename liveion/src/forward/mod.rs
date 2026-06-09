@@ -72,6 +72,15 @@ pub struct AudioTrackInfo {
     pub fmtp: String,
 }
 
+#[cfg(feature = "recorder")]
+#[derive(Clone, Debug)]
+pub struct VideoTrackInfo {
+    pub codec_mime: String,
+    pub fmtp: String,
+    pub payload_type: Option<u8>,
+    pub ssrc: Option<u32>,
+}
+
 impl PeerForward {
     #[cfg(feature = "source")]
     pub fn new(
@@ -326,17 +335,66 @@ impl PeerForward {
     pub async fn first_audio_track_info(&self) -> Option<AudioTrackInfo> {
         let tracks = self.internal.publish_tracks.read().await;
         for track in tracks.iter() {
-            if let track::PublishTrackRemote::Real { track, .. } = track {
-                let kind = track.kind().await;
-                if kind == RtpCodecKind::Audio {
-                    let ssrcs = track.ssrcs().await;
-                    let first_ssrc = ssrcs.first().copied().unwrap_or(0);
-                    if let Some(params) = track.codec(first_ssrc).await {
+            match track {
+                track::PublishTrackRemote::Real { track, .. } => {
+                    let kind = track.kind().await;
+                    if kind == RtpCodecKind::Audio {
+                        let ssrcs = track.ssrcs().await;
+                        let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+                        if let Some(params) = track.codec(first_ssrc).await {
+                            return Some(AudioTrackInfo {
+                                clock_rate: params.clock_rate,
+                                channels: params.channels,
+                                codec_mime: params.mime_type.clone(),
+                                fmtp: params.sdp_fmtp_line.clone(),
+                            });
+                        }
+                    }
+                }
+                #[cfg(feature = "source")]
+                track::PublishTrackRemote::Virtual(track) => {
+                    if track.kind == RtpCodecKind::Audio {
                         return Some(AudioTrackInfo {
-                            clock_rate: params.clock_rate,
-                            channels: params.channels,
-                            codec_mime: params.mime_type.clone(),
-                            fmtp: params.sdp_fmtp_line.clone(),
+                            clock_rate: track.codec_params.rtp_codec.clock_rate,
+                            channels: track.codec_params.rtp_codec.channels,
+                            codec_mime: track.codec_params.rtp_codec.mime_type.clone(),
+                            fmtp: track.codec_params.rtp_codec.sdp_fmtp_line.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "recorder")]
+    pub async fn first_video_track_info(&self) -> Option<VideoTrackInfo> {
+        let tracks = self.internal.publish_tracks.read().await;
+        for track in tracks.iter() {
+            match track {
+                track::PublishTrackRemote::Real { track, .. } => {
+                    let kind = track.kind().await;
+                    if kind == RtpCodecKind::Video {
+                        let ssrcs = track.ssrcs().await;
+                        let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+                        if let Some(params) = track.codec(first_ssrc).await {
+                            return Some(VideoTrackInfo {
+                                codec_mime: params.mime_type.clone(),
+                                fmtp: params.sdp_fmtp_line.clone(),
+                                payload_type: None,
+                                ssrc: ssrcs.first().copied(),
+                            });
+                        }
+                    }
+                }
+                #[cfg(feature = "source")]
+                track::PublishTrackRemote::Virtual(track) => {
+                    if track.kind == RtpCodecKind::Video {
+                        return Some(VideoTrackInfo {
+                            codec_mime: track.codec_params.rtp_codec.mime_type.clone(),
+                            fmtp: track.codec_params.rtp_codec.sdp_fmtp_line.clone(),
+                            payload_type: Some(track.codec_params.payload_type),
+                            ssrc: None,
                         });
                     }
                 }

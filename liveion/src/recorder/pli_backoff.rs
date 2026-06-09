@@ -46,7 +46,7 @@ impl Default for PliBackoff {
         Self::new(
             Duration::from_secs(5),  // Initial timeout: 5s
             Duration::from_secs(30), // Max timeout: 30s
-            5,                       // Max 5 consecutive requests
+            0,                       // Recorder keeps requesting until a keyframe/config arrives
             2.0,                     // Double timeout on each retry
             true,                    // Use exponential backoff
         )
