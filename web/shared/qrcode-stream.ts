@@ -19,6 +19,13 @@ export const QRCodeFrameRates: QRCodeFrameRate[] = [30, 60, 120, 144, 200];
 
 export const DefaultQRCodeFrameRate: QRCodeFrameRate = 30;
 
+export function parseQRCodeFrameRate(value: unknown): QRCodeFrameRate {
+    const frameRate = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+    return QRCodeFrameRates.includes(frameRate as QRCodeFrameRate)
+        ? frameRate as QRCodeFrameRate
+        : DefaultQRCodeFrameRate;
+}
+
 export class QRCodeStream {
 
     static White = '#fff';

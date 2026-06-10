@@ -1,7 +1,16 @@
 import { useSearchParams } from "@solidjs/router";
 import { createWhepPlayback } from "player-core";
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
-import { QRCodeStreamDecoder } from "../../shared/qrcode-stream";
+import {
+    collectVideoRtpFps,
+    type VideoFpsSamples,
+} from "../../player-core/webrtc-stats";
+import {
+    DefaultQRCodeFrameRate,
+    parseQRCodeFrameRate,
+    type QRCodeFrameRate,
+    QRCodeStreamDecoder,
+} from "../../shared/qrcode-stream";
 import { createLogger } from "../primitive/logger";
 import Datachannel from "./datachannel";
 import Player from "./player";
@@ -13,7 +22,13 @@ const WhepLayerOptions = [
     { value: "f", text: "HIGH" },
 ];
 
+function formatFps(fps: number | null) {
+    return fps === null ? "--" : fps.toFixed(1);
+}
+
 export default function Subscriber() {
+    const [searchParams] = useSearchParams();
+
     const [disabled, setDisabled] = createSignal(true);
     const [disabledAudio, setDisabledAudio] = createSignal(false);
     const [disabledVideo, setDisabledVideo] = createSignal(false);
@@ -21,10 +36,19 @@ export default function Subscriber() {
 
     const [latency, setLatency] = createSignal("");
     const [isMeasuringQrLatency, setIsMeasuringQrLatency] = createSignal(false);
+    const [expectedQrFrameRate, setExpectedQrFrameRate] =
+        createSignal<QRCodeFrameRate>(
+            parseQRCodeFrameRate(searchParams.qrfps ?? DefaultQRCodeFrameRate),
+        );
+    const [actualReceiveFps, setActualReceiveFps] = createSignal<number | null>(
+        null,
+    );
 
-    const [searchParams] = useSearchParams();
     let videoRef: HTMLVideoElement | undefined;
     let decoder: QRCodeStreamDecoder | null = null;
+    let receiveFpsSamples: VideoFpsSamples = {};
+    let receiveFpsInterval: ReturnType<typeof setInterval> | null = null;
+    let receiveFpsToken = 0;
 
     const playback = createWhepPlayback({
         url: () => {
@@ -37,6 +61,7 @@ export default function Subscriber() {
     });
 
     onCleanup(() => {
+        stopActualReceiveFps();
         stopQrLatencyMeasure();
         void playback.stop({ reconnect: false });
     });
@@ -47,16 +72,67 @@ export default function Subscriber() {
         }
     });
 
-    const stopQrLatencyMeasure = () => {
+    createEffect(() => {
+        const peerConnection = playback.peerConnection();
+        if (peerConnection) {
+            startActualReceiveFps(peerConnection);
+        } else {
+            stopActualReceiveFps();
+        }
+    });
+
+    function stopActualReceiveFps() {
+        receiveFpsToken += 1;
+        if (receiveFpsInterval) {
+            clearInterval(receiveFpsInterval);
+            receiveFpsInterval = null;
+        }
+        receiveFpsSamples = {};
+        setActualReceiveFps(null);
+    }
+
+    function startActualReceiveFps(peerConnection: RTCPeerConnection) {
+        stopActualReceiveFps();
+        const token = receiveFpsToken;
+
+        const syncActualReceiveFps = async () => {
+            const stats = await collectVideoRtpFps(
+                peerConnection,
+                "inbound",
+                receiveFpsSamples,
+            );
+            if (token !== receiveFpsToken) {
+                return;
+            }
+            receiveFpsSamples = stats.samples;
+            setActualReceiveFps(stats.fps);
+        };
+
+        void syncActualReceiveFps();
+        receiveFpsInterval = setInterval(() => {
+            void syncActualReceiveFps();
+        }, 1000);
+    }
+
+    createEffect(() => {
+        const frameRate = parseQRCodeFrameRate(
+            searchParams.qrfps ?? DefaultQRCodeFrameRate,
+        );
+        if (frameRate !== expectedQrFrameRate()) {
+            setExpectedQrFrameRate(frameRate);
+        }
+    });
+
+    function stopQrLatencyMeasure() {
         if (decoder) {
             decoder.stop();
             decoder = null;
         }
         setIsMeasuringQrLatency(false);
         setLatency("");
-    };
+    }
 
-    const startQrLatencyMeasure = () => {
+    function startQrLatencyMeasure() {
         if (!videoRef || !playback.stream()) {
             return;
         }
@@ -68,7 +144,7 @@ export default function Subscriber() {
             setLatency(`${e.detail} ms`);
         });
         decoder.start();
-    };
+    }
 
     const start = async () => {
         clear();
@@ -148,6 +224,8 @@ export default function Subscriber() {
                     </button>
                 </section>
 
+                <section>Expected QR FPS: {expectedQrFrameRate()} fps</section>
+
                 <section>
                     <button
                         type="button"
@@ -174,6 +252,7 @@ export default function Subscriber() {
                     <h5>
                         Audio Track Count: {playback.audioTrackCount()}, Video
                         Track Count: {playback.videoTrackCount()}
+                        {` | Expected FPS: ${expectedQrFrameRate()} | Actual Receive FPS: ${formatFps(actualReceiveFps())}`}
                         {latency() && ` | Latency: ${latency()}`}
                     </h5>
                     <Show when={playback.stream()}>

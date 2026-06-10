@@ -1,7 +1,11 @@
 import { useSearchParams } from "@solidjs/router";
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
 import {
-    DefaultQRCodeFrameRate,
+    collectVideoRtpFps,
+    type VideoFpsSamples,
+} from "../../player-core/webrtc-stats";
+import {
+    parseQRCodeFrameRate,
     type QRCodeFrameRate,
     QRCodeFrameRates,
     QRCodeStream,
@@ -70,7 +74,13 @@ type QrState = "idle" | "previewing" | "publishing";
 const QrCanvasWidth = 480;
 const QrCanvasHeight = 320;
 
+function formatFps(fps: number | null) {
+    return fps === null ? "--" : fps.toFixed(1);
+}
+
 export default function Publisher() {
+    const [searchParams, setSearchParams] = useSearchParams();
+
     const [disabled, setDisabled] = createSignal(false);
     const [stream, setStream] = createSignal<MediaStream | null>(null);
     const [preparedDesktopStream, setPreparedDesktopStream] =
@@ -88,12 +98,11 @@ export default function Publisher() {
     const [selectAudioPseudo, setSelectAudioPseudo] = createSignal(false);
     const [selectVideoLayer, setSelectVideoLayer] = createSignal("f");
     const [selectQrFrameRate, setSelectQrFrameRate] =
-        createSignal<QRCodeFrameRate>(DefaultQRCodeFrameRate);
+        createSignal<QRCodeFrameRate>(parseQRCodeFrameRate(searchParams.qrfps));
+    const [actualSendFps, setActualSendFps] = createSignal<number | null>(null);
 
     const [audioTrackCount, setAudioTrackCount] = createSignal(0);
     const [videoTrackCount, setVideoTrackCount] = createSignal(0);
-
-    const [searchParams, setSearchParams] = useSearchParams();
 
     const [logs, setLogs, clear] = createLogger();
 
@@ -101,6 +110,10 @@ export default function Publisher() {
     let qrCanvasRef: HTMLCanvasElement | undefined;
     let qrStream: QRCodeStream | null = null;
     let desktopStreamCleanupInProgress = false;
+    let publisherPeerConnection: RTCPeerConnection | null = null;
+    let sendFpsSamples: VideoFpsSamples = {};
+    let sendFpsInterval: ReturnType<typeof setInterval> | null = null;
+    let sendFpsToken = 0;
 
     const selectedVideoCodec = () => (searchParams.vcodec as string) || "";
 
@@ -157,7 +170,47 @@ export default function Publisher() {
         }
     };
 
+    const stopActualSendFps = () => {
+        sendFpsToken += 1;
+        if (sendFpsInterval) {
+            clearInterval(sendFpsInterval);
+            sendFpsInterval = null;
+        }
+        publisherPeerConnection = null;
+        sendFpsSamples = {};
+        setActualSendFps(null);
+    };
+
+    const startActualSendFps = (peerConnection: RTCPeerConnection) => {
+        stopActualSendFps();
+        publisherPeerConnection = peerConnection;
+        const token = sendFpsToken;
+
+        const syncActualSendFps = async () => {
+            const currentPeerConnection = publisherPeerConnection;
+            if (!currentPeerConnection) {
+                return;
+            }
+            const stats = await collectVideoRtpFps(
+                currentPeerConnection,
+                "outbound",
+                sendFpsSamples,
+            );
+            if (token !== sendFpsToken) {
+                return;
+            }
+            sendFpsSamples = stats.samples;
+            setActualSendFps(stats.fps);
+        };
+
+        void syncActualSendFps();
+        sendFpsInterval = setInterval(() => {
+            void syncActualSendFps();
+        }, 1000);
+    };
+
     onCleanup(async () => {
+        stopActualSendFps();
         if (stop) {
             await stop();
             stop = undefined;
@@ -248,6 +301,7 @@ export default function Publisher() {
 
     const start = async () => {
         setDisabled(true);
+        stopActualSendFps();
         clear();
         const streamId = ((searchParams.id as string) || "").trim();
         if (!streamId) {
@@ -304,6 +358,15 @@ export default function Publisher() {
             onChannel: (channel: RTCDataChannel): void => {
                 setDatachannel(channel);
             },
+            onPeerConnection: (
+                peerConnection: RTCPeerConnection | null,
+            ): void => {
+                if (peerConnection) {
+                    startActualSendFps(peerConnection);
+                } else {
+                    stopActualSendFps();
+                }
+            },
             log: setLogs,
         });
         if (isQrMode) {
@@ -344,6 +407,7 @@ export default function Publisher() {
 
     const updateQrFrameRate = (frameRate: QRCodeFrameRate) => {
         setSelectQrFrameRate(frameRate);
+        setSearchParams({ qrfps: frameRate.toString() });
         if (sourceMode() !== "qrtime" || qrState() !== "previewing") {
             return;
         }
@@ -359,6 +423,16 @@ export default function Publisher() {
         setQrState("previewing");
         setLogs(`QR source updated to ${frameRate} fps.`);
     };
+
+    createEffect(() => {
+        const frameRate = parseQRCodeFrameRate(searchParams.qrfps);
+        if (sourceMode() === "qrtime" && qrState() === "publishing") {
+            return;
+        }
+        if (frameRate !== selectQrFrameRate()) {
+            updateQrFrameRate(frameRate);
+        }
+    });
 
     return (
         <>
@@ -534,10 +608,9 @@ export default function Publisher() {
                                 value={selectQrFrameRate()}
                                 onChange={(e) => {
                                     updateQrFrameRate(
-                                        Number.parseInt(
+                                        parseQRCodeFrameRate(
                                             e.currentTarget.value,
-                                            10,
-                                        ) as QRCodeFrameRate,
+                                        ),
                                     );
                                 }}
                             >
@@ -567,6 +640,9 @@ export default function Publisher() {
                     <h5>
                         Audio Track Count: {audioTrackCount()}, Video Track
                         Count: {videoTrackCount()}
+                        <Show when={sourceMode() === "qrtime"}>
+                            {` | Target FPS: ${selectQrFrameRate()} | Actual Send FPS: ${formatFps(actualSendFps())}`}
+                        </Show>
                     </h5>
                     <Show when={stream()}>
                         {(ms) => <Player stream={ms()} />}
