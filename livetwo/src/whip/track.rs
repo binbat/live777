@@ -37,15 +37,7 @@ impl From<&Packet> for RtpPacketLog {
 
 fn log_write_rtp_error(kind: &str, packet: &RtpPacketLog, error: &dyn std::fmt::Display) {
     let error = error.to_string();
-    let error_kind = if error.contains("Disconnected") {
-        "disconnected"
-    } else if error.contains("Full") {
-        "channel_full"
-    } else if error.contains("track is not binding yet") {
-        "track_not_bound"
-    } else {
-        "write_failed"
-    };
+    let error_kind = classify_write_rtp_error(&error);
 
     let message = format!(
         "Failed to write {kind} RTP: error_kind={error_kind}, payload_type={}, sequence_number={}, timestamp={}, ssrc={}, payload_len={}",
@@ -56,10 +48,27 @@ fn log_write_rtp_error(kind: &str, packet: &RtpPacketLog, error: &dyn std::fmt::
         packet.payload_len,
     );
 
-    if error_kind == "disconnected" {
+    if matches!(
+        error_kind,
+        "disconnected" | "track_not_bound" | "dtls_not_started"
+    ) {
         debug!("{message}");
     } else {
         error!("{message}");
+    }
+}
+
+fn classify_write_rtp_error(error: &str) -> &'static str {
+    if error.contains("Disconnected") {
+        "disconnected"
+    } else if error.contains("Full") {
+        "channel_full"
+    } else if error.contains("track is not binding yet") {
+        "track_not_bound"
+    } else if error.contains("DTLS transport has not started yet") {
+        "dtls_not_started"
+    } else {
+        "write_failed"
     }
 }
 
@@ -224,4 +233,25 @@ pub async fn setup_audio_track(
     });
 
     Ok(Some(audio_tx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_write_rtp_error_treats_dtls_not_started_as_transient() {
+        assert_eq!(
+            classify_write_rtp_error("I/O error: the DTLS transport has not started yet"),
+            "dtls_not_started"
+        );
+    }
+
+    #[test]
+    fn classify_write_rtp_error_keeps_unknown_errors_as_write_failed() {
+        assert_eq!(
+            classify_write_rtp_error("unexpected SRTP write failure"),
+            "write_failed"
+        );
+    }
 }

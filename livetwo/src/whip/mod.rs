@@ -55,10 +55,18 @@ pub async fn into(
             target_url.clone(),
         )
         .await?;
-    info!("WebRTC peer connection established");
 
+    info!("Waiting for WebRTC peer connection to become connected");
+    wait_for_peer_connected(
+        peer_state_rx.clone(),
+        Duration::from_secs(15),
+        peer_diagnostics.clone(),
+    )
+    .await?;
+    info!("WebRTC peer connection connected");
+
+    info!("Starting stats monitor");
     start_stats_monitor(ct.clone(), peer.clone(), stats.clone()).await;
-
     let stats_clone = stats.clone();
     let ct_clone = ct.clone();
     tokio::spawn(async move {
@@ -80,6 +88,7 @@ pub async fn into(
         }
     });
 
+    info!("Starting input to WebRTC transport");
     let mut transport_handle: Option<JoinHandle<()>> = Some(
         transport::connect_input_to_webrtc(
             input_source,
@@ -207,6 +216,51 @@ pub async fn into(
     }
 }
 
+async fn wait_for_peer_connected(
+    mut state_rx: watch::Receiver<RTCPeerConnectionState>,
+    timeout: Duration,
+    diagnostics: Arc<webrtc::WhipPeerDiagnostics>,
+) -> Result<()> {
+    if *state_rx.borrow() == RTCPeerConnectionState::Connected {
+        return Ok(());
+    }
+
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            result = state_rx.changed() => {
+                result.map_err(|_| anyhow!("WHIP peer connection state channel closed while waiting for connected, {}", diagnostics.format()))?;
+
+                let state = *state_rx.borrow();
+                if state == RTCPeerConnectionState::Connected {
+                    return Ok(());
+                }
+
+                if matches!(
+                    state,
+                    RTCPeerConnectionState::Failed
+                        | RTCPeerConnectionState::Closed
+                        | RTCPeerConnectionState::Disconnected
+                ) {
+                    return Err(anyhow!(
+                        "WHIP peer connection failed while waiting for connected: state={state}, {}",
+                        diagnostics.format(),
+                    ));
+                }
+            }
+            _ = &mut deadline => {
+                return Err(anyhow!(
+                    "WHIP peer connection timed out after {}ms while waiting for connected, {}",
+                    timeout.as_millis(),
+                    diagnostics.format(),
+                ));
+            }
+        }
+    }
+}
+
 async fn wait_for_unexpected_peer_end(
     peer: Arc<dyn ::webrtc::peer_connection::PeerConnection>,
     mut state_rx: watch::Receiver<RTCPeerConnectionState>,
@@ -254,5 +308,117 @@ async fn wait_for_child_exit(child: Arc<Option<cli::ChildGuard>>) -> Result<Exit
                 return Ok(status);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_returns_when_state_is_already_connected() {
+        let (_tx, rx) = watch::channel(RTCPeerConnectionState::Connected);
+
+        wait_for_peer_connected(
+            rx,
+            Duration::from_millis(1),
+            Arc::new(webrtc::WhipPeerDiagnostics::default()),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_returns_when_state_changes_to_connected() {
+        let (tx, rx) = watch::channel(RTCPeerConnectionState::New);
+        tokio::spawn(async move {
+            tx.send(RTCPeerConnectionState::Connecting).unwrap();
+            tx.send(RTCPeerConnectionState::Connected).unwrap();
+        });
+
+        wait_for_peer_connected(
+            rx,
+            Duration::from_secs(1),
+            Arc::new(webrtc::WhipPeerDiagnostics::default()),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_errors_on_terminal_state() {
+        let (tx, rx) = watch::channel(RTCPeerConnectionState::New);
+        tokio::spawn(async move {
+            tx.send(RTCPeerConnectionState::Failed).unwrap();
+        });
+
+        let error = wait_for_peer_connected(
+            rx,
+            Duration::from_secs(1),
+            Arc::new(webrtc::WhipPeerDiagnostics::default()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("state=failed"), "{error}");
+        assert!(error.contains("connection_states="), "{error}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_errors_on_closed_state() {
+        let (tx, rx) = watch::channel(RTCPeerConnectionState::New);
+        tokio::spawn(async move {
+            tx.send(RTCPeerConnectionState::Closed).unwrap();
+        });
+
+        let error = wait_for_peer_connected(
+            rx,
+            Duration::from_secs(1),
+            Arc::new(webrtc::WhipPeerDiagnostics::default()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("state=closed"), "{error}");
+        assert!(error.contains("connection_states="), "{error}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_errors_on_disconnected_state() {
+        let (tx, rx) = watch::channel(RTCPeerConnectionState::New);
+        tokio::spawn(async move {
+            tx.send(RTCPeerConnectionState::Disconnected).unwrap();
+        });
+
+        let error = wait_for_peer_connected(
+            rx,
+            Duration::from_secs(1),
+            Arc::new(webrtc::WhipPeerDiagnostics::default()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("state=disconnected"), "{error}");
+        assert!(error.contains("connection_states="), "{error}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_errors_on_timeout() {
+        let (_tx, rx) = watch::channel(RTCPeerConnectionState::New);
+
+        let error = wait_for_peer_connected(
+            rx,
+            Duration::from_millis(1),
+            Arc::new(webrtc::WhipPeerDiagnostics::default()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("timed out"), "{error}");
+        assert!(error.contains("connection_states="), "{error}");
     }
 }
