@@ -44,7 +44,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 - **RawFrame** is C++-internal and never crosses the FFI boundary.
 - **EncodedPacket** crosses FFI via a pure-C callback inside `livesrc`; data is copied immediately and sent through an mpsc channel to `liveion`.
 - All FFI details are crate-private in `livesrc`; `liveion` only sees `EncodedPacket` through the channel.
-- **DMA-BUF** fds do not cross FFI; the zero-copy path (WIP) stays within C++.
+- **DMA-BUF zero-copy is not yet implemented.**  The `prefer_dmabuf` config field exists in the schema and is plumbed through to the C++ layer, but encoder-side DMA-BUF import has not been implemented.  The default remains `false`.  Setting it to `true` will cause the encoder to reject DMA-BUF frames.  Currently all frames are copied through the CPU path.
 
 ## Config paths
 

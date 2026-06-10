@@ -16,9 +16,6 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use webrtc::rtp::codecs::h264::H264Payloader;
 use webrtc::rtp::packetizer::{Packetizer as _, new_packetizer};
 use webrtc::rtp::sequence::new_random_sequencer;
-use webrtc::util::marshal::{Marshal, MarshalSize};
-
-const CHANNEL_VIDEO_RTP: u8 = 0;
 
 // ---------------------------------------------------------------------------
 // NativeEncodedSource
@@ -173,13 +170,9 @@ impl NativeEncodedSource {
                         match packetizer.packetize(&pkt.data.into(), delta) {
                             Ok(packets) => {
                                 for packet in packets {
-                                    let mut buf = Vec::with_capacity(packet.marshal_size());
-                                    if packet.marshal_to(&mut buf).is_ok() {
-                                        let _ = rtp_tx.send(MediaPacket::Rtp {
-                                            channel: CHANNEL_VIDEO_RTP,
-                                            data: buf.into(),
-                                        });
-                                    }
+                                    let _ = rtp_tx.send(MediaPacket::RtpPacket(
+                                        std::sync::Arc::new(packet),
+                                    ));
                                 }
                             }
                             Err(e) => {

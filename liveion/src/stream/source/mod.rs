@@ -1,7 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::sync::broadcast;
+use webrtc::rtp::packet::Packet;
 
 #[cfg(feature = "source-rtsp")]
 mod rtsp_source;
@@ -49,6 +51,12 @@ pub struct StateChangeEvent {
 #[derive(Debug, Clone)]
 pub enum MediaPacket {
     Rtp { channel: u8, data: Bytes },
+    RtpPacket(
+        // Only constructed in native_encoded_source.rs when native-source
+        // feature is enabled.  Other sources use the Rtp { data } path.
+        #[allow(dead_code)]
+        Arc<Packet>,
+    ),
 }
 
 #[derive(Debug, Clone)]

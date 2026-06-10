@@ -160,6 +160,16 @@ impl SourceBridge {
                                 packet_count += 1;
 
                                 let inject_result = match packet {
+                                    MediaPacket::RtpPacket(packet) => {
+                                        video_count += 1;
+                                        if video_count % LOG_PACKET_INTERVAL == 1 {
+                                            debug!(
+                                                "[{}] Forwarding video packet #{}, size: {}",
+                                                source_id_clone, video_count, packet.payload.len()
+                                            );
+                                        }
+                                        forward_clone.inject_video_rtp_packet(packet).await.map_err(|e| anyhow::anyhow!("{:?}", e))
+                                    }
                                     MediaPacket::Rtp { channel, data, .. } => {
                                         if channel_mapping.is_video_rtp(channel) {
                                             video_count += 1;
