@@ -50,13 +50,6 @@ public:
 static void stable_slot_v14_6(Request* request) {
     if (!request) return;
 
-    // SCERAM: I AM ALIVE!
-    static int global_counter = 0;
-    if (global_counter % 10 == 0) {
-        fprintf(stderr, "[CameraInternal] SLOT TRIGGERED! req=%p, status=%d\n", request, request->status());
-    }
-    global_counter++;
-
     FastMapping* entry = nullptr;
     for (int i = 0; i < g_registry_count; ++i) {
         if (g_registry[i].req == request) {

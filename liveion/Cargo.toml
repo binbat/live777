@@ -82,7 +82,7 @@ source-rtsp = ["source"]
 source-rtp = ["source"]
 source-all = ["source-sdp", "source-rtsp", "source-rtp"]
 
-native-source = ["dep:livesrc"]
+native-source = ["source", "dep:livesrc"]
 
 # Platform presets
 # native-rpi: builds both libcamera (Pi CSI camera) and V4L2 (Pi USB camera).

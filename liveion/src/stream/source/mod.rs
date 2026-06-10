@@ -50,12 +50,14 @@ pub struct StateChangeEvent {
 
 #[derive(Debug, Clone)]
 pub enum MediaPacket {
-    Rtp { channel: u8, data: Bytes },
+    Rtp {
+        channel: u8,
+        data: Bytes,
+    },
     RtpPacket(
         // Only constructed in native_encoded_source.rs when native-source
         // feature is enabled.  Other sources use the Rtp { data } path.
-        #[allow(dead_code)]
-        Arc<Packet>,
+        #[allow(dead_code)] Arc<Packet>,
     ),
 }
 

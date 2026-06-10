@@ -349,7 +349,7 @@ impl SourceBridge {
 
                     match rtcp_msg {
                         RtcpMessage::PictureLossIndication => {
-                            info!(
+                            debug!(
                                 "[{}] Received PLI for SSRC {}, requesting keyframe",
                                 source_id, ssrc
                             );

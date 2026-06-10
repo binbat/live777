@@ -44,6 +44,79 @@ ice_udp_addrs = ["auto"]
 # - RTSP: rtsp://username:password@host:port/path
 # url = "rtsp://username:password@host:port/path"
 
+# --- Native source examples (structured config, recommended) ---
+#
+# Raspberry Pi CSI camera:
+#   LIVE777_NATIVE_BACKEND=rpi cargo build --bin live777 --release \
+#     --no-default-features --features native-rpi,webui
+#
+# [[stream.sources]]
+# stream_id = "pi_cam"
+# kind = "libcamera"
+# [stream.sources.capture]
+# backend = "libcamera"
+# device = "0"
+# width = 640
+# height = 480
+# fps = 30
+# pixel_format = "yuv420"
+# [stream.sources.encoder]
+# backend = "v4l2-m2m"
+# codec = "h264"
+# bitrate = 1000000
+# profile = "42001f"
+# gop = 60
+# [stream.sources.output]
+# payload_type = 96
+# clock_rate = 90000
+#
+# Raspberry Pi USB camera:
+#   cargo build --bin live777 --release --no-default-features --features native-rpi,webui
+#
+# [[stream.sources]]
+# stream_id = "usb_cam"
+# kind = "v4l2"
+# [stream.sources.capture]
+# backend = "v4l2"
+# device = "/dev/video2"
+# width = 640
+# height = 480
+# fps = 30
+# pixel_format = "yuyv"
+# [stream.sources.encoder]
+# backend = "v4l2-m2m"
+# codec = "h264"
+# bitrate = 1000000
+# profile = "42001f"
+# gop = 60
+# [stream.sources.output]
+# payload_type = 96
+# clock_rate = 90000
+#
+# RDK X5 V4L2 camera + RDK hardware encoder:
+#   LIVE777_NATIVE_BACKEND=rdk-x5 cargo build --bin live777 --release \
+#     --no-default-features --features native-rdk,webui
+#
+# [[stream.sources]]
+# stream_id = "rdk_cam"
+# kind = "v4l2"
+# [stream.sources.capture]
+# backend = "v4l2"
+# device = "/dev/video0"
+# width = 640
+# height = 480
+# fps = 30
+# pixel_format = "yuyv"
+# [stream.sources.encoder]
+# backend = "rdk"
+# codec = "h264"
+# bitrate = 1000000
+# profile = "42001f"
+# gop = 60
+# [stream.sources.output]
+# payload_type = 96
+# clock_rate = 90000
+
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards
 # auto_streams = ["*"] # Record all streams

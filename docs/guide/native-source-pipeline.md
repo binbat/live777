@@ -12,8 +12,9 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 │         │                                                │
 │         ▼                                                │
 │  NativeEncodedSource                                     │
-│    Annex-B parse → SPS profile detect                    │
-│    → H264 packetize (RFC 6184) → RTP broadcast           │
+│    webrtc-rs H264Payloader / Packetizer                  │
+│    → MediaPacket::RtpPacket(Arc<Packet>)                 │
+│    → inject_rtp (no marshal/unmarshal roundtrip)         │
 │         │                                                │
 │  RTCP PLI → request_keyframe()                           │
 │         │                                                │
@@ -44,13 +45,16 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 - **RawFrame** is C++-internal and never crosses the FFI boundary.
 - **EncodedPacket** crosses FFI via a pure-C callback inside `livesrc`; data is copied immediately and sent through an mpsc channel to `liveion`.
 - All FFI details are crate-private in `livesrc`; `liveion` only sees `EncodedPacket` through the channel.
-- **DMA-BUF zero-copy is not yet implemented.**  The `prefer_dmabuf` config field exists in the schema and is plumbed through to the C++ layer, but encoder-side DMA-BUF import has not been implemented.  The default remains `false`.  Setting it to `true` will cause the encoder to reject DMA-BUF frames.  Currently all frames are copied through the CPU path.
+- **RTP path for native sources**: `EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`.  This avoids the `Packet` → bytes → `Packet::unmarshal` roundtrip that other sources use.
+- `MediaPacket::Rtp { data }` bytes path is still used by `rtp_listener` / `rtsp_source` / `sdp_source`.
+- **DMA-BUF zero-copy is not yet implemented.**  The `prefer_dmabuf` config field exists in the schema and is plumbed through to the C++ layer.  RDK V4L2 capture exports DMA-BUF fds when `prefer_dmabuf=true`, but `encoder_rdk.cpp` has not yet implemented DMA-BUF fd import — it rejects `BufferKind::DmaBuf`.  The default remains `false`.  Currently all frames are copied through the CPU path.  Full userspace zero-copy requires implementing DMA-BUF import in the RDK encoder backend and handling capture buffer lifetime.
 
-## Config paths
+## Config
 
-Two config formats coexist in `conf/live777.toml`:
+Native sources are configured under `[[stream.sources]]` in `conf/live777.toml`.
+There is no separate `sources_v2` or standalone `livesrc-*.toml` config file.
 
-### Path A: Legacy URL (backward-compatible, non-native only)
+### URL-based (non-native: RTSP / SDP / RTP)
 
 ```toml
 [[stream.sources]]
@@ -58,10 +62,7 @@ stream_id = "rtsp_cam"
 url = "rtsp://192.168.1.100:554/stream"
 ```
 
-URL-based config is supported for RTSP, SDP, and RTP sources.
-Native sources (libcamera, V4L2) must use the structured format in Path B.
-
-### Path B: Structured native (recommended)
+### Structured native (libcamera / V4L2 / RDK)
 
 ```toml
 [[stream.sources]]
@@ -88,13 +89,14 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-This path maps directly to `NativeEncodedSource` — no legacy URL roundtrip.
-`pixel_format` and `codec` values are validated at startup (unknown values error early).
+`pixel_format` and `codec` values are validated at startup (unknown values error early).  `kind` + `capture` + `encoder` are mutually exclusive with `url`.
+
+`conf/live777.toml` ships with commented-out Pi / RDK examples.  Copy them into your own config to enable a camera source.  Standalone `conf/livesrc-rdk.toml` / `conf/livesrc-rpicam.toml` files are no longer maintained; native source config is unified in `live777.toml`.
 
 ### Backend naming
 
-| Layer | Canonical value | Legacy aliases (still accepted) |
-|-------|----------------|-------------------------------|
+| Layer | Canonical value | Legacy aliases (C++ compat) |
+|-------|----------------|---------------------------|
 | `capture.backend` | `"v4l2"`, `"libcamera"` | `"rdk-x5"`, `"rdk_x5"` → `"v4l2"` |
 | `encoder.backend` | `"v4l2-m2m"`, `"rdk"` | `"v4l2_m2m"` → `"v4l2-m2m"`, `"rdk_x5"` → `"rdk"` |
 
@@ -122,17 +124,8 @@ Legacy values are normalized in the C++ `backend_factory.cpp` dispatcher.
 
 ## Feature flags
 
-The feature system is split into image-source (`livesrc-*`) and encoder (`liveenc-*`) layers:
-
-| Cargo feature | Enables |
-|---|---|
-| `livesrc-libcamera` | libcamera capture backend |
-| `livesrc-v4l2` | V4L2 capture backend |
-| `liveenc-v4l2-m2m` | V4L2 M2M hardware encoder |
-| `liveenc-rdk` | RDK X5 hardware encoder |
-| `webui` | Embedded web frontend |
-
-Platform presets (convenience combinations):
+Only platform presets are user-facing.  Each preset includes `native-source` which
+implies `source` (autostart) and `dep:livesrc` (native backend).
 
 | Preset | Expands to |
 |--------|-----------|
@@ -140,12 +133,24 @@ Platform presets (convenience combinations):
 | `native-generic-v4l2` | `native-source, livesrc/capture-v4l2, livesrc/encoder-v4l2-m2m` |
 | `native-rdk` | `native-source, livesrc/capture-v4l2, livesrc/encoder-rdk` |
 
-Always use a **preset** for a runnable pipeline:
+No additional `--features source` is needed — presets include autostart.
 
 ```bash
-cargo build --features native-rpi
-cargo build --features native-generic-v4l2
-cargo build --features native-rdk
+# Raspberry Pi CSI
+LIVE777_NATIVE_BACKEND=rpi \
+cargo build --bin live777 --release \
+  --target armv7-unknown-linux-gnueabihf \
+  --no-default-features --features native-rpi,webui
+
+# Generic Linux V4L2
+LIVE777_NATIVE_BACKEND=generic-v4l2 \
+cargo build --bin live777 --release \
+  --no-default-features --features native-generic-v4l2,webui
+
+# RDK X5
+LIVE777_NATIVE_BACKEND=rdk-x5 \
+cargo build --bin live777 --release \
+  --no-default-features --features native-rdk,webui
 ```
 
 ## Build
@@ -162,74 +167,143 @@ cargo build --features native-rdk
 LIVE777_NATIVE_BACKEND=rpi \
 cargo build --bin live777 --release \
   --target armv7-unknown-linux-gnueabihf \
-  --features native-rpi,webui
+  --no-default-features --features native-rpi,webui
 ```
 
-Requires the Pi sysroot with libcamera-dev. Set `PI_SYSROOT` if the sysroot
-is not at the default path.
+Requires the Pi sysroot with libcamera-dev. Set `PI_SYSROOT` if the sysroot is not at the default path.
 
-### Generic Linux V4L2 (no libcamera, no RDK)
+### Generic Linux V4L2
 
 ```bash
 LIVE777_NATIVE_BACKEND=generic-v4l2 \
 cargo build --bin live777 --release \
-  --features native-generic-v4l2,webui
+  --no-default-features --features native-generic-v4l2,webui
 ```
 
-`LIVE777_NATIVE_BACKEND` is **required** when building with only `livesrc-v4l2`.
-The build will panic at configure time if it is not set.
+`LIVE777_NATIVE_BACKEND` is **required** when building with `capture-v4l2` without `capture-libcamera`. The build will panic at configure time if it is not set.
 
 ### RDK X5
 
 ```bash
 LIVE777_NATIVE_BACKEND=rdk-x5 \
 cargo build --bin live777 --release \
-  --features native-rdk,webui
+  --no-default-features --features native-rdk,webui
 ```
 
-Requires the RDK sysroot with `hb_media_codec` libraries.
-Set `RDK_SYSROOT` if the sysroot is not at the default path.
+Requires the RDK sysroot with `hb_media_codec` libraries. Set `RDK_SYSROOT` if the sysroot is not at the default path.
 
-> **Note:** The DMA-BUF zero-copy encode path (`prefer_dmabuf = true`) is
-> still WIP. Use the CPU copy path (default) for production.
+> **Note:** The DMA-BUF zero-copy encode path is not yet implemented.  See the DMA-BUF notes in the Architecture section above.
 
 ### macOS (development / check only)
 
-CMake native builds are skipped when no native source features are active:
-
 ```bash
 cargo check --no-default-features
-cargo check --features native-rpi
+cargo check --features native-rpi,webui
 ```
 
-> **Caution:** Do not enable `livesrc-*` or `liveenc-*` features on macOS
-> unless the native C++ dependencies (libcamera, V4L2 headers, CMake) are
-> installed. Those features invoke CMake and will fail on a stock macOS
-> system.
+> **Caution:** Do not enable native features on macOS unless the native C++ dependencies (libcamera, V4L2 headers, CMake) are installed. Those features invoke CMake and will fail on a stock macOS system.
 
 ## Backend selection (build-time)
 
-The build system **never** infers the backend from `TARGET`.  Selection is
-explicit, via Cargo features and the `LIVE777_NATIVE_BACKEND` environment
-variable.  CMake options are driven by feature flags, not hardcoded per
-platform:
+The build system **never** infers the backend from `TARGET`.  Selection is explicit, via Cargo presets and `LIVE777_NATIVE_BACKEND`:
 
-| Feature | CMake define |
-|---------|-------------|
-| `livesrc-libcamera` | `ENABLE_CAPTURE_LIBCAMERA` |
-| `livesrc-v4l2` | `ENABLE_CAPTURE_V4L2` |
-| `liveenc-v4l2-m2m` | `ENABLE_ENCODER_V4L2_M2M` |
-| `liveenc-rdk` | `ENABLE_ENCODER_RDK_X5` |
+| Preset | CMake defines (ON) |
+|--------|-------------------|
+| `native-rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
+| `native-rdk` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
+| `native-generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 
-`LIVE777_NATIVE_BACKEND` only selects sysroot paths and platform-specific
-link libraries (`rpi`, `rdk-x5`, `generic-v4l2`).
+When no `capture-*` feature is enabled, CMake is skipped entirely. Encoder-only features do **not** trigger a CMake build — the SourcePipeline requires a capture backend.
 
-When no `livesrc-*` feature is enabled, CMake is skipped entirely.
-Encoder-only features (`liveenc-*` without `livesrc-*`) do **not** trigger a
-CMake build — the SourcePipeline requires a capture backend.
+## Config examples
 
-## What was NOT removed
+### Raspberry Pi CSI
 
-- `legacy_url.rs` has been removed. Native sources only support structured config.
+```toml
+[[stream.sources]]
+stream_id = "pi_cam"
+kind = "libcamera"
+
+[stream.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuv420"
+
+[stream.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 1_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+### Raspberry Pi USB V4L2
+
+```toml
+[[stream.sources]]
+stream_id = "usb_cam"
+kind = "v4l2"
+
+[stream.sources.capture]
+backend = "v4l2"
+device = "/dev/video2"
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuyv"
+
+[stream.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 1_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+### RDK X5
+
+```toml
+[[stream.sources]]
+stream_id = "rdk_cam"
+kind = "v4l2"
+
+[stream.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuyv"
+
+[stream.sources.encoder]
+backend = "rdk"
+codec = "h264"
+bitrate = 1_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+## What was removed
+
+- `legacy_url.rs` and URL-based native source config (`libcamera://`, `v4l2://`) — removed. Native sources only support structured config in `[[stream.sources]]`.
+- `sources_v2` config key — removed. All sources use `[[stream.sources]]`.
+- Deprecated feature aliases (`source-libcamera`, `source-v4l2`, `backend-rdk-x5`, `encoder-rdk-x5`) — removed. Use presets.
+- Standalone `conf/livesrc-rdk.toml` / `conf/livesrc-rpicam.toml` — removed. Native source config goes in `live777.toml`.
+- Old bridge files and legacy C ABI wrappers (`bridge_ffi.*`, `bridge_v4l2_ffi.*`, `camera.h`, `v4l2_capture.h`) — removed.
+- Custom H.264 RTP packetizer (`h264_utils.rs`) — replaced by webrtc-rs `H264Payloader` / `Packetizer`.
 - RTSP / SDP / RTP URL-based sources remain fully functional (used by non-native sources).
-- Old bridge files and legacy C ABI wrappers removed in PR6A/6B cleanup.
