@@ -79,8 +79,7 @@ recorder = [
 source = ["dep:rtsp", "dep:url"]
 source-sdp = ["source"]
 source-rtsp = ["source"]
-source-rtp = ["source"]
-source-all = ["source-sdp", "source-rtsp", "source-rtp"]
+source-all = ["source-sdp", "source-rtsp"]
 
 native-source = ["source", "dep:livesrc"]
 

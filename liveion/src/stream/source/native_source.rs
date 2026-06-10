@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc};
 
 #[cfg(feature = "source")]
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 pub struct NativeSource {
     inner: NativeEncodedSource,

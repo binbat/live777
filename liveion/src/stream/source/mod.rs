@@ -1,9 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
+use rtc::rtp::packet::Packet;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use webrtc::rtp::packet::Packet;
 
 #[cfg(feature = "source-rtsp")]
 mod rtsp_source;
@@ -16,12 +16,9 @@ pub mod native_encoded_source;
 pub mod source_router;
 pub mod stream_config_v2;
 
+pub mod manager;
 #[cfg(feature = "native-source")]
 pub mod native_source;
-#[cfg(feature = "source-rtp")]
-pub mod rtp_listener;
-
-pub mod manager;
 
 #[cfg(feature = "native-source")]
 pub use native_source::NativeSource;

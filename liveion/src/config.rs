@@ -433,7 +433,7 @@ pub struct StreamConfig {
     /// Source configurations: `[[stream.sources]]`.
     ///
     /// Accepts two formats:
-    /// - URL-based: `stream_id` + `url` (rtsp://, file://, rtp://)
+    /// - URL-based: `stream_id` + `url` (rtsp://, file://)
     /// - Structured native: `stream_id` + `kind` + `capture` + `encoder` [+ `output`]
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
@@ -445,7 +445,7 @@ pub struct SourceConfig {
     pub stream_id: String,
 
     /// Legacy URL — mutually exclusive with `kind`.
-    /// Supported: rtsp://, rtsps://, file://, .sdp, rtp://
+    /// Supported: rtsp://, rtsps://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
 
@@ -509,10 +509,9 @@ impl SourceConfig {
             && !url_lower.starts_with("rtsps://")
             && !url_lower.starts_with("file://")
             && !url_lower.ends_with(".sdp")
-            && !url_lower.starts_with("rtp://")
         {
             anyhow::bail!(
-                "Unsupported URL: {}. Valid: rtsp://, rtsps://, file://, rtp://, .sdp",
+                "Unsupported URL: {}. Valid: rtsp://, rtsps://, file://, .sdp",
                 url
             );
         }

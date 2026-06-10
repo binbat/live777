@@ -206,9 +206,10 @@ impl NativeEncodedSource {
     #[cfg(feature = "source")]
     pub async fn get_video_codec(
         &self,
-    ) -> Option<webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters> {
-        use webrtc::rtp_transceiver::RTCPFeedback;
-        use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+    ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
+        use rtc::rtp_transceiver::rtp_sender::{
+            RTCPFeedback, RTCRtpCodecCapability, RTCRtpCodecParameters,
+        };
 
         let mime_type = format!("video/{}", self.params.codec_name.to_uppercase());
         let profile = self
@@ -250,7 +251,7 @@ impl NativeEncodedSource {
     #[cfg(feature = "source")]
     pub async fn get_audio_codec(
         &self,
-    ) -> Option<webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters> {
+    ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
         None
     }
 

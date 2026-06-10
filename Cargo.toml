@@ -85,7 +85,7 @@ rtc-shared = "0.20.0-alpha.1"
 sdp = "0.17.1"
 
 axum = "0.8"
-axum-extra = "0.10"
+axum-extra = "0.12"
 tower-http = "0.6"
 rust-embed = "8.7"
 mime_guess = "2.0"
@@ -140,7 +140,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 opendal = "0.55.0"
 
-toml = "0.9"
+toml = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
@@ -150,7 +150,6 @@ net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]
 source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
-source-rtp = ["liveion/source-rtp"]
 source-all = ["liveion/source-all"]
 
 # Platform presets (recommended for users)

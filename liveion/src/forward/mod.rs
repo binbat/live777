@@ -705,7 +705,7 @@ impl PeerForward {
     #[cfg(feature = "source")]
     pub async fn inject_video_rtp_packet(&self, packet: Arc<Packet>) -> Result<()> {
         let tracks = self.internal.publish_tracks.read().await;
-        let video_track = tracks.iter().find(|t| t.kind() == RTPCodecType::Video);
+        let video_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Video);
         match video_track {
             Some(track) => match track.inject_rtp(packet) {
                 Ok(_) => Ok(()),

@@ -9,9 +9,6 @@ use anyhow::Result;
 #[cfg(feature = "source")]
 use crate::config::SourceConfig;
 
-#[cfg(feature = "source-rtp")]
-use super::rtp_listener::RtpListenerSource;
-
 #[cfg(feature = "native-source")]
 use super::native_source::NativeSource;
 
@@ -20,27 +17,12 @@ use super::stream_config_v2::SourceSpec;
 
 /// Creates a `StreamSource` from a connection URL.
 ///
-/// Handles rtp:// for the RTP listener; rtsp://, file://, .sdp delegate
-/// to the legacy factory.
+/// Delegates rtsp://, file://, .sdp to the legacy factory.
 #[cfg(feature = "source")]
 pub async fn create_source_extended(
     url: &str,
     config: &SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    let url_lower = url.to_lowercase();
-
-    if url_lower.starts_with("rtp://") {
-        #[cfg(feature = "source-rtp")]
-        {
-            let source = RtpListenerSource::from_url(url, config)?;
-            return Ok(Box::new(source));
-        }
-        #[cfg(not(feature = "source-rtp"))]
-        {
-            anyhow::bail!("RTP source feature not enabled. Recompile with feature 'source-rtp'");
-        }
-    }
-
     super::create_legacy_source_from_url(url, config).await
 }
 
