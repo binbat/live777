@@ -308,11 +308,16 @@ impl RecordingTask {
                             Some(packet) => {
                                 rtp_cnt_video += 1;
                                 let pkt_ts = packet.header.timestamp;
-                                segmenter.record_video_rtp_packet(
-                                    packet.header.marker,
-                                    pkt_ts,
-                                    packet.payload.len(),
-                                );
+                                if rtp_cnt_video == 1 || rtp_cnt_video.is_multiple_of(1500) {
+                                    tracing::debug!(
+                                        "[segmenter] {} video RTP packets={} marker={} timestamp={} payload_len={}",
+                                        stream_name_cloned,
+                                        rtp_cnt_video,
+                                        packet.header.marker,
+                                        pkt_ts,
+                                        packet.payload.len()
+                                    );
+                                }
 
                                 if codec_mime_opt.is_none() {
                                     codec_mime_opt = forward_clone

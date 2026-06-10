@@ -25,7 +25,7 @@ pub struct PliBackoff {
     /// Number of consecutive PLI requests sent without receiving a keyframe
     request_count: u32,
 
-    /// Maximum number of PLI requests to send before giving up (0 = unlimited)
+    /// Maximum number of PLI requests to send before giving up.
     max_requests: u32,
 
     /// Backoff multiplier (e.g., 2.0 for exponential backoff)
@@ -46,7 +46,7 @@ impl Default for PliBackoff {
         Self::new(
             Duration::from_secs(5),  // Initial timeout: 5s
             Duration::from_secs(30), // Max timeout: 30s
-            0,                       // Recorder keeps requesting until a keyframe/config arrives
+            5,                       // Bounded recorder startup retries; avoids unbounded PLI spam
             2.0,                     // Double timeout on each retry
             true,                    // Use exponential backoff
         )
@@ -59,7 +59,7 @@ impl PliBackoff {
     /// # Arguments
     /// * `initial_timeout` - Time to wait before first PLI request
     /// * `max_timeout` - Maximum timeout (cap for exponential growth)
-    /// * `max_requests` - Max consecutive requests (0 = unlimited)
+    /// * `max_requests` - Max consecutive requests
     /// * `backoff_multiplier` - Multiplier for exponential backoff (e.g., 2.0)
     /// * `use_exponential` - Enable exponential backoff (false = fixed retry)
     pub fn new(
@@ -92,7 +92,7 @@ impl PliBackoff {
     /// - We haven't exceeded max request count
     pub fn should_request(&self) -> bool {
         // If we've sent max requests without success, stop requesting
-        if self.max_requests > 0 && self.request_count >= self.max_requests {
+        if self.request_count >= self.max_requests {
             return false;
         }
 
@@ -178,11 +178,7 @@ impl PliBackoff {
             "PLI Backoff State: requests={}/{}, timeout={:.1}s, success_rate={:.2}%, \
              time_since_kf={}, time_since_req={}",
             self.request_count,
-            if self.max_requests == 0 {
-                "∞".to_string()
-            } else {
-                self.max_requests.to_string()
-            },
+            self.max_requests,
             self.current_timeout.as_secs_f64(),
             self.success_rate() * 100.0,
             self.time_since_keyframe()

@@ -41,6 +41,13 @@ struct SegmentInfo {
     duration: u64,   // Actual duration in timescale units
 }
 
+#[derive(Debug, Clone)]
+struct ExpectedVideo {
+    codec_mime: String,
+    payload_type: Option<u8>,
+    ssrc: Option<u32>,
+}
+
 pub struct Segmenter {
     op: Operator,
     stream: String,
@@ -117,17 +124,8 @@ pub struct Segmenter {
     /// Audio segments with their actual durations
     audio_segments: Vec<SegmentInfo>,
 
-    expected_video_track: bool,
-    expected_video_codec_mime: Option<String>,
-    expected_video_payload_type: Option<u8>,
-    expected_video_ssrc: Option<u32>,
-    metadata_video_config: Option<Vec<Vec<u8>>>,
-    metadata_video_dimensions: Option<(u32, u32)>,
-    video_packets_seen: u64,
-    video_frames_seen: u64,
-    video_keyframes_seen: u64,
-    video_config_events_seen: u64,
-    adapter_ready_logged: bool,
+    expected_video: Option<ExpectedVideo>,
+    pending_video_codec_config: Option<Vec<Vec<u8>>>,
 }
 
 impl Segmenter {
@@ -184,17 +182,8 @@ impl Segmenter {
             video_adapter: None,
             segments: Vec::new(),
             audio_segments: Vec::new(),
-            expected_video_track: false,
-            expected_video_codec_mime: None,
-            expected_video_payload_type: None,
-            expected_video_ssrc: None,
-            metadata_video_config: None,
-            metadata_video_dimensions: None,
-            video_packets_seen: 0,
-            video_frames_seen: 0,
-            video_keyframes_seen: 0,
-            video_config_events_seen: 0,
-            adapter_ready_logged: false,
+            expected_video: None,
+            pending_video_codec_config: None,
         })
     }
 
@@ -206,10 +195,11 @@ impl Segmenter {
         fmtp: Option<&str>,
     ) {
         let codec_mime = codec_mime.into();
-        self.expected_video_track = true;
-        self.expected_video_codec_mime = Some(codec_mime.clone());
-        self.expected_video_payload_type = payload_type;
-        self.expected_video_ssrc = ssrc;
+        self.expected_video = Some(ExpectedVideo {
+            codec_mime: codec_mime.clone(),
+            payload_type,
+            ssrc,
+        });
         tracing::info!(
             "[segmenter] recorder start stream={} video codec={} payload_type={:?} ssrc={:?} fmtp={}",
             self.stream,
@@ -229,10 +219,17 @@ impl Segmenter {
         if let Some(codec) = video_codec_from_mime(codec_mime) {
             self.ensure_video_adapter(codec);
         }
-        self.expected_video_codec_mime = Some(codec_mime.to_string());
+        if let Some(expected_video) = self.expected_video.as_mut() {
+            expected_video.codec_mime = codec_mime.to_string();
+        } else {
+            self.expected_video = Some(ExpectedVideo {
+                codec_mime: codec_mime.to_string(),
+                payload_type: None,
+                ssrc: None,
+            });
+        }
         if let Some(config) = codec_config.filter(|config| !config.is_empty()) {
-            self.metadata_video_config = Some(config);
-            self.video_config_events_seen += 1;
+            self.pending_video_codec_config = Some(config);
             tracing::info!(
                 "[segmenter] {} video codec config initialized from track metadata ({})",
                 self.stream,
@@ -245,7 +242,6 @@ impl Segmenter {
         {
             self.video_width = width;
             self.video_height = height;
-            self.metadata_video_dimensions = Some((width, height));
         }
         self.refresh_video_metadata();
     }
@@ -344,7 +340,6 @@ impl Segmenter {
         duration_ticks: u32,
     ) -> Result<()> {
         self.ensure_video_adapter(codec);
-        self.video_frames_seen += 1;
 
         let (payload, adapter_sync, config_ready) = {
             let adapter = self
@@ -360,33 +355,14 @@ impl Segmenter {
         let is_sync = explicit_sync.unwrap_or(false) || adapter_sync;
 
         if is_sync {
-            self.video_keyframes_seen += 1;
             self.pli_backoff.record_keyframe();
-            tracing::debug!(
-                "[segmenter] {} {:?} keyframe detected at frame {}",
-                self.stream,
-                codec,
-                self.video_frames_seen
-            );
+            tracing::debug!("[segmenter] {} {:?} keyframe detected", self.stream, codec);
         }
         if config_ready {
-            self.video_config_events_seen += 1;
             tracing::info!(
-                "[segmenter] {} {:?} codec config event detected at frame {}",
+                "[segmenter] {} {:?} codec config event detected",
                 self.stream,
-                codec,
-                self.video_frames_seen
-            );
-        }
-        if adapter_ready && !self.adapter_ready_logged {
-            self.adapter_ready_logged = true;
-            tracing::info!(
-                "[segmenter] {} {:?} adapter ready after {} frames (keyframes={}, config_events={})",
-                self.stream,
-                codec,
-                self.video_frames_seen,
-                self.video_keyframes_seen,
-                self.video_config_events_seen
+                codec
             );
         }
 
@@ -406,16 +382,6 @@ impl Segmenter {
                 self.refresh_video_metadata();
                 self.init_writer().await?;
             } else {
-                if self.video_frames_seen == 1 || self.video_frames_seen.is_multiple_of(150) {
-                    tracing::warn!(
-                        "[segmenter] {} {:?} video adapter not ready after {} frames (keyframes={}, config_events={})",
-                        self.stream,
-                        codec,
-                        self.video_frames_seen,
-                        self.video_keyframes_seen,
-                        self.video_config_events_seen
-                    );
-                }
                 return Ok(());
             }
         }
@@ -481,7 +447,6 @@ impl Segmenter {
         self.video_height = 0;
         self.video_codec.clear();
         self.pli_backoff.hard_reset();
-        self.adapter_ready_logged = false;
     }
 
     fn refresh_video_metadata(&mut self) {
@@ -502,7 +467,10 @@ impl Segmenter {
             }
         }
         if self.video_codec.is_empty()
-            && let Some(codec_mime) = self.expected_video_codec_mime.as_deref()
+            && let Some(codec_mime) = self
+                .expected_video
+                .as_ref()
+                .map(|video| video.codec_mime.as_str())
         {
             self.video_codec = default_codec_string(codec_mime).to_string();
         }
@@ -518,12 +486,10 @@ impl Segmenter {
     fn metadata_allows_video_init(&self, codec: VideoCodec) -> bool {
         match codec {
             VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Av1 => self
-                .metadata_video_config
+                .pending_video_codec_config
                 .as_ref()
                 .is_some_and(|config| !config.is_empty()),
-            VideoCodec::Vp9 => self
-                .metadata_video_dimensions
-                .is_some_and(|(width, height)| width > 0 && height > 0),
+            VideoCodec::Vp9 => self.video_width > 0 && self.video_height > 0,
         }
     }
 
@@ -542,25 +508,20 @@ impl Segmenter {
         self.pli_backoff.state_summary()
     }
 
-    pub fn record_video_rtp_packet(&mut self, marker: bool, timestamp: u32, payload_len: usize) {
-        self.video_packets_seen += 1;
-        if self.video_packets_seen == 1 || self.video_packets_seen.is_multiple_of(1500) {
-            tracing::debug!(
-                "[segmenter] {} video RTP packets={} marker={} timestamp={} payload_len={}",
-                self.stream,
-                self.video_packets_seen,
-                marker,
-                timestamp,
-                payload_len
-            );
-        }
-    }
-
     pub fn media_outcome(&self) -> RecordingMediaOutcome {
         let has_video = self.video_track_id.is_some() && !self.segments.is_empty();
         let has_audio = self.audio_track_id.is_some() && !self.audio_segments.is_empty();
 
-        if self.expected_video_track && !has_video {
+        if let Some(expected_video) = self.expected_video.as_ref()
+            && !has_video
+        {
+            tracing::warn!(
+                "[segmenter] {} expected video output is missing codec={} payload_type={:?} ssrc={:?}",
+                self.stream,
+                expected_video.codec_mime,
+                expected_video.payload_type,
+                expected_video.ssrc
+            );
             return if has_audio {
                 RecordingMediaOutcome::Degraded
             } else {
@@ -620,7 +581,8 @@ impl Segmenter {
             {
                 adapter
                     .codec_config()
-                    .or_else(|| self.metadata_video_config.clone())
+                    .filter(|config| !config.is_empty())
+                    .or_else(|| self.pending_video_codec_config.clone())
                     .unwrap_or_default()
             } else {
                 vec![]
@@ -630,7 +592,7 @@ impl Segmenter {
             || lower_codec.starts_with("hev1")
             || lower_codec.starts_with("hvc1")
         {
-            self.metadata_video_config.clone().unwrap_or_default()
+            self.pending_video_codec_config.clone().unwrap_or_default()
         } else {
             vec![]
         };
@@ -659,6 +621,7 @@ impl Segmenter {
                 e
             })?;
         info!("[segmenter] {} v_init.m4s written", self.stream);
+        self.pending_video_codec_config = None;
 
         // Generate or update the MPD manifest
         self.write_manifest(true).await?;
