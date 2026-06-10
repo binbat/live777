@@ -511,58 +511,49 @@ impl Manager {
         &self,
         sources_config: &crate::config::StreamConfig,
     ) -> Result<()> {
-        let legacy_count = sources_config.sources.len();
-        let v2_count = sources_config.sources_v2.len();
-
-        if legacy_count == 0 && v2_count == 0 {
+        let count = sources_config.sources.len();
+        if count == 0 {
             tracing::info!("No sources configured, skipping auto-start");
             return Ok(());
         }
 
-        tracing::info!(
-            "Auto-starting {} legacy + {} structured sources",
-            legacy_count,
-            v2_count
-        );
+        tracing::info!("Auto-starting {} sources", count);
 
-        // Process legacy URL-based sources
         for source_cfg in &sources_config.sources {
-            tracing::info!(
-                "Auto-starting source: {} from {}",
-                source_cfg.stream_id,
-                source_cfg.url
-            );
-
-            let source = match create_source_from_url(&source_cfg.url, source_cfg).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("Failed to create source {}: {}", source_cfg.stream_id, e);
-                    continue;
-                }
-            };
-
-            self.start_single_source(source, &source_cfg.stream_id)
-                .await;
-        }
-
-        // Process structured sources (direct path, no URL roundtrip)
-        for spec in &sources_config.sources_v2 {
-            tracing::info!(
-                "Auto-starting structured source: {} (kind={:?}, backend={})",
-                spec.stream_id,
-                spec.kind,
-                spec.capture.backend
-            );
-
-            let source = match create_source_from_spec(spec).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("Failed to create source {}: {}", spec.stream_id, e);
-                    continue;
-                }
-            };
-
-            self.start_single_source(source, &spec.stream_id).await;
+            // Structured native sources: kind + capture + encoder
+            if let Some(spec) = source_cfg.to_spec() {
+                tracing::info!(
+                    "Auto-starting native source: {} (kind={:?}, backend={})",
+                    spec.stream_id,
+                    spec.kind,
+                    spec.capture.backend
+                );
+                let source = match create_source_from_spec(&spec).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!("Failed to create source {}: {}", spec.stream_id, e);
+                        continue;
+                    }
+                };
+                self.start_single_source(source, &spec.stream_id).await;
+            }
+            // Legacy URL-based sources
+            else if let Some(ref url) = source_cfg.url {
+                tracing::info!(
+                    "Auto-starting legacy source: {} from {}",
+                    source_cfg.stream_id,
+                    url
+                );
+                let source = match create_source_from_url(url, source_cfg).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!("Failed to create source {}: {}", source_cfg.stream_id, e);
+                        continue;
+                    }
+                };
+                self.start_single_source(source, &source_cfg.stream_id)
+                    .await;
+            }
         }
 
         tracing::info!("Auto-start sources completed");

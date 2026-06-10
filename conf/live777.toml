@@ -18,7 +18,7 @@ url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
 # listen = "[::]:7777"
 # Cross-Origin Resource Sharing (CORS)
 # reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-cors = true
+# cors = false
 
 [[ice_servers]]
 urls = [
@@ -34,8 +34,6 @@ ice_udp_addrs = ["auto"]
 
 [stream]
 
-# ---- Path A: Legacy URL examples ----
-
 # Need enabled `--features=source`
 # [[stream.sources]]
 # stream_id = "test-source"
@@ -45,92 +43,6 @@ ice_udp_addrs = ["auto"]
 # Need enabled `--features=source-rtsp`
 # - RTSP: rtsp://username:password@host:port/path
 # url = "rtsp://username:password@host:port/path"
-
-# libcamera-bridge via legacy URL (requires --features=source-libcamera)
-[[stream.sources]]
-stream_id = "pi_cam"
-url = "libcamera://0?width=640&height=480&fps=30"
-
-# V4L2 via legacy URL (requires --features=source-v4l2)
-# [[stream.sources]]
-# stream_id = "usbcam_legacy"
-# url = "v4l2:///dev/video0?width=640&height=480&fps=30&bitrate=1000000"
-
-# ---- Path B: Structured native examples ----
-
-# libcamera structured (requires --features=source-libcamera or native-rpi)
-# [[stream.sources_v2]]
-# stream_id = "pi_cam_v2"
-# kind = "libcamera"
-#
-# [stream.sources_v2.capture]
-# backend = "libcamera"
-# device = "0"
-# width = 640
-# height = 480
-# fps = 30
-# pixel_format = "yuv420"
-#
-# [stream.sources_v2.encoder]
-# backend = "v4l2-m2m"
-# codec = "h264"
-# bitrate = 1_000_000
-# profile = "42001f"
-# gop = 60
-#
-# [stream.sources_v2.output]
-# payload_type = 96
-# clock_rate = 90000
-
-# V4L2 structured (requires --features=livesrc-v4l2,liveenc-v4l2-m2m or native-generic-v4l2)
-# [[stream.sources_v2]]
-# stream_id = "usbcam_v2"
-# kind = "v4l2"
-#
-# [stream.sources_v2.capture]
-# backend = "v4l2"
-# device = "/dev/video0"
-# width = 640
-# height = 480
-# fps = 30
-# pixel_format = "yuyv"
-#
-# [stream.sources_v2.encoder]
-# backend = "v4l2-m2m"
-# codec = "h264"
-# bitrate = 1_000_000
-# profile = "42001f"
-# gop = 60
-#
-# [stream.sources_v2.output]
-# payload_type = 96
-# clock_rate = 90000
-
-# RDK X5 structured (requires --features=native-rdk or livesrc-v4l2,liveenc-rdk)
-# Note: capture.backend = "v4l2" (RDK uses V4L2 capture), encoder.backend = "rdk".
-# Legacy values "rdk-x5" / "rdk_x5" are still accepted.
-# [[stream.sources_v2]]
-# stream_id = "rdk_cam"
-# kind = "v4l2"
-#
-# [stream.sources_v2.capture]
-# backend = "v4l2"
-# device = "/dev/video0"
-# width = 1920
-# height = 1080
-# fps = 30
-# pixel_format = "yuyv"
-#
-# [stream.sources_v2.encoder]
-# backend = "rdk"
-# codec = "h265"
-# bitrate = 4_000_000
-# profile = "42001f"
-# gop = 60
-#
-# [stream.sources_v2.output]
-# payload_type = 96
-# clock_rate = 90000
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards

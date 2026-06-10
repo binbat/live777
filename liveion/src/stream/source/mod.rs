@@ -8,32 +8,20 @@ mod rtsp_source;
 #[cfg(feature = "source-sdp")]
 mod sdp_source;
 
-pub mod h264_utils;
-pub mod legacy_url;
 pub mod lifecycle;
 #[cfg(feature = "native-source")]
 pub mod native_encoded_source;
 pub mod source_router;
 pub mod stream_config_v2;
 
-#[cfg(any(
-    feature = "livesrc-libcamera",
-    feature = "source-libcamera",
-    feature = "livesrc-v4l2",
-    feature = "source-v4l2"
-))]
+#[cfg(feature = "native-source")]
 pub mod native_source;
 #[cfg(feature = "source-rtp")]
 pub mod rtp_listener;
 
 pub mod manager;
 
-#[cfg(any(
-    feature = "livesrc-libcamera",
-    feature = "source-libcamera",
-    feature = "livesrc-v4l2",
-    feature = "source-v4l2"
-))]
+#[cfg(feature = "native-source")]
 pub use native_source::NativeSource;
 #[cfg(feature = "source-rtsp")]
 pub use rtsp_source::RtspSource;
@@ -73,7 +61,7 @@ impl InternalSourceConfig {
     pub fn from_config(config: &crate::config::SourceConfig) -> Self {
         Self {
             stream_id: config.stream_id.clone(),
-            url: config.url.clone(),
+            url: config.url.clone().unwrap_or_default(),
         }
     }
 
@@ -149,7 +137,7 @@ pub(crate) async fn create_legacy_source_from_url(
     url: &str,
     config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    let _internal_config = InternalSourceConfig::from_config(config);
+    let internal_config = InternalSourceConfig::from_config(config);
 
     if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
         #[cfg(feature = "source-rtsp")]

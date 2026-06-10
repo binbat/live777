@@ -3,19 +3,20 @@
 //!
 //! Data flow:
 //!   C++ SourcePipeline → livesrc FFI → EncodedPacket channel →
-//!   Annex-B parse → SPS profile detect → H264 packetize → RTP broadcast
+//!   H264 RTP packetize (webrtc crate) → RTP broadcast
 //!
 //! livesrc handles all C++ FFI — this module only sees `EncodedPacket`
 //! through an mpsc channel.
 
-use super::h264_utils::{AnnexBParser, H264Packetizer, NalType, parse_profile_level_id};
 use super::{MediaPacket, StateChangeEvent, StreamSourceState};
 use anyhow::Result;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::sync::{RwLock, broadcast, mpsc};
-use tracing::info;
+use webrtc::rtp::codecs::h264::H264Payloader;
+use webrtc::rtp::packetizer::{Packetizer as _, new_packetizer};
+use webrtc::rtp::sequence::new_random_sequencer;
+use webrtc::util::marshal::{Marshal, MarshalSize};
 
 const CHANNEL_VIDEO_RTP: u8 = 0;
 
@@ -68,7 +69,7 @@ impl NativeEncodedSource {
                 new_state,
                 error: error.clone(),
             });
-            info!(
+            tracing::info!(
                 "[{}] state: {:?} -> {:?}{}",
                 self.stream_id,
                 old_state,
@@ -106,18 +107,25 @@ impl NativeEncodedSource {
         let keyframe_handle = pipeline.keyframe_handle();
         let mut rx = pipeline.start()?;
 
-        // Spawn processing task: EncodedPacket → Annex-B → H264 → RTP
         let rtp_tx = self.rtp_tx.clone();
         let payload_type = self.params.payload_type as u8;
         let clock_rate = self.params.clock_rate;
+        let fallback_delta = clock_rate / self.params.fps.max(1);
         #[cfg(feature = "source")]
         let dynamic_profile = self.dynamic_profile.clone();
 
         tokio::spawn(async move {
-            let mut parser = AnnexBParser::new();
-            let mut packetizer = H264Packetizer::new(1400, payload_type, clock_rate);
+            let payloader = Box::new(H264Payloader::default());
+            let sequencer = Box::new(new_random_sequencer());
+            let ssrc: u32 = rand::random();
+            let mut packetizer =
+                new_packetizer(1400, payload_type, ssrc, payloader, sequencer, clock_rate);
+
+            // Track the previous RTP 90kHz timestamp so we can pass
+            // *increments* to packetizer.packetize().  The webrtc
+            // Packetizer maintains an internal timestamp base and
+            // wrapping-adds the `samples` parameter after each call.
             let mut last_rtp_ts: Option<u32> = None;
-            let start_instant = Instant::now();
 
             static DBG_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -128,53 +136,54 @@ impl NativeEncodedSource {
 
                         let n = DBG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
                         if n % 60 == 0 {
-                            tracing::info!(
+                            tracing::trace!(
                                 "[NativeEncodedSource] packet bytes={} count={}",
                                 pkt.data.len(), n
                             );
                         }
 
-                        // RTP 90 kHz timestamp
+                        // Convert PTS (microseconds) to RTP 90 kHz clock
                         let rtp_ts = if pkt.pts_us > 0 {
                             (pkt.pts_us * 9 / 100) as u32
                         } else {
-                            (start_instant.elapsed().as_micros() * 9 / 100) as u32
+                            0u32
                         };
 
-                        let delta = {
-                            let (effective_ts, d) = match last_rtp_ts {
-                                Some(prev) if rtp_ts > prev => (rtp_ts, rtp_ts - prev),
-                                Some(prev) => (prev.wrapping_add(3000), 3000),
-                                None => (rtp_ts, 0),
-                            };
-                            last_rtp_ts = Some(effective_ts);
-                            d
+                        // Delta across calls — monotonic, no backward steps.
+                        // `fallback_delta` = clock_rate / fps covers
+                        // timestamp regressions (e.g. encoder PTS reset).
+                        let delta = match last_rtp_ts {
+                            Some(prev) if rtp_ts > prev => rtp_ts - prev,
+                            Some(_prev) => fallback_delta,
+                            None => 0, // first frame: let Packetizer use
+                                       // its internal base timestamp
                         };
+                        last_rtp_ts = Some(rtp_ts);
 
-                        let nals = {
-                            parser.push(&pkt.data);
-                            parser.extract_nals()
-                        };
+                        #[cfg(feature = "source")]
+                        {
+                            if let Some(profile) = scan_sps_profile(&pkt.data) {
+                                let mut guard = dynamic_profile.write().await;
+                                if guard.as_ref() != Some(&profile) {
+                                    *guard = Some(profile);
+                                }
+                            }
+                        }
 
-                        packetizer.advance_timestamp(delta);
-
-                        for nal in &nals {
-                            #[cfg(feature = "source")]
-                            if nal.nal_type == NalType::Sps {
-                                if let Some(profile) = parse_profile_level_id(&nal.data) {
-                                    let mut guard = dynamic_profile.write().await;
-                                    if guard.as_ref() != Some(&profile) {
-                                        *guard = Some(profile);
+                        match packetizer.packetize(&pkt.data.into(), delta) {
+                            Ok(packets) => {
+                                for packet in packets {
+                                    let mut buf = Vec::with_capacity(packet.marshal_size());
+                                    if packet.marshal_to(&mut buf).is_ok() {
+                                        let _ = rtp_tx.send(MediaPacket::Rtp {
+                                            channel: CHANNEL_VIDEO_RTP,
+                                            data: buf.into(),
+                                        });
                                     }
                                 }
                             }
-
-                            let rtp_packets = packetizer.packetize(nal);
-                            for packet in rtp_packets {
-                                let _ = rtp_tx.send(MediaPacket::Rtp {
-                                    channel: CHANNEL_VIDEO_RTP,
-                                    data: packet.to_bytes(),
-                                });
+                            Err(e) => {
+                                tracing::warn!("RTP packetize error: {}", e);
                             }
                         }
                     }
@@ -196,7 +205,7 @@ impl NativeEncodedSource {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-        self.pipeline = None; // Drop → stops and frees C++ resources
+        self.pipeline = None;
         self.keyframe_handle = None;
         self.set_state(StreamSourceState::Disconnected, None).await;
     }
@@ -273,4 +282,43 @@ impl NativeEncodedSource {
         });
         Some(tx)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal H.264 Annex-B SPS scanner — only what's needed for
+// dynamic profile-level-id detection (used by get_video_codec).
+// RTP packetization is handled by webrtc's H264Payloader + Packetizer.
+// ---------------------------------------------------------------------------
+
+fn scan_sps_profile(data: &[u8]) -> Option<String> {
+    let mut pos = 0;
+    while pos + 3 < data.len() {
+        let start_len = if data[pos] == 0 && data[pos + 1] == 0 && data[pos + 2] == 1 {
+            3
+        } else if pos + 4 <= data.len()
+            && data[pos] == 0
+            && data[pos + 1] == 0
+            && data[pos + 2] == 0
+            && data[pos + 3] == 1
+        {
+            4
+        } else {
+            pos += 1;
+            continue;
+        };
+        let nal_start = pos + start_len;
+        if nal_start + 4 <= data.len() {
+            let nal_type = data[nal_start] & 0x1F;
+            if nal_type == 7 {
+                return Some(format!(
+                    "{:02x}{:02x}{:02x}",
+                    data[nal_start + 1],
+                    data[nal_start + 2],
+                    data[nal_start + 3]
+                ));
+            }
+        }
+        pos += start_len;
+    }
+    None
 }

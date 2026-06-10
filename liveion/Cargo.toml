@@ -46,7 +46,6 @@ sansio = "1.0"
 rtc-interceptor = { workspace = true }
 rtc-shared = { workspace = true }
 uuid = { workspace = true }
-libc = "0.2"
 
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -64,7 +63,6 @@ scuffle-h265 = { version = "0.2.2", optional = true }
 glob = "0.3"
 url = { workspace = true, optional = true }
 fs2 = "0.4"
-base64 = { workspace = true }
 
 [features]
 webui = ["dep:rust-embed", "dep:mime_guess"]
@@ -82,32 +80,15 @@ source = ["dep:rtsp", "dep:url"]
 source-sdp = ["source"]
 source-rtsp = ["source"]
 source-rtp = ["source"]
+source-all = ["source-sdp", "source-rtsp", "source-rtp"]
 
 native-source = ["dep:livesrc"]
 
-# --- native source / encoder features ---
-# Each enables native-source (→ livesrc crate) + the corresponding
-# livesrc capture-* / encoder-* feature.
-livesrc-libcamera = ["source", "native-source", "livesrc/capture-libcamera"]
-livesrc-v4l2 = ["source", "native-source", "livesrc/capture-v4l2"]
-liveenc-v4l2-m2m = ["native-source", "livesrc/encoder-v4l2-m2m"]
-liveenc-rdk = ["native-source", "livesrc/encoder-rdk"]
-
-# (future) livesrc-encoded-source = ["native-source", "livesrc/encoded-source-waybeam-venc"]
-
-# Platform presets (recommended for users)
-# native-rpi: 同时编译 libcamera 和 V4L2 source。
-#   Pi CSI 摄像头走 capture-libcamera，Pi USB 摄像头走 capture-v4l2。
-native-rpi = ["livesrc-libcamera", "livesrc-v4l2", "liveenc-v4l2-m2m"]
-native-generic-v4l2 = ["livesrc-v4l2", "liveenc-v4l2-m2m"]
-native-rdk = ["livesrc-v4l2", "liveenc-rdk"]
-
-# --- deprecated aliases (1:1, will be removed) ---
-source-libcamera = ["livesrc-libcamera"]
-source-v4l2 = ["livesrc-v4l2"]
-backend-rdk-x5 = ["liveenc-rdk"]
-encoder-rdk-x5 = ["liveenc-rdk"]
-source-all = ["source-sdp", "source-rtsp", "source-rtp", "source-libcamera", "source-v4l2"]
+# Platform presets
+# native-rpi: builds both libcamera (Pi CSI camera) and V4L2 (Pi USB camera).
+native-rpi = ["native-source", "livesrc/capture-libcamera", "livesrc/capture-v4l2", "livesrc/encoder-v4l2-m2m"]
+native-generic-v4l2 = ["native-source", "livesrc/capture-v4l2", "livesrc/encoder-v4l2-m2m"]
+native-rdk = ["native-source", "livesrc/capture-v4l2", "livesrc/encoder-rdk"]
 
 [dev-dependencies]
 tempfile = "3.26"

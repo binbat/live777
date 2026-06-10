@@ -50,26 +50,25 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 
 Two config formats coexist in `conf/live777.toml`:
 
-### Path A: Legacy URL (backward-compatible)
+### Path A: Legacy URL (backward-compatible, non-native only)
 
 ```toml
-[stream]
 [[stream.sources]]
-stream_id = "pi_cam"
-url = "libcamera://0?width=640&height=480&fps=30"
+stream_id = "rtsp_cam"
+url = "rtsp://192.168.1.100:554/stream"
 ```
 
-Parameters are embedded in the URL query string. This path remains supported.
+URL-based config is supported for RTSP, SDP, and RTP sources.
+Native sources (libcamera, V4L2) must use the structured format in Path B.
 
 ### Path B: Structured native (recommended)
 
 ```toml
-[stream]
-[[stream.sources_v2]]
+[[stream.sources]]
 stream_id = "pi_cam"
 kind = "libcamera"
 
-[stream.sources_v2.capture]
+[stream.sources.capture]
 backend = "libcamera"
 device = "0"
 width = 640
@@ -77,14 +76,14 @@ height = 480
 fps = 30
 pixel_format = "yuv420"
 
-[stream.sources_v2.encoder]
+[stream.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
 profile = "42001f"
 gop = 60
 
-[stream.sources_v2.output]
+[stream.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```
@@ -137,33 +136,17 @@ Platform presets (convenience combinations):
 
 | Preset | Expands to |
 |--------|-----------|
-| `native-rpi` | `livesrc-libcamera, livesrc-v4l2, liveenc-v4l2-m2m` |
-| `native-generic-v4l2` | `livesrc-v4l2, liveenc-v4l2-m2m` |
-| `native-rdk` | `livesrc-v4l2, liveenc-rdk` |
-
-Deprecated aliases are **capture/encoder-only** (1:1 mapping).  They do **not**
-include a corresponding encoder.  Using `source-v4l2` alone will compile the
-capture backend but no encoder — the pipeline will fail at runtime when
-`create_encoder_backend()` finds no matching backend.
+| `native-rpi` | `native-source, livesrc/capture-libcamera, livesrc/capture-v4l2, livesrc/encoder-v4l2-m2m` |
+| `native-generic-v4l2` | `native-source, livesrc/capture-v4l2, livesrc/encoder-v4l2-m2m` |
+| `native-rdk` | `native-source, livesrc/capture-v4l2, livesrc/encoder-rdk` |
 
 Always use a **preset** for a runnable pipeline:
 
 ```bash
-# Wrong — capture only, no encoder compiled
-cargo build --features source-v4l2
-
-# Correct — preset includes both capture and encoder
+cargo build --features native-rpi
 cargo build --features native-generic-v4l2
+cargo build --features native-rdk
 ```
-
-Deprecated aliases (1:1 mapping, will be removed):
-
-| Deprecated | Use instead |
-|-----------|-------------|
-| `source-libcamera` | `livesrc-libcamera` |
-| `source-v4l2` | `livesrc-v4l2` |
-| `backend-rdk-x5` | `liveenc-rdk` |
-| `encoder-rdk-x5` | `liveenc-rdk` |
 
 ## Build
 
@@ -247,6 +230,6 @@ CMake build — the SourcePipeline requires a capture backend.
 
 ## What was NOT removed
 
-- `legacy_url.rs` and its `parse_libcamera_url()` / `parse_v4l2_url()` / `parse_rtp_url()` — still used by Path A configs.
-- Legacy `libcamera://` and `v4l2://` URL support — fully functional.
+- `legacy_url.rs` has been removed. Native sources only support structured config.
+- RTSP / SDP / RTP URL-based sources remain fully functional (used by non-native sources).
 - Old bridge files and legacy C ABI wrappers removed in PR6A/6B cleanup.

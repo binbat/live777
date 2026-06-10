@@ -11,7 +11,7 @@ extern "C" {
     #include "hb_media_error.h"
 }
 
-// 优化的 NEON YUYV -> NV12 转换函数
+// Optimized NEON YUYV -> NV12 colour-space conversion.
 static void yuyv_to_nv12_neon(const uint8_t* yuyv, uint8_t* nv12_y, uint8_t* nv12_uv, int width, int height) {
     int num_pixels = width * height;
     for (int i = 0; i < num_pixels; i += 16) {

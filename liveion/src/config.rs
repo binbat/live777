@@ -308,13 +308,6 @@ impl Config {
                 .validate()
                 .map_err(|e| anyhow::anyhow!("source config error: {}", e))?;
         }
-
-        #[cfg(feature = "source")]
-        for source in &self.stream.sources_v2 {
-            source
-                .validate()
-                .map_err(|e| anyhow::anyhow!("structured source config error: {}", e))?;
-        }
         Ok(())
     }
 }
@@ -437,16 +430,13 @@ fn default_upload_concurrency() -> usize {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamConfig {
-    /// Legacy URL-based source configurations.
-    /// TOML: `[[stream.sources]]` with `url` field.
+    /// Source configurations: `[[stream.sources]]`.
+    ///
+    /// Accepts two formats:
+    /// - URL-based: `stream_id` + `url` (rtsp://, file://, rtp://)
+    /// - Structured native: `stream_id` + `kind` + `capture` + `encoder` [+ `output`]
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
-
-    /// Structured source specifications (v2, recommended).
-    /// TOML: `[[stream.sources_v2]]` with `kind`, `capture`, `encoder`, `output`.
-    #[cfg(feature = "source")]
-    #[serde(default)]
-    pub sources_v2: Vec<crate::stream::source::stream_config_v2::SourceSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,10 +444,31 @@ pub struct SourceConfig {
     /// Stream ID
     pub stream_id: String,
 
-    /// Source URL
-    /// - RTSP: rtsp://username:password@host:port/path
-    /// - SDP file: file:///path/to/file.sdp or /path/to/file.sdp
-    pub url: String,
+    /// Legacy URL — mutually exclusive with `kind`.
+    /// Supported: rtsp://, rtsps://, file://, .sdp, rtp://
+    #[serde(default)]
+    pub url: Option<String>,
+
+    /// Source kind for structured native sources.
+    /// When set, `capture` and `encoder` are required.
+    #[cfg(feature = "source")]
+    #[serde(default)]
+    pub kind: Option<crate::stream::source::stream_config_v2::SourceKind>,
+
+    /// Capture config (required when `kind` is set).
+    #[cfg(feature = "source")]
+    #[serde(default)]
+    pub capture: Option<crate::stream::source::stream_config_v2::CaptureSpec>,
+
+    /// Encoder config (required when `kind` is set).
+    #[cfg(feature = "source")]
+    #[serde(default)]
+    pub encoder: Option<crate::stream::source::stream_config_v2::EncoderSpec>,
+
+    /// RTP output params (optional, defaults apply).
+    #[cfg(feature = "source")]
+    #[serde(default)]
+    pub output: crate::stream::source::stream_config_v2::OutputSpec,
 }
 
 impl SourceConfig {
@@ -466,26 +477,60 @@ impl SourceConfig {
             anyhow::bail!("stream_id cannot be empty");
         }
 
-        if self.url.trim().is_empty() {
-            anyhow::bail!("url cannot be empty");
+        #[cfg(feature = "source")]
+        if self.kind.is_some() {
+            let capture = self
+                .capture
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("capture is required when kind is set"))?;
+            if capture.device.trim().is_empty() {
+                anyhow::bail!("capture.device cannot be empty");
+            }
+            if capture.width == 0 || capture.height == 0 {
+                anyhow::bail!("capture width/height must be non-zero");
+            }
+            let encoder = self
+                .encoder
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("encoder is required when kind is set"))?;
+            if encoder.bitrate == 0 {
+                anyhow::bail!("encoder.bitrate must be non-zero");
+            }
+            return Ok(());
         }
 
-        let url_lower = self.url.to_lowercase();
+        let url = self.url.as_deref().unwrap_or("");
+        if url.is_empty() {
+            anyhow::bail!("either url or kind must be set");
+        }
+
+        let url_lower = url.to_lowercase();
         if !url_lower.starts_with("rtsp://")
             && !url_lower.starts_with("rtsps://")
             && !url_lower.starts_with("file://")
             && !url_lower.ends_with(".sdp")
             && !url_lower.starts_with("rtp://")
-            && !url_lower.starts_with("exec://")
-            && !url_lower.starts_with("libcamera://")
-            && !url_lower.starts_with("v4l2://")
         {
             anyhow::bail!(
-                "Invalid URL format: {}. Must be rtsp://, rtsps://, file://, rtp://, exec://, libcamera://, v4l2:// or end with .sdp",
-                self.url
+                "Unsupported URL: {}. Valid: rtsp://, rtsps://, file://, rtp://, .sdp",
+                url
             );
         }
-
         Ok(())
+    }
+
+    /// Build a `SourceSpec` from structured fields (for native sources).
+    #[cfg(feature = "source")]
+    pub fn to_spec(&self) -> Option<crate::stream::source::stream_config_v2::SourceSpec> {
+        let kind = self.kind.clone()?;
+        let capture = self.capture.clone()?;
+        let encoder = self.encoder.clone()?;
+        Some(crate::stream::source::stream_config_v2::SourceSpec {
+            stream_id: self.stream_id.clone(),
+            kind,
+            capture,
+            encoder,
+            output: self.output.clone(),
+        })
     }
 }

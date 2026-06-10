@@ -9,7 +9,6 @@
 //! rather than an SDP file. It always listens on a single port for
 //! a single video stream.
 
-use super::stream_config_v2::parse_rtp_url;
 use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -378,4 +377,58 @@ impl RtpListenerSource {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct RtpUrlParams {
+    bind_addr: std::net::SocketAddr,
+    codec: String,
+    profile: String,
+    clock_rate: u32,
+    payload_type: u8,
+}
+
+/// Parse an `rtp://host:port?codec=H264&profile=42001f` URL.
+fn parse_rtp_url(url: &str) -> anyhow::Result<RtpUrlParams> {
+    let stripped = url
+        .strip_prefix("rtp://")
+        .ok_or_else(|| anyhow::anyhow!("URL must start with rtp://"))?;
+
+    let (addr_part, query_part) = match stripped.find('?') {
+        Some(idx) => (&stripped[..idx], Some(&stripped[idx + 1..])),
+        None => (stripped, None),
+    };
+
+    let bind_addr: std::net::SocketAddr = addr_part
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", addr_part, e))?;
+
+    let mut codec = "H264".to_string();
+    let mut profile = "42001f".to_string();
+    let mut clock_rate: u32 = 90000;
+    let mut payload_type: u8 = 96;
+
+    if let Some(query) = query_part {
+        for param in query.split('&') {
+            let (key, value) = match param.find('=') {
+                Some(idx) => (&param[..idx], &param[idx + 1..]),
+                None => continue,
+            };
+            match key {
+                "codec" => codec = value.to_uppercase(),
+                "profile" => profile = value.to_string(),
+                "clock_rate" => clock_rate = value.parse().unwrap_or(90000),
+                "payload_type" | "pt" => payload_type = value.parse().unwrap_or(96),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(RtpUrlParams {
+        bind_addr,
+        codec,
+        profile,
+        clock_rate,
+        payload_type,
+    })
 }

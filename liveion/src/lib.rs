@@ -51,17 +51,9 @@ where
 
     #[cfg(feature = "source")]
     {
-        let legacy_count = cfg.stream.sources.len();
-        let structured_count = cfg.stream.sources_v2.len();
-        let total_sources = legacy_count + structured_count;
-
-        if total_sources > 0 {
-            tracing::info!(
-                "[Server] Auto-starting {} configured sources (legacy={}, structured={})...",
-                total_sources,
-                legacy_count,
-                structured_count
-            );
+        let total = cfg.stream.sources.len();
+        if total > 0 {
+            tracing::info!("[Server] Auto-starting {} configured sources...", total);
 
             if let Err(e) = app_state
                 .stream_manager
