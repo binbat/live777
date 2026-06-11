@@ -90,6 +90,13 @@ enum Transport {
 }
 
 impl Transport {
+    fn label(&self) -> &'static str {
+        match self {
+            Transport::Udp => "udp",
+            Transport::Tcp => "tcp",
+        }
+    }
+
     fn as_query_param(&self) -> &str {
         match self {
             Transport::Udp => "",
@@ -130,6 +137,34 @@ struct TestConfig {
     ffmpeg_command: String,
     media: MediaExpectation,
     transport: Transport,
+}
+
+impl TestConfig {
+    fn codec_label(&self) -> &'static str {
+        if self.ffmpeg_command.contains("libvpx-vp9") {
+            "VP9"
+        } else if self.ffmpeg_command.contains("libvpx") {
+            "VP8"
+        } else if self.ffmpeg_command.contains("libx265") {
+            "H265"
+        } else if self.ffmpeg_command.contains("libx264") {
+            "H264"
+        } else if self.ffmpeg_command.contains("libopus") {
+            "OPUS"
+        } else if self.ffmpeg_command.contains("g722") {
+            "G722"
+        } else {
+            "unknown"
+        }
+    }
+
+    fn media_ready_timeout(&self) -> Duration {
+        if self.ffmpeg_command.contains("libvpx-vp9") {
+            Duration::from_secs(45)
+        } else {
+            Duration::from_secs(30)
+        }
+    }
 }
 
 const CONNECTION_CHECK_INTERVAL_MS: u64 = 100;
@@ -588,6 +623,7 @@ async fn run_rtsp_cycle_test_inner(config: TestConfig) {
         server_addr,
     )
     .await;
+    wait_for_media_ready(&server_addr, &stream_a, &config, "stream A publish").await;
     tokio::time::sleep(Duration::from_millis(STREAM_STABILIZATION_MS)).await;
 
     // Stream A → RTSP server → Stream B
@@ -596,6 +632,7 @@ async fn run_rtsp_cycle_test_inner(config: TestConfig) {
         start_stream_a_whep(tasks.ct(), &config, &ports, &server_addr, &stream_a).await,
     );
     wait_for_subscribe_connected(&server_addr, &stream_a).await;
+    wait_for_media_ready(&server_addr, &stream_a, &config, "stream A WHEP").await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
     // Stream B: RTSP client → WebRTC
@@ -605,6 +642,7 @@ async fn run_rtsp_cycle_test_inner(config: TestConfig) {
         start_stream_b_whip(tasks.ct(), &config, &ports, &server_addr, &stream_b).await,
     );
     wait_for_publish_connected(&server_addr, &stream_b).await;
+    wait_for_media_ready(&server_addr, &stream_b, &config, "stream B publish").await;
 
     // Stream C: Stream B → RTSP server
     let stream_c = stream_id("c");
@@ -619,6 +657,7 @@ async fn run_rtsp_cycle_test_inner(config: TestConfig) {
     );
     wait_for_subscribe_connected(&server_addr, &stream_b).await;
     wait_for_publish_connected(&server_addr, &stream_c).await;
+    wait_for_media_ready(&server_addr, &stream_c, &config, "stream C publish").await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
     // Stream C → RTSP server → ffprobe
@@ -627,6 +666,7 @@ async fn run_rtsp_cycle_test_inner(config: TestConfig) {
         start_stream_c_whep(tasks.ct(), &config, &ports, &server_addr, &stream_c).await,
     );
     wait_for_subscribe_connected(&server_addr, &stream_c).await;
+    wait_for_media_ready(&server_addr, &stream_c, &config, "stream C WHEP").await;
     tokio::time::sleep(Duration::from_millis(FFPROBE_PREPARATION_MS)).await;
 
     // Verify with ffprobe
@@ -876,6 +916,51 @@ async fn wait_for_subscribe_connected(server_addr: &SocketAddr, stream_id: &str)
         |stream| stream.subscribe.sessions[0].state,
     )
     .await;
+}
+
+async fn wait_for_media_ready(
+    server_addr: &SocketAddr,
+    stream_id: &str,
+    config: &TestConfig,
+    stage: &str,
+) {
+    let timeout = config.media_ready_timeout();
+    let attempts = (timeout.as_millis() / u128::from(CONNECTION_CHECK_INTERVAL_MS)) as u32;
+    let mut last_state = None;
+    let mut last_codecs = Vec::new();
+
+    for attempt in 0..attempts {
+        let res = reqwest::get(format!("http://{server_addr}{}", api::path::streams("")))
+            .await
+            .expect("Failed to get streams");
+
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        let body = res
+            .json::<Vec<api::response::Stream>>()
+            .await
+            .expect("Failed to parse streams response");
+
+        if let Some(stream) = body.into_iter().find(|s| s.id == stream_id) {
+            last_codecs = stream.codecs.clone();
+            last_state = stream.publish.sessions.first().map(|session| session.state);
+
+            if !last_codecs.is_empty() {
+                return;
+            }
+        }
+
+        if attempt + 1 == attempts {
+            panic!(
+                "Stream '{stream_id}' media was not ready during {stage} after {:?}; codec={}, transport={}, last_state={last_state:?}, last_codecs={last_codecs:?}",
+                timeout,
+                config.codec_label(),
+                config.transport.label()
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(CONNECTION_CHECK_INTERVAL_MS)).await;
+    }
 }
 
 async fn wait_for_connection_state<F, G>(
