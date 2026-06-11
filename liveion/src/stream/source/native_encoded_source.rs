@@ -13,9 +13,9 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{RwLock, broadcast, mpsc};
-use webrtc::rtp::codecs::h264::H264Payloader;
-use webrtc::rtp::packetizer::{Packetizer as _, new_packetizer};
-use webrtc::rtp::sequence::new_random_sequencer;
+use rtc_rtp::codec::h264::H264Payloader;
+use rtc_rtp::packetizer::{new_packetizer, Packetizer as _};
+use rtc_rtp::sequence::new_random_sequencer;
 
 // ---------------------------------------------------------------------------
 // NativeEncodedSource
@@ -207,9 +207,7 @@ impl NativeEncodedSource {
     pub async fn get_video_codec(
         &self,
     ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
-        use rtc::rtp_transceiver::rtp_sender::{
-            RTCPFeedback, RTCRtpCodecCapability, RTCRtpCodecParameters,
-        };
+        use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters};
 
         let mime_type = format!("video/{}", self.params.codec_name.to_uppercase());
         let profile = self
@@ -220,7 +218,7 @@ impl NativeEncodedSource {
             .unwrap_or_else(|| self.params.default_profile.clone());
 
         Some(RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
+            rtp_codec: RTCRtpCodec {
                 mime_type,
                 clock_rate: self.params.clock_rate,
                 channels: 0,
@@ -244,7 +242,6 @@ impl NativeEncodedSource {
                 ],
             },
             payload_type: self.params.payload_type as u8,
-            stats_id: String::new(),
         })
     }
 
@@ -261,11 +258,11 @@ impl NativeEncodedSource {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         tokio::spawn(async move {
             while let Some(data) = rx.recv().await {
-                if let Ok(packets) = webrtc::rtcp::packet::unmarshal(&mut &data[..]) {
+                if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
                     for packet in packets {
                         if packet
                             .as_any()
-                            .downcast_ref::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
+                            .downcast_ref::<rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
                             .is_some()
                         {
                             kh.request_keyframe();
