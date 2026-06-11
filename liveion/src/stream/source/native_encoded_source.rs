@@ -10,12 +10,12 @@
 
 use super::{MediaPacket, StateChangeEvent, StreamSourceState};
 use anyhow::Result;
+use rtc_rtp::codec::h264::H264Payloader;
+use rtc_rtp::packetizer::{Packetizer as _, new_packetizer};
+use rtc_rtp::sequence::new_random_sequencer;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{RwLock, broadcast, mpsc};
-use rtc_rtp::codec::h264::H264Payloader;
-use rtc_rtp::packetizer::{new_packetizer, Packetizer as _};
-use rtc_rtp::sequence::new_random_sequencer;
 
 // ---------------------------------------------------------------------------
 // NativeEncodedSource
