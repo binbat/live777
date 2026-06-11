@@ -78,7 +78,13 @@ pub async fn from(
         }
     });
 
-    let codec_info = wait_for_codec_info(codec_info.clone(), &target_url, &whep_url).await?;
+    let codec_info = tokio::select! {
+        _ = ct.cancelled() => {
+            graceful_shutdown("WHEP", &mut client, peer).await;
+            return Ok(());
+        }
+        result = wait_for_codec_info(codec_info.clone(), &target_url, &whep_url) => result?,
+    };
     debug!("Codec info: {:?}", codec_info);
 
     let (video_broadcast_tx, _) = broadcast::channel::<Vec<u8>>(1000);
