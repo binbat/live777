@@ -173,17 +173,6 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
         }
 
         hb_mm_mc_queue_output_buffer(context, &output_buf, 100);
-
-        if (++frame_count % 60 == 0) {
-            fprintf(stderr,
-                    "[RDK Encoder] submit frame=%ld kind=%s bytes=%u "
-                    "encoded=%u keyframe=%d\n",
-                    frame_count,
-                    frame.kind == BufferKind::DmaBuf ? "DmaBuf" : "CPU",
-                    frame.planes[0].bytes,
-                    out_len,
-                    (flags & static_cast<uint32_t>(EncodedKeyframe)) ? 1 : 0);
-        }
     }
     return true;
 }

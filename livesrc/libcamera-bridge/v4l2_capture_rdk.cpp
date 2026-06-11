@@ -154,8 +154,6 @@ static void capture_loop(V4L2CaptureImpl* impl) {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(impl->fd, VIDIOC_STREAMON, &type);
 
-    uint64_t dbg_count = 0;
-
     while (impl->running) {
         struct v4l2_buffer buf = {};
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -191,14 +189,6 @@ static void capture_loop(V4L2CaptureImpl* impl) {
                     impl->width * 2, buf.bytesused, -1, 0};
             }
             impl->capture_cb_(f);
-
-            dbg_count++;
-            if (dbg_count % 60 == 0) {
-                fprintf(stderr, "[RDK Capture] frame=%lu kind=%s bytes=%u\n",
-                        (unsigned long)impl->seq_,
-                        use_dmabuf ? "DmaBuf" : "CPU",
-                        buf.bytesused);
-            }
         }
 
         ioctl(impl->fd, VIDIOC_QBUF, &buf);
