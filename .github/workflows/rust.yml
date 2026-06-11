@@ -16,18 +16,8 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6
-      - name: Setup ffmpeg on Ubuntu
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-      - name: Setup ffmpeg on macOS
-        if: runner.os == 'macOS'
-        run: brew list ffmpeg || brew install ffmpeg
-      - name: Setup ffmpeg on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: choco install ffmpeg -y --no-progress
+      - name: Setup ffmpeg
+        uses: AnimMouse/setup-ffmpeg@v1.2.3
       - name: Show version information
         run: |
           ffmpeg -version
