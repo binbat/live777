@@ -13,9 +13,9 @@ function timestamp(value: number) {
     return `${s}.${ms}`;
 }
 
-export type QRCodeFrameRate = 30 | 60 | 120 | 144 | 200;
+export type QRCodeFrameRate = 30 | 60 | 120 | 144 | 200 | 500;
 
-export const QRCodeFrameRates: QRCodeFrameRate[] = [30, 60, 120, 144, 200];
+export const QRCodeFrameRates: QRCodeFrameRate[] = [30, 60, 120, 144, 200, 500];
 
 export const DefaultQRCodeFrameRate: QRCodeFrameRate = 30;
 
@@ -46,15 +46,17 @@ export class QRCodeStream {
     private timer: number | null = null;
     private nextFrameAt = 0;
     private captureTrack: CanvasCaptureMediaStreamTrack | null = null;
+    private frameRate: QRCodeFrameRate;
 
     private capturing: MediaStream | null = null;
     public canvas: HTMLCanvasElement;
 
     constructor(
         canvas: HTMLCanvasElement,
-        private frameRate: QRCodeFrameRate = DefaultQRCodeFrameRate
+        frameRate: QRCodeFrameRate = DefaultQRCodeFrameRate
     ) {
         this.canvas = canvas;
+        this.frameRate = frameRate;
         this.encoder = new Encoder({ level: 'L' });
         const { width, height } = canvas;
         this.width = width;

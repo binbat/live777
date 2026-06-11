@@ -2,10 +2,6 @@ import { useSearchParams } from "@solidjs/router";
 import { createWhepPlayback } from "player-core";
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
 import {
-    collectVideoRtpFps,
-    type VideoFpsSamples,
-} from "../../player-core/webrtc-stats";
-import {
     DefaultQRCodeFrameRate,
     parseQRCodeFrameRate,
     type QRCodeFrameRate,
@@ -22,10 +18,6 @@ const WhepLayerOptions = [
     { value: "f", text: "HIGH" },
 ];
 
-function formatFps(fps: number | null) {
-    return fps === null ? "--" : fps.toFixed(1);
-}
-
 export default function Subscriber() {
     const [searchParams] = useSearchParams();
 
@@ -40,15 +32,9 @@ export default function Subscriber() {
         createSignal<QRCodeFrameRate>(
             parseQRCodeFrameRate(searchParams.qrfps ?? DefaultQRCodeFrameRate),
         );
-    const [actualReceiveFps, setActualReceiveFps] = createSignal<number | null>(
-        null,
-    );
 
     let videoRef: HTMLVideoElement | undefined;
     let decoder: QRCodeStreamDecoder | null = null;
-    let receiveFpsSamples: VideoFpsSamples = {};
-    let receiveFpsInterval: ReturnType<typeof setInterval> | null = null;
-    let receiveFpsToken = 0;
 
     const playback = createWhepPlayback({
         url: () => {
@@ -61,7 +47,6 @@ export default function Subscriber() {
     });
 
     onCleanup(() => {
-        stopActualReceiveFps();
         stopQrLatencyMeasure();
         void playback.stop({ reconnect: false });
     });
@@ -71,48 +56,6 @@ export default function Subscriber() {
             stopQrLatencyMeasure();
         }
     });
-
-    createEffect(() => {
-        const peerConnection = playback.peerConnection();
-        if (peerConnection) {
-            startActualReceiveFps(peerConnection);
-        } else {
-            stopActualReceiveFps();
-        }
-    });
-
-    function stopActualReceiveFps() {
-        receiveFpsToken += 1;
-        if (receiveFpsInterval) {
-            clearInterval(receiveFpsInterval);
-            receiveFpsInterval = null;
-        }
-        receiveFpsSamples = {};
-        setActualReceiveFps(null);
-    }
-
-    function startActualReceiveFps(peerConnection: RTCPeerConnection) {
-        stopActualReceiveFps();
-        const token = receiveFpsToken;
-
-        const syncActualReceiveFps = async () => {
-            const stats = await collectVideoRtpFps(
-                peerConnection,
-                "inbound",
-                receiveFpsSamples,
-            );
-            if (token !== receiveFpsToken) {
-                return;
-            }
-            receiveFpsSamples = stats.samples;
-            setActualReceiveFps(stats.fps);
-        };
-
-        void syncActualReceiveFps();
-        receiveFpsInterval = setInterval(() => {
-            void syncActualReceiveFps();
-        }, 1000);
-    }
 
     createEffect(() => {
         const frameRate = parseQRCodeFrameRate(
@@ -224,8 +167,6 @@ export default function Subscriber() {
                     </button>
                 </section>
 
-                <section>Expected QR FPS: {expectedQrFrameRate()} fps</section>
-
                 <section>
                     <button
                         type="button"
@@ -252,7 +193,7 @@ export default function Subscriber() {
                     <h5>
                         Audio Track Count: {playback.audioTrackCount()}, Video
                         Track Count: {playback.videoTrackCount()}
-                        {` | Expected FPS: ${expectedQrFrameRate()} | Actual Receive FPS: ${formatFps(actualReceiveFps())}`}
+                        {` | QR Target FPS: ${expectedQrFrameRate()}`}
                         {latency() && ` | Latency: ${latency()}`}
                     </h5>
                     <Show when={playback.stream()}>
@@ -261,6 +202,7 @@ export default function Subscriber() {
                             return (
                                 <Player
                                     stream={stream}
+                                    showRenderFps
                                     onVideoElement={(video) => {
                                         videoRef = video;
                                     }}
