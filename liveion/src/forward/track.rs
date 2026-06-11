@@ -413,7 +413,7 @@ impl PublishTrackRemote {
                                     if !packets.is_empty() {
                                         let count = packets.len();
                                         match track.write_rtcp(packets).await {
-                                            Ok(()) => debug!(
+                                            Ok(()) => trace!(
                                                 "[{}] [{}] [twcc-probe] wrote manual TWCC feedback packets={}",
                                                 stream, id, count,
                                             ),
@@ -436,7 +436,7 @@ impl PublishTrackRemote {
                         let missing = twcc_missing_count.load(Ordering::Relaxed);
                         let seq = last_twcc_seq.load(Ordering::Relaxed);
                         if twcc_present {
-                            debug!(
+                            trace!(
                                 "[{}] [{}] [twcc-probe] total={}, twcc_present=true, last_twcc_seq={}, missing_since_last={}, packet_ext_ids={:?}",
                                 stream, id, total, seq, missing, packet_ext_ids,
                             );
