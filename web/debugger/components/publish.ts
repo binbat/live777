@@ -44,6 +44,7 @@ type startWhipConfig = {
     };
     onStream: (stream: MediaStream | null) => void;
     onChannel: (channel: RTCDataChannel) => void;
+    onPeerConnection?: (peerConnection: RTCPeerConnection | null) => void;
     log: (msg: string) => void;
 };
 
@@ -77,6 +78,7 @@ export default async function startWhip(
     cfg.onStream(stream);
 
     const pc = new RTCPeerConnection();
+    cfg.onPeerConnection?.(pc);
 
     // NOTE:
     // 1. Live777 Don't support label
@@ -135,6 +137,7 @@ export default async function startWhip(
     const stop = async () => {
         await whip.stop();
         cfg.log("stopped");
+        cfg.onPeerConnection?.(null);
         stream.getTracks().map((track) => track.stop());
         cfg.onStream(null);
     };

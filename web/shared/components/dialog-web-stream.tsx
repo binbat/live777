@@ -1,4 +1,4 @@
-import { useRef, useImperativeHandle, useState, useContext } from 'preact/hooks';
+import { useRef, useImperativeHandle, useState, useContext, useEffect } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
 import { Button, Collapse, Modal } from 'react-daisyui';
 import { WHIPClient } from '@binbat/whip-whep/whip';
@@ -6,7 +6,12 @@ import { WHIPClient } from '@binbat/whip-whep/whip';
 import { TokenContext } from '../context';
 import { formatVideoTrackResolution } from '../utils';
 import { useLogger } from '../hooks/use-logger';
-import { QRCodeStream } from '../qrcode-stream';
+import {
+    DefaultQRCodeFrameRate,
+    type QRCodeFrameRate,
+    QRCodeFrameRates,
+    QRCodeStream
+} from '../qrcode-stream';
 import convertSessionDescription from '../sdp-codec';
 
 interface Props {
@@ -31,6 +36,11 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     const refCanvas = useRef<HTMLCanvasElement>(null);
     const refQrCodeStream = useRef<QRCodeStream>(null);
     const [qrPreviewing, setQrPreviewing] = useState(false);
+    const [qrSourceHidden, setQrSourceHidden] = useState(false);
+    const refQrSourceHiddenLogged = useRef(false);
+    const [qrFrameRate, setQrFrameRate] = useState<QRCodeFrameRate>(
+        DefaultQRCodeFrameRate
+    );
 
     useImperativeHandle(ref, () => {
         return {
@@ -49,6 +59,27 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         setConnState(state);
         logger.log(state);
     };
+
+    useEffect(() => {
+        const handleVisibilityChange = () => {
+            if (
+                document.visibilityState !== 'hidden' ||
+                !refQrCodeStream.current ||
+                !refWhipClient.current
+            ) {
+                return;
+            }
+            setQrSourceHidden(true);
+            if (!refQrSourceHiddenLogged.current) {
+                logger.log('QR source page is hidden; browser timer throttling may reduce QR fps.');
+                refQrSourceHiddenLogged.current = true;
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, []);
 
     const handleStreamStart = async (stream: MediaStream) => {
         logger.clear();
@@ -109,8 +140,13 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
     };
 
     const handleEncodeLatencyPreview = () => {
+        setQrSourceHidden(false);
+        refQrSourceHiddenLogged.current = false;
         if (!refQrCodeStream.current) {
-            refQrCodeStream.current = new QRCodeStream(refCanvas.current!);
+            refQrCodeStream.current = new QRCodeStream(
+                refCanvas.current!,
+                qrFrameRate
+            );
         }
         const stream = refQrCodeStream.current.capture();
         refMediaStream.current = stream;
@@ -120,15 +156,40 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
         setQrPreviewing(true);
     };
 
+    const updateQrFrameRate = (frameRate: QRCodeFrameRate) => {
+        setQrFrameRate(frameRate);
+        if (!qrPreviewing || refWhipClient.current) {
+            return;
+        }
+
+        if (refQrCodeStream.current) {
+            refQrCodeStream.current.stop();
+            refQrCodeStream.current = null;
+        }
+        refQrCodeStream.current = new QRCodeStream(
+            refCanvas.current!,
+            frameRate
+        );
+        const stream = refQrCodeStream.current.capture();
+        refMediaStream.current = stream;
+        if (refVideo.current) {
+            refVideo.current.srcObject = stream;
+        }
+        logger.log(`QR source updated to ${frameRate} fps.`);
+    };
+
     const handleEncodeLatencyPublish = () => {
         if (refMediaStream.current) {
             handleStreamStart(refMediaStream.current);
+            logger.log('For QR latency testing, keep this source page visible and use Preview -> Decode Latency on this page.');
             setQrPreviewing(false);
         }
     };
 
     const handleStreamStop = async () => {
         setQrPreviewing(false);
+        setQrSourceHidden(false);
+        refQrSourceHiddenLogged.current = false;
         if (refQrCodeStream.current) {
             refQrCodeStream.current.stop();
             refQrCodeStream.current = null;
@@ -163,7 +224,7 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
             <Modal.Body>
                 <video
                     ref={refVideo}
-                    className="mx-[-1.5rem] min-w-[28rem] max-w-[90vw] max-h-[70vh]"
+                    className="block mx-auto min-w-[28rem] max-w-[90vw] max-h-[70vh]"
                     onResize={handleVideoResize}
                     controls autoplay
                 />
@@ -176,8 +237,32 @@ export const WebStreamDialog = forwardRef<IWebStreamDialog, Props>((props, ref) 
                         <pre class="overflow-auto max-h-[10lh]">{logger.logs.join('\n')}</pre>
                     </Collapse.Content>
                 </Collapse.Details>
+                {qrSourceHidden ? (
+                    <div className="alert alert-warning mt-2">
+                        <span>QR source page was hidden; browser timer throttling may reduce QR fps.</span>
+                    </div>
+                ) : null}
             </Modal.Body>
             <Modal.Actions className="mt-0">
+                <label className="mr-auto">
+                    QR Frame Rate:
+                    <select
+                        disabled={!!refWhipClient.current}
+                        value={qrFrameRate}
+                        onChange={(e) => {
+                            updateQrFrameRate(
+                                Number.parseInt(
+                                    e.currentTarget.value,
+                                    10
+                                ) as QRCodeFrameRate
+                            );
+                        }}
+                    >
+                        {QRCodeFrameRates.map(frameRate => (
+                            <option value={frameRate}>{frameRate} fps</option>
+                        ))}
+                    </select>
+                </label>
                 {refWhipClient.current ? (
                     <Button color="error" onClick={handleStreamStop}>Stop</Button>
                 ) : qrPreviewing ? (

@@ -1,7 +1,12 @@
 import { useSearchParams } from "@solidjs/router";
 import { createWhepPlayback } from "player-core";
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
-import { QRCodeStreamDecoder } from "../../shared/qrcode-stream";
+import {
+    DefaultQRCodeFrameRate,
+    parseQRCodeFrameRate,
+    type QRCodeFrameRate,
+    QRCodeStreamDecoder,
+} from "../../shared/qrcode-stream";
 import { createLogger } from "../primitive/logger";
 import Datachannel from "./datachannel";
 import Player from "./player";
@@ -14,6 +19,8 @@ const WhepLayerOptions = [
 ];
 
 export default function Subscriber() {
+    const [searchParams] = useSearchParams();
+
     const [disabled, setDisabled] = createSignal(true);
     const [disabledAudio, setDisabledAudio] = createSignal(false);
     const [disabledVideo, setDisabledVideo] = createSignal(false);
@@ -21,8 +28,11 @@ export default function Subscriber() {
 
     const [latency, setLatency] = createSignal("");
     const [isMeasuringQrLatency, setIsMeasuringQrLatency] = createSignal(false);
+    const [expectedQrFrameRate, setExpectedQrFrameRate] =
+        createSignal<QRCodeFrameRate>(
+            parseQRCodeFrameRate(searchParams.qrfps ?? DefaultQRCodeFrameRate),
+        );
 
-    const [searchParams] = useSearchParams();
     let videoRef: HTMLVideoElement | undefined;
     let decoder: QRCodeStreamDecoder | null = null;
 
@@ -47,16 +57,25 @@ export default function Subscriber() {
         }
     });
 
-    const stopQrLatencyMeasure = () => {
+    createEffect(() => {
+        const frameRate = parseQRCodeFrameRate(
+            searchParams.qrfps ?? DefaultQRCodeFrameRate,
+        );
+        if (frameRate !== expectedQrFrameRate()) {
+            setExpectedQrFrameRate(frameRate);
+        }
+    });
+
+    function stopQrLatencyMeasure() {
         if (decoder) {
             decoder.stop();
             decoder = null;
         }
         setIsMeasuringQrLatency(false);
         setLatency("");
-    };
+    }
 
-    const startQrLatencyMeasure = () => {
+    function startQrLatencyMeasure() {
         if (!videoRef || !playback.stream()) {
             return;
         }
@@ -68,7 +87,7 @@ export default function Subscriber() {
             setLatency(`${e.detail} ms`);
         });
         decoder.start();
-    };
+    }
 
     const start = async () => {
         clear();
@@ -174,6 +193,7 @@ export default function Subscriber() {
                     <h5>
                         Audio Track Count: {playback.audioTrackCount()}, Video
                         Track Count: {playback.videoTrackCount()}
+                        {` | QR Target FPS: ${expectedQrFrameRate()}`}
                         {latency() && ` | Latency: ${latency()}`}
                     </h5>
                     <Show when={playback.stream()}>
@@ -182,6 +202,7 @@ export default function Subscriber() {
                             return (
                                 <Player
                                     stream={stream}
+                                    showRenderFps
                                     onVideoElement={(video) => {
                                         videoRef = video;
                                     }}
