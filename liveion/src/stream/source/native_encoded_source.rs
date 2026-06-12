@@ -132,7 +132,7 @@ impl NativeEncodedSource {
                         let Some(pkt) = pkt else { break };
 
                         let n = DBG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                        if n % 60 == 0 {
+                        if n.is_multiple_of(60) {
                             tracing::trace!(
                                 "[NativeEncodedSource] packet bytes={} count={}",
                                 pkt.data.len(), n

@@ -40,7 +40,7 @@ pub async fn create_source_from_spec(spec: &SourceSpec) -> Result<Box<dyn Stream
     match spec.kind {
         #[cfg(feature = "native-source")]
         super::source_config::SourceKind::V4l2 | super::source_config::SourceKind::Libcamera => {
-            return Ok(Box::new(NativeSource::from_spec(spec)?));
+            Ok(Box::new(NativeSource::from_spec(spec)?))
         }
         #[cfg(not(feature = "native-source"))]
         _ => anyhow::bail!("Native source feature not enabled. Use a native-* preset."),
