@@ -366,6 +366,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "native-source")]
     fn test_to_native_params_valid() {
         let spec = SourceSpec {
             stream_id: "cam1".into(),
@@ -410,6 +411,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "native-source")]
     fn test_to_native_params_legacy_backend_compat() {
         // Legacy values are still accepted — they pass through unchanged.
         // Normalization happens in C++ backend_factory.cpp.
@@ -440,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "native-source")]
     fn test_to_native_params_invalid_pixel_format() {
         let spec = SourceSpec {
             stream_id: "bad".into(),
@@ -468,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "native-source")]
     fn test_to_native_params_invalid_codec() {
         let spec = SourceSpec {
             stream_id: "bad".into(),

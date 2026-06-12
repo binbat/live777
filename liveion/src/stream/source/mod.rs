@@ -10,7 +10,6 @@ mod rtsp_source;
 #[cfg(feature = "source-sdp")]
 mod sdp_source;
 
-pub mod lifecycle;
 #[cfg(feature = "native-source")]
 pub mod native_encoded_source;
 pub mod source_router;
