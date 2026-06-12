@@ -52,7 +52,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 ## Config
 
 Native sources are configured under `[[stream.sources]]` in `conf/live777.toml`.
-There is no separate `sources_v2` or standalone `livesrc-*.toml` config file.
+All source configuration goes through `[[stream.sources]]` in `live777.toml`.
 
 ### URL-based (non-native: RTSP / SDP / RTP)
 
@@ -91,16 +91,14 @@ clock_rate = 90000
 
 `pixel_format` and `codec` values are validated at startup (unknown values error early).  `kind` + `capture` + `encoder` are mutually exclusive with `url`.
 
-`conf/live777.toml` ships with commented-out Pi / RDK examples.  Copy them into your own config to enable a camera source.  Standalone `conf/livesrc-rdk.toml` / `conf/livesrc-rpicam.toml` files are no longer maintained; native source config is unified in `live777.toml`.
+`conf/live777.toml` ships with commented-out Pi / RDK examples.  Copy them into your own config to enable a camera source.
 
 ### Backend naming
 
-| Layer | Canonical value | Legacy aliases (C++ compat) |
-|-------|----------------|---------------------------|
-| `capture.backend` | `"v4l2"`, `"libcamera"` | `"rdk-x5"`, `"rdk_x5"` → `"v4l2"` |
-| `encoder.backend` | `"v4l2-m2m"`, `"rdk"` | `"v4l2_m2m"` → `"v4l2-m2m"`, `"rdk_x5"` → `"rdk"` |
-
-Legacy values are normalized in the C++ `backend_factory.cpp` dispatcher.
+| Layer | Value |
+|-------|-------|
+| `capture.backend` | `"libcamera"`, `"v4l2"` |
+| `encoder.backend` | `"v4l2_m2m"`, `"rdk"` |
 
 ### pixel_format values
 
@@ -139,7 +137,7 @@ No additional `--features source` is needed — presets include autostart.
 # Raspberry Pi CSI
 LIVE777_NATIVE_BACKEND=rpi \
 cargo build --bin live777 --release \
-  --target armv7-unknown-linux-gnueabihf \
+  --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rpi,webui
 
 # Generic Linux V4L2
@@ -166,7 +164,7 @@ cargo build --bin live777 --release \
 ```bash
 LIVE777_NATIVE_BACKEND=rpi \
 cargo build --bin live777 --release \
-  --target armv7-unknown-linux-gnueabihf \
+  --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rpi,webui
 ```
 
@@ -298,12 +296,3 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-## What was removed
-
-- `legacy_url.rs` and URL-based native source config (`libcamera://`, `v4l2://`) — removed. Native sources only support structured config in `[[stream.sources]]`.
-- `sources_v2` config key — removed. All sources use `[[stream.sources]]`.
-- Deprecated feature aliases (`source-libcamera`, `source-v4l2`, `backend-rdk-x5`, `encoder-rdk-x5`) — removed. Use presets.
-- Standalone `conf/livesrc-rdk.toml` / `conf/livesrc-rpicam.toml` — removed. Native source config goes in `live777.toml`.
-- Old bridge files and legacy C ABI wrappers (`bridge_ffi.*`, `bridge_v4l2_ffi.*`, `camera.h`, `v4l2_capture.h`) — removed.
-- Custom H.264 RTP packetizer (`h264_utils.rs`) — replaced by webrtc-rs `H264Payloader` / `Packetizer`.
-- RTSP / SDP / RTP URL-based sources remain fully functional (used by non-native sources).

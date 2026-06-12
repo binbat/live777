@@ -444,7 +444,7 @@ pub struct SourceConfig {
     /// Stream ID
     pub stream_id: String,
 
-    /// Legacy URL — mutually exclusive with `kind`.
+    /// URL source for RTSP / SDP inputs. Mutually exclusive with `kind`.
     /// Supported: rtsp://, rtsps://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
@@ -453,22 +453,22 @@ pub struct SourceConfig {
     /// When set, `capture` and `encoder` are required.
     #[cfg(feature = "source")]
     #[serde(default)]
-    pub kind: Option<crate::stream::source::stream_config_v2::SourceKind>,
+    pub kind: Option<crate::stream::source::source_config::SourceKind>,
 
     /// Capture config (required when `kind` is set).
     #[cfg(feature = "source")]
     #[serde(default)]
-    pub capture: Option<crate::stream::source::stream_config_v2::CaptureSpec>,
+    pub capture: Option<crate::stream::source::source_config::CaptureSpec>,
 
     /// Encoder config (required when `kind` is set).
     #[cfg(feature = "source")]
     #[serde(default)]
-    pub encoder: Option<crate::stream::source::stream_config_v2::EncoderSpec>,
+    pub encoder: Option<crate::stream::source::source_config::EncoderSpec>,
 
     /// RTP output params (optional, defaults apply).
     #[cfg(feature = "source")]
     #[serde(default)]
-    pub output: crate::stream::source::stream_config_v2::OutputSpec,
+    pub output: crate::stream::source::source_config::OutputSpec,
 }
 
 impl SourceConfig {
@@ -520,11 +520,11 @@ impl SourceConfig {
 
     /// Build a `SourceSpec` from structured fields (for native sources).
     #[cfg(feature = "source")]
-    pub fn to_spec(&self) -> Option<crate::stream::source::stream_config_v2::SourceSpec> {
+    pub fn to_spec(&self) -> Option<crate::stream::source::source_config::SourceSpec> {
         let kind = self.kind.clone()?;
         let capture = self.capture.clone()?;
         let encoder = self.encoder.clone()?;
-        Some(crate::stream::source::stream_config_v2::SourceSpec {
+        Some(crate::stream::source::source_config::SourceSpec {
             stream_id: self.stream_id.clone(),
             kind,
             capture,

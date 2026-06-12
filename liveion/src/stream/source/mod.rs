@@ -12,8 +12,8 @@ mod sdp_source;
 
 #[cfg(feature = "native-source")]
 pub mod native_encoded_source;
+pub mod source_config;
 pub mod source_router;
-pub mod stream_config_v2;
 
 pub mod manager;
 #[cfg(feature = "native-source")]
@@ -127,14 +127,14 @@ pub async fn create_source_from_url(
 
 #[cfg(feature = "source")]
 pub async fn create_source_from_spec(
-    spec: &stream_config_v2::SourceSpec,
+    spec: &source_config::SourceSpec,
 ) -> Result<Box<dyn StreamSource>> {
     source_router::create_source_from_spec(spec).await
 }
 
 #[cfg(not(feature = "source"))]
 pub async fn create_source_from_spec(
-    _spec: &stream_config_v2::SourceSpec,
+    _spec: &source_config::SourceSpec,
 ) -> Result<Box<dyn StreamSource>> {
     anyhow::bail!("Source feature not enabled")
 }

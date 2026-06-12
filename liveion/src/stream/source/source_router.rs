@@ -13,7 +13,7 @@ use crate::config::SourceConfig;
 use super::native_source::NativeSource;
 
 #[cfg(feature = "source")]
-use super::stream_config_v2::SourceSpec;
+use super::source_config::SourceSpec;
 
 /// Creates a `StreamSource` from a connection URL.
 ///
@@ -39,8 +39,7 @@ pub async fn create_source_extended(
 pub async fn create_source_from_spec(spec: &SourceSpec) -> Result<Box<dyn StreamSource>> {
     match spec.kind {
         #[cfg(feature = "native-source")]
-        super::stream_config_v2::SourceKind::V4l2
-        | super::stream_config_v2::SourceKind::Libcamera => {
+        super::source_config::SourceKind::V4l2 | super::source_config::SourceKind::Libcamera => {
             return Ok(Box::new(NativeSource::from_spec(spec)?));
         }
         #[cfg(not(feature = "native-source"))]
@@ -50,7 +49,7 @@ pub async fn create_source_from_spec(spec: &SourceSpec) -> Result<Box<dyn Stream
 
 #[cfg(not(feature = "source"))]
 pub async fn create_source_from_spec(
-    _spec: &super::stream_config_v2::SourceSpec,
+    _spec: &super::source_config::SourceSpec,
 ) -> Result<Box<dyn StreamSource>> {
     anyhow::bail!("Source feature not enabled")
 }

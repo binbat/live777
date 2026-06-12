@@ -537,7 +537,7 @@ impl Manager {
                 };
                 self.start_single_source(source, &spec.stream_id).await;
             }
-            // Legacy URL-based sources
+            // URL-based sources (RTSP / SDP)
             else if let Some(ref url) = source_cfg.url {
                 tracing::info!(
                     "Auto-starting legacy source: {} from {}",

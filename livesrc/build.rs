@@ -52,22 +52,36 @@ fn main() {
         return;
     }
 
-    // Determine native backend explicitly — NEVER infer from TARGET
+    // Native backend selection — NEVER inferred from TARGET.
+    // RDK and rpi require explicit LIVE777_NATIVE_BACKEND.
+    // When unset, default to generic-v4l2 (the CI all-features path).
     let requested_backend = env::var("LIVE777_NATIVE_BACKEND").ok();
-    let native_backend = if rdk_available {
-        "rdk-x5".to_string()
-    } else if requested_backend.as_deref() == Some("rdk-x5") {
-        println!(
-            "cargo:warning=LIVE777_NATIVE_BACKEND=rdk-x5 requested but target arch is \
-             {target_arch}; RDK requires aarch64. Falling back to generic-v4l2."
-        );
-        "generic-v4l2".to_string()
-    } else if has_capture_libcamera {
-        requested_backend.unwrap_or_else(|| "rpi".into())
-    } else if has_capture_v4l2 {
-        requested_backend.unwrap_or_else(|| "generic-v4l2".into())
-    } else {
-        return;
+    let native_backend = match requested_backend.as_deref() {
+        Some("rdk-x5") if rdk_available => "rdk-x5".to_string(),
+        Some("rdk-x5") => {
+            println!(
+                "cargo:warning=LIVE777_NATIVE_BACKEND=rdk-x5 requires aarch64 Linux; \
+                 falling back to generic-v4l2."
+            );
+            "generic-v4l2".to_string()
+        }
+        Some("rpi") => "rpi".to_string(),
+        Some("generic-v4l2") => "generic-v4l2".to_string(),
+        Some(other) => {
+            panic!(
+                "unsupported LIVE777_NATIVE_BACKEND={other}. \
+                 Expected 'rpi', 'generic-v4l2', or 'rdk-x5'"
+            )
+        }
+        None if has_capture_v4l2 => "generic-v4l2".to_string(),
+        None if has_capture_libcamera => {
+            println!(
+                "cargo:warning=capture-libcamera requires LIVE777_NATIVE_BACKEND=rpi; \
+                 CMake build skipped."
+            );
+            return;
+        }
+        None => return,
     };
 
     // Rerun-if-changed — all source files that affect the native build

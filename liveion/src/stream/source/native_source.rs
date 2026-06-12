@@ -5,11 +5,11 @@
 //! `NativeSourceParams` they construct — everything else is identical.
 //! This module merges them into a single `NativeSource` struct.
 //!
-//! Only the structured config path (`SourceSpec` → `NativeSourceParams`)
-//! is supported.  Legacy URL-based config has been removed.
+//! Native sources use structured `[[stream.sources]]` config fields
+//! (`kind`, `capture`, `encoder`, `output`).
 
 use super::native_encoded_source::NativeEncodedSource;
-use super::stream_config_v2::SourceSpec;
+use super::source_config::SourceSpec;
 use super::{MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
