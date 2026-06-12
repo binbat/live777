@@ -19,7 +19,6 @@ pub mod manager;
 #[cfg(feature = "native-source")]
 pub mod native_source;
 
-#[cfg(feature = "native-source")]
 #[cfg(feature = "source-rtsp")]
 pub use rtsp_source::RtspSource;
 #[cfg(feature = "source-sdp")]
