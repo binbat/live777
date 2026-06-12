@@ -7,6 +7,33 @@ fn main() {
     let has_encoder_v4l2_m2m = env::var("CARGO_FEATURE_ENCODER_V4L2_M2M").is_ok();
     let has_encoder_rdk = env::var("CARGO_FEATURE_ENCODER_RDK").is_ok();
 
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
+    // Native C++ backends (V4L2, libcamera, encoder) require Linux
+    // kernel headers.  On non-Linux hosts (macOS, Windows), skip CMake
+    // entirely to avoid compiling kernel-dependent code.
+    if target_os != "linux" {
+        if has_capture_libcamera || has_capture_v4l2 || has_encoder_v4l2_m2m || has_encoder_rdk {
+            println!(
+                "cargo:warning=native backend requires Linux (current: {target_os}); \
+                 CMake build skipped. Use a Linux target or omit native features."
+            );
+        }
+        return;
+    }
+
+    // RDK X5 backend requires aarch64 Linux (ARM NEON + Horizon SDK).
+    // On x86_64 Linux (e.g. CI all-features), RDK is disabled but
+    // host-safe backends (v4l2, v4l2-m2m) still compile.
+    let rdk_available = has_encoder_rdk && target_arch == "aarch64";
+    if has_encoder_rdk && !rdk_available {
+        println!(
+            "cargo:warning=encoder-rdk requires aarch64 (current: {target_arch}); \
+             RDK backend disabled."
+        );
+    }
+
     // Encoder-only without capture: warn and skip CMake.
     // The SourcePipeline requires a capture backend — encoder-only builds
     // have no standalone pipeline.  Use a native-* preset or enable a
@@ -26,17 +53,19 @@ fn main() {
     }
 
     // Determine native backend explicitly — NEVER infer from TARGET
-    let native_backend = if has_encoder_rdk {
+    let requested_backend = env::var("LIVE777_NATIVE_BACKEND").ok();
+    let native_backend = if rdk_available {
         "rdk-x5".to_string()
+    } else if requested_backend.as_deref() == Some("rdk-x5") {
+        println!(
+            "cargo:warning=LIVE777_NATIVE_BACKEND=rdk-x5 requested but target arch is \
+             {target_arch}; RDK requires aarch64. Falling back to generic-v4l2."
+        );
+        "generic-v4l2".to_string()
     } else if has_capture_libcamera {
-        env::var("LIVE777_NATIVE_BACKEND").unwrap_or_else(|_| "rpi".into())
+        requested_backend.unwrap_or_else(|| "rpi".into())
     } else if has_capture_v4l2 {
-        env::var("LIVE777_NATIVE_BACKEND").unwrap_or_else(|_| {
-            panic!(
-                "LIVE777_NATIVE_BACKEND must be set when using capture-v4l2 without capture-libcamera.\n\
-                 Supported values: 'rpi', 'generic-v4l2', 'rdk-x5'"
-            )
-        })
+        requested_backend.unwrap_or_else(|| "generic-v4l2".into())
     } else {
         return;
     };
@@ -53,10 +82,10 @@ fn main() {
     println!("cargo:rerun-if-changed=libcamera-bridge/include/media_types.h");
     println!("cargo:rerun-if-changed=libcamera-bridge/encoder.h");
 
-    if has_encoder_rdk {
+    if rdk_available {
         println!("cargo:rerun-if-changed=libcamera-bridge/encoder_rdk.cpp");
     }
-    if has_capture_v4l2 && has_encoder_rdk {
+    if has_capture_v4l2 && rdk_available {
         println!("cargo:rerun-if-changed=libcamera-bridge/v4l2_capture_rdk.cpp");
     }
     if has_capture_libcamera {
@@ -65,7 +94,7 @@ fn main() {
     if has_encoder_v4l2_m2m {
         println!("cargo:rerun-if-changed=libcamera-bridge/encoder.cpp");
     }
-    if has_capture_v4l2 && !has_encoder_rdk {
+    if has_capture_v4l2 && !rdk_available {
         println!("cargo:rerun-if-changed=libcamera-bridge/v4l2_capture.cpp");
     }
 
@@ -134,7 +163,10 @@ fn main() {
         }
         "rdk-x5" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
-            cmake_config.define("ENABLE_BACKEND_RDK_X5", "ON");
+            cmake_config.define(
+                "ENABLE_BACKEND_RDK_X5",
+                if rdk_available { "ON" } else { "OFF" },
+            );
             cmake_config.define("ENABLE_CAPTURE_LIBCAMERA", "OFF");
             cmake_config.define(
                 "ENABLE_CAPTURE_V4L2",
@@ -146,7 +178,7 @@ fn main() {
             );
             cmake_config.define(
                 "ENABLE_ENCODER_RDK_X5",
-                if has_encoder_rdk { "ON" } else { "OFF" },
+                if rdk_available { "ON" } else { "OFF" },
             );
         }
         "generic-v4l2" => {
