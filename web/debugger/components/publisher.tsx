@@ -261,8 +261,8 @@ export default function Publisher() {
         const inputStream = isDesktopMode
             ? preparedDesktopStream()
             : isQrMode
-              ? ensureQrInputStream()
-              : null;
+                ? ensureQrInputStream()
+                : null;
         if (isDesktopMode && !inputStream) {
             setLogs(
                 "Click Share Desktop to choose a screen before publishing.",
@@ -564,8 +564,8 @@ export default function Publisher() {
                             {qrState() === "previewing"
                                 ? "QR source ready. Click Start to publish."
                                 : qrState() === "publishing"
-                                  ? "QR source is publishing."
-                                  : "Click QRCode Time to generate a QR preview."}
+                                    ? "QR source is publishing."
+                                    : "Click QRCode Time to generate a QR preview."}
                         </small>
                     </section>
                     <section>
@@ -577,10 +577,10 @@ export default function Publisher() {
                     <h5>
                         Audio Track Count: {audioTrackCount()}, Video Track
                         Count: {videoTrackCount()}
-                        <Show when={sourceMode() === "qrtime"}>
-                            {` | QR Target FPS: ${selectQrFrameRate()}`}
-                        </Show>
                     </h5>
+                    <Show when={sourceMode() === "qrtime"}>
+                        <h5>QR Target FPS: {selectQrFrameRate()}</h5>
+                    </Show>
                     <Show when={stream()}>
                         {(ms) => (
                             <Player

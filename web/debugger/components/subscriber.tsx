@@ -193,7 +193,9 @@ export default function Subscriber() {
                     <h5>
                         Audio Track Count: {playback.audioTrackCount()}, Video
                         Track Count: {playback.videoTrackCount()}
-                        {` | QR Target FPS: ${expectedQrFrameRate()}`}
+                    </h5>
+                    <h5>
+                        QR Target FPS: {expectedQrFrameRate()}
                         {latency() && ` | Latency: ${latency()}`}
                     </h5>
                     <Show when={playback.stream()}>
