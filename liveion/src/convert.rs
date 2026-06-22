@@ -48,12 +48,27 @@ impl From<crate::forward::message::SessionInfo> for api::response::Session {
             id: value.id,
             created_at: value.create_at,
             state: convert_connect_state(value.state),
-            cascade: value.cascade.map(|reforward| reforward.into()),
+            cascade: value.cascade.map(|reforward| {
+                #[cfg(feature = "cascade")]
+                {
+                    reforward.into()
+                }
+                #[cfg(not(feature = "cascade"))]
+                {
+                    let _ = reforward;
+                    api::response::CascadeInfo {
+                        source_url: None,
+                        target_url: None,
+                        session_url: None,
+                    }
+                }
+            }),
             has_data_channel: value.has_data_channel,
         }
     }
 }
 
+#[cfg(feature = "cascade")]
 impl From<crate::forward::message::CascadeInfo> for api::response::CascadeInfo {
     fn from(value: crate::forward::message::CascadeInfo) -> Self {
         api::response::CascadeInfo {

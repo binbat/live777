@@ -417,6 +417,7 @@ impl Manager {
         resp
     }
 
+    #[cfg(feature = "cascade")]
     pub async fn cascade_pull(
         &self,
         stream: String,
@@ -438,6 +439,7 @@ impl Manager {
         }
     }
 
+    #[cfg(feature = "cascade")]
     pub async fn cascade_push(
         &self,
         stream: String,

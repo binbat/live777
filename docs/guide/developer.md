@@ -41,6 +41,32 @@ cargo build --release --bin=whipinto
 cargo build --release --bin=whepfrom
 ```
 
+### Feature flags {#features}
+
+Live777 supports the following Cargo feature flags to customize the build:
+
+| Feature      | Package   | Description                                    |
+| ------------ | --------- | ---------------------------------------------- |
+| `webui`      | liveion   | Enable Web UI (embedded assets)                |
+| `cascade`    | liveion   | Enable cascade push/pull between servers       |
+| `recorder`   | liveion   | Enable stream recording (H264/H265)            |
+| `source`     | liveion   | Enable source pulling (RTSP, SDP)              |
+| `source-sdp` | liveion   | Source pulling via SDP                         |
+| `source-rtsp`| liveion   | Source pulling via RTSP                        |
+| `net4mqtt`   | liveion   | Enable MQTT tunnel proxy                       |
+
+Enable features at build time:
+
+```bash
+cargo build --release --features "cascade,recorder"
+```
+
+The default build includes no optional features. Use `--all-features` to enable everything:
+
+```bash
+cargo build --release --all-features
+```
+
 If you need configuration, you can use
 
 ```bash

@@ -1,15 +1,30 @@
+use axum::Router;
+
+#[cfg(feature = "cascade")]
+use axum::Json;
+#[cfg(feature = "cascade")]
 use axum::extract::{Path, State};
+#[cfg(feature = "cascade")]
 use axum::routing::post;
-use axum::{Json, Router};
 
 use crate::AppState;
+#[cfg(feature = "cascade")]
 use crate::error::AppError;
+#[cfg(feature = "cascade")]
 use crate::result::Result;
 
 pub fn route() -> Router<AppState> {
-    Router::new().route(&api::path::cascade("{stream}"), post(cascade))
+    #[cfg(feature = "cascade")]
+    {
+        Router::new().route(&api::path::cascade("{stream}"), post(cascade))
+    }
+    #[cfg(not(feature = "cascade"))]
+    {
+        Router::new()
+    }
 }
 
+#[cfg(feature = "cascade")]
 async fn cascade(
     State(state): State<AppState>,
     Path(stream): Path<String>,

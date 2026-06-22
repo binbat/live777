@@ -9,6 +9,7 @@ use webrtc::peer_connection::RTCIceServer;
 pub struct ManagerConfig {
     pub ice_servers: Vec<RTCIceServer>,
     pub ice_udp_addrs: Vec<SocketAddr>,
+    #[cfg(feature = "cascade")]
     pub cascade_push_close_sub: bool,
     pub webhooks: Vec<String>,
     pub auto_create_pub: bool,
@@ -32,6 +33,7 @@ impl ManagerConfig {
             ice_udp_addrs: api::webrtc::resolve_webrtc_ice_udp_addrs(Some(
                 cfg.webrtc.ice_udp_addrs.clone(),
             )),
+            #[cfg(feature = "cascade")]
             cascade_push_close_sub: cfg.strategy.cascade_push_close_sub,
             webhooks: cfg.webhook.webhooks.clone(),
             auto_create_pub: cfg.strategy.auto_create_whip,

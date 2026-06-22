@@ -41,6 +41,32 @@ cargo build --release --bin=whipinto
 cargo build --release --bin=whepfrom
 ```
 
+### 特性标记 {#features}
+
+Live777 支持以下 Cargo feature 来定制构建：
+
+| 特性         | 所属包     | 说明                                     |
+| ------------ | --------- | ---------------------------------------- |
+| `webui`      | liveion   | 启用 Web UI（嵌入前端资源）              |
+| `cascade`    | liveion   | 启用服务间级联推拉流                     |
+| `recorder`   | liveion   | 启用录制功能（H264/H265）                |
+| `source`     | liveion   | 启用源拉取（RTSP, SDP）                  |
+| `source-sdp` | liveion   | 通过 SDP 拉取源                          |
+| `source-rtsp`| liveion   | 通过 RTSP 拉取源                         |
+| `net4mqtt`   | liveion   | 启用 MQTT 隧道代理                       |
+
+构建时启用特性：
+
+```bash
+cargo build --release --features "cascade,recorder"
+```
+
+默认构建不包含任何可选特性。使用 `--all-features` 启用全部：
+
+```bash
+cargo build --release --all-features
+```
+
 如果你需要配置，使用配置文件
 
 ```bash

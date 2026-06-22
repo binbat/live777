@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use chrono::Utc;
+#[cfg(feature = "cascade")]
 use libwish::Client;
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tracing::trace;
@@ -1508,6 +1509,7 @@ impl PeerForwardInternal {
 
     pub async fn remove_subscribe(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
         let mut flag = false;
+        #[allow(unused_mut)]
         let mut reforward_flat = false;
         let session = get_peer_id(&peer);
 
@@ -1519,6 +1521,7 @@ impl PeerForwardInternal {
                     flag = true;
                     metrics::SUBSCRIBE.dec();
 
+                    #[cfg(feature = "cascade")]
                     if let Some(cascade) = subscribe.cascade.clone() {
                         reforward_flat = true;
                         metrics::REFORWARD.dec();

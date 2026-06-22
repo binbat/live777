@@ -3,6 +3,7 @@ use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast};
+#[cfg(any(feature = "source", feature = "cascade"))]
 use tracing::error;
 #[cfg(feature = "source")]
 use tracing::{debug, trace, warn};
@@ -11,6 +12,7 @@ use webrtc::peer_connection::{
     RTCSessionDescription,
 };
 
+#[cfg(feature = "cascade")]
 use libwish::Client;
 
 #[cfg(feature = "source")]
@@ -27,7 +29,9 @@ use rtc::rtp::packet::Packet;
 use rtc::shared::marshal::Unmarshal;
 
 use self::media::MediaInfo;
-use self::message::{CascadeInfo, ForwardEvent};
+#[cfg(feature = "cascade")]
+use self::message::CascadeInfo;
+use self::message::ForwardEvent;
 
 #[cfg(feature = "source")]
 pub(crate) mod channel;
@@ -229,6 +233,7 @@ impl PeerForward {
         Ok((description, session))
     }
 
+    #[cfg(feature = "cascade")]
     pub async fn publish_pull(&self, src: String, token: Option<String>) -> Result<()> {
         if self.internal.publish_is_some().await {
             return Err(AppError::stream_already_exists(
@@ -458,6 +463,7 @@ impl PeerForward {
         Ok((sdp, session))
     }
 
+    #[cfg(feature = "cascade")]
     pub async fn subscribe_push(&self, dst: String, token: Option<String>) -> Result<()> {
         let media_info = MediaInfo {
             _codec: vec![],
