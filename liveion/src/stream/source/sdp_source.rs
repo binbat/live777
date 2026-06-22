@@ -783,6 +783,11 @@ mod tests {
 
         let params = SdpSource::video_codec_to_rtc(&codec);
 
-        assert!(params.rtp_codec.sdp_fmtp_line.contains("profile-level-id=42001f"));
+        assert!(
+            params
+                .rtp_codec
+                .sdp_fmtp_line
+                .contains("profile-level-id=42001f")
+        );
     }
 }
