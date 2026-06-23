@@ -6,8 +6,10 @@
 #include <map>
 #include <string>
 #include <memory>
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <chrono>
 #include <mutex>
 #include <atomic>
@@ -26,8 +28,11 @@ using namespace libcamera;
 struct MappedRequest {
     Request* request = nullptr;
     FrameBuffer* framebuffer = nullptr;
-    // Per-plane mmap results: (address, length).
-    std::vector<std::pair<void*, size_t>> plane_mappings;
+    // Single mmap of the whole FrameBuffer (libcamera planes live in one
+    // dma-buf with different offsets).  base_addr may be nullptr if the
+    // buffer has zero length.
+    void* base_addr = nullptr;
+    size_t mapped_size = 0;
     // Contiguous CPU copy of all planes for the callback.
     std::vector<uint8_t> contiguous;
     size_t total_size = 0;
@@ -101,15 +106,13 @@ void PiCameraImpl::release_resources() {
     // Drop requests before freeing buffers.
     requests.clear();
 
-    // Unmap all per-plane mappings.
+    // Unmap all buffer mappings.
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         for (auto& [req, mapped] : registry_) {
             (void)req;
-            for (auto& mapping : mapped.plane_mappings) {
-                if (mapping.first && mapping.first != MAP_FAILED) {
-                    munmap(mapping.first, mapping.second);
-                }
+            if (mapped.base_addr && mapped.base_addr != MAP_FAILED) {
+                munmap(mapped.base_addr, mapped.mapped_size);
             }
         }
         registry_.clear();
@@ -146,10 +149,9 @@ void PiCameraImpl::on_request_completed(Request* request) {
     uint8_t* dst = mapped.contiguous.data();
     size_t offset = 0;
     const auto& planes = mapped.framebuffer->planes();
-    for (size_t i = 0; i < planes.size() && i < mapped.plane_mappings.size(); ++i) {
-        const auto& plane = planes[i];
-        void* src = mapped.plane_mappings[i].first;
-        if (src && src != MAP_FAILED) {
+    for (const auto& plane : planes) {
+        if (mapped.base_addr && mapped.base_addr != MAP_FAILED) {
+            uint8_t* src = static_cast<uint8_t*>(mapped.base_addr) + plane.offset;
             memcpy(dst + offset, src, plane.length);
         }
         offset += plane.length;
@@ -248,24 +250,33 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
         mapped.framebuffer = framebuffer;
         mapped.total_size = 0;
 
-        // mmap each plane individually and prepare a contiguous copy buffer.
+        // Compute total buffer size and mmap the whole dma-buf once.
+        // libcamera planes share one fd with different offsets; mmap offset
+        // must be page aligned, so we map from offset 0 and access planes by
+        // base_addr + plane.offset.
+        size_t total_length = 0;
         for (const auto& plane : framebuffer->planes()) {
-            void* addr = mmap(nullptr, plane.length, PROT_READ, MAP_SHARED,
-                              plane.fd.get(), plane.offset);
-            if (addr == MAP_FAILED) {
-                if (err) *err = "mmap failed for camera buffer plane";
-                // Unmap already mapped planes.
-                for (auto& mapping : mapped.plane_mappings) {
-                    if (mapping.first && mapping.first != MAP_FAILED) {
-                        munmap(mapping.first, mapping.second);
-                    }
-                }
-                release_resources();
-                return false;
-            }
-            mapped.plane_mappings.push_back({addr, plane.length});
+            total_length = std::max(total_length,
+                                    static_cast<size_t>(plane.offset + plane.length));
             mapped.total_size += plane.length;
         }
+
+        const auto& planes = framebuffer->planes();
+        int fd = planes.empty() ? -1 : planes[0].fd.get();
+        if (fd < 0 || total_length == 0) {
+            if (err) *err = "invalid camera buffer fd or zero-length buffer";
+            release_resources();
+            return false;
+        }
+
+        void* addr = mmap(nullptr, total_length, PROT_READ, MAP_SHARED, fd, 0);
+        if (addr == MAP_FAILED) {
+            if (err) *err = "mmap failed for camera buffer";
+            release_resources();
+            return false;
+        }
+        mapped.base_addr = addr;
+        mapped.mapped_size = total_length;
         mapped.contiguous.resize(mapped.total_size);
 
         std::unique_ptr<Request> request = camera->createRequest();

@@ -30,9 +30,16 @@ fn main() {
     if has_encoder_rdk && !rdk_available {
         println!(
             "cargo:warning=encoder-rdk requires aarch64 (current: {target_arch}); \
-             RDK backend disabled."
+             falling back to generic-v4l2."
         );
     }
+
+    // Target triplet for sysroot pkg-config paths.
+    let target_triplet = match target_arch.as_str() {
+        "aarch64" => "aarch64-linux-gnu",
+        "arm" => "arm-linux-gnueabihf",
+        _ => "aarch64-linux-gnu",
+    };
 
     // Encoder-only without capture: warn and skip CMake.
     // The SourcePipeline requires a capture backend — encoder-only builds
@@ -52,36 +59,22 @@ fn main() {
         return;
     }
 
-    // Native backend selection — NEVER inferred from TARGET.
-    // RDK and rpi require explicit LIVE777_NATIVE_BACKEND.
-    // When unset, default to generic-v4l2 (the CI all-features path).
-    let requested_backend = env::var("LIVE777_NATIVE_BACKEND").ok();
-    let native_backend = match requested_backend.as_deref() {
-        Some("rdk-x5") if rdk_available => "rdk-x5".to_string(),
-        Some("rdk-x5") => {
-            println!(
-                "cargo:warning=LIVE777_NATIVE_BACKEND=rdk-x5 requires aarch64 Linux; \
-                 falling back to generic-v4l2."
-            );
-            "generic-v4l2".to_string()
-        }
-        Some("rpi") => "rpi".to_string(),
-        Some("generic-v4l2") => "generic-v4l2".to_string(),
-        Some(other) => {
+    // Native backend selection — inferred from enabled capture/encoder features.
+    // libcamera is Pi-specific; rdk-x5 is aarch64-specific; otherwise generic-v4l2.
+    let native_backend = if has_capture_libcamera {
+        if has_encoder_rdk {
             panic!(
-                "unsupported LIVE777_NATIVE_BACKEND={other}. \
-                 Expected 'rpi', 'generic-v4l2', or 'rdk-x5'"
-            )
-        }
-        None if has_capture_v4l2 => "generic-v4l2".to_string(),
-        None if has_capture_libcamera => {
-            println!(
-                "cargo:warning=capture-libcamera requires LIVE777_NATIVE_BACKEND=rpi; \
-                 CMake build skipped."
+                "capture-libcamera and encoder-rdk are incompatible; \
+                 use native-rpi or native-rdk preset separately"
             );
-            return;
         }
-        None => return,
+        "rpi".to_string()
+    } else if has_encoder_rdk && rdk_available {
+        "rdk-x5".to_string()
+    } else if has_capture_v4l2 || has_encoder_v4l2_m2m {
+        "generic-v4l2".to_string()
+    } else {
+        return;
     };
 
     // Rerun-if-changed — all source files that affect the native build
@@ -130,7 +123,7 @@ fn main() {
     } else if native_backend == "rpi" {
         if let Ok(sysroot) = env::var("PI_SYSROOT") {
             let sysroot = PathBuf::from(sysroot);
-            let pkg_config_path = sysroot.join("usr/lib/arm-linux-gnueabihf/pkgconfig");
+            let pkg_config_path = sysroot.join(format!("usr/lib/{target_triplet}/pkgconfig"));
             unsafe {
                 env::set_var("PKG_CONFIG_SYSROOT_DIR", &sysroot);
                 env::set_var("PKG_CONFIG_PATH", pkg_config_path);
@@ -138,7 +131,7 @@ fn main() {
             }
             println!(
                 "cargo:rustc-link-search=native={}",
-                sysroot.join("usr/lib/arm-linux-gnueabihf").display()
+                sysroot.join(format!("usr/lib/{target_triplet}")).display()
             );
         }
 
@@ -209,7 +202,7 @@ fn main() {
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
         }
         other => panic!(
-            "unsupported LIVE777_NATIVE_BACKEND={other}. \
+            "unsupported native backend '{other}'. \
              Expected 'rpi', 'rdk-x5', or 'generic-v4l2'"
         ),
     }

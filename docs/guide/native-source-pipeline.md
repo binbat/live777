@@ -122,32 +122,47 @@ clock_rate = 90000
 
 ## Feature flags
 
-Only platform presets are user-facing.  Each preset includes `native-source` which
-implies `source` (autostart) and `dep:livesrc` (native backend).
+Features are split into capture backends, encoder backends, and convenience
+presets.  All backend features imply `native-source`, which in turn enables
+`source` (autostart) and `dep:livesrc`.
+
+### Capture backends
+
+| Feature | Backend |
+|---------|---------|
+| `capture-libcamera` | libcamera (Raspberry Pi CSI cameras) |
+| `capture-v4l2` | V4L2 video capture (USB cameras, generic Linux) |
+
+### Encoder backends
+
+| Feature | Backend |
+|---------|---------|
+| `encoder-v4l2-m2m` | V4L2 Memory-to-Memory hardware encoder |
+| `encoder-rdk` | Horizon RDK X5 hardware encoder |
+
+### Platform presets
 
 | Preset | Expands to |
 |--------|-----------|
-| `native-rpi` | `native-source, livesrc/capture-libcamera, livesrc/capture-v4l2, livesrc/encoder-v4l2-m2m` |
-| `native-generic-v4l2` | `native-source, livesrc/capture-v4l2, livesrc/encoder-v4l2-m2m` |
-| `native-rdk` | `native-source, livesrc/capture-v4l2, livesrc/encoder-rdk` |
+| `native-rpi` | `capture-libcamera, capture-v4l2, encoder-v4l2-m2m` |
+| `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
+| `native-rdk` | `capture-v4l2, encoder-rdk` |
 
 No additional `--features source` is needed — presets include autostart.
 
 ```bash
 # Raspberry Pi CSI
-LIVE777_NATIVE_BACKEND=rpi \
-cargo build --bin live777 --release \
+ cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rpi,webui
 
 # Generic Linux V4L2
-LIVE777_NATIVE_BACKEND=generic-v4l2 \
 cargo build --bin live777 --release \
   --no-default-features --features native-generic-v4l2,webui
 
 # RDK X5
-LIVE777_NATIVE_BACKEND=rdk-x5 \
 cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rdk,webui
 ```
 
@@ -162,7 +177,6 @@ cargo build --bin live777 --release \
 ### Raspberry Pi (libcamera)
 
 ```bash
-LIVE777_NATIVE_BACKEND=rpi \
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rpi,webui
@@ -173,18 +187,15 @@ Requires the Pi sysroot with libcamera-dev. Set `PI_SYSROOT` if the sysroot is n
 ### Generic Linux V4L2
 
 ```bash
-LIVE777_NATIVE_BACKEND=generic-v4l2 \
 cargo build --bin live777 --release \
   --no-default-features --features native-generic-v4l2,webui
 ```
 
-`LIVE777_NATIVE_BACKEND` is **required** when building with `capture-v4l2` without `capture-libcamera`. The build will panic at configure time if it is not set.
-
 ### RDK X5
 
 ```bash
-LIVE777_NATIVE_BACKEND=rdk-x5 \
 cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rdk,webui
 ```
 
@@ -203,15 +214,17 @@ cargo check --features native-rpi,webui
 
 ## Backend selection (build-time)
 
-The build system **never** infers the backend from `TARGET`.  Selection is explicit, via Cargo presets and `LIVE777_NATIVE_BACKEND`:
+The CMake backend is inferred from the enabled capture/encoder features:
 
-| Preset | CMake defines (ON) |
-|--------|-------------------|
-| `native-rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
-| `native-rdk` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
-| `native-generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
+| Enabled feature(s) | Selected backend | CMake defines (ON) |
+|-------------------|------------------|-------------------|
+| `capture-libcamera` | `rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
+| `encoder-rdk` on aarch64 | `rdk-x5` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
+| `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 
 When no `capture-*` feature is enabled, CMake is skipped entirely. Encoder-only features do **not** trigger a CMake build — the SourcePipeline requires a capture backend.
+
+`capture-libcamera` and `encoder-rdk` are mutually exclusive and will panic at configure time if enabled together.
 
 ## Config examples
 

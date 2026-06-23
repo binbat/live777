@@ -85,11 +85,19 @@ source-all = ["source-sdp", "source-rtsp"]
 
 native-source = ["source", "dep:livesrc"]
 
+# Capture backends
+capture-libcamera = ["native-source", "livesrc/capture-libcamera"]
+capture-v4l2 = ["native-source", "livesrc/capture-v4l2"]
+
+# Encoder backends
+encoder-v4l2-m2m = ["native-source", "livesrc/encoder-v4l2-m2m"]
+encoder-rdk = ["native-source", "livesrc/encoder-rdk"]
+
 # Platform presets
 # native-rpi: builds both libcamera (Pi CSI camera) and V4L2 (Pi USB camera).
-native-rpi = ["native-source", "livesrc/capture-libcamera", "livesrc/capture-v4l2", "livesrc/encoder-v4l2-m2m"]
-native-generic-v4l2 = ["native-source", "livesrc/capture-v4l2", "livesrc/encoder-v4l2-m2m"]
-native-rdk = ["native-source", "livesrc/capture-v4l2", "livesrc/encoder-rdk"]
+native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
+native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
+native-rdk = ["capture-v4l2", "encoder-rdk"]
 
 [dev-dependencies]
 tempfile = "3.26"
