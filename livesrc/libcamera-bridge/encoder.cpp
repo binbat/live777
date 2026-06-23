@@ -332,6 +332,10 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
 
         if (ioctl(fd, VIDIOC_QBUF, &buf_in) == 0) {
             frames_injected++;
+            if (frames_injected % 60 == 0) {
+                fprintf(stderr, "[V4l2M2mEncoder] stats: injected=%d dropped=%d\n",
+                        frames_injected, frames_dropped);
+            }
         } else {
             // Return the buffer index to the free pool on queue failure.
             freeInputIndices.push(idx);
@@ -340,6 +344,8 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
         }
     } else {
         frames_dropped++;
+        fprintf(stderr, "[V4l2M2mEncoder] dropped frame (no free input buffer), total_dropped=%d\n",
+                frames_dropped);
     }
     return true;
 }

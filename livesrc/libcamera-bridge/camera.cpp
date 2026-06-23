@@ -61,6 +61,10 @@ public:
     std::mutex registry_mutex_;
     std::map<Request*, MappedRequest> registry_;
 
+    // Per-instance timestamp base so multiple capture backends do not share
+    // the same epoch. Initialised in start().
+    std::chrono::steady_clock::time_point start_time_{};
+
     // Serialises on_request_completed with stop()/release_resources() so that
     // camera/requests/buffers are not freed while a completion callback is
     // still running.
@@ -154,7 +158,7 @@ void PiCameraImpl::on_request_completed(Request* request) {
     std::lock_guard<std::mutex> lock(completion_mutex_);
     if (destroying_.load()) return;
 
-    MappedRequest mapped;
+    MappedRequest* mapped = nullptr;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = registry_.find(request);
@@ -162,16 +166,16 @@ void PiCameraImpl::on_request_completed(Request* request) {
             fprintf(stderr, "[CameraInternal] Registry MISS for req=%p\n", request);
             return;
         }
-        mapped = it->second;
+        mapped = &it->second;
     }
 
     // Copy each plane into the contiguous buffer.
-    uint8_t* dst = mapped.contiguous.data();
+    uint8_t* dst = mapped->contiguous.data();
     size_t offset = 0;
-    const auto& planes = mapped.framebuffer->planes();
+    const auto& planes = mapped->framebuffer->planes();
     for (const auto& plane : planes) {
-        if (mapped.base_addr && mapped.base_addr != MAP_FAILED) {
-            uint8_t* src = static_cast<uint8_t*>(mapped.base_addr) + plane.offset;
+        if (mapped->base_addr && mapped->base_addr != MAP_FAILED) {
+            uint8_t* src = static_cast<uint8_t*>(mapped->base_addr) + plane.offset;
             memcpy(dst + offset, src, plane.length);
         }
         offset += plane.length;
@@ -187,9 +191,8 @@ void PiCameraImpl::on_request_completed(Request* request) {
 
     if (cb) {
         auto now = std::chrono::steady_clock::now();
-        static auto start_time = now;
         uint64_t timestamp =
-            std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count();
+            std::chrono::duration_cast<std::chrono::microseconds>(now - start_time_).count();
 
         RawFrame f{};
         f.kind = BufferKind::Cpu;
@@ -200,9 +203,9 @@ void PiCameraImpl::on_request_completed(Request* request) {
         f.seq = ++seq_;
         f.plane_count = 1;
         f.planes[0] = {
-            mapped.contiguous.data(),
+            mapped->contiguous.data(),
             static_cast<uint32_t>(width_),
-            static_cast<uint32_t>(mapped.total_size),
+            static_cast<uint32_t>(mapped->total_size),
             -1,
             0,
         };
@@ -214,7 +217,9 @@ void PiCameraImpl::on_request_completed(Request* request) {
     if (should_queue) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (running.load() && camera) {
-            camera->queueRequest(request);
+            if (camera->queueRequest(request) < 0) {
+                fprintf(stderr, "[CameraInternal] queueRequest failed for req=%p\n", request);
+            }
         }
     }
 }
@@ -342,6 +347,7 @@ bool PiCameraImpl::start(CaptureFrameCallback cb, std::string* err) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (running.load()) return false;
         capture_cb_ = std::move(cb);
+        start_time_ = std::chrono::steady_clock::now();
     }
     camera->requestCompleted.connect(request_completed_slot);
 
@@ -383,7 +389,6 @@ void PiCameraImpl::stop() {
 }
 
 bool PiCameraImpl::isRunning() const {
-    std::lock_guard<std::mutex> lock(state_mutex_);
     return running.load();
 }
 

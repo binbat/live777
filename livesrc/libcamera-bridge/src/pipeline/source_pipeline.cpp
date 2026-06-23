@@ -53,8 +53,11 @@ public:
         }
         return capture_->start(
             [this](const RawFrame& frame) {
-                std::string ignored_err;
-                encoder_->submit(frame, &ignored_err);
+                std::string submit_err;
+                if (!encoder_->submit(frame, &submit_err)) {
+                    fprintf(stderr, "[SourcePipeline] encoder submit failed: %s\n",
+                            submit_err.c_str());
+                }
             },
             err);
     }
