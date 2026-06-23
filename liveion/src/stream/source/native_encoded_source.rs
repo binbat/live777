@@ -3,15 +3,19 @@
 //!
 //! Data flow:
 //!   C++ SourcePipeline → livesrc FFI → EncodedPacket channel →
-//!   H264 RTP packetize (webrtc crate) → RTP broadcast
+//!   codec-specific RTP packetize (webrtc crate) → RTP broadcast
 //!
 //! livesrc handles all C++ FFI — this module only sees `EncodedPacket`
 //! through an mpsc channel.
 
 use super::{MediaPacket, StateChangeEvent, StreamSourceState};
 use anyhow::Result;
+use rtc_rtp::codec::av1::Av1Payloader;
 use rtc_rtp::codec::h264::H264Payloader;
-use rtc_rtp::packetizer::{Packetizer as _, new_packetizer};
+use rtc_rtp::codec::h265::HevcPayloader;
+use rtc_rtp::codec::vp8::Vp8Payloader;
+use rtc_rtp::codec::vp9::Vp9Payloader;
+use rtc_rtp::packetizer::{Packetizer as _, Payloader, new_packetizer};
 use rtc_rtp::sequence::new_random_sequencer;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -107,12 +111,19 @@ impl NativeEncodedSource {
         let rtp_tx = self.rtp_tx.clone();
         let payload_type = self.params.payload_type as u8;
         let clock_rate = self.params.clock_rate;
+        let codec = self.params.codec;
         let fallback_delta = clock_rate / self.params.fps.max(1);
         #[cfg(feature = "source")]
         let dynamic_profile = self.dynamic_profile.clone();
 
         tokio::spawn(async move {
-            let payloader = Box::new(H264Payloader::default());
+            let payloader: Box<dyn Payloader> = match codec {
+                101 => Box::new(HevcPayloader::default()),
+                102 => Box::new(Av1Payloader::default()),
+                103 => Box::new(Vp8Payloader::default()),
+                104 => Box::new(Vp9Payloader::default()),
+                _ => Box::new(H264Payloader::default()),
+            };
             let sequencer = Box::new(new_random_sequencer());
             let ssrc: u32 = rand::random();
             let mut packetizer =
@@ -159,7 +170,10 @@ impl NativeEncodedSource {
 
                         #[cfg(feature = "source")]
                         {
-                            if let Some(profile) = scan_sps_profile(&pkt.data) {
+                            // Dynamic profile-level-id detection is H.264-specific.
+                            if codec == 100
+                                && let Some(profile) = scan_sps_profile(&pkt.data)
+                            {
                                 let mut guard = dynamic_profile.write().await;
                                 if guard.as_ref() != Some(&profile) {
                                     *guard = Some(profile);
@@ -210,22 +224,37 @@ impl NativeEncodedSource {
         use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters};
 
         let mime_type = format!("video/{}", self.params.codec_name.to_uppercase());
-        let profile = self
-            .dynamic_profile
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| self.params.default_profile.clone());
+
+        // Build codec-specific SDP fmtp line.
+        let sdp_fmtp_line = match self.params.codec {
+            100 => {
+                // H.264: use dynamically detected profile-level-id if available.
+                let profile = self
+                    .dynamic_profile
+                    .read()
+                    .await
+                    .clone()
+                    .unwrap_or_else(|| self.params.default_profile.clone());
+                format!(
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
+                    profile
+                )
+            }
+            101 => {
+                // H.265: default to Main profile / level 3.1.
+                // A future improvement can parse VPS/SPS for dynamic profile/level.
+                "profile-id=1;tier-flag=0;level-id=93".to_string()
+            }
+            // AV1, VP8, VP9: no fmtp required for basic negotiation.
+            _ => String::new(),
+        };
 
         Some(RTCRtpCodecParameters {
             rtp_codec: RTCRtpCodec {
                 mime_type,
                 clock_rate: self.params.clock_rate,
                 channels: 0,
-                sdp_fmtp_line: format!(
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
-                    profile
-                ),
+                sdp_fmtp_line,
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "goog-remb".into(),
@@ -276,9 +305,8 @@ impl NativeEncodedSource {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal H.264 Annex-B SPS scanner — only what's needed for
-// dynamic profile-level-id detection (used by get_video_codec).
-// RTP packetization is handled by webrtc's H264Payloader + Packetizer.
+// Minimal H.264 Annex-B SPS scanner — only used for H.264 dynamic
+// profile-level-id detection in get_video_codec().
 // ---------------------------------------------------------------------------
 
 fn scan_sps_profile(data: &[u8]) -> Option<String> {

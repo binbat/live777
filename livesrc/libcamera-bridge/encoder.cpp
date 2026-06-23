@@ -1,16 +1,18 @@
 #include "include/encoder_backend.h"
-#include <iostream>
-#include <vector>
+#include <atomic>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
-#include <unistd.h>
+#include <linux/videodev2.h>
+#include <queue>
+#include <string>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <linux/videodev2.h>
-#include <cstdio>
-#include <errno.h>
-#include <queue>
+#include <unistd.h>
 #include <utility>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // EncoderBackend implementation (V4L2 M2M)
@@ -22,6 +24,7 @@ public:
     uint32_t height = 0;
     uint32_t fps = 0;
     uint32_t bitrate = 0;
+    VideoCodec codec_ = VideoCodec::H264;
 
     std::string errorMsg;
 
@@ -35,15 +38,17 @@ public:
     std::vector<Buffer> inputBuffers;
     std::vector<Buffer> outputBuffers;
     std::queue<int> freeInputIndices;
-    bool force_idr = false;
+    std::atomic<bool> force_idr{false};
     int frames_injected = 0;
     int frames_dropped = 0;
-    bool running_ = false;
+    std::atomic<bool> running_{false};
 
     V4l2M2mEncoder() = default;
     ~V4l2M2mEncoder() override { cleanup(); }
 
     void cleanup();
+    static const char* default_device_path();
+    static uint32_t codec_to_v4l2_pixelformat(VideoCodec codec);
 
     // --- EncoderBackend overrides ---
     bool init(const EncoderConfig& cfg, std::string* err) override;
@@ -54,15 +59,36 @@ public:
     void setCallback(EncodedPacketCallback cb) override;
 };
 
+const char* V4l2M2mEncoder::default_device_path() {
+    if (const char* env = std::getenv("LIVE777_ENCODER_V4L2_M2M_DEVICE")) {
+        return env;
+    }
+    return "/dev/video11";
+}
+
+uint32_t V4l2M2mEncoder::codec_to_v4l2_pixelformat(VideoCodec codec) {
+    switch (codec) {
+    case VideoCodec::H265:
+        return V4L2_PIX_FMT_HEVC;
+    case VideoCodec::H264:
+    default:
+        return V4L2_PIX_FMT_H264;
+    }
+}
+
 bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
-    (void)err;
     width = cfg.width;
     height = cfg.height;
     fps = cfg.fps;
     bitrate = cfg.bitrate;
+    codec_ = cfg.codec;
 
-    fd = open("/dev/video11", O_RDWR | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) return false;
+    const char* dev = default_device_path();
+    fd = open(dev, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
+        if (err) *err = std::string("Failed to open ") + dev + ": " + strerror(errno);
+        return false;
+    }
 
     struct v4l2_format fmt = {};
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
@@ -72,30 +98,54 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
     fmt.fmt.pix_mp.num_planes = 1;
 
-    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) return false;
+    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+        if (err) *err = std::string("S_FMT (OUTPUT) failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
 
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_H264;
-    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) return false;
+    fmt.fmt.pix_mp.pixelformat = codec_to_v4l2_pixelformat(codec_);
+    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+        if (err) *err = std::string("S_FMT (CAPTURE) failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
 
     struct v4l2_control ctrl = {};
     ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE;
     ctrl.value = bitrate;
-    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+    if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+        if (err) *err = std::string("S_CTRL BITRATE failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
 
     ctrl.id = V4L2_CID_MPEG_VIDEO_H264_I_PERIOD;
     ctrl.value = fps * 2;
-    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+    if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+        if (err) *err = std::string("S_CTRL I_PERIOD failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
 
     ctrl.id = V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER;
     ctrl.value = 1;
-    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+    if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+        if (err) *err = std::string("S_CTRL REPEAT_SEQ_HEADER failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
 
     struct v4l2_requestbuffers req = {};
     req.count = 8;
     req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
     req.memory = V4L2_MEMORY_MMAP;
-    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) return false;
+    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+        if (err) *err = std::string("REQBUFS (OUTPUT) failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
 
     for (unsigned int i = 0; i < req.count; i++) {
         struct v4l2_buffer buf = {};
@@ -105,7 +155,11 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
         buf.index = i;
         buf.length = 1;
         buf.m.planes = planes;
-        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) return false;
+        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
+            if (err) *err = std::string("QUERYBUF (OUTPUT) failed: ") + strerror(errno);
+            cleanup();
+            return false;
+        }
         void* start = mmap(NULL, planes[0].length, PROT_READ | PROT_WRITE,
                            MAP_SHARED, fd, planes[0].m.mem_offset);
         if (start == MAP_FAILED) {
@@ -118,7 +172,11 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     }
 
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) return false;
+    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+        if (err) *err = std::string("REQBUFS (CAPTURE) failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
     for (unsigned int i = 0; i < req.count; i++) {
         struct v4l2_buffer buf = {};
         struct v4l2_plane planes[1] = {};
@@ -127,7 +185,11 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
         buf.index = i;
         buf.length = 1;
         buf.m.planes = planes;
-        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) return false;
+        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
+            if (err) *err = std::string("QUERYBUF (CAPTURE) failed: ") + strerror(errno);
+            cleanup();
+            return false;
+        }
         void* start = mmap(NULL, planes[0].length, PROT_READ | PROT_WRITE,
                            MAP_SHARED, fd, planes[0].m.mem_offset);
         if (start == MAP_FAILED) {
@@ -136,21 +198,35 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
             return false;
         }
         outputBuffers.push_back({start, planes[0].length});
-        if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) return false;
+        if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
+            if (err) *err = std::string("QBUF (CAPTURE) failed: ") + strerror(errno);
+            cleanup();
+            return false;
+        }
     }
 
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    ioctl(fd, VIDIOC_STREAMON, &type);
+    if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) {
+        if (err) *err = std::string("STREAMON (OUTPUT) failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    ioctl(fd, VIDIOC_STREAMON, &type);
+    if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) {
+        if (err) *err = std::string("STREAMON (CAPTURE) failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
 
-    running_ = true;
+    running_.store(true);
     return true;
 }
 
 bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
-    (void)err;
-    if (fd < 0 || !running_) return false;
+    if (fd < 0 || !running_.load()) {
+        if (err) *err = "encoder not running";
+        return false;
+    }
     if (frame.kind != BufferKind::Cpu) {
         if (err) *err = "CPU-frame required for V4L2 M2M encoder";
         return false;
@@ -165,6 +241,10 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
     buf_out.m.planes = planes_out;
 
     while (ioctl(fd, VIDIOC_DQBUF, &buf_out) == 0) {
+        if (buf_out.index >= outputBuffers.size()) {
+            fprintf(stderr, "[V4l2M2mEncoder] invalid output buffer index %u\n", buf_out.index);
+            break;
+        }
         if (encoded_cb_) {
             uint8_t* raw = static_cast<uint8_t*>(outputBuffers[buf_out.index].start);
             size_t len = planes_out[0].bytesused;
@@ -172,7 +252,7 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
             if (buf_out.flags & V4L2_BUF_FLAG_KEYFRAME) flags |= static_cast<uint32_t>(EncodedKeyframe);
 
             EncodedPacket pkt{};
-            pkt.codec = VideoCodec::H264;
+            pkt.codec = codec_;
             pkt.data = raw;
             pkt.size = len;
             pkt.pts_us = (uint64_t)buf_out.timestamp.tv_sec * 1000000
@@ -181,7 +261,10 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
             pkt.flags = flags;
             encoded_cb_(pkt);
         }
-        ioctl(fd, VIDIOC_QBUF, &buf_out);
+        if (ioctl(fd, VIDIOC_QBUF, &buf_out) < 0) {
+            fprintf(stderr, "[V4l2M2mEncoder] requeue output buffer failed: %s\n", strerror(errno));
+            break;
+        }
     }
 
     // Reclaim input pool
@@ -193,7 +276,11 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
     buf_in.m.planes = planes_in;
 
     while (ioctl(fd, VIDIOC_DQBUF, &buf_in) == 0) {
-        freeInputIndices.push(buf_in.index);
+        if (buf_in.index < inputBuffers.size()) {
+            freeInputIndices.push(buf_in.index);
+        } else {
+            fprintf(stderr, "[V4l2M2mEncoder] invalid input buffer index %u\n", buf_in.index);
+        }
     }
 
     // Feed input frame
@@ -221,16 +308,20 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
         buf_in.timestamp.tv_sec = frame.pts_us / 1000000;
         buf_in.timestamp.tv_usec = frame.pts_us % 1000000;
 
-        if (force_idr) {
+        if (force_idr.exchange(false)) {
             struct v4l2_control ctrl = {};
             ctrl.id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME;
             ctrl.value = 1;
             ioctl(fd, VIDIOC_S_CTRL, &ctrl);
-            force_idr = false;
         }
 
         if (ioctl(fd, VIDIOC_QBUF, &buf_in) == 0) {
             frames_injected++;
+        } else {
+            // Return the buffer index to the free pool on queue failure.
+            freeInputIndices.push(idx);
+            if (err) *err = std::string("QBUF (OUTPUT) failed: ") + strerror(errno);
+            return false;
         }
     } else {
         frames_dropped++;
@@ -239,16 +330,16 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
 }
 
 void V4l2M2mEncoder::requestKeyframe() {
-    force_idr = true;
+    force_idr.store(true);
 }
 
 void V4l2M2mEncoder::stop() {
-    running_ = false;
+    running_.store(false);
     cleanup();
 }
 
 bool V4l2M2mEncoder::isRunning() const {
-    return running_;
+    return running_.load();
 }
 
 void V4l2M2mEncoder::setCallback(EncodedPacketCallback cb) {
@@ -275,11 +366,11 @@ void V4l2M2mEncoder::cleanup() {
     inputBuffers.clear();
     outputBuffers.clear();
     while (!freeInputIndices.empty()) freeInputIndices.pop();
-    running_ = false;
+    running_.store(false);
 }
 
 // ---------------------------------------------------------------------------
-// Factory for EncoderBackend (V4L2 M2M)
+// Factory for CaptureBackend (V4L2 M2M)
 // ---------------------------------------------------------------------------
 std::unique_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg) {
     (void)cfg;

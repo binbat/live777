@@ -42,10 +42,12 @@ struct V4L2CaptureImpl : public CaptureBackend {
     std::thread capture_thread;
 
     void capture_loop();
+    void release_resources();
     bool is_healthy() const { return running.load() && thread_alive.load(); }
     void yuyv_to_yuv420p(const uint8_t* src, uint8_t* dst, int w, int h);
 
     // --- CaptureBackend overrides ---
+    ~V4L2CaptureImpl() override { stop(); }
     bool init(const CaptureConfig& cfg, std::string* err) override;
     bool start(CaptureFrameCallback cb, std::string* err) override;
     void stop() override;
@@ -66,11 +68,13 @@ void V4L2CaptureImpl::yuyv_to_yuv420p(const uint8_t* src, uint8_t* dst, int w, i
 
         for (int col = 0; col < w; col += 2) {
             int idx = col * 2;
-            y_row[col]     = row_src[idx + 0]; // Y0
-            y_row[col + 1] = row_src[idx + 2]; // Y1
+            y_row[col] = row_src[idx + 0]; // Y0
+            if (col + 1 < w) {
+                y_row[col + 1] = row_src[idx + 2]; // Y1
+            }
 
             // Subsample U and V: every 2x2 block shares one U and V
-            if (row % 2 == 0) {
+            if (row % 2 == 0 && col + 1 < w) {
                 int uv_col = col / 2;
                 int uv_row = row / 2;
                 u_plane[uv_row * (w / 2) + uv_col] = row_src[idx + 1]; // U
@@ -166,7 +170,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
     fps = static_cast<int>(cfg.fps);
 
     const char* dev = cfg.device.c_str();
-    fd = ::open(dev, O_RDWR);
+    fd = ::open(dev, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
         if (err) *err = std::string("Failed to open ") + dev + ": " + strerror(errno);
         return false;
@@ -231,6 +235,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
 
         if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
             if (err) *err = "QUERYBUF failed";
+            release_resources();
             return false;
         }
 
@@ -238,6 +243,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
                            MAP_SHARED, fd, buf.m.offset);
         if (start == MAP_FAILED) {
             if (err) *err = "mmap failed";
+            release_resources();
             return false;
         }
         buffers.push_back({start, buf.length});
@@ -247,6 +253,9 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
 
 bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
     (void)err;
+    if (running.load() || capture_thread.joinable()) {
+        return false;
+    }
     capture_cb_ = std::move(cb);
 
     for (unsigned int i = 0; i < buffers.size(); i++) {
@@ -265,10 +274,7 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
     return true;
 }
 
-void V4L2CaptureImpl::stop() {
-    running.store(false);
-    if (capture_thread.joinable()) capture_thread.join();
-
+void V4L2CaptureImpl::release_resources() {
     if (fd >= 0) {
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         ioctl(fd, VIDIOC_STREAMOFF, &type);
@@ -281,6 +287,12 @@ void V4L2CaptureImpl::stop() {
         fd = -1;
     }
     capture_cb_ = nullptr;
+}
+
+void V4L2CaptureImpl::stop() {
+    running.store(false);
+    if (capture_thread.joinable()) capture_thread.join();
+    release_resources();
 }
 
 bool V4L2CaptureImpl::isRunning() const {

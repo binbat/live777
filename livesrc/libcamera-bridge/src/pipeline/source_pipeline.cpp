@@ -21,6 +21,8 @@
 
 class SourcePipeline {
 public:
+    ~SourcePipeline() { stop(); }
+
     bool init(const CaptureConfig& ccfg, const EncoderConfig& ecfg,
               std::string* err) {
         capture_ = create_capture_backend(ccfg);
@@ -182,9 +184,7 @@ void source_pipeline_request_keyframe(SourcePipelineHandle* h) {
 
 void source_pipeline_free(SourcePipelineHandle* h) {
     if (!h) return;
-    auto* pipeline = reinterpret_cast<SourcePipeline*>(h);
-    pipeline->stop();
-    delete pipeline;
+    delete reinterpret_cast<SourcePipeline*>(h);
 }
 
 } // extern "C"

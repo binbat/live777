@@ -9,24 +9,37 @@
 #include <cstdio>
 #include <cstdint>
 #include <chrono>
+#include <mutex>
+#include <atomic>
 
 using namespace libcamera;
 
-// Private implementation class
-struct FastMapping {
-    Request* req;
-    uint8_t* data;
-    size_t size;
-    void* impl; 
+// ---------------------------------------------------------------------------
+// Per-instance request registry.
+//
+// Replaces the previous global, lock-free, magic-number registry with a
+// mutex-protected map owned by each PiCameraImpl.  The static completion
+// slot looks up the instance via a global instance table keyed by a unique
+// id, then delegates to the instance's on_request_completed().
+// ---------------------------------------------------------------------------
+
+struct MappedRequest {
+    Request* request = nullptr;
+    FrameBuffer* framebuffer = nullptr;
+    // Per-plane mmap results: (address, length).
+    std::vector<std::pair<void*, size_t>> plane_mappings;
+    // Contiguous CPU copy of all planes for the callback.
+    std::vector<uint8_t> contiguous;
+    size_t total_size = 0;
 };
 
-#define MAX_REGISTRY 16
-static FastMapping g_registry[MAX_REGISTRY];
-static volatile int g_registry_count = 0;
+static std::mutex g_instance_mutex;
+static std::map<Request*, class PiCameraImpl*> g_request_to_instance;
 
 class PiCameraImpl : public CaptureBackend {
 public:
-    uint32_t magic = 0xBCBCBCBC;
+    std::atomic<bool> destroying_{false};
+
     std::unique_ptr<CameraManager> cameraManager;
     std::shared_ptr<libcamera::Camera> camera;
     Stream* videoStream = nullptr;
@@ -39,6 +52,18 @@ public:
     CaptureFrameCallback capture_cb_;
     std::unique_ptr<FrameBufferAllocator> allocator_;
 
+    std::mutex registry_mutex_;
+    std::map<Request*, MappedRequest> registry_;
+
+    ~PiCameraImpl() override {
+        destroying_.store(true);
+        stop();
+        release_resources();
+    }
+
+    void release_resources();
+    void on_request_completed(Request* request);
+
     // --- CaptureBackend overrides ---
     bool init(const CaptureConfig& cfg, std::string* err) override;
     bool start(CaptureFrameCallback cb, std::string* err) override;
@@ -46,53 +71,118 @@ public:
     bool isRunning() const override;
 };
 
-// THE V14.6 "SCREAMING" SLOT
-static void stable_slot_v14_6(Request* request) {
+static void request_completed_slot(Request* request) {
     if (!request) return;
 
-    FastMapping* entry = nullptr;
-    for (int i = 0; i < g_registry_count; ++i) {
-        if (g_registry[i].req == request) {
-            entry = &g_registry[i];
-            break;
+    PiCameraImpl* impl = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_instance_mutex);
+        auto it = g_request_to_instance.find(request);
+        if (it != g_request_to_instance.end()) impl = it->second;
+    }
+
+    if (!impl || impl->destroying_.load()) return;
+    impl->on_request_completed(request);
+}
+
+void PiCameraImpl::release_resources() {
+    if (camera) {
+        camera->requestCompleted.disconnect(request_completed_slot);
+    }
+
+    // Unregister requests from the global lookup before destroying them.
+    {
+        std::lock_guard<std::mutex> lock(g_instance_mutex);
+        for (const auto& request : requests) {
+            g_request_to_instance.erase(request.get());
         }
     }
 
-    if (entry && entry->impl) {
-        PiCameraImpl* impl = static_cast<PiCameraImpl*>(entry->impl);
-        if (impl->magic == 0xBCBCBCBC) {
-            static auto start_time = std::chrono::steady_clock::now();
-            auto now = std::chrono::steady_clock::now();
-            uint64_t timestamp = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count();
+    // Drop requests before freeing buffers.
+    requests.clear();
 
-            // Dispatch RawFrame via CaptureBackend callback
-            if (impl->capture_cb_) {
-                RawFrame f{};
-                f.kind = BufferKind::Cpu;
-                f.format = RawPixelFormat::Yuv420p;
-                f.width = static_cast<uint32_t>(impl->width_);
-                f.height = static_cast<uint32_t>(impl->height_);
-                f.pts_us = timestamp;
-                f.seq = ++impl->seq_;
-                f.plane_count = 1;
-                f.planes[0] = {
-                    entry->data,
-                    static_cast<uint32_t>(impl->width_),
-                    static_cast<uint32_t>(entry->size),
-                    -1,
-                    0
-                };
-                impl->capture_cb_(f);
+    // Unmap all per-plane mappings.
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        for (auto& [req, mapped] : registry_) {
+            (void)req;
+            for (auto& mapping : mapped.plane_mappings) {
+                if (mapping.first && mapping.first != MAP_FAILED) {
+                    munmap(mapping.first, mapping.second);
+                }
             }
         }
-        
-        // Reuse and RE-QUEUE
-        request->reuse(Request::ReuseFlag::ReuseBuffers);
-        if (impl->running) {
-            impl->camera->queueRequest(request);
+        registry_.clear();
+    }
+
+    if (allocator_ && videoStream) {
+        allocator_->free(videoStream);
+    }
+    allocator_.reset();
+
+    if (camera) {
+        camera->release();
+        camera.reset();
+    }
+
+    if (cameraManager) {
+        cameraManager->stop();
+    }
+}
+
+void PiCameraImpl::on_request_completed(Request* request) {
+    MappedRequest mapped;
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        auto it = registry_.find(request);
+        if (it == registry_.end()) {
+            fprintf(stderr, "[CameraInternal] Registry MISS for req=%p\n", request);
+            return;
         }
-    } else {
-        fprintf(stderr, "[CameraInternal] Registry MISS for req=%p! (RegistryCount=%d)\n", request, g_registry_count);
+        mapped = it->second;
+    }
+
+    // Copy each plane into the contiguous buffer.
+    uint8_t* dst = mapped.contiguous.data();
+    size_t offset = 0;
+    const auto& planes = mapped.framebuffer->planes();
+    for (size_t i = 0; i < planes.size() && i < mapped.plane_mappings.size(); ++i) {
+        const auto& plane = planes[i];
+        void* src = mapped.plane_mappings[i].first;
+        if (src && src != MAP_FAILED) {
+            memcpy(dst + offset, src, plane.length);
+        }
+        offset += plane.length;
+    }
+
+    if (capture_cb_) {
+        auto now = std::chrono::steady_clock::now();
+        static auto start_time = now;
+        uint64_t timestamp =
+            std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count();
+
+        RawFrame f{};
+        f.kind = BufferKind::Cpu;
+        f.format = RawPixelFormat::Yuv420p;
+        f.width = static_cast<uint32_t>(width_);
+        f.height = static_cast<uint32_t>(height_);
+        f.pts_us = timestamp;
+        f.seq = ++seq_;
+        f.plane_count = 1;
+        f.planes[0] = {
+            mapped.contiguous.data(),
+            static_cast<uint32_t>(width_),
+            static_cast<uint32_t>(mapped.total_size),
+            -1,
+            0,
+        };
+        capture_cb_(f);
+    }
+
+    // Reuse and re-queue if still running.
+    request->reuse(Request::ReuseFlag::ReuseBuffers);
+    if (running && camera) {
+        camera->queueRequest(request);
     }
 }
 
@@ -127,13 +217,23 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
     sc.pixelFormat = formats::YUV420;
     sc.bufferCount = 8;
 
-    if (config->validate() == CameraConfiguration::Invalid) {
-        fprintf(stderr, "[CameraInternal] Config was invalid, adjusted.\n");
+    CameraConfiguration::Status validation = config->validate();
+    if (validation == CameraConfiguration::Invalid) {
+        if (err) *err = "Camera configuration invalid";
+        return false;
+    }
+    if (validation == CameraConfiguration::Adjusted) {
+        fprintf(stderr, "[CameraInternal] Config was adjusted to %ux%u\n",
+                sc.size.width, sc.size.height);
     }
     if (camera->configure(config.get()) < 0) {
         if (err) *err = "Camera configure failed";
         return false;
     }
+
+    // Honor the size negotiated by the camera.
+    width_ = static_cast<int>(sc.size.width);
+    height_ = static_cast<int>(sc.size.height);
 
     videoStream = sc.stream();
     allocator_ = std::make_unique<FrameBufferAllocator>(camera);
@@ -142,34 +242,64 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
         return false;
     }
 
-    g_registry_count = 0;
     for (const auto& buffer : allocator_->buffers(videoStream)) {
-        FrameBuffer* ptr = buffer.get();
-        size_t s = 0;
-        for (const auto& p : ptr->planes()) s += p.length;
+        FrameBuffer* framebuffer = buffer.get();
+        MappedRequest mapped;
+        mapped.framebuffer = framebuffer;
+        mapped.total_size = 0;
 
-        void* d = mmap(NULL, s, PROT_READ, MAP_SHARED,
-                       ptr->planes()[0].fd.get(), 0);
-
-        std::unique_ptr<Request> r = camera->createRequest();
-        r->addBuffer(videoStream, ptr);
-
-        if (g_registry_count < MAX_REGISTRY) {
-            g_registry[g_registry_count].req = r.get();
-            g_registry[g_registry_count].data = static_cast<uint8_t*>(d);
-            g_registry[g_registry_count].size = s;
-            g_registry[g_registry_count].impl = this;
-            g_registry_count++;
+        // mmap each plane individually and prepare a contiguous copy buffer.
+        for (const auto& plane : framebuffer->planes()) {
+            void* addr = mmap(nullptr, plane.length, PROT_READ, MAP_SHARED,
+                              plane.fd.get(), plane.offset);
+            if (addr == MAP_FAILED) {
+                if (err) *err = "mmap failed for camera buffer plane";
+                // Unmap already mapped planes.
+                for (auto& mapping : mapped.plane_mappings) {
+                    if (mapping.first && mapping.first != MAP_FAILED) {
+                        munmap(mapping.first, mapping.second);
+                    }
+                }
+                release_resources();
+                return false;
+            }
+            mapped.plane_mappings.push_back({addr, plane.length});
+            mapped.total_size += plane.length;
         }
-        requests.push_back(std::move(r));
+        mapped.contiguous.resize(mapped.total_size);
+
+        std::unique_ptr<Request> request = camera->createRequest();
+        if (!request) {
+            if (err) *err = "createRequest failed";
+            release_resources();
+            return false;
+        }
+        if (request->addBuffer(videoStream, framebuffer) < 0) {
+            if (err) *err = "addBuffer failed";
+            release_resources();
+            return false;
+        }
+
+        mapped.request = request.get();
+        {
+            std::lock_guard<std::mutex> lock(registry_mutex_);
+            registry_[mapped.request] = std::move(mapped);
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_instance_mutex);
+            g_request_to_instance[mapped.request] = this;
+        }
+        requests.push_back(std::move(request));
     }
     return true;
 }
 
 bool PiCameraImpl::start(CaptureFrameCallback cb, std::string* err) {
     (void)err;
+    if (running) return false;
+
     capture_cb_ = std::move(cb);
-    camera->requestCompleted.connect(stable_slot_v14_6);
+    camera->requestCompleted.connect(request_completed_slot);
 
     ControlList controls;
     int64_t frame_duration = 1000000 / target_fps;
@@ -190,7 +320,7 @@ void PiCameraImpl::stop() {
     running = false;
     if (camera) {
         camera->stop();
-        camera->requestCompleted.disconnect(stable_slot_v14_6);
+        camera->requestCompleted.disconnect(request_completed_slot);
     }
     capture_cb_ = nullptr;
 }
