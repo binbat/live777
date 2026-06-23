@@ -10,7 +10,11 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace, warn};
 
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "native-source"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "native-source"
+))]
 const LOG_PACKET_INTERVAL: u64 = 100;
 
 #[derive(Debug, Clone, Copy)]
@@ -130,7 +134,11 @@ impl SourceBridge {
             }
         }
 
-        #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "native-source"))]
+        #[cfg(any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "native-source"
+        ))]
         let forward_clone = self.forward.clone();
         let source_id_clone = self.source_id.clone();
         let mut shutdown_rx1 = shutdown_tx.subscribe();
@@ -142,9 +150,17 @@ impl SourceBridge {
                 source_id_clone, channel_mapping
             );
             let mut packet_count = 0u64;
-            #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "native-source"))]
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "native-source"
+            ))]
             let mut video_count = 0u64;
-            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp", feature = "native-source")))]
+            #[cfg(not(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "native-source"
+            )))]
             let video_count = 0u64;
             #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
             let mut audio_count = 0u64;
