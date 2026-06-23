@@ -1,7 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 use bytes::Bytes;
+#[cfg(feature = "native-source")]
 use rtc::rtp::packet::Packet;
+#[cfg(feature = "native-source")]
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -43,24 +46,31 @@ pub struct StateChangeEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum MediaPacket {
-    Rtp {
-        channel: u8,
-        data: Bytes,
-    },
-    RtpPacket(
-        // Only constructed in native_encoded_source.rs when native-source
-        // feature is enabled.  Other sources use the Rtp { data } path.
-        #[allow(dead_code)] Arc<Packet>,
-    ),
+    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+    Rtp { channel: u8, data: Bytes },
+    #[cfg(feature = "native-source")]
+    RtpPacket(Arc<Packet>),
+    // Placeholder when no concrete source implementation is enabled.
+    // The `source` feature alone has no active source types, so this
+    // variant keeps the enum non-empty without exposing real data.
+    #[cfg(not(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "native-source"
+    )))]
+    _Unused,
 }
 
 #[derive(Debug, Clone)]
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 pub struct InternalSourceConfig {
     pub stream_id: String,
     pub url: String,
 }
 
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 impl InternalSourceConfig {
     pub fn from_config(config: &crate::config::SourceConfig) -> Self {
         Self {
@@ -137,6 +147,7 @@ pub async fn create_source_from_spec(
     anyhow::bail!("Source feature not enabled")
 }
 
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 pub(crate) async fn create_url_source(
     url: &str,
     config: &crate::config::SourceConfig,

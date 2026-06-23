@@ -303,6 +303,15 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
         }
         memcpy(inputBuffers[idx].start, src, src_size);
 
+        // Re-initialise the buffer structure before QBUF.  The same
+        // structure was used for DQBUF above and may contain stale
+        // flags/timestamps written back by the driver.
+        buf_in = {};
+        planes_in[0] = {};
+        buf_in.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+        buf_in.memory = V4L2_MEMORY_MMAP;
+        buf_in.length = 1;
+        buf_in.m.planes = planes_in;
         buf_in.index = idx;
         planes_in[0].bytesused = src_size;
         buf_in.timestamp.tv_sec = frame.pts_us / 1000000;

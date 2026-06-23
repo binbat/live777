@@ -2646,6 +2646,7 @@ name = "livesrc"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "cc",
  "cmake",
  "pkg-config",
  "tokio",

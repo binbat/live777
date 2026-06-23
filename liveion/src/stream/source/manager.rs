@@ -81,7 +81,7 @@ impl SourceManager {
     }
 
     #[cfg(feature = "source")]
-    pub async fn create_bridge(&self, stream_id: &str, forward: Arc<PeerForward>) -> Result<()> {
+    pub async fn create_bridge(&self, stream_id: &str, forward: PeerForward) -> Result<()> {
         info!("Creating bridge for {}", stream_id);
 
         {

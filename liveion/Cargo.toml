@@ -48,7 +48,7 @@ rtc-shared = { workspace = true }
 uuid = { workspace = true }
 
 async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 version = { path = "../libs/version" }
 lazy_static = "1.4.0"
 md-5 = "0.10.6"

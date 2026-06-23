@@ -8,7 +8,9 @@
 //! livesrc handles all C++ FFI — this module only sees `EncodedPacket`
 //! through an mpsc channel.
 
-use super::{MediaPacket, StateChangeEvent, StreamSourceState};
+use super::{
+    MediaPacket, StateChangeEvent, StreamSourceState, source_config::VideoCodec as SourceVideoCodec,
+};
 use anyhow::Result;
 use rtc_rtp::codec::av1::Av1Payloader;
 use rtc_rtp::codec::h264::H264Payloader;
@@ -34,10 +36,15 @@ pub struct NativeEncodedSource {
     shutdown_tx: Option<broadcast::Sender<()>>,
     pipeline: Option<livesrc::NativePipeline>,
     keyframe_handle: Option<livesrc::KeyframeHandle>,
+    packetize_handle: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "source")]
     dynamic_profile: Arc<RwLock<Option<String>>>,
 }
 
+// SAFETY: `NativeEncodedSource` is composed entirely of `Send + Sync` types:
+// `String`, `NativeSourceParams`, `Arc<RwLock<…>>`, broadcast/mpsc channels,
+// and `livesrc::NativePipeline` / `livesrc::KeyframeHandle` (which already
+// implement `Send`/`Sync`). No raw pointers or thread-local state are held.
 unsafe impl Send for NativeEncodedSource {}
 unsafe impl Sync for NativeEncodedSource {}
 
@@ -55,6 +62,7 @@ impl NativeEncodedSource {
             shutdown_tx: None,
             pipeline: None,
             keyframe_handle: None,
+            packetize_handle: None,
             #[cfg(feature = "source")]
             dynamic_profile: Arc::new(RwLock::new(None)),
         }
@@ -116,13 +124,14 @@ impl NativeEncodedSource {
         #[cfg(feature = "source")]
         let dynamic_profile = self.dynamic_profile.clone();
 
-        tokio::spawn(async move {
-            let payloader: Box<dyn Payloader> = match codec {
-                101 => Box::new(HevcPayloader::default()),
-                102 => Box::new(Av1Payloader::default()),
-                103 => Box::new(Vp8Payloader::default()),
-                104 => Box::new(Vp9Payloader::default()),
-                _ => Box::new(H264Payloader::default()),
+        let handle = tokio::spawn(async move {
+            let codec_typed = SourceVideoCodec::try_from(codec).unwrap_or(SourceVideoCodec::H264);
+            let payloader: Box<dyn Payloader> = match codec_typed {
+                SourceVideoCodec::H265 => Box::new(HevcPayloader::default()),
+                SourceVideoCodec::Av1 => Box::new(Av1Payloader::default()),
+                SourceVideoCodec::Vp8 => Box::new(Vp8Payloader::default()),
+                SourceVideoCodec::Vp9 => Box::new(Vp9Payloader::default()),
+                SourceVideoCodec::H264 => Box::new(H264Payloader::default()),
             };
             let sequencer = Box::new(new_random_sequencer());
             let ssrc: u32 = rand::random();
@@ -171,12 +180,20 @@ impl NativeEncodedSource {
                         #[cfg(feature = "source")]
                         {
                             // Dynamic profile-level-id detection is H.264-specific.
-                            if codec == 100
-                                && let Some(profile) = scan_sps_profile(&pkt.data)
-                            {
-                                let mut guard = dynamic_profile.write().await;
-                                if guard.as_ref() != Some(&profile) {
-                                    *guard = Some(profile);
+                            // Use a read-lock first: the profile rarely changes, so
+                            // the fast path avoids contending with get_video_codec().
+                            if codec_typed == SourceVideoCodec::H264 {
+                                let needs_update = {
+                                    let guard = dynamic_profile.read().await;
+                                    guard.as_ref().is_none()
+                                };
+                                if needs_update
+                                    && let Some(profile) = scan_sps_profile(&pkt.data)
+                                {
+                                    let mut guard = dynamic_profile.write().await;
+                                    if guard.as_ref() != Some(&profile) {
+                                        *guard = Some(profile);
+                                    }
                                 }
                             }
                         }
@@ -203,6 +220,7 @@ impl NativeEncodedSource {
 
         self.pipeline = Some(pipeline);
         self.keyframe_handle = Some(keyframe_handle);
+        self.packetize_handle = Some(handle);
 
         self.set_state(StreamSourceState::Connected, None).await;
         Ok(())
@@ -211,6 +229,11 @@ impl NativeEncodedSource {
     pub async fn stop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
+        }
+        // Wait for the packetize task to finish so it does not touch
+        // rtp_tx / rx after we drop the pipeline.
+        if let Some(handle) = self.packetize_handle.take() {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
         self.pipeline = None;
         self.keyframe_handle = None;
@@ -226,8 +249,9 @@ impl NativeEncodedSource {
         let mime_type = format!("video/{}", self.params.codec_name.to_uppercase());
 
         // Build codec-specific SDP fmtp line.
-        let sdp_fmtp_line = match self.params.codec {
-            100 => {
+        let codec = SourceVideoCodec::try_from(self.params.codec).unwrap_or(SourceVideoCodec::H264);
+        let sdp_fmtp_line = match codec {
+            SourceVideoCodec::H264 => {
                 // H.264: use dynamically detected profile-level-id if available.
                 let profile = self
                     .dynamic_profile
@@ -240,7 +264,7 @@ impl NativeEncodedSource {
                     profile
                 )
             }
-            101 => {
+            SourceVideoCodec::H265 => {
                 // H.265: default to Main profile / level 3.1.
                 // A future improvement can parse VPS/SPS for dynamic profile/level.
                 "profile-id=1;tier-flag=0;level-id=93".to_string()
@@ -326,15 +350,38 @@ fn scan_sps_profile(data: &[u8]) -> Option<String> {
             continue;
         };
         let nal_start = pos + start_len;
-        if nal_start + 4 <= data.len() {
+        if nal_start < data.len() {
             let nal_type = data[nal_start] & 0x1F;
             if nal_type == 7 {
-                return Some(format!(
-                    "{:02x}{:02x}{:02x}",
-                    data[nal_start + 1],
-                    data[nal_start + 2],
-                    data[nal_start + 3]
-                ));
+                // Copy the SPS NAL payload into a small buffer while removing
+                // H.264 emulation prevention bytes (0x00 0x00 0x03). The
+                // profile-level-id follows the NAL header byte, so we need the
+                // next three de-escaped bytes.
+                let mut buf = [0u8; 4];
+                let mut src = nal_start;
+                let mut dst = 0;
+                while src < data.len() && dst < 4 {
+                    if src + 2 < data.len()
+                        && data[src] == 0
+                        && data[src + 1] == 0
+                        && data[src + 2] == 3
+                    {
+                        buf[dst] = 0;
+                        dst += 1;
+                        if dst < 4 {
+                            buf[dst] = 0;
+                            dst += 1;
+                        }
+                        src += 3;
+                    } else {
+                        buf[dst] = data[src];
+                        dst += 1;
+                        src += 1;
+                    }
+                }
+                if dst == 4 {
+                    return Some(format!("{:02x}{:02x}{:02x}", buf[1], buf[2], buf[3]));
+                }
             }
         }
         pos += start_len;

@@ -38,7 +38,10 @@ impl Clone for PipelineHandlePtr {
     }
 }
 
-// SAFETY: see struct-level doc.
+// SAFETY: `PipelineHandlePtr` is only used while guarded by the mutex inside
+// `SharedPipelineHandle`. The raw pointer is never dereferenced concurrently and
+// is taken out of the `Option` before being freed, so it cannot be accessed
+// after free.
 unsafe impl Send for PipelineHandlePtr {}
 unsafe impl Sync for PipelineHandlePtr {}
 
@@ -54,6 +57,9 @@ struct SharedPipelineHandle {
     inner: Arc<Mutex<Option<PipelineHandlePtr>>>,
 }
 
+// SAFETY: `SharedPipelineHandle` is an `Arc<Mutex<Option<PipelineHandlePtr>>>`.
+// All access to the wrapped raw pointer is serialized by the mutex, and the
+// pointer is removed from the `Option` before it is freed.
 unsafe impl Send for SharedPipelineHandle {}
 unsafe impl Sync for SharedPipelineHandle {}
 
@@ -148,6 +154,10 @@ pub struct NativePipeline {
     rx: Option<mpsc::UnboundedReceiver<EncodedPacket>>,
 }
 
+// SAFETY: `NativePipeline` owns its data: `SharedPipelineHandle` is safe to send
+// and share because the raw FFI pointer is mutex-protected, and `CallbackCtx`
+// is heap-allocated through `Box` with no raw pointers shared across FFI except
+// the stable `user_data` pointer passed at creation time.
 unsafe impl Send for NativePipeline {}
 unsafe impl Sync for NativePipeline {}
 

@@ -90,7 +90,11 @@ if(ENABLE_CAPTURE_LIBCAMERA)
 endif()
 
 if(ENABLE_BACKEND_RDK_X5)
-    target_include_directories(cambridge PRIVATE /usr/hobot/include)
+    if(DEFINED RDK_SYSROOT)
+        target_include_directories(cambridge PRIVATE ${RDK_SYSROOT}/usr/hobot/include)
+    else()
+        target_include_directories(cambridge PRIVATE /usr/hobot/include)
+    endif()
 endif()
 
 # --- Link libraries ---
@@ -101,7 +105,11 @@ if(ENABLE_CAPTURE_LIBCAMERA)
 endif()
 
 if(ENABLE_BACKEND_RDK_X5)
-    link_directories(/usr/hobot/lib)
+    if(DEFINED RDK_SYSROOT)
+        link_directories(${RDK_SYSROOT}/usr/hobot/lib)
+    else()
+        link_directories(/usr/hobot/lib)
+    endif()
     target_link_libraries(cambridge PRIVATE multimedia hbmem vpf)
 endif()
 

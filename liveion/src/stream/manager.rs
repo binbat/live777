@@ -627,16 +627,16 @@ impl Manager {
     pub async fn get_or_create_forward_for_source(
         &self,
         stream_id: &str,
-    ) -> Arc<crate::forward::PeerForward> {
+    ) -> crate::forward::PeerForward {
         self.get_or_create_forward(stream_id).await
     }
 
     #[cfg(feature = "source")]
-    async fn get_or_create_forward(&self, stream_id: &str) -> Arc<crate::forward::PeerForward> {
+    async fn get_or_create_forward(&self, stream_id: &str) -> crate::forward::PeerForward {
         let mut stream_map = self.stream_map.write().await;
 
         if let Some(forward) = stream_map.get(stream_id) {
-            Arc::new(forward.clone())
+            forward.clone()
         } else {
             let forward = crate::forward::PeerForward::new(
                 stream_id.to_string(),
@@ -660,7 +660,7 @@ impl Manager {
                     e
                 );
             }
-            Arc::new(forward)
+            forward
         }
     }
 

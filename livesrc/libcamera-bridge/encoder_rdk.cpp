@@ -27,10 +27,14 @@ static void yuyv_to_nv12_scalar(const uint8_t* yuyv, uint8_t* nv12_y,
 
     // UV plane: subsample 2x2, interleave U and V.
     // Guard against odd dimensions: need a full 2x2 block.
+    // NV12 UV stride is the same as the Y stride, which is rounded up to
+    // an even number for odd widths. Using `width` directly would overwrite
+    // by one byte per UV row when width is odd.
+    const int uv_stride = (width + 1) & ~1;
     for (int row = 0; row + 1 < height; row += 2) {
         const uint8_t* src0 = yuyv + row * width * 2;
         const uint8_t* src1 = src0 + width * 2;
-        uint8_t* dest_uv = nv12_uv + (row / 2) * width;
+        uint8_t* dest_uv = nv12_uv + (row / 2) * uv_stride;
 
         for (int col = 0; col + 1 < width; col += 2) {
             // Average U and V from the 2x2 block.
@@ -235,11 +239,19 @@ bool RdkX5Encoder::submit(const RawFrame& frame, std::string* err) {
     media_codec_buffer_t input_buf;
     memset(&input_buf, 0, sizeof(media_codec_buffer_t));
     if (hb_mm_mc_dequeue_input_buffer(context, &input_buf, 100) == 0) {
+        if (!input_buf.vframe_buf.vir_ptr[0] || !input_buf.vframe_buf.vir_ptr[1]) {
+            if (err) *err = "RDK encoder returned input buffer with null virtual address";
+            hb_mm_mc_queue_input_buffer(context, &input_buf, 100);
+            return false;
+        }
         yuyv_to_nv12_scalar(frame.planes[0].data,
                             input_buf.vframe_buf.vir_ptr[0],
                             input_buf.vframe_buf.vir_ptr[1], width, height);
         input_buf.vframe_buf.pts = frame.pts_us / 1000;
-        hb_mm_mc_queue_input_buffer(context, &input_buf, 100);
+        if (hb_mm_mc_queue_input_buffer(context, &input_buf, 100) != 0) {
+            if (err) *err = "RDK encoder failed to queue input buffer";
+            return false;
+        }
     }
 
     media_codec_buffer_t output_buf;
@@ -247,6 +259,13 @@ bool RdkX5Encoder::submit(const RawFrame& frame, std::string* err) {
     if (hb_mm_mc_dequeue_output_buffer(context, &output_buf, NULL, 0) == 0) {
         uint8_t* out_data = (uint8_t*)output_buf.vstream_buf.vir_ptr;
         uint32_t out_len = output_buf.vstream_buf.size;
+
+        if (!out_data || out_len == 0 || out_len > 16 * 1024 * 1024) {
+            if (err)
+                *err = "RDK encoder returned invalid output buffer (null pointer or bad size)";
+            hb_mm_mc_queue_output_buffer(context, &output_buf, 100);
+            return false;
+        }
 
         // Detect keyframe / config NALs based on codec.
         uint32_t flags = 0;
@@ -268,7 +287,10 @@ bool RdkX5Encoder::submit(const RawFrame& frame, std::string* err) {
             encoded_cb_(pkt);
         }
 
-        hb_mm_mc_queue_output_buffer(context, &output_buf, 100);
+        if (hb_mm_mc_queue_output_buffer(context, &output_buf, 100) != 0) {
+            if (err) *err = "RDK encoder failed to queue output buffer";
+            return false;
+        }
     }
     return true;
 }

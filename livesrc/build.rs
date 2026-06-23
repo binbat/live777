@@ -1,5 +1,76 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Detect the C++ standard library name preferred by the active C++ compiler.
+///
+/// On most Linux targets the default compiler is g++ which links libstdc++.
+/// On clang-based toolchains or macOS the preferred name is `c++` (libc++ on
+/// Apple platforms, often still libstdc++ on Linux clang).  This avoids the
+/// previous hard-coded `stdc++` which fails on libc++-only systems.
+/// Result of probing a pkg-config library in a specific environment.
+struct ProbedLibrary {
+    include_paths: Vec<PathBuf>,
+    link_paths: Vec<PathBuf>,
+    libs: Vec<String>,
+}
+
+/// Probe `libcamera` via pkg-config inside the given sysroot without mutating
+/// the current process environment.
+fn probe_libcamera_in_sysroot(sysroot: &Path, triplet: &str) -> Option<ProbedLibrary> {
+    let pkg_config_path = sysroot.join(format!("usr/lib/{triplet}/pkgconfig"));
+
+    let output = Command::new("pkg-config")
+        .env("PKG_CONFIG_SYSROOT_DIR", sysroot.as_os_str())
+        .env("PKG_CONFIG_PATH", pkg_config_path.as_os_str())
+        .env("PKG_CONFIG_ALLOW_CROSS", "1")
+        .args(["--cflags", "--libs", "libcamera"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut result = ProbedLibrary {
+        include_paths: Vec::new(),
+        link_paths: Vec::new(),
+        libs: Vec::new(),
+    };
+
+    for token in stdout.split_whitespace() {
+        if let Some(path) = token.strip_prefix("-I") {
+            result.include_paths.push(PathBuf::from(path));
+        } else if let Some(path) = token.strip_prefix("-L") {
+            result.link_paths.push(PathBuf::from(path));
+        } else if let Some(lib) = token.strip_prefix("-l") {
+            result.libs.push(lib.to_string());
+        }
+    }
+
+    Some(result)
+}
+
+fn detect_cpp_stdlib() -> String {
+    // Allow explicit override for cross-compilation environments.
+    if let Ok(name) = env::var("LIVESRC_CXX_STDLIB") {
+        return name;
+    }
+
+    let compiler = cc::Build::new().cpp(true).get_compiler();
+    let path = compiler.path().to_string_lossy().to_lowercase();
+
+    if path.contains("clang") {
+        // Linux clang usually still links libstdc++ by default unless
+        // `-stdlib=libc++` is passed; macOS clang links libc++ via `c++`.
+        // Using `c++` lets the linker pick the compiler's default.
+        "c++".to_string()
+    } else {
+        // g++ and most other Linux toolchains default to libstdc++.
+        "stdc++".to_string()
+    }
+}
 
 fn main() {
     let has_capture_libcamera = env::var("CARGO_FEATURE_CAPTURE_LIBCAMERA").is_ok();
@@ -38,7 +109,14 @@ fn main() {
     let target_triplet = match target_arch.as_str() {
         "aarch64" => "aarch64-linux-gnu",
         "arm" => "arm-linux-gnueabihf",
-        _ => "aarch64-linux-gnu",
+        "x86_64" => "x86_64-linux-gnu",
+        other => {
+            println!(
+                "cargo:warning=unknown target architecture '{other}', \
+                 defaulting triplet to x86_64-linux-gnu"
+            );
+            "x86_64-linux-gnu"
+        }
     };
 
     // Encoder-only without capture: warn and skip CMake.
@@ -107,6 +185,9 @@ fn main() {
         println!("cargo:rerun-if-changed=libcamera-bridge/v4l2_capture.cpp");
     }
 
+    // Track whether libcamera link flags were already emitted via pkg-config.
+    let mut libcamera_linked = false;
+
     // Setup sysroot paths
     if native_backend == "rdk-x5" {
         if let Ok(sysroot) = env::var("RDK_SYSROOT") {
@@ -119,31 +200,37 @@ fn main() {
                 "cargo:rustc-link-search=native={}",
                 sysroot.join("lib").display()
             );
-            unsafe {
-                env::set_var("PKG_CONFIG_ALLOW_CROSS", "1");
-            }
         }
     } else if native_backend == "rpi" {
         if let Ok(sysroot) = env::var("PI_SYSROOT") {
             let sysroot = PathBuf::from(sysroot);
-            let pkg_config_path = sysroot.join(format!("usr/lib/{target_triplet}/pkgconfig"));
-            unsafe {
-                env::set_var("PKG_CONFIG_SYSROOT_DIR", &sysroot);
-                env::set_var("PKG_CONFIG_PATH", pkg_config_path);
-                env::set_var("PKG_CONFIG_ALLOW_CROSS", "1");
-            }
             println!(
                 "cargo:rustc-link-search=native={}",
                 sysroot.join(format!("usr/lib/{target_triplet}")).display()
             );
-        }
 
-        // Find libcamera via pkg-config (RPi only)
-        let mut config = pkg_config::Config::new();
-        config.atleast_version("0.1");
-        if let Ok(lib) = config.probe("libcamera") {
-            for path in lib.include_paths {
-                println!("cargo:include={}", path.display());
+            // Find libcamera via pkg-config inside the sysroot without
+            // mutating the global process environment.
+            if let Some(lib) = probe_libcamera_in_sysroot(&sysroot, target_triplet) {
+                for path in lib.include_paths {
+                    println!("cargo:include={}", path.display());
+                }
+                for path in lib.link_paths {
+                    println!("cargo:rustc-link-search=native={}", path.display());
+                }
+                for lib_name in lib.libs {
+                    println!("cargo:rustc-link-lib=dylib={}", lib_name);
+                }
+                libcamera_linked = true;
+            }
+        } else {
+            // No sysroot: fall back to host pkg-config.
+            let mut config = pkg_config::Config::new();
+            config.atleast_version("0.1");
+            if let Ok(lib) = config.probe("libcamera") {
+                for path in lib.include_paths {
+                    println!("cargo:include={}", path.display());
+                }
             }
         }
     }
@@ -151,6 +238,11 @@ fn main() {
     // Build the C++ bridge library using CMake
     let mut cmake_config = cmake::Config::new("libcamera-bridge");
     cmake_config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+    if native_backend == "rdk-x5"
+        && let Ok(sysroot) = env::var("RDK_SYSROOT")
+    {
+        cmake_config.define("RDK_SYSROOT", sysroot);
+    }
 
     match native_backend.as_str() {
         "rpi" => {
@@ -215,19 +307,33 @@ fn main() {
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=cambridge");
 
-    // Link C++ standard library
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    // Link C++ standard library.  Prefer the compiler's default (g++ ->
+    // libstdc++, clang++ -> libc++ / libstdc++ depending on platform) rather
+    // than hard-coding libstdc++.
+    let cpp_stdlib = detect_cpp_stdlib();
+    println!("cargo:rustc-link-lib=dylib={}", cpp_stdlib);
 
     // Platform-specific native libraries
     if native_backend == "rdk-x5" {
-        println!("cargo:rustc-link-search=native=/usr/hobot/lib");
+        let rdk_sysroot = env::var("RDK_SYSROOT").unwrap_or_else(|_| "/".to_string());
+        let rdk_sysroot = PathBuf::from(rdk_sysroot);
+        println!(
+            "cargo:rustc-link-search=native={}",
+            rdk_sysroot.join("usr/hobot/lib").display()
+        );
         println!("cargo:rustc-link-search=native=/usr/lib");
         println!("cargo:rustc-link-lib=dylib=multimedia");
         println!("cargo:rustc-link-lib=dylib=hbmem");
         println!("cargo:rustc-link-lib=dylib=vpf");
-        println!("cargo:rustc-link-arg=-Wl,--allow-shlib-undefined");
-        println!("cargo:rustc-link-arg=-Wl,--unresolved-symbols=ignore-in-shared-libs");
-    } else if has_capture_libcamera {
+
+        // By default we want link-time errors to surface missing symbols.
+        // In cross-compilation scenarios where the sysroot is incomplete,
+        // allow relaxed linking via LIVESRC_RDK_ALLOW_UNDEFINED=1.
+        if env::var("LIVESRC_RDK_ALLOW_UNDEFINED").is_ok() {
+            println!("cargo:rustc-link-arg=-Wl,--allow-shlib-undefined");
+            println!("cargo:rustc-link-arg=-Wl,--unresolved-symbols=ignore-in-shared-libs");
+        }
+    } else if has_capture_libcamera && !libcamera_linked {
         println!("cargo:rustc-link-lib=dylib=camera");
         println!("cargo:rustc-link-lib=dylib=camera-base");
         println!("cargo:rustc-link-lib=dylib=event");
