@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <linux/videodev2.h>
+#include <mutex>
 #include <queue>
 #include <string>
 #include <sys/ioctl.h>
@@ -42,6 +43,10 @@ public:
     int frames_injected = 0;
     int frames_dropped = 0;
     std::atomic<bool> running_{false};
+
+    // Serialises submit() with stop()/cleanup() so that buffers/fd are not
+    // released while a frame is being processed.
+    std::mutex mutex_;
 
     V4l2M2mEncoder() = default;
     ~V4l2M2mEncoder() override { cleanup(); }
@@ -223,6 +228,7 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
 }
 
 bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (fd < 0 || !running_.load()) {
         if (err) *err = "encoder not running";
         return false;
@@ -343,6 +349,7 @@ void V4l2M2mEncoder::requestKeyframe() {
 }
 
 void V4l2M2mEncoder::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
     running_.store(false);
     cleanup();
 }
@@ -356,6 +363,7 @@ void V4l2M2mEncoder::setCallback(EncodedPacketCallback cb) {
 }
 
 void V4l2M2mEncoder::cleanup() {
+    // Caller must hold mutex_.
     if (fd >= 0) {
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
         ioctl(fd, VIDIOC_STREAMOFF, &type);

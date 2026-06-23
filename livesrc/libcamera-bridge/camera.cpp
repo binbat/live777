@@ -61,6 +61,11 @@ public:
     std::mutex registry_mutex_;
     std::map<Request*, MappedRequest> registry_;
 
+    // Serialises on_request_completed with stop()/release_resources() so that
+    // camera/requests/buffers are not freed while a completion callback is
+    // still running.
+    std::mutex completion_mutex_;
+
     static std::shared_ptr<PiCameraImpl> create() {
         return std::shared_ptr<PiCameraImpl>(new PiCameraImpl());
     }
@@ -101,6 +106,8 @@ static void request_completed_slot(Request* request) {
 }
 
 void PiCameraImpl::release_resources() {
+    std::lock_guard<std::mutex> lock(completion_mutex_);
+
     if (camera) {
         camera->requestCompleted.disconnect(request_completed_slot);
     }
@@ -144,6 +151,9 @@ void PiCameraImpl::release_resources() {
 }
 
 void PiCameraImpl::on_request_completed(Request* request) {
+    std::lock_guard<std::mutex> lock(completion_mutex_);
+    if (destroying_.load()) return;
+
     MappedRequest mapped;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
@@ -367,6 +377,9 @@ void PiCameraImpl::stop() {
         camera->stop();
         camera->requestCompleted.disconnect(request_completed_slot);
     }
+    // Wait for any in-flight completion callback to finish before returning,
+    // so that callers can safely release resources afterwards.
+    std::lock_guard<std::mutex> lock(completion_mutex_);
 }
 
 bool PiCameraImpl::isRunning() const {
