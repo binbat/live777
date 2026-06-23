@@ -8,7 +8,7 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(version)]
+#[command(version = version::VERSION)]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count)]

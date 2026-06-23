@@ -75,10 +75,6 @@ async fn record_status(
     State(_state): State<AppState>,
     Path(stream): Path<String>,
 ) -> crate::result::Result<Json<serde_json::Value>> {
-    if stream == "__feature_probe__" {
-        return Ok(Json(serde_json::json!({ "available": true })));
-    }
-
     let recording = crate::recorder::is_recording(&stream).await;
     Ok(Json(serde_json::json!({ "recording": recording })))
 }
@@ -86,12 +82,8 @@ async fn record_status(
 #[cfg(not(feature = "recorder"))]
 async fn record_status(
     _state: State<AppState>,
-    Path(stream): Path<String>,
+    Path(_stream): Path<String>,
 ) -> crate::result::Result<Response> {
-    if stream == "__feature_probe__" {
-        return Ok(Json(serde_json::json!({ "available": false })).into_response());
-    }
-
     Ok(recorder_not_enabled())
 }
 

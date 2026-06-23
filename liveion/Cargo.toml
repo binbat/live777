@@ -48,6 +48,7 @@ uuid = { workspace = true }
 
 async-trait = "0.1"
 chrono = "0.4"
+version = { path = "../libs/version" }
 lazy_static = "1.4.0"
 md-5 = "0.10.6"
 prometheus = "0.14"

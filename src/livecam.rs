@@ -8,7 +8,7 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(name = "livecam", version)]
+#[command(name = "livecam", version = version::VERSION)]
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,

@@ -11,7 +11,7 @@ mod utils;
 const NAME: &str = "liveman";
 
 #[derive(Parser)]
-#[command(name = "livenil", version)]
+#[command(name = "livenil", version = version::VERSION)]
 struct Args {
     /// Set config file path
     #[arg(short, long, default_value_t = format!("livenil"))]

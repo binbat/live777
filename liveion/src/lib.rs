@@ -7,7 +7,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{Level, error, info_span};
 
 use crate::config::Config;
-use crate::route::{AppState, admin, session, whep, whip};
+use crate::route::{AppState, admin, info, session, whep, whip};
 use api::path;
 use auth::{AuthState, access::access_middleware, validate_middleware};
 use error::AppError;
@@ -96,6 +96,7 @@ where
 
     let app = app
         .route(path::METRICS, get(metrics))
+        .merge(info::route())
         .with_state(app_state.clone())
         .layer(if cfg.http.cors {
             CorsLayer::permissive()

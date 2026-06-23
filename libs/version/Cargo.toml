@@ -1,0 +1,13 @@
+[package]
+name = "version"
+description = "Build-time version information for live777"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+shadow-rs = "2.0"
+
+[build-dependencies]
+shadow-rs = "2.0"
