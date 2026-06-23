@@ -143,6 +143,24 @@ export async function probeRecorderFeature(force = false): Promise<CapabilityPro
     }
 }
 
+let cascadeProbeCache: CapabilityProbeStatus | null = null;
+
+export async function probeCascadeFeature(force = false): Promise<CapabilityProbeStatus> {
+    if (!force && cascadeProbeCache && cascadeProbeCache !== 'unauthorized') {
+        return cascadeProbeCache;
+    }
+
+    try {
+        const info = await getServerInfo();
+        const status: CapabilityProbeStatus = info.features.includes('cascade') ? 'available' : 'unavailable';
+        cascadeProbeCache = status;
+        return status;
+    } catch {
+        cascadeProbeCache = 'unavailable';
+        return 'unavailable';
+    }
+}
+
 export function getSegmentUrl(path: string) {
     return `/api/record/object/${encodeURI(path)}`;
 }

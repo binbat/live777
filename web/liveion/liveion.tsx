@@ -16,13 +16,18 @@ export function Liveion() {
         return view === 'recordings' ? 'recordings' : 'streams';
     });
     const [recorderAvailable, setRecorderAvailable] = useState(false);
+    const [cascadeAvailable, setCascadeAvailable] = useState(false);
 
     useEffect(() => {
         let disposed = false;
         (async () => {
-            const status = await api.probeRecorderFeature();
+            const [recorderStatus, cascadeStatus] = await Promise.all([
+                api.probeRecorderFeature(),
+                api.probeCascadeFeature(),
+            ]);
             if (!disposed) {
-                setRecorderAvailable(status === 'available');
+                setRecorderAvailable(recorderStatus === 'available');
+                setCascadeAvailable(cascadeStatus === 'available');
             }
         })();
 
@@ -65,7 +70,7 @@ export function Liveion() {
 
         return (
             <StreamsTable
-                showCascade
+                showCascade={cascadeAvailable}
                 features={{ debugger: true, player: true, recording: recorderAvailable, autoDetectRecording: false, recordingPlayback: recorderAvailable }}
             />
         );

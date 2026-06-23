@@ -113,6 +113,11 @@ async fn test_liveion_info() {
     assert!(body.features.contains(&"recorder".to_string()));
     #[cfg(not(feature = "recorder"))]
     assert!(!body.features.contains(&"recorder".to_string()));
+
+    #[cfg(feature = "cascade")]
+    assert!(body.features.contains(&"cascade".to_string()));
+    #[cfg(not(feature = "cascade"))]
+    assert!(!body.features.contains(&"cascade".to_string()));
 }
 
 #[tokio::test]
