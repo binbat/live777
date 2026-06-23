@@ -98,7 +98,7 @@ static CaptureConfig to_capture_config(const CaptureConfigFFI* ffi) {
 
 static EncoderConfig to_encoder_config(const EncoderConfigFFI* ffi) {
     EncoderConfig cfg;
-    cfg.backend = ffi->backend ? ffi->backend : "v4l2_m2m";
+    cfg.backend = ffi->backend ? ffi->backend : "v4l2-m2m";
     cfg.codec = static_cast<VideoCodec>(ffi->codec);
     cfg.width = ffi->width;
     cfg.height = ffi->height;

@@ -17,13 +17,13 @@ use super::source_config::SourceSpec;
 
 /// Creates a `StreamSource` from a connection URL.
 ///
-/// Delegates rtsp://, file://, .sdp to the legacy factory.
+/// Delegates rtsp://, file://, .sdp to the URL-based source factory.
 #[cfg(feature = "source")]
 pub async fn create_source_extended(
     url: &str,
     config: &SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    super::create_legacy_source_from_url(url, config).await
+    super::create_url_source(url, config).await
 }
 
 #[cfg(not(feature = "source"))]

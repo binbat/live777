@@ -65,7 +65,6 @@ pub struct CaptureSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncoderSpec {
     /// Encoder backend: `"v4l2-m2m"` or `"rdk"`.
-    /// Legacy values `"v4l2_m2m"` and `"rdk_x5"` are still accepted.
     pub backend: String,
     /// Video codec: `"h264"` or `"h265"`.
     pub codec: String,
@@ -106,7 +105,7 @@ fn default_clock_rate() -> u32 {
 
 /// Full specification for a single media source.
 ///
-/// This is the recommended structured config format replacing the legacy
+/// This is the recommended structured config format replacing the
 /// URL query-string approach.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceSpec {
@@ -197,7 +196,7 @@ pub fn codec_to_u32(s: &str) -> anyhow::Result<u32> {
 impl SourceSpec {
     /// Build `NativeSourceParams` directly from a structured `SourceSpec`.
     ///
-    /// This is the direct path — no legacy URL roundtrip.
+    /// This is the direct path — no URL-based roundtrip.
     /// Returns an error if `pixel_format` or `codec` strings are unrecognised.
     #[cfg(feature = "native-source")]
     pub fn to_native_params(&self) -> anyhow::Result<NativeSourceParams> {
@@ -408,37 +407,6 @@ mod tests {
         assert_eq!(params.gop, 30);
         assert_eq!(params.payload_type, 97);
         assert_eq!(params.clock_rate, 90000);
-    }
-
-    #[test]
-    #[cfg(feature = "native-source")]
-    fn test_to_native_params_legacy_backend_compat() {
-        // Legacy values are still accepted — they pass through unchanged.
-        // Normalization happens in C++ backend_factory.cpp.
-        let spec = SourceSpec {
-            stream_id: "cam1".into(),
-            kind: SourceKind::V4l2,
-            capture: CaptureSpec {
-                backend: "v4l2".into(),
-                device: "/dev/video0".into(),
-                width: 640,
-                height: 480,
-                fps: 30,
-                pixel_format: "yuyv".into(),
-                prefer_dmabuf: false,
-            },
-            encoder: EncoderSpec {
-                backend: "rdk_x5".into(),
-                codec: "h264".into(),
-                bitrate: 1_000_000,
-                profile: "42001f".into(),
-                gop: 60,
-                prefer_dmabuf: false,
-            },
-            output: OutputSpec::default(),
-        };
-        let params = spec.to_native_params().unwrap();
-        assert_eq!(params.encoder_backend, "rdk_x5"); // legacy value passed through
     }
 
     #[test]

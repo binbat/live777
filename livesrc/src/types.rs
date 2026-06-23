@@ -1,7 +1,7 @@
 //! Public types for the livesrc native backend crate.
 //!
 //! `NativeSourceParams` is defined here and owned by livesrc.
-//! liveion converts `SourceSpec` / legacy URL into this type and passes it to
+//! liveion converts `SourceSpec` / URL-based config into this type and passes it to
 //! `NativePipeline::new()`.
 
 /// Parameters for creating a native capture+encode pipeline.

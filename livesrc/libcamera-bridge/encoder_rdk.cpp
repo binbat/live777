@@ -1,4 +1,3 @@
-#include "encoder.h"
 #include "include/encoder_backend.h"
 #include <cstdio>
 #include <cstring>
@@ -31,7 +30,17 @@ static void yuyv_to_nv12_neon(const uint8_t* yuyv, uint8_t* nv12_y, uint8_t* nv1
     }
 }
 
-struct Encoder::Impl : public EncoderBackend {
+// ---------------------------------------------------------------------------
+// EncoderBackend implementation (RDK X5)
+//
+// Two paths:
+//   1. CPU copy-path (STABLE, default):
+//      RawFrame.data (YUYV) -> NEON CSC -> NV12 -> hb_mm_mc_queue_input_buffer
+//   2. DMA-BUF zero-copy path (WIP, gated by prefer_dmabuf=true):
+//      NOT YET IMPLEMENTED.  Do not enable in production.
+// ---------------------------------------------------------------------------
+class RdkX5Encoder : public EncoderBackend {
+public:
     media_codec_context_t* context = nullptr;
     int width = 0;
     int height = 0;
@@ -42,7 +51,8 @@ struct Encoder::Impl : public EncoderBackend {
 
     EncodedPacketCallback encoded_cb_;
 
-    ~Impl() {
+    RdkX5Encoder() = default;
+    ~RdkX5Encoder() override {
         if (context) {
             hb_mm_mc_stop(context);
             hb_mm_mc_release(context);
@@ -59,16 +69,7 @@ struct Encoder::Impl : public EncoderBackend {
     void setCallback(EncodedPacketCallback cb) override;
 };
 
-// ---------------------------------------------------------------------------
-// EncoderBackend implementation (RDK X5)
-//
-// Two paths:
-//   1. CPU copy-path (STABLE, default):
-//      RawFrame.data (YUYV) → NEON CSC → NV12 → hb_mm_mc_queue_input_buffer
-//   2. DMA-BUF zero-copy path (WIP, gated by prefer_dmabuf=true):
-//      NOT YET IMPLEMENTED.  Do not enable in production.
-// ---------------------------------------------------------------------------
-bool Encoder::Impl::init(const EncoderConfig& cfg, std::string* err) {
+bool RdkX5Encoder::init(const EncoderConfig& cfg, std::string* err) {
     (void)err;
     width = static_cast<int>(cfg.width);
     height = static_cast<int>(cfg.height);
@@ -112,7 +113,7 @@ bool Encoder::Impl::init(const EncoderConfig& cfg, std::string* err) {
     return true;
 }
 
-bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
+bool RdkX5Encoder::submit(const RawFrame& frame, std::string* err) {
     if (!context || !running_) return false;
 
     // DMA-BUF zero-copy path: NOT YET IMPLEMENTED
@@ -122,7 +123,7 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
         return false;
     }
 
-    // CPU copy-path: YUYV → NV12 via NEON, then submit to hardware
+    // CPU copy-path: YUYV -> NV12 via NEON, then submit to hardware
     if (frame.planes[0].data == nullptr) {
         if (err) *err = "frame data is null";
         return false;
@@ -177,38 +178,30 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
     return true;
 }
 
-void Encoder::Impl::requestKeyframe() {
+void RdkX5Encoder::requestKeyframe() {
     // RDK X5 hardware issues IDR automatically based on intra_period.
     // A force-IDR control may be added in a future SDK update.
 }
 
-void Encoder::Impl::stop() {
+void RdkX5Encoder::stop() {
     running_ = false;
     if (context) {
         hb_mm_mc_stop(context);
     }
 }
 
-bool Encoder::Impl::isRunning() const {
+bool RdkX5Encoder::isRunning() const {
     return running_;
 }
 
-void Encoder::Impl::setCallback(EncodedPacketCallback cb) {
+void RdkX5Encoder::setCallback(EncodedPacketCallback cb) {
     encoded_cb_ = std::move(cb);
 }
-
-Encoder::Encoder() : pImpl(std::make_unique<Impl>()) {}
-Encoder::~Encoder() = default;
 
 // ---------------------------------------------------------------------------
 // Factory for EncoderBackend (RDK X5)
 // ---------------------------------------------------------------------------
-
-std::unique_ptr<EncoderBackend> Encoder::createRdkX5Backend() {
-    return std::make_unique<Impl>();
-}
-
 std::unique_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg) {
     (void)cfg;
-    return Encoder::createRdkX5Backend();
+    return std::make_unique<RdkX5Encoder>();
 }

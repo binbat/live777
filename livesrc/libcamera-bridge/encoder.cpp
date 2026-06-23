@@ -1,4 +1,3 @@
-#include "encoder.h"
 #include "include/encoder_backend.h"
 #include <iostream>
 #include <vector>
@@ -13,7 +12,10 @@
 #include <queue>
 #include <utility>
 
-class Encoder::Impl : public EncoderBackend {
+// ---------------------------------------------------------------------------
+// EncoderBackend implementation (V4L2 M2M)
+// ---------------------------------------------------------------------------
+class V4l2M2mEncoder : public EncoderBackend {
 public:
     int fd = -1;
     uint32_t width = 0;
@@ -38,6 +40,9 @@ public:
     int frames_dropped = 0;
     bool running_ = false;
 
+    V4l2M2mEncoder() = default;
+    ~V4l2M2mEncoder() override { cleanup(); }
+
     void cleanup();
 
     // --- EncoderBackend overrides ---
@@ -49,10 +54,7 @@ public:
     void setCallback(EncodedPacketCallback cb) override;
 };
 
-// ---------------------------------------------------------------------------
-// EncoderBackend implementation (V4L2 M2M)
-// ---------------------------------------------------------------------------
-bool Encoder::Impl::init(const EncoderConfig& cfg, std::string* err) {
+bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     (void)err;
     width = cfg.width;
     height = cfg.height;
@@ -146,7 +148,7 @@ bool Encoder::Impl::init(const EncoderConfig& cfg, std::string* err) {
     return true;
 }
 
-bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
+bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
     (void)err;
     if (fd < 0 || !running_) return false;
     if (frame.kind != BufferKind::Cpu) {
@@ -236,30 +238,24 @@ bool Encoder::Impl::submit(const RawFrame& frame, std::string* err) {
     return true;
 }
 
-void Encoder::Impl::requestKeyframe() {
+void V4l2M2mEncoder::requestKeyframe() {
     force_idr = true;
 }
 
-void Encoder::Impl::stop() {
+void V4l2M2mEncoder::stop() {
     running_ = false;
     cleanup();
 }
 
-bool Encoder::Impl::isRunning() const {
+bool V4l2M2mEncoder::isRunning() const {
     return running_;
 }
 
-void Encoder::Impl::setCallback(EncodedPacketCallback cb) {
+void V4l2M2mEncoder::setCallback(EncodedPacketCallback cb) {
     encoded_cb_ = std::move(cb);
 }
 
-Encoder::Encoder() : pImpl(std::make_unique<Impl>()) {}
-
-Encoder::~Encoder() {
-    pImpl->cleanup();
-}
-
-void Encoder::Impl::cleanup() {
+void V4l2M2mEncoder::cleanup() {
     if (fd >= 0) {
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
         ioctl(fd, VIDIOC_STREAMOFF, &type);
@@ -285,12 +281,7 @@ void Encoder::Impl::cleanup() {
 // ---------------------------------------------------------------------------
 // Factory for EncoderBackend (V4L2 M2M)
 // ---------------------------------------------------------------------------
-
-std::unique_ptr<EncoderBackend> Encoder::createV4L2M2MBackend() {
-    return std::make_unique<Impl>();
-}
-
 std::unique_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg) {
     (void)cfg;
-    return Encoder::createV4L2M2MBackend();
+    return std::make_unique<V4l2M2mEncoder>();
 }

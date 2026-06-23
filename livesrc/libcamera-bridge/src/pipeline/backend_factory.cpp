@@ -44,26 +44,19 @@ std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg)
     if (cfg.backend == "libcamera") return create_libcamera_capture_backend(cfg);
 #endif
 #if ENABLE_BACKEND_RDK_X5
-    // Canonical: "v4l2".  Legacy aliases: "rdk-x5", "rdk_x5".
-    if (cfg.backend == "v4l2" || cfg.backend == "rdk-x5" || cfg.backend == "rdk_x5")
-        return create_rdk_v4l2_capture_backend(cfg);
+    if (cfg.backend == "v4l2") return create_rdk_v4l2_capture_backend(cfg);
 #elif ENABLE_CAPTURE_V4L2
-    if (cfg.backend == "v4l2")
-        return create_v4l2_capture_backend(cfg);
+    if (cfg.backend == "v4l2") return create_v4l2_capture_backend(cfg);
 #endif
     return nullptr;
 }
 
 std::unique_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg) {
 #if ENABLE_ENCODER_V4L2_M2M
-    // Canonical: "v4l2-m2m".  Legacy alias: "v4l2_m2m".
-    if (cfg.backend == "v4l2-m2m" || cfg.backend == "v4l2_m2m")
-        return create_v4l2_m2m_encoder_backend(cfg);
+    if (cfg.backend == "v4l2-m2m") return create_v4l2_m2m_encoder_backend(cfg);
 #endif
 #if ENABLE_ENCODER_RDK_X5
-    // Canonical: "rdk".  Legacy alias: "rdk_x5".
-    if (cfg.backend == "rdk" || cfg.backend == "rdk_x5")
-        return create_rdk_x5_encoder_backend(cfg);
+    if (cfg.backend == "rdk") return create_rdk_x5_encoder_backend(cfg);
 #endif
     return nullptr;
 }

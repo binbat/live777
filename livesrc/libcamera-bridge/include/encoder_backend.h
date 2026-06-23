@@ -30,7 +30,7 @@ enum EncodedFlags : uint32_t {
 // Encoder configuration
 // ---------------------------------------------------------------------------
 struct EncoderConfig {
-    std::string backend;  // "v4l2_m2m" or "rdk_x5"
+    std::string backend;  // "v4l2-m2m" or "rdk"
     VideoCodec codec;     // H264 or H265
     uint32_t width;
     uint32_t height;

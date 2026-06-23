@@ -137,7 +137,7 @@ pub async fn create_source_from_spec(
     anyhow::bail!("Source feature not enabled")
 }
 
-pub(crate) async fn create_legacy_source_from_url(
+pub(crate) async fn create_url_source(
     url: &str,
     config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {

@@ -542,7 +542,7 @@ impl Manager {
             // URL-based sources (RTSP / SDP)
             else if let Some(ref url) = source_cfg.url {
                 tracing::info!(
-                    "Auto-starting legacy source: {} from {}",
+                    "Auto-starting URL-based source: {} from {}",
                     source_cfg.stream_id,
                     url
                 );

@@ -98,7 +98,7 @@ clock_rate = 90000
 | Layer | Value |
 |-------|-------|
 | `capture.backend` | `"libcamera"`, `"v4l2"` |
-| `encoder.backend` | `"v4l2_m2m"`, `"rdk"` |
+| `encoder.backend` | `"v4l2-m2m"`, `"rdk"` |
 
 ### pixel_format values
 

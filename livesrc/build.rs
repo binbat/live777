@@ -94,7 +94,6 @@ fn main() {
     println!("cargo:rerun-if-changed=libcamera-bridge/include/capture_backend.h");
     println!("cargo:rerun-if-changed=libcamera-bridge/include/encoder_backend.h");
     println!("cargo:rerun-if-changed=libcamera-bridge/include/media_types.h");
-    println!("cargo:rerun-if-changed=libcamera-bridge/encoder.h");
 
     if rdk_available {
         println!("cargo:rerun-if-changed=libcamera-bridge/encoder_rdk.cpp");
