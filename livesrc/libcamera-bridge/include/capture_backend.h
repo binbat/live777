@@ -58,10 +58,10 @@ public:
 
 /// Platform-specific capture factories — defined in backend .cpp files.
 /// Callers should use create_capture_backend() (the dispatcher in backend_factory.cpp).
-std::unique_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
-std::unique_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
-std::unique_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
 
 /// Dispatcher: selects the right backend based on cfg.backend.
 /// Defined exactly once in src/pipeline/backend_factory.cpp.
-std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg);

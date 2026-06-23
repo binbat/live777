@@ -16,30 +16,30 @@
 // ---------------------------------------------------------------------------
 
 #if ENABLE_CAPTURE_LIBCAMERA
-std::unique_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
 #endif
 
 // V4L2 capture: RDK and generic are mutually exclusive at compile time.
 // Only declare the factory that actually exists in the current build.
 #if ENABLE_BACKEND_RDK_X5
-std::unique_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
 #elif ENABLE_CAPTURE_V4L2
-std::unique_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
 #endif
 
 #if ENABLE_ENCODER_V4L2_M2M
-std::unique_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg);
+std::shared_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg);
 #endif
 
 #if ENABLE_ENCODER_RDK_X5
-std::unique_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg);
+std::shared_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg);
 #endif
 
 // ---------------------------------------------------------------------------
 // Dispatchers
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg) {
+std::shared_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg) {
 #if ENABLE_CAPTURE_LIBCAMERA
     if (cfg.backend == "libcamera") return create_libcamera_capture_backend(cfg);
 #endif
@@ -51,7 +51,7 @@ std::unique_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg)
     return nullptr;
 }
 
-std::unique_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg) {
+std::shared_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg) {
 #if ENABLE_ENCODER_V4L2_M2M
     if (cfg.backend == "v4l2-m2m") return create_v4l2_m2m_encoder_backend(cfg);
 #endif

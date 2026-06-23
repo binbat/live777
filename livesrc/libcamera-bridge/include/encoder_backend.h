@@ -90,9 +90,9 @@ public:
 
 /// Platform-specific encoder factories — defined in backend .cpp files.
 /// Callers should use create_encoder_backend() (the dispatcher in backend_factory.cpp).
-std::unique_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg);
-std::unique_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg);
+std::shared_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg);
+std::shared_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg);
 
 /// Dispatcher: selects the right backend based on cfg.backend.
 /// Defined exactly once in src/pipeline/backend_factory.cpp.
-std::unique_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg);
+std::shared_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg);

@@ -61,11 +61,14 @@ fn main() {
 
     // Native backend selection — inferred from enabled capture/encoder features.
     // libcamera is Pi-specific; rdk-x5 is aarch64-specific; otherwise generic-v4l2.
+    // capture-libcamera and encoder-rdk are mutually exclusive presets; if both
+    // are enabled (e.g. `cargo --all-features`), prefer the libcamera backend and
+    // ignore encoder-rdk instead of panicking.
     let native_backend = if has_capture_libcamera {
         if has_encoder_rdk {
-            panic!(
-                "capture-libcamera and encoder-rdk are incompatible; \
-                 use native-rpi or native-rdk preset separately"
+            println!(
+                "cargo:warning=capture-libcamera and encoder-rdk are incompatible; \
+                 encoder-rdk will be ignored for this build"
             );
         }
         "rpi".to_string()

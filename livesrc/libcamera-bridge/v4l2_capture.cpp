@@ -302,7 +302,7 @@ bool V4L2CaptureImpl::isRunning() const {
 // ---------------------------------------------------------------------------
 // Factory for CaptureBackend (generic V4L2)
 // ---------------------------------------------------------------------------
-std::unique_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg) {
+std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg) {
     (void)cfg;
-    return std::make_unique<V4L2CaptureImpl>();
+    return std::make_shared<V4L2CaptureImpl>();
 }

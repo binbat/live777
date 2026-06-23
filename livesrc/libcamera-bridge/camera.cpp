@@ -39,9 +39,9 @@ struct MappedRequest {
 };
 
 static std::mutex g_instance_mutex;
-static std::map<Request*, class PiCameraImpl*> g_request_to_instance;
+static std::map<Request*, std::weak_ptr<class PiCameraImpl>> g_request_to_instance;
 
-class PiCameraImpl : public CaptureBackend {
+class PiCameraImpl : public CaptureBackend, public std::enable_shared_from_this<PiCameraImpl> {
 public:
     std::atomic<bool> destroying_{false};
 
@@ -49,16 +49,21 @@ public:
     std::shared_ptr<libcamera::Camera> camera;
     Stream* videoStream = nullptr;
     std::vector<std::unique_ptr<Request>> requests;
-    bool running = false;
+    std::atomic<bool> running{false};
     int target_fps = 30;
     int width_ = 0;
     int height_ = 0;
-    uint64_t seq_ = 0;
+    std::atomic<uint64_t> seq_{0};
     CaptureFrameCallback capture_cb_;
+    mutable std::mutex state_mutex_;
     std::unique_ptr<FrameBufferAllocator> allocator_;
 
     std::mutex registry_mutex_;
     std::map<Request*, MappedRequest> registry_;
+
+    static std::shared_ptr<PiCameraImpl> create() {
+        return std::shared_ptr<PiCameraImpl>(new PiCameraImpl());
+    }
 
     ~PiCameraImpl() override {
         destroying_.store(true);
@@ -74,16 +79,21 @@ public:
     bool start(CaptureFrameCallback cb, std::string* err) override;
     void stop() override;
     bool isRunning() const override;
+
+private:
+    PiCameraImpl() = default;
 };
 
 static void request_completed_slot(Request* request) {
     if (!request) return;
 
-    PiCameraImpl* impl = nullptr;
+    std::shared_ptr<PiCameraImpl> impl;
     {
         std::lock_guard<std::mutex> lock(g_instance_mutex);
         auto it = g_request_to_instance.find(request);
-        if (it != g_request_to_instance.end()) impl = it->second;
+        if (it != g_request_to_instance.end()) {
+            impl = it->second.lock();
+        }
     }
 
     if (!impl || impl->destroying_.load()) return;
@@ -157,7 +167,15 @@ void PiCameraImpl::on_request_completed(Request* request) {
         offset += plane.length;
     }
 
-    if (capture_cb_) {
+    CaptureFrameCallback cb;
+    bool should_queue = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        cb = capture_cb_;
+        should_queue = running.load() && camera != nullptr;
+    }
+
+    if (cb) {
         auto now = std::chrono::steady_clock::now();
         static auto start_time = now;
         uint64_t timestamp =
@@ -178,13 +196,16 @@ void PiCameraImpl::on_request_completed(Request* request) {
             -1,
             0,
         };
-        capture_cb_(f);
+        cb(f);
     }
 
     // Reuse and re-queue if still running.
     request->reuse(Request::ReuseFlag::ReuseBuffers);
-    if (running && camera) {
-        camera->queueRequest(request);
+    if (should_queue) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (running.load() && camera) {
+            camera->queueRequest(request);
+        }
     }
 }
 
@@ -298,7 +319,7 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
         }
         {
             std::lock_guard<std::mutex> lock(g_instance_mutex);
-            g_request_to_instance[mapped.request] = this;
+            g_request_to_instance[mapped.request] = shared_from_this();
         }
         requests.push_back(std::move(request));
     }
@@ -307,19 +328,28 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
 
 bool PiCameraImpl::start(CaptureFrameCallback cb, std::string* err) {
     (void)err;
-    if (running) return false;
-
-    capture_cb_ = std::move(cb);
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (running.load()) return false;
+        capture_cb_ = std::move(cb);
+    }
     camera->requestCompleted.connect(request_completed_slot);
 
     ControlList controls;
+    if (target_fps <= 0) {
+        target_fps = 30;
+    }
     int64_t frame_duration = 1000000 / target_fps;
     controls.set(controls::FrameDurationLimits, {frame_duration, frame_duration});
 
     int ret = camera->start(&controls);
-    if (ret < 0) return false;
+    if (ret < 0) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        capture_cb_ = nullptr;
+        return false;
+    }
 
-    running = true;
+    running.store(true);
     for (auto& r : requests) {
         camera->queueRequest(r.get());
     }
@@ -327,23 +357,27 @@ bool PiCameraImpl::start(CaptureFrameCallback cb, std::string* err) {
 }
 
 void PiCameraImpl::stop() {
-    if (!running) return;
-    running = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (!running.load()) return;
+        running.store(false);
+        capture_cb_ = nullptr;
+    }
     if (camera) {
         camera->stop();
         camera->requestCompleted.disconnect(request_completed_slot);
     }
-    capture_cb_ = nullptr;
 }
 
 bool PiCameraImpl::isRunning() const {
-    return running;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return running.load();
 }
 
 // ---------------------------------------------------------------------------
 // Factory for CaptureBackend (libcamera)
 // ---------------------------------------------------------------------------
-std::unique_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg) {
+std::shared_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg) {
     (void)cfg;
-    return std::make_unique<PiCameraImpl>();
+    return PiCameraImpl::create();
 }

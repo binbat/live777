@@ -65,16 +65,19 @@ impl SharedPipelineHandle {
     }
 
     fn set(&self, h: *mut SourcePipelineHandle) {
-        *self.inner.lock().unwrap() = Some(PipelineHandlePtr(h));
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some(PipelineHandlePtr(h));
+        }
     }
 
     fn take(&self) -> Option<PipelineHandlePtr> {
-        self.inner.lock().unwrap().take()
+        self.inner.lock().ok().and_then(|mut g| g.take())
     }
 
     fn request_keyframe(&self) {
-        let guard = self.inner.lock().unwrap();
-        if let Some(h) = guard.as_ref() {
+        if let Ok(guard) = self.inner.lock()
+            && let Some(h) = guard.as_ref()
+        {
             unsafe { source_pipeline_request_keyframe(h.0) };
         }
     }
@@ -118,8 +121,9 @@ unsafe extern "C" fn on_encoded_packet(
         flags: pkt.flags,
     };
 
-    let guard = ctx.tx.lock().unwrap();
-    if let Some(tx) = guard.as_ref() {
+    if let Ok(guard) = ctx.tx.lock()
+        && let Some(tx) = guard.as_ref()
+    {
         let _ = tx.send(encoded);
     }
 }
@@ -227,7 +231,9 @@ impl NativePipeline {
             anyhow::bail!("source_pipeline_start failed");
         }
 
-        Ok(self.rx.take().expect("start called twice"))
+        self.rx
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("start called twice"))
     }
 
     /// Stop streaming and free C++ resources.

@@ -77,8 +77,8 @@ public:
     }
 
 private:
-    std::unique_ptr<CaptureBackend> capture_;
-    std::unique_ptr<EncoderBackend> encoder_;
+    std::shared_ptr<CaptureBackend> capture_;
+    std::shared_ptr<EncoderBackend> encoder_;
     EncodedPacketCallback on_packet_;
 };
 

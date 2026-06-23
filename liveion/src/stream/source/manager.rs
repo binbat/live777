@@ -34,6 +34,10 @@ impl SourceManager {
         source.start().await?;
 
         let mut sources = self.sources.write().await;
+        if sources.contains_key(&stream_id) {
+            source.stop().await?;
+            anyhow::bail!("Source already exists: {}", stream_id);
+        }
         sources.insert(stream_id.clone(), Arc::new(tokio::sync::Mutex::new(source)));
 
         info!("Added source: {}", stream_id);
@@ -79,6 +83,13 @@ impl SourceManager {
     #[cfg(feature = "source")]
     pub async fn create_bridge(&self, stream_id: &str, forward: Arc<PeerForward>) -> Result<()> {
         info!("Creating bridge for {}", stream_id);
+
+        {
+            let bridges = self.bridges.read().await;
+            if bridges.contains_key(stream_id) {
+                anyhow::bail!("Bridge already exists for source: {}", stream_id);
+            }
+        }
 
         let sources = self.sources.read().await;
         let source = sources
@@ -141,7 +152,7 @@ impl SourceManager {
                 .add_virtual_track(rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Video, codec)
                 .await
             {
-                warn!("Failed to add video track: {:?}", e);
+                anyhow::bail!("Failed to add video track for {}: {:?}", stream_id, e);
             }
         }
 
@@ -155,7 +166,7 @@ impl SourceManager {
                 .add_virtual_track(rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Audio, codec)
                 .await
             {
-                warn!("Failed to add audio track: {:?}", e);
+                anyhow::bail!("Failed to add audio track for {}: {:?}", stream_id, e);
             }
         }
 
@@ -202,6 +213,17 @@ impl SourceManager {
         bridge.start_bridging(rtp_rx, state_rx).await?;
 
         let mut bridges = self.bridges.write().await;
+        let sources = self.sources.read().await;
+        if !sources.contains_key(stream_id) {
+            drop(sources);
+            drop(bridges);
+            if let Err(e) = bridge.stop().await {
+                warn!("Failed to stop orphan bridge for {}: {}", stream_id, e);
+            }
+            anyhow::bail!("Source was removed while creating bridge: {}", stream_id);
+        }
+        drop(sources);
+
         bridges.insert(
             stream_id.to_string(),
             Arc::new(tokio::sync::Mutex::new(bridge)),

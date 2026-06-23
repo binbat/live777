@@ -37,13 +37,13 @@ public:
 
     ~V4L2CaptureImpl() {
         stop();
-        if (fd >= 0) close(fd);
+        if (fd >= 0) {
+            close(fd);
+            fd = -1;
+        }
     }
 
-    void stop() {
-        running = false;
-        if (cap_thread.joinable()) cap_thread.join();
-
+    void release_resources() {
         if (fd >= 0) {
             enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             ioctl(fd, VIDIOC_STREAMOFF, &type);
@@ -53,8 +53,17 @@ public:
                 if (buf.dbuf_fd >= 0) close(buf.dbuf_fd);
             }
             buffers.clear();
+
+            close(fd);
+            fd = -1;
         }
         capture_cb_ = nullptr;
+    }
+
+    void stop() {
+        running = false;
+        if (cap_thread.joinable()) cap_thread.join();
+        release_resources();
     }
 
     // --- CaptureBackend overrides ---
@@ -87,6 +96,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
 
     if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
         if (err) *err = "S_FMT failed";
+        release_resources();
         return false;
     }
 
@@ -97,6 +107,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
 
     if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
         if (err) *err = "REQBUFS failed";
+        release_resources();
         return false;
     }
 
@@ -106,13 +117,18 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
 
-        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) return false;
+        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
+            if (err) *err = "QUERYBUF failed";
+            release_resources();
+            return false;
+        }
 
         Buffer b;
         b.length = buf.length;
         b.start = mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
         if (b.start == MAP_FAILED) {
             if (err) *err = "mmap failed";
+            release_resources();
             return false;
         }
 
@@ -126,7 +142,11 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         }
 
         buffers.push_back(b);
-        ioctl(fd, VIDIOC_QBUF, &buf);
+        if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
+            if (err) *err = "QBUF failed";
+            release_resources();
+            return false;
+        }
     }
 
     return true;
@@ -198,7 +218,7 @@ static void capture_loop(V4L2CaptureImpl* impl) {
 // ---------------------------------------------------------------------------
 // Factory for CaptureBackend (RDK X5 V4L2)
 // ---------------------------------------------------------------------------
-std::unique_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg) {
+std::shared_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg) {
     (void)cfg;
-    return std::make_unique<V4L2CaptureImpl>();
+    return std::make_shared<V4L2CaptureImpl>();
 }

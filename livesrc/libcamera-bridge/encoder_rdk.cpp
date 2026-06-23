@@ -297,7 +297,7 @@ void RdkX5Encoder::setCallback(EncodedPacketCallback cb) {
 // ---------------------------------------------------------------------------
 // Factory for EncoderBackend (RDK X5)
 // ---------------------------------------------------------------------------
-std::unique_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg) {
+std::shared_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg) {
     (void)cfg;
-    return std::make_unique<RdkX5Encoder>();
+    return std::make_shared<RdkX5Encoder>();
 }
