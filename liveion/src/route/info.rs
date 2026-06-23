@@ -17,25 +17,22 @@ async fn info() -> Json<ServerInfo> {
 }
 
 fn enabled_features() -> Vec<String> {
-    #[allow(unused_mut)]
-    let mut features = Vec::with_capacity(8);
-
-    #[cfg(feature = "webui")]
-    features.push("webui".to_string());
-    #[cfg(feature = "cascade")]
-    features.push("cascade".to_string());
-    #[cfg(feature = "net4mqtt")]
-    features.push("net4mqtt".to_string());
-    #[cfg(feature = "recorder")]
-    features.push("recorder".to_string());
-    #[cfg(feature = "source")]
-    features.push("source".to_string());
-    #[cfg(feature = "source-sdp")]
-    features.push("source-sdp".to_string());
-    #[cfg(feature = "source-rtsp")]
-    features.push("source-rtsp".to_string());
-    #[cfg(feature = "source-all")]
-    features.push("source-all".to_string());
-
-    features
+    vec![
+        #[cfg(feature = "webui")]
+        "webui".to_string(),
+        #[cfg(feature = "cascade")]
+        "cascade".to_string(),
+        #[cfg(feature = "net4mqtt")]
+        "net4mqtt".to_string(),
+        #[cfg(feature = "recorder")]
+        "recorder".to_string(),
+        #[cfg(feature = "source")]
+        "source".to_string(),
+        #[cfg(feature = "source-sdp")]
+        "source-sdp".to_string(),
+        #[cfg(feature = "source-rtsp")]
+        "source-rtsp".to_string(),
+        #[cfg(feature = "source-all")]
+        "source-all".to_string(),
+    ]
 }
