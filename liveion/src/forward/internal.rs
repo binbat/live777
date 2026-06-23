@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 #[cfg(feature = "cascade")]
@@ -38,7 +39,101 @@ use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
 use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
-use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
+use super::track::{
+    PublishTrackForwardContext, PublishTrackRemote, SharedManualTwccFeedback, TrackWriteErrorClass,
+    classify_webrtc_write_error,
+};
+
+pub(crate) const PEER_CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone)]
+pub(crate) struct PeerConnectionReadiness {
+    state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    changed: Arc<Notify>,
+    history: Arc<std::sync::Mutex<Vec<RTCPeerConnectionState>>>,
+}
+
+impl PeerConnectionReadiness {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New)),
+            changed: Arc::new(Notify::new()),
+            history: Arc::new(std::sync::Mutex::new(vec![RTCPeerConnectionState::New])),
+        })
+    }
+
+    pub(crate) fn state_handle(&self) -> Arc<std::sync::RwLock<RTCPeerConnectionState>> {
+        self.state.clone()
+    }
+
+    pub(crate) fn current_state(&self) -> RTCPeerConnectionState {
+        self.state
+            .read()
+            .map(|state| *state)
+            .unwrap_or(RTCPeerConnectionState::New)
+    }
+
+    pub(crate) fn record_state(&self, state: RTCPeerConnectionState) {
+        if let Ok(mut current) = self.state.write() {
+            *current = state;
+        }
+        if let Ok(mut history) = self.history.lock() {
+            history.push(state);
+        }
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) async fn wait_for_connected(
+        &self,
+        stream: &str,
+        peer_id: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            let state = self.current_state();
+            match state {
+                RTCPeerConnectionState::Connected => return Ok(()),
+                RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected => {
+                    return Err(AppError::throw(self.diagnostics(stream, peer_id, start)));
+                }
+                _ => {}
+            }
+
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Err(AppError::throw(self.diagnostics(stream, peer_id, start)));
+            }
+
+            if tokio::time::timeout(remaining, self.changed.notified())
+                .await
+                .is_err()
+            {
+                return Err(AppError::throw(self.diagnostics(stream, peer_id, start)));
+            }
+        }
+    }
+
+    fn diagnostics(&self, stream: &str, peer_id: &str, start: Instant) -> String {
+        let connection_states = self
+            .history
+            .lock()
+            .map(|states| {
+                states
+                    .iter()
+                    .map(|state| format!("{state:?}"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        format!(
+            "peer connection did not become connected: stream_id={stream}, peer_id={peer_id}, last_state={:?}, elapsed={}ms, connection_states={connection_states:?}",
+            self.current_state(),
+            start.elapsed().as_millis(),
+        )
+    }
+}
 
 fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
     vec![
@@ -92,12 +187,13 @@ struct DataChannelForward {
 struct PublishPeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
     gather_complete: Arc<Notify>,
-    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    readiness: Arc<PeerConnectionReadiness>,
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for PublishPeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        self.readiness.record_state(state);
         if let Some(internal) = self.internal.upgrade() {
             let pc = internal
                 .publish_peer_ref
@@ -110,9 +206,6 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                     "[{}] [publish] connection state changed: {}",
                     internal.stream, state
                 );
-                if let Ok(mut s) = self.connection_state.write() {
-                    *s = state;
-                }
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
@@ -135,7 +228,9 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 .clone()
                 .and_then(|w| w.upgrade());
             if let Some(pc) = pc {
-                let _ = internal.publish_track_up(pc, track).await;
+                let _ = internal
+                    .publish_track_up(pc, track, self.readiness.clone())
+                    .await;
             }
         }
     }
@@ -167,20 +262,20 @@ struct SubscribePeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
     peer: Arc<Mutex<Option<std::sync::Weak<dyn PeerConnection>>>>,
     gather_complete: Arc<Notify>,
-    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    readiness: Arc<PeerConnectionReadiness>,
 }
 
 impl SubscribePeerHandler {
     fn new(
         internal: std::sync::Weak<PeerForwardInternal>,
         gather_complete: Arc<Notify>,
-        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        readiness: Arc<PeerConnectionReadiness>,
     ) -> Self {
         Self {
             internal,
             peer: Arc::new(Mutex::new(None)),
             gather_complete,
-            connection_state,
+            readiness,
         }
     }
 
@@ -192,9 +287,7 @@ impl SubscribePeerHandler {
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for SubscribePeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        if let Ok(mut s) = self.connection_state.write() {
-            *s = state;
-        }
+        self.readiness.record_state(state);
         let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
         if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
             info!(
@@ -702,6 +795,28 @@ impl PeerForwardInternal {
         }
     }
 
+    async fn add_ice_candidate_nonfatal_network_noise(
+        stream: &str,
+        id: &str,
+        peer: &Arc<dyn PeerConnection>,
+        ice_candidate: RTCIceCandidateInit,
+    ) -> Result<()> {
+        match peer.add_ice_candidate(ice_candidate).await {
+            Ok(()) => Ok(()),
+            Err(err)
+                if classify_webrtc_write_error(&err, RTCPeerConnectionState::New)
+                    == TrackWriteErrorClass::CandidateNetworkNoise =>
+            {
+                debug!(
+                    "[{}] [{}] ignoring ICE candidate network noise: {}",
+                    stream, id, err
+                );
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
     pub(crate) fn subscribe_event(&self) -> broadcast::Receiver<ForwardEvent> {
         self.event_sender.subscribe()
     }
@@ -769,7 +884,13 @@ impl PeerForwardInternal {
         if publish.is_some() && publish.as_ref().unwrap().id == id {
             let publish = publish.as_ref().unwrap();
             for ice_candidate in ice_candidates {
-                publish.peer.add_ice_candidate(ice_candidate).await?;
+                Self::add_ice_candidate_nonfatal_network_noise(
+                    &self.stream,
+                    &id,
+                    &publish.peer,
+                    ice_candidate,
+                )
+                .await?;
             }
             return Ok(());
         }
@@ -779,7 +900,13 @@ impl PeerForwardInternal {
         for subscribe in subscribe_group.iter() {
             if subscribe.id == id {
                 for ice_candidate in ice_candidates {
-                    subscribe.peer.add_ice_candidate(ice_candidate).await?;
+                    Self::add_ice_candidate_nonfatal_network_noise(
+                        &self.stream,
+                        &id,
+                        &subscribe.peer,
+                        ice_candidate,
+                    )
+                    .await?;
                 }
                 return Ok(());
             }
@@ -945,6 +1072,7 @@ impl PeerForwardInternal {
         peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
         connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        readiness: Arc<PeerConnectionReadiness>,
     ) -> Result<()> {
         {
             let mut publish = self.publish.write().await;
@@ -960,6 +1088,7 @@ impl PeerForwardInternal {
                 self.publish_rtcp_channel.subscribe(),
                 cascade,
                 connection_state,
+                readiness,
             )
             .await?;
 
@@ -1063,6 +1192,7 @@ impl PeerForwardInternal {
         Arc<dyn PeerConnection>,
         Arc<Notify>,
         Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        Arc<PeerConnectionReadiness>,
     )> {
         if media_info.video_transceiver.0 > 1 && media_info.audio_transceiver.0 > 1 {
             return Err(AppError::throw("sendonly is more than 1"));
@@ -1117,11 +1247,12 @@ impl PeerForwardInternal {
             .build();
 
         let gather_complete = Arc::new(Notify::new());
-        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
+        let readiness = PeerConnectionReadiness::new();
+        let connection_state = readiness.state_handle();
         let handler = PublishPeerHandler {
             internal: internal_weak,
             gather_complete: gather_complete.clone(),
-            connection_state: connection_state.clone(),
+            readiness: readiness.clone(),
         };
         let peer: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
@@ -1158,7 +1289,7 @@ impl PeerForwardInternal {
                 .await?;
         }
 
-        Ok((peer, gather_complete, connection_state))
+        Ok((peer, gather_complete, connection_state, readiness))
     }
 
     pub(crate) fn set_twcc_ext_id(&self, ext_id: u8) {
@@ -1169,6 +1300,7 @@ impl PeerForwardInternal {
         &self,
         peer: Arc<dyn PeerConnection>,
         track: Arc<dyn TrackRemote>,
+        readiness: Arc<PeerConnectionReadiness>,
     ) -> Result<()> {
         let generation_id = *self.media_generation_id.read().await;
         let twcc_ext_id = self.negotiated_twcc_ext_id.load(Ordering::Relaxed);
@@ -1191,9 +1323,12 @@ impl PeerForwardInternal {
             self.stream.clone(),
             get_peer_id(&peer),
             track,
-            twcc_ext_id,
-            self.native_twcc_bound.clone(),
-            manual_twcc_feedback,
+            PublishTrackForwardContext {
+                readiness,
+                twcc_ext_id,
+                native_twcc_bound: self.native_twcc_bound.clone(),
+                manual_twcc_feedback,
+            },
             generation_id,
         )
         .await;
@@ -1273,6 +1408,7 @@ impl PeerForwardInternal {
         Arc<dyn PeerConnection>,
         Arc<Notify>,
         Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        Arc<PeerConnectionReadiness>,
     )> {
         if media_info.video_transceiver.1 > 1 && media_info.audio_transceiver.1 > 1 {
             return Err(AppError::throw("recvonly is more than 1"));
@@ -1308,12 +1444,10 @@ impl PeerForwardInternal {
             .build();
 
         let gather_complete = Arc::new(Notify::new());
-        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
-        let handler = SubscribePeerHandler::new(
-            internal_weak,
-            gather_complete.clone(),
-            connection_state.clone(),
-        );
+        let readiness = PeerConnectionReadiness::new();
+        let connection_state = readiness.state_handle();
+        let handler =
+            SubscribePeerHandler::new(internal_weak, gather_complete.clone(), readiness.clone());
         let peer: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
                 .with_media_engine(m)
@@ -1348,7 +1482,7 @@ impl PeerForwardInternal {
         )
         .await?;
 
-        Ok((peer, gather_complete, connection_state))
+        Ok((peer, gather_complete, connection_state, readiness))
     }
 
     async fn new_sender(
@@ -1590,5 +1724,100 @@ impl PeerForwardInternal {
             session,
             stream_info: self.info().await,
         });
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use tokio::time::Duration;
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_returns_when_connected() {
+        let readiness = PeerConnectionReadiness::new();
+        let waiter = {
+            let readiness = readiness.clone();
+            tokio::spawn(async move {
+                readiness
+                    .wait_for_connected("stream-a", "peer-a", Duration::from_secs(1))
+                    .await
+            })
+        };
+
+        readiness.record_state(RTCPeerConnectionState::Connecting);
+        readiness.record_state(RTCPeerConnectionState::Connected);
+
+        assert!(waiter.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_fails_with_diagnostics_on_failed_state() {
+        let readiness = PeerConnectionReadiness::new();
+        readiness.record_state(RTCPeerConnectionState::Failed);
+
+        let err = readiness
+            .wait_for_connected("stream-b", "peer-b", Duration::from_secs(1))
+            .await
+            .expect_err("failed state must reject media startup");
+        let err = format!("{err:?}");
+
+        assert!(err.contains("stream-b"));
+        assert!(err.contains("peer-b"));
+        assert!(err.contains("Failed"));
+        assert!(err.contains("connection_states"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_rejects_closed_and_disconnected() {
+        for terminal_state in [
+            RTCPeerConnectionState::Closed,
+            RTCPeerConnectionState::Disconnected,
+        ] {
+            let readiness = PeerConnectionReadiness::new();
+            readiness.record_state(terminal_state);
+
+            let err = readiness
+                .wait_for_connected("stream-terminal", "peer-terminal", Duration::from_secs(1))
+                .await
+                .expect_err("terminal state must reject media startup");
+            let err = format!("{err:?}");
+
+            assert!(err.contains("stream-terminal"));
+            assert!(err.contains("peer-terminal"));
+            assert!(err.contains(&format!("{terminal_state:?}")));
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_does_not_return_while_connecting() {
+        let readiness = PeerConnectionReadiness::new();
+        readiness.record_state(RTCPeerConnectionState::Connecting);
+
+        let result = readiness
+            .wait_for_connected(
+                "stream-connecting",
+                "peer-connecting",
+                Duration::from_millis(1),
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_connected_times_out_with_last_state() {
+        let readiness = PeerConnectionReadiness::new();
+        readiness.record_state(RTCPeerConnectionState::Connecting);
+
+        let err = readiness
+            .wait_for_connected("stream-c", "peer-c", Duration::from_millis(1))
+            .await
+            .expect_err("timeout must reject media startup");
+        let err = format!("{err:?}");
+
+        assert!(err.contains("stream-c"));
+        assert!(err.contains("peer-c"));
+        assert!(err.contains("Connecting"));
+        assert!(err.contains("elapsed"));
     }
 }

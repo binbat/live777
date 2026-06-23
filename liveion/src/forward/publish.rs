@@ -13,8 +13,10 @@ use crate::forward::message::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
 
 use super::get_peer_id;
+use super::internal::{PEER_CONNECTED_TIMEOUT, PeerConnectionReadiness};
 use super::media::MediaInfo;
 use super::message::CascadeInfo;
+use super::track::{TrackWriteErrorClass, classify_webrtc_write_error};
 
 pub(crate) struct PublishRTCPeerConnection {
     pub(crate) id: String,
@@ -32,6 +34,7 @@ impl PublishRTCPeerConnection {
         rtcp_recv: broadcast::Receiver<(RtcpMessage, u32)>,
         cascade: Option<CascadeInfo>,
         connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        readiness: Arc<PeerConnectionReadiness>,
     ) -> Result<Self> {
         let id = get_peer_id(&peer);
         let peer_weak = Arc::downgrade(&peer);
@@ -42,7 +45,13 @@ impl PublishRTCPeerConnection {
         let mut reader = Cursor::new(remote_desc.sdp.as_bytes());
         let sdp = SessionDescription::unmarshal(&mut reader)?;
         let media_info = MediaInfo::try_from(sdp)?;
-        tokio::spawn(Self::peer_send_rtcp(path, id.clone(), peer_weak, rtcp_recv));
+        tokio::spawn(Self::peer_send_rtcp(
+            path,
+            id.clone(),
+            peer_weak,
+            readiness,
+            rtcp_recv,
+        ));
         Ok(Self {
             id,
             peer,
@@ -72,8 +81,20 @@ impl PublishRTCPeerConnection {
         path: String,
         id: String,
         peer: Weak<dyn PeerConnection>,
+        readiness: Arc<PeerConnectionReadiness>,
         mut recv: broadcast::Receiver<(RtcpMessage, u32)>,
     ) {
+        if let Err(err) = readiness
+            .wait_for_connected(&path, &id, PEER_CONNECTED_TIMEOUT)
+            .await
+        {
+            debug!(
+                "[{}] [{}] not starting publish RTCP writer before peer connected: {:?}",
+                path, id, err
+            );
+            return;
+        }
+
         while let (Ok((rtcp_message, media_ssrc)), Some(pc)) = (recv.recv().await, peer.upgrade()) {
             debug!(
                 "[{}] [{}] ssrc : {} ,send rtcp : {:?}",
@@ -99,10 +120,37 @@ impl PublishRTCPeerConnection {
                             "[{}] [{}] wrote RTCP {:?} for ssrc {}",
                             path, id, rtcp_message, media_ssrc
                         ),
-                        Err(err) => debug!(
-                            "[{}] [{}] Failed to write RTCP for ssrc {}: {}",
-                            path, id, media_ssrc, err
-                        ),
+                        Err(err) => {
+                            let state = readiness.current_state();
+                            match classify_webrtc_write_error(&err, state) {
+                                TrackWriteErrorClass::TransientNotReady => {
+                                    debug!(
+                                        "[{}] [{}] stopping publish RTCP writer after transient write error, state={}, ssrc={}: {}",
+                                        path, id, state, media_ssrc, err
+                                    );
+                                    return;
+                                }
+                                TrackWriteErrorClass::CandidateNetworkNoise => {
+                                    debug!(
+                                        "[{}] [{}] ignoring candidate network write noise in publish RTCP writer, state={}, ssrc={}: {}",
+                                        path, id, state, media_ssrc, err
+                                    );
+                                }
+                                TrackWriteErrorClass::PeerDisconnected => {
+                                    debug!(
+                                        "[{}] [{}] stopping publish RTCP writer after peer disconnected, state={}, ssrc={}",
+                                        path, id, state, media_ssrc
+                                    );
+                                    return;
+                                }
+                                TrackWriteErrorClass::Fatal => {
+                                    debug!(
+                                        "[{}] [{}] Failed to write RTCP for ssrc {}, state={}: {}",
+                                        path, id, media_ssrc, state, err
+                                    );
+                                }
+                            }
+                        }
                     }
                     break;
                 }

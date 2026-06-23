@@ -1,3 +1,20 @@
+# ICE servers advertised to WHIP/WHEP clients.
+#
+# Local development usually does not need a public STUN server. Keep this
+# explicit empty list for loopback testing; if the key is omitted, live777's
+# config defaults may add a public STUN server back.
+ice_servers = []
+#
+# Enable STUN/TURN for LAN/public deployments where clients are not on the same
+# host and need NAT traversal. TURN is recommended for reliable cross-network
+# access; STUN alone only helps discover reflexive candidates and may still fail
+# behind restrictive NATs.
+#
+# [[ice_servers]]
+# urls = [
+#     "stun:stun.l.google.com:19302",
+# ]
+
 # Channel forwarding configuration.
 # Each stream has one independent channel endpoint.
 # URL format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
@@ -20,17 +37,12 @@ url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
 # reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 # cors = false
 
-[[ice_servers]]
-urls = [
-    "stun:stun.l.google.com:19302",
-]
-
 [webrtc]
 # UDP bind addresses used by WebRTC ICE host candidates.
 # Env override priority: LIVE777_WEBRTC_ICE_UDP_ADDRS > LIVE777_WEBRTC_ICE_UDP_ADDR > LIVETWO_WEBRTC_ICE_UDP_ADDR > config > default.
 # Use "auto" to advertise a non-loopback local address. Use "127.0.0.1:0" only when the browser runs on the same machine.
 # 0.0.0.0 can bind sockets, but it is not a usable advertised ICE candidate address and will be ignored.
-ice_udp_addrs = ["auto"]
+ice_udp_addrs = ["127.0.0.1:0"]
 
 [stream]
 

@@ -216,7 +216,8 @@ impl PeerForward {
         let twcc_ext_id = parse_twcc_ext_id_from_sdp(&offer.sdp);
         self.internal.set_twcc_ext_id(twcc_ext_id);
 
-        let (peer, gather_complete, connection_state) = self.new_publish_peer(media_info).await?;
+        let (peer, gather_complete, connection_state, readiness) =
+            self.new_publish_peer(media_info).await?;
 
         let description = peer_complete(offer, peer.clone(), gather_complete).await?;
 
@@ -225,7 +226,7 @@ impl PeerForward {
             .await?;
 
         self.internal
-            .set_publish(peer.clone(), None, connection_state)
+            .set_publish(peer.clone(), None, connection_state, readiness)
             .await?;
 
         let session = get_peer_id(&peer);
@@ -261,7 +262,8 @@ impl PeerForward {
             .decide_publish_generation(&media_profile)
             .await;
 
-        let (peer, gather_complete, connection_state) = self.new_publish_peer(media_info).await?;
+        let (peer, gather_complete, connection_state, readiness) =
+            self.new_publish_peer(media_info).await?;
 
         let offer = peer.create_offer(None).await?;
         peer.set_local_description(offer).await?;
@@ -293,6 +295,7 @@ impl PeerForward {
                             session_url: client.session_url,
                         }),
                         connection_state,
+                        readiness,
                     )
                     .await?;
                 Ok(())
@@ -311,6 +314,7 @@ impl PeerForward {
         Arc<dyn PeerConnection>,
         Arc<Notify>,
         Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        Arc<internal::PeerConnectionReadiness>,
     )> {
         self.internal
             .new_publish_peer(media_info, Arc::downgrade(&self.internal))
@@ -447,7 +451,7 @@ impl PeerForward {
     ) -> Result<(RTCSessionDescription, String)> {
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
-        let (peer, gather_complete, connection_state) =
+        let (peer, gather_complete, connection_state, _readiness) =
             self.new_subscription_peer(media_info.clone()).await?;
 
         let (sdp, session) = (
@@ -472,7 +476,7 @@ impl PeerForward {
             has_data_channel: false,
         };
 
-        let (peer, gather_complete, connection_state) =
+        let (peer, gather_complete, connection_state, _readiness) =
             self.new_subscription_peer(media_info.clone()).await?;
 
         let offer: RTCSessionDescription = peer.create_offer(None).await?;
@@ -522,6 +526,7 @@ impl PeerForward {
         Arc<dyn PeerConnection>,
         Arc<Notify>,
         Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        Arc<internal::PeerConnectionReadiness>,
     )> {
         self.internal
             .new_subscription_peer(media_info, Arc::downgrade(&self.internal))

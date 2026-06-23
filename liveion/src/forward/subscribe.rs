@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -26,8 +25,9 @@ use crate::{constant, result::Result};
 use super::get_peer_id;
 use super::media::MediaInfo;
 use super::message::CascadeInfo;
-use super::track::ForwardData;
-use super::track::PublishTrackRemote;
+use super::track::{
+    ForwardData, PublishTrackRemote, TrackWriteErrorClass, classify_webrtc_write_error,
+};
 
 type SelectLayerBody = (RtpCodecKind, String);
 type OptionalRtpSender = Option<Arc<dyn RtpSender>>;
@@ -44,6 +44,7 @@ struct BoundPublishTrack {
 }
 
 struct SubscribeForwardChannel {
+    peer: Arc<dyn PeerConnection>,
     publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
     select_layer_recv: broadcast::Receiver<SelectLayerBody>,
     publish_track_change: broadcast::Receiver<()>,
@@ -99,6 +100,7 @@ impl SubscribeRTCPeerConnection {
                 track_binding_publish_rid.clone(),
                 publish_tracks.clone(),
                 SubscribeForwardChannel {
+                    peer: peer.clone(),
                     publish_rtcp_sender: publish_rtcp_sender.clone(),
                     select_layer_recv: select_layer_sender.subscribe(),
                     publish_track_change: publish_track_change.subscribe(),
@@ -417,12 +419,6 @@ impl SubscribeRTCPeerConnection {
             .cloned()
     }
 
-    fn is_transient_track_write_error(err: &impl Display) -> bool {
-        let message = err.to_string();
-        message.contains("local_srtp_context is not set yet")
-            || message.contains("track is not binding yet")
-    }
-
     fn current_connection_state(
         connection_state: &Arc<std::sync::RwLock<RTCPeerConnectionState>>,
     ) -> RTCPeerConnectionState {
@@ -439,6 +435,50 @@ impl SubscribeRTCPeerConnection {
                 | RTCPeerConnectionState::Closed
                 | RTCPeerConnectionState::Disconnected
         )
+    }
+
+    async fn wait_until_subscriber_connected(
+        stream: &str,
+        id: &str,
+        kind: RtpCodecKind,
+        peer: &Arc<dyn PeerConnection>,
+        connection_state: &Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    ) -> bool {
+        let started = Instant::now();
+        loop {
+            let state = Self::current_connection_state(connection_state);
+            match state {
+                RTCPeerConnectionState::Connected => return true,
+                state if Self::is_terminal_connection_state(state) => {
+                    warn!(
+                        "[{}] [{}] {} subscriber forward stopped before write because peer is {}",
+                        stream, id, kind, state
+                    );
+                    return false;
+                }
+                _ => {}
+            }
+
+            if started.elapsed() >= TRACK_BIND_RETRY_TIMEOUT {
+                warn!(
+                    "[{}] [{}] {} subscriber forward timed out waiting for peer connected: last_state={}, elapsed={}ms",
+                    stream,
+                    id,
+                    kind,
+                    state,
+                    started.elapsed().as_millis(),
+                );
+                if let Err(err) = peer.close().await {
+                    debug!(
+                        "[{}] [{}] {} failed to close timed-out subscriber peer: {}",
+                        stream, id, kind, err
+                    );
+                }
+                return false;
+            }
+
+            sleep(TRACK_BIND_RETRY_DELAY).await;
+        }
     }
 
     fn spawn_startup_pli_burst(
@@ -609,14 +649,27 @@ impl SubscribeRTCPeerConnection {
                                     packet.header.extensions.clear();
                                     packet.header.extensions_padding = 0;
 
+                                    if !Self::wait_until_subscriber_connected(
+                                        &stream,
+                                        &id,
+                                        kind,
+                                        &forward_channel.peer,
+                                        &forward_channel.connection_state,
+                                    )
+                                    .await
+                                    {
+                                        break;
+                                    }
+
                                     if let Err(err) = track.write_rtp(packet).await {
-                                        if Self::is_transient_track_write_error(&err) {
+                                        let state = Self::current_connection_state(
+                                            &forward_channel.connection_state,
+                                        );
+                                        match classify_webrtc_write_error(&err, state) {
+                                            TrackWriteErrorClass::TransientNotReady => {
                                             let now = Instant::now();
                                             let started = transient_write_error_since.get_or_insert(now);
                                             let elapsed = started.elapsed();
-                                            let state = Self::current_connection_state(
-                                                &forward_channel.connection_state,
-                                            );
                                             if Self::is_terminal_connection_state(state) {
                                                 warn!(
                                                     "[{}] [{}] {} track write stopped after transient error because peer is {}: {}",
@@ -659,9 +712,26 @@ impl SubscribeRTCPeerConnection {
                                             );
                                             sleep(TRACK_BIND_RETRY_DELAY).await;
                                             continue;
+                                            }
+                                            TrackWriteErrorClass::CandidateNetworkNoise => {
+                                                debug!(
+                                                    "[{}] [{}] {} ignoring candidate network write noise, state={}, ssrc={}: {}",
+                                                    stream, id, kind, state, sender_ssrc, err
+                                                );
+                                                continue;
+                                            }
+                                            TrackWriteErrorClass::PeerDisconnected => {
+                                                debug!(
+                                                    "[{}] [{}] {} track write stopped after peer disconnected, state={}, ssrc={}",
+                                                    stream, id, kind, state, sender_ssrc
+                                                );
+                                                break;
+                                            }
+                                            TrackWriteErrorClass::Fatal => {
+                                                warn!("[{}] [{}] {} track write err, state={}, ssrc={}: {}", stream, id, kind, state, sender_ssrc, err);
+                                                break;
+                                            }
                                         }
-                                        warn!("[{}] [{}] {} track write err: {}", stream, id, kind, err);
-                                        break;
                                     }
                                     transient_write_error_since = None;
                                     if first_packet {
@@ -868,9 +938,35 @@ mod tests {
 
     #[test]
     fn track_not_binding_yet_is_a_transient_track_write_error() {
-        assert!(SubscribeRTCPeerConnection::is_transient_track_write_error(
-            &"track is not binding yet"
-        ));
+        assert_eq!(
+            classify_webrtc_write_error(
+                &"track is not binding yet",
+                RTCPeerConnectionState::Connecting,
+            ),
+            TrackWriteErrorClass::TransientNotReady
+        );
+    }
+
+    #[test]
+    fn dtls_not_started_is_a_transient_track_write_error() {
+        assert_eq!(
+            classify_webrtc_write_error(
+                &"the DTLS transport has not started yet",
+                RTCPeerConnectionState::Connecting,
+            ),
+            TrackWriteErrorClass::TransientNotReady
+        );
+    }
+
+    #[test]
+    fn unreachable_network_write_error_is_not_transient_binding_error() {
+        assert_eq!(
+            classify_webrtc_write_error(
+                &"write udp [::1]:1234: sendto: Network is unreachable",
+                RTCPeerConnectionState::Connected,
+            ),
+            TrackWriteErrorClass::CandidateNetworkNoise
+        );
     }
 
     #[test]

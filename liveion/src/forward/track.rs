@@ -19,12 +19,14 @@ use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 #[cfg(feature = "source")]
 use tracing::error;
 use webrtc::media_stream::track_remote::TrackRemote;
+use webrtc::peer_connection::RTCPeerConnectionState;
 
 #[cfg(feature = "source")]
 use std::sync::atomic::AtomicU32;
 #[cfg(feature = "source")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::internal::{PEER_CONNECTED_TIMEOUT, PeerConnectionReadiness};
 use super::message::Codec;
 use crate::new_broadcast_channel;
 
@@ -41,6 +43,56 @@ pub(crate) type ForwardData = Arc<Packet>;
 const MANUAL_TWCC_INTERVAL: Duration = Duration::from_millis(100);
 const MANUAL_TWCC_MAX_STATUS_COUNT: u16 = 512;
 const TYPE_TCC_DELTA_SCALE_FACTOR_US: i64 = 250;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TrackWriteErrorClass {
+    TransientNotReady,
+    CandidateNetworkNoise,
+    PeerDisconnected,
+    Fatal,
+}
+
+pub(crate) fn classify_webrtc_write_error(
+    err: &impl std::fmt::Display,
+    state: RTCPeerConnectionState,
+) -> TrackWriteErrorClass {
+    let message = err.to_string();
+    if message.contains("No route to host")
+        || message.contains("Network is unreachable")
+        || message.contains("Host is down")
+        || message.contains("Can't assign requested address")
+    {
+        return TrackWriteErrorClass::CandidateNetworkNoise;
+    }
+
+    if message.contains("Disconnected(") {
+        return TrackWriteErrorClass::PeerDisconnected;
+    }
+
+    if message.contains("the DTLS transport has not started yet")
+        || message.contains("local_srtp_context is not set yet")
+        || message.contains("track is not binding yet")
+    {
+        return match state {
+            RTCPeerConnectionState::Connected => TrackWriteErrorClass::TransientNotReady,
+            RTCPeerConnectionState::New
+            | RTCPeerConnectionState::Connecting
+            | RTCPeerConnectionState::Disconnected
+            | RTCPeerConnectionState::Failed
+            | RTCPeerConnectionState::Closed
+            | RTCPeerConnectionState::Unspecified => TrackWriteErrorClass::TransientNotReady,
+        };
+    }
+
+    TrackWriteErrorClass::Fatal
+}
+
+pub(crate) struct PublishTrackForwardContext {
+    pub(crate) readiness: Arc<PeerConnectionReadiness>,
+    pub(crate) twcc_ext_id: u8,
+    pub(crate) native_twcc_bound: Arc<AtomicBool>,
+    pub(crate) manual_twcc_feedback: Option<SharedManualTwccFeedback>,
+}
 
 struct ManualTwccFeedback {
     sender_ssrc: u32,
@@ -278,9 +330,7 @@ impl PublishTrackRemote {
         stream: String,
         id: String,
         track: Arc<dyn TrackRemote>,
-        twcc_ext_id: u8,
-        native_twcc_bound: Arc<AtomicBool>,
-        manual_twcc_feedback: Option<SharedManualTwccFeedback>,
+        forward_context: PublishTrackForwardContext,
         generation_id: u64,
     ) -> Self {
         let rtp_sender = new_broadcast_channel!(4096);
@@ -310,10 +360,8 @@ impl PublishTrackRemote {
             stream.clone(),
             id.clone(),
             track.clone(),
+            forward_context,
             rtp_sender.clone(),
-            twcc_ext_id,
-            native_twcc_bound,
-            manual_twcc_feedback,
         ));
 
         Self::Real {
@@ -330,11 +378,15 @@ impl PublishTrackRemote {
         stream: String,
         id: String,
         track: Arc<dyn TrackRemote>,
+        forward_context: PublishTrackForwardContext,
         rtp_sender: broadcast::Sender<ForwardData>,
-        twcc_ext_id: u8,
-        native_twcc_bound: Arc<AtomicBool>,
-        manual_twcc_feedback: Option<SharedManualTwccFeedback>,
     ) {
+        let PublishTrackForwardContext {
+            readiness,
+            twcc_ext_id,
+            native_twcc_bound,
+            manual_twcc_feedback,
+        } = forward_context;
         let kind = track.kind().await;
         let ssrcs = track.ssrcs().await;
         let first_ssrc = ssrcs.first().copied().unwrap_or(0);
@@ -344,6 +396,17 @@ impl PublishTrackRemote {
             .map(|r| r.to_string())
             .unwrap_or_default();
         let codec = track.codec(first_ssrc).await;
+
+        if let Err(err) = readiness
+            .wait_for_connected(&stream, &id, PEER_CONNECTED_TIMEOUT)
+            .await
+        {
+            warn!(
+                "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {:?} not starting forward before peer connected: {:?}",
+                stream, id, kind, rid, ssrcs, err,
+            );
+            return;
+        }
 
         info!(
             "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {:?}, codec: {:?} start forward",
@@ -417,10 +480,35 @@ impl PublishTrackRemote {
                                                 "[{}] [{}] [twcc-probe] wrote manual TWCC feedback packets={}",
                                                 stream, id, count,
                                             ),
-                                            Err(err) => warn!(
-                                                "[{}] [{}] [twcc-probe] failed to write manual TWCC feedback: {}",
-                                                stream, id, err,
-                                            ),
+                                            Err(err) => {
+                                                let state = readiness.current_state();
+                                                match classify_webrtc_write_error(&err, state) {
+                                                    TrackWriteErrorClass::TransientNotReady => {
+                                                        warn!(
+                                                            "[{}] [{}] [twcc-probe] stopping manual TWCC feedback after transient write error, state={}, kind={:?}, ssrc={}: {}",
+                                                            stream, id, state, kind, rtp_packet.header.ssrc, err,
+                                                        );
+                                                        break;
+                                                    }
+                                                    TrackWriteErrorClass::CandidateNetworkNoise => {
+                                                        debug!(
+                                                            "[{}] [{}] [twcc-probe] ignoring candidate network write noise, state={}, kind={:?}, ssrc={}: {}",
+                                                            stream, id, state, kind, rtp_packet.header.ssrc, err,
+                                                        );
+                                                    }
+                                                    TrackWriteErrorClass::PeerDisconnected => {
+                                                        debug!(
+                                                            "[{}] [{}] [twcc-probe] stopping manual TWCC feedback after peer disconnected, state={}, kind={:?}, ssrc={}",
+                                                            stream, id, state, kind, rtp_packet.header.ssrc,
+                                                        );
+                                                        break;
+                                                    }
+                                                    TrackWriteErrorClass::Fatal => warn!(
+                                                        "[{}] [{}] [twcc-probe] failed to write manual TWCC feedback, state={}, kind={:?}, ssrc={}: {}",
+                                                        stream, id, state, kind, rtp_packet.header.ssrc, err,
+                                                    ),
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -722,6 +810,45 @@ fn system_time_to_ntp(time: SystemTime) -> u64 {
 #[cfg(test)]
 mod manual_twcc_tests {
     use super::*;
+    use webrtc::peer_connection::RTCPeerConnectionState;
+
+    #[test]
+    fn dtls_not_started_is_transient_before_peer_connected() {
+        let classification = classify_webrtc_write_error(
+            &"the DTLS transport has not started yet",
+            RTCPeerConnectionState::Connecting,
+        );
+
+        assert_eq!(classification, TrackWriteErrorClass::TransientNotReady);
+    }
+
+    #[test]
+    fn unreachable_network_write_error_is_non_fatal_candidate_noise() {
+        let classification =
+            classify_webrtc_write_error(&"sendto: No route to host", RTCPeerConnectionState::New);
+
+        assert_eq!(classification, TrackWriteErrorClass::CandidateNetworkNoise);
+    }
+
+    #[test]
+    fn cannot_assign_requested_address_is_candidate_noise() {
+        let classification = classify_webrtc_write_error(
+            &"Failed to send to 198.18.0.1:50268 from 127.0.0.1:53531: Can't assign requested address (os error 49)",
+            RTCPeerConnectionState::Connected,
+        );
+
+        assert_eq!(classification, TrackWriteErrorClass::CandidateNetworkNoise);
+    }
+
+    #[test]
+    fn disconnected_sender_rtp_is_peer_disconnected() {
+        let classification = classify_webrtc_write_error(
+            &"Disconnected(SenderRtp(RTCRtpSenderId(0), Packet { ... }))",
+            RTCPeerConnectionState::Connected,
+        );
+
+        assert_eq!(classification, TrackWriteErrorClass::PeerDisconnected);
+    }
 
     #[test]
     fn manual_twcc_feedback_marks_missing_packets() {
