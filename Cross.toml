@@ -1,0 +1,22 @@
+# Cross-rs configuration for live777 native backends.
+#
+# Usage example (Raspberry Pi libcamera / V4L2):
+#   export PI_SYSROOT=/path/to/pi-sysroot
+#   cross build --target aarch64-unknown-linux-gnu \
+#     --bin live777 --release \
+#     --no-default-features --features native-rpi,webui
+#
+# The PI_SYSROOT directory is mounted into the container at the same path.
+# livesrc/build.rs reads PI_SYSROOT to set pkg-config sysroot and link paths.
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+
+[target.aarch64-unknown-linux-gnu.env]
+volumes = ["PI_SYSROOT"]
+
+[target.armv7-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:main"
+
+[target.armv7-unknown-linux-gnueabihf.env]
+volumes = ["PI_SYSROOT"]
