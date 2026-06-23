@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use chrono::Utc;
+#[cfg(feature = "cascade")]
 use libwish::Client;
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tracing::trace;
@@ -337,7 +338,7 @@ mod rtcp_egress_probe {
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                             + 1;
                         *self.last_twcc_time.lock().unwrap() = Some(std::time::Instant::now());
-                        tracing::debug!(
+                        tracing::trace!(
                             "[{}] [rtcp-egress-probe] outgoing TWCC feedback count={} sender_ssrc={} media_ssrc={} base_seq={} status_count={}",
                             stream,
                             cnt,
@@ -524,10 +525,11 @@ mod rtcp_egress_probe {
                     }
                 }
             }
-            // Log probe activity every 300th poll_write call
-            if cnt % 300 == 1 {
+            // This probe is useful when debugging RTCP egress, but it is too noisy for normal
+            // debug logs while streams are active.
+            if cnt % 3000 == 1 {
                 let snap = self.counters.snapshot();
-                tracing::debug!(
+                tracing::trace!(
                     "[{}] [rtcp-egress-probe] poll_write_calls={} non_empty={} rtp={} twcc={} rr={} sr={} pli={} fir={} nack={} remb={} other={}",
                     self.stream,
                     snap.poll_write_calls,
@@ -579,7 +581,7 @@ mod rtcp_egress_probe {
                 self.native_twcc_bound
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            tracing::debug!(
+            tracing::trace!(
                 "[{}] [rtcp-egress-probe] bind_remote_stream ssrc={} pt={} mime={} twcc_ext={} ext_count={}",
                 self.stream,
                 info.ssrc,
@@ -591,7 +593,7 @@ mod rtcp_egress_probe {
             self.inner.bind_remote_stream(info);
         }
         fn unbind_remote_stream(&mut self, info: &StreamInfo) {
-            tracing::debug!(
+            tracing::trace!(
                 "[{}] [rtcp-egress-probe] unbind_remote_stream ssrc={}",
                 self.stream,
                 info.ssrc,
@@ -1507,6 +1509,7 @@ impl PeerForwardInternal {
 
     pub async fn remove_subscribe(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
         let mut flag = false;
+        #[allow(unused_mut)]
         let mut reforward_flat = false;
         let session = get_peer_id(&peer);
 
@@ -1518,6 +1521,7 @@ impl PeerForwardInternal {
                     flag = true;
                     metrics::SUBSCRIBE.dec();
 
+                    #[cfg(feature = "cascade")]
                     if let Some(cascade) = subscribe.cascade.clone() {
                         reforward_flat = true;
                         metrics::REFORWARD.dec();

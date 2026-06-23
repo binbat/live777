@@ -27,11 +27,25 @@ const VIDEO_TRACK_ID: u32 = 1;
 const AUDIO_TRACK_ID: u32 = 2;
 const MANIFEST_UPDATE_PERIOD_SECS: u64 = 2;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingMediaOutcome {
+    Complete,
+    Degraded,
+    Failed,
+}
+
 /// Represents a completed segment with its actual duration
 #[derive(Debug, Clone)]
 struct SegmentInfo {
     start_time: u64, // Start time in timescale units
     duration: u64,   // Actual duration in timescale units
+}
+
+#[derive(Debug, Clone)]
+struct ExpectedVideo {
+    codec_mime: String,
+    payload_type: Option<u8>,
+    ssrc: Option<u32>,
 }
 
 pub struct Segmenter {
@@ -109,6 +123,9 @@ pub struct Segmenter {
 
     /// Audio segments with their actual durations
     audio_segments: Vec<SegmentInfo>,
+
+    expected_video: Option<ExpectedVideo>,
+    pending_video_codec_config: Option<Vec<Vec<u8>>>,
 }
 
 impl Segmenter {
@@ -165,7 +182,68 @@ impl Segmenter {
             video_adapter: None,
             segments: Vec::new(),
             audio_segments: Vec::new(),
+            expected_video: None,
+            pending_video_codec_config: None,
         })
+    }
+
+    pub fn expect_video_track(
+        &mut self,
+        codec_mime: impl Into<String>,
+        payload_type: Option<u8>,
+        ssrc: Option<u32>,
+        fmtp: Option<&str>,
+    ) {
+        let codec_mime = codec_mime.into();
+        self.expected_video = Some(ExpectedVideo {
+            codec_mime: codec_mime.clone(),
+            payload_type,
+            ssrc,
+        });
+        tracing::info!(
+            "[segmenter] recorder start stream={} video codec={} payload_type={:?} ssrc={:?} fmtp={}",
+            self.stream,
+            codec_mime,
+            payload_type,
+            ssrc,
+            fmtp.unwrap_or("")
+        );
+    }
+
+    pub fn configure_video_from_track_metadata(
+        &mut self,
+        codec_mime: &str,
+        codec_config: Option<Vec<Vec<u8>>>,
+        dimensions: Option<(u32, u32)>,
+    ) {
+        if let Some(codec) = video_codec_from_mime(codec_mime) {
+            self.ensure_video_adapter(codec);
+        }
+        if let Some(expected_video) = self.expected_video.as_mut() {
+            expected_video.codec_mime = codec_mime.to_string();
+        } else {
+            self.expected_video = Some(ExpectedVideo {
+                codec_mime: codec_mime.to_string(),
+                payload_type: None,
+                ssrc: None,
+            });
+        }
+        if let Some(config) = codec_config.filter(|config| !config.is_empty()) {
+            self.pending_video_codec_config = Some(config);
+            tracing::info!(
+                "[segmenter] {} video codec config initialized from track metadata ({})",
+                self.stream,
+                codec_mime
+            );
+        }
+        if let Some((width, height)) = dimensions
+            && width > 0
+            && height > 0
+        {
+            self.video_width = width;
+            self.video_height = height;
+        }
+        self.refresh_video_metadata();
     }
 
     /// Feed one H.264 Frame (Annex-B format, may contain multiple NALUs)
@@ -278,6 +356,14 @@ impl Segmenter {
 
         if is_sync {
             self.pli_backoff.record_keyframe();
+            tracing::debug!("[segmenter] {} {:?} keyframe detected", self.stream, codec);
+        }
+        if config_ready {
+            tracing::info!(
+                "[segmenter] {} {:?} codec config event detected",
+                self.stream,
+                codec
+            );
         }
 
         let dur = if duration_ticks == 0 {
@@ -292,7 +378,7 @@ impl Segmenter {
         }
 
         if self.video_track_id.is_none() {
-            if config_ready || adapter_ready {
+            if config_ready || adapter_ready || self.metadata_allows_video_init(codec) {
                 self.refresh_video_metadata();
                 self.init_writer().await?;
             } else {
@@ -380,6 +466,14 @@ impl Segmenter {
                 self.video_codec = cs;
             }
         }
+        if self.video_codec.is_empty()
+            && let Some(codec_mime) = self
+                .expected_video
+                .as_ref()
+                .map(|video| video.codec_mime.as_str())
+        {
+            self.video_codec = default_codec_string(codec_mime).to_string();
+        }
     }
 
     fn current_video_adapter_ready(&self) -> bool {
@@ -387,6 +481,16 @@ impl Segmenter {
             .as_ref()
             .map(|adapter| adapter.ready())
             .unwrap_or(false)
+    }
+
+    fn metadata_allows_video_init(&self, codec: VideoCodec) -> bool {
+        match codec {
+            VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Av1 => self
+                .pending_video_codec_config
+                .as_ref()
+                .is_some_and(|config| !config.is_empty()),
+            VideoCodec::Vp9 => self.video_width > 0 && self.video_height > 0,
+        }
     }
 
     /// Check if we need to request a keyframe due to timeout
@@ -402,6 +506,34 @@ impl Segmenter {
     /// Get PLI backoff statistics for logging
     pub fn pli_stats(&self) -> String {
         self.pli_backoff.state_summary()
+    }
+
+    pub fn media_outcome(&self) -> RecordingMediaOutcome {
+        let has_video = self.video_track_id.is_some() && !self.segments.is_empty();
+        let has_audio = self.audio_track_id.is_some() && !self.audio_segments.is_empty();
+
+        if let Some(expected_video) = self.expected_video.as_ref()
+            && !has_video
+        {
+            tracing::warn!(
+                "[segmenter] {} expected video output is missing codec={} payload_type={:?} ssrc={:?}",
+                self.stream,
+                expected_video.codec_mime,
+                expected_video.payload_type,
+                expected_video.ssrc
+            );
+            return if has_audio {
+                RecordingMediaOutcome::Degraded
+            } else {
+                RecordingMediaOutcome::Failed
+            };
+        }
+
+        if has_video || has_audio {
+            RecordingMediaOutcome::Complete
+        } else {
+            RecordingMediaOutcome::Failed
+        }
     }
 
     pub async fn flush(&mut self) -> Result<()> {
@@ -447,10 +579,20 @@ impl Segmenter {
                 || lower_codec.starts_with("hev1")
                 || lower_codec.starts_with("hvc1")
             {
-                adapter.codec_config().unwrap_or_default()
+                adapter
+                    .codec_config()
+                    .filter(|config| !config.is_empty())
+                    .or_else(|| self.pending_video_codec_config.clone())
+                    .unwrap_or_default()
             } else {
                 vec![]
             }
+        } else if lower_codec.starts_with("avc1")
+            || lower_codec.starts_with("av01")
+            || lower_codec.starts_with("hev1")
+            || lower_codec.starts_with("hvc1")
+        {
+            self.pending_video_codec_config.clone().unwrap_or_default()
         } else {
             vec![]
         };
@@ -478,7 +620,8 @@ impl Segmenter {
                 );
                 e
             })?;
-        info!("[segmenter] {} init.m4s written", self.stream);
+        info!("[segmenter] {} v_init.m4s written", self.stream);
+        self.pending_video_codec_config = None;
 
         // Generate or update the MPD manifest
         self.write_manifest(true).await?;
@@ -878,73 +1021,7 @@ impl Segmenter {
             self.stream
         );
 
-        if name == MANIFEST_FILENAME {
-            return self.store_file_now(path, data).await;
-        }
-
-        if let Some(uploader) = self.uploader.as_ref()
-            && let Some(local_dir) = self.local_dir.as_ref()
-        {
-            let local_path = local_dir.join(&path);
-            let uploader = uploader.clone();
-            let stream_clone = self.stream.clone();
-            let path_clone = path.clone();
-            tokio::spawn(async move {
-                if let Some(parent) = local_path.parent()
-                    && let Err(e) = tokio::fs::create_dir_all(parent).await
-                {
-                    tracing::warn!(
-                        "[segmenter] failed to create local dir for {}: {}",
-                        path_clone,
-                        e
-                    );
-                    return;
-                }
-                if let Err(e) = tokio::fs::write(&local_path, data).await {
-                    tracing::warn!(
-                        "[segmenter] failed to write local file {} (stream {}): {}",
-                        path_clone,
-                        stream_clone,
-                        e
-                    );
-                    return;
-                }
-                if let Err(e) = uploader
-                    .enqueue(path_clone.clone(), local_path.to_string_lossy().to_string())
-                    .await
-                {
-                    tracing::warn!("[segmenter] failed to enqueue upload {}: {}", path_clone, e);
-                }
-            });
-        } else {
-            // Clone what we need for the background task.
-            let op_clone = self.op.clone();
-            let stream_clone = self.stream.clone();
-            let path_clone = path.clone();
-
-            // Spawn the actual write in a detached task so that slow/object‐storage latency does
-            // not block the real‐time RTP processing loop. Any error will be logged.
-            tokio::spawn(async move {
-                if let Err(e) = op_clone.write(&path_clone, data).await {
-                    tracing::warn!(
-                        "[segmenter] failed to write file {} (stream {}): {}",
-                        path_clone,
-                        stream_clone,
-                        e
-                    );
-                } else {
-                    tracing::debug!(
-                        "[segmenter] successfully stored file {} for stream {}",
-                        path_clone,
-                        stream_clone
-                    );
-                }
-            });
-        }
-
-        // Return immediately. The caller does not need to wait for persistence; worst-case we
-        // lose one fragment, which is acceptable for live streaming.
-        Ok(())
+        self.store_file_now(path, data).await
     }
 
     async fn store_file_now(&self, path: String, data: Vec<u8>) -> Result<()> {
@@ -964,6 +1041,31 @@ impl Segmenter {
         }
 
         Ok(())
+    }
+}
+
+fn video_codec_from_mime(codec_mime: &str) -> Option<VideoCodec> {
+    let codec = codec_mime.to_ascii_lowercase();
+    if codec == "video/h264" {
+        Some(VideoCodec::H264)
+    } else if codec == "video/h265" || codec == "video/hevc" {
+        Some(VideoCodec::H265)
+    } else if codec == "video/vp9" {
+        Some(VideoCodec::Vp9)
+    } else if codec == "video/av1" {
+        Some(VideoCodec::Av1)
+    } else {
+        None
+    }
+}
+
+fn default_codec_string(codec_mime: &str) -> &'static str {
+    match codec_mime.to_ascii_lowercase().as_str() {
+        "video/h264" => "avc1",
+        "video/h265" | "video/hevc" => "hev1",
+        "video/vp9" => "vp09.00.10.08.01.02.02.02.00",
+        "video/av1" => "av01.0.08M.08",
+        _ => "avc1",
     }
 }
 

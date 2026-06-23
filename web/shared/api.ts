@@ -112,6 +112,17 @@ export async function stopRecording(streamId: string): Promise<boolean> {
     return true;
 }
 
+export interface ServerInfo {
+    version: string;
+    gitHash: string;
+    buildTime: string;
+    features: string[];
+}
+
+export function getServerInfo() {
+    return w.url('/api/info').get().json<ServerInfo>();
+}
+
 export type CapabilityProbeStatus = 'available' | 'unavailable' | 'unauthorized';
 
 let recorderProbeCache: CapabilityProbeStatus | null = null;
@@ -122,22 +133,30 @@ export async function probeRecorderFeature(force = false): Promise<CapabilityPro
     }
 
     try {
-        const response = await w.url(recordUrl('__feature_probe__')).get().res();
-        if (response.status === 401 || response.status === 403) {
-            return 'unauthorized';
-        }
-
-        if (!response.ok) {
-            recorderProbeCache = 'unavailable';
-            return 'unavailable';
-        }
-
-        const payload = await response.json().catch(() => null) as { available?: boolean } | null;
-        const status: CapabilityProbeStatus = payload?.available === false ? 'unavailable' : 'available';
+        const info = await getServerInfo();
+        const status: CapabilityProbeStatus = info.features.includes('recorder') ? 'available' : 'unavailable';
         recorderProbeCache = status;
         return status;
     } catch {
         recorderProbeCache = 'unavailable';
+        return 'unavailable';
+    }
+}
+
+let cascadeProbeCache: CapabilityProbeStatus | null = null;
+
+export async function probeCascadeFeature(force = false): Promise<CapabilityProbeStatus> {
+    if (!force && cascadeProbeCache && cascadeProbeCache !== 'unauthorized') {
+        return cascadeProbeCache;
+    }
+
+    try {
+        const info = await getServerInfo();
+        const status: CapabilityProbeStatus = info.features.includes('cascade') ? 'available' : 'unavailable';
+        cascadeProbeCache = status;
+        return status;
+    } catch {
+        cascadeProbeCache = 'unavailable';
         return 'unavailable';
     }
 }

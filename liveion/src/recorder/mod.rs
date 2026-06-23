@@ -26,6 +26,8 @@ mod index;
 mod pli_backoff;
 mod segmenter;
 mod task;
+#[cfg(test)]
+mod tests;
 mod uploader;
 use task::RecordingTask;
 pub mod codec;

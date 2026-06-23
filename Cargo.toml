@@ -60,6 +60,7 @@ members = [
     "libs/rtsp",
     "libs/net4mqtt",
     "libs/storage",
+    "libs/version",
     "liveion",
     "liveman",
     "livetwo",
@@ -127,6 +128,7 @@ signal = { path = "libs/signal" }
 
 storage = { path = "libs/storage" }
 api = { path = "libs/api" }
+version = { path = "libs/version" }
 
 clap = { workspace = true, features = ["derive"] }
 reqwest = { workspace = true, features = ["json"] }
@@ -145,6 +147,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 source = ["liveion/source"]
+cascade = ["liveion/cascade"]
 webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]

@@ -85,6 +85,42 @@ async fn test_liveion_simple() {
 }
 
 #[tokio::test]
+async fn test_liveion_info() {
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let res = reqwest::get(format!("http://{addr}{}", api::path::INFO))
+        .await
+        .unwrap();
+
+    assert_eq!(http::StatusCode::OK, res.status());
+
+    let body = res.json::<api::response::ServerInfo>().await.unwrap();
+
+    assert!(!body.version.is_empty());
+    assert!(body.version.contains(&body.git_hash));
+    assert!(!body.git_hash.is_empty());
+    assert!(!body.build_time.is_empty());
+    assert!(body.features.iter().all(|f| !f.is_empty()));
+
+    #[cfg(feature = "recorder")]
+    assert!(body.features.contains(&"recorder".to_string()));
+    #[cfg(not(feature = "recorder"))]
+    assert!(!body.features.contains(&"recorder".to_string()));
+
+    #[cfg(feature = "cascade")]
+    assert!(body.features.contains(&"cascade".to_string()));
+    #[cfg(not(feature = "cascade"))]
+    assert!(!body.features.contains(&"cascade".to_string()));
+}
+
+#[tokio::test]
 async fn test_liveion_ipv6() {
     let cfg = liveion::config::Config::default();
     let strategy = cfg.strategy.clone();

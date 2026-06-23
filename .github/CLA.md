@@ -61,3 +61,4 @@ Example:
 - Yilong Hu，@yingchuan8985，2026/04/09
 - Kun Che, @CK-bantang, 2026/04/25
 - Ming Fang, @syzp3, 2026/05/30
+- Jiahao Chu @luckygala1 2026/06/12

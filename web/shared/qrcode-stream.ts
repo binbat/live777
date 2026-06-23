@@ -13,6 +13,19 @@ function timestamp(value: number) {
     return `${s}.${ms}`;
 }
 
+export type QRCodeFrameRate = 30 | 60 | 120 | 144 | 200 | 500;
+
+export const QRCodeFrameRates: QRCodeFrameRate[] = [30, 60, 120, 144, 200, 500];
+
+export const DefaultQRCodeFrameRate: QRCodeFrameRate = 30;
+
+export function parseQRCodeFrameRate(value: unknown): QRCodeFrameRate {
+    const frameRate = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+    return QRCodeFrameRates.includes(frameRate as QRCodeFrameRate)
+        ? frameRate as QRCodeFrameRate
+        : DefaultQRCodeFrameRate;
+}
+
 export class QRCodeStream {
 
     static White = '#fff';
@@ -30,13 +43,20 @@ export class QRCodeStream {
     private textOriginY: number;
 
     private scheduled = false;
-    private frameRequestCallback: FrameRequestCallback;
+    private timer: number | null = null;
+    private nextFrameAt = 0;
+    private captureTrack: CanvasCaptureMediaStreamTrack | null = null;
+    private frameRate: QRCodeFrameRate;
 
     private capturing: MediaStream | null = null;
     public canvas: HTMLCanvasElement;
 
-    constructor(canvas: HTMLCanvasElement) {
+    constructor(
+        canvas: HTMLCanvasElement,
+        frameRate: QRCodeFrameRate = DefaultQRCodeFrameRate
+    ) {
         this.canvas = canvas;
+        this.frameRate = frameRate;
         this.encoder = new Encoder({ level: 'L' });
         const { width, height } = canvas;
         this.width = width;
@@ -45,7 +65,6 @@ export class QRCodeStream {
         this.qrSize = Math.min(width, height);
         this.qrMarginX = (width - this.qrSize) / 2;
         this.qrMarginY = (height - this.qrSize) / 2;
-        this.frameRequestCallback = this.frameRequestCallback_unbound.bind(this);
         const textMarginX = Math.max(4, width * 0.01);
         const textMarginY = Math.max(4, height * 0.01);
         let fontSize = 1000;
@@ -93,13 +112,32 @@ export class QRCodeStream {
             }
         }
         this.ctx.fillText(timestamp(now), this.textOriginX, this.textOriginY);
+        this.captureTrack?.requestFrame();
     }
 
-    private frameRequestCallback_unbound(_time: DOMHighResTimeStamp) {
-        const now = Date.now();
-        this.doFrame(now);
+    private scheduleFrame() {
+        const frameInterval = 1000 / this.frameRate;
+        const now = performance.now();
+        if (this.nextFrameAt <= now) {
+            this.nextFrameAt = now + frameInterval;
+        }
+        this.timer = window.setTimeout(
+            () => this.frameRequestCallback_unbound(),
+            Math.max(0, this.nextFrameAt - now)
+        );
+    }
+
+    private frameRequestCallback_unbound() {
+        const frameInterval = 1000 / this.frameRate;
+        const now = performance.now();
+        this.nextFrameAt += frameInterval;
+        if (this.nextFrameAt <= now) {
+            const skippedFrames = Math.floor((now - this.nextFrameAt) / frameInterval) + 1;
+            this.nextFrameAt += skippedFrames * frameInterval;
+        }
+        this.doFrame(Date.now());
         if (this.scheduled) {
-            window.requestAnimationFrame(this.frameRequestCallback);
+            this.scheduleFrame();
         }
     }
 
@@ -107,12 +145,21 @@ export class QRCodeStream {
         if (this.capturing) {
             return this.capturing;
         }
+        let ms = this.canvas.captureStream(0);
+        const [track] = ms.getVideoTracks();
+        if (track && 'requestFrame' in track) {
+            this.captureTrack = track as CanvasCaptureMediaStreamTrack;
+        } else {
+            ms.getTracks().forEach(t => t.stop());
+            ms = this.canvas.captureStream(this.frameRate);
+        }
+        this.capturing = ms;
         if (!this.scheduled) {
             this.scheduled = true;
-            window.requestAnimationFrame(this.frameRequestCallback);
+            this.nextFrameAt = performance.now();
+            this.doFrame(Date.now());
+            this.scheduleFrame();
         }
-        const ms = this.canvas.captureStream();
-        this.capturing = ms;
         return ms;
     }
 
@@ -120,10 +167,15 @@ export class QRCodeStream {
         if (this.scheduled) {
             this.scheduled = false;
         }
+        if (this.timer !== null) {
+            window.clearTimeout(this.timer);
+            this.timer = null;
+        }
         if (this.capturing) {
             this.capturing.getTracks().forEach(t => t.stop());
             this.capturing = null;
         }
+        this.captureTrack = null;
     }
 
 }

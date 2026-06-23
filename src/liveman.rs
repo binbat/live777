@@ -8,7 +8,7 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(name = "liveman", version)]
+#[command(name = "liveman", version = version::VERSION)]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count)]

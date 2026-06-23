@@ -1,5 +1,6 @@
 pub const METRICS: &str = "/metrics";
 pub const METRICS_JSON: &str = "/metrics/json";
+pub const INFO: &str = "/api/info";
 
 pub fn whip(stream: &str) -> String {
     format!("/whip/{stream}")

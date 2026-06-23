@@ -14,7 +14,7 @@ api = { path = "../libs/api" }
 auth = { path = "../libs/auth" }
 http-log = { path = "../libs/http-log" }
 iceserver = { path = "../libs/iceserver" }
-libwish = { path = "../libs/libwish" }
+libwish = { path = "../libs/libwish", optional = true }
 storage = { path = "../libs/storage", optional = true }
 rtsp = { path = "../libs/rtsp", optional = true }
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
@@ -49,6 +49,7 @@ uuid = { workspace = true }
 
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+version = { path = "../libs/version" }
 lazy_static = "1.4.0"
 md-5 = "0.10.6"
 prometheus = "0.14"
@@ -66,6 +67,7 @@ fs2 = "0.4"
 
 [features]
 webui = ["dep:rust-embed", "dep:mime_guess"]
+cascade = ["dep:libwish"]
 net4mqtt = ["dep:net4mqtt"]
 recorder = [
     "dep:storage",

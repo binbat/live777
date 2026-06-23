@@ -61,6 +61,7 @@ struct VideoCodecInfo {
     codec_name: String,
     clock_rate: u32,
     payload_type: u8,
+    fmtp_line: Option<String>,
 }
 
 #[cfg(feature = "source")]
@@ -225,6 +226,7 @@ impl SdpSource {
                                     codec_name: codec_name.clone(),
                                     clock_rate,
                                     payload_type: pt,
+                                    fmtp_line: None,
                                 });
                                 info!(
                                     "[{}] Parsed video codec: {} ({}Hz, PT={})",
@@ -252,6 +254,24 @@ impl SdpSource {
                             _ => {}
                         }
                     }
+                }
+            }
+
+            if line.starts_with("a=fmtp:") {
+                let fmtp = line.trim_start_matches("a=fmtp:");
+                if let Some((pt_str, params)) = fmtp.split_once(' ')
+                    && let Ok(pt) = pt_str.parse::<u8>()
+                    && Some(pt) == current_payload_type
+                    && let Some("video") = current_media_type.as_deref()
+                    && let Some(ref mut vc) = video_codec
+                {
+                    vc.fmtp_line = Some(params.trim().to_string());
+                    info!(
+                        "[{}] Parsed video fmtp for PT={}: {}",
+                        self.config.stream_id,
+                        pt,
+                        params.trim()
+                    );
                 }
             }
         }
@@ -438,18 +458,27 @@ impl SdpSource {
     #[cfg(feature = "source")]
     fn video_codec_to_rtc(codec: &VideoCodecInfo) -> RTCRtpCodecParameters {
         let mime_type = format!("video/{}", codec.codec_name.to_uppercase());
+        let codec_upper = codec.codec_name.to_uppercase();
+
+        let sdp_fmtp_line = if codec_upper == "H264" {
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_string()
+        } else if codec_upper == "H265" || codec_upper == "HEVC" {
+            // Preserve any fmtp line from the source SDP; if none is present, use a
+            // default H.265 fmtp so browsers can negotiate the codec.
+            codec
+                .fmtp_line
+                .clone()
+                .unwrap_or_else(|| "profile-id=0;tier-flag=0;tx-mode=SRST".to_string())
+        } else {
+            String::new()
+        };
 
         RTCRtpCodecParameters {
             rtp_codec: RTCRtpCodec {
                 mime_type,
                 clock_rate: codec.clock_rate,
                 channels: 0,
-                sdp_fmtp_line: if codec.codec_name.to_uppercase() == "H264" {
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
-                        .to_string()
-                } else {
-                    String::new()
-                },
+                sdp_fmtp_line,
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "goog-remb".to_owned(),
@@ -695,5 +724,70 @@ impl StreamSource for SdpSource {
     #[cfg(feature = "source")]
     async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
         self.get_rtcp_sender().await
+    }
+}
+
+#[cfg(all(test, feature = "source"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h265_without_fmtp_gets_default_profile() {
+        let codec = VideoCodecInfo {
+            codec_name: "H265".to_string(),
+            clock_rate: 90000,
+            payload_type: 97,
+            fmtp_line: None,
+        };
+
+        let params = SdpSource::video_codec_to_rtc(&codec);
+
+        assert_eq!(params.rtp_codec.mime_type, "video/H265");
+        assert!(
+            params.rtp_codec.sdp_fmtp_line.contains("profile-id=0"),
+            "expected default profile-id, got {}",
+            params.rtp_codec.sdp_fmtp_line
+        );
+        assert!(
+            params.rtp_codec.sdp_fmtp_line.contains("tx-mode=SRST"),
+            "expected tx-mode=SRST, got {}",
+            params.rtp_codec.sdp_fmtp_line
+        );
+    }
+
+    #[test]
+    fn h265_with_fmtp_preserves_source_params() {
+        let codec = VideoCodecInfo {
+            codec_name: "H265".to_string(),
+            clock_rate: 90000,
+            payload_type: 97,
+            fmtp_line: Some("profile-id=1;tier-flag=0;tx-mode=SRST".to_string()),
+        };
+
+        let params = SdpSource::video_codec_to_rtc(&codec);
+
+        assert_eq!(
+            params.rtp_codec.sdp_fmtp_line,
+            "profile-id=1;tier-flag=0;tx-mode=SRST"
+        );
+    }
+
+    #[test]
+    fn h264_keeps_default_fmtp() {
+        let codec = VideoCodecInfo {
+            codec_name: "H264".to_string(),
+            clock_rate: 90000,
+            payload_type: 96,
+            fmtp_line: None,
+        };
+
+        let params = SdpSource::video_codec_to_rtc(&codec);
+
+        assert!(
+            params
+                .rtp_codec
+                .sdp_fmtp_line
+                .contains("profile-level-id=42001f")
+        );
     }
 }

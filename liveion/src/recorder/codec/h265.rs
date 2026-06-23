@@ -440,3 +440,39 @@ impl crate::recorder::codec::RtpParser for H265RtpParser {
         self.push_packet(pkt)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::H265RtpParser;
+    use bytes::Bytes;
+    use rtc_rtp::packet::Packet;
+
+    fn make_packet(payload: &'static [u8], marker: bool, seq: u16) -> Packet {
+        let mut pkt = Packet::default();
+        pkt.header.marker = marker;
+        pkt.header.payload_type = 96;
+        pkt.header.sequence_number = seq;
+        pkt.payload = Bytes::from_static(payload);
+        pkt
+    }
+
+    #[test]
+    fn rtp_parser_reassembles_fragmented_keyframe_at_marker() {
+        // FU indicator NAL type 49, then FU header S/E + original IDR type 19.
+        let start = make_packet(&[0x62, 0x01, 0x80 | 19, 0xaa, 0xbb], false, 1);
+        let end = make_packet(&[0x62, 0x01, 0x40 | 19, 0xcc, 0xdd], true, 2);
+
+        let mut parser = H265RtpParser::new();
+        assert!(parser.push_packet(&start).expect("push start").is_none());
+
+        let (frame, is_keyframe) = parser
+            .push_packet(&end)
+            .expect("push end")
+            .expect("frame at marker");
+
+        assert!(is_keyframe);
+        assert!(frame.starts_with(&[0, 0, 0, 1]));
+        assert_eq!((frame[4] >> 1) & 0x3f, 19);
+        assert_eq!(&frame[6..], &[0xaa, 0xbb, 0xcc, 0xdd]);
+    }
+}
