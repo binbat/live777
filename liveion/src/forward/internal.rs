@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use chrono::Utc;
 #[cfg(feature = "cascade")]
 use libwish::Client;
-use tokio::sync::{Mutex, Notify, RwLock, broadcast};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
 use tracing::trace;
 use tracing::{debug, info};
 
@@ -93,6 +93,7 @@ struct PublishPeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
     gather_complete: Arc<Notify>,
     connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    connection_state_tx: watch::Sender<RTCPeerConnectionState>,
 }
 
 #[async_trait::async_trait]
@@ -113,6 +114,7 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 if let Ok(mut s) = self.connection_state.write() {
                     *s = state;
                 }
+                let _ = self.connection_state_tx.send(state);
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
@@ -160,6 +162,45 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
             self.gather_complete.notify_one();
         }
     }
+}
+
+pub(crate) const PUBLISH_CONNECTED_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
+pub(crate) async fn wait_for_peer_connected(
+    mut peer_state_rx: watch::Receiver<RTCPeerConnectionState>,
+    timeout: std::time::Duration,
+    context: &str,
+) -> Result<()> {
+    let wait = async {
+        loop {
+            let state = *peer_state_rx.borrow_and_update();
+            match state {
+                RTCPeerConnectionState::Connected => return Ok(()),
+                RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected => {
+                    return Err(AppError::throw(format!(
+                        "{context}: peer closed before Connected: state={state}"
+                    )));
+                }
+                _ => {}
+            }
+
+            peer_state_rx.changed().await.map_err(|_| {
+                AppError::throw(format!(
+                    "{context}: peer connection state channel closed before Connected"
+                ))
+            })?;
+        }
+    };
+
+    tokio::time::timeout(timeout, wait).await.map_err(|_| {
+        AppError::throw(format!(
+            "{context}: timed out waiting for PeerConnection Connected after {:?}",
+            timeout
+        ))
+    })?
 }
 
 #[derive(Clone)]
@@ -619,6 +660,7 @@ pub(crate) struct PeerForwardInternal {
     event_sender: broadcast::Sender<ForwardEvent>,
     /// Weak reference to the publish peer, set before signaling via `set_publish_peer_ref`
     publish_peer_ref: Mutex<Option<std::sync::Weak<dyn PeerConnection>>>,
+    publish_peer_state_rx: Mutex<Option<watch::Receiver<RTCPeerConnectionState>>>,
     /// Negotiated transport-wide-cc RTP header extension ID (0 = unknown/missing)
     negotiated_twcc_ext_id: std::sync::atomic::AtomicU8,
     /// RTCP egress counters from the probe interceptor (None until publish peer created)
@@ -659,6 +701,7 @@ impl PeerForwardInternal {
             ice_udp_addrs,
             event_sender: new_broadcast_channel!(16),
             publish_peer_ref: Mutex::new(None),
+            publish_peer_state_rx: Mutex::new(None),
             negotiated_twcc_ext_id: AtomicU8::new(0),
             rtcp_egress_counters: std::sync::Mutex::new(None),
             native_twcc_bound: Arc::new(AtomicBool::new(false)),
@@ -693,6 +736,7 @@ impl PeerForwardInternal {
             ice_udp_addrs,
             event_sender: new_broadcast_channel!(16),
             publish_peer_ref: Mutex::new(None),
+            publish_peer_state_rx: Mutex::new(None),
             negotiated_twcc_ext_id: AtomicU8::new(0),
             rtcp_egress_counters: std::sync::Mutex::new(None),
             native_twcc_bound: Arc::new(AtomicBool::new(false)),
@@ -837,6 +881,7 @@ impl PeerForwardInternal {
         dc: Arc<dyn DataChannel>,
         sender: broadcast::Sender<Vec<u8>>,
         receiver: broadcast::Receiver<Vec<u8>>,
+        connected_gate: Option<watch::Receiver<RTCPeerConnectionState>>,
     ) {
         let dc_rx = dc.clone();
         let dc_tx = dc.clone();
@@ -864,7 +909,25 @@ impl PeerForwardInternal {
 
         tokio::spawn(async move {
             let mut receiver = receiver;
+            let mut connected = connected_gate.is_none();
             while let Ok(msg) = receiver.recv().await {
+                if !connected {
+                    if let Some(gate) = connected_gate.clone()
+                        && let Err(err) = wait_for_peer_connected(
+                            gate,
+                            PUBLISH_CONNECTED_TIMEOUT,
+                            "publish data channel send",
+                        )
+                        .await
+                    {
+                        info!(
+                            "publish data channel send stopped before Connected: {:?}",
+                            err
+                        );
+                        return;
+                    }
+                    connected = true;
+                }
                 if let Err(err) = dc_tx.send(bytes::BytesMut::from(&msg[..])).await {
                     info!("write data channel err: {}", err);
                     return;
@@ -945,6 +1008,7 @@ impl PeerForwardInternal {
         peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
         connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     ) -> Result<()> {
         {
             let mut publish = self.publish.write().await;
@@ -960,6 +1024,7 @@ impl PeerForwardInternal {
                 self.publish_rtcp_channel.subscribe(),
                 cascade,
                 connection_state,
+                connection_state_rx,
             )
             .await?;
 
@@ -992,6 +1057,7 @@ impl PeerForwardInternal {
 
             *publish = None;
         }
+        *self.publish_peer_state_rx.lock().await = None;
 
         {
             let mut publish_tracks = self.publish_tracks.write().await;
@@ -1063,6 +1129,7 @@ impl PeerForwardInternal {
         Arc<dyn PeerConnection>,
         Arc<Notify>,
         Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        watch::Receiver<RTCPeerConnectionState>,
     )> {
         if media_info.video_transceiver.0 > 1 && media_info.audio_transceiver.0 > 1 {
             return Err(AppError::throw("sendonly is more than 1"));
@@ -1118,10 +1185,14 @@ impl PeerForwardInternal {
 
         let gather_complete = Arc::new(Notify::new());
         let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
+        let (connection_state_tx, connection_state_rx) =
+            watch::channel(RTCPeerConnectionState::New);
+        *self.publish_peer_state_rx.lock().await = Some(connection_state_rx.clone());
         let handler = PublishPeerHandler {
             internal: internal_weak,
             gather_complete: gather_complete.clone(),
             connection_state: connection_state.clone(),
+            connection_state_tx,
         };
         let peer: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
@@ -1158,7 +1229,7 @@ impl PeerForwardInternal {
                 .await?;
         }
 
-        Ok((peer, gather_complete, connection_state))
+        Ok((peer, gather_complete, connection_state, connection_state_rx))
     }
 
     pub(crate) fn set_twcc_ext_id(&self, ext_id: u8) {
@@ -1191,6 +1262,7 @@ impl PeerForwardInternal {
             self.stream.clone(),
             get_peer_id(&peer),
             track,
+            self.publish_peer_state_rx.lock().await.clone(),
             twcc_ext_id,
             self.native_twcc_bound.clone(),
             manual_twcc_feedback,
@@ -1214,7 +1286,8 @@ impl PeerForwardInternal {
     ) -> Result<()> {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
-        Self::data_channel_forward(dc, sender, receiver).await;
+        let connection_state_rx = self.publish_peer_state_rx.lock().await.clone();
+        Self::data_channel_forward(dc, sender, receiver, connection_state_rx).await;
         Ok(())
     }
 
@@ -1580,7 +1653,7 @@ impl PeerForwardInternal {
     ) -> Result<()> {
         let sender = self.data_channel_forward.publish.clone();
         let receiver = self.data_channel_forward.subscribe.subscribe();
-        Self::data_channel_forward(dc, sender, receiver).await;
+        Self::data_channel_forward(dc, sender, receiver, None).await;
         Ok(())
     }
 
@@ -1590,5 +1663,64 @@ impl PeerForwardInternal {
             session,
             stream_info: self.info().await,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+
+    #[tokio::test]
+    async fn publish_connected_gate_blocks_until_connected() {
+        let (tx, rx) = watch::channel(RTCPeerConnectionState::New);
+
+        let task = tokio::spawn(wait_for_peer_connected(
+            rx,
+            std::time::Duration::from_secs(1),
+            "publish rtcp",
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        assert!(!task.is_finished());
+
+        tx.send(RTCPeerConnectionState::Connected).unwrap();
+
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn publish_connected_gate_fails_on_terminal_state() {
+        for state in [
+            RTCPeerConnectionState::Failed,
+            RTCPeerConnectionState::Closed,
+            RTCPeerConnectionState::Disconnected,
+        ] {
+            let (tx, rx) = watch::channel(RTCPeerConnectionState::New);
+            tx.send(state).unwrap();
+
+            let error =
+                wait_for_peer_connected(rx, std::time::Duration::from_secs(1), "publish rtcp")
+                    .await
+                    .unwrap_err();
+            let error = format!("{error:?}");
+
+            assert!(error.contains("publish rtcp"));
+            assert!(error.contains("before Connected"));
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_connected_gate_times_out_with_context() {
+        let (_tx, rx) = watch::channel(RTCPeerConnectionState::New);
+
+        let error =
+            wait_for_peer_connected(rx, std::time::Duration::from_millis(10), "manual twcc")
+                .await
+                .unwrap_err();
+        let error = format!("{error:?}");
+
+        assert!(error.contains("manual twcc"));
+        assert!(error.contains("timed out"));
     }
 }

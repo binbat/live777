@@ -25,6 +25,8 @@ pub use input::InputSource;
 pub(crate) use webrtc::log_rtcp_feedback_packet;
 pub use webrtc::setup_whip_peer;
 
+const WAIT_FOR_PEER_CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub async fn into(
     ct: CancellationToken,
     target_url: String,
@@ -55,7 +57,15 @@ pub async fn into(
             target_url.clone(),
         )
         .await?;
-    info!("WebRTC peer connection established");
+    info!("WHIP peer setup completed; waiting for WebRTC connection");
+
+    wait_for_peer_connected(
+        peer.clone(),
+        peer_state_rx.clone(),
+        peer_diagnostics.clone(),
+    )
+    .await?;
+    info!("WebRTC peer connection connected");
 
     start_stats_monitor(ct.clone(), peer.clone(), stats.clone()).await;
 
@@ -207,6 +217,78 @@ pub async fn into(
     }
 }
 
+async fn wait_for_peer_connected(
+    peer: Arc<dyn ::webrtc::peer_connection::PeerConnection>,
+    state_rx: watch::Receiver<RTCPeerConnectionState>,
+    diagnostics: Arc<webrtc::WhipPeerDiagnostics>,
+) -> Result<()> {
+    wait_for_peer_connected_with_timeout(
+        state_rx,
+        diagnostics,
+        WAIT_FOR_PEER_CONNECTED_TIMEOUT,
+        move || {
+            let peer = peer.clone();
+            async move { webrtc::format_ice_stats(peer).await }
+        },
+    )
+    .await
+}
+
+async fn wait_for_peer_connected_with_timeout<F, Fut>(
+    mut state_rx: watch::Receiver<RTCPeerConnectionState>,
+    diagnostics: Arc<webrtc::WhipPeerDiagnostics>,
+    timeout: Duration,
+    ice_stats: F,
+) -> Result<()>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = String>,
+{
+    let wait_result = tokio::time::timeout(timeout, async {
+        loop {
+            let state = *state_rx.borrow_and_update();
+            match state {
+                RTCPeerConnectionState::Connected => return Ok(()),
+                RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected => {
+                    return Err(anyhow!(
+                        "WHIP peer connection ended before becoming connected: state={state}"
+                    ));
+                }
+                _ => {}
+            }
+
+            state_rx
+                .changed()
+                .await
+                .map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
+        }
+    })
+    .await;
+
+    match wait_result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            let ice_stats = ice_stats().await;
+            Err(anyhow!(
+                "{error}, {}, ice_stats=[{}]",
+                diagnostics.format(),
+                ice_stats
+            ))
+        }
+        Err(_) => {
+            let ice_stats = ice_stats().await;
+            Err(anyhow!(
+                "WHIP peer connection timed out waiting for connected after {:?}: {}, ice_stats=[{}]",
+                timeout,
+                diagnostics.format(),
+                ice_stats
+            ))
+        }
+    }
+}
+
 async fn wait_for_unexpected_peer_end(
     peer: Arc<dyn ::webrtc::peer_connection::PeerConnection>,
     mut state_rx: watch::Receiver<RTCPeerConnectionState>,
@@ -254,5 +336,99 @@ async fn wait_for_child_exit(child: Arc<Option<cli::ChildGuard>>) -> Result<Exit
                 return Ok(status);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[tokio::test]
+    async fn waits_for_connected_before_starting_media_transport() {
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let diagnostics = Arc::new(webrtc::WhipPeerDiagnostics::default());
+        let started = Arc::new(AtomicUsize::new(0));
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let task = {
+            let started = started.clone();
+            let order = order.clone();
+            tokio::spawn(async move {
+                wait_for_peer_connected_with_timeout(
+                    state_rx.clone(),
+                    diagnostics,
+                    Duration::from_secs(1),
+                    || async { "ice-stats".to_string() },
+                )
+                .await?;
+
+                started.fetch_add(1, Ordering::SeqCst);
+                order.lock().unwrap().push("stats");
+                started.fetch_add(1, Ordering::SeqCst);
+                order.lock().unwrap().push("transport");
+                Result::<()>::Ok(())
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+
+        state_tx.send(RTCPeerConnectionState::Connected).unwrap();
+
+        task.await.unwrap().unwrap();
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+        assert_eq!(order.lock().unwrap().as_slice(), ["stats", "transport"]);
+    }
+
+    #[tokio::test]
+    async fn returns_error_with_diagnostics_when_peer_fails_before_connected() {
+        for state in [
+            RTCPeerConnectionState::Failed,
+            RTCPeerConnectionState::Closed,
+            RTCPeerConnectionState::Disconnected,
+        ] {
+            let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+            let diagnostics = Arc::new(webrtc::WhipPeerDiagnostics::default());
+
+            state_tx.send(state).unwrap();
+
+            let error = wait_for_peer_connected_with_timeout(
+                state_rx,
+                diagnostics,
+                Duration::from_secs(1),
+                || async { "candidate_pair state=failed".to_string() },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+            assert!(error.contains("before becoming connected"));
+            assert!(error.contains("connection_states="));
+            assert!(error.contains("candidate_pair state=failed"));
+        }
+    }
+
+    #[tokio::test]
+    async fn returns_error_with_diagnostics_when_wait_for_connected_times_out() {
+        let (_state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let diagnostics = Arc::new(webrtc::WhipPeerDiagnostics::default());
+
+        let error = wait_for_peer_connected_with_timeout(
+            state_rx,
+            diagnostics,
+            Duration::from_millis(10),
+            || async { "<no ice candidate stats>".to_string() },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("timed out waiting"));
+        assert!(error.contains("connection_states="));
+        assert!(error.contains("<no ice candidate stats>"));
     }
 }

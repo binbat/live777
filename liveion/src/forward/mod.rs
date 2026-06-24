@@ -49,6 +49,10 @@ mod track;
 
 use md5::{Digest, Md5};
 
+const ANSWER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const ANSWER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(25);
+
 #[cfg(feature = "source")]
 pub mod bridge;
 
@@ -218,7 +222,8 @@ impl PeerForward {
         let twcc_ext_id = parse_twcc_ext_id_from_sdp(&offer.sdp);
         self.internal.set_twcc_ext_id(twcc_ext_id);
 
-        let (peer, gather_complete, connection_state) = self.new_publish_peer(media_info).await?;
+        let (peer, gather_complete, connection_state, connection_state_rx) =
+            self.new_publish_peer(media_info).await?;
 
         let description = peer_complete(offer, peer.clone(), gather_complete).await?;
 
@@ -227,7 +232,7 @@ impl PeerForward {
             .await?;
 
         self.internal
-            .set_publish(peer.clone(), None, connection_state)
+            .set_publish(peer.clone(), None, connection_state, connection_state_rx)
             .await?;
 
         let session = get_peer_id(&peer);
@@ -263,7 +268,8 @@ impl PeerForward {
             .decide_publish_generation(&media_profile)
             .await;
 
-        let (peer, gather_complete, connection_state) = self.new_publish_peer(media_info).await?;
+        let (peer, gather_complete, connection_state, connection_state_rx) =
+            self.new_publish_peer(media_info).await?;
 
         let offer = peer.create_offer(None).await?;
         peer.set_local_description(offer).await?;
@@ -295,6 +301,7 @@ impl PeerForward {
                             session_url: client.session_url,
                         }),
                         connection_state,
+                        connection_state_rx,
                     )
                     .await?;
                 Ok(())
@@ -313,6 +320,7 @@ impl PeerForward {
         Arc<dyn PeerConnection>,
         Arc<Notify>,
         Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        tokio::sync::watch::Receiver<RTCPeerConnectionState>,
     )> {
         self.internal
             .new_publish_peer(media_info, Arc::downgrade(&self.internal))
@@ -586,17 +594,30 @@ async fn peer_complete(
     let answer = peer.create_answer(None).await?;
     peer.set_local_description(answer).await?;
 
-    // Wait for ICE gathering to complete with a timeout.
-    // If gathering never completes (e.g. STUN servers unreachable),
-    // fall back to the current partial description after timeout.
-    if tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        gather_complete.notified(),
-    )
-    .await
-    .is_err()
-    {
-        tracing::warn!("ICE gathering timed out after 3s, using partial description");
+    let deadline = tokio::time::sleep(ANSWER_ICE_CANDIDATE_TIMEOUT);
+    tokio::pin!(deadline);
+    let mut poll = tokio::time::interval(ANSWER_ICE_CANDIDATE_POLL_INTERVAL);
+
+    loop {
+        if let Some(description) = peer.local_description().await
+            && sdp_has_ice_candidate(&description.sdp)
+        {
+            return Ok(description);
+        }
+
+        tokio::select! {
+            _ = gather_complete.notified() => {
+                break;
+            }
+            _ = poll.tick() => {}
+            _ = &mut deadline => {
+                tracing::warn!(
+                    "ICE candidate gathering timed out after {}ms, using partial description",
+                    ANSWER_ICE_CANDIDATE_TIMEOUT.as_millis()
+                );
+                break;
+            }
+        }
     }
 
     let description = peer
@@ -605,6 +626,10 @@ async fn peer_complete(
         .ok_or(anyhow::anyhow!("failed to get local description"))?;
 
     Ok(description)
+}
+
+fn sdp_has_ice_candidate(sdp: &str) -> bool {
+    sdp.lines().any(|line| line.starts_with("a=candidate:"))
 }
 
 fn unmarshal_sdp(sdp_str: &str) -> Result<sdp::SessionDescription> {
@@ -836,7 +861,7 @@ impl PeerForward {
 mod test {
     use crate::forward::PeerForward;
     use crate::forward::parse_ice_candidate;
-    use crate::forward::strip_unusable_remote_ice_candidates;
+    use crate::forward::{sdp_has_ice_candidate, strip_unusable_remote_ice_candidates};
     use rtc::media_stream::MediaStreamTrack;
     use rtc::peer_connection::configuration::interceptor_registry::{
         configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers,
@@ -909,6 +934,14 @@ a=end-of-candidates";
         assert!(!sanitized.contains("198.18.0.1"));
         assert!(sanitized.contains("192.0.2.1"));
         assert!(sanitized.contains("a=end-of-candidates"));
+    }
+
+    #[test]
+    fn sdp_candidate_detector_requires_real_candidate_lines() {
+        assert!(sdp_has_ice_candidate(
+            "v=0\na=candidate:1 1 udp 2122260223 127.0.0.1 5000 typ host\n"
+        ));
+        assert!(!sdp_has_ice_candidate("v=0\na=end-of-candidates\n"));
     }
 
     #[tokio::test]
@@ -998,6 +1031,80 @@ a=end-of-candidates";
         );
 
         forward.remove_peer(session).await?;
+        offer_peer.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn peer_complete_returns_after_answer_has_ice_candidate() -> crate::result::Result<()> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+
+        let offer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(media_engine)
+                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        let media_track = MediaStreamTrack::new(
+            "answer-candidate-test".to_owned(),
+            "video".to_owned(),
+            "video".to_owned(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(1),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                ..Default::default()
+            }],
+        );
+        offer_peer
+            .add_track(std::sync::Arc::new(TrackLocalStaticRTP::new(media_track)))
+            .await?;
+        let offer = offer_peer.create_offer(None).await?;
+        offer_peer.set_local_description(offer).await?;
+
+        let answer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(MediaEngine::default())
+                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+
+        let started = std::time::Instant::now();
+        let answer = super::peer_complete(
+            offer_peer.local_description().await.unwrap(),
+            answer_peer.clone(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        )
+        .await?;
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "peer_complete waited for ICE gathering completion despite answer candidate:\n{}",
+            answer.sdp
+        );
+        assert!(
+            sdp_has_ice_candidate(&answer.sdp),
+            "expected answer SDP to contain ICE candidate:\n{}",
+            answer.sdp
+        );
+
+        answer_peer.close().await?;
         offer_peer.close().await?;
         Ok(())
     }
