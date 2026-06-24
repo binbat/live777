@@ -368,8 +368,14 @@ mod tests {
     #[tokio::test]
     async fn stop_all_stops_all_sources() {
         let manager = SourceManager::new();
-        manager.add_source(Box::new(MockSource::new("a"))).await.unwrap();
-        manager.add_source(Box::new(MockSource::new("b"))).await.unwrap();
+        manager
+            .add_source(Box::new(MockSource::new("a")))
+            .await
+            .unwrap();
+        manager
+            .add_source(Box::new(MockSource::new("b")))
+            .await
+            .unwrap();
 
         manager.stop_all().await.unwrap();
 

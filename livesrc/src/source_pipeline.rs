@@ -71,26 +71,17 @@ impl SharedPipelineHandle {
     }
 
     fn set(&self, h: *mut SourcePipelineHandle) {
-        let mut guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(PipelineHandlePtr(h));
     }
 
     fn take(&self) -> Option<PipelineHandlePtr> {
-        let mut guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         guard.take()
     }
 
     fn request_keyframe(&self) {
-        let guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(h) = guard.as_ref() {
             unsafe { source_pipeline_request_keyframe(h.0) };
         }
@@ -244,23 +235,13 @@ impl NativePipeline {
             .take()
             .ok_or_else(|| anyhow::anyhow!("start called twice"))?;
 
-        let guard = self
-            .handle
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let guard = self.handle.inner.lock().unwrap_or_else(|e| e.into_inner());
         let raw_handle = guard
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("pipeline not initialised"))?;
 
         let mut errbuf: [c_char; ERR_BUF_LEN] = [0; ERR_BUF_LEN];
-        if !unsafe {
-            source_pipeline_start(
-                raw_handle.0,
-                errbuf.as_mut_ptr(),
-                ERR_BUF_LEN,
-            )
-        } {
+        if !unsafe { source_pipeline_start(raw_handle.0, errbuf.as_mut_ptr(), ERR_BUF_LEN) } {
             let err_str = unsafe { std::ffi::CStr::from_ptr(errbuf.as_ptr()) }
                 .to_string_lossy()
                 .into_owned();
@@ -321,7 +302,9 @@ impl Drop for NativePipeline {
 // FFI config builder
 // ---------------------------------------------------------------------------
 
-fn build_ffi_config(params: &NativeSourceParams) -> Result<(SourcePipelineConfigFFI, Vec<CString>)> {
+fn build_ffi_config(
+    params: &NativeSourceParams,
+) -> Result<(SourcePipelineConfigFFI, Vec<CString>)> {
     let mut cstrs = Vec::new();
 
     let cap_backend = CString::new(params.capture_backend.as_str())
