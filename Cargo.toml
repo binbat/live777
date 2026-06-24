@@ -76,13 +76,13 @@ authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
-webrtc = { version = "0.20.0-alpha.1", features = ["runtime-tokio"] }
-rtc = "0.20.0-alpha.1"
-rtc-ice = "0.20.0-alpha.1"
-rtc-interceptor = "0.20.0-alpha.1"
-rtc-rtcp = "0.20.0-alpha.1"
-rtc-rtp = "0.20.0-alpha.1"
-rtc-shared = "0.20.0-alpha.1"
+webrtc = { version = "0.20.0-alpha.2", features = ["runtime-tokio"] }
+rtc = "0.20.0-alpha.2"
+rtc-ice = "0.20.0-alpha.2"
+rtc-interceptor = "0.20.0-alpha.2"
+rtc-rtcp = "0.20.0-alpha.2"
+rtc-rtp = "0.20.0-alpha.2"
+rtc-shared = "0.20.0-alpha.2"
 sdp = "0.17.1"
 
 axum = "0.8"
