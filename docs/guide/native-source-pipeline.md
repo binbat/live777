@@ -199,7 +199,7 @@ cargo build --bin live777 --release \
   --no-default-features --features native-rdk,webui
 ```
 
-Requires the RDK sysroot with `hb_media_codec` libraries. Set `RDK_SYSROOT` if the sysroot is not at the default path.
+Requires the RDK sysroot with `hb_media_codec` libraries. `RDK_SYSROOT` must be set to the sysroot path; there is no default.
 
 > **Note:** The DMA-BUF zero-copy encode path is not yet implemented.  See the DMA-BUF notes in the Architecture section above.
 
@@ -210,7 +210,7 @@ cargo check --no-default-features
 cargo check --features native-rpi,webui
 ```
 
-> **Caution:** Do not enable native features on macOS unless the native C++ dependencies (libcamera, V4L2 headers, CMake) are installed. Those features invoke CMake and will fail on a stock macOS system.
+> **Note:** On macOS and Windows, native backend features are silently skipped by the build script; CMake is not invoked and no native symbols are linked. You can run `cargo check` with native features for linting, but the resulting binary cannot use native sources on those platforms.
 
 ## Backend selection (build-time)
 
@@ -224,7 +224,7 @@ The CMake backend is inferred from the enabled capture/encoder features:
 
 When no `capture-*` feature is enabled, CMake is skipped entirely. Encoder-only features do **not** trigger a CMake build — the SourcePipeline requires a capture backend.
 
-`capture-libcamera` and `encoder-rdk` are mutually exclusive and will panic at configure time if enabled together.
+`capture-libcamera` and `encoder-rdk` are mutually exclusive. If both are enabled, `encoder-rdk` is ignored with a build warning and the `rpi` (libcamera) backend is selected.
 
 ## Config examples
 

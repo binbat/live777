@@ -110,6 +110,11 @@ void V4L2CaptureImpl::capture_loop() {
             break;
         }
 
+        if (buf.index >= buffers.size()) {
+            fprintf(stderr, "[V4L2Capture] invalid buffer index %u\n", buf.index);
+            break;
+        }
+
         uint64_t ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000 + buf.timestamp.tv_usec;
 
         // Convert YUYV → YUV420P when CaptureBackend callback is set
@@ -226,6 +231,11 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         if (err) *err = std::string("REQBUFS failed: ") + strerror(errno);
         close(fd); fd = -1; return false;
     }
+    if (req.count < 2) {
+        if (err) *err = std::string("REQBUFS returned too few buffers: ") + std::to_string(req.count);
+        release_resources();
+        return false;
+    }
 
     for (unsigned int i = 0; i < req.count; i++) {
         struct v4l2_buffer buf = {};
@@ -252,8 +262,8 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
 }
 
 bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
-    (void)err;
     if (running.load() || capture_thread.joinable()) {
+        if (err) *err = "capture already running";
         return false;
     }
     capture_cb_ = std::move(cb);
@@ -263,11 +273,17 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
-        if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) return false;
+        if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
+            if (err) *err = std::string("QBUF failed: ") + strerror(errno);
+            return false;
+        }
     }
 
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) return false;
+    if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) {
+        if (err) *err = std::string("STREAMON failed: ") + strerror(errno);
+        return false;
+    }
 
     running.store(true);
     capture_thread = std::thread(&V4L2CaptureImpl::capture_loop, this);

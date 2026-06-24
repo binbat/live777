@@ -71,19 +71,27 @@ impl SharedPipelineHandle {
     }
 
     fn set(&self, h: *mut SourcePipelineHandle) {
-        if let Ok(mut guard) = self.inner.lock() {
-            *guard = Some(PipelineHandlePtr(h));
-        }
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = Some(PipelineHandlePtr(h));
     }
 
     fn take(&self) -> Option<PipelineHandlePtr> {
-        self.inner.lock().ok().and_then(|mut g| g.take())
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.take()
     }
 
     fn request_keyframe(&self) {
-        if let Ok(guard) = self.inner.lock()
-            && let Some(h) = guard.as_ref()
-        {
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = guard.as_ref() {
             unsafe { source_pipeline_request_keyframe(h.0) };
         }
     }
@@ -127,9 +135,8 @@ unsafe extern "C" fn on_encoded_packet(
         flags: pkt.flags,
     };
 
-    if let Ok(guard) = ctx.tx.lock()
-        && let Some(tx) = guard.as_ref()
-    {
+    let guard = ctx.tx.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tx) = guard.as_ref() {
         let _ = tx.send(encoded);
     }
 }
@@ -154,11 +161,11 @@ pub struct NativePipeline {
     rx: Option<mpsc::UnboundedReceiver<EncodedPacket>>,
 }
 
-// SAFETY: `NativePipeline` owns its data: `SharedPipelineHandle` is safe to send
-// and share because the raw FFI pointer is mutex-protected, and `CallbackCtx`
-// is heap-allocated through `Box` with no raw pointers shared across FFI except
-// the stable `user_data` pointer passed at creation time.
-unsafe impl Send for NativePipeline {}
+// SAFETY: `NativePipeline` is `Sync` because the only `!Sync` field,
+// `rx: Option<mpsc::UnboundedReceiver<EncodedPacket>>`, is only accessed
+// through `&mut self` in `start()`.  All other fields are `Send + Sync`,
+// and `SharedPipelineHandle` guarantees serialized access to the raw FFI
+// pointer.
 unsafe impl Sync for NativePipeline {}
 
 impl NativePipeline {
@@ -180,7 +187,7 @@ impl NativePipeline {
             user_data,
         };
 
-        let (ffi_cfg, cstrs) = build_ffi_config(params);
+        let (ffi_cfg, cstrs) = build_ffi_config(params)?;
 
         let mut errbuf: [c_char; ERR_BUF_LEN] = [0; ERR_BUF_LEN];
 
@@ -232,18 +239,35 @@ impl NativePipeline {
     /// C++ encoder thread.  The pipeline is stopped when this
     /// `NativePipeline` is dropped.
     pub fn start(&mut self) -> Result<mpsc::UnboundedReceiver<EncodedPacket>> {
-        let raw_handle = {
-            let guard = self.handle.inner.lock().unwrap();
-            guard.ok_or_else(|| anyhow::anyhow!("pipeline not initialised"))?
-        };
+        let rx = self
+            .rx
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("start called twice"))?;
 
-        if !unsafe { source_pipeline_start(raw_handle.0) } {
-            anyhow::bail!("source_pipeline_start failed");
+        let guard = self
+            .handle
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let raw_handle = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("pipeline not initialised"))?;
+
+        let mut errbuf: [c_char; ERR_BUF_LEN] = [0; ERR_BUF_LEN];
+        if !unsafe {
+            source_pipeline_start(
+                raw_handle.0,
+                errbuf.as_mut_ptr(),
+                ERR_BUF_LEN,
+            )
+        } {
+            let err_str = unsafe { std::ffi::CStr::from_ptr(errbuf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned();
+            anyhow::bail!("source_pipeline_start failed: {}", err_str);
         }
 
-        self.rx
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("start called twice"))
+        Ok(rx)
     }
 
     /// Stop streaming and free C++ resources.
@@ -255,9 +279,8 @@ impl NativePipeline {
             }
         }
         // Drop the sender side so the receiver knows we're done.
-        if let Some(ctx) = self.ctx.take()
-            && let Ok(mut guard) = ctx.tx.lock()
-        {
+        if let Some(ctx) = self.ctx.take() {
+            let mut guard = ctx.tx.lock().unwrap_or_else(|e| e.into_inner());
             *guard = None;
         }
     }
@@ -298,13 +321,17 @@ impl Drop for NativePipeline {
 // FFI config builder
 // ---------------------------------------------------------------------------
 
-fn build_ffi_config(params: &NativeSourceParams) -> (SourcePipelineConfigFFI, Vec<CString>) {
+fn build_ffi_config(params: &NativeSourceParams) -> Result<(SourcePipelineConfigFFI, Vec<CString>)> {
     let mut cstrs = Vec::new();
 
-    let cap_backend = CString::new(params.capture_backend.as_str()).unwrap();
-    let cap_device = CString::new(params.capture_device.as_str()).unwrap();
-    let enc_backend = CString::new(params.encoder_backend.as_str()).unwrap();
-    let profile = CString::new(params.profile.as_str()).unwrap();
+    let cap_backend = CString::new(params.capture_backend.as_str())
+        .map_err(|e| anyhow::anyhow!("invalid capture backend string: {e}"))?;
+    let cap_device = CString::new(params.capture_device.as_str())
+        .map_err(|e| anyhow::anyhow!("invalid capture device string: {e}"))?;
+    let enc_backend = CString::new(params.encoder_backend.as_str())
+        .map_err(|e| anyhow::anyhow!("invalid encoder backend string: {e}"))?;
+    let profile = CString::new(params.profile.as_str())
+        .map_err(|e| anyhow::anyhow!("invalid profile string: {e}"))?;
 
     let cfg = SourcePipelineConfigFFI {
         capture: CaptureConfigFFI {
@@ -336,5 +363,5 @@ fn build_ffi_config(params: &NativeSourceParams) -> (SourcePipelineConfigFFI, Ve
     cstrs.push(enc_backend);
     cstrs.push(profile);
 
-    (cfg, cstrs)
+    Ok((cfg, cstrs))
 }

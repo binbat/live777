@@ -52,7 +52,7 @@ fn probe_libcamera_in_sysroot(sysroot: &Path, triplet: &str) -> Option<ProbedLib
     Some(result)
 }
 
-fn detect_cpp_stdlib() -> String {
+fn detect_cpp_stdlib(target_os: &str) -> String {
     // Allow explicit override for cross-compilation environments.
     if let Ok(name) = env::var("LIVESRC_CXX_STDLIB") {
         return name;
@@ -62,10 +62,16 @@ fn detect_cpp_stdlib() -> String {
     let path = compiler.path().to_string_lossy().to_lowercase();
 
     if path.contains("clang") {
-        // Linux clang usually still links libstdc++ by default unless
-        // `-stdlib=libc++` is passed; macOS clang links libc++ via `c++`.
-        // Using `c++` lets the linker pick the compiler's default.
-        "c++".to_string()
+        // On Apple platforms clang links libc++ via the `c++` surrogate.
+        // On Linux, clang typically defaults to libstdc++ unless
+        // `-stdlib=libc++` is explicitly passed.  Use the Cargo target OS
+        // rather than the build host OS so cross-compilation picks the right
+        // library.
+        if target_os == "macos" {
+            "c++".to_string()
+        } else {
+            "stdc++".to_string()
+        }
     } else {
         // g++ and most other Linux toolchains default to libstdc++.
         "stdc++".to_string()
@@ -73,6 +79,13 @@ fn detect_cpp_stdlib() -> String {
 }
 
 fn main() {
+    // Rebuild when environment variables that affect sysroot/linker selection
+    // change.
+    println!("cargo:rerun-if-env-changed=PI_SYSROOT");
+    println!("cargo:rerun-if-env-changed=RDK_SYSROOT");
+    println!("cargo:rerun-if-env-changed=LIVESRC_CXX_STDLIB");
+    println!("cargo:rerun-if-env-changed=LIVESRC_RDK_ALLOW_UNDEFINED");
+
     let has_capture_libcamera = env::var("CARGO_FEATURE_CAPTURE_LIBCAMERA").is_ok();
     let has_capture_v4l2 = env::var("CARGO_FEATURE_CAPTURE_V4L2").is_ok();
     let has_encoder_v4l2_m2m = env::var("CARGO_FEATURE_ENCODER_V4L2_M2M").is_ok();
@@ -224,13 +237,20 @@ fn main() {
                 libcamera_linked = true;
             }
         } else {
-            // No sysroot: fall back to host pkg-config.
+            // No sysroot: fall back to host pkg-config and link against it.
             let mut config = pkg_config::Config::new();
             config.atleast_version("0.1");
             if let Ok(lib) = config.probe("libcamera") {
                 for path in lib.include_paths {
                     println!("cargo:include={}", path.display());
                 }
+                for path in lib.link_paths {
+                    println!("cargo:rustc-link-search=native={}", path.display());
+                }
+                for lib_name in lib.libs {
+                    println!("cargo:rustc-link-lib=dylib={}", lib_name);
+                }
+                libcamera_linked = true;
             }
         }
     }
@@ -310,18 +330,30 @@ fn main() {
     // Link C++ standard library.  Prefer the compiler's default (g++ ->
     // libstdc++, clang++ -> libc++ / libstdc++ depending on platform) rather
     // than hard-coding libstdc++.
-    let cpp_stdlib = detect_cpp_stdlib();
+    let cpp_stdlib = detect_cpp_stdlib(&target_os);
     println!("cargo:rustc-link-lib=dylib={}", cpp_stdlib);
 
     // Platform-specific native libraries
     if native_backend == "rdk-x5" {
-        let rdk_sysroot = env::var("RDK_SYSROOT").unwrap_or_else(|_| "/".to_string());
+        let rdk_sysroot = env::var("RDK_SYSROOT").unwrap_or_else(|_| {
+            panic!(
+                "RDK_SYSROOT must be set for RDK X5 builds. \
+                 Point it to the Horizon SDK sysroot."
+            );
+        });
         let rdk_sysroot = PathBuf::from(rdk_sysroot);
         println!(
             "cargo:rustc-link-search=native={}",
             rdk_sysroot.join("usr/hobot/lib").display()
         );
-        println!("cargo:rustc-link-search=native=/usr/lib");
+        println!(
+            "cargo:rustc-link-search=native={}",
+            rdk_sysroot.join("usr/lib").display()
+        );
+        println!(
+            "cargo:rustc-link-search=native={}",
+            rdk_sysroot.join("lib").display()
+        );
         println!("cargo:rustc-link-lib=dylib=multimedia");
         println!("cargo:rustc-link-lib=dylib=hbmem");
         println!("cargo:rustc-link-lib=dylib=vpf");

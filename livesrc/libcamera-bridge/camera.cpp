@@ -13,6 +13,7 @@
 #include <chrono>
 #include <mutex>
 #include <atomic>
+#include <condition_variable>
 
 using namespace libcamera;
 
@@ -65,10 +66,15 @@ public:
     // the same epoch. Initialised in start().
     std::chrono::steady_clock::time_point start_time_{};
 
-    // Serialises on_request_completed with stop()/release_resources() so that
-    // camera/requests/buffers are not freed while a completion callback is
-    // still running.
+    // Serialises on_request_completed with stop()/release_resources().
+    // callbacks_in_flight_ tracks how many completion callbacks are currently
+    // executing; stop() waits for it to reach zero before returning so that
+    // callers can safely release resources.  User code is invoked without
+    // holding completion_mutex_, avoiding deadlocks when the frame callback
+    // performs work that contends on the same locks.
     std::mutex completion_mutex_;
+    std::condition_variable completion_cv_;
+    std::atomic<size_t> callbacks_in_flight_{0};
 
     static std::shared_ptr<PiCameraImpl> create() {
         return std::shared_ptr<PiCameraImpl>(new PiCameraImpl());
@@ -93,6 +99,24 @@ private:
     PiCameraImpl() = default;
 };
 
+// RAII helper that increments callbacks_in_flight_ while a completion
+// callback runs and notifies stop() when it finishes.
+class CallbackInFlightGuard {
+public:
+    explicit CallbackInFlightGuard(PiCameraImpl* impl) : impl_(impl) {
+        impl_->callbacks_in_flight_.fetch_add(1, std::memory_order_acq_rel);
+    }
+    ~CallbackInFlightGuard() {
+        if (impl_->callbacks_in_flight_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            impl_->completion_cv_.notify_all();
+        }
+    }
+    CallbackInFlightGuard(const CallbackInFlightGuard&) = delete;
+    CallbackInFlightGuard& operator=(const CallbackInFlightGuard&) = delete;
+private:
+    PiCameraImpl* impl_;
+};
+
 static void request_completed_slot(Request* request) {
     if (!request) return;
 
@@ -106,6 +130,12 @@ static void request_completed_slot(Request* request) {
     }
 
     if (!impl || impl->destroying_.load()) return;
+
+    // Mark the callback in-flight for the entire duration of the slot,
+    // including the early return path.  This ensures stop()/the destructor
+    // waits until we are done touching PiCameraImpl state before releasing
+    // resources.
+    CallbackInFlightGuard guard(impl.get());
     impl->on_request_completed(request);
 }
 
@@ -155,7 +185,6 @@ void PiCameraImpl::release_resources() {
 }
 
 void PiCameraImpl::on_request_completed(Request* request) {
-    std::lock_guard<std::mutex> lock(completion_mutex_);
     if (destroying_.load()) return;
 
     MappedRequest* mapped = nullptr;
@@ -181,18 +210,36 @@ void PiCameraImpl::on_request_completed(Request* request) {
         offset += plane.length;
     }
 
+    // Copy frame data locally so we can invoke the callback without holding
+    // any PiCameraImpl lock.  This keeps the frame valid even if stop() runs
+    // concurrently.
+    std::vector<uint8_t> frame_data;
+    frame_data.assign(mapped->contiguous.data(),
+                      mapped->contiguous.data() + mapped->total_size);
+
     CaptureFrameCallback cb;
     bool should_queue = false;
+    std::chrono::steady_clock::time_point start_time;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         cb = capture_cb_;
         should_queue = running.load() && camera != nullptr;
+        start_time = start_time_;
+    }
+
+    // Reuse and re-queue if still running.  Resources are still alive because
+    // stop() waits for callbacks_in_flight_ to reach zero before returning.
+    request->reuse(Request::ReuseFlag::ReuseBuffers);
+    if (should_queue) {
+        if (camera->queueRequest(request) < 0) {
+            fprintf(stderr, "[CameraInternal] queueRequest failed for req=%p\n", request);
+        }
     }
 
     if (cb) {
         auto now = std::chrono::steady_clock::now();
         uint64_t timestamp =
-            std::chrono::duration_cast<std::chrono::microseconds>(now - start_time_).count();
+            std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count();
 
         RawFrame f{};
         f.kind = BufferKind::Cpu;
@@ -203,24 +250,13 @@ void PiCameraImpl::on_request_completed(Request* request) {
         f.seq = ++seq_;
         f.plane_count = 1;
         f.planes[0] = {
-            mapped->contiguous.data(),
+            frame_data.data(),
             static_cast<uint32_t>(width_),
-            static_cast<uint32_t>(mapped->total_size),
+            static_cast<uint32_t>(frame_data.size()),
             -1,
             0,
         };
         cb(f);
-    }
-
-    // Reuse and re-queue if still running.
-    request->reuse(Request::ReuseFlag::ReuseBuffers);
-    if (should_queue) {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        if (running.load() && camera) {
-            if (camera->queueRequest(request) < 0) {
-                fprintf(stderr, "[CameraInternal] queueRequest failed for req=%p\n", request);
-            }
-        }
     }
 }
 
@@ -385,7 +421,8 @@ void PiCameraImpl::stop() {
     }
     // Wait for any in-flight completion callback to finish before returning,
     // so that callers can safely release resources afterwards.
-    std::lock_guard<std::mutex> lock(completion_mutex_);
+    std::unique_lock<std::mutex> lock(completion_mutex_);
+    completion_cv_.wait(lock, [&] { return callbacks_in_flight_.load() == 0; });
 }
 
 bool PiCameraImpl::isRunning() const {

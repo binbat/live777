@@ -117,7 +117,6 @@ impl Manager {
                             stream, publish_leave_at
                         );
 
-                        metrics::STREAM.dec();
                         let _ = event_sender.send(Event::Stream(StreamEvent {
                             r#type: StreamEventType::Down,
                             stream: Stream {
@@ -146,7 +145,7 @@ impl Manager {
             for (stream, forward) in stream_map_read.iter() {
                 let forward_info = forward.info().await;
                 if forward_info.subscribe_leave_at > 0
-                    && Utc::now().timestamp_millis() - forward_info.publish_leave_at
+                    && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at
                         > subscribe_leave_atout
                 {
                     remove_streams.push(stream.clone());
@@ -177,7 +176,6 @@ impl Manager {
                             stream, subscribe_leave_at
                         );
 
-                        metrics::STREAM.dec();
                         let _ = event_sender.send(Event::Stream(StreamEvent {
                             r#type: StreamEventType::Down,
                             stream: Stream {
@@ -523,6 +521,7 @@ impl Manager {
 
         for source_cfg in &sources_config.sources {
             // Structured native sources: kind + capture + encoder
+            #[cfg(feature = "native-source")]
             if let Some(spec) = source_cfg.to_spec() {
                 tracing::info!(
                     "Auto-starting native source: {} (kind={:?}, backend={})",
@@ -538,9 +537,10 @@ impl Manager {
                     }
                 };
                 self.start_single_source(source, &spec.stream_id).await;
+                continue;
             }
             // URL-based sources (RTSP / SDP)
-            else if let Some(ref url) = source_cfg.url {
+            if let Some(ref url) = source_cfg.url {
                 tracing::info!(
                     "Auto-starting URL-based source: {} from {}",
                     source_cfg.stream_id,

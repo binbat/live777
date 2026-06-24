@@ -93,7 +93,11 @@ unsafe extern "C" {
         errbuf_len: usize,
     ) -> *mut SourcePipelineHandle;
 
-    pub fn source_pipeline_start(h: *mut SourcePipelineHandle) -> bool;
+    pub fn source_pipeline_start(
+        h: *mut SourcePipelineHandle,
+        errbuf: *mut c_char,
+        errbuf_len: usize,
+    ) -> bool;
     pub fn source_pipeline_stop(h: *mut SourcePipelineHandle);
     #[allow(dead_code)]
     pub fn source_pipeline_is_running(h: *mut SourcePipelineHandle) -> bool;

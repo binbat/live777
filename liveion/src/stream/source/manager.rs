@@ -213,6 +213,17 @@ impl SourceManager {
         bridge.start_bridging(rtp_rx, state_rx).await?;
 
         let mut bridges = self.bridges.write().await;
+
+        // Re-check under write lock: another concurrent create_bridge may have
+        // inserted a bridge while we were doing async setup above.
+        if bridges.contains_key(stream_id) {
+            drop(bridges);
+            if let Err(e) = bridge.stop().await {
+                warn!("Failed to stop duplicate bridge for {}: {}", stream_id, e);
+            }
+            anyhow::bail!("Bridge already exists for source: {}", stream_id);
+        }
+
         let sources = self.sources.read().await;
         if !sources.contains_key(stream_id) {
             drop(sources);
@@ -276,5 +287,93 @@ impl SourceManager {
 impl Default for SourceManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::source::{MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use tokio::sync::broadcast;
+
+    struct MockSource {
+        id: String,
+        state: StreamSourceState,
+        rtp_tx: broadcast::Sender<MediaPacket>,
+        state_tx: broadcast::Sender<StateChangeEvent>,
+        started: bool,
+    }
+
+    impl MockSource {
+        fn new(id: &str) -> Self {
+            let (rtp_tx, _) = broadcast::channel(16);
+            let (state_tx, _) = broadcast::channel(16);
+            Self {
+                id: id.to_string(),
+                state: StreamSourceState::Disconnected,
+                rtp_tx,
+                state_tx,
+                started: false,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl StreamSource for MockSource {
+        fn stream_id(&self) -> &str {
+            &self.id
+        }
+
+        fn state(&self) -> StreamSourceState {
+            self.state
+        }
+
+        async fn start(&mut self) -> Result<()> {
+            self.started = true;
+            self.state = StreamSourceState::Connected;
+            Ok(())
+        }
+
+        async fn stop(&mut self) -> Result<()> {
+            self.started = false;
+            self.state = StreamSourceState::Disconnected;
+            Ok(())
+        }
+
+        fn subscribe_rtp(&self) -> broadcast::Receiver<MediaPacket> {
+            self.rtp_tx.subscribe()
+        }
+
+        fn subscribe_state(&self) -> broadcast::Receiver<StateChangeEvent> {
+            self.state_tx.subscribe()
+        }
+    }
+
+    #[tokio::test]
+    async fn add_source_rejects_duplicate_stream_id() {
+        let manager = SourceManager::new();
+        let source1 = Box::new(MockSource::new("test"));
+        let source2 = Box::new(MockSource::new("test"));
+
+        manager.add_source(source1).await.unwrap();
+        let err = manager.add_source(source2).await.unwrap_err();
+        assert!(err.to_string().contains("Source already exists"));
+
+        let sources = manager.list_sources().await;
+        assert_eq!(sources.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stop_all_stops_all_sources() {
+        let manager = SourceManager::new();
+        manager.add_source(Box::new(MockSource::new("a"))).await.unwrap();
+        manager.add_source(Box::new(MockSource::new("b"))).await.unwrap();
+
+        manager.stop_all().await.unwrap();
+
+        let sources = manager.list_sources().await;
+        assert!(sources.is_empty());
     }
 }

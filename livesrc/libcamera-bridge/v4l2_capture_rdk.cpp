@@ -45,11 +45,8 @@ public:
 
     void release_resources() {
         if (fd >= 0) {
-            enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            ioctl(fd, VIDIOC_STREAMOFF, &type);
-
             for (auto& buf : buffers) {
-                if (buf.start) munmap(buf.start, buf.length);
+                if (buf.start && buf.start != MAP_FAILED) munmap(buf.start, buf.length);
                 if (buf.dbuf_fd >= 0) close(buf.dbuf_fd);
             }
             buffers.clear();
@@ -62,6 +59,12 @@ public:
 
     void stop() {
         running = false;
+        // STREAMOFF must happen before join so that capture_loop unblocks
+        // from VIDIOC_DQBUF and exits cleanly.
+        if (fd >= 0) {
+            enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            ioctl(fd, VIDIOC_STREAMOFF, &type);
+        }
         if (cap_thread.joinable()) cap_thread.join();
         release_resources();
     }
@@ -180,6 +183,11 @@ static void capture_loop(V4L2CaptureImpl* impl) {
         buf.memory = V4L2_MEMORY_MMAP;
 
         if (ioctl(impl->fd, VIDIOC_DQBUF, &buf) < 0) continue;
+
+        if (buf.index >= impl->buffers.size()) {
+            fprintf(stderr, "[RDK V4L2Capture] invalid buffer index %u\n", buf.index);
+            continue;
+        }
 
         uint64_t ts = (uint64_t)buf.timestamp.tv_sec * 1000000 + buf.timestamp.tv_usec;
 

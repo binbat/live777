@@ -24,6 +24,7 @@ pub struct NativeSource {
 
 impl NativeSource {
     pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
+        spec.validate()?;
         let native_params = spec.to_native_params()?;
         Ok(Self {
             inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params),

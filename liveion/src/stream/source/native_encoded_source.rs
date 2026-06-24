@@ -37,16 +37,15 @@ pub struct NativeEncodedSource {
     pipeline: Option<livesrc::NativePipeline>,
     keyframe_handle: Option<livesrc::KeyframeHandle>,
     packetize_handle: Option<tokio::task::JoinHandle<()>>,
+    rtcp_sender: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    rtcp_handle: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "source")]
     dynamic_profile: Arc<RwLock<Option<String>>>,
 }
 
-// SAFETY: `NativeEncodedSource` is composed entirely of `Send + Sync` types:
-// `String`, `NativeSourceParams`, `Arc<RwLock<…>>`, broadcast/mpsc channels,
-// and `livesrc::NativePipeline` / `livesrc::KeyframeHandle` (which already
-// implement `Send`/`Sync`). No raw pointers or thread-local state are held.
-unsafe impl Send for NativeEncodedSource {}
-unsafe impl Sync for NativeEncodedSource {}
+// `NativeEncodedSource` is `Send + Sync` because all its fields are
+// `Send + Sync` (strings, params, channels, Arc<RwLock>, and the livesrc
+// pipeline/handle types).
 
 impl NativeEncodedSource {
     pub fn new(stream_id: String, params: livesrc::NativeSourceParams) -> Self {
@@ -63,6 +62,8 @@ impl NativeEncodedSource {
             pipeline: None,
             keyframe_handle: None,
             packetize_handle: None,
+            rtcp_sender: None,
+            rtcp_handle: None,
             #[cfg(feature = "source")]
             dynamic_profile: Arc::new(RwLock::new(None)),
         }
@@ -116,6 +117,28 @@ impl NativeEncodedSource {
         let keyframe_handle = pipeline.keyframe_handle();
         let mut rx = pipeline.start()?;
 
+        // Start a single RTCP task for this source.  It will exit when the
+        // sender is dropped in stop().
+        let (rtcp_tx, mut rtcp_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let kh = keyframe_handle.clone();
+        let rtcp_task = tokio::spawn(async move {
+            while let Some(data) = rtcp_rx.recv().await {
+                if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
+                    for packet in packets {
+                        if packet
+                            .as_any()
+                            .downcast_ref::<rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
+                            .is_some()
+                        {
+                            kh.request_keyframe();
+                        }
+                    }
+                }
+            }
+        });
+        self.rtcp_sender = Some(rtcp_tx);
+        self.rtcp_handle = Some(rtcp_task);
+
         let rtp_tx = self.rtp_tx.clone();
         let payload_type = self.params.payload_type as u8;
         let clock_rate = self.params.clock_rate;
@@ -159,9 +182,12 @@ impl NativeEncodedSource {
                             );
                         }
 
-                        // Convert PTS (microseconds) to RTP 90 kHz clock
+                        // Convert PTS (microseconds) to RTP 90 kHz clock.
+                        // Use u128 for the intermediate product so that very
+                        // large PTS values cannot overflow before we wrap to
+                        // the 32-bit RTP timestamp.
                         let rtp_ts = if pkt.pts_us > 0 {
-                            (pkt.pts_us * 9 / 100) as u32
+                            ((pkt.pts_us as u128 * 9) / 100) as u32
                         } else {
                             0u32
                         };
@@ -230,11 +256,21 @@ impl NativeEncodedSource {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-        // Wait for the packetize task to finish so it does not touch
+
+        // Drop the RTCP sender so the RTCP task exits naturally.
+        self.rtcp_sender = None;
+
+        // Abort and wait for the worker tasks so they do not touch
         // rtp_tx / rx after we drop the pipeline.
         if let Some(handle) = self.packetize_handle.take() {
+            handle.abort();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
+        if let Some(handle) = self.rtcp_handle.take() {
+            handle.abort();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        }
+
         self.pipeline = None;
         self.keyframe_handle = None;
         self.set_state(StreamSourceState::Disconnected, None).await;
@@ -307,24 +343,7 @@ impl NativeEncodedSource {
 
     #[cfg(feature = "source")]
     pub async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
-        let kh = self.keyframe_handle.clone()?;
-        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        tokio::spawn(async move {
-            while let Some(data) = rx.recv().await {
-                if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
-                    for packet in packets {
-                        if packet
-                            .as_any()
-                            .downcast_ref::<rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
-                            .is_some()
-                        {
-                            kh.request_keyframe();
-                        }
-                    }
-                }
-            }
-        });
-        Some(tx)
+        self.rtcp_sender.clone()
     }
 }
 

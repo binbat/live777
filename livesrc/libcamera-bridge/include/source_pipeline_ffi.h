@@ -91,13 +91,15 @@ SourcePipelineHandle* source_pipeline_create(
     const SourcePipelineConfigFFI* cfg,
     const SourcePipelineHooksFFI* hooks,
     char* errbuf,
-    size_t errbuf_len);
+    size_t errbuf_len) noexcept;
 
-bool source_pipeline_start(SourcePipelineHandle* h);
-void source_pipeline_stop(SourcePipelineHandle* h);
-bool source_pipeline_is_running(SourcePipelineHandle* h);
-void source_pipeline_request_keyframe(SourcePipelineHandle* h);
-void source_pipeline_free(SourcePipelineHandle* h);
+bool source_pipeline_start(SourcePipelineHandle* h,
+                           char* errbuf,
+                           size_t errbuf_len) noexcept;
+void source_pipeline_stop(SourcePipelineHandle* h) noexcept;
+bool source_pipeline_is_running(SourcePipelineHandle* h) noexcept;
+void source_pipeline_request_keyframe(SourcePipelineHandle* h) noexcept;
+void source_pipeline_free(SourcePipelineHandle* h) noexcept;
 
 #ifdef __cplusplus
 }

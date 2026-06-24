@@ -451,22 +451,22 @@ pub struct SourceConfig {
 
     /// Source kind for structured native sources.
     /// When set, `capture` and `encoder` are required.
-    #[cfg(feature = "source")]
+    #[cfg(feature = "native-source")]
     #[serde(default)]
     pub kind: Option<crate::stream::source::source_config::SourceKind>,
 
     /// Capture config (required when `kind` is set).
-    #[cfg(feature = "source")]
+    #[cfg(feature = "native-source")]
     #[serde(default)]
     pub capture: Option<crate::stream::source::source_config::CaptureSpec>,
 
     /// Encoder config (required when `kind` is set).
-    #[cfg(feature = "source")]
+    #[cfg(feature = "native-source")]
     #[serde(default)]
     pub encoder: Option<crate::stream::source::source_config::EncoderSpec>,
 
     /// RTP output params (optional, defaults apply).
-    #[cfg(feature = "source")]
+    #[cfg(feature = "native-source")]
     #[serde(default)]
     pub output: crate::stream::source::source_config::OutputSpec,
 }
@@ -477,7 +477,7 @@ impl SourceConfig {
             anyhow::bail!("stream_id cannot be empty");
         }
 
-        #[cfg(feature = "source")]
+        #[cfg(feature = "native-source")]
         if self.kind.is_some() {
             let capture = self
                 .capture
@@ -519,7 +519,7 @@ impl SourceConfig {
     }
 
     /// Build a `SourceSpec` from structured fields (for native sources).
-    #[cfg(feature = "source")]
+    #[cfg(feature = "native-source")]
     pub fn to_spec(&self) -> Option<crate::stream::source::source_config::SourceSpec> {
         let kind = self.kind.clone()?;
         let capture = self.capture.clone()?;

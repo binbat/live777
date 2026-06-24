@@ -1,6 +1,7 @@
 #include "include/encoder_backend.h"
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -144,8 +145,13 @@ public:
     EncodedPacketCallback encoded_cb_;
     bool initialized_ = false;
 
+    // Serialises submit()/stop()/setCallback()/destructor so that the
+    // encoder context is not torn down while a frame is being processed.
+    mutable std::mutex mutex_;
+
     RdkX5Encoder() = default;
     ~RdkX5Encoder() override {
+        std::lock_guard<std::mutex> lock(mutex_);
         if (context) {
             if (initialized_) {
                 hb_mm_mc_stop(context);
@@ -208,12 +214,21 @@ bool RdkX5Encoder::init(const EncoderConfig& cfg, std::string* err) {
         v_params->rc_params.h264_cbr_params.bit_rate = bitrate / 1000;
     }
 
-    if (hb_mm_mc_initialize(ctx) != 0) return false;
-    if (hb_mm_mc_configure(ctx) != 0) return false;
+    if (hb_mm_mc_initialize(ctx) != 0) {
+        if (err) *err = "hb_mm_mc_initialize failed";
+        return false;
+    }
+    if (hb_mm_mc_configure(ctx) != 0) {
+        if (err) *err = "hb_mm_mc_configure failed";
+        return false;
+    }
 
     mc_av_codec_startup_params_t startup_params;
     memset(&startup_params, 0, sizeof(startup_params));
-    if (hb_mm_mc_start(ctx, &startup_params) != 0) return false;
+    if (hb_mm_mc_start(ctx, &startup_params) != 0) {
+        if (err) *err = "hb_mm_mc_start failed";
+        return false;
+    }
 
     initialized_ = true;
     running_ = true;
@@ -221,7 +236,12 @@ bool RdkX5Encoder::init(const EncoderConfig& cfg, std::string* err) {
 }
 
 bool RdkX5Encoder::submit(const RawFrame& frame, std::string* err) {
-    if (!context || !running_) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!context || !running_) {
+        if (err) *err = "encoder not running";
+        return false;
+    }
 
     // DMA-BUF zero-copy path: NOT YET IMPLEMENTED
     if (frame.kind == BufferKind::DmaBuf) {
@@ -230,9 +250,22 @@ bool RdkX5Encoder::submit(const RawFrame& frame, std::string* err) {
         return false;
     }
 
-    // CPU copy-path: YUYV -> NV12 via scalar CSC, then submit to hardware
-    if (frame.planes[0].data == nullptr) {
-        if (err) *err = "frame data is null";
+    // CPU copy-path: validate that we received a CPU YUYV frame with the
+    // expected dimensions before converting to NV12.
+    if (frame.kind != BufferKind::Cpu) {
+        if (err) *err = "CPU-frame required for RDK encoder";
+        return false;
+    }
+    if (frame.format != RawPixelFormat::Yuyv422) {
+        if (err) *err = "RDK encoder CPU path expects YUYV input";
+        return false;
+    }
+    if (static_cast<int>(frame.width) != width || static_cast<int>(frame.height) != height) {
+        if (err) *err = "frame dimensions do not match encoder configuration";
+        return false;
+    }
+    if (frame.planes[0].data == nullptr || frame.planes[0].bytes == 0) {
+        if (err) *err = "frame data is null or empty";
         return false;
     }
 
@@ -301,6 +334,7 @@ void RdkX5Encoder::requestKeyframe() {
 }
 
 void RdkX5Encoder::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
     running_ = false;
     if (context && initialized_) {
         hb_mm_mc_stop(context);
@@ -309,10 +343,12 @@ void RdkX5Encoder::stop() {
 }
 
 bool RdkX5Encoder::isRunning() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return running_;
 }
 
 void RdkX5Encoder::setCallback(EncodedPacketCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
     encoded_cb_ = std::move(cb);
 }
 

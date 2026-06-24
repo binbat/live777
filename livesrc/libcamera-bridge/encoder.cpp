@@ -126,20 +126,23 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
         return false;
     }
 
-    ctrl.id = V4L2_CID_MPEG_VIDEO_H264_I_PERIOD;
-    ctrl.value = fps * 2;
-    if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
-        if (err) *err = std::string("S_CTRL I_PERIOD failed: ") + strerror(errno);
-        cleanup();
-        return false;
-    }
+    // H.264-specific controls: only apply when the output codec is H.264.
+    if (codec_ == VideoCodec::H264) {
+        ctrl.id = V4L2_CID_MPEG_VIDEO_H264_I_PERIOD;
+        ctrl.value = fps * 2;
+        if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+            if (err) *err = std::string("S_CTRL I_PERIOD failed: ") + strerror(errno);
+            cleanup();
+            return false;
+        }
 
-    ctrl.id = V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER;
-    ctrl.value = 1;
-    if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
-        if (err) *err = std::string("S_CTRL REPEAT_SEQ_HEADER failed: ") + strerror(errno);
-        cleanup();
-        return false;
+        ctrl.id = V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER;
+        ctrl.value = 1;
+        if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+            if (err) *err = std::string("S_CTRL REPEAT_SEQ_HEADER failed: ") + strerror(errno);
+            cleanup();
+            return false;
+        }
     }
 
     struct v4l2_requestbuffers req = {};
@@ -365,6 +368,7 @@ bool V4l2M2mEncoder::isRunning() const {
 }
 
 void V4l2M2mEncoder::setCallback(EncodedPacketCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
     encoded_cb_ = std::move(cb);
 }
 
