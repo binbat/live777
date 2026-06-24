@@ -8,7 +8,11 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(name = "liveman", version = version::VERSION)]
+#[command(name = "liveman", version = version::version_with_features!(
+    "webui",
+    "net4mqtt",
+    "recorder",
+))]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count)]

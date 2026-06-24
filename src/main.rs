@@ -8,7 +8,24 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(version = version::VERSION)]
+#[command(version = version::version_with_features!(
+    "webui",
+    "cascade",
+    "net4mqtt",
+    "recorder",
+    "source",
+    "source-sdp",
+    "source-rtsp",
+    "source-all",
+    "native-source",
+    "capture-libcamera",
+    "capture-v4l2",
+    "encoder-v4l2-m2m",
+    "encoder-rdk",
+    "native-rpi",
+    "native-generic-v4l2",
+    "native-rdk",
+))]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count)]

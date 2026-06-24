@@ -8,7 +8,10 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(name = "livecam", version = version::VERSION)]
+#[command(name = "livecam", version = version::version_with_features!(
+    "webui",
+    "net4mqtt",
+))]
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,

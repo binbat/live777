@@ -9,7 +9,7 @@ use net4mqtt::proxy;
 mod log;
 
 #[derive(Parser, Debug)]
-#[command(name = "net4mqtt", version, propagate_version = true)]
+#[command(name = "net4mqtt", version = version::version_with_features!(), propagate_version = true)]
 struct Cli {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]

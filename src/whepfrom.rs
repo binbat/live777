@@ -7,7 +7,7 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(name = "whepfrom", version = version::VERSION)]
+#[command(name = "whepfrom", version = version::version_with_features!())]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]

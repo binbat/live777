@@ -11,7 +11,24 @@ mod utils;
 const NAME: &str = "liveman";
 
 #[derive(Parser)]
-#[command(name = "livenil", version = version::VERSION)]
+#[command(name = "livenil", version = version::version_with_features!(
+    "webui",
+    "cascade",
+    "net4mqtt",
+    "recorder",
+    "source",
+    "source-sdp",
+    "source-rtsp",
+    "source-all",
+    "native-source",
+    "capture-libcamera",
+    "capture-v4l2",
+    "encoder-v4l2-m2m",
+    "encoder-rdk",
+    "native-rpi",
+    "native-generic-v4l2",
+    "native-rdk",
+))]
 struct Args {
     /// Set config file path
     #[arg(short, long, default_value_t = format!("livenil"))]
