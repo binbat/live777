@@ -4,11 +4,12 @@ use std::sync::{Arc, Weak};
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use sdp::SessionDescription;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tracing::debug;
 use webrtc::peer_connection::PeerConnection;
 use webrtc::peer_connection::RTCPeerConnectionState;
 
+use crate::forward::internal::{PUBLISH_CONNECTED_TIMEOUT, wait_for_peer_connected};
 use crate::forward::message::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
 
@@ -32,6 +33,7 @@ impl PublishRTCPeerConnection {
         rtcp_recv: broadcast::Receiver<(RtcpMessage, u32)>,
         cascade: Option<CascadeInfo>,
         connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     ) -> Result<Self> {
         let id = get_peer_id(&peer);
         let peer_weak = Arc::downgrade(&peer);
@@ -42,7 +44,13 @@ impl PublishRTCPeerConnection {
         let mut reader = Cursor::new(remote_desc.sdp.as_bytes());
         let sdp = SessionDescription::unmarshal(&mut reader)?;
         let media_info = MediaInfo::try_from(sdp)?;
-        tokio::spawn(Self::peer_send_rtcp(path, id.clone(), peer_weak, rtcp_recv));
+        tokio::spawn(Self::peer_send_rtcp(
+            path,
+            id.clone(),
+            peer_weak,
+            rtcp_recv,
+            connection_state_rx,
+        ));
         Ok(Self {
             id,
             peer,
@@ -73,8 +81,26 @@ impl PublishRTCPeerConnection {
         id: String,
         peer: Weak<dyn PeerConnection>,
         mut recv: broadcast::Receiver<(RtcpMessage, u32)>,
+        connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     ) {
+        let mut connected = false;
         while let (Ok((rtcp_message, media_ssrc)), Some(pc)) = (recv.recv().await, peer.upgrade()) {
+            if !connected {
+                if let Err(err) = wait_for_peer_connected(
+                    connection_state_rx.clone(),
+                    PUBLISH_CONNECTED_TIMEOUT,
+                    "publish RTCP send",
+                )
+                .await
+                {
+                    debug!(
+                        "[{}] [{}] stop RTCP sender before Connected: {:?}",
+                        path, id, err
+                    );
+                    break;
+                }
+                connected = true;
+            }
             debug!(
                 "[{}] [{}] ssrc : {} ,send rtcp : {:?}",
                 path, id, media_ssrc, rtcp_message

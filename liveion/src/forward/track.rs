@@ -9,7 +9,7 @@ use rtc::rtcp::transport_feedbacks::transport_layer_cc::{
 use rtc::rtp::packet::Packet;
 use rtc::shared::marshal::Unmarshal;
 use std::collections::BTreeMap;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
 use tracing::{debug, info, trace, warn};
 
@@ -25,6 +25,7 @@ use std::sync::atomic::AtomicU32;
 #[cfg(feature = "source")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::internal::{PUBLISH_CONNECTED_TIMEOUT, wait_for_peer_connected};
 use super::message::Codec;
 use crate::new_broadcast_channel;
 
@@ -274,10 +275,12 @@ pub(crate) enum PublishTrackRemote {
 }
 
 impl PublishTrackRemote {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         stream: String,
         id: String,
         track: Arc<dyn TrackRemote>,
+        connected_gate: Option<watch::Receiver<webrtc::peer_connection::RTCPeerConnectionState>>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
         manual_twcc_feedback: Option<SharedManualTwccFeedback>,
@@ -311,6 +314,7 @@ impl PublishTrackRemote {
             id.clone(),
             track.clone(),
             rtp_sender.clone(),
+            connected_gate,
             twcc_ext_id,
             native_twcc_bound,
             manual_twcc_feedback,
@@ -326,11 +330,13 @@ impl PublishTrackRemote {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn track_forward(
         stream: String,
         id: String,
         track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
+        connected_gate: Option<watch::Receiver<webrtc::peer_connection::RTCPeerConnectionState>>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
         manual_twcc_feedback: Option<SharedManualTwccFeedback>,
@@ -365,6 +371,22 @@ impl PublishTrackRemote {
         info!(
             "[{}] [{}] [twcc-probe] negotiated_twcc_ext_id={}",
             stream, id, twcc_ext_id,
+        );
+
+        if let Some(gate) = connected_gate
+            && let Err(err) =
+                wait_for_peer_connected(gate, PUBLISH_CONNECTED_TIMEOUT, "publish track forward")
+                    .await
+        {
+            warn!(
+                "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {:?} stop before Connected: {:?}",
+                stream, id, kind, rid, ssrcs, err,
+            );
+            return;
+        }
+        debug!(
+            "[{}] [{}] [track] kind: {:?}, rid: {}, ssrc: {:?} Connected; starting poll loop",
+            stream, id, kind, rid, ssrcs,
         );
 
         loop {
