@@ -116,10 +116,10 @@ struct AppState {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let path = std::path::Path::new("livevod.toml");
-    let cfg: Config = if path.try_exists().unwrap() {
-        toml::from_str(std::fs::read_to_string(path).unwrap().as_str()).unwrap()
+    let cfg: Config = if path.try_exists()? {
+        toml::from_str(std::fs::read_to_string(path)?.as_str())?
     } else {
         eprintln!("=== No any config file, use default config ===");
         Default::default()
@@ -145,16 +145,15 @@ async fn main() {
         .route("/api/record/object/{*path}", get(get_object))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(&cfg.http.listen)
-        .await
-        .expect("failed to bind listen address");
-    let addr = listener.local_addr().expect("failed to read listen addr");
+    let listener = tokio::net::TcpListener::bind(&cfg.http.listen).await?;
+    let addr = listener.local_addr()?;
     info!("LiveVOD listening on {}", addr);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(utils::shutdown_signal())
-        .await
-        .unwrap();
+        .await?;
+
+    Ok(())
 }
 
 async fn list_streams(State(state): State<AppState>) -> Result<Json<Vec<String>>, Response> {

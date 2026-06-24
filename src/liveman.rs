@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
         Default::default()
     };
 
-    cfg.validate().unwrap();
+    cfg.validate()?;
 
     let log_level = if args.verbose != 0 {
         match args.verbose {

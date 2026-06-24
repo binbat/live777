@@ -27,26 +27,26 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args.command {
         Some(Commands::GenHash { password }) => {
             gen_hash(password).await;
-            return;
+            return Ok(());
         }
         Some(Commands::Serve) | None => {}
     }
 
     let path = Path::new(&args.config);
-    let mut cfg: livecam::config::Config = if path.try_exists().unwrap() {
-        toml::from_str(std::fs::read_to_string(path).unwrap().as_str()).unwrap()
+    let mut cfg: livecam::config::Config = if path.try_exists()? {
+        toml::from_str(std::fs::read_to_string(path)?.as_str())?
     } else {
         eprintln!("=== No any config file, use default config ===");
         Default::default()
     };
 
-    cfg.validate().unwrap();
+    cfg.validate()?;
 
     log::set(format!(
         "livecam={},tower_http=info,webrtc=error",
@@ -56,22 +56,15 @@ async fn main() {
     warn!("set log level: {}", cfg.log.level);
     debug!("load config: {:?}", cfg);
 
-    let listener = match tokio::net::TcpListener::bind(&cfg.http.listen).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("bind to {} failed: {}", &cfg.http.listen, e);
-            return;
-        }
-    };
+    let listener = tokio::net::TcpListener::bind(&cfg.http.listen).await?;
     info!("server listening on : {}", &cfg.http.listen);
 
     let config_arc = Arc::new(RwLock::new(cfg));
 
-    if let Err(e) = livecam::serve(config_arc, listener, utils::shutdown_signal()).await {
-        tracing::error!("server error: {}", e);
-    }
-
+    livecam::serve(config_arc, listener, utils::shutdown_signal()).await?;
     info!("Server shutdown");
+
+    Ok(())
 }
 
 async fn gen_hash(password: Option<String>) {

@@ -19,11 +19,12 @@ struct Args {
 }
 
 pub fn parse(name: &str) -> (&str, &str, &str) {
-    let mut v: Vec<&str> = name.split('.').collect();
-    if v.len() < 2 {
-        v[1] = ""
-    };
-    (v[0], v[1], v[v.len() - 1])
+    let v: Vec<&str> = name.split('.').collect();
+    match v.len() {
+        1 => (v[0], "", ""),
+        2 => (v[0], v[1], v[1]),
+        _ => (v[0], v[1], v[v.len() - 1]),
+    }
 }
 
 #[tokio::main]
@@ -39,7 +40,7 @@ async fn main() -> Result<()> {
         Default::default()
     };
 
-    cfg.validate().unwrap();
+    cfg.validate()?;
 
     log::set(format!(
         "livenil={},liveman={},liveion={},http_log={},webrtc=error",
@@ -53,6 +54,10 @@ async fn main() -> Result<()> {
     while let Some(entry) = dir_entries.next_entry().await.unwrap() {
         warn!("Entry: {:?}", entry.path());
         let file_name = entry.file_name().to_str().unwrap().to_string();
+        if !file_name.ends_with(".toml") {
+            continue;
+        }
+
         let (srv, alias, _) = parse(&file_name);
         if srv == NAME {
             continue;
@@ -62,7 +67,7 @@ async fn main() -> Result<()> {
         let cfg: liveion::config::Config =
             toml::from_str(std::fs::read_to_string(entry.path())?.as_str())?;
 
-        cfg.validate().unwrap();
+        cfg.validate()?;
         debug!("config : {:?}", cfg);
         let listener = TcpListener::bind(&cfg.http.listen).await.unwrap();
         let addr = listener.local_addr().unwrap();
