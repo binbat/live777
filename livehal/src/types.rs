@@ -1,6 +1,6 @@
-//! Public types for the livesrc native backend crate.
+//! Public types for the livehal native backend crate.
 //!
-//! `NativeSourceParams` is defined here and owned by livesrc.
+//! `NativeSourceParams` is defined here and owned by livehal.
 //! liveion converts `SourceSpec` / URL-based config into this type and passes it to
 //! `NativePipeline::new()`.
 

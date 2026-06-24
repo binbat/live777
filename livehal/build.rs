@@ -54,7 +54,7 @@ fn probe_libcamera_in_sysroot(sysroot: &Path, triplet: &str) -> Option<ProbedLib
 
 fn detect_cpp_stdlib(target_os: &str) -> String {
     // Allow explicit override for cross-compilation environments.
-    if let Ok(name) = env::var("LIVESRC_CXX_STDLIB") {
+    if let Ok(name) = env::var("LIVEHAL_CXX_STDLIB") {
         return name;
     }
 
@@ -83,8 +83,8 @@ fn main() {
     // change.
     println!("cargo:rerun-if-env-changed=PI_SYSROOT");
     println!("cargo:rerun-if-env-changed=RDK_SYSROOT");
-    println!("cargo:rerun-if-env-changed=LIVESRC_CXX_STDLIB");
-    println!("cargo:rerun-if-env-changed=LIVESRC_RDK_ALLOW_UNDEFINED");
+    println!("cargo:rerun-if-env-changed=LIVEHAL_CXX_STDLIB");
+    println!("cargo:rerun-if-env-changed=LIVEHAL_RDK_ALLOW_UNDEFINED");
 
     let has_capture_libcamera = env::var("CARGO_FEATURE_CAPTURE_LIBCAMERA").is_ok();
     let has_capture_v4l2 = env::var("CARGO_FEATURE_CAPTURE_V4L2").is_ok();
@@ -172,30 +172,30 @@ fn main() {
     };
 
     // Rerun-if-changed — all source files that affect the native build
-    println!("cargo:rerun-if-changed=libcamera-bridge/CMakeLists.txt");
+    println!("cargo:rerun-if-changed=native-pipeline/CMakeLists.txt");
 
     // Core pipeline files
-    println!("cargo:rerun-if-changed=libcamera-bridge/src/pipeline/source_pipeline.cpp");
-    println!("cargo:rerun-if-changed=libcamera-bridge/src/pipeline/backend_factory.cpp");
-    println!("cargo:rerun-if-changed=libcamera-bridge/include/source_pipeline_ffi.h");
-    println!("cargo:rerun-if-changed=libcamera-bridge/include/capture_backend.h");
-    println!("cargo:rerun-if-changed=libcamera-bridge/include/encoder_backend.h");
-    println!("cargo:rerun-if-changed=libcamera-bridge/include/media_types.h");
+    println!("cargo:rerun-if-changed=native-pipeline/src/pipeline/source_pipeline.cpp");
+    println!("cargo:rerun-if-changed=native-pipeline/src/pipeline/backend_factory.cpp");
+    println!("cargo:rerun-if-changed=native-pipeline/include/source_pipeline_ffi.h");
+    println!("cargo:rerun-if-changed=native-pipeline/include/capture_backend.h");
+    println!("cargo:rerun-if-changed=native-pipeline/include/encoder_backend.h");
+    println!("cargo:rerun-if-changed=native-pipeline/include/media_types.h");
 
     if rdk_available {
-        println!("cargo:rerun-if-changed=libcamera-bridge/encoder_rdk.cpp");
+        println!("cargo:rerun-if-changed=native-pipeline/encoder_rdk.cpp");
     }
     if has_capture_v4l2 && rdk_available {
-        println!("cargo:rerun-if-changed=libcamera-bridge/v4l2_capture_rdk.cpp");
+        println!("cargo:rerun-if-changed=native-pipeline/v4l2_capture_rdk.cpp");
     }
     if has_capture_libcamera {
-        println!("cargo:rerun-if-changed=libcamera-bridge/camera.cpp");
+        println!("cargo:rerun-if-changed=native-pipeline/camera.cpp");
     }
     if has_encoder_v4l2_m2m {
-        println!("cargo:rerun-if-changed=libcamera-bridge/encoder.cpp");
+        println!("cargo:rerun-if-changed=native-pipeline/encoder.cpp");
     }
     if has_capture_v4l2 && !rdk_available {
-        println!("cargo:rerun-if-changed=libcamera-bridge/v4l2_capture.cpp");
+        println!("cargo:rerun-if-changed=native-pipeline/v4l2_capture.cpp");
     }
 
     // Track whether libcamera link flags were already emitted via pkg-config.
@@ -256,7 +256,7 @@ fn main() {
     }
 
     // Build the C++ bridge library using CMake
-    let mut cmake_config = cmake::Config::new("libcamera-bridge");
+    let mut cmake_config = cmake::Config::new("native-pipeline");
     cmake_config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
     if native_backend == "rdk-x5"
         && let Ok(sysroot) = env::var("RDK_SYSROOT")
@@ -325,7 +325,7 @@ fn main() {
     let dst = cmake_config.build();
 
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
-    println!("cargo:rustc-link-lib=static=cambridge");
+    println!("cargo:rustc-link-lib=static=native-pipeline");
 
     // Link C++ standard library.  Prefer the compiler's default (g++ ->
     // libstdc++, clang++ -> libc++ / libstdc++ depending on platform) rather
@@ -360,8 +360,8 @@ fn main() {
 
         // By default we want link-time errors to surface missing symbols.
         // In cross-compilation scenarios where the sysroot is incomplete,
-        // allow relaxed linking via LIVESRC_RDK_ALLOW_UNDEFINED=1.
-        if env::var("LIVESRC_RDK_ALLOW_UNDEFINED").is_ok() {
+        // allow relaxed linking via LIVEHAL_RDK_ALLOW_UNDEFINED=1.
+        if env::var("LIVEHAL_RDK_ALLOW_UNDEFINED").is_ok() {
             println!("cargo:rustc-link-arg=-Wl,--allow-shlib-undefined");
             println!("cargo:rustc-link-arg=-Wl,--unresolved-symbols=ignore-in-shared-libs");
         }

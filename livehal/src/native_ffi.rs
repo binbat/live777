@@ -1,10 +1,10 @@
 //! Crate-private FFI bindings for the pure-C source_pipeline_* API.
 //!
-//! Mirrors `libcamera-bridge/include/source_pipeline_ffi.h`.
+//! Mirrors `native-pipeline/include/source_pipeline_ffi.h`.
 //! All structs are `#[repr(C)]` and use only C ABI-safe types.
 //! C `bool` is mapped to Rust `u8` (0 = false, non-0 = true).
 //!
-//! This module is **not** public — livesrc exposes only `NativePipeline`,
+//! This module is **not** public — livehal exposes only `NativePipeline`,
 //! `NativeSourceParams`, and `EncodedPacket`.
 
 use std::os::raw::{c_char, c_void};

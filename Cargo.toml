@@ -65,7 +65,7 @@ members = [
     "liveman",
     "livetwo",
     "livecam",
-    "livesrc",
+    "livehal",
 ]
 
 [workspace.package]

@@ -30,7 +30,7 @@ export const en: LocaleConfig = {
                         collapsed: false,
                         items: [
                             { text: 'Live777', link: 'live777' },
-                            { text: 'Native Source Pipeline', link: 'native-source-pipeline' },
+                            { text: 'livehal', link: 'livehal' },
                             { text: 'Web UI', link: 'webui' },
                             { text: 'Recorder', link: 'recorder' },
                             { text: 'LiveMan', link: 'liveman' },

@@ -1,11 +1,11 @@
-//! NativeEncodedSource — consumes `livesrc::NativePipeline` and bridges
+//! NativeEncodedSource — consumes `livehal::NativePipeline` and bridges
 //! encoded packets into the liveion RTP / WHEP infrastructure.
 //!
 //! Data flow:
-//!   C++ SourcePipeline → livesrc FFI → EncodedPacket channel →
+//!   C++ SourcePipeline → livehal FFI → EncodedPacket channel →
 //!   codec-specific RTP packetize (webrtc crate) → RTP broadcast
 //!
-//! livesrc handles all C++ FFI — this module only sees `EncodedPacket`
+//! livehal handles all C++ FFI — this module only sees `EncodedPacket`
 //! through an mpsc channel.
 
 use super::{
@@ -29,13 +29,13 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 
 pub struct NativeEncodedSource {
     stream_id: String,
-    params: livesrc::NativeSourceParams,
+    params: livehal::NativeSourceParams,
     state: Arc<RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     shutdown_tx: Option<broadcast::Sender<()>>,
-    pipeline: Option<livesrc::NativePipeline>,
-    keyframe_handle: Option<livesrc::KeyframeHandle>,
+    pipeline: Option<livehal::NativePipeline>,
+    keyframe_handle: Option<livehal::KeyframeHandle>,
     packetize_handle: Option<tokio::task::JoinHandle<()>>,
     rtcp_sender: Option<mpsc::UnboundedSender<Vec<u8>>>,
     rtcp_handle: Option<tokio::task::JoinHandle<()>>,
@@ -44,11 +44,11 @@ pub struct NativeEncodedSource {
 }
 
 // `NativeEncodedSource` is `Send + Sync` because all its fields are
-// `Send + Sync` (strings, params, channels, Arc<RwLock>, and the livesrc
+// `Send + Sync` (strings, params, channels, Arc<RwLock>, and the livehal
 // pipeline/handle types).
 
 impl NativeEncodedSource {
-    pub fn new(stream_id: String, params: livesrc::NativeSourceParams) -> Self {
+    pub fn new(stream_id: String, params: livehal::NativeSourceParams) -> Self {
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
 
@@ -113,7 +113,7 @@ impl NativeEncodedSource {
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         self.shutdown_tx = Some(shutdown_tx);
 
-        let mut pipeline = livesrc::NativePipeline::new(&self.params)?;
+        let mut pipeline = livehal::NativePipeline::new(&self.params)?;
         let keyframe_handle = pipeline.keyframe_handle();
         let mut rx = pipeline.start()?;
 

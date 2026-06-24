@@ -2548,6 +2548,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "livehal"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "cmake",
+ "pkg-config",
+ "tokio",
+]
+
+[[package]]
 name = "liveion"
 version = "0.9.0"
 dependencies = [
@@ -2571,7 +2582,7 @@ dependencies = [
  "iceserver",
  "lazy_static",
  "libwish",
- "livesrc",
+ "livehal",
  "livetwo",
  "md-5",
  "mime_guess",
@@ -2639,17 +2650,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "livesrc"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "cc",
- "cmake",
- "pkg-config",
- "tokio",
 ]
 
 [[package]]

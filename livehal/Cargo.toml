@@ -1,5 +1,5 @@
 [package]
-name = "livesrc"
+name = "livehal"
 description = "Native capture / encoder backend for liveion"
 version.workspace = true
 edition.workspace = true
@@ -21,11 +21,11 @@ pkg-config = "0.3"
 [features]
 default = []
 
-# --- capture backends (C++ libcamera-bridge) ---
+# --- capture backends (C++ native-pipeline) ---
 capture-libcamera = []
 capture-v4l2 = []
 
-# --- encoder backends (C++ libcamera-bridge) ---
+# --- encoder backends (C++ native-pipeline) ---
 encoder-v4l2-m2m = []
 encoder-rdk = []
 

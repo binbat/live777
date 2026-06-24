@@ -18,7 +18,7 @@ libwish = { path = "../libs/libwish", optional = true }
 storage = { path = "../libs/storage", optional = true }
 rtsp = { path = "../libs/rtsp", optional = true }
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
-livesrc = { path = "../livesrc", optional = true }
+livehal = { path = "../livehal", optional = true }
 
 axum = { workspace = true, features = ["multipart", "tracing"] }
 axum-extra = { workspace = true, features = ["query"] }
@@ -83,15 +83,15 @@ source-sdp = ["source"]
 source-rtsp = ["source"]
 source-all = ["source-sdp", "source-rtsp"]
 
-native-source = ["source", "dep:livesrc"]
+native-source = ["source", "dep:livehal"]
 
 # Capture backends
-capture-libcamera = ["native-source", "livesrc/capture-libcamera"]
-capture-v4l2 = ["native-source", "livesrc/capture-v4l2"]
+capture-libcamera = ["native-source", "livehal/capture-libcamera"]
+capture-v4l2 = ["native-source", "livehal/capture-v4l2"]
 
 # Encoder backends
-encoder-v4l2-m2m = ["native-source", "livesrc/encoder-v4l2-m2m"]
-encoder-rdk = ["native-source", "livesrc/encoder-rdk"]
+encoder-v4l2-m2m = ["native-source", "livehal/encoder-v4l2-m2m"]
+encoder-rdk = ["native-source", "livehal/encoder-rdk"]
 
 # Platform presets
 # native-rpi: builds both libcamera (Pi CSI camera) and V4L2 (Pi USB camera).

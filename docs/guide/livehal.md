@@ -1,6 +1,8 @@
-# Native Source Pipeline
+# livehal
 
 Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-and-encode pipeline.
+
+`livehal` is the Hardware Abstraction Layer crate that wraps the `native-pipeline` C++ pipeline. It exposes a safe Rust API (`NativePipeline`) to `liveion` while keeping all FFI details crate-private.
 
 ## Architecture
 
@@ -20,7 +22,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 │         │                                                │
 │─────────│─ optional dep boundary ────────────────────────│
 │         ▼                                                │
-│ livesrc (native backend crate)                           │
+│ livehal (native backend crate)                           │
 │                                                          │
 │  NativePipeline  (safe Rust wrapper)                     │
 │         │                                                │
@@ -28,7 +30,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 │  native_ffi.rs  →  source_pipeline_ffi.h                 │
 │         │                                                │
 │         ▼                                                │
-│ C++ (libcamera-bridge / cambridge)                       │
+│ C++ (native-pipeline)                                    │
 │                                                          │
 │  SourcePipeline                                          │
 │    ├─ CaptureBackend  →  RawFrame  (C++ internal)        │
@@ -43,8 +45,8 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 ```
 
 - **RawFrame** is C++-internal and never crosses the FFI boundary.
-- **EncodedPacket** crosses FFI via a pure-C callback inside `livesrc`; data is copied immediately and sent through an mpsc channel to `liveion`.
-- All FFI details are crate-private in `livesrc`; `liveion` only sees `EncodedPacket` through the channel.
+- **EncodedPacket** crosses FFI via a pure-C callback inside `livehal`; data is copied immediately and sent through an mpsc channel to `liveion`.
+- All FFI details are crate-private in `livehal`; `liveion` only sees `EncodedPacket` through the channel.
 - **RTP path for native sources**: `EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`.  This avoids the `Packet` → bytes → `Packet::unmarshal` roundtrip that other sources use.
 - `MediaPacket::Rtp { data }` bytes path is still used by `rtp_listener` / `rtsp_source` / `sdp_source`.
 - **DMA-BUF zero-copy is not yet implemented.**  The `prefer_dmabuf` config field exists in the schema and is plumbed through to the C++ layer.  RDK V4L2 capture exports DMA-BUF fds when `prefer_dmabuf=true`, but `encoder_rdk.cpp` has not yet implemented DMA-BUF fd import — it rejects `BufferKind::DmaBuf`.  The default remains `false`.  Currently all frames are copied through the CPU path.  Full userspace zero-copy requires implementing DMA-BUF import in the RDK encoder backend and handling capture buffer lifetime.
@@ -124,7 +126,7 @@ clock_rate = 90000
 
 Features are split into capture backends, encoder backends, and convenience
 presets.  All backend features imply `native-source`, which in turn enables
-`source` (autostart) and `dep:livesrc`.
+`source` (autostart) and `dep:livehal`.
 
 ### Capture backends
 
@@ -211,6 +213,15 @@ cargo check --features native-rpi,webui
 ```
 
 > **Note:** On macOS and Windows, native backend features are silently skipped by the build script; CMake is not invoked and no native symbols are linked. You can run `cargo check` with native features for linting, but the resulting binary cannot use native sources on those platforms.
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `PI_SYSROOT` | Path to the Raspberry Pi sysroot containing `libcamera-dev`. Used when building `capture-libcamera` / `native-rpi`. |
+| `RDK_SYSROOT` | Path to the Horizon RDK X5 SDK sysroot. **Required** when building `encoder-rdk` / `native-rdk` for aarch64. |
+| `LIVEHAL_CXX_STDLIB` | Override the C++ standard library to link (`stdc++`, `c++`, etc.). Useful for cross-compilation toolchains. |
+| `LIVEHAL_RDK_ALLOW_UNDEFINED` | Set to `1` to allow unresolved symbols in RDK shared libraries during cross-compilation with an incomplete sysroot. |
 
 ## Backend selection (build-time)
 

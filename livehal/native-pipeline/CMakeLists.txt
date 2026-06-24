@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(libcamera-bridge VERSION 1.0.0 LANGUAGES CXX)
+project(native-pipeline VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,7 +22,7 @@ option(ENABLE_ENCODER_RDK_X5 "Enable RDK X5 encoder backend" OFF)
 set(SOURCES "")
 
 if(ENABLE_CAPTURE_LIBCAMERA)
-    message(STATUS "cambridge: libcamera capture enabled")
+    message(STATUS "native-pipeline: libcamera capture enabled")
     list(APPEND SOURCES camera.cpp)
 endif()
 
@@ -31,29 +31,29 @@ endif()
 if(ENABLE_CAPTURE_V4L2)
   if(ENABLE_BACKEND_RDK_X5)
     list(APPEND SOURCES v4l2_capture_rdk.cpp)
-    message(STATUS "cambridge: RDK X5 V4L2 capture enabled")
+    message(STATUS "native-pipeline: RDK X5 V4L2 capture enabled")
   else()
     list(APPEND SOURCES v4l2_capture.cpp)
-    message(STATUS "cambridge: generic V4L2 capture enabled")
+    message(STATUS "native-pipeline: generic V4L2 capture enabled")
   endif()
 endif()
 
 if(ENABLE_ENCODER_V4L2_M2M)
-    message(STATUS "cambridge: V4L2 M2M encoder enabled")
+    message(STATUS "native-pipeline: V4L2 M2M encoder enabled")
     list(APPEND SOURCES encoder.cpp)
 endif()
 
 if(ENABLE_ENCODER_RDK_X5)
-    message(STATUS "cambridge: RDK X5 encoder enabled")
+    message(STATUS "native-pipeline: RDK X5 encoder enabled")
     list(APPEND SOURCES encoder_rdk.cpp)
 endif()
 
 if(ENABLE_BACKEND_PI)
-    message(STATUS "cambridge: Raspberry Pi backend enabled")
+    message(STATUS "native-pipeline: Raspberry Pi backend enabled")
 endif()
 
 if(ENABLE_BACKEND_RDK_X5)
-    message(STATUS "cambridge: RDK X5 backend enabled")
+    message(STATUS "native-pipeline: RDK X5 backend enabled")
     add_definitions(-DPLATFORM_RDK)
 endif()
 
@@ -61,67 +61,67 @@ endif()
 list(APPEND SOURCES src/pipeline/source_pipeline.cpp src/pipeline/backend_factory.cpp)
 
 # --- Static library ---
-add_library(cambridge STATIC ${SOURCES})
+add_library(native-pipeline STATIC ${SOURCES})
 
 # Feature compile definitions for conditional compilation in backend_factory.cpp
 if(ENABLE_CAPTURE_LIBCAMERA)
-    target_compile_definitions(cambridge PRIVATE ENABLE_CAPTURE_LIBCAMERA=1)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_CAPTURE_LIBCAMERA=1)
 endif()
 if(ENABLE_CAPTURE_V4L2)
-    target_compile_definitions(cambridge PRIVATE ENABLE_CAPTURE_V4L2=1)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_CAPTURE_V4L2=1)
 endif()
 if(ENABLE_BACKEND_RDK_X5)
-    target_compile_definitions(cambridge PRIVATE ENABLE_BACKEND_RDK_X5=1)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_BACKEND_RDK_X5=1)
 endif()
 if(ENABLE_ENCODER_V4L2_M2M)
-    target_compile_definitions(cambridge PRIVATE ENABLE_ENCODER_V4L2_M2M=1)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_V4L2_M2M=1)
 endif()
 if(ENABLE_ENCODER_RDK_X5)
-    target_compile_definitions(cambridge PRIVATE ENABLE_ENCODER_RDK_X5=1)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_RDK_X5=1)
 endif()
 
-target_include_directories(cambridge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(native-pipeline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Platform-specific include dirs
 if(ENABLE_CAPTURE_LIBCAMERA)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBCAMERA REQUIRED libcamera)
-    target_include_directories(cambridge PRIVATE ${LIBCAMERA_INCLUDE_DIRS})
+    target_include_directories(native-pipeline PRIVATE ${LIBCAMERA_INCLUDE_DIRS})
 endif()
 
 if(ENABLE_BACKEND_RDK_X5)
     if(DEFINED RDK_SYSROOT)
-        target_include_directories(cambridge PRIVATE ${RDK_SYSROOT}/usr/hobot/include)
+        target_include_directories(native-pipeline PRIVATE ${RDK_SYSROOT}/usr/hobot/include)
     else()
-        target_include_directories(cambridge PRIVATE /usr/hobot/include)
+        target_include_directories(native-pipeline PRIVATE /usr/hobot/include)
     endif()
 endif()
 
 # --- Link libraries ---
-target_link_libraries(cambridge PRIVATE pthread)
+target_link_libraries(native-pipeline PRIVATE pthread)
 
 if(ENABLE_CAPTURE_LIBCAMERA)
-    target_link_libraries(cambridge PRIVATE ${LIBCAMERA_LIBRARIES})
+    target_link_libraries(native-pipeline PRIVATE ${LIBCAMERA_LIBRARIES})
 endif()
 
 if(ENABLE_BACKEND_RDK_X5)
     if(DEFINED RDK_SYSROOT)
-        target_link_directories(cambridge PRIVATE ${RDK_SYSROOT}/usr/hobot/lib)
+        target_link_directories(native-pipeline PRIVATE ${RDK_SYSROOT}/usr/hobot/lib)
     else()
-        target_link_directories(cambridge PRIVATE /usr/hobot/lib)
+        target_link_directories(native-pipeline PRIVATE /usr/hobot/lib)
     endif()
-    target_link_libraries(cambridge PRIVATE multimedia hbmem vpf)
+    target_link_libraries(native-pipeline PRIVATE multimedia hbmem vpf)
 endif()
 
 # --- Compile options ---
-target_compile_options(cambridge PRIVATE -Wall -Wextra)
+target_compile_options(native-pipeline PRIVATE -Wall -Wextra)
 
 if(ENABLE_CAPTURE_LIBCAMERA)
-    target_compile_options(cambridge PRIVATE ${LIBCAMERA_CFLAGS_OTHER})
+    target_compile_options(native-pipeline PRIVATE ${LIBCAMERA_CFLAGS_OTHER})
 endif()
 
 # --- Install ---
-install(TARGETS cambridge
+install(TARGETS native-pipeline
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
 )

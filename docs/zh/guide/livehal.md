@@ -1,0 +1,319 @@
+# livehal
+
+libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
+
+`livehal` 是 Hardware Abstraction Layer（硬件抽象层）crate，封装了 `native-pipeline` C++ pipeline。它向 `liveion` 暴露安全的 Rust API（`NativePipeline`），同时将所有 FFI 细节保持在 crate 内部。
+
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ liveion（RTP / WHEP / 源管理器）                          │
+│                                                          │
+│  NativeSource（统一薄封装层）                             │
+│         │                                                │
+│         ▼                                                │
+│  NativeEncodedSource                                     │
+│    webrtc-rs H264Payloader / Packetizer                  │
+│    → MediaPacket::RtpPacket(Arc<Packet>)                 │
+│    → inject_rtp（无 marshal/unmarshal 往返）              │
+│         │                                                │
+│  RTCP PLI → request_keyframe()                           │
+│         │                                                │
+│─────────│─ 可选依赖边界 ──────────────────────────────────│
+│         ▼                                                │
+│ livehal（原生后端 crate）                                 │
+│                                                          │
+│  NativePipeline（安全 Rust 封装）                         │
+│         │                                                │
+│         ▼  crate-private FFI                             │
+│  native_ffi.rs  →  source_pipeline_ffi.h                 │
+│         │                                                │
+│         ▼                                                │
+│ C++（native-pipeline）                                    │
+│                                                          │
+│  SourcePipeline                                          │
+│    ├─ CaptureBackend  →  RawFrame（C++ 内部）             │
+│    └─ EncoderBackend  →  EncodedPacket                   │
+│                              │                           │
+│                              ▼  FFI 回调                  │
+│  on_encoded_packet()  ← EncodedPacketFFI                 │
+│         │                                                │
+│         ▼  数据立即拷贝 → mpsc 通道                       │
+│  EncodedPacket → liveion NativeEncodedSource             │
+└──────────────────────────────────────────────────────────┘
+```
+
+- **RawFrame** 仅在 C++ 内部使用，不会跨越 FFI 边界。
+- **EncodedPacket** 通过 `livehal` 内的纯 C 回调跨越 FFI；数据会被立即拷贝，并通过 mpsc 通道发送给 `liveion`。
+- 所有 FFI 细节在 `livehal` 内部都是 crate-private 的；`liveion` 只能通过通道看到 `EncodedPacket`。
+- **原生源的 RTP 路径**：`EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`。这避免了其他源所使用的 `Packet` → bytes → `Packet::unmarshal` 往返。
+- `MediaPacket::Rtp { data }` 字节路径仍由 `rtp_listener` / `rtsp_source` / `sdp_source` 使用。
+- **DMA-BUF 零拷贝尚未实现。** `prefer_dmabuf` 配置字段已存在于 schema 中，并已贯通到 C++ 层。RDK V4L2 采集在 `prefer_dmabuf=true` 时会导出 DMA-BUF fd，但 `encoder_rdk.cpp` 尚未实现 DMA-BUF fd 导入——它会拒绝 `BufferKind::DmaBuf`。默认值仍为 `false`。目前所有帧都通过 CPU 路径拷贝。完整的用户态零拷贝需要在 RDK 编码后端实现 DMA-BUF 导入，并处理好采集缓冲区生命周期。
+
+## 配置
+
+原生源在 `conf/live777.toml` 的 `[[stream.sources]]` 下配置。
+所有源配置都通过 `live777.toml` 中的 `[[stream.sources]]` 完成。
+
+### 基于 URL 的方式（非原生：RTSP / SDP / RTP）
+
+```toml
+[[stream.sources]]
+stream_id = "rtsp_cam"
+url = "rtsp://192.168.1.100:554/stream"
+```
+
+### 结构化原生配置（libcamera / V4L2 / RDK）
+
+```toml
+[[stream.sources]]
+stream_id = "pi_cam"
+kind = "libcamera"
+
+[stream.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuv420"
+
+[stream.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 1_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+`pixel_format` 和 `codec` 值在启动时就会被校验（未知值会尽早报错）。`kind` + `capture` + `encoder` 与 `url` 互斥。
+
+`conf/live777.toml` 自带注释掉的 Pi / RDK 示例。复制它们到你自己的配置中即可启用摄像头源。
+
+### 后端命名
+
+| 层级 | 取值 |
+|-------|-------|
+| `capture.backend` | `"libcamera"`, `"v4l2"` |
+| `encoder.backend` | `"v4l2-m2m"`, `"rdk"` |
+
+### pixel_format 取值
+
+| TOML 字符串 | RawPixelFormat | 数值 |
+|---|---|---|
+| `yuyv`, `yuyv422` | Yuyv422 | 0 |
+| `nv12` | Nv12 | 1 |
+| `yuv420`, `yuv420p` | Yuv420p | 2 |
+| `mjpeg` | Mjpeg | 3 |
+| `rgb888`, `rgb` | Rgb888 | 4 |
+
+### codec 取值
+
+| TOML 字符串 | VideoCodec | 数值 |
+|---|---|---|
+| `h264` | H264 | 100 |
+| `h265`, `hevc` | H265 | 101 |
+| `av1` | Av1 | 102 |
+| `vp8` | Vp8 | 103 |
+| `vp9` | Vp9 | 104 |
+
+## 特性标志
+
+特性分为采集后端、编码后端和便捷预设三类。所有后端特性都隐含 `native-source`，而 `native-source` 又会启用 `source`（自动启动）和 `dep:livehal`。
+
+### 采集后端
+
+| 特性 | 后端 |
+|---------|------|
+| `capture-libcamera` | libcamera（树莓派 CSI 摄像头） |
+| `capture-v4l2` | V4L2 视频采集（USB 摄像头、通用 Linux） |
+
+### 编码后端
+
+| 特性 | 后端 |
+|---------|------|
+| `encoder-v4l2-m2m` | V4L2 Memory-to-Memory 硬件编码器 |
+| `encoder-rdk` | 地平线 RDK X5 硬件编码器 |
+
+### 平台预设
+
+| 预设 | 展开为 |
+|--------|-----------|
+| `native-rpi` | `capture-libcamera, capture-v4l2, encoder-v4l2-m2m` |
+| `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
+| `native-rdk` | `capture-v4l2, encoder-rdk` |
+
+无需额外加 `--features source`——预设已经包含自动启动。
+
+```bash
+# 树莓派 CSI
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rpi,webui
+
+# 通用 Linux V4L2
+cargo build --bin live777 --release \
+  --no-default-features --features native-generic-v4l2,webui
+
+# RDK X5
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rdk,webui
+```
+
+## 构建
+
+### 前置要求
+
+- CMake ≥ 3.16
+- C++17 编译器（gcc 或 clang）
+- 按需准备平台 SDK（libcamera、RDK sysroot）
+
+### 树莓派（libcamera）
+
+```bash
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rpi,webui
+```
+
+需要带有 libcamera-dev 的 Pi sysroot。如果 sysroot 不在默认路径，请设置 `PI_SYSROOT`。
+
+### 通用 Linux V4L2
+
+```bash
+cargo build --bin live777 --release \
+  --no-default-features --features native-generic-v4l2,webui
+```
+
+### RDK X5
+
+```bash
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rdk,webui
+```
+
+需要带有 `hb_media_codec` 库的 RDK sysroot。必须设置 `RDK_SYSROOT` 指向 sysroot 路径；没有默认值。
+
+> **注意：** DMA-BUF 零拷贝编码路径尚未实现。详见上文“架构”章节中的 DMA-BUF 说明。
+
+### macOS（仅开发 / 检查）
+
+```bash
+cargo check --no-default-features
+cargo check --features native-rpi,webui
+```
+
+> **注意：** 在 macOS 和 Windows 上，原生后端特性会被构建脚本静默跳过；不会调用 CMake，也不会链接原生符号。你可以用原生特性运行 `cargo check` 做静态检查，但生成的二进制无法在这些平台上使用原生源。
+
+### 环境变量
+
+| 变量 | 用途 |
+|----------|---------|
+| `PI_SYSROOT` | 包含 `libcamera-dev` 的树莓派 sysroot 路径。在构建 `capture-libcamera` / `native-rpi` 时使用。 |
+| `RDK_SYSROOT` | 地平线 RDK X5 SDK sysroot 路径。在 aarch64 上构建 `encoder-rdk` / `native-rdk` 时**必须**设置。 |
+| `LIVEHAL_CXX_STDLIB` | 覆盖要链接的 C++ 标准库（如 `stdc++`、`c++` 等），用于交叉编译工具链。 |
+| `LIVEHAL_RDK_ALLOW_UNDEFINED` | 设为 `1` 可在 sysroot 不完整时允许 RDK 共享库存在未解析符号。 |
+
+## 后端选择（构建时）
+
+CMake 后端根据启用的采集/编码特性推断：
+
+| 启用的特性 | 选定后端 | CMake 开启的宏 |
+|-------------------|------------------|-------------------|
+| `capture-libcamera` | `rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
+| aarch64 上的 `encoder-rdk` | `rdk-x5` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
+| `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
+
+当没有启用任何 `capture-*` 特性时，CMake 会被完全跳过。仅启用编码特性**不会**触发 CMake 构建——SourcePipeline 需要一个采集后端。
+
+`capture-libcamera` 和 `encoder-rdk` 互斥。如果同时启用，构建脚本会发出警告并忽略 `encoder-rdk`，选择 `rpi`（libcamera）后端。
+
+## 配置示例
+
+### 树莓派 CSI
+
+```toml
+[[stream.sources]]
+stream_id = "pi_cam"
+kind = "libcamera"
+
+[stream.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuv420"
+
+[stream.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 1_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+### 树莓派 USB V4L2
+
+```toml
+[[stream.sources]]
+stream_id = "usb_cam"
+kind = "v4l2"
+
+[stream.sources.capture]
+backend = "v4l2"
+device = "/dev/video2"
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuyv"
+
+[stream.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 1_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+### RDK X5
+
+```toml
+[[stream.sources]]
+stream_id = "rdk_cam"
+kind = "v4l2"
+
+[stream.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuyv"
+
+[stream.sources.encoder]
+backend = "rdk"
+codec = "h264"
+bitrate = 1_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sources.output]
+payload_type = 96
+clock_rate = 90000
+```

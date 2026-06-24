@@ -30,7 +30,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "native-source")]
-use livesrc::NativeSourceParams;
+use livehal::NativeSourceParams;
 
 // ---------------------------------------------------------------------------
 // Structured source configuration types (v2 — recommended)
