@@ -5,8 +5,10 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast};
 #[cfg(any(feature = "source", feature = "cascade"))]
 use tracing::error;
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+use tracing::trace;
 #[cfg(feature = "source")]
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 use webrtc::peer_connection::{
     PeerConnection, RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionState,
     RTCSessionDescription,
@@ -25,7 +27,7 @@ use crate::{AppError, constant};
 pub use bridge::SourceBridge;
 #[cfg(feature = "source")]
 use rtc::rtp::packet::Packet;
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 use rtc::shared::marshal::Unmarshal;
 
 use self::media::MediaInfo;
@@ -722,7 +724,7 @@ impl PeerForward {
 
         Ok(())
     }
-    #[cfg(feature = "source")]
+    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
     pub async fn inject_video_rtp(&self, mut data: &[u8]) -> Result<()> {
         let packet = match Packet::unmarshal(&mut data) {
             Ok(p) => p,
@@ -767,6 +769,25 @@ impl PeerForward {
     }
 
     #[cfg(feature = "source")]
+    pub async fn inject_video_rtp_packet(&self, packet: Arc<Packet>) -> Result<()> {
+        let tracks = self.internal.publish_tracks.read().await;
+        let video_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Video);
+        match video_track {
+            Some(track) => match track.inject_rtp(packet) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    error!("[{}] Failed to inject video RTP packet: {}", self.stream, e);
+                    Err(anyhow::anyhow!("Inject failed: {}", e).into())
+                }
+            },
+            None => {
+                warn!("[{}] No video track found for injection", self.stream);
+                Err(anyhow::anyhow!("No video track").into())
+            }
+        }
+    }
+
+    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
     pub async fn inject_audio_rtp(&self, mut data: &[u8]) -> Result<()> {
         let packet = match Packet::unmarshal(&mut data) {
             Ok(p) => p,

@@ -1,0 +1,33 @@
+[package]
+name = "livesrc"
+description = "Native capture / encoder backend for liveion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[build-dependencies]
+cc = "1.0"
+cmake = "0.1"
+pkg-config = "0.3"
+
+[features]
+default = []
+
+# --- capture backends (C++ libcamera-bridge) ---
+capture-libcamera = []
+capture-v4l2 = []
+
+# --- encoder backends (C++ libcamera-bridge) ---
+encoder-v4l2-m2m = []
+encoder-rdk = []
+
+# future
+# encoded-source-waybeam-venc = []

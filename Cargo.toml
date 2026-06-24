@@ -65,6 +65,7 @@ members = [
     "liveman",
     "livetwo",
     "livecam",
+    "livesrc",
 ]
 
 [workspace.package]
@@ -145,12 +146,27 @@ toml = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
+source = ["liveion/source"]
 cascade = ["liveion/cascade"]
 webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]
-
-source = ["liveion/source"]
 source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
 source-all = ["liveion/source-all"]
+
+# Native source infrastructure (required by all capture-/encoder-* features)
+native-source = ["liveion/native-source"]
+
+# Capture backends
+capture-libcamera = ["liveion/capture-libcamera", "native-source"]
+capture-v4l2 = ["liveion/capture-v4l2", "native-source"]
+
+# Encoder backends
+encoder-v4l2-m2m = ["liveion/encoder-v4l2-m2m", "native-source"]
+encoder-rdk = ["liveion/encoder-rdk", "native-source"]
+
+# Platform presets (recommended for users)
+native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
+native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
+native-rdk = ["capture-v4l2", "encoder-rdk"]

@@ -430,6 +430,11 @@ fn default_upload_concurrency() -> usize {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamConfig {
+    /// Source configurations: `[[stream.sources]]`.
+    ///
+    /// Accepts two formats:
+    /// - URL-based: `stream_id` + `url` (rtsp://, file://)
+    /// - Structured native: `stream_id` + `kind` + `capture` + `encoder` [+ `output`]
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
 }
@@ -439,10 +444,31 @@ pub struct SourceConfig {
     /// Stream ID
     pub stream_id: String,
 
-    /// Source URL
-    /// - RTSP: rtsp://username:password@host:port/path
-    /// - SDP file: file:///path/to/file.sdp or /path/to/file.sdp
-    pub url: String,
+    /// URL source for RTSP / SDP inputs. Mutually exclusive with `kind`.
+    /// Supported: rtsp://, rtsps://, file://, .sdp
+    #[serde(default)]
+    pub url: Option<String>,
+
+    /// Source kind for structured native sources.
+    /// When set, `capture` and `encoder` are required.
+    #[cfg(feature = "native-source")]
+    #[serde(default)]
+    pub kind: Option<crate::stream::source::source_config::SourceKind>,
+
+    /// Capture config (required when `kind` is set).
+    #[cfg(feature = "native-source")]
+    #[serde(default)]
+    pub capture: Option<crate::stream::source::source_config::CaptureSpec>,
+
+    /// Encoder config (required when `kind` is set).
+    #[cfg(feature = "native-source")]
+    #[serde(default)]
+    pub encoder: Option<crate::stream::source::source_config::EncoderSpec>,
+
+    /// RTP output params (optional, defaults apply).
+    #[cfg(feature = "native-source")]
+    #[serde(default)]
+    pub output: crate::stream::source::source_config::OutputSpec,
 }
 
 impl SourceConfig {
@@ -451,22 +477,59 @@ impl SourceConfig {
             anyhow::bail!("stream_id cannot be empty");
         }
 
-        if self.url.trim().is_empty() {
-            anyhow::bail!("url cannot be empty");
+        #[cfg(feature = "native-source")]
+        if self.kind.is_some() {
+            let capture = self
+                .capture
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("capture is required when kind is set"))?;
+            if capture.device.trim().is_empty() {
+                anyhow::bail!("capture.device cannot be empty");
+            }
+            if capture.width == 0 || capture.height == 0 {
+                anyhow::bail!("capture width/height must be non-zero");
+            }
+            let encoder = self
+                .encoder
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("encoder is required when kind is set"))?;
+            if encoder.bitrate == 0 {
+                anyhow::bail!("encoder.bitrate must be non-zero");
+            }
+            return Ok(());
         }
 
-        let url_lower = self.url.to_lowercase();
+        let url = self.url.as_deref().unwrap_or("");
+        if url.is_empty() {
+            anyhow::bail!("either url or kind must be set");
+        }
+
+        let url_lower = url.to_lowercase();
         if !url_lower.starts_with("rtsp://")
             && !url_lower.starts_with("rtsps://")
             && !url_lower.starts_with("file://")
             && !url_lower.ends_with(".sdp")
         {
             anyhow::bail!(
-                "Invalid URL format: {}. Must be rtsp://, rtsps://, file://, or end with .sdp",
-                self.url
+                "Unsupported URL: {}. Valid: rtsp://, rtsps://, file://, .sdp",
+                url
             );
         }
-
         Ok(())
+    }
+
+    /// Build a `SourceSpec` from structured fields (for native sources).
+    #[cfg(feature = "native-source")]
+    pub fn to_spec(&self) -> Option<crate::stream::source::source_config::SourceSpec> {
+        let kind = self.kind.clone()?;
+        let capture = self.capture.clone()?;
+        let encoder = self.encoder.clone()?;
+        Some(crate::stream::source::source_config::SourceSpec {
+            stream_id: self.stream_id.clone(),
+            kind,
+            capture,
+            encoder,
+            output: self.output.clone(),
+        })
     }
 }

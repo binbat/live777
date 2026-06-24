@@ -51,11 +51,10 @@ where
 
     #[cfg(feature = "source")]
     {
-        if !cfg.stream.sources.is_empty() {
-            tracing::info!(
-                "[Server] Auto-starting {} configured sources...",
-                cfg.stream.sources.len()
-            );
+        let total = cfg.stream.sources.len();
+        if total > 0 {
+            tracing::info!("[Server] Auto-starting {} configured sources...", total);
+
             if let Err(e) = app_state
                 .stream_manager
                 .auto_start_sources(&cfg.stream)

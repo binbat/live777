@@ -65,6 +65,11 @@ jobs:
         run: pnpm install
       - name: Build WebUI
         run: pnpm -r build
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcamera-dev libv4l-dev
+
       - name: Cargo clippy --all-features
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 

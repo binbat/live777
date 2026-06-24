@@ -1,5 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+use bytes::Bytes;
+#[cfg(feature = "native-source")]
+use rtc::rtp::packet::Packet;
+#[cfg(feature = "native-source")]
+use std::sync::Arc;
 use tokio::sync::broadcast;
 
 #[cfg(feature = "source-rtsp")]
@@ -7,7 +13,15 @@ mod rtsp_source;
 #[cfg(feature = "source-sdp")]
 mod sdp_source;
 
+#[cfg(feature = "native-source")]
+pub mod native_encoded_source;
+#[cfg(feature = "native-source")]
+pub mod source_config;
+pub mod source_router;
+
 pub mod manager;
+#[cfg(feature = "native-source")]
+pub mod native_source;
 
 #[cfg(feature = "source-rtsp")]
 pub use rtsp_source::RtspSource;
@@ -33,21 +47,36 @@ pub struct StateChangeEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum MediaPacket {
-    Rtp { channel: u8, data: Vec<u8> },
+    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+    Rtp { channel: u8, data: Bytes },
+    #[cfg(feature = "native-source")]
+    RtpPacket(Arc<Packet>),
+    // Placeholder when no concrete source implementation is enabled.
+    // The `source` feature alone has no active source types, so this
+    // variant keeps the enum non-empty without exposing real data.
+    #[cfg(not(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "native-source"
+    )))]
+    _Unused,
 }
 
 #[derive(Debug, Clone)]
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 pub struct InternalSourceConfig {
     pub stream_id: String,
     pub url: String,
 }
 
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 impl InternalSourceConfig {
     pub fn from_config(config: &crate::config::SourceConfig) -> Self {
         Self {
             stream_id: config.stream_id.clone(),
-            url: config.url.clone(),
+            url: config.url.clone().unwrap_or_default(),
         }
     }
 
@@ -99,6 +128,21 @@ pub trait StreamSource: Send + Sync {
 }
 
 pub async fn create_source_from_url(
+    url: &str,
+    config: &crate::config::SourceConfig,
+) -> Result<Box<dyn StreamSource>> {
+    source_router::create_source_extended(url, config).await
+}
+
+#[cfg(feature = "native-source")]
+pub async fn create_source_from_spec(
+    spec: &source_config::SourceSpec,
+) -> Result<Box<dyn StreamSource>> {
+    source_router::create_source_from_spec(spec).await
+}
+
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+pub(crate) async fn create_url_source(
     url: &str,
     config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {

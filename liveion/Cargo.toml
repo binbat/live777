@@ -18,6 +18,7 @@ libwish = { path = "../libs/libwish", optional = true }
 storage = { path = "../libs/storage", optional = true }
 rtsp = { path = "../libs/rtsp", optional = true }
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
+livesrc = { path = "../livesrc", optional = true }
 
 axum = { workspace = true, features = ["multipart", "tracing"] }
 axum-extra = { workspace = true, features = ["query"] }
@@ -47,7 +48,7 @@ rtc-shared = { workspace = true }
 uuid = { workspace = true }
 
 async-trait = "0.1"
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 version = { path = "../libs/version" }
 lazy_static = "1.4.0"
 md-5 = "0.10.6"
@@ -81,6 +82,22 @@ source = ["dep:rtsp", "dep:url"]
 source-sdp = ["source"]
 source-rtsp = ["source"]
 source-all = ["source-sdp", "source-rtsp"]
+
+native-source = ["source", "dep:livesrc"]
+
+# Capture backends
+capture-libcamera = ["native-source", "livesrc/capture-libcamera"]
+capture-v4l2 = ["native-source", "livesrc/capture-v4l2"]
+
+# Encoder backends
+encoder-v4l2-m2m = ["native-source", "livesrc/encoder-v4l2-m2m"]
+encoder-rdk = ["native-source", "livesrc/encoder-rdk"]
+
+# Platform presets
+# native-rpi: builds both libcamera (Pi CSI camera) and V4L2 (Pi USB camera).
+native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
+native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
+native-rdk = ["capture-v4l2", "encoder-rdk"]
 
 [dev-dependencies]
 tempfile = "3.26"

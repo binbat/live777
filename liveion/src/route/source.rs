@@ -63,7 +63,15 @@ async fn create_source(
 
     let config = crate::config::SourceConfig {
         stream_id: stream.clone(),
-        url: req.url.clone(),
+        url: Some(req.url.clone()),
+        #[cfg(feature = "native-source")]
+        kind: None,
+        #[cfg(feature = "native-source")]
+        capture: None,
+        #[cfg(feature = "native-source")]
+        encoder: None,
+        #[cfg(feature = "native-source")]
+        output: Default::default(),
     };
 
     let source = create_source_from_url(&req.url, &config).await?;

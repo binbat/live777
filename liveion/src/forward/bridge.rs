@@ -2,6 +2,7 @@ use super::PeerForward;
 use crate::forward::rtcp::RtcpMessage;
 use crate::stream::source::{MediaPacket, StateChangeEvent};
 use anyhow::Result;
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 use anyhow::anyhow;
 use rtc::shared::marshal::Marshal;
 use std::sync::Arc;
@@ -9,9 +10,15 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace, warn};
 
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "native-source"
+))]
 const LOG_PACKET_INTERVAL: u64 = 100;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 struct ChannelMapping {
     video_rtp: Option<u8>,
     video_rtcp: Option<u8>,
@@ -19,6 +26,7 @@ struct ChannelMapping {
     audio_rtcp: Option<u8>,
 }
 
+#[allow(dead_code)]
 impl ChannelMapping {
     fn new(has_video: bool, has_audio: bool) -> Self {
         match (has_video, has_audio) {
@@ -67,7 +75,7 @@ impl ChannelMapping {
 }
 pub struct SourceBridge {
     source_id: String,
-    forward: Arc<PeerForward>,
+    forward: PeerForward,
     tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 
@@ -80,12 +88,7 @@ pub struct SourceBridge {
 }
 
 impl SourceBridge {
-    pub fn new(
-        source_id: String,
-        forward: Arc<PeerForward>,
-        has_video: bool,
-        has_audio: bool,
-    ) -> Self {
+    pub fn new(source_id: String, forward: PeerForward, has_video: bool, has_audio: bool) -> Self {
         let channel_mapping = ChannelMapping::new(has_video, has_audio);
 
         Self {
@@ -131,6 +134,11 @@ impl SourceBridge {
             }
         }
 
+        #[cfg(any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "native-source"
+        ))]
         let forward_clone = self.forward.clone();
         let source_id_clone = self.source_id.clone();
         let mut shutdown_rx1 = shutdown_tx.subscribe();
@@ -142,8 +150,22 @@ impl SourceBridge {
                 source_id_clone, channel_mapping
             );
             let mut packet_count = 0u64;
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "native-source"
+            ))]
             let mut video_count = 0u64;
+            #[cfg(not(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "native-source"
+            )))]
+            let video_count = 0u64;
+            #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
             let mut audio_count = 0u64;
+            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
+            let audio_count = 0u64;
 
             loop {
                 tokio::select! {
@@ -159,7 +181,19 @@ impl SourceBridge {
                             Ok(packet) => {
                                 packet_count += 1;
 
-                                let inject_result = match packet {
+                                let inject_result: anyhow::Result<()> = match packet {
+                                    #[cfg(feature = "native-source")]
+                                    MediaPacket::RtpPacket(packet) => {
+                                        video_count += 1;
+                                        if video_count % LOG_PACKET_INTERVAL == 1 {
+                                            debug!(
+                                                "[{}] Forwarding video packet #{}, size: {}",
+                                                source_id_clone, video_count, packet.payload.len()
+                                            );
+                                        }
+                                        forward_clone.inject_video_rtp_packet(packet).await.map_err(|e| anyhow::anyhow!("{:?}", e))
+                                    }
+                                    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
                                     MediaPacket::Rtp { channel, data, .. } => {
                                         if channel_mapping.is_video_rtp(channel) {
                                             video_count += 1;
@@ -193,6 +227,16 @@ impl SourceBridge {
                                             Ok(())
                                         }
                                     }
+                                    // The `source` feature alone enables no
+                                    // concrete source implementation; the enum
+                                    // carries a placeholder variant in that
+                                    // configuration, so we just ignore it.
+                                    #[cfg(not(any(
+                                        feature = "source-rtsp",
+                                        feature = "source-sdp",
+                                        feature = "native-source"
+                                    )))]
+                                    _ => Ok(()),
                                 };
 
                                 if let Err(e) = inject_result {
@@ -309,7 +353,7 @@ impl SourceBridge {
     #[cfg(feature = "source")]
     async fn rtcp_handler(
         source_id: String,
-        forward: Arc<PeerForward>,
+        forward: PeerForward,
         rtcp_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) {
@@ -339,7 +383,7 @@ impl SourceBridge {
 
                     match rtcp_msg {
                         RtcpMessage::PictureLossIndication => {
-                            info!(
+                            debug!(
                                 "[{}] Received PLI for SSRC {}, requesting keyframe",
                                 source_id, ssrc
                             );
@@ -434,7 +478,7 @@ impl SourceBridge {
     #[cfg(feature = "source")]
     async fn sender_report_loop(
         source_id: String,
-        forward: Arc<PeerForward>,
+        forward: PeerForward,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) {
         info!("[{}] Sender Report task started", source_id);
