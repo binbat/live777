@@ -150,7 +150,7 @@ impl NativeEncodedSource {
         let handle = tokio::spawn(async move {
             let codec_typed = SourceVideoCodec::try_from(codec).unwrap_or(SourceVideoCodec::H264);
             let payloader: Box<dyn Payloader> = match codec_typed {
-                SourceVideoCodec::H265 => Box::new(HevcPayloader::default()),
+                SourceVideoCodec::H265 => Box::new(HevcPayloader),
                 SourceVideoCodec::Av1 => Box::new(Av1Payloader::default()),
                 SourceVideoCodec::Vp8 => Box::new(Vp8Payloader::default()),
                 SourceVideoCodec::Vp9 => Box::new(Vp9Payloader::default()),

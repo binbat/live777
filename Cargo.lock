@@ -4070,8 +4070,7 @@ dependencies = [
 [[package]]
 name = "rtc"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d33ac3fc777d4520cca0f7fd245edd6f9eeea40b5bd8a711c28a69c7334e8bd9"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "hex",
@@ -4105,8 +4104,7 @@ dependencies = [
 [[package]]
 name = "rtc-datachannel"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02fc328c2ec4d02e3e204911c30070c36229f2bca76279bf77287622a97b7cb0"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "log",
@@ -4118,8 +4116,7 @@ dependencies = [
 [[package]]
 name = "rtc-dtls"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e76769b1d6fcd44d7a2923b9d76faa9fee2ab3bf066bfcab404db745027ebeda"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4152,8 +4149,7 @@ dependencies = [
 [[package]]
 name = "rtc-ice"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3e9b3488965b5747da6e170b585d51cdc4c3c9308f35b395e7d0c4021f1b261"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "crc",
@@ -4171,8 +4167,7 @@ dependencies = [
 [[package]]
 name = "rtc-interceptor"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38e34dac31dc348c6422218ae1885f0e5bac29f7cde76f91d85cefa06bf80e12"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "log",
  "rand 0.9.2",
@@ -4186,8 +4181,7 @@ dependencies = [
 [[package]]
 name = "rtc-interceptor-derive"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ec7b5654dcf6ddfa8e8243000a91db15cc7404b906d07570b7658371dfd332b"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4197,8 +4191,7 @@ dependencies = [
 [[package]]
 name = "rtc-mdns"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b0e4863fbe0659d9080425c58799c5aa844d644ccaed5fdfefc988b8dda47a9"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "log",
@@ -4210,8 +4203,7 @@ dependencies = [
 [[package]]
 name = "rtc-media"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "084adc53e7a4800801be0ecdb8ca8bee57d25b0ed771ad5100df550f7ba6b2c3"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "byteorder",
  "bytes",
@@ -4224,8 +4216,7 @@ dependencies = [
 [[package]]
 name = "rtc-rtcp"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "423770c91355d6919832f231c9dc124fd1fd6c264cf556cbed53b32d18c76eb3"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "rtc-shared",
@@ -4234,8 +4225,7 @@ dependencies = [
 [[package]]
 name = "rtc-rtp"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8688e33a70f197a66d91df6a58ca61c74f1d9b0b1195f686c2613f559aafa4eb"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "memchr",
@@ -4247,8 +4237,7 @@ dependencies = [
 [[package]]
 name = "rtc-sctp"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5dd12a2624a3a0d258a62001917840a48cfd69a1b3b313af7d20c2612128828"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "crc",
@@ -4262,8 +4251,7 @@ dependencies = [
 [[package]]
 name = "rtc-sdp"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e9d8f0b470cc28a5ff91f428af9bb1c4719e244367e81db01ab20e7e60c4a63"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "rand 0.9.2",
  "rtc-shared",
@@ -4273,8 +4261,7 @@ dependencies = [
 [[package]]
 name = "rtc-shared"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eca59a1fd845694de2141ecdcbdf0625c5b63ef1ab62bce53b3bbfe3717043d"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4295,8 +4282,7 @@ dependencies = [
 [[package]]
 name = "rtc-srtp"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c814f2559bc8d44d092a3fbf93796317ed539674c87249e1976c0add570ada7"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "aead",
  "aes",
@@ -4315,8 +4301,7 @@ dependencies = [
 [[package]]
 name = "rtc-stun"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d6489a308dcc6894732f5e5c376417f399af33eb235676d6db0448ed5eb7cc3"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -4334,8 +4319,7 @@ dependencies = [
 [[package]]
 name = "rtc-turn"
 version = "0.20.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dc9f32239fd9e65aae1a377d3743b4f7ba7f703242854f8b0a393d693ad3f83"
+source = "git+https://github.com/binbat/rtc?rev=ca153d30#ca153d300b57403fc0825a1d86fcee33e19d9945"
 dependencies = [
  "bytes",
  "log",

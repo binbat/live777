@@ -170,3 +170,11 @@ encoder-rdk = ["liveion/encoder-rdk", "native-source"]
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
 native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
+
+[patch.crates-io]
+rtc = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-ice = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-interceptor = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-rtcp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-rtp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-shared = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
