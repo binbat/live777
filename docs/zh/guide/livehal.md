@@ -53,25 +53,25 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 
 ## 配置
 
-原生源在 `conf/live777.toml` 的 `[[stream.sources]]` 下配置。
-所有源配置都通过 `live777.toml` 中的 `[[stream.sources]]` 完成。
+源配置在 `conf/live777.toml` 中按 stream 划分，写在 `[[stream.<name>.sources]]` 下。
+`[stream]` 下的每个键就是 stream 名称；每个 stream 可以包含一个或多个源，也可以选配一个
+DataChannel <-> UDP 通道。
 
 ### 基于 URL 的方式（非原生：RTSP / SDP / RTP）
 
 ```toml
-[[stream.sources]]
-stream_id = "rtsp_cam"
+[stream.rtsp-cam]
+[[stream.rtsp-cam.sources]]
 url = "rtsp://192.168.1.100:554/stream"
 ```
 
 ### 结构化原生配置（libcamera / V4L2 / RDK）
 
 ```toml
-[[stream.sources]]
-stream_id = "pi_cam"
-kind = "libcamera"
+[stream.pi-cam]
+[[stream.pi-cam.sources]]
 
-[stream.sources.capture]
+[stream.pi-cam.sources.capture]
 backend = "libcamera"
 device = "0"
 width = 640
@@ -79,19 +79,20 @@ height = 480
 fps = 30
 pixel_format = "yuv420"
 
-[stream.sources.encoder]
+[stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
-profile = "42001f"
+profile = "baseline"     # 也可以是 6 位十六进制 profile-level-id，如 "42001f"
+level = "3.1"            # 当 profile 为名称时必填
 gop = 60
 
-[stream.sources.output]
+[stream.pi-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```
 
-`pixel_format` 和 `codec` 值在启动时就会被校验（未知值会尽早报错）。`kind` + `capture` + `encoder` 与 `url` 互斥。
+`pixel_format` 和 `codec` 值在启动时就会被校验（未知值会尽早报错）。`capture` + `encoder` 与 `url` 互斥，源类型由 `capture.backend` 推导（`device` 对 libcamera 是 camera ID，对 v4l2 是设备路径）。
 
 `conf/live777.toml` 自带注释掉的 Pi / RDK 示例。复制它们到你自己的配置中即可启用摄像头源。
 
@@ -240,11 +241,10 @@ CMake 后端根据启用的采集/编码特性推断：
 ### 树莓派 CSI
 
 ```toml
-[[stream.sources]]
-stream_id = "pi_cam"
-kind = "libcamera"
+[stream.pi-cam]
+[[stream.pi-cam.sources]]
 
-[stream.sources.capture]
+[stream.pi-cam.sources.capture]
 backend = "libcamera"
 device = "0"
 width = 640
@@ -252,14 +252,15 @@ height = 480
 fps = 30
 pixel_format = "yuv420"
 
-[stream.sources.encoder]
+[stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
-profile = "42001f"
+profile = "baseline"
+level = "3.1"
 gop = 60
 
-[stream.sources.output]
+[stream.pi-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```
@@ -267,11 +268,10 @@ clock_rate = 90000
 ### 树莓派 USB V4L2
 
 ```toml
-[[stream.sources]]
-stream_id = "usb_cam"
-kind = "v4l2"
+[stream.usb-cam]
+[[stream.usb-cam.sources]]
 
-[stream.sources.capture]
+[stream.usb-cam.sources.capture]
 backend = "v4l2"
 device = "/dev/video2"
 width = 640
@@ -279,14 +279,14 @@ height = 480
 fps = 30
 pixel_format = "yuyv"
 
-[stream.sources.encoder]
+[stream.usb-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
 profile = "42001f"
 gop = 60
 
-[stream.sources.output]
+[stream.usb-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```
@@ -294,11 +294,10 @@ clock_rate = 90000
 ### RDK X5
 
 ```toml
-[[stream.sources]]
-stream_id = "rdk_cam"
-kind = "v4l2"
+[stream.rdk-cam]
+[[stream.rdk-cam.sources]]
 
-[stream.sources.capture]
+[stream.rdk-cam.sources.capture]
 backend = "v4l2"
 device = "/dev/video0"
 width = 640
@@ -306,14 +305,14 @@ height = 480
 fps = 30
 pixel_format = "yuyv"
 
-[stream.sources.encoder]
+[stream.rdk-cam.sources.encoder]
 backend = "rdk"
 codec = "h264"
 bitrate = 1_000_000
 profile = "42001f"
 gop = 60
 
-[stream.sources.output]
+[stream.rdk-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```

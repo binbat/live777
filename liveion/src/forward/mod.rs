@@ -18,7 +18,7 @@ use webrtc::peer_connection::{
 use libwish::Client;
 
 #[cfg(feature = "source")]
-use crate::config::Channel;
+use crate::config::ChannelConfig;
 use crate::forward::internal::PeerForwardInternal;
 use crate::forward::message::{ForwardInfo, Layer};
 use crate::result::Result;
@@ -97,7 +97,8 @@ impl PeerForward {
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
-        channel: Channel,
+        channel: Option<ChannelConfig>,
+        strategy: api::strategy::Strategy,
     ) -> Self {
         PeerForward {
             stream: stream.to_string(),
@@ -107,6 +108,7 @@ impl PeerForward {
                 ice_server,
                 ice_udp_addrs,
                 channel,
+                strategy,
             )),
         }
     }
@@ -116,11 +118,17 @@ impl PeerForward {
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
+        strategy: api::strategy::Strategy,
     ) -> Self {
         PeerForward {
             stream: stream.to_string(),
             publish_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(stream, ice_server, ice_udp_addrs)),
+            internal: Arc::new(PeerForwardInternal::new(
+                stream,
+                ice_server,
+                ice_udp_addrs,
+                strategy,
+            )),
         }
     }
     #[cfg(feature = "source")]
@@ -153,6 +161,10 @@ impl PeerForward {
 
     pub async fn info(&self) -> ForwardInfo {
         self.internal.info().await
+    }
+
+    pub(crate) fn strategy(&self) -> &api::strategy::Strategy {
+        &self.internal.strategy
     }
 
     #[cfg(feature = "source")]
@@ -989,18 +1001,13 @@ a=end-of-candidates";
             .await?;
 
         let offer = offer_peer.create_offer(None).await?;
-        #[cfg(feature = "source")]
         let forward = PeerForward::new(
             "bwe-contract-test",
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
-            crate::config::Channel::default(),
-        );
-        #[cfg(not(feature = "source"))]
-        let forward = PeerForward::new(
-            "bwe-contract-test",
-            vec![],
-            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
         );
         let (answer, session) = forward.set_publish(offer).await?;
 

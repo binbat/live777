@@ -53,25 +53,25 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 
 ## Config
 
-Native sources are configured under `[[stream.sources]]` in `conf/live777.toml`.
-All source configuration goes through `[[stream.sources]]` in `live777.toml`.
+Sources are configured under per-stream `[[stream.<name>.sources]]` blocks in `conf/live777.toml`.
+The stream name is the key under `[stream]`; each stream can have one or more sources and an
+optional DataChannel <-> UDP channel.
 
 ### URL-based (non-native: RTSP / SDP / RTP)
 
 ```toml
-[[stream.sources]]
-stream_id = "rtsp_cam"
+[stream.rtsp-cam]
+[[stream.rtsp-cam.sources]]
 url = "rtsp://192.168.1.100:554/stream"
 ```
 
 ### Structured native (libcamera / V4L2 / RDK)
 
 ```toml
-[[stream.sources]]
-stream_id = "pi_cam"
-kind = "libcamera"
+[stream.pi-cam]
+[[stream.pi-cam.sources]]
 
-[stream.sources.capture]
+[stream.pi-cam.sources.capture]
 backend = "libcamera"
 device = "0"
 width = 640
@@ -79,19 +79,20 @@ height = 480
 fps = 30
 pixel_format = "yuv420"
 
-[stream.sources.encoder]
+[stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
-profile = "42001f"
+profile = "baseline"     # or a 6-digit hex profile-level-id such as "42001f"
+level = "3.1"            # required when profile is a profile name
 gop = 60
 
-[stream.sources.output]
+[stream.pi-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```
 
-`pixel_format` and `codec` values are validated at startup (unknown values error early).  `kind` + `capture` + `encoder` are mutually exclusive with `url`.
+`pixel_format` and `codec` values are validated at startup (unknown values error early).  `capture` + `encoder` are mutually exclusive with `url`; the source type is derived from `capture.backend` (`device` is a camera ID for libcamera or a path for v4l2).
 
 `conf/live777.toml` ships with commented-out Pi / RDK examples.  Copy them into your own config to enable a camera source.
 
@@ -242,11 +243,10 @@ When no `capture-*` feature is enabled, CMake is skipped entirely. Encoder-only 
 ### Raspberry Pi CSI
 
 ```toml
-[[stream.sources]]
-stream_id = "pi_cam"
-kind = "libcamera"
+[stream.pi-cam]
+[[stream.pi-cam.sources]]
 
-[stream.sources.capture]
+[stream.pi-cam.sources.capture]
 backend = "libcamera"
 device = "0"
 width = 640
@@ -254,14 +254,15 @@ height = 480
 fps = 30
 pixel_format = "yuv420"
 
-[stream.sources.encoder]
+[stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
-profile = "42001f"
+profile = "baseline"
+level = "3.1"
 gop = 60
 
-[stream.sources.output]
+[stream.pi-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```
@@ -269,11 +270,10 @@ clock_rate = 90000
 ### Raspberry Pi USB V4L2
 
 ```toml
-[[stream.sources]]
-stream_id = "usb_cam"
-kind = "v4l2"
+[stream.usb-cam]
+[[stream.usb-cam.sources]]
 
-[stream.sources.capture]
+[stream.usb-cam.sources.capture]
 backend = "v4l2"
 device = "/dev/video2"
 width = 640
@@ -281,14 +281,14 @@ height = 480
 fps = 30
 pixel_format = "yuyv"
 
-[stream.sources.encoder]
+[stream.usb-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
 bitrate = 1_000_000
 profile = "42001f"
 gop = 60
 
-[stream.sources.output]
+[stream.usb-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```
@@ -296,11 +296,10 @@ clock_rate = 90000
 ### RDK X5
 
 ```toml
-[[stream.sources]]
-stream_id = "rdk_cam"
-kind = "v4l2"
+[stream.rdk-cam]
+[[stream.rdk-cam.sources]]
 
-[stream.sources.capture]
+[stream.rdk-cam.sources.capture]
 backend = "v4l2"
 device = "/dev/video0"
 width = 640
@@ -308,14 +307,14 @@ height = 480
 fps = 30
 pixel_format = "yuyv"
 
-[stream.sources.encoder]
+[stream.rdk-cam.sources.encoder]
 backend = "rdk"
 codec = "h264"
 bitrate = 1_000_000
 profile = "42001f"
 gop = 60
 
-[stream.sources.output]
+[stream.rdk-cam.sources.output]
 payload_type = 96
 clock_rate = 90000
 ```

@@ -73,9 +73,9 @@ pub struct InternalSourceConfig {
 
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 impl InternalSourceConfig {
-    pub fn from_config(config: &crate::config::SourceConfig) -> Self {
+    pub fn from_config(stream_id: &str, config: &crate::config::SourceConfig) -> Self {
         Self {
-            stream_id: config.stream_id.clone(),
+            stream_id: stream_id.to_string(),
             url: config.url.clone().unwrap_or_default(),
         }
     }
@@ -128,10 +128,11 @@ pub trait StreamSource: Send + Sync {
 }
 
 pub async fn create_source_from_url(
+    stream_id: &str,
     url: &str,
     config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    source_router::create_source_extended(url, config).await
+    source_router::create_source_extended(stream_id, url, config).await
 }
 
 #[cfg(feature = "native-source")]
@@ -143,10 +144,11 @@ pub async fn create_source_from_spec(
 
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 pub(crate) async fn create_url_source(
+    stream_id: &str,
     url: &str,
     config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    let internal_config = InternalSourceConfig::from_config(config);
+    let internal_config = InternalSourceConfig::from_config(stream_id, config);
 
     if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
         #[cfg(feature = "source-rtsp")]

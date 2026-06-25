@@ -38,6 +38,15 @@ auto_create_whip = true
 auto_create_whep = true
 ```
 
+You can also override any strategy field per stream:
+
+```toml
+[stream.restricted]
+[stream.restricted.strategy]
+auto_create_whip = false
+auto_create_whep = false
+```
+
 Response: [204]
 
 ### Get all Stream

@@ -49,21 +49,8 @@ impl Manager {
             });
         }
 
-        if cfg.auto_delete_pub >= 0 {
-            tokio::spawn(Self::publish_check_tick(
-                stream_map.clone(),
-                cfg.auto_delete_pub,
-                send.clone(),
-            ));
-        }
-
-        if cfg.auto_delete_sub >= 0 {
-            tokio::spawn(Self::subscribe_check_tick(
-                stream_map.clone(),
-                cfg.auto_delete_sub,
-                send.clone(),
-            ));
-        }
+        tokio::spawn(Self::publish_check_tick(stream_map.clone(), send.clone()));
+        tokio::spawn(Self::subscribe_check_tick(stream_map.clone(), send.clone()));
 
         Manager {
             stream_map,
@@ -76,7 +63,6 @@ impl Manager {
 
     async fn publish_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        publish_leave_atout: i64,
         event_sender: broadcast::Sender<Event>,
     ) {
         loop {
@@ -84,10 +70,13 @@ impl Manager {
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
+                let timeout = forward.strategy().auto_delete_whip.0;
+                if timeout < 0 {
+                    continue;
+                }
                 let forward_info = forward.info().await;
                 if forward_info.publish_leave_at > 0
-                    && Utc::now().timestamp_millis() - forward_info.publish_leave_at
-                        > publish_leave_atout
+                    && Utc::now().timestamp_millis() - forward_info.publish_leave_at > timeout
                 {
                     remove_streams.push(stream.clone());
                 }
@@ -99,10 +88,13 @@ impl Manager {
             let mut stream_map = stream_map.write().await;
             for stream in remove_streams.iter() {
                 if let Some(forward) = stream_map.get(stream) {
+                    let timeout = forward.strategy().auto_delete_whip.0;
+                    if timeout < 0 {
+                        continue;
+                    }
                     let forward_info = forward.info().await;
                     if forward_info.publish_leave_at > 0
-                        && Utc::now().timestamp_millis() - forward_info.publish_leave_at
-                            > publish_leave_atout
+                        && Utc::now().timestamp_millis() - forward_info.publish_leave_at > timeout
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
@@ -135,7 +127,6 @@ impl Manager {
 
     async fn subscribe_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        subscribe_leave_atout: i64,
         event_sender: broadcast::Sender<Event>,
     ) {
         loop {
@@ -143,10 +134,13 @@ impl Manager {
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
+                let timeout = forward.strategy().auto_delete_whep.0;
+                if timeout < 0 {
+                    continue;
+                }
                 let forward_info = forward.info().await;
                 if forward_info.subscribe_leave_at > 0
-                    && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at
-                        > subscribe_leave_atout
+                    && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at > timeout
                 {
                     remove_streams.push(stream.clone());
                 }
@@ -158,10 +152,13 @@ impl Manager {
             let mut stream_map = stream_map.write().await;
             for stream in remove_streams.iter() {
                 if let Some(forward) = stream_map.get(stream) {
+                    let timeout = forward.strategy().auto_delete_whep.0;
+                    if timeout < 0 {
+                        continue;
+                    }
                     let forward_info = forward.info().await;
                     if forward_info.subscribe_leave_at > 0
-                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at
-                            > subscribe_leave_atout
+                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at > timeout
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
@@ -215,18 +212,27 @@ impl Manager {
     }
 
     async fn do_stream_create(&self, stream: String) -> PeerForward {
+        let entry = self.config.stream.streams.get(&stream);
+        let strategy = api::strategy::Strategy::effective(
+            &self.config.strategy,
+            entry.and_then(|e| e.strategy.as_ref()),
+        );
+        #[cfg(feature = "source")]
+        let channel = entry.and_then(|entry| entry.channel.clone());
         #[cfg(feature = "source")]
         let forward = PeerForward::new(
             stream.clone(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
-            self.config.channel.clone(),
+            channel,
+            strategy,
         );
         #[cfg(not(feature = "source"))]
         let forward = PeerForward::new(
             stream.clone(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
+            strategy,
         );
         let subscribe_event = forward.subscribe_event();
         tokio::spawn(Self::forward_event_handler(
@@ -289,7 +295,7 @@ impl Manager {
         );
         let mut stream_map = self.stream_map.write().await;
         let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.auto_create_pub {
+        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whip {
             let raw_forward = self.do_stream_create(stream.clone()).await;
             stream_map.insert(stream.clone(), raw_forward.clone());
             forward = Some(raw_forward);
@@ -314,7 +320,7 @@ impl Manager {
         );
         let mut stream_map = self.stream_map.write().await;
         let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.auto_create_sub {
+        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whep {
             let raw_forward = self.do_stream_create(stream.clone()).await;
             stream_map.insert(stream.clone(), raw_forward.clone());
             forward = Some(raw_forward);
@@ -424,7 +430,7 @@ impl Manager {
     ) -> Result<()> {
         let mut stream_map = self.stream_map.write().await;
         let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.auto_create_pub {
+        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whip {
             let raw_forward = self.do_stream_create(stream.clone()).await;
             stream_map.insert(stream.clone(), raw_forward.clone());
             forward = Some(raw_forward);
@@ -449,7 +455,7 @@ impl Manager {
         drop(streams);
         if let Some(forward) = forward {
             forward.subscribe_push(dst, token).await?;
-            if self.config.cascade_push_close_sub {
+            if forward.strategy().cascade_push_close_sub {
                 for subscribe_session_info in forward.info().await.subscribe_session_infos {
                     if subscribe_session_info.cascade.is_none() {
                         let _ = forward.remove_peer(subscribe_session_info.id).await;
@@ -509,9 +515,13 @@ impl Manager {
     #[cfg(feature = "source")]
     pub async fn auto_start_sources(
         &self,
-        sources_config: &crate::config::StreamConfig,
+        stream_config: &crate::config::StreamConfig,
     ) -> Result<()> {
-        let count = sources_config.sources.len();
+        let count: usize = stream_config
+            .streams
+            .values()
+            .map(|e| e.sources.len())
+            .sum();
         if count == 0 {
             tracing::info!("No sources configured, skipping auto-start");
             return Ok(());
@@ -519,42 +529,38 @@ impl Manager {
 
         tracing::info!("Auto-starting {} sources", count);
 
-        for source_cfg in &sources_config.sources {
-            // Structured native sources: kind + capture + encoder
-            #[cfg(feature = "native-source")]
-            if let Some(spec) = source_cfg.to_spec() {
-                tracing::info!(
-                    "Auto-starting native source: {} (kind={:?}, backend={})",
-                    spec.stream_id,
-                    spec.kind,
-                    spec.capture.backend
-                );
-                let source = match create_source_from_spec(&spec).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::error!("Failed to create source {}: {}", spec.stream_id, e);
-                        continue;
-                    }
-                };
-                self.start_single_source(source, &spec.stream_id).await;
-                continue;
-            }
-            // URL-based sources (RTSP / SDP)
-            if let Some(ref url) = source_cfg.url {
-                tracing::info!(
-                    "Auto-starting URL-based source: {} from {}",
-                    source_cfg.stream_id,
-                    url
-                );
-                let source = match create_source_from_url(url, source_cfg).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::error!("Failed to create source {}: {}", source_cfg.stream_id, e);
-                        continue;
-                    }
-                };
-                self.start_single_source(source, &source_cfg.stream_id)
-                    .await;
+        for (stream_id, entry) in &stream_config.streams {
+            for source_cfg in &entry.sources {
+                // Structured native sources: kind + capture + encoder
+                #[cfg(feature = "native-source")]
+                if let Some(spec) = source_cfg.to_spec(stream_id) {
+                    tracing::info!(
+                        "Auto-starting native source: {} (backend={})",
+                        spec.stream_id,
+                        spec.capture.backend
+                    );
+                    let source = match create_source_from_spec(&spec).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!("Failed to create source {}: {}", spec.stream_id, e);
+                            continue;
+                        }
+                    };
+                    self.start_single_source(source, &spec.stream_id).await;
+                    continue;
+                }
+                // URL-based sources (RTSP / SDP)
+                if let Some(ref url) = source_cfg.url {
+                    tracing::info!("Auto-starting URL-based source: {} from {}", stream_id, url);
+                    let source = match create_source_from_url(stream_id, url, source_cfg).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!("Failed to create source {}: {}", stream_id, e);
+                            continue;
+                        }
+                    };
+                    self.start_single_source(source, stream_id).await;
+                }
             }
         }
 
@@ -638,11 +644,18 @@ impl Manager {
         if let Some(forward) = stream_map.get(stream_id) {
             forward.clone()
         } else {
+            let entry = self.config.stream.streams.get(stream_id);
+            let channel = entry.and_then(|entry| entry.channel.clone());
+            let strategy = api::strategy::Strategy::effective(
+                &self.config.strategy,
+                entry.and_then(|e| e.strategy.as_ref()),
+            );
             let forward = crate::forward::PeerForward::new(
                 stream_id.to_string(),
                 self.config.ice_servers.clone(),
                 self.config.ice_udp_addrs.clone(),
-                self.config.channel.clone(),
+                channel,
+                strategy,
             );
 
             let subscribe_event = forward.subscribe_event();

@@ -1,18 +1,3 @@
-# Channel forwarding configuration.
-# Each stream has one independent channel endpoint.
-# URL format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
-#   listen_host:listen_port  - liveion listens here for replies from downstream
-#   target_host:target_port  - liveion sends DataChannel messages to this address
-#
-# [channel.streams.camera]
-# url = "udp://0.0.0.0:7774?host=127.0.0.1&port=1234"
-#
-# [channel.streams.camera2]
-# url = "udp://0.0.0.0:7775?host=127.0.0.1&port=1235"
-
-[channel.streams.webcontrol]
-url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
-
 [http]
 # Http Server Listen Address
 # listen = "[::]:7777"
@@ -34,14 +19,26 @@ ice_udp_addrs = ["auto"]
 
 [stream]
 
+# [[stream.<name>]]
+
+# Per-stream configuration. Each key under [stream] is a stream name and may
+# contain sources (media inputs) and/or a channel (DataChannel <-> UDP bridge).
+
+# DataChannel <-> UDP forwarding for the "dc-udp" stream.
+# [stream.dc-udp]
+# [stream.dc-udp.channel]
+# listen = "0.0.0.0:8891"
+# target = "127.0.0.1:8890"
+
 # Need enabled `--features=source`
-# [[stream.sources]]
-# stream_id = "test-source"
+# [stream.test-source]
 # Need enabled `--features=source-sdp`
 # - SDP file: file:///path/to/file.sdp or /path/to/file.sdp
+# [[stream.test-source.sources]]
 # url = "file:///path/to/file.sdp"
 # Need enabled `--features=source-rtsp`
 # - RTSP: rtsp://username:password@host:port/path
+# [[stream.test-source.sources]]
 # url = "rtsp://username:password@host:port/path"
 
 # --- Native source examples (structured config, recommended) ---
@@ -53,23 +50,23 @@ ice_udp_addrs = ["auto"]
 #   cargo build --bin live777 --release \
 #     --no-default-features --features webui,capture-libcamera,encoder-v4l2-m2m
 #
-# [[stream.sources]]
-# stream_id = "pi_cam"
-# kind = "libcamera"
-# [stream.sources.capture]
+# [stream.pi-cam]
+# [[stream.pi-cam.sources]]
+# [stream.pi-cam.sources.capture]
 # backend = "libcamera"
 # device = "0"
 # width = 640
 # height = 480
 # fps = 30
 # pixel_format = "yuv420"
-# [stream.sources.encoder]
+# [stream.pi-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
 # bitrate = 1000000
-# profile = "42001f"
+# profile = "baseline"        # or a 6-digit hex profile-level-id like "42001f"
+# level = "3.1"               # required when profile is a name
 # gop = 60
-# [stream.sources.output]
+# [stream.pi-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
 #
@@ -79,23 +76,22 @@ ice_udp_addrs = ["auto"]
 #   cargo build --bin live777 --release \
 #     --no-default-features --features webui,capture-v4l2,encoder-v4l2-m2m
 #
-# [[stream.sources]]
-# stream_id = "usb_cam"
-# kind = "v4l2"
-# [stream.sources.capture]
+# [stream.usb-cam]
+# [[stream.usb-cam.sources]]
+# [stream.usb-cam.sources.capture]
 # backend = "v4l2"
 # device = "/dev/video2"
 # width = 640
 # height = 480
 # fps = 30
 # pixel_format = "yuyv"
-# [stream.sources.encoder]
+# [stream.usb-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
 # bitrate = 1000000
-# profile = "42001f"
+# profile = "42001f"          # 6-digit hex profile-level-id
 # gop = 60
-# [stream.sources.output]
+# [stream.usb-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
 #
@@ -103,23 +99,22 @@ ice_udp_addrs = ["auto"]
 #   cargo build --bin live777 --release \
 #     --no-default-features --features native-rdk,webui
 #
-# [[stream.sources]]
-# stream_id = "rdk_cam"
-# kind = "v4l2"
-# [stream.sources.capture]
+# [stream.rdk-cam]
+# [[stream.rdk-cam.sources]]
+# [stream.rdk-cam.sources.capture]
 # backend = "v4l2"
 # device = "/dev/video0"
 # width = 640
 # height = 480
 # fps = 30
 # pixel_format = "yuyv"
-# [stream.sources.encoder]
+# [stream.rdk-cam.sources.encoder]
 # backend = "rdk"
 # codec = "h264"
 # bitrate = 1000000
 # profile = "42001f"
 # gop = 60
-# [stream.sources.output]
+# [stream.rdk-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
 
@@ -209,6 +204,12 @@ root = "./storage"
 # auto_delete_whip = 60000
 # Auto a destroy a stream at no sub
 # auto_delete_whep = 60000
+
+# Per-stream strategy overrides take precedence over the global [strategy] section.
+# [stream.restricted]
+# [stream.restricted.strategy]
+# auto_create_whip = false
+# auto_create_whep = false
 
 # Experimental Feature
 # [webhook]

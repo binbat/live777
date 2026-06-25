@@ -20,14 +20,16 @@ use super::source_config::SourceSpec;
 /// Delegates rtsp://, file://, .sdp to the URL-based source factory.
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 pub async fn create_source_extended(
+    stream_id: &str,
     url: &str,
     config: &SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    super::create_url_source(url, config).await
+    super::create_url_source(stream_id, url, config).await
 }
 
 #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
 pub async fn create_source_extended(
+    _stream_id: &str,
     _url: &str,
     _config: &crate::config::SourceConfig,
 ) -> Result<Box<dyn StreamSource>> {
@@ -37,9 +39,5 @@ pub async fn create_source_extended(
 /// Create a `StreamSource` from a structured [`SourceSpec`].
 #[cfg(feature = "native-source")]
 pub async fn create_source_from_spec(spec: &SourceSpec) -> Result<Box<dyn StreamSource>> {
-    match spec.kind {
-        super::source_config::SourceKind::V4l2 | super::source_config::SourceKind::Libcamera => {
-            Ok(Box::new(NativeSource::from_spec(spec)?))
-        }
-    }
+    Ok(Box::new(NativeSource::from_spec(spec)?))
 }

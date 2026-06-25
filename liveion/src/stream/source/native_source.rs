@@ -5,8 +5,8 @@
 //! `NativeSourceParams` they construct — everything else is identical.
 //! This module merges them into a single `NativeSource` struct.
 //!
-//! Native sources use structured `[[stream.sources]]` config fields
-//! (`kind`, `capture`, `encoder`, `output`).
+//! Native sources use structured per-stream `[[stream.<name>.sources]]` config
+//! fields (`kind`, `capture`, `encoder`, `output`).
 
 use super::native_encoded_source::NativeEncodedSource;
 use super::source_config::SourceSpec;

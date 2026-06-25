@@ -62,10 +62,7 @@ async fn create_source(
     info!("Creating source for stream: {} from {}", stream, req.url);
 
     let config = crate::config::SourceConfig {
-        stream_id: stream.clone(),
         url: Some(req.url.clone()),
-        #[cfg(feature = "native-source")]
-        kind: None,
         #[cfg(feature = "native-source")]
         capture: None,
         #[cfg(feature = "native-source")]
@@ -74,7 +71,7 @@ async fn create_source(
         output: Default::default(),
     };
 
-    let source = create_source_from_url(&req.url, &config).await?;
+    let source = create_source_from_url(&stream, &req.url, &config).await?;
 
     let source_type = if req.url.starts_with("rtsp://") {
         "rtsp"

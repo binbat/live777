@@ -51,7 +51,7 @@ where
 
     #[cfg(feature = "source")]
     {
-        let total = cfg.stream.sources.len();
+        let total: usize = cfg.stream.streams.values().map(|e| e.sources.len()).sum();
         if total > 0 {
             tracing::info!("[Server] Auto-starting {} configured sources...", total);
 

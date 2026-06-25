@@ -1,22 +1,23 @@
 /// DataChannel <-> UDP bidirectional forwarding
 ///
-/// Each stream maps to one independent UDP endpoint configured via URL:
-///   udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
-///
-/// - listen_host:listen_port  -- liveion binds here to receive replies from downstream
-/// - target_host:target_port  -- liveion sends DataChannel messages to this address
+/// Each stream maps to one independent UDP endpoint configured with explicit
+/// listen and target socket addresses.
 ///
 /// Configuration example (conf/live777.toml):
-///   [channel.streams.camera]
-///   url = "udp://0.0.0.0:7774?host=127.0.0.1&port=1234"
+///   [stream.camera]
+///   [stream.camera.channel]
+///   listen = "0.0.0.0:7774"
+///   target = "127.0.0.1:1234"
 ///
-///   [channel.streams.camera2]
-///   url = "udp://0.0.0.0:7775?host=127.0.0.1&port=1235"
+///   [stream.camera2]
+///   [stream.camera2.channel]
+///   listen = "0.0.0.0:7775"
+///   target = "127.0.0.1:1235"
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-use crate::config::ChannelStream;
+use crate::config::ChannelConfig;
 
 /// Buffer size for incoming UDP packets.
 /// - WebRTC DataChannel SCTP max: 1024 * 64 = 65536 bytes
@@ -32,21 +33,12 @@ pub async fn spawn_channel(
     stream: String,
     mut dc_rx: broadcast::Receiver<Vec<u8>>,
     dc_tx: broadcast::Sender<Vec<u8>>,
-    stream_cfg: ChannelStream,
+    stream_cfg: ChannelConfig,
 ) -> anyhow::Result<()> {
-    let (listen_host, listen_port, target_host, target_port) = match stream_cfg.parse() {
-        Some(v) => v,
-        None => {
-            warn!("channel [{}]: invalid url: {}", stream, stream_cfg.url);
-            return Ok(());
-        }
-    };
+    let listen = stream_cfg.listen;
+    let target = stream_cfg.target;
 
-    // Format socket addresses using url::Host to correctly handle IPv6 brackets
-    let target = format!("{}:{}", target_host, target_port);
-    let listen = format!("{}:{}", listen_host, listen_port);
-
-    let socket = match UdpSocket::bind(&listen).await {
+    let socket = match UdpSocket::bind(listen).await {
         Ok(s) => {
             info!("channel [{}]: listen={} target={}", stream, listen, target);
             s
@@ -74,7 +66,7 @@ pub async fn spawn_channel(
                 // DataChannel -> UDP
                 result = dc_rx.recv() => match result {
                     Ok(data) => {
-                        if let Err(e) = socket.send_to(&data, &target).await {
+                        if let Err(e) = socket.send_to(&data, target).await {
                             warn!("channel [{}]: send to {} failed: {}", stream_dc, target, e);
                         } else {
                             debug!("channel [{}]: DC->UDP {} bytes -> {}", stream_dc, data.len(), target);

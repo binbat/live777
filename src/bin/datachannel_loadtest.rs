@@ -162,13 +162,17 @@ async fn setup_topology(
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
     let mut cfg = liveion::config::Config::default();
-    cfg.channel.streams.insert(
+    cfg.stream.streams.insert(
         stream_id.to_string(),
-        liveion::config::ChannelStream {
-            url: format!(
-                "udp://0.0.0.0:{liveion_ch_listen}?host={}&port={liveion_ch_target}",
-                args.target_host
-            ),
+        liveion::config::StreamEntry {
+            sources: vec![],
+            strategy: None,
+            channel: Some(liveion::config::ChannelConfig {
+                listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
+                target: format!("{}:{liveion_ch_target}", args.target_host)
+                    .parse()
+                    .unwrap(),
+            }),
         },
     );
     let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();

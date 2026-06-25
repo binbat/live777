@@ -1,13 +1,13 @@
 //! Native source configuration types.
 //!
-//! Structured TOML config under `[[stream.sources]]`:
+//! Structured TOML config under a per-stream `[[stream.<name>.sources]]` block.
+//! The source type is determined by `capture.backend`:
 //!
 //! ```toml
-//! [[stream.sources]]
-//! stream_id = "usbcam"
-//! kind = "v4l2"
+//! [stream.usb-cam]
+//! [[stream.usb-cam.sources]]
 //!
-//! [stream.sources.capture]
+//! [stream.usb-cam.sources.capture]
 //! backend = "v4l2"
 //! device = "/dev/video0"
 //! width = 640
@@ -15,14 +15,14 @@
 //! fps = 30
 //! pixel_format = "yuyv"
 //!
-//! [stream.sources.encoder]
+//! [stream.usb-cam.sources.encoder]
 //! backend = "rdk"
 //! codec = "h264"
 //! bitrate = 1_500_000
 //! profile = "42001f"
 //! gop = 60
 //!
-//! [stream.sources.output]
+//! [stream.usb-cam.sources.output]
 //! payload_type = 96
 //! clock_rate = 90000
 //! ```
@@ -36,21 +36,16 @@ use livehal::NativeSourceParams;
 // Structured source configuration types (v2 — recommended)
 // ---------------------------------------------------------------------------
 
-/// Identifies the type of media source.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum SourceKind {
-    V4l2,
-    Libcamera,
-}
-
 /// Capture (input device) specification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CaptureSpec {
     /// Capture backend: `"libcamera"` or `"v4l2"`.
     pub backend: String,
-    /// Device path, e.g. `"/dev/video0"`.
-    pub device: String,
+    /// Capture device identifier.
+    /// - For `libcamera`: camera ID, e.g. `"0"`.
+    /// - For `v4l2`: device path, e.g. `"/dev/video0"`.
+    #[serde(default)]
+    pub device: Option<String>,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -62,7 +57,7 @@ pub struct CaptureSpec {
 }
 
 /// Encoder specification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EncoderSpec {
     /// Encoder backend: `"v4l2-m2m"` or `"rdk"`.
     pub backend: String,
@@ -70,8 +65,16 @@ pub struct EncoderSpec {
     pub codec: String,
     /// Target bitrate in bits per second.
     pub bitrate: u32,
-    /// H.264 profile-level-id, e.g. `"42001f"`.
+    /// Codec profile identifier.
+    /// For H.264 this is the profile/level-id hex string, e.g. `"42001f"`.
     pub profile: String,
+    /// Optional explicit level (H.264/H.265 level-id component).
+    /// When omitted, `profile` is treated as the complete profile-level-id.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Optional encoder tier (H.265 only: `"main"` or `"high"`).
+    #[serde(default)]
+    pub tier: Option<String>,
     /// GOP size (keyframe interval).
     #[serde(default = "default_gop")]
     pub gop: u32,
@@ -111,8 +114,6 @@ fn default_clock_rate() -> u32 {
 pub struct SourceSpec {
     /// Unique stream identifier.
     pub stream_id: String,
-    /// Type of media source.
-    pub kind: SourceKind,
     /// Capture / input device configuration.
     pub capture: CaptureSpec,
     /// Encoder configuration.
@@ -137,8 +138,22 @@ impl SourceSpec {
         if self.stream_id.trim().is_empty() {
             anyhow::bail!("stream_id cannot be empty");
         }
-        if self.capture.device.trim().is_empty() {
+        if self
+            .capture
+            .device
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
             anyhow::bail!("capture.device cannot be empty");
+        }
+        let backend = self.capture.backend.to_lowercase();
+        if backend != "libcamera" && backend != "v4l2" {
+            anyhow::bail!(
+                "capture.backend must be 'v4l2' or 'libcamera', got '{}'",
+                self.capture.backend
+            );
         }
         if self.capture.width == 0 || self.capture.height == 0 {
             anyhow::bail!("capture width/height must be non-zero");
@@ -153,14 +168,6 @@ impl SourceSpec {
             anyhow::bail!("encoder.gop must be non-zero");
         }
 
-        let capture_backend = self.capture.backend.to_lowercase();
-        if capture_backend != "v4l2" && capture_backend != "libcamera" {
-            anyhow::bail!(
-                "capture.backend must be 'v4l2' or 'libcamera', got '{}'",
-                self.capture.backend
-            );
-        }
-
         let encoder_backend = self.encoder.backend.to_lowercase();
         if encoder_backend != "v4l2-m2m" && encoder_backend != "rdk" {
             anyhow::bail!(
@@ -169,14 +176,9 @@ impl SourceSpec {
             );
         }
 
-        // H.264 profile-level-id is a 6-digit hex string such as "42001f".
-        if self.encoder.profile.len() != 6
-            || !self.encoder.profile.chars().all(|c| c.is_ascii_hexdigit())
-        {
-            anyhow::bail!(
-                "encoder.profile must be a 6-digit hex string, got '{}'",
-                self.encoder.profile
-            );
+        // Validate profile/level/tier resolve to a usable profile-level-id.
+        if let Err(e) = self.encoder.profile_level_id() {
+            anyhow::bail!("encoder.profile/level/tier: {}", e);
         }
 
         // Validate pixel_format and codec strings early so config errors
@@ -285,6 +287,63 @@ pub fn video_codec_from_str(s: &str) -> anyhow::Result<VideoCodec> {
     }
 }
 
+impl EncoderSpec {
+    /// Resolve the effective H.264 profile-level-id string.
+    ///
+    /// - If `profile` is already a 6-digit hex string, it is returned unchanged.
+    /// - Otherwise `profile` is treated as a profile name and `level` must be provided.
+    pub fn profile_level_id(&self) -> anyhow::Result<String> {
+        if self.profile.len() == 6 && self.profile.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(self.profile.clone());
+        }
+        let level_idc = match self.level.as_deref() {
+            Some(l) => h264_level_to_idc(l)?,
+            None => anyhow::bail!(
+                "encoder.level is required when profile is a profile name ('{}')",
+                self.profile
+            ),
+        };
+        let (profile_idc, constraint) = h264_profile_to_idc(&self.profile)?;
+        Ok(format!("{}{}{:02x}", profile_idc, constraint, level_idc))
+    }
+}
+
+/// Map common H.264 profile names to (profile_idc, constraint_set0_flag byte).
+fn h264_profile_to_idc(name: &str) -> anyhow::Result<(&'static str, &'static str)> {
+    match name.to_ascii_lowercase().as_str() {
+        "baseline" => Ok(("42", "00")),
+        "constrained-baseline" => Ok(("42", "C0")),
+        "main" => Ok(("4D", "00")),
+        "constrained-main" => Ok(("4D", "C0")),
+        "extended" => Ok(("58", "00")),
+        "high" => Ok(("64", "00")),
+        "constrained-high" => Ok(("64", "C0")),
+        "high-10" => Ok(("6E", "00")),
+        "high-422" => Ok(("7A", "00")),
+        "high-444" => Ok(("F4", "00")),
+        other => anyhow::bail!(
+            "unsupported H.264 profile name '{}'. Supported: baseline, constrained-baseline, main, constrained-main, extended, high, constrained-high, high-10, high-422, high-444",
+            other
+        ),
+    }
+}
+
+/// Map H.264 level strings (e.g. "3.1", "5") to level_idc.
+fn h264_level_to_idc(level: &str) -> anyhow::Result<u8> {
+    let normalized = level.trim();
+    let idc = if let Some(dot) = normalized.find('.') {
+        let major: u8 = normalized[..dot].parse()?;
+        let minor: u8 = normalized[dot + 1..].parse()?;
+        major * 10 + minor
+    } else {
+        normalized.parse::<u8>()? * 10
+    };
+    if idc == 0 || idc > 186 {
+        anyhow::bail!("invalid H.264 level '{}'", level);
+    }
+    Ok(idc)
+}
+
 impl SourceSpec {
     /// Build `NativeSourceParams` directly from a structured `SourceSpec`.
     ///
@@ -292,9 +351,14 @@ impl SourceSpec {
     /// Returns an error if `pixel_format` or `codec` strings are unrecognised.
     #[cfg(feature = "native-source")]
     pub fn to_native_params(&self) -> anyhow::Result<NativeSourceParams> {
+        let backend = self.capture.backend.to_lowercase();
+        if backend != "libcamera" && backend != "v4l2" {
+            anyhow::bail!("unsupported capture backend: {}", self.capture.backend);
+        }
+        let capture_device = self.capture.device.clone().unwrap_or_default();
         Ok(NativeSourceParams {
             capture_backend: self.capture.backend.clone(),
-            capture_device: self.capture.device.clone(),
+            capture_device,
             width: self.capture.width,
             height: self.capture.height,
             fps: self.capture.fps,
@@ -302,14 +366,14 @@ impl SourceSpec {
             encoder_backend: self.encoder.backend.clone(),
             codec: codec_to_u32(&self.encoder.codec)?,
             bitrate: self.encoder.bitrate,
-            profile: self.encoder.profile.clone(),
+            profile: self.encoder.profile_level_id()?,
             gop: self.encoder.gop,
             payload_type: self.output.payload_type as u32,
             clock_rate: self.output.clock_rate,
             capture_prefer_dmabuf: self.capture.prefer_dmabuf as u8,
             encoder_prefer_dmabuf: self.encoder.prefer_dmabuf as u8,
             codec_name: self.encoder.codec.to_uppercase(),
-            default_profile: self.encoder.profile.clone(),
+            default_profile: self.encoder.profile_level_id()?,
         })
     }
 }
@@ -322,16 +386,12 @@ impl SourceSpec {
 mod tests {
     use super::*;
 
-    // --- SourceSpec (structured) tests ---
-
-    #[test]
-    fn test_source_spec_validate_ok() {
-        let spec = SourceSpec {
+    fn v4l2_spec() -> SourceSpec {
+        SourceSpec {
             stream_id: "cam1".into(),
-            kind: SourceKind::V4l2,
             capture: CaptureSpec {
                 backend: "v4l2".into(),
-                device: "/dev/video0".into(),
+                device: Some("/dev/video0".into()),
                 width: 640,
                 height: 480,
                 fps: 30,
@@ -343,78 +403,80 @@ mod tests {
                 codec: "h264".into(),
                 bitrate: 1_500_000,
                 profile: "42001f".into(),
+                level: None,
+                tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
             },
             output: OutputSpec::default(),
-        };
-        assert!(spec.validate().is_ok());
+        }
+    }
+
+    fn libcamera_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "pi-cam".into(),
+            capture: CaptureSpec {
+                backend: "libcamera".into(),
+                device: Some("0".into()),
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                pixel_format: "nv12".into(),
+                prefer_dmabuf: true,
+            },
+            encoder: EncoderSpec {
+                backend: "rdk".into(),
+                codec: "h264".into(),
+                bitrate: 2_000_000,
+                profile: "high".into(),
+                level: Some("4.2".into()),
+                tier: None,
+                gop: 60,
+                prefer_dmabuf: false,
+            },
+            output: OutputSpec::default(),
+        }
+    }
+
+    // --- SourceSpec validation tests ---
+
+    #[test]
+    fn test_source_spec_validate_v4l2_ok() {
+        assert!(v4l2_spec().validate().is_ok());
+    }
+
+    #[test]
+    fn test_source_spec_validate_libcamera_ok() {
+        assert!(libcamera_spec().validate().is_ok());
     }
 
     #[test]
     fn test_source_spec_validate_empty_id() {
-        let spec = SourceSpec {
-            stream_id: "  ".into(),
-            kind: SourceKind::V4l2,
-            capture: CaptureSpec {
-                backend: "v4l2".into(),
-                device: "/dev/video0".into(),
-                width: 640,
-                height: 480,
-                fps: 30,
-                pixel_format: "yuyv".into(),
-                prefer_dmabuf: false,
-            },
-            encoder: EncoderSpec {
-                backend: "v4l2-m2m".into(),
-                codec: "h264".into(),
-                bitrate: 1_000_000,
-                profile: "42001f".into(),
-                gop: 60,
-                prefer_dmabuf: false,
-            },
-            output: OutputSpec::default(),
-        };
+        let mut spec = v4l2_spec();
+        spec.stream_id = "  ".into();
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_source_spec_validate_missing_v4l2_device() {
+        let mut spec = v4l2_spec();
+        spec.capture.device = None;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_source_spec_validate_missing_libcamera_device() {
+        let mut spec = libcamera_spec();
+        spec.capture.device = None;
         assert!(spec.validate().is_err());
     }
 
     #[test]
     fn test_source_spec_validate_zero_size() {
-        let spec = SourceSpec {
-            stream_id: "cam1".into(),
-            kind: SourceKind::V4l2,
-            capture: CaptureSpec {
-                backend: "v4l2".into(),
-                device: "/dev/video0".into(),
-                width: 0,
-                height: 0,
-                fps: 30,
-                pixel_format: "yuyv".into(),
-                prefer_dmabuf: false,
-            },
-            encoder: EncoderSpec {
-                backend: "v4l2-m2m".into(),
-                codec: "h264".into(),
-                bitrate: 1_000_000,
-                profile: "42001f".into(),
-                gop: 60,
-                prefer_dmabuf: false,
-            },
-            output: OutputSpec::default(),
-        };
+        let mut spec = v4l2_spec();
+        spec.capture.width = 0;
+        spec.capture.height = 0;
         assert!(spec.validate().is_err());
-    }
-
-    #[test]
-    fn test_source_kind_serde() {
-        let json = r#""v4l2""#;
-        let kind: SourceKind = serde_json::from_str(json).unwrap();
-        assert_eq!(kind, SourceKind::V4l2);
-        assert_eq!(serde_json::to_string(&kind).unwrap(), r#""v4l2""#);
-
-        let json = r#""libcamera""#;
-        let kind: SourceKind = serde_json::from_str(json).unwrap();
-        assert_eq!(kind, SourceKind::Libcamera);
     }
 
     // --- pixel_format / codec mapping tests ---
@@ -456,106 +518,77 @@ mod tests {
         assert!(codec_to_u32("mjpeg").is_err());
     }
 
+    // --- profile/level/tier tests ---
+
+    #[test]
+    fn test_profile_level_id_hex_passthrough() {
+        let enc = EncoderSpec {
+            profile: "64001f".into(),
+            level: None,
+            ..Default::default()
+        };
+        assert_eq!(enc.profile_level_id().unwrap(), "64001f");
+    }
+
+    #[test]
+    fn test_profile_level_id_from_name() {
+        let enc = EncoderSpec {
+            profile: "high".into(),
+            level: Some("4.2".into()),
+            ..Default::default()
+        };
+        assert_eq!(enc.profile_level_id().unwrap(), "64002a");
+    }
+
+    #[test]
+    fn test_profile_level_id_name_without_level() {
+        let enc = EncoderSpec {
+            profile: "main".into(),
+            level: None,
+            ..Default::default()
+        };
+        assert!(enc.profile_level_id().is_err());
+    }
+
+    // --- NativeSourceParams conversion tests ---
+
     #[test]
     #[cfg(feature = "native-source")]
-    fn test_to_native_params_valid() {
-        let spec = SourceSpec {
-            stream_id: "cam1".into(),
-            kind: SourceKind::V4l2,
-            capture: CaptureSpec {
-                backend: "v4l2".into(),
-                device: "/dev/video0".into(),
-                width: 1920,
-                height: 1080,
-                fps: 60,
-                pixel_format: "nv12".into(),
-                prefer_dmabuf: true,
-            },
-            encoder: EncoderSpec {
-                backend: "rdk".into(),
-                codec: "h265".into(),
-                bitrate: 4_000_000,
-                profile: "42001f".into(),
-                gop: 30,
-                prefer_dmabuf: false,
-            },
-            output: OutputSpec {
-                payload_type: 97,
-                clock_rate: 90000,
-            },
-        };
-
-        let params = spec.to_native_params().unwrap();
+    fn test_to_native_params_v4l2() {
+        let params = v4l2_spec().to_native_params().unwrap();
         assert_eq!(params.capture_backend, "v4l2");
         assert_eq!(params.capture_device, "/dev/video0");
-        assert_eq!(params.width, 1920);
-        assert_eq!(params.height, 1080);
-        assert_eq!(params.fps, 60);
-        assert_eq!(params.capture_pixel_format, 1); // nv12
-        assert_eq!(params.encoder_backend, "rdk");
-        assert_eq!(params.codec, 101); // h265
-        assert_eq!(params.bitrate, 4_000_000);
+        assert_eq!(params.width, 640);
+        assert_eq!(params.height, 480);
+        assert_eq!(params.capture_pixel_format, 0); // yuyv
+        assert_eq!(params.encoder_backend, "v4l2-m2m");
+        assert_eq!(params.codec, 100); // h264
         assert_eq!(params.profile, "42001f");
-        assert_eq!(params.gop, 30);
-        assert_eq!(params.payload_type, 97);
-        assert_eq!(params.clock_rate, 90000);
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_libcamera() {
+        let params = libcamera_spec().to_native_params().unwrap();
+        assert_eq!(params.capture_backend, "libcamera");
+        assert_eq!(params.capture_device, "0");
+        assert_eq!(params.encoder_backend, "rdk");
+        assert_eq!(params.profile, "64002a");
     }
 
     #[test]
     #[cfg(feature = "native-source")]
     fn test_to_native_params_invalid_pixel_format() {
-        let spec = SourceSpec {
-            stream_id: "bad".into(),
-            kind: SourceKind::V4l2,
-            capture: CaptureSpec {
-                backend: "v4l2".into(),
-                device: "/dev/video0".into(),
-                width: 640,
-                height: 480,
-                fps: 30,
-                pixel_format: "bad_format".into(),
-                prefer_dmabuf: false,
-            },
-            encoder: EncoderSpec {
-                backend: "v4l2-m2m".into(),
-                codec: "h264".into(),
-                bitrate: 1_000_000,
-                profile: "42001f".into(),
-                gop: 60,
-                prefer_dmabuf: false,
-            },
-            output: OutputSpec::default(),
-        };
-
+        let mut spec = v4l2_spec();
+        spec.capture.pixel_format = "bad_format".into();
         assert!(spec.to_native_params().is_err());
     }
 
     #[test]
     #[cfg(feature = "native-source")]
     fn test_to_native_params_invalid_codec() {
-        let spec = SourceSpec {
-            stream_id: "bad".into(),
-            kind: SourceKind::V4l2,
-            capture: CaptureSpec {
-                backend: "v4l2".into(),
-                device: "/dev/video0".into(),
-                width: 640,
-                height: 480,
-                fps: 30,
-                pixel_format: "yuyv".into(),
-                prefer_dmabuf: false,
-            },
-            encoder: EncoderSpec {
-                backend: "v4l2-m2m".into(),
-                codec: "h266".into(),
-                bitrate: 1_000_000,
-                profile: "42001f".into(),
-                gop: 60,
-                prefer_dmabuf: false,
-            },
-            output: OutputSpec::default(),
-        };
-
+        let mut spec = v4l2_spec();
+        spec.encoder.codec = "h266".into();
         assert!(spec.to_native_params().is_err());
     }
 }

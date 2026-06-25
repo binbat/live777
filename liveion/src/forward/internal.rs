@@ -11,7 +11,7 @@ use tracing::{debug, info};
 
 use crate::AppError;
 #[cfg(feature = "source")]
-use crate::config::Channel;
+use crate::config::ChannelConfig;
 use crate::forward::get_peer_id;
 use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
@@ -672,7 +672,10 @@ pub(crate) struct PeerForwardInternal {
     media_generation_id: RwLock<u64>,
     last_publish_profile: RwLock<Option<MediaProfile>>,
     #[cfg(feature = "source")]
-    channel: Channel,
+    channel: Option<ChannelConfig>,
+    /// Effective strategy for this stream (global strategy merged with any
+    /// per-stream override).
+    pub(crate) strategy: api::strategy::Strategy,
 }
 
 impl PeerForwardInternal {
@@ -681,7 +684,8 @@ impl PeerForwardInternal {
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
-        channel: Channel,
+        channel: Option<ChannelConfig>,
+        strategy: api::strategy::Strategy,
     ) -> Self {
         PeerForwardInternal {
             stream: stream.to_string(),
@@ -709,6 +713,7 @@ impl PeerForwardInternal {
             media_generation_id: RwLock::new(0),
             last_publish_profile: RwLock::new(None),
             channel,
+            strategy,
         }
     }
 
@@ -717,6 +722,7 @@ impl PeerForwardInternal {
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
+        strategy: api::strategy::Strategy,
     ) -> Self {
         PeerForwardInternal {
             stream: stream.to_string(),
@@ -743,6 +749,7 @@ impl PeerForwardInternal {
             manual_twcc_feedback: std::sync::Mutex::new(None),
             media_generation_id: RwLock::new(0),
             last_publish_profile: RwLock::new(None),
+            strategy,
         }
     }
 
@@ -869,7 +876,7 @@ impl PeerForwardInternal {
     /// Initialize the UDP <-> DataChannel bridge for this stream, if configured.
     #[cfg(feature = "source")]
     pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
-        if let Some(stream_cfg) = self.channel.streams.get(&self.stream).cloned() {
+        if let Some(stream_cfg) = self.channel.clone() {
             let dc_rx = self.data_channel_forward.publish.subscribe();
             let dc_tx = self.data_channel_forward.subscribe.clone();
             super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;

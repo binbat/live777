@@ -38,6 +38,15 @@ auto_create_whip = true
 auto_create_whep = true
 ```
 
+你也可以按流覆盖 strategy 字段：
+
+```toml
+[stream.restricted]
+[stream.restricted.strategy]
+auto_create_whip = false
+auto_create_whep = false
+```
+
 Response: [204]
 
 ### Get all Stream

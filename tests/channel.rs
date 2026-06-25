@@ -1,7 +1,7 @@
 /// Integration test: liveion UDP channel <-> whepfrom DataChannel <-> UDP
 ///
 /// This test verifies end-to-end DataChannel <-> UDP forwarding without a WHIP
-/// publisher. liveion's own UDP channel (channel.streams) is initialized at
+/// publisher. liveion's own UDP channel (stream.<name>.channel) is initialized at
 /// stream creation time, and whepfrom bridges its DataChannel to UDP via
 /// the --channel flag.
 ///
@@ -69,12 +69,15 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
 
     // ── 2. Start liveion with UDP channel config ────────────────────────────────
     let mut cfg = liveion::config::Config::default();
-    cfg.channel.streams.insert(
+    cfg.stream.streams.insert(
         stream_id.to_string(),
-        liveion::config::ChannelStream {
-            url: format!(
-                "udp://0.0.0.0:{liveion_ch_listen}?host=127.0.0.1&port={liveion_ch_target}"
-            ),
+        liveion::config::StreamEntry {
+            sources: vec![],
+            strategy: None,
+            channel: Some(liveion::config::ChannelConfig {
+                listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
+                target: format!("127.0.0.1:{liveion_ch_target}").parse().unwrap(),
+            }),
         },
     );
     let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();

@@ -1,9 +1,7 @@
-use std::{env, net::SocketAddr, str::FromStr};
+use std::{collections::HashMap, env, net::SocketAddr, str::FromStr};
 
 use iceserver::{IceServer, default_ice_servers};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "source")]
-use url::Url;
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -30,10 +28,6 @@ pub struct Config {
 
     #[serde(default)]
     pub webhook: Webhook,
-
-    #[cfg(feature = "source")]
-    #[serde(default)]
-    pub channel: Channel,
 
     #[cfg(feature = "recorder")]
     #[serde(default)]
@@ -143,68 +137,21 @@ impl Default for Log {
 }
 
 #[cfg(feature = "source")]
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct Channel {
-    /// Per-stream channel configuration, keyed by stream name.
-    /// URL format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
-    /// Example:
-    ///   [channel.streams.camera]
-    ///   url = "udp://0.0.0.0:7774?host=127.0.0.1&port=1234"
-    #[serde(default)]
-    pub streams: std::collections::HashMap<String, ChannelStream>,
-}
-
-#[cfg(feature = "source")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ChannelStream {
-    /// Channel URL, currently supports UDP:
-    /// udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
-    pub url: String,
+pub struct ChannelConfig {
+    /// Local UDP socket address to bind for the DataChannel bridge.
+    /// Example: `"0.0.0.0:7774"` or `"[::]:7774"`.
+    pub listen: std::net::SocketAddr,
+    /// Target UDP address where DataChannel messages are forwarded.
+    /// Example: `"127.0.0.1:8890"`.
+    pub target: std::net::SocketAddr,
 }
 
 #[cfg(feature = "source")]
-impl ChannelStream {
-    /// Parse the URL into (listen_host, listen_port, target_host, target_port).
-    /// Supported format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
-    pub fn parse(&self) -> Option<(String, u16, String, u16)> {
-        let parsed = Url::parse(&self.url).ok()?;
-        if parsed.scheme() != "udp" {
-            return None;
-        }
-
-        // url::Url::host_str() returns IPv6 already bracketed (e.g. "[::1]").
-        // Normalize to bracketed form for socket addresses.
-        let listen_host = parsed.host_str()?.to_string();
-        let listen_host = if listen_host.starts_with('[') {
-            listen_host
-        } else if listen_host.contains(':') {
-            format!("[{}]", listen_host)
-        } else {
-            listen_host
-        };
-        let listen_port = parsed.port()?;
-
-        let mut target_host = String::new();
-        let mut target_port: u16 = 0;
-        for (key, value) in parsed.query_pairs() {
-            match key.as_ref() {
-                "host" => target_host = value.into_owned(),
-                "port" => target_port = value.parse().ok()?,
-                _ => {}
-            }
-        }
-        if target_host.is_empty() || target_port == 0 {
-            return None;
-        }
-
-        // query_pairs() returns raw IPv6 without brackets, add them for socket addresses
-        let target_host = if target_host.contains(':') {
-            format!("[{}]", target_host)
-        } else {
-            target_host
-        };
-
-        Some((listen_host, listen_port, target_host, target_port))
+impl ChannelConfig {
+    /// Return the listen and target socket addresses.
+    pub fn endpoints(&self) -> (std::net::SocketAddr, std::net::SocketAddr) {
+        (self.listen, self.target)
     }
 }
 
@@ -214,55 +161,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_channel_stream_parse_ipv4() {
-        let s = ChannelStream {
-            url: "udp://0.0.0.0:7774?host=127.0.0.1&port=1234".to_string(),
+    fn test_channel_config_ipv4() {
+        let s = ChannelConfig {
+            listen: "0.0.0.0:7774".parse().unwrap(),
+            target: "127.0.0.1:1234".parse().unwrap(),
         };
-        let (listen_host, listen_port, target_host, target_port) = s.parse().unwrap();
-        assert_eq!(listen_host, "0.0.0.0");
-        assert_eq!(listen_port, 7774);
-        assert_eq!(target_host, "127.0.0.1");
-        assert_eq!(target_port, 1234);
+        let (listen, target) = s.endpoints();
+        assert_eq!(listen.to_string(), "0.0.0.0:7774");
+        assert_eq!(target.to_string(), "127.0.0.1:1234");
     }
 
     #[test]
-    fn test_channel_stream_parse_ipv6() {
-        let s = ChannelStream {
-            url: "udp://[::]:7774?host=::1&port=1234".to_string(),
+    fn test_channel_config_ipv6() {
+        let s = ChannelConfig {
+            listen: "[::]:7774".parse().unwrap(),
+            target: "[::1]:1234".parse().unwrap(),
         };
-        let (listen_host, listen_port, target_host, target_port) = s.parse().unwrap();
-        assert_eq!(listen_host, "[::]");
-        assert_eq!(listen_port, 7774);
-        assert_eq!(target_host, "[::1]");
-        assert_eq!(target_port, 1234);
+        let (listen, target) = s.endpoints();
+        assert_eq!(listen.to_string(), "[::]:7774");
+        assert_eq!(target.to_string(), "[::1]:1234");
     }
 
     #[test]
-    fn test_channel_stream_parse_domain() {
-        let s = ChannelStream {
-            url: "udp://localhost:7774?host=example.com&port=1234".to_string(),
-        };
-        let (listen_host, listen_port, target_host, target_port) = s.parse().unwrap();
-        assert_eq!(listen_host, "localhost");
-        assert_eq!(listen_port, 7774);
-        assert_eq!(target_host, "example.com");
-        assert_eq!(target_port, 1234);
-    }
+    #[cfg(feature = "native-source")]
+    fn test_stream_entry_roundtrip() {
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[sources]]
+            [sources.capture]
+            backend = "libcamera"
+            device = "0"
+            width = 640
+            height = 480
+            fps = 30
+            pixel_format = "yuv420"
+            [sources.encoder]
+            backend = "v4l2-m2m"
+            codec = "h264"
+            bitrate = 1000000
+            profile = "baseline"
+            level = "3.1"
+            gop = 60
 
-    #[test]
-    fn test_channel_stream_parse_invalid_scheme() {
-        let s = ChannelStream {
-            url: "tcp://0.0.0.0:7774?host=127.0.0.1&port=1234".to_string(),
-        };
-        assert!(s.parse().is_none());
-    }
+            [channel]
+            listen = "0.0.0.0:8891"
+            target = "127.0.0.1:8890"
 
-    #[test]
-    fn test_channel_stream_parse_missing_target() {
-        let s = ChannelStream {
-            url: "udp://0.0.0.0:7774".to_string(),
-        };
-        assert!(s.parse().is_none());
+            [strategy]
+            auto_create_whip = false
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(entry.sources.len(), 1);
+        let source = entry.sources.first().unwrap();
+        assert!(source.capture.is_some());
+        let capture = source.capture.as_ref().unwrap();
+        assert_eq!(capture.backend, "libcamera");
+        assert_eq!(capture.device.as_deref(), Some("0"));
+        assert_eq!(source.encoder.as_ref().unwrap().profile, "baseline");
+        assert_eq!(
+            source.encoder.as_ref().unwrap().level.as_deref(),
+            Some("3.1")
+        );
+
+        let channel = entry.channel.as_ref().unwrap();
+        assert_eq!(channel.listen.to_string(), "0.0.0.0:8891");
+        assert_eq!(channel.target.to_string(), "127.0.0.1:8890");
+
+        let strategy = entry.strategy.as_ref().unwrap();
+        assert!(!strategy.auto_create_whip);
     }
 }
 
@@ -303,10 +271,20 @@ impl Config {
         }
 
         #[cfg(feature = "source")]
-        for source in &self.stream.sources {
-            source
-                .validate()
-                .map_err(|e| anyhow::anyhow!("source config error: {}", e))?;
+        for (stream_id, entry) in &self.stream.streams {
+            for source in &entry.sources {
+                source.validate().map_err(|e| {
+                    anyhow::anyhow!("stream[{}] source config error: {}", stream_id, e)
+                })?;
+            }
+            if let Some(channel) = &entry.channel
+                && (channel.listen.port() == 0 || channel.target.port() == 0)
+            {
+                anyhow::bail!(
+                    "stream[{}] channel listen/target ports must be non-zero",
+                    stream_id
+                );
+            }
         }
         Ok(())
     }
@@ -430,37 +408,48 @@ fn default_upload_concurrency() -> usize {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamConfig {
-    /// Source configurations: `[[stream.sources]]`.
+    /// Per-stream configuration, keyed by stream name.
     ///
-    /// Accepts two formats:
-    /// - URL-based: `stream_id` + `url` (rtsp://, file://)
-    /// - Structured native: `stream_id` + `kind` + `capture` + `encoder` [+ `output`]
+    /// Example:
+    ///   [stream.dc-udp]
+    ///   [stream.dc-udp.channel]
+    ///   listen = "0.0.0.0:8891"
+    ///   target = "127.0.0.1:8890"
+    ///
+    ///   [stream.rtsp-cam]
+    ///   [[stream.rtsp-cam.sources]]
+    ///   url = "rtsp://..."
+    #[serde(flatten)]
+    pub streams: HashMap<String, StreamEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamEntry {
+    /// Media input sources for this stream.
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
+    /// Optional DataChannel <-> UDP bridge for this stream.
+    #[cfg(feature = "source")]
+    #[serde(default)]
+    pub channel: Option<ChannelConfig>,
+    /// Optional per-stream strategy override.
+    #[serde(default)]
+    pub strategy: Option<api::strategy::Strategy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
-    /// Stream ID
-    pub stream_id: String,
-
-    /// URL source for RTSP / SDP inputs. Mutually exclusive with `kind`.
+    /// URL source for RTSP / SDP inputs. Mutually exclusive with structured native fields.
     /// Supported: rtsp://, rtsps://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
 
-    /// Source kind for structured native sources.
-    /// When set, `capture` and `encoder` are required.
-    #[cfg(feature = "native-source")]
-    #[serde(default)]
-    pub kind: Option<crate::stream::source::source_config::SourceKind>,
-
-    /// Capture config (required when `kind` is set).
+    /// Capture config (required for structured native sources).
     #[cfg(feature = "native-source")]
     #[serde(default)]
     pub capture: Option<crate::stream::source::source_config::CaptureSpec>,
 
-    /// Encoder config (required when `kind` is set).
+    /// Encoder config (required for structured native sources).
     #[cfg(feature = "native-source")]
     #[serde(default)]
     pub encoder: Option<crate::stream::source::source_config::EncoderSpec>,
@@ -473,18 +462,21 @@ pub struct SourceConfig {
 
 impl SourceConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.stream_id.trim().is_empty() {
-            anyhow::bail!("stream_id cannot be empty");
-        }
-
         #[cfg(feature = "native-source")]
-        if self.kind.is_some() {
+        if self.capture.is_some() {
             let capture = self
                 .capture
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("capture is required when kind is set"))?;
-            if capture.device.trim().is_empty() {
+                .ok_or_else(|| anyhow::anyhow!("capture is required for native sources"))?;
+            if capture.device.as_deref().unwrap_or("").trim().is_empty() {
                 anyhow::bail!("capture.device cannot be empty");
+            }
+            let backend = capture.backend.to_lowercase();
+            if backend != "libcamera" && backend != "v4l2" {
+                anyhow::bail!(
+                    "capture.backend must be 'libcamera' or 'v4l2', got '{}'",
+                    backend
+                );
             }
             if capture.width == 0 || capture.height == 0 {
                 anyhow::bail!("capture width/height must be non-zero");
@@ -492,7 +484,7 @@ impl SourceConfig {
             let encoder = self
                 .encoder
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("encoder is required when kind is set"))?;
+                .ok_or_else(|| anyhow::anyhow!("encoder is required for native sources"))?;
             if encoder.bitrate == 0 {
                 anyhow::bail!("encoder.bitrate must be non-zero");
             }
@@ -501,7 +493,7 @@ impl SourceConfig {
 
         let url = self.url.as_deref().unwrap_or("");
         if url.is_empty() {
-            anyhow::bail!("either url or kind must be set");
+            anyhow::bail!("either url or capture must be set");
         }
 
         let url_lower = url.to_lowercase();
@@ -520,13 +512,14 @@ impl SourceConfig {
 
     /// Build a `SourceSpec` from structured fields (for native sources).
     #[cfg(feature = "native-source")]
-    pub fn to_spec(&self) -> Option<crate::stream::source::source_config::SourceSpec> {
-        let kind = self.kind.clone()?;
+    pub fn to_spec(
+        &self,
+        stream_id: &str,
+    ) -> Option<crate::stream::source::source_config::SourceSpec> {
         let capture = self.capture.clone()?;
         let encoder = self.encoder.clone()?;
         Some(crate::stream::source::source_config::SourceSpec {
-            stream_id: self.stream_id.clone(),
-            kind,
+            stream_id: stream_id.to_string(),
             capture,
             encoder,
             output: self.output.clone(),
