@@ -3475,6 +3475,7 @@ name = "playwright-whep"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

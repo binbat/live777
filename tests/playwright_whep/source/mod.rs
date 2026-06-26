@@ -5,6 +5,7 @@ pub mod rsmpeg_vp8;
 pub mod whipsynth;
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 pub trait SourceHandle: Send {
     fn stop(self: Box<Self>);
@@ -48,6 +49,15 @@ pub trait Source: Send + Sync {
     /// returns `true`.
     fn start_direct(&self, _whip_url: &str) -> anyhow::Result<Box<dyn SourceHandle>> {
         anyhow::bail!("direct publishing not supported by this source")
+    }
+
+    /// Wait until the source is producing frames and it is safe to subscribe.
+    ///
+    /// The default implementation sleeps briefly to give encoders time to emit
+    /// the first keyframe. Individual sources may override this with a more
+    /// deterministic readiness check.
+    async fn wait_for_ready(&self) {
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 

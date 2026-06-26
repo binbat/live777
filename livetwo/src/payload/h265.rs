@@ -122,7 +122,7 @@ impl H265Processor {
 
         match nal_type {
             0..=47 => Self::is_idr_nal_type(nal_type),
-            nal_type::H265_NAL_AP => self.check_ap_for_idr(&data[2..]),
+            nal_type::H265_NAL_AP if data.len() >= 3 => self.check_ap_for_idr(&data[2..]),
             nal_type::H265_NAL_FU => {
                 if data.len() < 3 {
                     return false;
@@ -388,6 +388,10 @@ const FU_END_BITMASK: u8 = 0x40;
 /// into Fragmentation Unit (FU) payloads.
 pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
     let mut payloads = Vec::new();
+
+    // The smallest FU payload we can emit is the 2-byte NAL header plus one
+    // byte of FU header. Guard against callers passing an impossibly small MTU.
+    let max_payload_size = max_payload_size.max(3);
 
     for nal in NalIterator::new(data) {
         if nal.data.len() < 2 {

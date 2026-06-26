@@ -55,8 +55,10 @@ impl ProbeBackend for RsmpegProbe {
 
         let ct = CancellationToken::new();
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(RTCPeerConnectionState::New);
-        let (video_tx, mut video_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let (audio_tx, _audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        // Use a bounded channel so a slow decoder cannot cause unbounded memory
+        // growth. Backpressure will propagate to the WebRTC track reader.
+        let (video_tx, mut video_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+        let (audio_tx, _audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
         let codec_info = Arc::new(Mutex::new(rtsp::CodecInfo::new()));
         let (video_mime_tx, mut video_mime_rx) = tokio::sync::watch::channel(None::<String>);
 
@@ -110,10 +112,20 @@ impl ProbeBackend for RsmpegProbe {
             return Ok(result);
         }
 
-        // Wait briefly for the track to report its negotiated codec.
-        let mime_type = wait_for_video_mime(&mut video_mime_rx, Duration::from_secs(5))
-            .await
-            .unwrap_or_else(|_| "video/VP8".to_string());
+        // Wait briefly for the track to report its negotiated codec. If the
+        // track never reports its mime type we cannot reliably decode the
+        // stream, so fail the probe instead of guessing a fallback codec.
+        let mime_type = match wait_for_video_mime(&mut video_mime_rx, Duration::from_secs(5)).await
+        {
+            Ok(mime) => mime,
+            Err(e) => {
+                ct.cancel();
+                result.error = Some(format!("timed out waiting for video codec: {e}"));
+                graceful_shutdown("WHEP", &mut client, peer).await;
+                result.duration_ms = start.elapsed().as_millis() as u64;
+                return Ok(result);
+            }
+        };
         info!("WHEP peer connected, video mime type: {mime_type}");
 
         let decode_duration = self.decode_duration.min(Duration::from_secs(10));
@@ -123,7 +135,9 @@ impl ProbeBackend for RsmpegProbe {
         let cancelled_clone = cancelled.clone();
 
         // Forward RTP packets from the async WebRTC reader to the blocking
-        // FFmpeg decoder thread.
+        // FFmpeg decoder thread. Stop when cancelled or when the decode window
+        // has elapsed so the probe cannot outlive its timeout.
+        let forward_ct = ct.clone();
         let forward_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -132,6 +146,7 @@ impl ProbeBackend for RsmpegProbe {
                             break;
                         }
                     }
+                    _ = forward_ct.cancelled() => break,
                     _ = tokio::time::sleep(decode_duration) => break,
                 }
             }

@@ -57,8 +57,10 @@ pub async fn from_with_state(
 ) -> Result<()> {
     info!("Starting WHEP session: {}", target_url);
 
-    let (video_send, mut video_recv) = unbounded_channel::<Vec<u8>>();
-    let (audio_send, mut audio_recv) = unbounded_channel::<Vec<u8>>();
+    // Use bounded channels so a slow consumer cannot cause unbounded memory
+    // growth. The track handlers drop packets when the channel is full.
+    let (video_send, mut video_recv) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+    let (audio_send, mut audio_recv) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
     let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
 
     let mut client = Client::new(whep_url.clone(), Client::get_auth_header_map(token.clone()));

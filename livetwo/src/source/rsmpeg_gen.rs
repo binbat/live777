@@ -337,6 +337,14 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
             continue;
         }
         unsafe {
+            assert!(
+                !frame.data[0].is_null() && !frame.data[1].is_null() && !frame.data[2].is_null(),
+                "H265 sprop extraction: frame data pointers must not be null"
+            );
+            assert!(
+                frame.linesize[0] > 0 && frame.linesize[1] > 0 && frame.linesize[2] > 0,
+                "H265 sprop extraction: frame linesizes must be positive"
+            );
             std::ptr::write_bytes(
                 frame.data[0],
                 0,

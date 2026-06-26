@@ -22,6 +22,11 @@ use crate::payload::{RePayload, RePayloadCodec};
 
 /// Assembles RTP payloads into complete encoded frames and decodes them with
 /// FFmpeg through rsmpeg.
+/// Number of consecutive decode errors tolerated before the first successful
+/// frame. This avoids failing on startup noise (e.g. VP8 interframes before the
+/// first keyframe) while still surfacing persistent stream corruption.
+const STARTUP_ERROR_THRESHOLD: u32 = 10;
+
 pub struct RtpFrameDecoder {
     repayload: RePayloadCodec,
     frame_count: u32,
@@ -29,6 +34,7 @@ pub struct RtpFrameDecoder {
     height: u32,
     codec_context: AVCodecContext,
     codec_context_open: bool,
+    consecutive_failures: u32,
 }
 
 impl RtpFrameDecoder {
@@ -82,6 +88,7 @@ impl RtpFrameDecoder {
             height: 0,
             codec_context,
             codec_context_open: false,
+            consecutive_failures: 0,
         })
     }
 
@@ -90,16 +97,24 @@ impl RtpFrameDecoder {
         let packet = Packet::unmarshal(&mut Cursor::new(raw_rtp))
             .map_err(|e| anyhow!("Failed to unmarshal RTP packet: {e}"))?;
 
-        if let Some(frame_data) = self.repayload.process(&packet)
-            && let Err(e) = self.decode_packet(&frame_data)
-        {
-            // Before the first successful frame, errors are usually startup
-            // noise (e.g. VP8 interframes before the first keyframe). Once
-            // decoding has produced output, treat further errors as fatal.
-            if self.frame_count > 0 {
-                return Err(e);
+        if let Some(frame_data) = self.repayload.process(&packet) {
+            if let Err(e) = self.decode_packet(&frame_data) {
+                self.consecutive_failures += 1;
+                // Before the first successful frame, errors are usually startup
+                // noise (e.g. VP8 interframes before the first keyframe). Once
+                // decoding has produced output, treat further errors as fatal.
+                // We also fail if we see many consecutive errors before the
+                // first frame, which indicates a real problem such as a
+                // parameter-set mismatch.
+                if self.frame_count > 0
+                    || self.consecutive_failures >= STARTUP_ERROR_THRESHOLD
+                {
+                    return Err(e);
+                }
+                warn!(size = frame_data.len(), "Failed to decode frame: {e}");
+            } else {
+                self.consecutive_failures = 0;
             }
-            warn!(size = frame_data.len(), "Failed to decode frame: {e}");
         }
 
         Ok(())
@@ -182,8 +197,10 @@ impl RtpFrameDecoder {
 
 /// Create an AVPacket that owns a copy of the provided bytes.
 fn av_packet_from_bytes(data: &[u8]) -> Result<AVPacket> {
+    let len_i32 = i32::try_from(data.len())
+        .map_err(|_| anyhow!("frame data too large for AVPacket: {} bytes", data.len()))?;
     let mut packet = AVPacket::new();
-    let ret = unsafe { rsmpeg::ffi::av_new_packet(packet.as_mut_ptr(), data.len() as i32) };
+    let ret = unsafe { rsmpeg::ffi::av_new_packet(packet.as_mut_ptr(), len_i32) };
     if ret < 0 {
         return Err(anyhow!("av_new_packet failed with {ret}"));
     }

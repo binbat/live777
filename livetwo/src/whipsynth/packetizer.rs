@@ -14,6 +14,10 @@ use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 use crate::payload::{RTP_OUTBOUND_MTU, payload_annex_b};
 use crate::source::{AudioCodec, EncodedFrame, VideoCodec};
 
+/// Maximum RTP payload size used by all payloaders. We reserve the 12-byte RTP
+/// header so that the final on-wire RTP packet does not exceed `RTP_OUTBOUND_MTU`.
+const MAX_RTP_PAYLOAD_SIZE: usize = RTP_OUTBOUND_MTU - 12;
+
 /// Configuration for a [`Packetizer`].
 #[derive(Debug, Clone)]
 pub struct PacketizerConfig {
@@ -186,11 +190,11 @@ impl Packetizer {
             .wrapping_add(track.timestamp_offset);
 
         let payloads = if video_codec == VideoCodec::H265 {
-            payload_annex_b(&frame.data, RTP_OUTBOUND_MTU - 12)
+            payload_annex_b(&frame.data, MAX_RTP_PAYLOAD_SIZE)
         } else {
             track
                 .payloader
-                .payload(RTP_OUTBOUND_MTU, &Bytes::from(frame.data.clone()))
+                .payload(MAX_RTP_PAYLOAD_SIZE, &Bytes::from(frame.data.clone()))
                 .map_err(|e| anyhow::anyhow!("video payload error: {e}"))?
         };
 
@@ -230,7 +234,7 @@ impl Packetizer {
 
         let payloads = track
             .payloader
-            .payload(RTP_OUTBOUND_MTU, &Bytes::from(frame.data.clone()))
+            .payload(MAX_RTP_PAYLOAD_SIZE, &Bytes::from(frame.data.clone()))
             .map_err(|e| anyhow::anyhow!("audio payload error: {e}"))?;
 
         let length = payloads.len();
@@ -277,7 +281,11 @@ fn pts_to_rtp_timestamp(pts: i64, time_base: ffi::AVRational, clock_rate: u32) -
     if den == 0 {
         return 0;
     }
-    let ts = pts * clock_rate as i64 * num / den;
+    let ts = pts
+        .saturating_mul(clock_rate as i64)
+        .saturating_mul(num)
+        .checked_div(den)
+        .unwrap_or(0);
     ts as u32
 }
 

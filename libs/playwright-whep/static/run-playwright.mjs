@@ -29,6 +29,10 @@ function parseArgs() {
     token: "",
   };
   for (let i = 0; i < args.length; i += 2) {
+    if (i + 1 >= args.length) {
+      console.error(`Missing value for argument ${args[i]}`);
+      process.exit(1);
+    }
     const key = args[i];
     const value = args[i + 1];
     switch (key) {
@@ -115,7 +119,15 @@ async function startServer(staticRoot) {
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    let filePath = path.join(root, url.pathname);
+    let filePath = path.resolve(path.join(root, url.pathname));
+
+    // Reject requests that escape the served directory.
+    if (!filePath.startsWith(root + path.sep) && filePath !== root) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      res.end("Forbidden");
+      return;
+    }
+
     const stats = await fs.stat(filePath).catch(() => null);
     if (stats?.isDirectory()) {
       filePath = path.join(filePath, "index.html");
@@ -177,9 +189,8 @@ function buildPlayerUrl(baseUrl, params) {
   if (params.layer) {
     url.searchParams.set("layer", params.layer);
   }
-  if (params.token) {
-    url.searchParams.set("token", params.token);
-  }
+  // Token is passed via an in-page message instead of the URL to avoid
+  // leaking it into browser history, server logs, and referrer headers.
   url.searchParams.set("source", params.source);
   url.searchParams.set("timeout", params.timeoutMs.toString());
   return url.toString();
@@ -239,6 +250,12 @@ async function main() {
     });
 
     await page.goto(playerUrl, { waitUntil: "domcontentloaded" });
+
+    if (params.token) {
+      await page.evaluate((token) => {
+        window.__LIVE777_TOKEN__ = token;
+      }, params.token);
+    }
 
     const resultProp = resultPropertyName(params.mode);
     await page.waitForFunction(

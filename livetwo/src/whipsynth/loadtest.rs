@@ -61,12 +61,10 @@ pub struct LoadtestStats {
 /// session. This is the simplest loadtest shape; a future optimization could
 /// share a single encoded-bitstream source across sessions.
 pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Result<LoadtestStats> {
-    let stats = Arc::new(Mutex::new(LoadtestStats {
-        sessions_total: config.session_count,
-        ..Default::default()
-    }));
+    let stats = Arc::new(Mutex::new(LoadtestStats::default()));
 
     let mut join_set = JoinSet::new();
+    let mut spawned = 0usize;
 
     for i in 0..config.session_count {
         if ct.is_cancelled() {
@@ -98,16 +96,25 @@ pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Resu
                 }
             }
         });
+        spawned += 1;
 
         if i + 1 < config.session_count {
-            tokio::time::sleep(config.spawn_interval).await;
+            tokio::select! {
+                _ = ct.cancelled() => break,
+                _ = tokio::time::sleep(config.spawn_interval) => {}
+            }
         }
     }
 
     // Wait for all sessions to finish or cancellation.
-    while join_set.join_next().await.is_some() {}
+    while let Some(result) = join_set.join_next().await {
+        if let Err(e) = result {
+            warn!(error = ?e, "loadtest session task panicked or was cancelled");
+        }
+    }
 
-    let final_stats = stats.lock().map(|s| s.clone()).unwrap_or_default();
+    let mut final_stats = stats.lock().map(|s| s.clone()).unwrap_or_default();
+    final_stats.sessions_total = spawned;
     info!(
         sessions_total = final_stats.sessions_total,
         sessions_connected = final_stats.sessions_connected,
@@ -116,6 +123,13 @@ pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Resu
         total_bytes_sent = final_stats.total_bytes_sent,
         "Loadtest completed"
     );
+
+    if final_stats.sessions_connected == 0 && spawned > 0 {
+        return Err(anyhow::anyhow!(
+            "all {} loadtest session(s) failed",
+            spawned
+        ));
+    }
 
     Ok(final_stats)
 }

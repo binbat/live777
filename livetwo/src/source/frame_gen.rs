@@ -487,6 +487,16 @@ fn fill_test_pattern(
     height: usize,
     frame_index: u64,
 ) {
+    assert!(
+        linesize.len() >= 3 && data.len() >= 3,
+        "fill_test_pattern expects at least three planes"
+    );
+    assert!(
+        linesize[0] > 0 && linesize[1] > 0 && linesize[2] > 0,
+        "video linesizes must be positive, got {:?}",
+        linesize
+    );
+
     let y_stride = linesize[0] as usize;
     let u_stride = linesize[1] as usize;
     let v_stride = linesize[2] as usize;
@@ -548,9 +558,11 @@ fn fill_sine_wave(
     channels: i32,
     sample_fmt: i32,
 ) {
-    if data.is_empty() || data[0].is_null() {
+    if data.is_empty() || data[0].is_null() || linesize.is_empty() {
         return;
     }
+    assert!(linesize[0] > 0, "audio linesize must be positive, got {}", linesize[0]);
+
     let freq = 440.0f32;
     let sample_rate = sample_rate as f32;
     let total_samples = (samples * channels) as usize;
@@ -562,8 +574,9 @@ fn fill_sine_wave(
     } else {
         return;
     };
+    let buffer_size = linesize[0] as usize;
     assert!(
-        linesize[0] as usize >= total_samples * sample_size,
+        buffer_size >= total_samples * sample_size,
         "audio buffer too small: {} bytes for {} samples of size {}",
         linesize[0],
         total_samples,

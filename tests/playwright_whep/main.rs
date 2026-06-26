@@ -38,12 +38,25 @@ fn init_liveion_test_environment() {
     });
 }
 
-fn pick_udp_port(ip: IpAddr) -> u16 {
+/// Holds a bound UDP socket so the reserved port cannot be reused by another
+/// process until we are ready to hand it to liveion. Dropping the guard
+/// releases the port.
+struct UdpPortGuard {
+    socket: UdpSocket,
+}
+
+impl UdpPortGuard {
+    fn port(&self) -> u16 {
+        self.socket
+            .local_addr()
+            .expect("Failed to read temporary UDP port")
+            .port()
+    }
+}
+
+fn reserve_udp_port(ip: IpAddr) -> UdpPortGuard {
     let socket = UdpSocket::bind(SocketAddr::new(ip, 0)).expect("Failed to reserve UDP port");
-    socket
-        .local_addr()
-        .expect("Failed to read temporary UDP port")
-        .port()
+    UdpPortGuard { socket }
 }
 
 /// Matrix test for sources played back by the in-process livetwo WHEP player.
@@ -110,7 +123,7 @@ where
         start_published_stream(&source, bind_ip).await;
 
     // Give the source a moment to produce keyframes before subscribing.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    source.wait_for_ready().await;
 
     // Run the WHEP player and verify playback.
     let whep_url = format!("http://{whep_host}:{port}{}", api::path::whep("-"));
@@ -135,13 +148,11 @@ where
 #[cfg(feature = "rsmpeg")]
 #[tokio::test]
 async fn whep_probe_rsmpeg_vp8() {
-    let (_api_addr, port, source_handle, whip_ct, whip_handle) = start_published_stream(
-        &source::rsmpeg_vp8::RsmpegVp8Source::default(),
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-    )
-    .await;
+    let source = source::rsmpeg_vp8::RsmpegVp8Source::default();
+    let (_api_addr, port, source_handle, whip_ct, whip_handle) =
+        start_published_stream(&source, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    source.wait_for_ready().await;
 
     let whep_url = format!("http://127.0.0.1:{port}{}", api::path::whep("-"));
     let config = ProbeConfig {
@@ -347,13 +358,15 @@ where
     }
 
     let whip_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let whip_video_port = pick_udp_port(whip_ip);
+    let whip_video_guard = reserve_udp_port(whip_ip);
+    let whip_video_port = whip_video_guard.port();
     let whip_video_addr = SocketAddr::new(whip_ip, whip_video_port);
-    let whip_audio_addr = if source.has_audio() {
-        let port = pick_udp_port(whip_ip);
-        Some(SocketAddr::new(whip_ip, port))
+    let (whip_audio_guard, whip_audio_addr) = if source.has_audio() {
+        let guard = reserve_udp_port(whip_ip);
+        let port = guard.port();
+        (Some(guard), Some(SocketAddr::new(whip_ip, port)))
     } else {
-        None
+        (None, None)
     };
 
     // Write the SDP file that liveion will use to receive the source stream.
@@ -365,14 +378,23 @@ where
         file.write_all(sdp.as_bytes()).unwrap();
     }
 
+    // Release the temporary UDP sockets immediately before starting WHIP so the
+    // ports are free for liveion to bind. The SDP already contains the selected
+    // ports. This minimizes the TOCTOU window; fully eliminating it would
+    // require passing pre-bound sockets into the WHIP input path.
+    drop(whip_video_guard);
+    if let Some(guard) = whip_audio_guard {
+        drop(guard);
+    }
+
     let ct = CancellationToken::new();
-    let mut handle_whip = tokio::spawn(livetwo::whip::into(
-        ct.clone(),
-        sdp_path.clone(),
-        whip_url,
-        None,
-        None,
-    ));
+    let whip_ct = ct.clone();
+    let mut handle_whip = tokio::spawn(async move {
+        // Keep the temp SDP file alive for the lifetime of the WHIP task so the
+        // runner cannot read a deleted path.
+        let _whip_sdp = _whip_sdp;
+        livetwo::whip::into(whip_ct, sdp_path, whip_url, None, None).await
+    });
 
     wait_for_publish_connected(&api_addr, Some(&mut handle_whip)).await;
 
@@ -458,7 +480,7 @@ fn assert_playback_ok(player_name: &str, playback: &PlayResult) {
     assert!(playback.connected, "{player_name} did not connect");
 
     // Browser playback additionally checks rendered frame dimensions.
-    if player_name == "playwright" || player_name == "playwright-container" {
+    if player_name.starts_with("playwright") {
         assert!(
             playback.video_width > 0 && playback.video_height > 0,
             "Browser did not render any video frames"

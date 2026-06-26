@@ -7,6 +7,7 @@ use rtc::peer_connection::configuration::interceptor_registry::{
     configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers, configure_twcc,
 };
 use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_AV1, MIME_TYPE_HEVC, MediaEngine};
+use rtc::statistics::StatsSelector;
 use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
 };
@@ -143,6 +144,10 @@ impl Publisher {
             }
         };
 
+        // Collect RTCP feedback counters from outbound RTP stats before tearing
+        // down the peer connection.
+        let rtcp_feedback = collect_rtcp_feedback(&peer).await;
+
         // Teardown.
         let _ = source_handle.stop().await;
         if let Err(e) = peer.close().await {
@@ -152,7 +157,9 @@ impl Publisher {
             debug!("Failed to remove WHIP resource: {}", e);
         }
 
-        let final_stats = stats.lock().map(|s| s.clone()).unwrap_or_default();
+        let mut final_stats = stats.lock().map(|s| s.clone()).unwrap_or_default();
+        final_stats.nack_count = rtcp_feedback.nack_count;
+        final_stats.pli_count = rtcp_feedback.pli_count;
         info!(
             packets_sent = final_stats.packets_sent,
             connected_ms = final_stats.connected_duration.as_millis() as u64,
@@ -162,13 +169,6 @@ impl Publisher {
         result.map(|_| final_stats)
     }
 
-    /// Return a snapshot of the publisher session statistics.
-    ///
-    /// This is a hook for future loadtest aggregation. The standalone publisher
-    /// does not update this after `run` completes.
-    pub fn stats(&self) -> SessionStats {
-        SessionStats::default()
-    }
 }
 
 async fn run_write_loop(
@@ -185,9 +185,9 @@ async fn run_write_loop(
 
     loop {
         tokio::select! {
-            Some(frame) = frame_rx.recv() => {
+            frame = frame_rx.recv() => {
                 match frame {
-                    MediaFrame::Video(encoded) => {
+                    Some(MediaFrame::Video(encoded)) => {
                         match packetizer.packetize_video(&encoded) {
                             Ok(packets) => {
                                 for packet in packets {
@@ -209,7 +209,7 @@ async fn run_write_loop(
                             }
                         }
                     }
-                    MediaFrame::Audio(encoded) => {
+                    Some(MediaFrame::Audio(encoded)) => {
                         if let Some(ref audio) = audio_track {
                             match packetizer.packetize_audio(&encoded) {
                                 Ok(packets) => {
@@ -232,6 +232,10 @@ async fn run_write_loop(
                                 }
                             }
                         }
+                    }
+                    None => {
+                        debug!("Frame source ended, exiting publisher write loop");
+                        break;
                     }
                 }
             }
@@ -392,6 +396,24 @@ async fn create_peer(
     Ok((peer, packetizer, state_rx, diagnostics))
 }
 
+#[derive(Default, Clone, Copy)]
+struct RtcpFeedbackCounters {
+    nack_count: u64,
+    pli_count: u64,
+}
+
+async fn collect_rtcp_feedback(peer: &Arc<dyn PeerConnection>) -> RtcpFeedbackCounters {
+    let report = peer
+        .get_stats(std::time::Instant::now(), StatsSelector::None)
+        .await;
+    let mut counters = RtcpFeedbackCounters::default();
+    for outbound in report.outbound_rtp_streams() {
+        counters.nack_count += outbound.nack_count as u64;
+        counters.pli_count += outbound.pli_count as u64;
+    }
+    counters
+}
+
 async fn wait_for_peer_connected(
     peer: Arc<dyn PeerConnection>,
     mut state_rx: watch::Receiver<RTCPeerConnectionState>,
@@ -450,11 +472,6 @@ async fn wait_for_unexpected_peer_end(
     let mut saw_connected = *state_rx.borrow() == RTCPeerConnectionState::Connected;
 
     loop {
-        state_rx
-            .changed()
-            .await
-            .map_err(|_| anyhow!("WHIP publisher peer connection state channel closed"))?;
-
         let state = *state_rx.borrow();
         if state == RTCPeerConnectionState::Connected {
             saw_connected = true;
@@ -473,6 +490,11 @@ async fn wait_for_unexpected_peer_end(
                 ice_stats
             ));
         }
+
+        state_rx
+            .changed()
+            .await
+            .map_err(|_| anyhow!("WHIP publisher peer connection state channel closed"))?;
     }
 }
 

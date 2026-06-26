@@ -54,6 +54,10 @@ struct RePayloadBase {
     buffer: Vec<Bytes>,
     sequence_number: u16,
     src_sequence_number: u16,
+    /// Whether `src_sequence_number` has been initialized. Sequence number 0
+    /// is a valid RTP value, so we cannot use `0` as a sentinel for the first
+    /// packet.
+    has_baseline: bool,
 }
 
 impl RePayloadBase {
@@ -62,18 +66,26 @@ impl RePayloadBase {
             buffer: Vec::new(),
             sequence_number: 0,
             src_sequence_number: 0,
+            has_baseline: false,
         }
     }
 
     fn verify_sequence_number(&mut self, packet: &Packet) -> bool {
-        let expected = self.src_sequence_number.wrapping_add(1);
-        let continuous = self.src_sequence_number == 0 || expected == packet.header.sequence_number;
+        let continuous = if self.has_baseline {
+            let expected = self.src_sequence_number.wrapping_add(1);
+            expected == packet.header.sequence_number
+        } else {
+            // First packet: accept any sequence number and establish the baseline.
+            true
+        };
         if !continuous {
             error!(
                 "Expected sequence {}, received {}",
-                expected, packet.header.sequence_number
+                self.src_sequence_number.wrapping_add(1),
+                packet.header.sequence_number
             );
         }
+        self.has_baseline = true;
         self.src_sequence_number = packet.header.sequence_number;
         continuous
     }

@@ -14,6 +14,8 @@
 //! use playwright_whep::{WhepBrowserPlayer, Browser, Mode, PublishSource};
 //!
 //! # async fn example() -> anyhow::Result<()> {
+//! use playwright_whep::HarnessResult;
+//!
 //! // Subscribe-only (original behaviour).
 //! let result = WhepBrowserPlayer::new("http://localhost:7777/whep/live")
 //!     .browser(Browser::Chromium)
@@ -22,9 +24,11 @@
 //!     .play()
 //!     .await?;
 //!
-//! assert!(result.success);
-//! assert!(result.connected);
-//! assert!(result.video_width > 0);
+//! if let HarnessResult::Subscribe(r) = result {
+//!     assert!(r.success);
+//!     assert!(r.connected);
+//!     assert!(r.video_width > 0);
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -214,6 +218,10 @@ pub struct WhepBrowserPlayer {
     timeout: Duration,
     headless: bool,
     node_path: PathBuf,
+    /// Directory used to resolve the Playwright module and as the runner's
+    /// working directory. Defaults to the current working directory at the
+    /// time `play()` is called.
+    playwright_dir: Option<PathBuf>,
 }
 
 impl WhepBrowserPlayer {
@@ -234,6 +242,7 @@ impl WhepBrowserPlayer {
             timeout: Duration::from_secs(30),
             headless: true,
             node_path: PathBuf::from("node"),
+            playwright_dir: None,
         }
     }
 
@@ -254,6 +263,7 @@ impl WhepBrowserPlayer {
             timeout: Duration::from_secs(30),
             headless: true,
             node_path: PathBuf::from("node"),
+            playwright_dir: None,
         }
     }
 
@@ -277,6 +287,7 @@ impl WhepBrowserPlayer {
             timeout: Duration::from_secs(30),
             headless: true,
             node_path: PathBuf::from("node"),
+            playwright_dir: None,
         }
     }
 
@@ -357,9 +368,20 @@ impl WhepBrowserPlayer {
         self
     }
 
+    /// Directory used to resolve the Playwright module and as the runner's
+    /// working directory (default: current working directory at `play()` time).
+    pub fn playwright_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.playwright_dir = Some(dir.into());
+        self
+    }
+
     /// Launch the browser, perform the requested WebRTC flow, and return the result.
     pub async fn play(self) -> Result<HarnessResult> {
-        let playwright_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let playwright_dir = self
+            .playwright_dir
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
 
         let playwright_module = resolve_playwright_module(&self.node_path, &playwright_dir)
             .await
@@ -452,6 +474,8 @@ impl WhepBrowserPlayer {
         let mut stdout_lines = stdout_reader.lines();
         let mut stderr_lines = stderr_reader.lines();
 
+        let child_id = child.id();
+
         let wait_fut = async {
             loop {
                 tokio::select! {
@@ -490,7 +514,7 @@ impl WhepBrowserPlayer {
             Ok(Ok(status)) => status,
             Ok(Err(e)) => return Err(e),
             Err(_) => {
-                let _ = child.start_kill();
+                graceful_kill_child(child_id, &mut child).await;
                 return Err(anyhow!(
                     "Playwright runner timed out after {:?}",
                     total_timeout
@@ -544,6 +568,25 @@ async fn write_asset(dir: &Path, name: &str, content: &str) -> Result<()> {
         .await
         .with_context(|| format!("Failed to write asset {}", path.display()))?;
     Ok(())
+}
+
+/// Attempt to terminate the runner gracefully and fall back to a force kill
+/// if it does not exit in time. On Unix we send SIGTERM first so the runner's
+/// `finally` block has a chance to close the browser; on other platforms we
+/// kill the process directly.
+async fn graceful_kill_child(child_id: Option<u32>, child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child_id {
+        unsafe {
+            let _ = libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+        // Give the runner a few seconds to shut down the browser cleanly.
+        match timeout(Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(_)) => return,
+            _ => {}
+        }
+    }
+    let _ = child.start_kill();
 }
 
 async fn resolve_playwright_module(node_path: &Path, dir: &Path) -> Result<PathBuf> {

@@ -57,7 +57,9 @@
           vcodec: params.get("vcodec") || "",
           acodec: params.get("acodec") || "",
           layer: params.get("layer") || "",
-          token: params.get("token") || "",
+          // Token is injected by the runner via page.evaluate so it never
+          // appears in the URL or browser history.
+          token: window.__LIVE777_TOKEN__ || "",
         };
       }
 
@@ -303,7 +305,7 @@
           log("WHIP publish connected");
 
           // Allow stats to accumulate briefly.
-          await sleep(500);
+          await sleep(100);
 
           const stats = await pc.getStats();
           let audioCodec = "";
@@ -340,23 +342,9 @@
         }
       }
 
-      async function runBoth(whipUrl, whepUrl, timeoutMs, source, token) {
-        const startMs = performance.now();
-        log(
-          `Starting publish+subscribe: publish=${whipUrl} subscribe=${whepUrl}`,
-        );
-
-        // Publish side must stay alive while subscribing, so manage it inline.
-        let publishPc = null;
-        let publishCleanup = null;
-        let publishResult;
-        let subscribeResult;
-        let error = null;
-
+      async function runPublishInternal(publishPc, whipUrl, timeoutMs, source, token) {
+        const { stream, cleanup } = await acquireStream(source);
         try {
-          publishPc = new RTCPeerConnection();
-          const { stream, cleanup } = await acquireStream(source);
-          publishCleanup = cleanup;
           stream.getTracks().forEach((track) =>
             publishPc.addTrack(track, stream),
           );
@@ -378,7 +366,7 @@
           await waitForConnection(publishPc, timeoutMs);
           log("WHIP publish connected");
 
-          await sleep(500);
+          await sleep(100);
           const stats = await publishPc.getStats();
           let audioCodec = "";
           let videoCodec = "";
@@ -398,13 +386,42 @@
             }
           });
 
-          publishResult = {
-            success: true,
-            connected: true,
+          return {
             audioTracks: stream.getAudioTracks().length,
             videoTracks: stream.getVideoTracks().length,
             audioCodec,
             videoCodec,
+          };
+        } finally {
+          cleanup();
+        }
+      }
+
+      async function runBoth(whipUrl, whepUrl, timeoutMs, source, token) {
+        const startMs = performance.now();
+        log(
+          `Starting publish+subscribe: publish=${whipUrl} subscribe=${whepUrl}`,
+        );
+
+        // Publish side must stay alive while subscribing, so manage it inline.
+        let publishPc = null;
+        let publishResult;
+        let subscribeResult;
+        let error = null;
+
+        try {
+          publishPc = new RTCPeerConnection();
+          const publishInfo = await runPublishInternal(
+            publishPc,
+            whipUrl,
+            timeoutMs,
+            source,
+            token,
+          );
+          publishResult = {
+            success: true,
+            connected: true,
+            ...publishInfo,
             durationMs: Math.round(performance.now() - startMs),
             error: null,
           };
@@ -441,7 +458,6 @@
           };
         } finally {
           if (publishPc) publishPc.close();
-          if (publishCleanup) publishCleanup();
         }
 
         return {

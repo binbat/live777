@@ -4,7 +4,6 @@ use anyhow::{Result, anyhow};
 use libwish::Client;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::shared::marshal::{Marshal, MarshalSize};
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Mutex, Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -26,8 +25,8 @@ const DATA_CHANNEL_LABEL: &str = "control";
 pub async fn setup_whep_peer(
     ct: CancellationToken,
     client: &mut Client,
-    video_send: UnboundedSender<Vec<u8>>,
-    audio_send: UnboundedSender<Vec<u8>>,
+    video_send: mpsc::Sender<Vec<u8>>,
+    audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     video_mime_tx: Option<watch::Sender<Option<String>>>,
@@ -71,8 +70,8 @@ pub async fn setup_whep_peer(
 struct WhepTrackHandler {
     ct: CancellationToken,
     gather_complete: Arc<Notify>,
-    video_send: Option<UnboundedSender<Vec<u8>>>,
-    audio_send: Option<UnboundedSender<Vec<u8>>>,
+    video_send: Option<mpsc::Sender<Vec<u8>>>,
+    audio_send: Option<mpsc::Sender<Vec<u8>>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     video_mime_tx: Option<watch::Sender<Option<String>>>,
@@ -182,9 +181,17 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                                 warn!("WHEP: Failed to marshal RTP packet: {}", e);
                                 continue;
                             }
-                            if sender.send(buf[..size].to_vec()).is_err() {
-                                debug!("WHEP: {} channel receiver dropped, stopping", kind);
-                                break;
+                            match sender.try_send(buf[..size].to_vec()) {
+                                Ok(()) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                    // Decoder cannot keep up; drop the packet to
+                                    // avoid unbounded memory growth.
+                                    debug!("WHEP: {} channel full, dropping packet", kind);
+                                }
+                                Err(_) => {
+                                    debug!("WHEP: {} channel receiver dropped, stopping", kind);
+                                    break;
+                                }
                             }
                         }
                         Some(TrackRemoteEvent::OnEnded) => {
@@ -278,8 +285,8 @@ fn setup_data_channel_loop(
 #[allow(clippy::too_many_arguments)]
 async fn create_peer(
     ct: CancellationToken,
-    video_send: UnboundedSender<Vec<u8>>,
-    audio_send: UnboundedSender<Vec<u8>>,
+    video_send: mpsc::Sender<Vec<u8>>,
+    audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
     gather_complete: Arc<Notify>,
     dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
