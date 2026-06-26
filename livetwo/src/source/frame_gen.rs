@@ -505,9 +505,18 @@ fn fill_test_pattern(
     let v_ptr = data[2];
 
     assert!(!y_ptr.is_null() && !u_ptr.is_null() && !v_ptr.is_null());
-    assert!(y_stride >= width, "Y stride {y_stride} smaller than width {width}");
-    assert!(u_stride >= width / 2, "U stride {u_stride} smaller than width/2");
-    assert!(v_stride >= width / 2, "V stride {v_stride} smaller than width/2");
+    assert!(
+        y_stride >= width,
+        "Y stride {y_stride} smaller than width {width}"
+    );
+    assert!(
+        u_stride >= width / 2,
+        "U stride {u_stride} smaller than width/2"
+    );
+    assert!(
+        v_stride >= width / 2,
+        "V stride {v_stride} smaller than width/2"
+    );
 
     let shift = (frame_index % width as u64) as usize;
 
@@ -561,7 +570,11 @@ fn fill_sine_wave(
     if data.is_empty() || data[0].is_null() || linesize.is_empty() {
         return;
     }
-    assert!(linesize[0] > 0, "audio linesize must be positive, got {}", linesize[0]);
+    assert!(
+        linesize[0] > 0,
+        "audio linesize must be positive, got {}",
+        linesize[0]
+    );
 
     let freq = 440.0f32;
     let sample_rate = sample_rate as f32;
@@ -628,7 +641,10 @@ mod tests {
         while frames < 32 {
             match generator.next_frame().expect("generate frame") {
                 SourceFrame::Frame(MediaFrame::Video(frame)) => {
-                    assert!(!frame.data.is_empty(), "encoded AV1 frame must not be empty");
+                    assert!(
+                        !frame.data.is_empty(),
+                        "encoded AV1 frame must not be empty"
+                    );
                     if frame.is_keyframe {
                         keyframes += 1;
                     }

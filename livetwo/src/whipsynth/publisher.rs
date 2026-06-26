@@ -6,11 +6,13 @@ use libwish::Client;
 use rtc::peer_connection::configuration::interceptor_registry::{
     configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers, configure_twcc,
 };
-use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_AV1, MIME_TYPE_HEVC, MediaEngine};
-use rtc::statistics::StatsSelector;
+use rtc::peer_connection::configuration::media_engine::{
+    MIME_TYPE_AV1, MIME_TYPE_HEVC, MediaEngine,
+};
 use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
 };
+use rtc::statistics::StatsSelector;
 use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -168,7 +170,6 @@ impl Publisher {
 
         result.map(|_| final_stats)
     }
-
 }
 
 async fn run_write_loop(
@@ -311,11 +312,8 @@ async fn create_peer(
     // receiver infers level-idx=5 (720p30); higher-resolution streams may then
     // be dropped once they exceed that level.
     if config.video_codec == VideoCodec::Av1 {
-        let level_idx = crate::whipsynth::packetizer::av1_level_idx(
-            config.width,
-            config.height,
-            config.fps,
-        );
+        let level_idx =
+            crate::whipsynth::packetizer::av1_level_idx(config.width, config.height, config.fps);
         m.register_codec(
             RTCRtpCodecParameters {
                 rtp_codec: RTCRtpCodec {

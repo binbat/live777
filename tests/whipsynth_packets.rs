@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use livetwo::source::{FrameGenerator, FrameGeneratorConfig, MediaFrame, VideoCodec};
-use livetwo::whipsynth::source::SourceFrame;
 use livetwo::whipsynth::packetizer::{Packetizer, PacketizerConfig};
+use livetwo::whipsynth::source::SourceFrame;
 use webrtc::media_stream::Track;
 
 #[test]

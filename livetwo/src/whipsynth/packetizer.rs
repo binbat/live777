@@ -314,7 +314,7 @@ fn audio_payloader(codec: AudioCodec) -> Box<dyn Payloader + Send> {
 fn video_payload_type(codec: VideoCodec) -> u8 {
     match codec {
         VideoCodec::Vp8 => 96,
-        VideoCodec::Vp9 => 98, // profile-id=0
+        VideoCodec::Vp9 => 98,   // profile-id=0
         VideoCodec::H264 => 102, // packetization-mode=1;profile-level-id=42001f
         VideoCodec::H265 => 126,
         VideoCodec::Av1 => 41,
@@ -514,15 +514,17 @@ mod tests {
             let packets = packetizer
                 .packetize_video(&frame)
                 .expect("packetize AV1 frame");
-            assert!(!packets.is_empty(), "AV1 frame must produce at least one RTP packet");
+            assert!(
+                !packets.is_empty(),
+                "AV1 frame must produce at least one RTP packet"
+            );
 
             let mut depacketizer = Av1Depacketizer::default();
             let mut depacketized = Vec::new();
             for packet in packets {
                 assert_eq!(packet.header.payload_type, 41, "AV1 payload type mismatch");
-                let payload = Bytes::from(packet.payload);
                 let out = depacketizer
-                    .depacketize(&payload)
+                    .depacketize(&packet.payload)
                     .expect("depacketize AV1 RTP packet");
                 depacketized.extend_from_slice(&out);
             }
@@ -530,7 +532,10 @@ mod tests {
             // The depacketizer output should be a non-empty low-overhead
             // bitstream (OBUs with size fields). At minimum it must start
             // with a valid OBU header.
-            assert!(!depacketized.is_empty(), "depacketized AV1 bitstream is empty");
+            assert!(
+                !depacketized.is_empty(),
+                "depacketized AV1 bitstream is empty"
+            );
             assert_eq!(
                 depacketized[0] & 0x80,
                 0,

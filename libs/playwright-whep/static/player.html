@@ -38,12 +38,12 @@
       function log(msg) {
         const line = `[${new Date().toISOString()}] ${msg}`;
         console.log(line);
-        logEl.textContent += line + "\n";
+        logEl.textContent += `${line}\n`;
       }
 
       function setResult(prop, result) {
         window[prop] = result;
-        log(`RESULT ${prop}: ` + JSON.stringify(result));
+        log(`RESULT ${prop}: ${JSON.stringify(result)}`);
       }
 
       function getParams() {
@@ -146,7 +146,7 @@
           Accept: "application/sdp",
         };
         if (token) {
-          headers["Authorization"] = `Bearer ${token}`;
+          headers.Authorization = `Bearer ${token}`;
         }
         const response = await fetch(url, {
           method: "POST",
@@ -170,7 +170,11 @@
           });
           return {
             stream,
-            cleanup: () => stream.getTracks().forEach((t) => t.stop()),
+            cleanup: () => {
+              for (const t of stream.getTracks()) {
+                t.stop();
+              }
+            },
           };
         }
 
@@ -207,7 +211,9 @@
             if (rafId !== null) cancelAnimationFrame(rafId);
             oscillator.stop();
             void audioCtx.close();
-            stream.getTracks().forEach((t) => t.stop());
+            for (const t of stream.getTracks()) {
+              t.stop();
+            }
           },
         };
       }
@@ -287,7 +293,9 @@
 
         const pc = new RTCPeerConnection();
         const { stream, cleanup } = await acquireStream(source);
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        for (const track of stream.getTracks()) {
+          pc.addTrack(track, stream);
+        }
 
         pc.onconnectionstatechange = () => {
           log(`Connection state: ${pc.connectionState}`);
@@ -345,9 +353,9 @@
       async function runPublishInternal(publishPc, whipUrl, timeoutMs, source, token) {
         const { stream, cleanup } = await acquireStream(source);
         try {
-          stream.getTracks().forEach((track) =>
-            publishPc.addTrack(track, stream),
-          );
+          for (const track of stream.getTracks()) {
+            publishPc.addTrack(track, stream);
+          }
 
           publishPc.onconnectionstatechange = () => {
             log(`Publish connection state: ${publishPc.connectionState}`);
@@ -462,10 +470,8 @@
 
         return {
           success:
-            publishResult &&
-            publishResult.success &&
-            subscribeResult &&
-            subscribeResult.success,
+            publishResult?.success &&
+            subscribeResult?.success,
           publish: publishResult,
           subscribe: subscribeResult,
           error,

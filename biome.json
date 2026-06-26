@@ -1,5 +1,5 @@
 {
-  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.3.3/schema.json",
   "files": {
     "includes": [
       "web/alone-player/**",
@@ -7,7 +7,8 @@
       "web/player-core/**",
       "!web/player-core/dist",
       "web/debugger/**",
-      "!web/debugger/dist"
+      "!web/debugger/dist",
+      "libs/playwright-whep/static/**"
     ]
   },
   "formatter": {

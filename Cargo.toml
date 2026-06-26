@@ -138,13 +138,15 @@ api = { path = "libs/api" }
 cli = { path = "libs/cli" }
 playwright-whep = { path = "libs/playwright-whep" }
 reqwest = { workspace = true, features = ["socks", "json"] }
-rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"] }
 async-trait = "0.1"
 url = { workspace = true }
 tempfile = "3"
 webrtc = { workspace = true }
 test-case = "3"
 anyhow = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"] }
 
 [dependencies]
 liveion = { path = "liveion" }

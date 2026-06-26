@@ -106,9 +106,7 @@ impl RtpFrameDecoder {
                 // We also fail if we see many consecutive errors before the
                 // first frame, which indicates a real problem such as a
                 // parameter-set mismatch.
-                if self.frame_count > 0
-                    || self.consecutive_failures >= STARTUP_ERROR_THRESHOLD
-                {
+                if self.frame_count > 0 || self.consecutive_failures >= STARTUP_ERROR_THRESHOLD {
                     return Err(e);
                 }
                 warn!(size = frame_data.len(), "Failed to decode frame: {e}");

@@ -267,7 +267,9 @@ impl RePayloadCodec {
 
             debug!(
                 "H.265 RTP packet: seq={} marker={} len={}",
-                header.sequence_number, header.marker, payload.len()
+                header.sequence_number,
+                header.marker,
+                payload.len()
             );
 
             packets.push(Packet { header, payload });

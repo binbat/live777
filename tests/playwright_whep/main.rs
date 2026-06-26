@@ -59,11 +59,10 @@ fn reserve_udp_port(ip: IpAddr) -> UdpPortGuard {
     UdpPortGuard { socket }
 }
 
-/// Matrix test for sources played back by the in-process livetwo WHEP player.
+/// Matrix test for FFmpeg sources played back by the in-process livetwo WHEP player.
 /// This runs without any browser dependency.
 #[test_matrix(
     [
-        source::rsmpeg_vp8::RsmpegVp8Source::default(),
         source::ffmpeg::FfmpegSource::new(VideoCodec::Vp8),
         source::ffmpeg::FfmpegSource::new(VideoCodec::H264),
     ],
@@ -78,8 +77,23 @@ where
     run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
 }
 
+/// Matrix test for the rsmpeg VP8 source played back by the in-process livetwo WHEP player.
+#[cfg(feature = "rsmpeg")]
+#[test_matrix(
+    [source::rsmpeg_vp8::RsmpegVp8Source::default()],
+    [player::livetwo::LivetwoWhepPlayer]
+)]
+#[tokio::test]
+async fn whep_livetwo_rsmpeg_vp8_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
 /// Matrix test for sources played back in a real browser via Playwright.
-#[cfg(feature = "whepwright")]
+#[cfg(all(feature = "whepwright", feature = "rsmpeg"))]
 #[test_matrix(
     [
         source::rsmpeg_vp8::RsmpegVp8Source::default(),
@@ -98,6 +112,7 @@ where
 }
 
 /// Pure rsmpeg baseline: rsmpeg/FFmpeg VP8 source -> liveion -> rsmpeg decoder.
+#[cfg(feature = "rsmpeg")]
 #[test_matrix(
     [
         source::rsmpeg_vp8::RsmpegVp8Source::default(),

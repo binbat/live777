@@ -321,7 +321,11 @@ impl WhepBrowserPlayer {
     /// installed Google Chrome / Microsoft Edge instead of the bundled Chromium.
     pub fn channel(mut self, channel: impl Into<String>) -> Self {
         let channel = channel.into();
-        self.channel = if channel.is_empty() { None } else { Some(channel) };
+        self.channel = if channel.is_empty() {
+            None
+        } else {
+            Some(channel)
+        };
         self
     }
 
@@ -581,9 +585,8 @@ async fn graceful_kill_child(child_id: Option<u32>, child: &mut tokio::process::
             let _ = libc::kill(pid as libc::pid_t, libc::SIGTERM);
         }
         // Give the runner a few seconds to shut down the browser cleanly.
-        match timeout(Duration::from_secs(5), child.wait()).await {
-            Ok(Ok(_)) => return,
-            _ => {}
+        if let Ok(Ok(_)) = timeout(Duration::from_secs(5), child.wait()).await {
+            return;
         }
     }
     let _ = child.start_kill();

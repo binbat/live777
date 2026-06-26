@@ -1,5 +1,6 @@
 pub mod ffmpeg;
 pub mod gstreamer_vp8;
+#[cfg(feature = "rsmpeg")]
 pub mod rsmpeg_vp8;
 #[cfg(feature = "rsmpeg")]
 pub mod whipsynth;

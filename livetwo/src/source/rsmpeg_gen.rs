@@ -215,11 +215,13 @@ pub fn generate_sdp(config: &GeneratorConfig) -> String {
         config.video_port,
         rtpmap = config.video_codec.sdp_rtpmap(video_pt)
     ));
-    if let Some(fmtp) =
-        config
-            .video_codec
-            .sdp_fmtp(video_pt, sprop_params, config.width, config.height, config.fps)
-    {
+    if let Some(fmtp) = config.video_codec.sdp_fmtp(
+        video_pt,
+        sprop_params,
+        config.width,
+        config.height,
+        config.fps,
+    ) {
         sdp.push_str(&format!("{fmtp}\r\n"));
     }
 
@@ -371,9 +373,8 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
         loop {
             match codec_ctx.receive_packet() {
                 Ok(packet) if packet.size > 0 => {
-                    let data = unsafe {
-                        std::slice::from_raw_parts(packet.data, packet.size as usize)
-                    };
+                    let data =
+                        unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
                     encoded.extend_from_slice(data);
                 }
                 Ok(_) => {}
@@ -414,7 +415,10 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
     }
 
     let (vps, sps, pps) = parse_annex_b_hevc_parameter_sets(&encoded).or_else(|| {
-        tracing::debug!(encoded_len = encoded.len(), "H265 sprop extraction: failed to parse parameter sets from encoded data");
+        tracing::debug!(
+            encoded_len = encoded.len(),
+            "H265 sprop extraction: failed to parse parameter sets from encoded data"
+        );
         None
     })?;
 

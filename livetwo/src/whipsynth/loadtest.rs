@@ -13,8 +13,8 @@ use crate::whipsynth::{Publisher, PublisherConfig};
 /// `http://localhost:7777/whip/live` with index `3` becomes
 /// `http://localhost:7777/whip/live-3`.
 fn session_whip_url(base_url: &str, index: usize) -> Result<String> {
-    let mut url = url::Url::parse(base_url)
-        .with_context(|| format!("Invalid WHIP URL: {base_url}"))?;
+    let mut url =
+        url::Url::parse(base_url).with_context(|| format!("Invalid WHIP URL: {base_url}"))?;
 
     let mut segments: Vec<String> = url
         .path_segments()

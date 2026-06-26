@@ -104,4 +104,3 @@ pub trait ProbeBackend: Send + Sync {
     /// Probe the configured WHEP endpoint.
     async fn probe(&self, config: &ProbeConfig) -> Result<ProbeResult>;
 }
-
