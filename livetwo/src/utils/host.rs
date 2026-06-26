@@ -73,9 +73,18 @@ fn resolve_domain(domain: &str) -> String {
 }
 
 pub fn derive_listen_host(target_host: &str) -> String {
-    if target_host.parse::<Ipv6Addr>().is_ok() {
+    if let Ok(ip) = target_host.parse::<Ipv6Addr>() {
+        if ip.is_loopback() {
+            debug!("Target is IPv6 loopback, using ::1 for listening");
+            return Ipv6Addr::LOCALHOST.to_string();
+        }
         debug!("Target is IPv6, using :: for listening");
         Ipv6Addr::UNSPECIFIED.to_string()
+    } else if let Ok(ip) = target_host.parse::<Ipv4Addr>()
+        && ip.is_loopback()
+    {
+        debug!("Target is IPv4 loopback, using 127.0.0.1 for listening");
+        Ipv4Addr::LOCALHOST.to_string()
     } else {
         debug!("Target is IPv4, using 0.0.0.0 for listening");
         Ipv4Addr::UNSPECIFIED.to_string()
@@ -153,7 +162,7 @@ mod tests {
         let url = Url::parse("rtsp://[::1]:8554/stream").unwrap();
         let (target_host, listen_host) = parse_host(&url);
         assert_eq!(target_host, "::1");
-        assert_eq!(listen_host, "::");
+        assert_eq!(listen_host, "::1");
     }
 
     #[test]
@@ -167,9 +176,9 @@ mod tests {
         assert!(is_ipv6 || is_ipv4);
 
         if is_ipv6 {
-            assert_eq!(listen_host, "::");
+            assert_eq!(listen_host, "::1");
         } else {
-            assert_eq!(listen_host, "0.0.0.0");
+            assert_eq!(listen_host, "127.0.0.1");
         }
     }
 
@@ -178,6 +187,13 @@ mod tests {
         let (target, listen) = parse_host_from_sdp("192.168.1.100");
         assert_eq!(target, "192.168.1.100");
         assert_eq!(listen, "0.0.0.0");
+    }
+
+    #[test]
+    fn test_parse_host_from_sdp_ipv4_loopback() {
+        let (target, listen) = parse_host_from_sdp("127.0.0.1");
+        assert_eq!(target, "127.0.0.1");
+        assert_eq!(listen, "127.0.0.1");
     }
 
     #[test]

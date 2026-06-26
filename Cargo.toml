@@ -34,6 +34,27 @@ name = "whepfrom"
 path = "src/whepfrom.rs"
 
 [[bin]]
+name = "whepprobe"
+path = "src/whepprobe.rs"
+required-features = ["rsmpeg"]
+test = false
+bench = false
+
+[[bin]]
+name = "whepwright"
+path = "src/whepwright.rs"
+required-features = ["whepwright"]
+test = false
+bench = false
+
+[[bin]]
+name = "whipsynth"
+path = "src/whipsynth.rs"
+required-features = ["rsmpeg"]
+test = false
+bench = false
+
+[[bin]]
 name = "livevod"
 path = "src/livevod.rs"
 
@@ -59,6 +80,7 @@ members = [
     "libs/signal",
     "libs/rtsp",
     "libs/net4mqtt",
+    "libs/playwright-whep",
     "libs/storage",
     "libs/version",
     "liveion",
@@ -76,13 +98,13 @@ authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
-webrtc = { version = "0.20.0-alpha.2", features = ["runtime-tokio"] }
-rtc = "0.20.0-alpha.2"
-rtc-ice = "0.20.0-alpha.2"
-rtc-interceptor = "0.20.0-alpha.2"
-rtc-rtcp = "0.20.0-alpha.2"
-rtc-rtp = "0.20.0-alpha.2"
-rtc-shared = "0.20.0-alpha.2"
+webrtc = { version = "0.20.0-beta.1", features = ["runtime-tokio"] }
+rtc = "0.20.0-beta.1"
+rtc-ice = "0.20.0-beta.1"
+rtc-interceptor = "0.20.0-beta.1"
+rtc-rtcp = "0.20.0-beta.1"
+rtc-rtp = "0.20.0-beta.1"
+rtc-shared = "0.20.0-beta.1"
 sdp = "0.17.1"
 
 axum = "0.8"
@@ -114,8 +136,14 @@ portpicker = "0.1.1"
 
 api = { path = "libs/api" }
 cli = { path = "libs/cli" }
+playwright-whep = { path = "libs/playwright-whep" }
 reqwest = { workspace = true, features = ["socks", "json"] }
+rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"] }
+async-trait = "0.1"
+url = { workspace = true }
 tempfile = "3"
+webrtc = { workspace = true }
+test-case = "3"
 anyhow = { workspace = true }
 
 [dependencies]
@@ -130,6 +158,7 @@ storage = { path = "libs/storage" }
 api = { path = "libs/api" }
 version = { path = "libs/version" }
 
+cli = { path = "libs/cli" }
 clap = { workspace = true, features = ["derive"] }
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["process"] }
@@ -141,8 +170,10 @@ axum-extra = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 opendal = "0.55.0"
+playwright-whep = { path = "libs/playwright-whep", optional = true }
 
 toml = "1.0"
+tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
@@ -171,10 +202,9 @@ native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
 native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
 
-[patch.crates-io]
-rtc = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-ice = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-interceptor = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-rtcp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-rtp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-shared = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+# Enables rsmpeg-based tools (whepprobe, whipsynth) and livetwo rsmpeg support
+rsmpeg = ["livetwo/rsmpeg"]
+
+# WHEP browser playback tester (Playwright-based)
+whepwright = ["dep:playwright-whep"]
+

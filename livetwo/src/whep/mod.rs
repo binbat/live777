@@ -10,10 +10,10 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use ::webrtc::peer_connection::PeerConnection;
+use ::webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
 use cli::create_child;
 use libwish::Client;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 use crate::transport;
 use crate::utils::shutdown::graceful_shutdown;
@@ -31,6 +31,30 @@ pub async fn from(
     command: Option<String>,
     channel_url: Option<String>,
 ) -> Result<()> {
+    from_with_state(
+        ct,
+        target_url,
+        whep_url,
+        sdp_file,
+        token,
+        command,
+        channel_url,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn from_with_state(
+    ct: CancellationToken,
+    target_url: String,
+    whep_url: String,
+    sdp_file: Option<String>,
+    token: Option<String>,
+    command: Option<String>,
+    channel_url: Option<String>,
+    state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+) -> Result<()> {
     info!("Starting WHEP session: {}", target_url);
 
     let (video_send, mut video_recv) = unbounded_channel::<Vec<u8>>();
@@ -45,6 +69,8 @@ pub async fn from(
         video_send,
         audio_send,
         codec_info.clone(),
+        state_tx,
+        None,
     )
     .await?;
     info!("WebRTC peer connection established");

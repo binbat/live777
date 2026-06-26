@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use tracing::{debug, trace, warn};
 
 const NAL_UNIT_TYPE_MASK: u8 = 0x3F;
@@ -375,4 +376,60 @@ impl<'a> Iterator for NalIterator<'a> {
 
 struct NalUnit<'a> {
     data: &'a [u8],
+}
+
+const FU_START_BITMASK: u8 = 0x80;
+const FU_END_BITMASK: u8 = 0x40;
+
+/// Payload an Annex-B H.265 bitstream into RTP payloads.
+///
+/// Returns a list of payloads ready to be wrapped in RTP headers. Small NAL
+/// units are emitted as single-NAL payloads; oversized NAL units are split
+/// into Fragmentation Unit (FU) payloads.
+pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
+    let mut payloads = Vec::new();
+
+    for nal in NalIterator::new(data) {
+        if nal.data.len() < 2 {
+            continue;
+        }
+
+        let nal_header = &nal.data[0..2];
+        let nal_unit_type = (nal_header[0] >> 1) & NAL_UNIT_TYPE_MASK;
+
+        if nal.data.len() <= max_payload_size {
+            payloads.push(Bytes::copy_from_slice(nal.data));
+            continue;
+        }
+
+        let fu_payload_data = &nal.data[2..];
+        let mut fu_offset = 0;
+        let mut is_first = true;
+
+        while fu_offset < fu_payload_data.len() {
+            let chunk_size = (fu_payload_data.len() - fu_offset).min(max_payload_size - 3);
+            let is_last = fu_offset + chunk_size >= fu_payload_data.len();
+
+            let mut fu_header = nal_unit_type;
+            if is_first {
+                fu_header |= FU_START_BITMASK;
+            }
+            if is_last {
+                fu_header |= FU_END_BITMASK;
+            }
+
+            let mut fu_packet = Vec::with_capacity(3 + chunk_size);
+            fu_packet.push((nal_header[0] & 0x81) | (nal_type::H265_NAL_FU << 1));
+            fu_packet.push(nal_header[1]);
+            fu_packet.push(fu_header);
+            fu_packet.extend_from_slice(&fu_payload_data[fu_offset..fu_offset + chunk_size]);
+
+            payloads.push(Bytes::from(fu_packet));
+
+            fu_offset += chunk_size;
+            is_first = false;
+        }
+    }
+
+    payloads
 }

@@ -299,6 +299,58 @@ impl SubscribeRTCPeerConnection {
         codec.mime_type.eq_ignore_ascii_case("video/H265")
     }
 
+    fn is_av1_codec(codec: &RTCRtpCodec) -> bool {
+        codec.mime_type.eq_ignore_ascii_case("video/AV1")
+    }
+
+    /// Merge H265 parameters from the publisher fmtp into the selected
+    /// subscriber fmtp. Existing selected parameters are preserved, except for
+    /// bitstream-describing parameters (profile-space, profile-id, tier-flag,
+    /// level-id and sprop-*) which are taken from the publisher so the answer
+    /// accurately describes the stream being forwarded.
+    fn merge_h265_sprop(publisher_fmtp: &str, selected_fmtp: &str) -> String {
+        let publisher_keys = [
+            "profile-space",
+            "profile-id",
+            "tier-flag",
+            "level-id",
+            "sprop-vps",
+            "sprop-sps",
+            "sprop-pps",
+        ];
+
+        let mut params: Vec<(String, String)> = selected_fmtp
+            .split(';')
+            .filter(|part| !part.trim().is_empty())
+            .filter_map(|part| {
+                let (key, value) = part.trim().split_once('=')?;
+                let key = key.trim();
+                if publisher_keys.iter().any(|k| k.eq_ignore_ascii_case(key)) {
+                    return None;
+                }
+                Some((key.to_owned(), value.trim().to_owned()))
+            })
+            .collect();
+
+        for key in publisher_keys {
+            if let Some(value) = publisher_fmtp.split(';').find_map(|part| {
+                let (param_key, value) = part.trim().split_once('=')?;
+                param_key
+                    .trim()
+                    .eq_ignore_ascii_case(key)
+                    .then(|| value.trim().to_owned())
+            }) {
+                params.push((key.to_owned(), value));
+            }
+        }
+
+        params
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+
     fn h265_codecs_are_compatible(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
         if !Self::is_h265_codec(candidate) || !Self::is_h265_codec(publisher) {
             return false;
@@ -309,19 +361,74 @@ impl SubscribeRTCPeerConnection {
             return false;
         }
 
-        for key in ["profile-id", "tier-flag", "tx-mode"] {
+        // Exact-match parameters: if both sides specify them, they must agree.
+        // If only the publisher specifies a value, the candidate is assumed to
+        // accept the inferred/default value.
+        for key in ["profile-space", "profile-id", "tier-flag", "tx-mode"] {
             match (
                 Self::fmtp_param(&publisher.sdp_fmtp_line, key),
                 Self::fmtp_param(&candidate.sdp_fmtp_line, key),
             ) {
                 (Some(publisher_value), Some(candidate_value))
                     if publisher_value == candidate_value => {}
-                (Some(_), _) => return false,
+                (_, Some(_)) => return false,
                 _ => {}
             }
         }
 
         true
+    }
+
+    fn h265_candidate_level_sufficient(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
+        // level-id in the offer indicates the highest level the receiver can
+        // support, so the publisher's level must be <= the candidate's level.
+        // When either side omits level-id, RFC 7798 infers 93 (Level 3.1).
+        let candidate_level = Self::fmtp_param(&candidate.sdp_fmtp_line, "level-id");
+        let publisher_level = Self::fmtp_param(&publisher.sdp_fmtp_line, "level-id");
+        let candidate_level = candidate_level
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(93);
+        let publisher_level = publisher_level
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(93);
+        publisher_level <= candidate_level
+    }
+
+    /// AV1 fmtp may differ by `profile`/`profile-id`, `level-idx` and `tier`
+    /// between the publisher and the subscriber's negotiated codec. The existing
+    /// sender track can be reused as long as the stream profile is compatible
+    /// (the answerer's `profile`/`profile-id` is the maximum it supports, so the
+    /// sender profile must be <= that value). Reusing the bound track avoids a
+    /// `replace_track` that `webrtc-rs` will not re-bind, which manifests as
+    /// `track is not binding yet` and a 3 s subscribe loop timeout.
+    fn av1_codecs_are_compatible(
+        sender_track_codec: &RTCRtpCodec,
+        selected_codec: &RTCRtpCodec,
+    ) -> bool {
+        if !Self::is_av1_codec(sender_track_codec) || !Self::is_av1_codec(selected_codec) {
+            return false;
+        }
+
+        if sender_track_codec.clock_rate != selected_codec.clock_rate
+            || sender_track_codec.channels != selected_codec.channels
+        {
+            return false;
+        }
+
+        // AV1 RTP spec uses `profile`, while older rtc-rs/webrtc-rs code uses
+        // `profile-id`. Chrome answers with `profile`, so accept both names.
+        let sender_profile = Self::av1_profile_id(&sender_track_codec.sdp_fmtp_line);
+        let receiver_profile = Self::av1_profile_id(&selected_codec.sdp_fmtp_line);
+        sender_profile <= receiver_profile
+    }
+
+    /// Parse AV1 profile from an fmtp line, accepting both `profile` and
+    /// `profile-id`. Defaults to 0 (Main profile) when absent.
+    fn av1_profile_id(fmtp: &str) -> u32 {
+        Self::fmtp_param(fmtp, "profile")
+            .or_else(|| Self::fmtp_param(fmtp, "profile-id"))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
     }
 
     fn sender_track_codec_compatible(
@@ -330,6 +437,7 @@ impl SubscribeRTCPeerConnection {
     ) -> bool {
         Self::rtp_codecs_match(sender_track_codec, selected_codec)
             || Self::h265_codecs_are_compatible(sender_track_codec, selected_codec)
+            || Self::av1_codecs_are_compatible(sender_track_codec, selected_codec)
     }
 
     async fn select_sender_codec(
@@ -368,9 +476,20 @@ impl SubscribeRTCPeerConnection {
             return (publisher_codec, None);
         }
 
+        // Preserve H265 sprop parameters from the publisher so the subscriber's
+        // SDP answer includes them. Browsers need sprop-vps/sps/pps to
+        // initialize an H265 decoder.
+        let mut selected_rtp_codec = selected.rtp_codec.clone();
+        if Self::is_h265_codec(&selected_rtp_codec) {
+            selected_rtp_codec.sdp_fmtp_line = Self::merge_h265_sprop(
+                &publisher_codec.sdp_fmtp_line,
+                &selected_rtp_codec.sdp_fmtp_line,
+            );
+        }
+
         let mut updated_params = params.clone();
         for encoding in updated_params.encodings.iter_mut() {
-            encoding.codec = selected.rtp_codec.clone();
+            encoding.codec = selected_rtp_codec.clone();
         }
         if let Err(e) = sender.set_parameters(updated_params, None).await {
             debug!(
@@ -379,7 +498,7 @@ impl SubscribeRTCPeerConnection {
             );
         }
 
-        (selected.rtp_codec, Some(selected.payload_type))
+        (selected_rtp_codec, Some(selected.payload_type))
     }
 
     fn select_compatible_codec(
@@ -401,6 +520,10 @@ impl SubscribeRTCPeerConnection {
                 .iter()
                 .find(|candidate| {
                     Self::h265_codecs_are_compatible(&candidate.rtp_codec, publisher_codec)
+                        && Self::h265_candidate_level_sufficient(
+                            &candidate.rtp_codec,
+                            publisher_codec,
+                        )
                 })
                 .cloned();
         }
@@ -790,53 +913,89 @@ impl SubscribeRTCPeerConnection {
                                     };
                                     let (codec, new_payload_type) =
                                         Self::select_sender_codec(&stream, &id, kind, &sender, publisher_codec.clone()).await;
-                                    let new_track = Arc::new(TrackLocalStaticRTP::new(
-                                        MediaStreamTrack::new(
-                                            "webrtc".to_string(),
-                                            format!("{}-{}", "webrtc", kind),
-                                            "webrtc".to_string(),
+
+                                    // Reuse the already-bound sender track when the codec is
+                                    // compatible to avoid webrtc-rs' replace_track, which does not
+                                    // re-bind the new track and causes 'track is not binding yet'.
+                                    let sender_track = sender.track();
+                                    let sender_track_codec = sender_track.codec(sender_ssrc).await;
+                                    let track_to_use: Arc<dyn TrackLocal> = if sender_track_codec.as_ref().is_some_and(
+                                        |sender_track_codec| {
+                                            Self::sender_track_codec_compatible(sender_track_codec, &codec)
+                                        }
+                                    ) {
+                                        info!(
+                                            "[{}] [{}] {} layer switch reusing bound sender track: sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                                            stream,
+                                            id,
                                             kind,
-                                            vec![RTCRtpEncodingParameters {
-                                                rtp_coding_parameters: RTCRtpCodingParameters {
-                                                    ssrc: Some(sender_ssrc),
+                                            Self::format_codec(sender_track_codec.as_ref().expect("checked above")),
+                                            Self::format_codec(&codec),
+                                            new_payload_type,
+                                            sender_ssrc,
+                                        );
+                                        sender_track.clone()
+                                    } else {
+                                        let new_track = Arc::new(TrackLocalStaticRTP::new(
+                                            MediaStreamTrack::new(
+                                                "webrtc".to_string(),
+                                                format!("{}-{}", "webrtc", kind),
+                                                "webrtc".to_string(),
+                                                kind,
+                                                vec![RTCRtpEncodingParameters {
+                                                    rtp_coding_parameters: RTCRtpCodingParameters {
+                                                        ssrc: Some(sender_ssrc),
+                                                        ..Default::default()
+                                                    },
+                                                    codec: codec.clone(),
                                                     ..Default::default()
-                                                },
-                                                codec: codec.clone(),
-                                                ..Default::default()
-                                            }],
-                                        ),
-                                    ));
+                                                }],
+                                            ),
+                                        ));
 
-                                    match sender.replace_track(new_track.clone() as Arc<dyn webrtc::media_stream::track_local::TrackLocal>).await {
-                                        Ok(_) => {
-                                            debug!("[{}] [{}] {} track replace ok", stream, id, kind);
-                                            recv = publish_track.subscribe();
-                                            track = Some(new_track);
-                                            payload_type = new_payload_type;
-                                            source_codec = Some(publisher_codec);
-                                            selected_codec = Some(codec);
-                                            transient_write_error_since = None;
-
-                                            let ssrc = match publish_track {
-                                                PublishTrackRemote::Real { track, .. } => {
-                                                    let ssrcs = track.ssrcs().await;
-                                                    ssrcs.first().copied().unwrap_or(0)
-                                                }
-                                                #[cfg(feature = "source")]
-                                                PublishTrackRemote::Virtual(v) => v.ssrc(),
-                                            };
-
-                                            let _ = forward_channel
-                                                .publish_rtcp_sender
-                                                .send((RtcpMessage::PictureLossIndication, ssrc));
-
-                                            track_binding_publish_rid.insert(kind.to_string(), new_rid.clone());
-                                            info!("[{}] [{}] {} select layer to {}", stream, id, kind, new_rid);
-                                        }
-                                        Err(e) => {
+                                        if let Err(e) = sender.replace_track(new_track.clone() as Arc<dyn webrtc::media_stream::track_local::TrackLocal>).await {
                                             debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
+                                            break;
                                         }
-                                    }
+
+                                        info!(
+                                            "[{}] [{}] {} layer switch replaced sender track: previous_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                                            stream,
+                                            id,
+                                            kind,
+                                            sender_track_codec
+                                                .as_ref()
+                                                .map(Self::format_codec)
+                                                .unwrap_or_else(|| "<none>".to_string()),
+                                            Self::format_codec(&codec),
+                                            new_payload_type,
+                                            sender_ssrc,
+                                        );
+                                        new_track
+                                    };
+
+                                    recv = publish_track.subscribe();
+                                    track = Some(track_to_use);
+                                    payload_type = new_payload_type;
+                                    source_codec = Some(publisher_codec);
+                                    selected_codec = Some(codec);
+                                    transient_write_error_since = None;
+
+                                    let ssrc = match publish_track {
+                                        PublishTrackRemote::Real { track, .. } => {
+                                            let ssrcs = track.ssrcs().await;
+                                            ssrcs.first().copied().unwrap_or(0)
+                                        }
+                                        #[cfg(feature = "source")]
+                                        PublishTrackRemote::Virtual(v) => v.ssrc(),
+                                    };
+
+                                    let _ = forward_channel
+                                        .publish_rtcp_sender
+                                        .send((RtcpMessage::PictureLossIndication, ssrc));
+
+                                    track_binding_publish_rid.insert(kind.to_string(), new_rid.clone());
+                                    info!("[{}] [{}] {} select layer to {}", stream, id, kind, new_rid);
                                     break;
                                 }
                             }
@@ -989,6 +1148,175 @@ mod tests {
             clock_rate: 90000,
             channels: 0,
             sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(SubscribeRTCPeerConnection::sender_track_codec_compatible(
+            &sender_track_codec,
+            &selected_codec
+        ));
+    }
+
+    #[test]
+    fn h265_codec_selection_accepts_missing_candidate_profile_id() {
+        // Browsers such as Safari/WebKit may omit profile-id from their offer;
+        // the inferred default is Main profile (profile-id=1), so a Main-profile
+        // publisher should still be compatible.
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=1;tier-flag=0;sprop-vps=QAEMAf//AWAAAAMAkAAAAwAAAwBaoA==;sprop-sps=QgEBAWAAAAMAkAAAAwAAAwBaoA==;sprop-pps=RAHAcYMS".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let webkit_codec = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/H265".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "sprop-vps=QAEMAf//AWAAAAMAkAAAAwAAAwBaoA==;sprop-sps=QgEBAWAAAAMAkAAAAwAAAwBaoA==;sprop-pps=RAHAcYMS".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 35,
+        };
+
+        assert!(SubscribeRTCPeerConnection::h265_codecs_are_compatible(
+            &webkit_codec.rtp_codec,
+            &source_codec
+        ));
+    }
+
+    #[test]
+    fn h265_codec_selection_rejects_incompatible_profile_id() {
+        // Chromium may offer H265 with profile-id=2 (Main 10), which cannot
+        // decode a Main-profile (profile-id=1) bitstream.
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=1;tier-flag=0;sprop-vps=QAEMAf//AWAAAAMAkAAAAwAAAwBaoA==;sprop-sps=QgEBAWAAAAMAkAAAAwAAAwBaoA==;sprop-pps=RAHAcYMS".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let main_10_profile = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/H265".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "profile-id=2;tier-flag=0;level-id=180;tx-mode=SRST".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 51,
+        };
+
+        assert!(!SubscribeRTCPeerConnection::h265_codecs_are_compatible(
+            &main_10_profile.rtp_codec,
+            &source_codec
+        ));
+    }
+
+    #[test]
+    fn h265_merge_sprop_overrides_bitstream_params_from_publisher() {
+        let publisher_fmtp =
+            "profile-id=1;tier-flag=0;level-id=90;sprop-vps=VPS;sprop-sps=SPS;sprop-pps=PPS";
+        let selected_fmtp = "tx-mode=SRST;profile-id=2;tier-flag=1;level-id=180;sprop-vps=OLD";
+        let merged = SubscribeRTCPeerConnection::merge_h265_sprop(publisher_fmtp, selected_fmtp);
+        assert!(merged.contains("profile-id=1"));
+        assert!(merged.contains("tier-flag=0"));
+        assert!(merged.contains("level-id=90"));
+        assert!(merged.contains("tx-mode=SRST"));
+        assert!(merged.contains("sprop-vps=VPS"));
+        assert!(merged.contains("sprop-sps=SPS"));
+        assert!(merged.contains("sprop-pps=PPS"));
+        assert!(!merged.contains("profile-id=2"));
+        assert!(!merged.contains("sprop-vps=OLD"));
+    }
+
+    #[test]
+    fn av1_sender_track_reuse_allows_different_level_idx_with_same_profile() {
+        let sender_track_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=3;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(SubscribeRTCPeerConnection::sender_track_codec_compatible(
+            &sender_track_codec,
+            &selected_codec
+        ));
+    }
+
+    #[test]
+    fn av1_sender_track_reuse_accepts_higher_receiver_profile() {
+        // The receiver may advertise a higher profile than the sender stream.
+        // As long as sender profile <= receiver profile, reuse the track.
+        let sender_track_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=3;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=2;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(SubscribeRTCPeerConnection::sender_track_codec_compatible(
+            &sender_track_codec,
+            &selected_codec
+        ));
+    }
+
+    #[test]
+    fn av1_sender_track_reuse_rejects_incompatible_profile() {
+        let sender_track_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=2;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(!SubscribeRTCPeerConnection::sender_track_codec_compatible(
+            &sender_track_codec,
+            &selected_codec
+        ));
+    }
+
+    #[test]
+    fn av1_sender_track_reuse_accepts_profile_parameter_name() {
+        // Chrome answers use `profile`, while rtc-rs uses `profile-id`.
+        let sender_track_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=3;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile=1;level-idx=5;tier=0".to_string(),
             rtcp_feedback: vec![],
         };
 

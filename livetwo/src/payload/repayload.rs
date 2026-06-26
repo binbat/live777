@@ -8,7 +8,7 @@ use rtc::rtp::{
 use tracing::{debug, error, trace, warn};
 
 use super::{H264Processor, H265Processor};
-use crate::payload::RTP_OUTBOUND_MTU;
+use crate::payload::{RTP_OUTBOUND_MTU, payload_annex_b};
 
 const NAL_UNIT_TYPE_MASK: u8 = 0x3F;
 const FU_START_BITMASK: u8 = 0x80;
@@ -65,17 +65,17 @@ impl RePayloadBase {
         }
     }
 
-    fn verify_sequence_number(&mut self, packet: &Packet) {
-        if self.src_sequence_number.wrapping_add(1) != packet.header.sequence_number
-            && self.src_sequence_number != 0
-        {
+    fn verify_sequence_number(&mut self, packet: &Packet) -> bool {
+        let expected = self.src_sequence_number.wrapping_add(1);
+        let continuous = self.src_sequence_number == 0 || expected == packet.header.sequence_number;
+        if !continuous {
             error!(
-                "Should received sequence: {}. But received sequence: {}",
-                self.src_sequence_number.wrapping_add(1),
-                packet.header.sequence_number
+                "Expected sequence {}, received {}",
+                expected, packet.header.sequence_number
             );
         }
         self.src_sequence_number = packet.header.sequence_number;
+        continuous
     }
 
     fn clear_buffer(&mut self) {
@@ -237,129 +237,28 @@ impl RePayloadCodec {
         result
     }
 
-    fn payload_h265_manually(
+    fn payload_h265(
         &mut self,
         data: &[u8],
         original_header: &rtc::rtp::header::Header,
     ) -> Vec<Packet> {
-        const MAX_PAYLOAD_SIZE: usize = RTP_OUTBOUND_MTU - 12;
+        let max_payload_size = RTP_OUTBOUND_MTU - 12;
+        let payloads = payload_annex_b(data, max_payload_size);
+        let total = payloads.len();
 
-        let mut packets = Vec::new();
-        let mut offset = 0;
-
-        while offset < data.len() {
-            if offset + 4 > data.len() {
-                break;
-            }
-
-            let start_code_len = if data[offset..].starts_with(&START_CODE_4) {
-                4
-            } else if data[offset..].starts_with(&START_CODE_3) {
-                3
-            } else {
-                offset += 1;
-                continue;
-            };
-
-            let nal_start = offset + start_code_len;
-
-            let mut nal_end = nal_start + 1;
-            while nal_end + 3 < data.len() {
-                if data[nal_end..].starts_with(&START_CODE_4)
-                    || data[nal_end..].starts_with(&START_CODE_3)
-                {
-                    break;
-                }
-                nal_end += 1;
-            }
-            if nal_end >= data.len() - 3 {
-                nal_end = data.len();
-            }
-
-            let nal_unit = &data[nal_start..nal_end];
-
-            if nal_unit.len() < 2 {
-                offset = nal_end;
-                continue;
-            }
-
-            let nal_header = &nal_unit[0..2];
-            let nal_type = (nal_header[0] >> 1) & NAL_UNIT_TYPE_MASK;
+        let mut packets = Vec::with_capacity(total);
+        for (i, payload) in payloads.into_iter().enumerate() {
+            let mut header = original_header.clone();
+            header.sequence_number = self.base.sequence_number;
+            header.marker = i == total - 1;
+            self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
 
             debug!(
-                "H.265 NAL unit - type={}, size={} bytes",
-                nal_type,
-                nal_unit.len()
+                "H.265 RTP packet: seq={} marker={} len={}",
+                header.sequence_number, header.marker, payload.len()
             );
 
-            // If NAL unit fits in MTU, send as Single NAL Unit
-            if nal_unit.len() <= MAX_PAYLOAD_SIZE {
-                let mut header = original_header.clone();
-                header.sequence_number = self.base.sequence_number;
-                header.marker = nal_end >= data.len();
-                self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
-
-                let marker = header.marker;
-
-                packets.push(Packet {
-                    header,
-                    payload: Bytes::from(nal_unit.to_vec()),
-                });
-
-                debug!(
-                    "H.265 Single NAL - type={}, size={}, marker={}",
-                    nal_type,
-                    nal_unit.len(),
-                    marker
-                );
-            } else {
-                // NAL unit too large, fragment using FU
-                let fu_payload_data = &nal_unit[2..];
-                let mut fu_offset = 0;
-                let mut is_first = true;
-
-                while fu_offset < fu_payload_data.len() {
-                    let chunk_size = (fu_payload_data.len() - fu_offset).min(MAX_PAYLOAD_SIZE - 3);
-                    let is_last = fu_offset + chunk_size >= fu_payload_data.len();
-
-                    let mut fu_header = nal_type;
-                    if is_first {
-                        fu_header |= FU_START_BITMASK;
-                    }
-                    if is_last {
-                        fu_header |= FU_END_BITMASK;
-                    }
-
-                    let mut fu_packet = Vec::with_capacity(3 + chunk_size);
-                    fu_packet.push((nal_header[0] & 0x81) | (H265_NAL_TYPE_FU << 1));
-                    fu_packet.push(nal_header[1]);
-                    fu_packet.push(fu_header);
-                    fu_packet
-                        .extend_from_slice(&fu_payload_data[fu_offset..fu_offset + chunk_size]);
-
-                    let mut header = original_header.clone();
-                    header.sequence_number = self.base.sequence_number;
-                    header.marker = is_last && nal_end >= data.len();
-                    self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
-
-                    let marker = header.marker;
-
-                    packets.push(Packet {
-                        header,
-                        payload: Bytes::from(fu_packet),
-                    });
-
-                    debug!(
-                        "H.265 FU - type={}, S={}, E={}, size={}, marker={}",
-                        nal_type, is_first, is_last, chunk_size, marker
-                    );
-
-                    fu_offset += chunk_size;
-                    is_first = false;
-                }
-            }
-
-            offset = nal_end;
+            packets.push(Packet { header, payload });
         }
 
         debug!("Generated {} H.265 RTP packets", packets.len());
@@ -367,9 +266,16 @@ impl RePayloadCodec {
     }
 }
 
-impl RePayload for RePayloadCodec {
-    fn payload(&mut self, packet: Packet) -> Vec<Packet> {
-        self.base.verify_sequence_number(&packet);
+impl RePayloadCodec {
+    /// Process an inbound RTP packet and return the complete encoded frame when
+    /// the marker bit indicates the end of a frame.
+    pub fn process(&mut self, packet: &Packet) -> Option<Vec<u8>> {
+        let continuous = self.base.verify_sequence_number(packet);
+        if !continuous {
+            // A gap means the buffered fragments belong to a previous frame that
+            // will never be complete; drop them to avoid feeding corrupt data.
+            self.base.clear_buffer();
+        }
 
         match self.decoder.depacketize(&packet.payload) {
             Ok(data) => {
@@ -426,7 +332,7 @@ impl RePayload for RePayloadCodec {
             }
             Err(e) => {
                 error!("Depacketize error: {}", e);
-                return vec![];
+                return None;
             }
         }
 
@@ -437,7 +343,7 @@ impl RePayload for RePayloadCodec {
             if combined_data.is_empty() {
                 warn!("Empty frame data, skipping");
                 self.base.clear_buffer();
-                return vec![];
+                return None;
             }
             let data_with_params = if let Some(ref mut processor) = self.h264_processor {
                 if !processor.has_params() {
@@ -467,38 +373,46 @@ impl RePayload for RePayloadCodec {
                 combined_data
             };
 
-            let packets = if self.h265_processor.is_some() {
-                self.payload_h265_manually(&final_data, &packet.header)
-            } else {
-                match self.encoder.payload(RTP_OUTBOUND_MTU, &final_data) {
-                    Ok(payloads) => {
-                        let length = payloads.len();
-                        debug!("Generated {} output packets", length);
-
-                        payloads
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, payload)| {
-                                let mut header = packet.header.clone();
-                                header.sequence_number = self.base.sequence_number;
-                                header.marker = i == length - 1;
-                                self.base.sequence_number =
-                                    self.base.sequence_number.wrapping_add(1);
-                                Packet { header, payload }
-                            })
-                            .collect::<Vec<Packet>>()
-                    }
-                    Err(e) => {
-                        error!("Payload error: {}", e);
-                        vec![]
-                    }
-                }
-            };
-
             self.base.clear_buffer();
-            packets
+            Some(final_data.to_vec())
         } else {
-            vec![]
+            None
+        }
+    }
+}
+
+impl RePayload for RePayloadCodec {
+    fn payload(&mut self, packet: Packet) -> Vec<Packet> {
+        let final_data = match self.process(&packet) {
+            Some(data) => Bytes::from(data),
+            None => return vec![],
+        };
+
+        if self.h265_processor.is_some() {
+            self.payload_h265(&final_data, &packet.header)
+        } else {
+            match self.encoder.payload(RTP_OUTBOUND_MTU, &final_data) {
+                Ok(payloads) => {
+                    let length = payloads.len();
+                    debug!("Generated {} output packets", length);
+
+                    payloads
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, payload)| {
+                            let mut header = packet.header.clone();
+                            header.sequence_number = self.base.sequence_number;
+                            header.marker = i == length - 1;
+                            self.base.sequence_number = self.base.sequence_number.wrapping_add(1);
+                            Packet { header, payload }
+                        })
+                        .collect::<Vec<Packet>>()
+                }
+                Err(e) => {
+                    error!("Payload error: {}", e);
+                    vec![]
+                }
+            }
         }
     }
 

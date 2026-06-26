@@ -117,6 +117,22 @@ impl From<Codec> for RTCRtpCodec {
     }
 }
 
+impl Codec {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Codec::Vp8 => "VP8",
+            Codec::Vp9 => "VP9",
+            Codec::H264 => "H264",
+            Codec::H265 => "H265",
+            Codec::AV1 => "AV1",
+            Codec::Opus => "OPUS",
+            Codec::G722 => "G722",
+            Codec::PCMU => "PCMU",
+            Codec::PCMA => "PCMA",
+        }
+    }
+}
+
 pub fn codec_from_str(s: &str) -> Result<Codec> {
     match s.to_uppercase().as_str() {
         "VP8" => Ok(Codec::Vp8),

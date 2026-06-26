@@ -1,0 +1,19 @@
+[package]
+name = "playwright-whep"
+description = "Browser WHEP playback test harness using Playwright, callable from Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "time", "fs", "io-util"] }
+tracing = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -5,7 +5,7 @@ use libwish::Client;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
@@ -29,6 +29,8 @@ pub async fn setup_whep_peer(
     video_send: UnboundedSender<Vec<u8>>,
     audio_send: UnboundedSender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+    video_mime_tx: Option<watch::Sender<Option<String>>>,
 ) -> Result<(
     Arc<dyn PeerConnection>,
     RTCSessionDescription,
@@ -48,6 +50,8 @@ pub async fn setup_whep_peer(
         gather_complete.clone(),
         dc_recv_tx,
         dc_send_rx,
+        state_tx,
+        video_mime_tx,
     )
     .await?;
 
@@ -70,12 +74,17 @@ struct WhepTrackHandler {
     video_send: Option<UnboundedSender<Vec<u8>>>,
     audio_send: Option<UnboundedSender<Vec<u8>>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+    video_mime_tx: Option<watch::Sender<Option<String>>>,
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for WhepTrackHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         info!("WHEP connection state changed: {}", state);
+        if let Some(tx) = &self.state_tx {
+            let _ = tx.send(state);
+        }
         match state {
             RTCPeerConnectionState::Failed => {
                 self.ct.cancel();
@@ -109,7 +118,10 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
             match kind {
                 RtpCodecKind::Video => {
                     debug!("WHEP updating video codec: {:?}", codec);
-                    info.video_codec = Some(codec_params);
+                    info.video_codec = Some(codec_params.clone());
+                    if let Some(tx) = &self.video_mime_tx {
+                        let _ = tx.send(Some(codec.mime_type.clone()));
+                    }
                 }
                 RtpCodecKind::Audio => {
                     debug!("WHEP updating audio codec: {:?}", codec);
@@ -129,6 +141,7 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
         if let Some(sender) = sender {
             let track_clone = track.clone();
             let codec_info = self.codec_info.clone();
+            let video_mime_tx = self.video_mime_tx.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
                 let mut first_packet = true;
@@ -147,7 +160,10 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                                     let mut info = codec_info.lock().await;
                                     match kind {
                                         RtpCodecKind::Video => {
-                                            info.video_codec = Some(codec_params);
+                                            info.video_codec = Some(codec_params.clone());
+                                            if let Some(tx) = &video_mime_tx {
+                                                let _ = tx.send(Some(codec.mime_type.clone()));
+                                            }
                                         }
                                         RtpCodecKind::Audio => {
                                             info.audio_codec = Some(codec_params);
@@ -259,6 +275,7 @@ fn setup_data_channel_loop(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_peer(
     ct: CancellationToken,
     video_send: UnboundedSender<Vec<u8>>,
@@ -267,6 +284,8 @@ async fn create_peer(
     gather_complete: Arc<Notify>,
     dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
     dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+    video_mime_tx: Option<watch::Sender<Option<String>>>,
 ) -> Result<Arc<dyn PeerConnection>> {
     let mut media_engine = MediaEngine::default();
     media_engine.register_default_codecs()?;
@@ -277,6 +296,8 @@ async fn create_peer(
         video_send: Some(video_send),
         audio_send: Some(audio_send),
         codec_info,
+        state_tx,
+        video_mime_tx,
     });
 
     let config = RTCConfigurationBuilder::new()

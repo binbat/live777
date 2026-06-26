@@ -22,6 +22,7 @@ use crate::utils::shutdown::graceful_shutdown;
 use crate::utils::stats::start_stats_monitor;
 
 pub use input::InputSource;
+pub use webrtc::format_ice_stats;
 pub(crate) use webrtc::log_rtcp_feedback_packet;
 pub use webrtc::setup_whip_peer;
 

@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use cli::codec_from_str;
 use sdp::description::common::{Address, ConnectionInformation};
 use sdp::{SessionDescription, description::media::RangedPort};
-use std::fs::{self, File};
-use std::io::{Cursor, Write};
+use std::fs;
+use std::io::Cursor;
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::Path;
 use std::sync::Arc;
@@ -192,12 +192,16 @@ pub async fn setup_rtp_output(
     let file_path = sdp_filename.unwrap_or_else(|| "output.sdp".to_string());
     debug!("SDP written to {:?}", file_path);
 
-    let mut file = File::options()
+    let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(file_path)?;
-    file.write_all(sdp.as_bytes())?;
+        .open(&file_path)
+        .await
+        .with_context(|| format!("Failed to open SDP file {file_path}"))?;
+    tokio::io::AsyncWriteExt::write_all(&mut file, sdp.as_bytes())
+        .await
+        .with_context(|| format!("Failed to write SDP file {file_path}"))?;
 
     notify.notify_one();
     debug!("Sent signal to start child process");
