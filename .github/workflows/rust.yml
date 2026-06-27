@@ -17,8 +17,11 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v6
       - name: Setup ffmpeg
-        if: runner.os != 'Linux'
+        if: runner.os == 'Windows'
         uses: AnimMouse/setup-ffmpeg@v1.2.3
+      - name: Install FFmpeg
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
       - name: Install FFmpeg development files
         if: runner.os == 'Linux'
         run: |
@@ -31,7 +34,7 @@ jobs:
         run: |
           ffmpeg -version
           ffprobe -version
-          if [ "$RUNNER_OS" == "Linux" ]; then
+          if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
             pkg-config --modversion libavcodec libavutil libavdevice \
               libavfilter libavformat libswresample libswscale || true
           fi
@@ -84,6 +87,9 @@ jobs:
         run: pnpm install
       - name: Build WebUI
         run: pnpm -r build
+      - name: Install FFmpeg
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
         run: |
@@ -99,7 +105,7 @@ jobs:
             libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev
 
       - name: Show ffmpeg version
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: |
           ffmpeg -version
           ffprobe -version
