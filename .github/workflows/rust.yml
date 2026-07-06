@@ -32,17 +32,17 @@ jobs:
           sudo apt-get install -y build-essential pkg-config \
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev
-      - name: Install FFmpeg development files (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          curl -fsSL -o /tmp/ffmpeg.zip \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
-          7z x /tmp/ffmpeg.zip -o/c/ffmpeg-tmp
-          mv /c/ffmpeg-tmp/ffmpeg-*-win64-gpl-shared /c/ffmpeg
-          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
-          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
-          echo "FFMPEG_LIB_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
+#      - name: Install FFmpeg development files (Windows)
+#        if: runner.os == 'Windows'
+#        shell: bash
+#        run: |
+#          curl -fsSL -o /tmp/ffmpeg.zip \
+#            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
+#          7z x /tmp/ffmpeg.zip -o/c/ffmpeg-tmp
+#          mv /c/ffmpeg-tmp/ffmpeg-*-win64-gpl-shared /c/ffmpeg
+#          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
+#          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
+#          echo "FFMPEG_LIB_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
       - name: Show version information
         shell: bash
         run: |
@@ -66,6 +66,19 @@ jobs:
           BINDING=$(find "$HOME/.cargo/registry/src" -path '*rusty_ffmpeg-*/src/binding.rs' 2>/dev/null | head -1)
           echo "FFMPEG_BINDING_PATH=$BINDING"
           echo "FFMPEG_BINDING_PATH=$BINDING" >> "$GITHUB_ENV"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+      - name: Setup Nodejs
+        uses: actions/setup-node@v6
+        with:
+          node-version: latest
+          cache: pnpm
+      - name: Install npm dependencies
+        run: pnpm install
+      - name: Build WebUI
+        run: pnpm -r build
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Install cargo-nextest
