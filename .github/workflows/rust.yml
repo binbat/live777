@@ -16,25 +16,39 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6
-      - name: Setup ffmpeg
+      - name: Setup ffmpeg (Windows runtime)
         if: runner.os == 'Windows'
         uses: AnimMouse/setup-ffmpeg@v1.2.3
-      - name: Install FFmpeg
+      - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
-      - name: Install FFmpeg development files
+        run: |
+          brew install ffmpeg pkg-config
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+      - name: Install FFmpeg development files (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y build-essential pkg-config \
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev
+      - name: Install FFmpeg development files (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL -o /tmp/ffmpeg.zip \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
+          7z x /tmp/ffmpeg.zip -o/c/ffmpeg-tmp
+          mv /c/ffmpeg-tmp/ffmpeg-*-win64-gpl-shared /c/ffmpeg
+          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
+          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIB_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
       - name: Show version information
         shell: bash
         run: |
           ffmpeg -version
           ffprobe -version
-          if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
+          if [ "$RUNNER_OS" != "Windows" ]; then
             pkg-config --modversion libavcodec libavutil libavdevice \
               libavfilter libavformat libswresample libswscale || true
           fi
@@ -46,7 +60,7 @@ jobs:
           ldconfig -p | grep libclang || true
           dpkg -l | grep -E 'clang|llvm|libc6-dev|linux-libc-dev' || true
       - name: Prepare FFmpeg binding
-        if: runner.os == 'Linux'
+        shell: bash
         run: |
           cargo fetch
           BINDING=$(find "$HOME/.cargo/registry/src" -path '*rusty_ffmpeg-*/src/binding.rs' 2>/dev/null | head -1)
@@ -57,7 +71,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
       - name: Generate code coverage
-        run: cargo llvm-cov nextest --profile ci --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg --lcov --output-path lcov.info
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v6
         with:
@@ -87,16 +101,19 @@ jobs:
         run: pnpm install
       - name: Build WebUI
         run: pnpm -r build
-      - name: Install FFmpeg
+      - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        run: |
+          brew install ffmpeg pkg-config
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libcamera-dev libv4l-dev
 
-      - name: Install FFmpeg development files
+      - name: Install FFmpeg development files (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
@@ -104,13 +121,27 @@ jobs:
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev
 
+      - name: Install FFmpeg development files (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL -o /tmp/ffmpeg.zip \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
+          7z x /tmp/ffmpeg.zip -o/c/ffmpeg-tmp
+          mv /c/ffmpeg-tmp/ffmpeg-*-win64-gpl-shared /c/ffmpeg
+          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
+          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIB_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
+
       - name: Show ffmpeg version
-        if: runner.os == 'Linux' || runner.os == 'macOS'
+        shell: bash
         run: |
           ffmpeg -version
           ffprobe -version
-          pkg-config --modversion libavcodec libavutil libavdevice \
-            libavfilter libavformat libswresample libswscale
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            pkg-config --modversion libavcodec libavutil libavdevice \
+              libavfilter libavformat libswresample libswscale || true
+          fi
 
       - name: Bindgen diagnostics
         if: runner.os == 'Linux'
@@ -121,7 +152,7 @@ jobs:
           dpkg -l | grep -E 'clang|llvm|libc6-dev|linux-libc-dev' || true
 
       - name: Prepare FFmpeg binding
-        if: runner.os == 'Linux'
+        shell: bash
         run: |
           cargo fetch
           BINDING=$(find "$HOME/.cargo/registry/src" -path '*rusty_ffmpeg-*/src/binding.rs' 2>/dev/null | head -1)
@@ -135,8 +166,8 @@ jobs:
             cargo build --all-targets --all-features --release --verbose
           else
             # Native V4L2/libcamera/RDK backends require Linux kernel headers.
-            # On macOS/Windows test the full non-native feature set instead.
+            # On macOS/Windows test the full non-native feature set + rsmpeg instead.
             cargo build --all-targets \
-              --features source-all,webui,net4mqtt,recorder,cascade \
+              --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg \
               --release --verbose
           fi

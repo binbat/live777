@@ -144,8 +144,6 @@ tempfile = "3"
 webrtc = { workspace = true }
 test-case = "3"
 anyhow = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"] }
 
 [dependencies]
