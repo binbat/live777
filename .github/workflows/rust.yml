@@ -26,9 +26,9 @@ jobs:
           echo "cba748035c21ce1431d0823c7a3a711f38616f89f87a265dceddf9b7f6749d2d  /tmp/ffmpeg.7z" | sha256sum -c
           7z x /tmp/ffmpeg.7z -o/c/ffmpeg-tmp
           mv /c/ffmpeg-tmp/ffmpeg-8.1.2-full_build-shared /c/ffmpeg
-          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
-          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
-          echo "FFMPEG_LIBS_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
+          echo "$(cygpath -w /c/ffmpeg/bin)" >> "$GITHUB_PATH"
+          echo "FFMPEG_INCLUDE_DIR=$(cygpath -w /c/ffmpeg/include)" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIBS_DIR=$(cygpath -w /c/ffmpeg/lib)" >> "$GITHUB_ENV"
           echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
       - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
@@ -64,6 +64,9 @@ jobs:
         run: |
           cargo fetch
           BINDING=$(find "$HOME/.cargo/registry/src" -path '*rusty_ffmpeg-*/src/binding.rs' 2>/dev/null | head -1)
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            BINDING=$(cygpath -w "$BINDING")
+          fi
           echo "FFMPEG_BINDING_PATH=$BINDING"
           echo "FFMPEG_BINDING_PATH=$BINDING" >> "$GITHUB_ENV"
 
@@ -153,9 +156,9 @@ jobs:
           echo "cba748035c21ce1431d0823c7a3a711f38616f89f87a265dceddf9b7f6749d2d  /tmp/ffmpeg.7z" | sha256sum -c
           7z x /tmp/ffmpeg.7z -o/c/ffmpeg-tmp
           mv /c/ffmpeg-tmp/ffmpeg-8.1.2-full_build-shared /c/ffmpeg
-          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
-          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
-          echo "FFMPEG_LIBS_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
+          echo "$(cygpath -w /c/ffmpeg/bin)" >> "$GITHUB_PATH"
+          echo "FFMPEG_INCLUDE_DIR=$(cygpath -w /c/ffmpeg/include)" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIBS_DIR=$(cygpath -w /c/ffmpeg/lib)" >> "$GITHUB_ENV"
           echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
 
       - name: Show ffmpeg version
@@ -181,6 +184,9 @@ jobs:
         run: |
           cargo fetch
           BINDING=$(find "$HOME/.cargo/registry/src" -path '*rusty_ffmpeg-*/src/binding.rs' 2>/dev/null | head -1)
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            BINDING=$(cygpath -w "$BINDING")
+          fi
           echo "FFMPEG_BINDING_PATH=$BINDING"
           echo "FFMPEG_BINDING_PATH=$BINDING" >> "$GITHUB_ENV"
 
