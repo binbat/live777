@@ -18,18 +18,18 @@ jobs:
         uses: actions/checkout@v6
       - name: Install FFmpeg development files (Windows)
         if: runner.os == 'Windows'
-        shell: powershell
+        shell: bash
         run: |
-          choco install ffmpeg-shared -y --no-progress
-          $dir = Get-ChildItem `
-            -Path "$env:ProgramData\chocolatey\lib\ffmpeg-shared\tools" `
-            -Filter "ffmpeg-*-full_build-shared" `
-            -Directory | Select-Object -First 1
-          if (-not $dir) { throw "ffmpeg-shared install dir not found" }
-          "$($dir.FullName)\bin" >> $env:GITHUB_PATH
-          "FFMPEG_INCLUDE_DIR=$($dir.FullName)\include" >> $env:GITHUB_ENV
-          "FFMPEG_LIBS_DIR=$($dir.FullName)\lib" >> $env:GITHUB_ENV
-          "FFMPEG_LINK_MODE=dynamic" >> $env:GITHUB_ENV
+          # Pin to a GyanD shared build so upstream updates don't break checksums.
+          curl -fsSL -L -o /tmp/ffmpeg.7z \
+            "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-full_build-shared.7z"
+          echo "cba748035c21ce1431d0823c7a3a711f38616f89f87a265dceddf9b7f6749d2d  /tmp/ffmpeg.7z" | sha256sum -c
+          7z x /tmp/ffmpeg.7z -o/c/ffmpeg-tmp
+          mv /c/ffmpeg-tmp/ffmpeg-8.1.2-full_build-shared /c/ffmpeg
+          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
+          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIBS_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
+          echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
       - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -145,18 +145,18 @@ jobs:
 
       - name: Install FFmpeg development files (Windows)
         if: runner.os == 'Windows'
-        shell: powershell
+        shell: bash
         run: |
-          choco install ffmpeg-shared -y --no-progress
-          $dir = Get-ChildItem `
-            -Path "$env:ProgramData\chocolatey\lib\ffmpeg-shared\tools" `
-            -Filter "ffmpeg-*-full_build-shared" `
-            -Directory | Select-Object -First 1
-          if (-not $dir) { throw "ffmpeg-shared install dir not found" }
-          "$($dir.FullName)\bin" >> $env:GITHUB_PATH
-          "FFMPEG_INCLUDE_DIR=$($dir.FullName)\include" >> $env:GITHUB_ENV
-          "FFMPEG_LIBS_DIR=$($dir.FullName)\lib" >> $env:GITHUB_ENV
-          "FFMPEG_LINK_MODE=dynamic" >> $env:GITHUB_ENV
+          # Pin to a GyanD shared build so upstream updates don't break checksums.
+          curl -fsSL -L -o /tmp/ffmpeg.7z \
+            "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-full_build-shared.7z"
+          echo "cba748035c21ce1431d0823c7a3a711f38616f89f87a265dceddf9b7f6749d2d  /tmp/ffmpeg.7z" | sha256sum -c
+          7z x /tmp/ffmpeg.7z -o/c/ffmpeg-tmp
+          mv /c/ffmpeg-tmp/ffmpeg-8.1.2-full_build-shared /c/ffmpeg
+          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
+          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIBS_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
+          echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
 
       - name: Show ffmpeg version
         shell: bash
