@@ -16,9 +16,20 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6
-      - name: Setup ffmpeg (Windows runtime)
+      - name: Install FFmpeg development files (Windows)
         if: runner.os == 'Windows'
-        uses: AnimMouse/setup-ffmpeg@v1.2.3
+        shell: powershell
+        run: |
+          choco install ffmpeg-shared -y --no-progress
+          $dir = Get-ChildItem `
+            -Path "$env:ProgramData\chocolatey\lib\ffmpeg-shared\tools" `
+            -Filter "ffmpeg-*-full_build-shared" `
+            -Directory | Select-Object -First 1
+          if (-not $dir) { throw "ffmpeg-shared install dir not found" }
+          "$($dir.FullName)\bin" >> $env:GITHUB_PATH
+          "FFMPEG_INCLUDE_DIR=$($dir.FullName)\include" >> $env:GITHUB_ENV
+          "FFMPEG_LIBS_DIR=$($dir.FullName)\lib" >> $env:GITHUB_ENV
+          "FFMPEG_LINK_MODE=dynamic" >> $env:GITHUB_ENV
       - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -32,17 +43,6 @@ jobs:
           sudo apt-get install -y build-essential pkg-config \
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev
-#      - name: Install FFmpeg development files (Windows)
-#        if: runner.os == 'Windows'
-#        shell: bash
-#        run: |
-#          curl -fsSL -o /tmp/ffmpeg.zip \
-#            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
-#          7z x /tmp/ffmpeg.zip -o/c/ffmpeg-tmp
-#          mv /c/ffmpeg-tmp/ffmpeg-*-win64-gpl-shared /c/ffmpeg
-#          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
-#          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
-#          echo "FFMPEG_LIB_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
       - name: Show version information
         shell: bash
         run: |
@@ -145,15 +145,18 @@ jobs:
 
       - name: Install FFmpeg development files (Windows)
         if: runner.os == 'Windows'
-        shell: bash
+        shell: powershell
         run: |
-          curl -fsSL -o /tmp/ffmpeg.zip \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
-          7z x /tmp/ffmpeg.zip -o/c/ffmpeg-tmp
-          mv /c/ffmpeg-tmp/ffmpeg-*-win64-gpl-shared /c/ffmpeg
-          echo "/c/ffmpeg/bin" >> "$GITHUB_PATH"
-          echo "FFMPEG_INCLUDE_DIR=/c/ffmpeg/include" >> "$GITHUB_ENV"
-          echo "FFMPEG_LIB_DIR=/c/ffmpeg/lib" >> "$GITHUB_ENV"
+          choco install ffmpeg-shared -y --no-progress
+          $dir = Get-ChildItem `
+            -Path "$env:ProgramData\chocolatey\lib\ffmpeg-shared\tools" `
+            -Filter "ffmpeg-*-full_build-shared" `
+            -Directory | Select-Object -First 1
+          if (-not $dir) { throw "ffmpeg-shared install dir not found" }
+          "$($dir.FullName)\bin" >> $env:GITHUB_PATH
+          "FFMPEG_INCLUDE_DIR=$($dir.FullName)\include" >> $env:GITHUB_ENV
+          "FFMPEG_LIBS_DIR=$($dir.FullName)\lib" >> $env:GITHUB_ENV
+          "FFMPEG_LINK_MODE=dynamic" >> $env:GITHUB_ENV
 
       - name: Show ffmpeg version
         shell: bash
