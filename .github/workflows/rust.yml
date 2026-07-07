@@ -76,6 +76,15 @@ jobs:
           cache: pnpm
       - name: Install npm dependencies
         run: pnpm install
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: .playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium webkit
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
       - name: Build WebUI
         run: pnpm -r build
 
@@ -84,7 +93,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
       - name: Generate code coverage
-        run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright --lcov --output-path lcov.info
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v6
         with:

@@ -222,8 +222,9 @@ where
 }
 
 /// `whipsynth` H265 source verified in WebKit (Safari), the only major browser
-/// engine that supports H265 WebRTC.
-#[cfg(all(feature = "rsmpeg", feature = "whepwright"))]
+/// engine that supports H265 WebRTC. Linux CI uses WebKitGTK which does not
+/// expose H265 WebRTC decoding, so keep this test macOS-only.
+#[cfg(all(target_os = "macos", feature = "rsmpeg", feature = "whepwright"))]
 #[test_matrix(
     [source::whipsynth::WhipgenSource::new(VideoCodec::H265)],
     [player::playwright::PlaywrightWhepPlayer::webkit()]

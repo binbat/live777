@@ -25,7 +25,7 @@ use crate::payload::{RePayload, RePayloadCodec};
 /// Number of consecutive decode errors tolerated before the first successful
 /// frame. This avoids failing on startup noise (e.g. VP8 interframes before the
 /// first keyframe) while still surfacing persistent stream corruption.
-const STARTUP_ERROR_THRESHOLD: u32 = 10;
+const STARTUP_ERROR_THRESHOLD: u32 = 120;
 
 pub struct RtpFrameDecoder {
     repayload: RePayloadCodec,

@@ -121,7 +121,7 @@ impl FrameGenerator {
             .audio_codec
             .map(|c| match c {
                 AudioCodec::Opus => 960, // 20 ms at 48 kHz
-                AudioCodec::G722 => 160, // 10 ms at 16 kHz
+                AudioCodec::G722 => 320, // 20 ms at 16 kHz
             })
             .unwrap_or(960) as i64;
 
