@@ -84,13 +84,13 @@ authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
-webrtc = { version = "0.20.0-alpha.2", features = ["runtime-tokio"] }
-rtc = "0.20.0-alpha.2"
-rtc-ice = "0.20.0-alpha.2"
-rtc-interceptor = "0.20.0-alpha.2"
-rtc-rtcp = "0.20.0-alpha.2"
-rtc-rtp = "0.20.0-alpha.2"
-rtc-shared = "0.20.0-alpha.2"
+webrtc = { version = "0.20.0-rc.2", features = ["runtime-tokio"] }
+rtc = "0.20.0-rc.2"
+rtc-ice = "0.20.0-rc.2"
+rtc-interceptor = "0.20.0-rc.2"
+rtc-rtcp = "0.20.0-rc.2"
+rtc-rtp = "0.20.0-rc.2"
+rtc-shared = "0.20.0-rc.2"
 sdp = "0.17.1"
 
 axum = "0.8"
@@ -188,9 +188,9 @@ native-rdk = ["capture-v4l2", "encoder-rdk"]
 whepwright = ["dep:playwright-whep"]
 
 [patch.crates-io]
-rtc = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-ice = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-interceptor = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-rtcp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-rtp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
-rtc-shared = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-ice = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-interceptor = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-rtcp = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-rtp = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-shared = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
