@@ -22,6 +22,7 @@ impl Player for LivetwoWhepPlayer {
 
     async fn play(&self, whep_url: &str) -> Result<PlayResult> {
         let (base_url, stream_id) = parse_whep_url(whep_url)?;
+        let whep_url = whep_url.to_string();
 
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let output_port = pick_udp_port(ip);
@@ -36,15 +37,23 @@ impl Player for LivetwoWhepPlayer {
             .to_string();
 
         let ct = CancellationToken::new();
-        let mut handle_whep = Some(tokio::spawn(livetwo::whep::from(
-            ct.clone(),
-            output_url,
-            whep_url.to_string(),
-            Some(output_sdp_path),
-            None,
-            None,
-            None,
-        )));
+        let mut handle_whep = Some(tokio::spawn({
+            let ct = ct.clone();
+            async move {
+                // Keep the output SDP file alive for the lifetime of the WHEP task.
+                let _output_sdp = output_sdp;
+                livetwo::whep::from(
+                    ct,
+                    output_url,
+                    whep_url.to_string(),
+                    Some(output_sdp_path),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+            }
+        }));
 
         let mut connected = false;
         let mut last_error = None;

@@ -94,7 +94,10 @@ async fn run() -> Result<()> {
 
     match result {
         Ok(result) => {
-            print_result(&result, args.output);
+            if let Err(e) = print_result(&result, args.output) {
+                eprintln!("Failed to serialize result: {e}");
+                return Err(e);
+            }
             if result.success {
                 info!("=== WHEP playback succeeded ===");
                 Ok(())
@@ -107,7 +110,7 @@ async fn run() -> Result<()> {
         }
         Err(e) => {
             let failed = PlayResult::failed(format!("{e:?}"));
-            print_result(&failed, args.output);
+            let _ = print_result(&failed, args.output);
             Err(e)
         }
     }
@@ -186,12 +189,13 @@ impl PlayResult {
     }
 }
 
-fn print_result(result: &PlayResult, format: OutputFormat) {
+fn print_result(result: &PlayResult, format: OutputFormat) -> Result<()> {
     match format {
-        OutputFormat::Json => match serde_json::to_string_pretty(result) {
-            Ok(json) => println!("{json}"),
-            Err(e) => eprintln!("Failed to serialize result: {e}"),
-        },
+        OutputFormat::Json => {
+            let json =
+                serde_json::to_string_pretty(result).context("Failed to serialize result")?;
+            println!("{json}");
+        }
         OutputFormat::Human => {
             println!("=== WHEP Play Result ===");
             println!("Connected:      {}", result.connected);
@@ -217,4 +221,5 @@ fn print_result(result: &PlayResult, format: OutputFormat) {
             }
         }
     }
+    Ok(())
 }

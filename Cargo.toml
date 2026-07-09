@@ -145,6 +145,7 @@ webrtc = { workspace = true }
 test-case = "3"
 anyhow = { workspace = true }
 rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
 
 [dependencies]
 liveion = { path = "liveion" }
@@ -208,3 +209,10 @@ rsmpeg = ["livetwo/rsmpeg"]
 # WHEP browser playback tester (Playwright-based)
 whepwright = ["dep:playwright-whep"]
 
+[patch.crates-io]
+rtc = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-ice = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-interceptor = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-rtcp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-rtp = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
+rtc-shared = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }

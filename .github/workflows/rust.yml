@@ -85,18 +85,19 @@ jobs:
           path: .playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Install Playwright browsers
-        run: pnpm exec playwright install --with-deps chromium webkit
+        run: pnpm exec playwright install --with-deps chromium
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
       - name: Build WebUI
         run: pnpm -r build
-
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
       - name: Generate code coverage
         run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright --lcov --output-path lcov.info
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v6
         with:
@@ -197,8 +198,8 @@ jobs:
             cargo build --all-targets --all-features --release --verbose
           else
             # Native V4L2/libcamera/RDK backends require Linux kernel headers.
-            # On macOS/Windows test the full non-native feature set + rsmpeg instead.
+            # On macOS/Windows test the full non-native feature set + rsmpeg + whepwright instead.
             cargo build --all-targets \
-              --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg \
+              --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright \
               --release --verbose
           fi

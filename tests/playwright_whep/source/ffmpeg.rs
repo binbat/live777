@@ -47,7 +47,6 @@ impl Source for FfmpegSource {
         let codec = self.codec;
         let payload_type = codec.payload_type();
         let encoder = codec.ffmpeg_encoder();
-        let extra = codec.ffmpeg_extra_args().join(" ");
 
         // FFmpeg's RTP muxer names VP9 `VP9` and AV1 `AV1X` in the SDP.
         let rtp_codec_name = match codec {
@@ -55,17 +54,36 @@ impl Source for FfmpegSource {
             _ => encoder,
         };
 
-        let command = format!(
-            "ffmpeg -re -f lavfi -i testsrc=size={width}x{height}:rate={fps} \
-             -vcodec {encoder} {extra} \
-             -g {fps} -keyint_min {fps} \
-             -b:v 1000k -maxrate 1200k -bufsize 2400k \
-             -payload_type {payload_type} \
-             -f rtp 'rtp://{target_addr}?codec={rtp_codec_name}'"
-        );
+        let mut cmd = Command::new("ffmpeg");
+        cmd.arg("-re")
+            .arg("-f")
+            .arg("lavfi")
+            .arg("-i")
+            .arg(format!("testsrc=size={width}x{height}:rate={fps}"))
+            .arg("-vcodec")
+            .arg(encoder);
+        for arg in codec.ffmpeg_extra_args() {
+            cmd.arg(arg);
+        }
+        cmd.arg("-g")
+            .arg(fps.to_string())
+            .arg("-keyint_min")
+            .arg(fps.to_string())
+            .arg("-b:v")
+            .arg("1000k")
+            .arg("-maxrate")
+            .arg("1200k")
+            .arg("-bufsize")
+            .arg("2400k")
+            .arg("-payload_type")
+            .arg(payload_type.to_string())
+            .arg("-f")
+            .arg("rtp")
+            .arg(format!("rtp://{target_addr}?codec={rtp_codec_name}"));
 
-        let child = spawn_shell_command(&command)
-            .with_context(|| format!("Failed to spawn FFmpeg source: {command}"))?;
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn FFmpeg source: {cmd:?}"))?;
 
         Ok(Box::new(FfmpegHandle { child }))
     }
@@ -96,20 +114,4 @@ impl SourceHandle for FfmpegHandle {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_shell_command(command: &str) -> Result<Child> {
-    Command::new("cmd")
-        .args(["/C", command])
-        .spawn()
-        .context("Failed to spawn cmd")
-}
-
-#[cfg(not(target_os = "windows"))]
-fn spawn_shell_command(command: &str) -> Result<Child> {
-    Command::new("sh")
-        .args(["-c", command])
-        .spawn()
-        .context("Failed to spawn sh")
 }

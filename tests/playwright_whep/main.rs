@@ -59,7 +59,7 @@ fn reserve_udp_port(ip: IpAddr) -> UdpPortGuard {
     UdpPortGuard { socket }
 }
 
-/// Matrix test for FFmpeg sources played back by the in-process livetwo WHEP player.
+/// Matrix test for FFmpeg RTP sources played back by the in-process livetwo WHEP player.
 /// This runs without any browser dependency.
 #[test_matrix(
     [
@@ -92,7 +92,7 @@ where
     run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
 }
 
-/// Matrix test for sources played back in a real browser via Playwright.
+/// Matrix test for FFmpeg RTP sources played back in a real browser via Playwright.
 #[cfg(all(feature = "whepwright", feature = "rsmpeg"))]
 #[test_matrix(
     [
