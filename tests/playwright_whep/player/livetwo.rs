@@ -104,9 +104,6 @@ impl Player for LivetwoWhepPlayer {
             connected,
             video_width: 0,
             video_height: 0,
-            video_tracks: 0,
-            audio_tracks: 0,
-            duration_ms: 0,
             error: last_error,
         })
     }

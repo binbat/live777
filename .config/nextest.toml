@@ -15,10 +15,10 @@ fail-fast = false
 filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests))'
 test-group = 'resource-limited'
 
-# Integration test binaries exercise ffmpeg and local sockets; keep them serial
-# to avoid fixed-port and media-resource contention under nextest.
+# Integration test binaries exercise ffmpeg, local sockets, and/or real browsers;
+# keep them serial to avoid fixed-port and media-resource contention under nextest.
 [[profile.default.overrides]]
-filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests)'
+filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests) | binary(playwright_whep)'
 test-group = 'serial-integration'
 
 [[profile.ci.overrides]]
@@ -26,7 +26,7 @@ filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | bi
 test-group = 'resource-limited'
 
 [[profile.ci.overrides]]
-filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests)'
+filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests) | binary(playwright_whep)'
 test-group = 'serial-integration'
 
 [[profile.ci.overrides]]

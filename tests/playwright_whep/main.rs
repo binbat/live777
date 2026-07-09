@@ -162,19 +162,11 @@ where
     let whip_url = format!("http://{api_addr}{}", api::path::whip("-"));
 
     let whip_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let whip_video_guard = reserve_udp_port(whip_ip);
-    let whip_video_port = whip_video_guard.port();
-    let whip_video_addr = SocketAddr::new(whip_ip, whip_video_port);
-    let (whip_audio_guard, whip_audio_addr) = if source.has_audio() {
-        let guard = reserve_udp_port(whip_ip);
-        let port = guard.port();
-        (Some(guard), Some(SocketAddr::new(whip_ip, port)))
-    } else {
-        (None, None)
-    };
+    let whip_guard = reserve_udp_port(whip_ip);
+    let whip_addr = SocketAddr::new(whip_ip, whip_guard.port());
 
     // Write the SDP file that liveion will use to receive the source stream.
-    let sdp = source.sdp_with_audio(whip_video_addr, whip_audio_addr);
+    let sdp = source.sdp(whip_addr);
     let _whip_sdp = tempfile::NamedTempFile::new().unwrap();
     let sdp_path = _whip_sdp.path().to_str().unwrap().to_string();
     {
@@ -182,13 +174,10 @@ where
         file.write_all(sdp.as_bytes()).unwrap();
     }
 
-    // Release the temporary UDP sockets immediately before starting WHIP so the
-    // ports are free for liveion to bind. The SDP already contains the selected
-    // ports. This minimizes the TOCTOU window.
-    drop(whip_video_guard);
-    if let Some(guard) = whip_audio_guard {
-        drop(guard);
-    }
+    // Release the temporary UDP socket immediately before starting WHIP so the
+    // port is free for liveion to bind. The SDP already contains the selected
+    // port. This minimizes the TOCTOU window.
+    drop(whip_guard);
 
     let ct = CancellationToken::new();
     let whip_ct = ct.clone();
@@ -203,7 +192,7 @@ where
 
     // Start the media source only after the WHIP/RTP listener is bound.
     let source_handle = source
-        .start_with_audio(whip_video_addr, whip_audio_addr)
+        .start(whip_addr)
         .expect("Failed to start media source");
 
     (api_addr, port, source_handle, ct, handle_whip)

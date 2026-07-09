@@ -34,9 +34,6 @@ impl Source for FfmpegSource {
         match self.codec {
             VideoCodec::Vp8 => "ffmpeg-vp8",
             VideoCodec::H264 => "ffmpeg-h264",
-            VideoCodec::H265 => "ffmpeg-h265",
-            VideoCodec::Vp9 => "ffmpeg-vp9",
-            VideoCodec::Av1 => "ffmpeg-av1",
         }
     }
 
@@ -48,11 +45,9 @@ impl Source for FfmpegSource {
         let payload_type = codec.payload_type();
         let encoder = codec.ffmpeg_encoder();
 
-        // FFmpeg's RTP muxer names VP9 `VP9` and AV1 `AV1X` in the SDP.
-        let rtp_codec_name = match codec {
-            VideoCodec::Av1 => "av1x",
-            _ => encoder,
-        };
+        // For the codecs we support the FFmpeg encoder name is also the RTP
+        // muxer codec name.
+        let rtp_codec_name = encoder;
 
         let mut cmd = Command::new("ffmpeg");
         cmd.arg("-re")

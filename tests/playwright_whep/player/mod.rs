@@ -3,16 +3,12 @@ pub mod livetwo;
 pub mod playwright;
 
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct PlayResult {
     pub success: bool,
     pub connected: bool,
     pub error: Option<String>,
     pub video_width: u32,
     pub video_height: u32,
-    pub video_tracks: u32,
-    pub audio_tracks: u32,
-    pub duration_ms: u64,
 }
 
 #[async_trait::async_trait]
