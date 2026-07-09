@@ -36,6 +36,7 @@ export const zh: LocaleConfig = {
                             { text: 'LiveMan', link: 'liveman' },
                             { text: 'WhipInto', link: 'whipinto' },
                             { text: 'WhepFrom', link: 'whepfrom' },
+                            { text: 'WhepWright', link: 'whepwright' },
                             { text: 'NET4MQTT', link: 'net4mqtt' },
                         ]
                     },

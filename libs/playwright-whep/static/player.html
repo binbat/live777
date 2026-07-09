@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live777 WebRTC Test Player</title>
+    <style>
+      body {
+        margin: 0;
+        background: #000;
+        color: #0f0;
+        font-family: monospace;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+      video {
+        width: 320px;
+        height: 240px;
+        background: #111;
+        border: 1px solid #333;
+      }
+      #log {
+        margin-top: 8px;
+        max-width: 640px;
+        white-space: pre-wrap;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <video id="video" autoplay muted playsinline></video>
+    <div id="log"></div>
+    <script>
+      const logEl = document.getElementById("log");
+      function log(msg) {
+        const line = `[${new Date().toISOString()}] ${msg}`;
+        console.log(line);
+        logEl.textContent += `${line}\n`;
+      }
+
+      function setResult(prop, result) {
+        window[prop] = result;
+        log(`RESULT ${prop}: ${JSON.stringify(result)}`);
+      }
+
+      function getParams() {
+        const params = new URLSearchParams(window.location.search);
+        return {
+          mode: params.get("mode") || "subscribe",
+          whepUrl: params.get("whep_url") || "",
+          whipUrl: params.get("whip_url") || "",
+          timeoutMs: parseInt(params.get("timeout") || "30000", 10),
+          source: params.get("source") || "fake",
+          vcodec: params.get("vcodec") || "",
+          acodec: params.get("acodec") || "",
+          layer: params.get("layer") || "",
+          // Token is injected by the runner via page.evaluate so it never
+          // appears in the URL or browser history.
+          token: window.__LIVE777_TOKEN__ || "",
+        };
+      }
+
+      function waitForIceGatheringComplete(pc) {
+        return new Promise((resolve) => {
+          if (pc.iceGatheringState === "complete") {
+            resolve();
+            return;
+          }
+          const handler = () => {
+            if (pc.iceGatheringState === "complete") {
+              pc.removeEventListener("icegatheringstatechange", handler);
+              resolve();
+            }
+          };
+          pc.addEventListener("icegatheringstatechange", handler);
+        });
+      }
+
+      function waitForConnection(pc, timeoutMs) {
+        return new Promise((resolve, reject) => {
+          if (
+            pc.iceConnectionState === "connected" ||
+            pc.iceConnectionState === "completed"
+          ) {
+            resolve();
+            return;
+          }
+          const timer = setTimeout(
+            () => reject(new Error("Timeout waiting for WebRTC connection")),
+            timeoutMs,
+          );
+          const handler = () => {
+            log(`ICE state: ${pc.iceConnectionState}`);
+            if (
+              pc.iceConnectionState === "connected" ||
+              pc.iceConnectionState === "completed"
+            ) {
+              clearTimeout(timer);
+              pc.removeEventListener("iceconnectionstatechange", handler);
+              resolve();
+            } else if (
+              pc.iceConnectionState === "failed" ||
+              pc.iceConnectionState === "closed"
+            ) {
+              clearTimeout(timer);
+              pc.removeEventListener("iceconnectionstatechange", handler);
+              reject(new Error(`ICE connection ${pc.iceConnectionState}`));
+            }
+          };
+          pc.addEventListener("iceconnectionstatechange", handler);
+        });
+      }
+
+      function waitForVideoFrames(video, timeoutMs) {
+        return new Promise((resolve, reject) => {
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            resolve();
+            return;
+          }
+          const start = performance.now();
+          const raf = () => {
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+              resolve();
+              return;
+            }
+            if (performance.now() - start > timeoutMs) {
+              reject(new Error("Timeout waiting for video frames"));
+              return;
+            }
+            requestAnimationFrame(raf);
+          };
+          requestAnimationFrame(raf);
+        });
+      }
+
+      async function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function fetchSdp(url, offer, token) {
+        const headers = {
+          "Content-Type": "application/sdp",
+          Accept: "application/sdp",
+        };
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: offer,
+        });
+        if (!response.ok) {
+          const text = await response.text().catch(() => "");
+          throw new Error(
+            `SDP POST failed: ${response.status} ${response.statusText} ${text}`,
+          );
+        }
+        return response.text();
+      }
+
+      async function acquireStream(source) {
+        if (source === "fake" || source === "device") {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          return {
+            stream,
+            cleanup: () => {
+              for (const t of stream.getTracks()) {
+                t.stop();
+              }
+            },
+          };
+        }
+
+        // canvas: generate a simple color video track + synthetic audio tone.
+        const canvas = document.createElement("canvas");
+        canvas.width = 640;
+        canvas.height = 480;
+        const ctx = canvas.getContext("2d");
+        let frame = 0;
+        let rafId = null;
+        const draw = () => {
+          frame++;
+          ctx.fillStyle = `hsl(${(frame * 2) % 360}, 70%, 50%)`;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#fff";
+          ctx.font = "30px monospace";
+          ctx.fillText(new Date().toISOString(), 20, 50);
+          rafId = requestAnimationFrame(draw);
+        };
+        rafId = requestAnimationFrame(draw);
+
+        const videoTrack = canvas.captureStream(30).getVideoTracks()[0];
+        const audioCtx = new AudioContext();
+        const oscillator = audioCtx.createOscillator();
+        const dst = audioCtx.createMediaStreamDestination();
+        oscillator.connect(dst);
+        oscillator.start();
+        const audioTrack = dst.stream.getAudioTracks()[0];
+        const stream = new MediaStream([videoTrack, audioTrack]);
+
+        return {
+          stream,
+          cleanup: () => {
+            if (rafId !== null) cancelAnimationFrame(rafId);
+            oscillator.stop();
+            void audioCtx.close();
+            for (const t of stream.getTracks()) {
+              t.stop();
+            }
+          },
+        };
+      }
+
+      async function runSubscribe(whepUrl, timeoutMs, token) {
+        const startMs = performance.now();
+        log(`Starting WHEP subscribe: ${whepUrl}`);
+
+        const pc = new RTCPeerConnection();
+        const video = document.getElementById("video");
+        const stream = new MediaStream();
+        video.srcObject = stream;
+
+        pc.addTransceiver("video", { direction: "recvonly" });
+        pc.addTransceiver("audio", { direction: "recvonly" });
+
+        pc.ontrack = (event) => {
+          log(`Received ${event.track.kind} track`);
+          stream.addTrack(event.track);
+        };
+
+        pc.onconnectionstatechange = () => {
+          log(`Connection state: ${pc.connectionState}`);
+        };
+
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await waitForIceGatheringComplete(pc);
+
+          const answerSdp = await fetchSdp(whepUrl, pc.localDescription.sdp, token);
+          await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+
+          await waitForConnection(pc, timeoutMs);
+          await waitForVideoFrames(video, timeoutMs);
+          log(`Video playing: ${video.videoWidth}x${video.videoHeight}`);
+
+          const stats = await pc.getStats();
+          let inboundRtpCount = 0;
+          let videoBytesReceived = 0;
+          let audioBytesReceived = 0;
+          stats.forEach((report) => {
+            if (report.type === "inbound-rtp") {
+              inboundRtpCount += 1;
+              if (report.mediaType === "video" || report.kind === "video") {
+                videoBytesReceived = report.bytesReceived || 0;
+              } else if (
+                report.mediaType === "audio" ||
+                report.kind === "audio"
+              ) {
+                audioBytesReceived = report.bytesReceived || 0;
+              }
+            }
+          });
+
+          return {
+            success: true,
+            connected: true,
+            videoWidth: video.videoWidth,
+            videoHeight: video.videoHeight,
+            videoTracks: stream.getVideoTracks().length,
+            audioTracks: stream.getAudioTracks().length,
+            durationMs: Math.round(performance.now() - startMs),
+            inboundRtpCount,
+            videoBytesReceived,
+            audioBytesReceived,
+            error: null,
+          };
+        } finally {
+          pc.close();
+        }
+      }
+
+      async function runPublish(whipUrl, timeoutMs, source, token) {
+        const startMs = performance.now();
+        log(`Starting WHIP publish: ${whipUrl}`);
+
+        const pc = new RTCPeerConnection();
+        const { stream, cleanup } = await acquireStream(source);
+        for (const track of stream.getTracks()) {
+          pc.addTrack(track, stream);
+        }
+
+        pc.onconnectionstatechange = () => {
+          log(`Connection state: ${pc.connectionState}`);
+        };
+
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await waitForIceGatheringComplete(pc);
+
+          const answerSdp = await fetchSdp(whipUrl, pc.localDescription.sdp, token);
+          await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+
+          await waitForConnection(pc, timeoutMs);
+          log("WHIP publish connected");
+
+          // Allow stats to accumulate briefly.
+          await sleep(100);
+
+          const stats = await pc.getStats();
+          let audioCodec = "";
+          let videoCodec = "";
+          stats.forEach((report) => {
+            if (report.type === "outbound-rtp") {
+              const codec = stats.get(report.codecId);
+              if (codec) {
+                if (report.kind === "audio" || report.mediaType === "audio") {
+                  audioCodec = codec.mimeType || "";
+                } else if (
+                  report.kind === "video" ||
+                  report.mediaType === "video"
+                ) {
+                  videoCodec = codec.mimeType || "";
+                }
+              }
+            }
+          });
+
+          return {
+            success: true,
+            connected: true,
+            audioTracks: stream.getAudioTracks().length,
+            videoTracks: stream.getVideoTracks().length,
+            audioCodec,
+            videoCodec,
+            durationMs: Math.round(performance.now() - startMs),
+            error: null,
+          };
+        } finally {
+          pc.close();
+          cleanup();
+        }
+      }
+
+      async function runPublishInternal(publishPc, whipUrl, timeoutMs, source, token) {
+        const { stream, cleanup } = await acquireStream(source);
+        try {
+          for (const track of stream.getTracks()) {
+            publishPc.addTrack(track, stream);
+          }
+
+          publishPc.onconnectionstatechange = () => {
+            log(`Publish connection state: ${publishPc.connectionState}`);
+          };
+
+          const offer = await publishPc.createOffer();
+          await publishPc.setLocalDescription(offer);
+          await waitForIceGatheringComplete(publishPc);
+
+          const answerSdp = await fetchSdp(whipUrl, publishPc.localDescription.sdp, token);
+          await publishPc.setRemoteDescription({
+            type: "answer",
+            sdp: answerSdp,
+          });
+
+          await waitForConnection(publishPc, timeoutMs);
+          log("WHIP publish connected");
+
+          await sleep(100);
+          const stats = await publishPc.getStats();
+          let audioCodec = "";
+          let videoCodec = "";
+          stats.forEach((report) => {
+            if (report.type === "outbound-rtp") {
+              const codec = stats.get(report.codecId);
+              if (codec) {
+                if (report.kind === "audio" || report.mediaType === "audio") {
+                  audioCodec = codec.mimeType || "";
+                } else if (
+                  report.kind === "video" ||
+                  report.mediaType === "video"
+                ) {
+                  videoCodec = codec.mimeType || "";
+                }
+              }
+            }
+          });
+
+          return {
+            audioTracks: stream.getAudioTracks().length,
+            videoTracks: stream.getVideoTracks().length,
+            audioCodec,
+            videoCodec,
+          };
+        } finally {
+          cleanup();
+        }
+      }
+
+      async function runBoth(whipUrl, whepUrl, timeoutMs, source, token) {
+        const startMs = performance.now();
+        log(
+          `Starting publish+subscribe: publish=${whipUrl} subscribe=${whepUrl}`,
+        );
+
+        // Publish side must stay alive while subscribing, so manage it inline.
+        let publishPc = null;
+        let publishResult;
+        let subscribeResult;
+        let error = null;
+
+        try {
+          publishPc = new RTCPeerConnection();
+          const publishInfo = await runPublishInternal(
+            publishPc,
+            whipUrl,
+            timeoutMs,
+            source,
+            token,
+          );
+          publishResult = {
+            success: true,
+            connected: true,
+            ...publishInfo,
+            durationMs: Math.round(performance.now() - startMs),
+            error: null,
+          };
+        } catch (err) {
+          error = err.message || String(err);
+          publishResult = {
+            success: false,
+            connected: false,
+            audioTracks: 0,
+            videoTracks: 0,
+            audioCodec: "",
+            videoCodec: "",
+            durationMs: Math.round(performance.now() - startMs),
+            error,
+          };
+        }
+
+        try {
+          subscribeResult = await runSubscribe(whepUrl, timeoutMs, token);
+        } catch (err) {
+          error = error || err.message || String(err);
+          subscribeResult = {
+            success: false,
+            connected: false,
+            videoWidth: 0,
+            videoHeight: 0,
+            videoTracks: 0,
+            audioTracks: 0,
+            durationMs: Math.round(performance.now() - startMs),
+            inboundRtpCount: 0,
+            videoBytesReceived: 0,
+            audioBytesReceived: 0,
+            error: err.message || String(err),
+          };
+        } finally {
+          if (publishPc) publishPc.close();
+        }
+
+        return {
+          success:
+            publishResult?.success &&
+            subscribeResult?.success,
+          publish: publishResult,
+          subscribe: subscribeResult,
+          error,
+        };
+      }
+
+      function makeErrorResult(mode, error) {
+        const base = {
+          success: false,
+          connected: false,
+          error,
+        };
+        if (mode === "publish") {
+          return {
+            ...base,
+            audioTracks: 0,
+            videoTracks: 0,
+            audioCodec: "",
+            videoCodec: "",
+            durationMs: 0,
+          };
+        }
+        if (mode === "subscribe") {
+          return {
+            ...base,
+            videoWidth: 0,
+            videoHeight: 0,
+            videoTracks: 0,
+            audioTracks: 0,
+            durationMs: 0,
+            inboundRtpCount: 0,
+            videoBytesReceived: 0,
+            audioBytesReceived: 0,
+          };
+        }
+        return {
+          success: false,
+          publish: null,
+          subscribe: null,
+          error,
+        };
+      }
+
+      async function main() {
+        const params = getParams();
+
+        try {
+          let result;
+          if (params.mode === "publish") {
+            if (!params.whipUrl) throw new Error("Missing WHIP URL");
+            result = await runPublish(
+              params.whipUrl,
+              params.timeoutMs,
+              params.source,
+              params.token,
+            );
+            setResult("__LIVE777_PUBLISH_RESULT__", result);
+          } else if (params.mode === "subscribe") {
+            if (!params.whepUrl) throw new Error("Missing WHEP URL");
+            result = await runSubscribe(params.whepUrl, params.timeoutMs, params.token);
+            setResult("__LIVE777_SUBSCRIBE_RESULT__", result);
+          } else {
+            if (!params.whipUrl || !params.whepUrl) {
+              throw new Error("Both mode requires both WHIP and WHEP URLs");
+            }
+            result = await runBoth(
+              params.whipUrl,
+              params.whepUrl,
+              params.timeoutMs,
+              params.source,
+              params.token,
+            );
+            setResult("__LIVE777_RESULT__", result);
+          }
+        } catch (err) {
+          log(`Error: ${err.message || err}`);
+          setResult(
+            params.mode === "publish"
+              ? "__LIVE777_PUBLISH_RESULT__"
+              : params.mode === "subscribe"
+                ? "__LIVE777_SUBSCRIBE_RESULT__"
+                : "__LIVE777_RESULT__",
+            makeErrorResult(params.mode, err.message || String(err)),
+          );
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

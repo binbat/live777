@@ -45,6 +45,7 @@
     "@stylistic/eslint-plugin-js": "^4.4.1",
     "@types/node": "^24.10.0",
     "daisyui": "^4.12.24",
+    "playwright": "^1.52.0",
     "eslint": "^9.39.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3",
