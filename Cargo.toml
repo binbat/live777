@@ -34,6 +34,13 @@ name = "whepfrom"
 path = "src/whepfrom.rs"
 
 [[bin]]
+name = "whepwright"
+path = "src/whepwright.rs"
+required-features = ["whepwright"]
+test = false
+bench = false
+
+[[bin]]
 name = "livevod"
 path = "src/livevod.rs"
 
@@ -59,6 +66,7 @@ members = [
     "libs/signal",
     "libs/rtsp",
     "libs/net4mqtt",
+    "libs/playwright-whep",
     "libs/storage",
     "libs/version",
     "liveion",
@@ -117,6 +125,10 @@ cli = { path = "libs/cli" }
 reqwest = { workspace = true, features = ["socks", "json"] }
 tempfile = "3"
 anyhow = { workspace = true }
+async-trait = "0.1"
+url = { workspace = true }
+test-case = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
 
 [dependencies]
 liveion = { path = "liveion" }
@@ -141,6 +153,7 @@ axum-extra = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 opendal = "0.55.0"
+playwright-whep = { path = "libs/playwright-whep", optional = true }
 
 toml = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -170,6 +183,9 @@ encoder-rdk = ["liveion/encoder-rdk", "native-source"]
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
 native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
+
+# WHEP browser playback tester (Playwright-based)
+whepwright = ["dep:playwright-whep"]
 
 [patch.crates-io]
 rtc = { git = "https://github.com/binbat/rtc", rev = "ca153d30" }
