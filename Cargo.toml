@@ -98,13 +98,13 @@ authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
-webrtc = { version = "0.20.0-beta.1", features = ["runtime-tokio"] }
-rtc = "0.20.0-beta.1"
-rtc-ice = "0.20.0-beta.1"
-rtc-interceptor = "0.20.0-beta.1"
-rtc-rtcp = "0.20.0-beta.1"
-rtc-rtp = "0.20.0-beta.1"
-rtc-shared = "0.20.0-beta.1"
+webrtc = { version = "0.20.0-rc.2", features = ["runtime-tokio"] }
+rtc = "0.20.0-rc.2"
+rtc-ice = "0.20.0-rc.2"
+rtc-interceptor = "0.20.0-rc.2"
+rtc-rtcp = "0.20.0-rc.2"
+rtc-rtp = "0.20.0-rc.2"
+rtc-shared = "0.20.0-rc.2"
 sdp = "0.17.1"
 
 axum = "0.8"
@@ -208,3 +208,11 @@ rsmpeg = ["livetwo/rsmpeg"]
 
 # WHEP browser playback tester (Playwright-based)
 whepwright = ["dep:playwright-whep"]
+
+[patch.crates-io]
+rtc = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-ice = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-interceptor = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-rtcp = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-rtp = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc-shared = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
