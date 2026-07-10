@@ -24,10 +24,14 @@ pub async fn subscribe_streams(
     );
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
-    );
+    let auth_value = match HeaderValue::from_str(&format!("Bearer {}", token)) {
+        Ok(v) => v,
+        Err(e) => {
+            error!(alias, error = ?e, "invalid sse auth token");
+            return;
+        }
+    };
+    headers.insert(header::AUTHORIZATION, auth_value);
 
     loop {
         select! {
@@ -133,21 +137,6 @@ pub async fn update_storage(
     alias: &str,
     streams: Vec<Stream>,
 ) -> crate::result::Result<()> {
-    storage.clear_alias(alias).await?;
-
-    storage.info_put(alias.to_string(), streams.clone()).await?;
-    for stream in streams {
-        storage
-            .stream_put(stream.id.clone(), alias.to_string())
-            .await?;
-        for session in stream.subscribe.sessions {
-            storage
-                .session_put(
-                    api::path::session(&stream.id, &session.id),
-                    alias.to_string(),
-                )
-                .await?;
-        }
-    }
+    storage.update_snapshot(alias, streams).await?;
     Ok(())
 }

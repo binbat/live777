@@ -11,6 +11,8 @@ use tracing::{debug, error, trace, warn};
 use api::response::Stream;
 use api::strategy::Strategy;
 
+use crate::config::UpdateMode;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
     #[serde(default)]
@@ -30,6 +32,7 @@ pub struct Node {
     pub token: String,
     pub kind: NodeKind,
     pub url: String,
+    pub mode: UpdateMode,
 
     streams: Vec<Stream>,
     pub strategy: Option<Strategy>,
@@ -37,11 +40,12 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(token: String, kind: NodeKind, url: String) -> Self {
+    pub fn new(token: String, kind: NodeKind, url: String, mode: UpdateMode) -> Self {
         Self {
             token,
             kind,
             url,
+            mode,
             ..Default::default()
         }
     }
@@ -116,6 +120,7 @@ pub struct Storage {
     client: reqwest::Client,
     stream: Arc<RwLock<HashMap<String, Vec<String>>>>,
     session: Arc<RwLock<HashMap<String, String>>>,
+    update_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Storage {
@@ -126,6 +131,7 @@ impl Storage {
             client,
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
+            update_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -171,7 +177,13 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn clear_alias(&self, alias: &str) -> Result<()> {
+    pub async fn update_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
+        let _guard = self.update_lock.lock().await;
+        self.apply_snapshot(alias, streams).await
+    }
+
+    async fn apply_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
+        // Remove stale alias references contributed by this node.
         {
             let mut stream_map = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
             for aliases in stream_map.values_mut() {
@@ -197,6 +209,19 @@ impl Storage {
                         session_map.remove(&key);
                     }
                 }
+            }
+        }
+
+        self.info_put(alias.to_string(), streams.clone()).await?;
+        for stream in streams {
+            self.stream_put(stream.id.clone(), alias.to_string())
+                .await?;
+            for session in stream.subscribe.sessions {
+                self.session_put(
+                    api::path::session(&stream.id, &session.id),
+                    alias.to_string(),
+                )
+                .await?;
             }
         }
         Ok(())
@@ -330,11 +355,6 @@ impl Storage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.stream.write().unwrap().clear();
-
-        // Maybe Don't need clear "session"
-        //self.session.write().unwrap().clear();
-
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
@@ -365,6 +385,8 @@ impl Storage {
     }
 
     async fn update(&mut self) {
+        let update_lock = self.update_lock.clone();
+        let _guard = update_lock.lock().await;
         if self.time.elapsed().unwrap() < Duration::from_secs(3) {
             return;
         }
@@ -374,15 +396,19 @@ impl Storage {
             .await;
 
         let start = Instant::now();
-        let servers = self.get_cluster();
+        let poll_nodes: Vec<(String, Node)> = self
+            .get_map_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.kind != NodeKind::Net4mqtt && node.mode == UpdateMode::Poll)
+            .collect();
         let mut requests = Vec::new();
 
-        for server in servers {
+        for (alias, node) in poll_nodes {
             requests.push((
-                server.alias,
+                alias,
                 self.client
-                    .get(format!("{}{}", server.url, &api::path::streams("")))
-                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                    .get(format!("{}{}", node.url, &api::path::streams("")))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", node.token))
                     .send(),
             ));
         }
@@ -408,11 +434,6 @@ impl Storage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.stream.write().unwrap().clear();
-
-        // Maybe Don't need clear "session"
-        //self.session.write().unwrap().clear();
-
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
@@ -425,25 +446,8 @@ impl Storage {
                     match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
                             trace!("{:?}", streams.clone());
-                            self.info_put(alias.clone(), streams.clone()).await.unwrap();
-                            for stream in streams {
-                                let target = self.get_map_server().get(&alias).unwrap().clone();
-                                self.stream_put(stream.id.clone(), target.alias.clone())
-                                    .await
-                                    .unwrap();
-
-                                for session in stream.subscribe.sessions {
-                                    match self
-                                        .session_put(
-                                            api::path::session(&stream.id, &session.id),
-                                            target.alias.clone(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(_) => {}
-                                        Err(e) => error!("Put Session Error: {:?}", e),
-                                    }
-                                }
+                            if let Err(e) = self.apply_snapshot(&alias, streams).await {
+                                error!("{}: apply snapshot error: {:?}", alias, e);
                             }
                         }
                         Err(e) => error!("Error: {:?}", e),

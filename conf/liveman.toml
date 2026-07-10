@@ -148,11 +148,14 @@ enabled = false
 # token = "live777"
 # Live777 Address
 # url = "http://127.0.0.1:7777"
+# Update mechanism: "poll" (default) or "sse"
+# mode = "sse"
 
 # [[nodes]]
 # alias = "static-1"
 # token = "live777"
 # url = "http://127.0.0.1:7778"
+# mode = "poll"
 
 # [[nodes]]
 # Globally unique id

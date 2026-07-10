@@ -9,7 +9,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info, info_span};
 
 use crate::admin::{authorize, token};
-use crate::config::Config;
+use crate::config::{Config, UpdateMode};
 use crate::service::database::DatabaseService;
 use crate::store::{Node, NodeKind, Storage};
 
@@ -97,16 +97,18 @@ where
     for v in cfg.nodes.clone() {
         nodes.write().unwrap().insert(
             v.alias.clone(),
-            Node::new(v.token.clone(), NodeKind::Static, v.url.clone()),
+            Node::new(v.token.clone(), NodeKind::Static, v.url.clone(), v.mode),
         );
 
-        tokio::spawn(crate::sse::subscribe_streams(
-            v.url,
-            v.token,
-            v.alias,
-            store.clone(),
-            cancel.clone(),
-        ));
+        if v.mode == UpdateMode::Sse {
+            tokio::spawn(crate::sse::subscribe_streams(
+                v.url,
+                v.token,
+                v.alias,
+                store.clone(),
+                cancel.clone(),
+            ));
+        }
     }
 
     #[cfg(feature = "net4mqtt")]
@@ -168,6 +170,7 @@ where
                                                 "".to_string(),
                                                 NodeKind::Net4mqtt,
                                                 format!("http://{}", dns.registry(&agent_id)),
+                                                UpdateMode::default(),
                                             ),
                                         );
                                     } else {

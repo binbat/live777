@@ -76,6 +76,14 @@ fn default_database_connect_timeout() -> u64 {
     30
 }
 
+#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    #[default]
+    Poll,
+    Sse,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
     #[serde(default)]
@@ -84,6 +92,8 @@ pub struct Node {
     pub token: String,
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub mode: UpdateMode,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
