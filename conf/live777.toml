@@ -211,10 +211,6 @@ root = "./storage"
 # auto_create_whip = false
 # auto_create_whep = false
 
-# Experimental Feature
-# [webhook]
-# webhooks = ["http://127.0.0.1:8080/webhook?token="]
-
 # Default enabled `--features=net4mqtt`
 # [net4mqtt]
 # Global unique alias

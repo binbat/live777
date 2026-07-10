@@ -4,7 +4,6 @@ use crate::config::Config;
 use crate::stream::manager::Manager;
 
 pub mod admin;
-pub mod events;
 pub mod info;
 pub mod recorder;
 pub mod sdp;

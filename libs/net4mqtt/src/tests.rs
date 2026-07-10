@@ -1022,8 +1022,9 @@ async fn test_xdata() {
     let msg_3: Vec<u8> = "333".bytes().collect();
     let msg_4: Vec<u8> = "4444".bytes().collect();
 
-    let (sender_a, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
-    let (sender, mut receiver_a) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (sender_a, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
+    let (sender, mut receiver_a) =
+        tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
     thread::spawn(move || {
         let id = 'a';
@@ -1045,8 +1046,9 @@ async fn test_xdata() {
         ))
     });
 
-    let (sender_b, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
-    let (sender, mut receiver_b) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (sender_b, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
+    let (sender, mut receiver_b) =
+        tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
     thread::spawn(move || {
         let id = 'b';
@@ -1068,8 +1070,9 @@ async fn test_xdata() {
         ))
     });
 
-    let (sender_c, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
-    let (sender, mut receiver_c) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (sender_c, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
+    let (sender, mut receiver_c) =
+        tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
     thread::spawn(move || {
         let id = 'c';
@@ -1091,66 +1094,176 @@ async fn test_xdata() {
         ))
     });
 
-    time::sleep(time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     let ev = "test".to_string();
 
-    sender_a.send((ev.clone(), msg_1.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+    sender_a
+        .send(("a".to_string(), ev.clone(), msg_1.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_1.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_1.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_1.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_b.send((ev.clone(), msg_2.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_c.recv().await);
+    sender_b
+        .send(("b".to_string(), ev.clone(), msg_2.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("b".to_string(), ev.clone(), msg_2.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("b".to_string(), ev.clone(), msg_2.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("b".to_string(), ev.clone(), msg_2.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_c.send((ev.clone(), msg_3.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_c.recv().await);
+    sender_c
+        .send(("c".to_string(), ev.clone(), msg_3.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_3.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_3.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_3.clone())),
+        receiver_c.recv().await
+    );
 
-    time::sleep(time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
     assert!(receiver_a.is_empty());
     assert!(receiver_b.is_empty());
     assert!(receiver_c.is_empty());
 
-    sender_a.send((ev.clone(), msg_2.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_2.clone())), receiver_c.recv().await);
+    sender_a
+        .send(("a".to_string(), ev.clone(), msg_2.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_2.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_2.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_2.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_b.send((ev.clone(), msg_1.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+    sender_b
+        .send(("b".to_string(), ev.clone(), msg_1.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("b".to_string(), ev.clone(), msg_1.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("b".to_string(), ev.clone(), msg_1.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("b".to_string(), ev.clone(), msg_1.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_c.send((ev.clone(), msg_1.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+    sender_c
+        .send(("c".to_string(), ev.clone(), msg_1.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_1.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_1.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_1.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_c.send((ev.clone(), msg_3.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_3.clone())), receiver_c.recv().await);
+    sender_c
+        .send(("c".to_string(), ev.clone(), msg_3.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_3.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_3.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("c".to_string(), ev.clone(), msg_3.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_a.send((ev.clone(), msg_4.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_c.recv().await);
+    sender_a
+        .send(("a".to_string(), ev.clone(), msg_4.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_4.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_4.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_4.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_a.send((ev.clone(), msg_4.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_4.clone())), receiver_c.recv().await);
+    sender_a
+        .send(("a".to_string(), ev.clone(), msg_4.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_4.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_4.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_4.clone())),
+        receiver_c.recv().await
+    );
 
-    sender_a.send((ev.clone(), msg_1.clone())).unwrap();
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_a.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_b.recv().await);
-    assert_eq!(Some((ev.clone(), msg_1.clone())), receiver_c.recv().await);
+    sender_a
+        .send(("a".to_string(), ev.clone(), msg_1.clone()))
+        .unwrap();
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_1.clone())),
+        receiver_a.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_1.clone())),
+        receiver_b.recv().await
+    );
+    assert_eq!(
+        Some(("a".to_string(), ev.clone(), msg_1.clone())),
+        receiver_c.recv().await
+    );
 
-    time::sleep(time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
     assert!(receiver_a.is_empty());
     assert!(receiver_b.is_empty());
     assert!(receiver_c.is_empty());

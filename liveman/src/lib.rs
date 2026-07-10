@@ -113,7 +113,7 @@ where
             let (sender, mut receiver) =
                 tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
             let (x_sender, mut x_receiver) =
-                tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+                tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
             let domain = c.domain.clone();
 
@@ -182,43 +182,32 @@ where
 
             let store_xdata = store.clone();
             tokio::spawn(async move {
-                while let Some((key, data)) = x_receiver.recv().await {
-                    match key.as_str() {
-                        "events" => match serde_json::from_slice::<api::event::EventBody>(&data) {
-                            Ok(body) => tracing::debug!(?body, "received net4mqtt event"),
-                            Err(err) => tracing::warn!(?err, "failed to decode net4mqtt event"),
-                        },
-                        "streams" => match serde_json::from_slice::<serde_json::Value>(&data) {
-                            Ok(value) => {
-                                let alias = value
-                                    .get("alias")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let streams = value
-                                    .get("streams")
-                                    .and_then(|v| {
-                                        serde_json::from_value::<Vec<api::response::Stream>>(
-                                            v.clone(),
-                                        )
+                while let Some((alias, key, data)) = x_receiver.recv().await {
+                    if key.as_str() != "streams" {
+                        continue;
+                    }
+                    match serde_json::from_slice::<serde_json::Value>(&data) {
+                        Ok(value) => {
+                            let streams = value
+                                .get("streams")
+                                .and_then(|v| {
+                                    serde_json::from_value::<Vec<api::response::Stream>>(v.clone())
                                         .ok()
-                                    })
-                                    .unwrap_or_default();
-                                if let Err(e) =
-                                    crate::sse::update_storage(&store_xdata, &alias, streams).await
-                                {
-                                    tracing::warn!(
-                                        alias,
-                                        error = ?e,
-                                        "failed to update storage from net4mqtt"
-                                    );
-                                }
+                                })
+                                .unwrap_or_default();
+                            if let Err(e) =
+                                crate::sse::update_storage(&store_xdata, &alias, streams).await
+                            {
+                                tracing::warn!(
+                                    alias,
+                                    error = ?e,
+                                    "failed to update storage from net4mqtt"
+                                );
                             }
-                            Err(err) => {
-                                tracing::warn!(?err, "failed to decode net4mqtt streams")
-                            }
-                        },
-                        _ => {}
+                        }
+                        Err(err) => {
+                            tracing::warn!(?err, "failed to decode net4mqtt streams")
+                        }
                     }
                 }
             });

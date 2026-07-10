@@ -160,36 +160,26 @@ Response: [200]
 
 Response: [204]
 
-## 事件
+## 流状态 SSE
 
-`GET` `/api/sse/events`
+`GET` `/api/sse/streams`
 
 Server-Sent Events 端点，和管理接口使用同样的鉴权。
 
-每条 SSE 消息都是一个 JSON 对象：
+当流状态发生变化时，推送所有流的全量快照。每条 SSE 消息都是一个流对象的 JSON 数组：
 
 ```json
-{
-  "metrics": {
-    "stream": 0,
-    "publish": 0,
-    "subscribe": 0,
-    "reforward": 0
-  },
-  "event": {
-    "type": "StreamUp",
-    "stream": {
-      "stream": "streamId",
-      "session": "sessionId",
-      "publish": 0,
-      "subscribe": 0,
-      "reforward": 0
-    }
+[
+  {
+    "id": "streamId",
+    "publish": { ... },
+    "subscribe": { ... },
+    "reforward": { ... }
   }
-}
+]
 ```
 
-事件类型：`StreamUp`、`StreamDown`、`PublishUp`、`PublishDown`、`SubscribeUp`、`SubscribeDown`、`ReforwardUp`、`ReforwardDown`。
+连接建立后会立即发送第一条消息，之后每次状态变更都会再次推送当前完整状态。
 
 ## ​级联
 

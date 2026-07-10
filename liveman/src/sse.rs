@@ -97,6 +97,8 @@ pub async fn update_storage(
     alias: &str,
     streams: Vec<Stream>,
 ) -> crate::result::Result<()> {
+    storage.clear_alias(alias).await?;
+
     storage.info_put(alias.to_string(), streams.clone()).await?;
     for stream in streams {
         storage

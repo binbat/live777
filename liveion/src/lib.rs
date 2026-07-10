@@ -74,7 +74,6 @@ where
             .merge(session::route())
             .merge(admin::route())
             .merge(crate::route::stream::route())
-            .merge(crate::route::events::route())
             .merge(crate::route::recorder::route())
             .merge(crate::route::strategy::route())
             .merge({
@@ -135,46 +134,31 @@ where
                         loop {
                             let stream_manager = stream_manager.clone();
                             let (x_sender, x_receiver) =
-                                tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+                                tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
                             let alias = c.alias.clone();
-                            let x_sender_events = x_sender.clone();
-                            let x_sender_streams = x_sender.clone();
-                            let stream_manager_events = stream_manager.clone();
-                            let stream_manager_streams = stream_manager.clone();
+                            let stream_manager_notify = stream_manager.clone();
+                            let x_sender_notify = x_sender.clone();
 
-                            tokio::spawn(async move {
-                                let mut event_recv = stream_manager_events.subscribe_event();
-                                while let Ok(event) = event_recv.recv().await {
-                                    let body = api::event::EventBody {
-                                        metrics: crate::metrics::node_metrics(),
-                                        event: event.convert_api_event(),
-                                    };
-                                    if let Ok(data) = serde_json::to_vec(&body) {
-                                        let _ = x_sender_events.send(("events".to_string(), data));
-                                    }
-                                }
-                            });
-
-                            tokio::spawn(async move {
-                                let mut interval =
-                                    tokio::time::interval(tokio::time::Duration::from_secs(3));
-                                loop {
-                                    interval.tick().await;
-                                    let streams: Vec<api::response::Stream> =
-                                        stream_manager_streams
-                                            .info(vec![])
-                                            .await
-                                            .into_iter()
-                                            .map(|info| info.into())
-                                            .collect();
+                            let notify_handle = tokio::spawn(async move {
+                                let mut event_recv = stream_manager_notify.subscribe_event();
+                                while let Ok(_event) = event_recv.recv().await {
+                                    let streams: Vec<api::response::Stream> = stream_manager_notify
+                                        .info(vec![])
+                                        .await
+                                        .into_iter()
+                                        .map(|info| info.into())
+                                        .collect();
                                     let body = serde_json::json!({
                                         "alias": alias,
                                         "streams": streams,
                                     });
                                     if let Ok(data) = serde_json::to_vec(&body) {
-                                        let _ =
-                                            x_sender_streams.send(("streams".to_string(), data));
+                                        let _ = x_sender_notify.send((
+                                            alias.clone(),
+                                            "streams".to_string(),
+                                            data,
+                                        ));
                                     }
                                 }
                             });
@@ -207,6 +191,7 @@ where
                                 ),
                                 Err(e) => error!("mqtt4mqtt error: {:?}", e),
                             }
+                            notify_handle.abort();
                             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         }
                     });

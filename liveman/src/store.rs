@@ -171,6 +171,37 @@ impl Storage {
         Ok(())
     }
 
+    pub async fn clear_alias(&self, alias: &str) -> Result<()> {
+        {
+            let mut stream_map = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+            for aliases in stream_map.values_mut() {
+                aliases.retain(|a| a != alias);
+            }
+            stream_map.retain(|_, aliases| !aliases.is_empty());
+        }
+        {
+            let old_streams = self
+                .list
+                .read()
+                .map_err(|e| anyhow!("{:?}", e))?
+                .get(alias)
+                .map(|node| node.streams.clone())
+                .unwrap_or_default();
+            let mut session_map = self.session.write().map_err(|e| anyhow!("{:?}", e))?;
+            for stream in old_streams {
+                for session in stream.subscribe.sessions {
+                    let key = api::path::session(&stream.id, &session.id);
+                    if let Some(existing_alias) = session_map.get(&key)
+                        && existing_alias == alias
+                    {
+                        session_map.remove(&key);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn info_get(&mut self, alias: String) -> Result<Vec<Stream>, Error> {
         self.update().await;
         match self.list.read().unwrap().get(&alias) {

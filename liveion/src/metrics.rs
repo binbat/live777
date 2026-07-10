@@ -12,12 +12,3 @@ pub static REFORWARD: LazyLock<Gauge> =
 pub static REGISTRY: LazyLock<Registry> =
     LazyLock::new(|| Registry::new_custom(Some("live777".to_string()), None).unwrap());
 pub static ENCODER: LazyLock<TextEncoder> = LazyLock::new(TextEncoder::new);
-
-pub fn node_metrics() -> api::event::NodeMetrics {
-    api::event::NodeMetrics {
-        stream: STREAM.get() as u64,
-        publish: PUBLISH.get() as u64,
-        subscribe: SUBSCRIBE.get() as u64,
-        reforward: REFORWARD.get() as u64,
-    }
-}

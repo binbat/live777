@@ -253,8 +253,8 @@ async fn mqtt_client_init(
         EventLoop,
         String,
         Option<Sender<(String, String, Vec<u8>)>>,
-        Option<UnboundedSender<(String, Vec<u8>)>>,
-        UnboundedReceiver<(String, Vec<u8>)>,
+        Option<UnboundedSender<(String, String, Vec<u8>)>>,
+        UnboundedReceiver<(String, String, Vec<u8>)>,
     ),
     Error,
 > {
@@ -266,7 +266,7 @@ async fn mqtt_client_init(
         (
             sender,
             receiver.unwrap_or_else(|| {
-                let (sender, receiver) = unbounded_channel::<(String, Vec<u8>)>();
+                let (sender, receiver) = unbounded_channel::<(String, String, Vec<u8>)>();
                 std::mem::forget(sender);
                 receiver
             }),
@@ -342,8 +342,8 @@ pub struct VDataConfig {
 
 #[derive(Default)]
 pub struct XDataConfig {
-    pub sender: Option<UnboundedSender<(String, Vec<u8>)>>,
-    pub receiver: Option<UnboundedReceiver<(String, Vec<u8>)>>,
+    pub sender: Option<UnboundedSender<(String, String, Vec<u8>)>>,
+    pub receiver: Option<UnboundedReceiver<(String, String, Vec<u8>)>>,
 }
 
 /// Agent service
@@ -391,7 +391,7 @@ pub async fn agent(
         select! {
             result = x_receiver.recv() => {
                 match result {
-                    Some((key, data)) => {
+                    Some((_sender_id, key, data)) => {
                         client.publish(topic::build_pub_x(&prefix, agent_id, topic::NIL, topic::label::X, &key),
                             QoS::AtMostOnce,
                             false,
@@ -429,7 +429,12 @@ pub async fn agent(
                                 },
                                 topic::label::X => {
                                     if let Some(s) = x_sender {
-                                        s.send((protocol.to_string(), p.payload.to_vec()))?;
+                                        let sender_id = if agent_id == topic::NIL {
+                                            local_id.to_string()
+                                        } else {
+                                            agent_id.to_string()
+                                        };
+                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
                                     }
                                 },
                                 _ => {
@@ -522,8 +527,8 @@ pub async fn local_ports_tcp(
             }
             result = x_receiver.recv() => {
                 match result {
-                    Some((key, data)) => {
-                        client.publish(topic::build_pub_x(&prefix, topic::NIL, local_id, topic::label::X, &key),
+                    Some((_sender_id, key, data)) => {
+                        client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
                             QoS::AtMostOnce,
                             false,
                             data
@@ -560,7 +565,12 @@ pub async fn local_ports_tcp(
                                 },
                                 (topic::label::X, _) => {
                                     if let Some(s) = x_sender {
-                                        s.send((protocol.to_string(), p.payload.to_vec()))?;
+                                        let sender_id = if agent_id == topic::NIL {
+                                            local_id.to_string()
+                                        } else {
+                                            agent_id.to_string()
+                                        };
+                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
                                     }
                                 },
                                 (_, topic::protocol::KCP | topic::protocol::TCP) => {
@@ -619,8 +629,8 @@ pub async fn local_ports_udp(
             }
             result = x_receiver.recv() => {
                 match result {
-                    Some((key, data)) => {
-                        client.publish(topic::build_pub_x(&prefix, topic::NIL, local_id, topic::label::X, &key),
+                    Some((_sender_id, key, data)) => {
+                        client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
                             QoS::AtMostOnce,
                             false,
                             data
@@ -647,7 +657,7 @@ pub async fn local_ports_udp(
                     Ok(notification) => {
                         if let Some(p) = mqtt_receive(notification) {
                             let topic = p.topic.clone();
-                            let (_prefix, _agent_id, _local_id, label, protocol, src, _dst) = topic::parse(&topic);
+                            let (_prefix, agent_id, local_id, label, protocol, src, _dst) = topic::parse(&topic);
 
                             match (label, protocol) {
                                 (topic::label::V, _) => {
@@ -657,7 +667,12 @@ pub async fn local_ports_udp(
                                 },
                                 (topic::label::X, _) => {
                                     if let Some(s) = x_sender {
-                                        s.send((protocol.to_string(), p.payload.to_vec()))?;
+                                        let sender_id = if agent_id == topic::NIL {
+                                            local_id.to_string()
+                                        } else {
+                                            agent_id.to_string()
+                                        };
+                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
                                     }
                                 },
                                 (_, topic::protocol::UDP) => { let _ = sock.send_to(&p.payload, src).await?; },
@@ -760,8 +775,8 @@ pub async fn local_socks(
 
             result = x_receiver.recv() => {
                 match result {
-                    Some((key, data)) => {
-                        client.publish(topic::build_pub_x(&prefix, topic::NIL, local_id, topic::label::X, &key),
+                    Some((_sender_id, key, data)) => {
+                        client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
                             QoS::AtMostOnce,
                             false,
                             data
@@ -798,7 +813,12 @@ pub async fn local_socks(
                                 },
                                 (topic::label::X, _) => {
                                     if let Some(s) = x_sender {
-                                        s.send((protocol.to_string(), p.payload.to_vec()))?;
+                                        let sender_id = if agent_id == topic::NIL {
+                                            local_id.to_string()
+                                        } else {
+                                            agent_id.to_string()
+                                        };
+                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
                                     }
                                 },
                                 (_, topic::protocol::KCP | topic::protocol::TCP) => {

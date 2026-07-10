@@ -35,10 +35,6 @@ pub fn streams_sse() -> &'static str {
     "/api/sse/streams"
 }
 
-pub fn events_sse() -> &'static str {
-    "/api/sse/events"
-}
-
 pub fn strategy() -> &'static str {
     "/api/strategy/"
 }
