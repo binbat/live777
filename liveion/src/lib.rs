@@ -130,6 +130,11 @@ where
 
     #[cfg(feature = "net4mqtt")]
     {
+        #[derive(serde::Serialize)]
+        struct XDataStreams<'a> {
+            streams: &'a [api::response::Stream],
+        }
+
         if let Some(mut c) = cfg.net4mqtt {
             c.validate();
             let stream_manager = app_state.stream_manager.clone();
@@ -172,8 +177,8 @@ where
                                         continue;
                                     }
                                     last_sent = Some(streams.clone());
-                                    let body = serde_json::json!({ "streams": streams });
-                                    if let Ok(data) = serde_json::to_vec(&body)
+                                    if let Ok(data) =
+                                        serde_json::to_vec(&XDataStreams { streams: &streams })
                                         && let Err(e) = x_sender_notify.try_send((
                                             alias.clone(),
                                             "streams".to_string(),

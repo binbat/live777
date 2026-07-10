@@ -24,13 +24,6 @@ pub async fn subscribe_streams(
         base_url.trim_end_matches('/'),
         api::path::streams_sse()
     );
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        // SSE is a long-lived stream; do not set a per-request timeout and rely
-        // on TCP keepalive + cancellation for hang detection.
-        .tcp_keepalive(Duration::from_secs(30))
-        .build()
-        .unwrap();
     let mut headers = HeaderMap::new();
     let auth_value = match HeaderValue::from_str(&format!("Bearer {}", token)) {
         Ok(v) => v,
@@ -41,13 +34,22 @@ pub async fn subscribe_streams(
     };
     headers.insert(header::AUTHORIZATION, auth_value);
 
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        // SSE is a long-lived stream; do not set a per-request timeout and rely
+        // on TCP keepalive + cancellation for hang detection.
+        .tcp_keepalive(Duration::from_secs(30))
+        .default_headers(headers)
+        .build()
+        .unwrap();
+
     loop {
         select! {
             _ = cancel.cancelled() => {
                 info!(alias, "sse subscriber cancelled");
                 return;
             }
-            result = client.get(&url).headers(headers.clone()).send() => {
+            result = client.get(&url).send() => {
                 match result {
                     Ok(resp) => {
                         let status = resp.status();
