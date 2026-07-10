@@ -76,6 +76,14 @@ fn default_database_connect_timeout() -> u64 {
     30
 }
 
+#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    #[default]
+    Poll,
+    Sse,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
     #[serde(default)]
@@ -84,6 +92,8 @@ pub struct Node {
     pub token: String,
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub mode: UpdateMode,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
@@ -403,4 +413,36 @@ fn default_auto_record_tick() -> u64 {
 
 fn default_auto_record_max_seconds() -> u64 {
     86_400
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_mode_defaults_to_poll() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+            token = "live777"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.mode, UpdateMode::Poll);
+    }
+
+    #[test]
+    fn node_mode_parses_sse() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+            token = "live777"
+            mode = "sse"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.mode, UpdateMode::Sse);
+    }
 }

@@ -161,6 +161,18 @@ api_token = ""
 ttl = 3600
 ```
 
+## Node Status Updates {#status}
+
+Liveman can receive Liveion stream status via push instead of relying solely on polling.
+
+### SSE (for static/manual nodes)
+
+For every node configured under `[[nodes]]`, Liveman automatically opens an SSE connection to the Liveion `/api/sse/streams` endpoint and updates its local storage when stream state changes.
+
+### net4mqtt xdata (for net4mqtt-discovered nodes)
+
+When `net4mqtt` is enabled, each Liveion node periodically pushes a stream snapshot through `xdata` with key `streams`. Liveman decodes it and updates the corresponding node entry.
+
 ## Cluster {#cluster}
 
 Cluster mode must liveman. We can use [`net4mqtt`](/guide/net4mqtt) extra network

@@ -160,6 +160,27 @@ For Example:
 
 Response: [204]
 
+## Streams SSE
+
+`GET` `/api/sse/streams`
+
+Server-Sent Events endpoint. Requires the same auth as admin routes.
+
+Pushes the full snapshot of all streams whenever the stream state changes. Each SSE message is a JSON array of stream objects:
+
+```json
+[
+  {
+    "id": "streamId",
+    "publish": { ... },
+    "subscribe": { ... },
+    "reforward": { ... }
+  }
+]
+```
+
+Use this endpoint to keep a live view of the current stream state. The first message is sent when the connection is established; subsequent messages are sent on every state change.
+
 ## Cascade
 
 `POST` `/api/cascade/:streamId`

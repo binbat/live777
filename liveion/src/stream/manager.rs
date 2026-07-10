@@ -1,8 +1,7 @@
 use crate::config::Config;
 use crate::forward::message::ForwardInfo;
 
-use crate::hook::webhook::WebHook;
-use crate::hook::{Event, EventHook, Stream, StreamEvent, StreamEventType};
+use crate::hook::{Event, Stream, StreamEvent, StreamEventType};
 
 use crate::result::Result;
 
@@ -41,13 +40,6 @@ impl Manager {
         let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         let send = new_broadcast_channel!(4);
-        for web_hook_url in cfg.webhooks.iter() {
-            let webhook = WebHook::new(web_hook_url.clone());
-            let recv = send.subscribe();
-            tokio::spawn(async move {
-                webhook.hook(recv).await;
-            });
-        }
 
         tokio::spawn(Self::publish_check_tick(stream_map.clone(), send.clone()));
         tokio::spawn(Self::subscribe_check_tick(stream_map.clone(), send.clone()));
@@ -113,10 +105,6 @@ impl Manager {
                             r#type: StreamEventType::Down,
                             stream: Stream {
                                 stream: stream.clone(),
-                                session: None,
-                                publish: 0,
-                                subscribe: 0,
-                                reforward: 0,
                             },
                         }));
                     }
@@ -177,10 +165,6 @@ impl Manager {
                             r#type: StreamEventType::Down,
                             stream: Stream {
                                 stream: stream.clone(),
-                                session: None,
-                                publish: 0,
-                                subscribe: 0,
-                                reforward: 0,
                             },
                         }));
                     }
@@ -245,10 +229,6 @@ impl Manager {
         let _ = self.event_sender.send(Event::Stream(StreamEvent {
             stream: Stream {
                 stream: stream.clone(),
-                session: None,
-                publish: 1,
-                subscribe: 0,
-                reforward: 0,
             },
             r#type: StreamEventType::Up,
         }));
@@ -277,13 +257,7 @@ impl Manager {
     async fn do_stream_delete(&self, stream: String) {
         metrics::STREAM.dec();
         let _ = self.event_sender.send(Event::Stream(StreamEvent {
-            stream: Stream {
-                stream,
-                publish: 0,
-                subscribe: 0,
-                reforward: 0,
-                session: None,
-            },
+            stream: Stream { stream },
             r#type: StreamEventType::Down,
         }));
     }
@@ -468,29 +442,70 @@ impl Manager {
         }
     }
 
+    async fn do_snapshot(
+        stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
+        streams: &[String],
+    ) -> Vec<api::response::Stream> {
+        let stream_map = stream_map.read().await;
+        let mut infos: Vec<api::response::Stream> = vec![];
+        for (_, forward) in stream_map.iter() {
+            if !streams.is_empty() && !streams.contains(&forward.stream) {
+                continue;
+            }
+            infos.push(forward.info().await.into());
+        }
+        drop(stream_map);
+        infos.sort_by(|a, b| a.id.cmp(&b.id));
+        for info in &mut infos {
+            info.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+            info.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+        }
+        infos
+    }
+
+    #[cfg(any(feature = "net4mqtt", feature = "recorder"))]
+    pub async fn snapshot(&self, streams: &[String]) -> Vec<api::response::Stream> {
+        Self::do_snapshot(&self.stream_map, streams).await
+    }
+
     pub async fn sse_handler(
         &self,
         streams: Vec<String>,
-    ) -> Result<tokio::sync::mpsc::Receiver<Vec<ForwardInfo>>> {
+    ) -> Result<tokio::sync::mpsc::Receiver<Vec<api::response::Stream>>> {
         let (send, recv) = tokio::sync::mpsc::channel(64);
-        let mut evnet_recv = self.event_sender.subscribe();
+        let mut event_recv = self.event_sender.subscribe();
         let stream_map = self.stream_map.clone();
         tokio::spawn(async move {
-            while let Ok(event) = evnet_recv.recv().await {
+            let mut last_sent: Option<Vec<api::response::Stream>> = None;
+
+            async fn send_snapshot(
+                stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
+                streams: &[String],
+                last_sent: &mut Option<Vec<api::response::Stream>>,
+                send: &tokio::sync::mpsc::Sender<Vec<api::response::Stream>>,
+            ) -> bool {
+                let infos = Manager::do_snapshot(stream_map, streams).await;
+                if last_sent.as_ref() == Some(&infos) {
+                    return true;
+                }
+                *last_sent = Some(infos.clone());
+                send.send(infos).await.is_ok()
+            }
+
+            // Send an initial snapshot so the consumer has current state immediately.
+            if !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await {
+                return;
+            }
+
+            while let Ok(event) = event_recv.recv().await {
                 let stream = match event {
                     Event::Stream(val) => val.stream.stream,
-                    Event::Forward(val) => val.stream_info.id,
+                    Event::Forward(val) => val.stream_id,
                 };
-                if streams.is_empty() || streams.contains(&stream) {
-                    let stream_map = stream_map.read().await;
-                    let mut infos = vec![];
-                    for (_, forward) in stream_map.iter() {
-                        if !streams.is_empty() && !streams.contains(&forward.stream) {
-                            continue;
-                        }
-                        infos.push(forward.info().await);
-                    }
-                    let _ = send.send(infos).await;
+                if (streams.is_empty() || streams.contains(&stream))
+                    && !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await
+                {
+                    break;
                 }
             }
         });
@@ -677,7 +692,7 @@ impl Manager {
         }
     }
 
-    #[cfg(feature = "recorder")]
+    #[cfg(any(feature = "net4mqtt", feature = "recorder"))]
     pub fn subscribe_event(&self) -> broadcast::Receiver<Event> {
         self.event_sender.subscribe()
     }

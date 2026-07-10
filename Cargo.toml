@@ -187,6 +187,17 @@ native-rdk = ["capture-v4l2", "encoder-rdk"]
 # WHEP browser playback tester (Playwright-based)
 whepwright = ["dep:playwright-whep"]
 
+# Size-optimized release profile.
+# Use with: cargo build --profile release-size --bin live777 --features ...
+# Keeps opt-level=3 (runtime performance) but enables aggressive binary-size
+# reductions: full LTO, single codegen unit, symbol stripping, and panic=abort.
+[profile.release-size]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
 [patch.crates-io]
 rtc = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
 rtc-ice = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
