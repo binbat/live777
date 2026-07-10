@@ -172,8 +172,7 @@ where
                                         continue;
                                     }
                                     last_sent = Some(streams.clone());
-                                    if let Ok(data) =
-                                        serde_json::to_vec(&streams)
+                                    if let Ok(data) = serde_json::to_vec(&streams)
                                         && let Err(e) = x_sender_notify.try_send((
                                             alias.clone(),
                                             "streams".to_string(),
