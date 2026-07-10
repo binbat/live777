@@ -34,7 +34,9 @@ impl ChannelOutput {
 impl std::io::Write for ChannelOutput {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let n = buf.len();
-        self.sender.send((self.key.clone(), buf.to_vec())).unwrap();
+        self.sender
+            .send((self.key.clone(), buf.to_vec()))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
         Ok(n)
     }
 
@@ -254,7 +256,7 @@ async fn mqtt_client_init(
         String,
         Option<Sender<(String, String, Vec<u8>)>>,
         Option<UnboundedSender<(String, String, Vec<u8>)>>,
-        UnboundedReceiver<(String, String, Vec<u8>)>,
+        Option<UnboundedReceiver<(String, String, Vec<u8>)>>,
     ),
     Error,
 > {
@@ -263,14 +265,7 @@ async fn mqtt_client_init(
 
     let (x_sender, x_receiver) = {
         let XDataConfig { sender, receiver } = xdata.unwrap_or_default();
-        (
-            sender,
-            receiver.unwrap_or_else(|| {
-                let (sender, receiver) = unbounded_channel::<(String, String, Vec<u8>)>();
-                std::mem::forget(sender);
-                receiver
-            }),
-        )
+        (sender, receiver)
     };
 
     let VDataConfig {
@@ -308,16 +303,12 @@ async fn mqtt_client_init(
     if let Some(v) = online {
         client
             .publish(topic_v_pub, QoS::AtMostOnce, true, v)
-            .await
-            .unwrap();
+            .await?;
     }
 
     // MQTT subscribe at label::V
     if receiver.is_some() {
-        client
-            .subscribe(topic_v_sub, QoS::AtMostOnce)
-            .await
-            .unwrap();
+        client.subscribe(topic_v_sub, QoS::AtMostOnce).await?;
     }
 
     // MQTT subscribe at label::X
@@ -327,8 +318,7 @@ async fn mqtt_client_init(
                 topic::build_sub(&prefix, topic::ANY, topic::ANY, topic::label::X),
                 QoS::AtMostOnce,
             )
-            .await
-            .unwrap();
+            .await?;
     }
     Ok((client, eventloop, prefix, receiver, x_sender, x_receiver))
 }
@@ -389,7 +379,12 @@ pub async fn agent(
         let x_sender = x_sender.clone();
         let on_vdata = on_vdata.clone();
         select! {
-            result = x_receiver.recv() => {
+            result = async {
+                match x_receiver.as_mut() {
+                    Some(r) => r.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 match result {
                     Some((_sender_id, key, data)) => {
                         client.publish(topic::build_pub_x(&prefix, agent_id, topic::NIL, topic::label::X, &key),
@@ -434,30 +429,31 @@ pub async fn agent(
                                         } else {
                                             agent_id.to_string()
                                         };
-                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
+                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
+                                            warn!("xdata receiver closed: {:?}", e);
+                                        }
                                     }
                                 },
                                 _ => {
-                                    let sender = match senders.get(&p.topic) {
-                                        Some(sender) => sender,
-                                        None => {
-                                            let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
-                                            let topic = p.topic.clone();
-                                            let protocol = protocol.to_string();
-                                            let dst = if dst == topic::NIL { address } else { dst }.to_string();
-                                            task::spawn(async move {
-                                                if let Err(e) = up_agent_vclient(&dst, &protocol, topic, sender, vnet_rx).await {
-                                                    error!("agent vnet error: {:?}", e)
-                                                }
-                                            });
-                                            senders.insert(p.topic.clone(), vnet_tx);
-                                            senders.get(&p.topic).unwrap()
-                                        },
-                                    };
-                                    if sender.is_closed() {
-                                        senders.remove(&p.topic);
-                                    } else {
-                                        sender.send((p.topic, p.payload.to_vec()))?;
+                                    if !senders.contains_key(&p.topic) {
+                                        let (vnet_tx, vnet_rx) = unbounded_channel::<(String, Vec<u8>)>();
+                                        let topic = p.topic.clone();
+                                        let protocol = protocol.to_string();
+                                        let dst = if dst == topic::NIL { address } else { dst }.to_string();
+                                        let sender = sender.clone();
+                                        task::spawn(async move {
+                                            if let Err(e) = up_agent_vclient(&dst, &protocol, topic, sender, vnet_rx).await {
+                                                error!("agent vnet error: {:?}", e)
+                                            }
+                                        });
+                                        senders.insert(p.topic.clone(), vnet_tx);
+                                    }
+                                    if let Some(sender) = senders.get(&p.topic) {
+                                        if sender.is_closed() {
+                                            senders.remove(&p.topic);
+                                        } else {
+                                            sender.send((p.topic, p.payload.to_vec()))?;
+                                        }
                                     }
                                 },
                             }
@@ -525,7 +521,12 @@ pub async fn local_ports_tcp(
                     } { error!("local vnet error: {}", e) };
                 });
             }
-            result = x_receiver.recv() => {
+            result = async {
+                match x_receiver.as_mut() {
+                    Some(r) => r.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 match result {
                     Some((_sender_id, key, data)) => {
                         client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
@@ -570,7 +571,9 @@ pub async fn local_ports_tcp(
                                         } else {
                                             agent_id.to_string()
                                         };
-                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
+                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
+                                            warn!("xdata receiver closed: {:?}", e);
+                                        }
                                     }
                                 },
                                 (_, topic::protocol::KCP | topic::protocol::TCP) => {
@@ -627,7 +630,12 @@ pub async fn local_ports_udp(
                     topic::build(&prefix, agent_id, local_id, topic::label::I, topic::protocol::UDP, &addr.to_string(), &target),
                     buf[..len].to_vec())).unwrap();
             }
-            result = x_receiver.recv() => {
+            result = async {
+                match x_receiver.as_mut() {
+                    Some(r) => r.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 match result {
                     Some((_sender_id, key, data)) => {
                         client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
@@ -672,7 +680,9 @@ pub async fn local_ports_udp(
                                         } else {
                                             agent_id.to_string()
                                         };
-                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
+                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
+                                            warn!("xdata receiver closed: {:?}", e);
+                                        }
                                     }
                                 },
                                 (_, topic::protocol::UDP) => { let _ = sock.send_to(&p.payload, src).await?; },
@@ -773,7 +783,12 @@ pub async fn local_socks(
                 }
             }
 
-            result = x_receiver.recv() => {
+            result = async {
+                match x_receiver.as_mut() {
+                    Some(r) => r.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 match result {
                     Some((_sender_id, key, data)) => {
                         client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
@@ -818,7 +833,9 @@ pub async fn local_socks(
                                         } else {
                                             agent_id.to_string()
                                         };
-                                        s.send((sender_id, protocol.to_string(), p.payload.to_vec()))?;
+                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
+                                            warn!("xdata receiver closed: {:?}", e);
+                                        }
                                     }
                                 },
                                 (_, topic::protocol::KCP | topic::protocol::TCP) => {

@@ -1,0 +1,27 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Breaking Changes
+
+- **Removed webhook support from `liveion`.** The `[webhook]` configuration section and the `webhooks` list are no longer recognized. If your configuration contains a `[webhook]` section, the server will fail to start. Remove it before upgrading.
+  - Webhook-style push notifications are replaced by Server-Sent Events (`GET /api/sse/streams`) and the `net4mqtt` xdata channel, both of which push full stream-state snapshots when the state changes.
+  - The `/api/sse/events` endpoint has been removed. Use `/api/sse/streams` instead.
+
+### Changed
+
+- `liveion` now exposes a single SSE endpoint `/api/sse/streams` that pushes a full snapshot of all streams whenever stream state changes.
+- `net4mqtt` xdata messages now carry the sender identity as part of the channel tuple `(sender_id, key, payload)`. The receiver no longer needs to trust a user-supplied `alias` field inside the payload.
+- `liveman` consumes `net4mqtt` xdata `streams` messages and uses the message metadata as the node alias.
+
+### Fixed
+
+- Fixed a channel-sender leak in `net4mqtt` when `XDataConfig.receiver` was not provided.
+- Changed MQTT subscribe/publish calls in `net4mqtt` to propagate errors instead of panicking on connection failures.
+- Fixed `liveman` storage update logic so that stale stream/session mappings for a node are cleared before applying a new snapshot.
+- Fixed task leaks in `liveion` net4mqtt reconnection logic.
