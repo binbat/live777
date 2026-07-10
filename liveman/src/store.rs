@@ -171,16 +171,22 @@ impl Storage {
 
     pub async fn update_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
         let _guard = self.update_lock.lock().await;
-        self.apply_snapshot(alias, streams).await
+        Self::apply_snapshot_body(&self.list, &self.session, &self.stream, alias, streams)
     }
 
-    async fn apply_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
+    fn apply_snapshot_body(
+        list: &Arc<RwLock<HashMap<String, Node>>>,
+        session: &Arc<RwLock<HashMap<String, String>>>,
+        stream: &Arc<RwLock<HashMap<String, Vec<String>>>>,
+        alias: &str,
+        streams: Vec<Stream>,
+    ) -> Result<()> {
         // Hold all three indexes at once with a consistent lock order
         // (list -> session -> stream) so the snapshot is applied atomically
         // relative to other snapshot updates.
-        let mut list = self.list.write().map_err(|e| anyhow!("{:?}", e))?;
-        let mut session_map = self.session.write().map_err(|e| anyhow!("{:?}", e))?;
-        let mut stream_map = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut list = list.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut session_map = session.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut stream_map = stream.write().map_err(|e| anyhow!("{:?}", e))?;
 
         // Remove stale alias references contributed by this node.
         for aliases in stream_map.values_mut() {
@@ -446,7 +452,13 @@ impl Storage {
                     match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
                             trace!("{:?}", streams.clone());
-                            if let Err(e) = self.apply_snapshot(&alias, streams).await {
+                            if let Err(e) = Self::apply_snapshot_body(
+                                &self.list,
+                                &self.session,
+                                &self.stream,
+                                &alias,
+                                streams,
+                            ) {
                                 error!("{}: apply snapshot error: {:?}", alias, e);
                             }
                         }

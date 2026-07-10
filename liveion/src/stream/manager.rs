@@ -447,7 +447,7 @@ impl Manager {
         streams: Vec<String>,
     ) -> Result<tokio::sync::mpsc::Receiver<Vec<api::response::Stream>>> {
         let (send, recv) = tokio::sync::mpsc::channel(64);
-        let mut evnet_recv = self.event_sender.subscribe();
+        let mut event_recv = self.event_sender.subscribe();
         let stream_map = self.stream_map.clone();
         tokio::spawn(async move {
             let mut last_sent: Option<Vec<api::response::Stream>> = None;
@@ -484,7 +484,7 @@ impl Manager {
                 return;
             }
 
-            while let Ok(event) = evnet_recv.recv().await {
+            while let Ok(event) = event_recv.recv().await {
                 let stream = match event {
                     Event::Stream(val) => val.stream.stream,
                     Event::Forward(val) => val.stream_id,
