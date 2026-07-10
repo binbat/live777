@@ -92,16 +92,8 @@ async fn sse(
         .stream_manager
         .sse_handler(req.streams.clone())
         .await?;
-    let stream = ReceiverStream::new(recv).map(|forward_infos| {
-        Ok(Event::default()
-            .json_data(
-                forward_infos
-                    .into_iter()
-                    .map(api::response::Stream::from)
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap())
-    });
+    let stream =
+        ReceiverStream::new(recv).map(|streams| Ok(Event::default().json_data(streams).unwrap()));
     let resp = Sse::new(stream).keep_alive(KeepAlive::default());
     Ok(resp)
 }

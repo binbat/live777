@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `net4mqtt` xdata messages now carry the sender identity as part of the channel tuple `(sender_id, key, payload)`. The receiver no longer needs to trust a user-supplied `alias` field inside the payload.
 - `liveman` consumes `net4mqtt` xdata `streams` messages and uses the message metadata as the node alias.
 - `liveman` static nodes now support a `mode` field (`"poll"` or `"sse"`, default `"poll"`). `poll` nodes continue to be updated by periodic HTTP polling, while `sse` nodes subscribe to the upstream `/api/sse/streams` endpoint for stream-state snapshots. `net4mqtt` nodes are unaffected and still update through `xdata`.
+- `liveion` SSE `/api/sse/streams` and `net4mqtt` xdata `streams` now deduplicate snapshots: a new message is only emitted when the actual stream-state snapshot differs from the previous one.
+- `liveion` `net4mqtt` xdata `streams` payload no longer contains a redundant `alias` field; the sender identity is provided by the MQTT topic/channel metadata.
 
 ### Fixed
 

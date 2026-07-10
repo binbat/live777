@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use api::response::Stream;
 use http::header;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -22,7 +24,11 @@ pub async fn subscribe_streams(
         base_url.trim_end_matches('/'),
         api::path::streams_sse()
     );
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .unwrap();
     let mut headers = HeaderMap::new();
     let auth_value = match HeaderValue::from_str(&format!("Bearer {}", token)) {
         Ok(v) => v,

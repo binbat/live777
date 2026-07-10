@@ -142,17 +142,25 @@ where
 
                             let notify_handle = tokio::spawn(async move {
                                 let mut event_recv = stream_manager_notify.subscribe_event();
+                                let mut last_sent: Option<Vec<api::response::Stream>> = None;
                                 while let Ok(_event) = event_recv.recv().await {
-                                    let streams: Vec<api::response::Stream> = stream_manager_notify
-                                        .info(vec![])
-                                        .await
-                                        .into_iter()
-                                        .map(|info| info.into())
-                                        .collect();
-                                    let body = serde_json::json!({
-                                        "alias": alias,
-                                        "streams": streams,
-                                    });
+                                    let mut streams: Vec<api::response::Stream> =
+                                        stream_manager_notify
+                                            .info(vec![])
+                                            .await
+                                            .into_iter()
+                                            .map(|info| info.into())
+                                            .collect();
+                                    streams.sort_by(|a, b| a.id.cmp(&b.id));
+                                    for stream in &mut streams {
+                                        stream.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+                                        stream.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+                                    }
+                                    if last_sent.as_ref() == Some(&streams) {
+                                        continue;
+                                    }
+                                    last_sent = Some(streams.clone());
+                                    let body = serde_json::json!({ "streams": streams });
                                     if let Ok(data) = serde_json::to_vec(&body) {
                                         let _ = x_sender_notify.send((
                                             alias.clone(),
