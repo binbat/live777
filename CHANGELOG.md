@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `liveman` consumes `net4mqtt` xdata `streams` messages and uses the message metadata as the node alias.
 - `liveman` static nodes now support a `mode` field (`"poll"` or `"sse"`, default `"poll"`). `poll` nodes continue to be updated by periodic HTTP polling, while `sse` nodes subscribe to the upstream `/api/sse/streams` endpoint for stream-state snapshots. `net4mqtt` nodes are unaffected and still update through `xdata`.
 - `liveion` SSE `/api/sse/streams` and `net4mqtt` xdata `streams` now deduplicate snapshots: a new message is only emitted when the actual stream-state snapshot differs from the previous one.
-- `liveion` `net4mqtt` xdata `streams` payload no longer contains a redundant `alias` field; the sender identity is provided by the MQTT topic/channel metadata.
+- `liveion` `net4mqtt` xdata `streams` payload and vdata online payload no longer contain a redundant `alias` field; the sender identity is provided by the MQTT topic/channel metadata.
+- `liveion` `net4mqtt` xdata channel is now bounded (capacity 64) with backpressure: outdated snapshots are dropped when the channel is full.
+- `liveman` SSE subscriber now uses a 10s connect timeout, 300s read timeout, and 30s TCP keepalive to recover from hung connections without frequent idle reconnects.
+- `liveman` no longer polls `/api/strategy` for dynamically discovered `net4mqtt` nodes.
 
 ### Fixed
 

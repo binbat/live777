@@ -407,6 +407,38 @@ fn default_record_sync_limit() -> u32 {
     200
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_mode_defaults_to_poll() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+            token = "live777"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.mode, UpdateMode::Poll);
+    }
+
+    #[test]
+    fn node_mode_parses_sse() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+            token = "live777"
+            mode = "sse"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.mode, UpdateMode::Sse);
+    }
+}
+
 fn default_auto_record_tick() -> u64 {
     5_000
 }

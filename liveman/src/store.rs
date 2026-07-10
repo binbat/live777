@@ -316,7 +316,7 @@ impl Storage {
     fn get_do_strategy_updata_list(&self) -> HashMap<String, Node> {
         self.get_map_nodes()
             .into_iter()
-            .filter(|(_, v)| v.strategy.is_none())
+            .filter(|(_, v)| v.kind != NodeKind::Net4mqtt && v.strategy.is_none())
             .collect()
     }
 
@@ -459,5 +459,59 @@ impl Storage {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strategy_update_list_skips_net4mqtt_nodes() {
+        let storage = Storage::new(reqwest::Client::new());
+        {
+            let mut nodes = storage.list.write().unwrap();
+            nodes.insert(
+                "static-0".to_string(),
+                Node::new(
+                    "token".to_string(),
+                    NodeKind::Static,
+                    "http://127.0.0.1:7777".to_string(),
+                    UpdateMode::Poll,
+                ),
+            );
+            nodes.insert(
+                "mqtt-0".to_string(),
+                Node::new(
+                    "".to_string(),
+                    NodeKind::Net4mqtt,
+                    "http://mqtt-0.net4mqtt.local:7777".to_string(),
+                    UpdateMode::default(),
+                ),
+            );
+        }
+
+        let list = storage.get_do_strategy_updata_list();
+        assert!(list.contains_key("static-0"));
+        assert!(!list.contains_key("mqtt-0"));
+    }
+
+    #[test]
+    fn strategy_update_list_skips_nodes_with_strategy() {
+        let storage = Storage::new(reqwest::Client::new());
+        {
+            let mut nodes = storage.list.write().unwrap();
+            let mut node = Node::new(
+                "token".to_string(),
+                NodeKind::Static,
+                "http://127.0.0.1:7777".to_string(),
+                UpdateMode::Poll,
+            );
+            node.strategy = Some(Strategy::default());
+            nodes.insert("static-0".to_string(), node);
+        }
+
+        let list = storage.get_do_strategy_updata_list();
+        assert!(!list.contains_key("static-0"));
     }
 }

@@ -26,7 +26,8 @@ pub async fn subscribe_streams(
     );
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
+        .tcp_keepalive(Duration::from_secs(30))
         .build()
         .unwrap();
     let mut headers = HeaderMap::new();

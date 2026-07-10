@@ -105,10 +105,6 @@ impl Manager {
                             r#type: StreamEventType::Down,
                             stream: Stream {
                                 stream: stream.clone(),
-                                session: None,
-                                publish: 0,
-                                subscribe: 0,
-                                reforward: 0,
                             },
                         }));
                     }
@@ -169,10 +165,6 @@ impl Manager {
                             r#type: StreamEventType::Down,
                             stream: Stream {
                                 stream: stream.clone(),
-                                session: None,
-                                publish: 0,
-                                subscribe: 0,
-                                reforward: 0,
                             },
                         }));
                     }
@@ -237,10 +229,6 @@ impl Manager {
         let _ = self.event_sender.send(Event::Stream(StreamEvent {
             stream: Stream {
                 stream: stream.clone(),
-                session: None,
-                publish: 1,
-                subscribe: 0,
-                reforward: 0,
             },
             r#type: StreamEventType::Up,
         }));
@@ -269,13 +257,7 @@ impl Manager {
     async fn do_stream_delete(&self, stream: String) {
         metrics::STREAM.dec();
         let _ = self.event_sender.send(Event::Stream(StreamEvent {
-            stream: Stream {
-                stream,
-                publish: 0,
-                subscribe: 0,
-                reforward: 0,
-                session: None,
-            },
+            stream: Stream { stream },
             r#type: StreamEventType::Down,
         }));
     }
@@ -472,7 +454,7 @@ impl Manager {
             while let Ok(event) = evnet_recv.recv().await {
                 let stream = match event {
                     Event::Stream(val) => val.stream.stream,
-                    Event::Forward(val) => val.stream_info.id,
+                    Event::Forward(val) => val.stream_id,
                 };
                 if streams.is_empty() || streams.contains(&stream) {
                     let stream_map = stream_map.read().await;

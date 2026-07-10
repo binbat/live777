@@ -59,3 +59,6 @@ opendal = { version = "0.55", optional = true }
 webui = ["dep:rust-embed", "dep:mime_guess"]
 net4mqtt = ["dep:net4mqtt"]
 recorder = ["dep:storage", "dep:opendal"]
+
+[dev-dependencies]
+toml = "1.0"

@@ -8,7 +8,7 @@ use rumqttc::{AsyncClient, EventLoop, QoS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::select;
-use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::{task, time};
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
@@ -256,7 +256,7 @@ async fn mqtt_client_init(
         String,
         Option<Sender<(String, String, Vec<u8>)>>,
         Option<UnboundedSender<(String, String, Vec<u8>)>>,
-        Option<UnboundedReceiver<(String, String, Vec<u8>)>>,
+        Option<Receiver<(String, String, Vec<u8>)>>,
     ),
     Error,
 > {
@@ -333,7 +333,7 @@ pub struct VDataConfig {
 #[derive(Default)]
 pub struct XDataConfig {
     pub sender: Option<UnboundedSender<(String, String, Vec<u8>)>>,
-    pub receiver: Option<UnboundedReceiver<(String, String, Vec<u8>)>>,
+    pub receiver: Option<Receiver<(String, String, Vec<u8>)>>,
 }
 
 /// Agent service

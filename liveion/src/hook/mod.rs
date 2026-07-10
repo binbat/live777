@@ -1,5 +1,3 @@
-pub mod convert;
-
 use crate::forward::message::ForwardEvent;
 
 #[derive(Clone, Debug)]
@@ -10,6 +8,8 @@ pub enum Event {
 
 #[derive(Clone, Debug)]
 pub struct StreamEvent {
+    // Only the recorder feature consumes the event type.
+    #[cfg_attr(not(feature = "recorder"), allow(dead_code))]
     pub r#type: StreamEventType,
     pub stream: Stream,
 }
@@ -23,8 +23,4 @@ pub enum StreamEventType {
 #[derive(Clone, Debug)]
 pub struct Stream {
     pub stream: String,
-    pub session: Option<String>,
-    pub publish: u64,
-    pub subscribe: u64,
-    pub reforward: u64,
 }

@@ -134,7 +134,7 @@ where
                         loop {
                             let stream_manager = stream_manager.clone();
                             let (x_sender, x_receiver) =
-                                tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
+                                tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(64);
 
                             let alias = c.alias.clone();
                             let stream_manager_notify = stream_manager.clone();
@@ -161,12 +161,18 @@ where
                                     }
                                     last_sent = Some(streams.clone());
                                     let body = serde_json::json!({ "streams": streams });
-                                    if let Ok(data) = serde_json::to_vec(&body) {
-                                        let _ = x_sender_notify.send((
+                                    if let Ok(data) = serde_json::to_vec(&body)
+                                        && let Err(e) = x_sender_notify.try_send((
                                             alias.clone(),
                                             "streams".to_string(),
                                             data,
-                                        ));
+                                        ))
+                                    {
+                                        tracing::warn!(
+                                            alias,
+                                            error = %e,
+                                            "net4mqtt xdata channel full or closed"
+                                        );
                                     }
                                 }
                             });
@@ -177,12 +183,10 @@ where
                                 &c.alias.clone(),
                                 Some(net4mqtt::proxy::VDataConfig {
                                     online: Some(
-                                        serde_json::json!({
-                                            "alias": c.alias,
-                                        })
-                                        .to_string()
-                                        .bytes()
-                                        .collect(),
+                                        serde_json::json!({ "online": true })
+                                            .to_string()
+                                            .bytes()
+                                            .collect(),
                                     ),
                                     offline: Some("{}".bytes().collect()),
                                     ..Default::default()
