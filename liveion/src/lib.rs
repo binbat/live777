@@ -1,4 +1,7 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc};
+
+#[cfg(feature = "net4mqtt")]
+use std::time::Duration;
 
 use axum::{Router, extract::Request, middleware, response::IntoResponse, routing::get};
 use http::{StatusCode, Uri};
