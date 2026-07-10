@@ -253,13 +253,16 @@ impl Storage {
             .collect())
     }
 
+    // Serialize with snapshot updates so proxy writes are not interleaved
+    // with apply_snapshot_body rebuilding the stream/session indexes.
     pub async fn stream_put(&self, stream: String, alias: String) -> Result<()> {
-        {
-            let mut ctx = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
-            let mut arr = ctx.get(&stream).cloned().unwrap_or(Vec::new());
+        let _guard = self.update_lock.lock().await;
+        let mut ctx = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut arr = ctx.get(&stream).cloned().unwrap_or(Vec::new());
+        if !arr.contains(&alias) {
             arr.push(alias);
-            ctx.insert(stream, arr);
         }
+        ctx.insert(stream, arr);
         Ok(())
     }
 
@@ -290,7 +293,10 @@ impl Storage {
         self.stream.read().unwrap().clone()
     }
 
+    // Serialize with snapshot updates so proxy writes are not interleaved
+    // with apply_snapshot_body rebuilding the stream/session indexes.
     pub async fn session_put(&self, session: String, alias: String) -> Result<()> {
+        let _guard = self.update_lock.lock().await;
         self.session
             .write()
             .map_err(|e| anyhow!("{:?}", e))?

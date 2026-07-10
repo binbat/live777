@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **Removed webhook support from `liveion`.** The `[webhook]` configuration section and the `webhooks` list are no longer recognized. If your configuration contains a `[webhook]` section, the server will fail to start. Remove it before upgrading.
+- **Removed webhook support from `liveion`.** The `[webhook]` configuration section and the `webhooks` list are no longer recognized. Existing configurations that still contain a `[webhook]` section will have that section silently ignored. Remove it before upgrading to keep configs tidy.
   - Webhook-style push notifications are replaced by Server-Sent Events (`GET /api/sse/streams`) and the `net4mqtt` xdata channel, both of which push full stream-state snapshots when the state changes.
   - The `/api/sse/events` endpoint has been removed. Use `/api/sse/streams` instead.
 
