@@ -227,15 +227,8 @@ where
                                     if key.as_str() != "streams" {
                                         continue;
                                     }
-                                    match serde_json::from_slice::<serde_json::Value>(&data) {
-                                        Ok(value) => {
-                                            let streams = value
-                                                .get("streams")
-                                                .and_then(|v| {
-                                                    serde_json::from_value::<Vec<api::response::Stream>>(v.clone())
-                                                        .ok()
-                                                })
-                                                .unwrap_or_default();
+                                    match serde_json::from_slice::<Vec<api::response::Stream>>(&data) {
+                                        Ok(streams) => {
                                             if let Err(e) =
                                                 store_xdata.update_snapshot(&alias, streams).await
                                             {
