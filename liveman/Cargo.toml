@@ -37,6 +37,8 @@ url = { workspace = true }
 
 chrono = { version = "0.4", features = ["serde"] }
 http-body-util = "0.1.2"
+tokio-stream = { version = "0.1.15" }
+tokio-util = { workspace = true, features = ["io"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 glob = "0.3"
 

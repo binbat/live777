@@ -2648,6 +2648,8 @@ dependencies = [
  "signal",
  "storage",
  "tokio",
+ "tokio-stream",
+ "tokio-util",
  "tower-http",
  "tracing",
  "url",

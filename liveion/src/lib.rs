@@ -127,11 +127,58 @@ where
     {
         if let Some(mut c) = cfg.net4mqtt {
             c.validate();
+            let stream_manager = app_state.stream_manager.clone();
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
                         loop {
+                            let stream_manager = stream_manager.clone();
+                            let (x_sender, x_receiver) =
+                                tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+
+                            let alias = c.alias.clone();
+                            let x_sender_events = x_sender.clone();
+                            let x_sender_streams = x_sender.clone();
+                            let stream_manager_events = stream_manager.clone();
+                            let stream_manager_streams = stream_manager.clone();
+
+                            tokio::spawn(async move {
+                                let mut event_recv = stream_manager_events.subscribe_event();
+                                while let Ok(event) = event_recv.recv().await {
+                                    let body = api::event::EventBody {
+                                        metrics: crate::metrics::node_metrics(),
+                                        event: event.convert_api_event(),
+                                    };
+                                    if let Ok(data) = serde_json::to_vec(&body) {
+                                        let _ = x_sender_events.send(("events".to_string(), data));
+                                    }
+                                }
+                            });
+
+                            tokio::spawn(async move {
+                                let mut interval =
+                                    tokio::time::interval(tokio::time::Duration::from_secs(3));
+                                loop {
+                                    interval.tick().await;
+                                    let streams: Vec<api::response::Stream> =
+                                        stream_manager_streams
+                                            .info(vec![])
+                                            .await
+                                            .into_iter()
+                                            .map(|info| info.into())
+                                            .collect();
+                                    let body = serde_json::json!({
+                                        "alias": alias,
+                                        "streams": streams,
+                                    });
+                                    if let Ok(data) = serde_json::to_vec(&body) {
+                                        let _ =
+                                            x_sender_streams.send(("streams".to_string(), data));
+                                    }
+                                }
+                            });
+
                             match net4mqtt::proxy::agent(
                                 &c.mqtt_url,
                                 &cfg.http.listen.to_string(),
@@ -147,6 +194,10 @@ where
                                     ),
                                     offline: Some("{}".bytes().collect()),
                                     ..Default::default()
+                                }),
+                                Some(net4mqtt::proxy::XDataConfig {
+                                    sender: None,
+                                    receiver: Some(x_receiver),
                                 }),
                             )
                             .await

@@ -25,6 +25,7 @@ pub mod migration;
 mod result;
 mod route;
 pub mod service;
+mod sse;
 mod store;
 mod tick;
 mod utils;
@@ -92,10 +93,17 @@ where
     let store = Storage::new(client_mem.build().unwrap());
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
-        nodes
-            .write()
-            .unwrap()
-            .insert(v.alias, Node::new(v.token, NodeKind::Static, v.url));
+        nodes.write().unwrap().insert(
+            v.alias.clone(),
+            Node::new(v.token.clone(), NodeKind::Static, v.url.clone()),
+        );
+
+        tokio::spawn(crate::sse::subscribe_streams(
+            v.url,
+            v.token,
+            v.alias,
+            store.clone(),
+        ));
     }
 
     #[cfg(feature = "net4mqtt")]
@@ -104,6 +112,8 @@ where
             c.validate();
             let (sender, mut receiver) =
                 tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(10);
+            let (x_sender, mut x_receiver) =
+                tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
 
             let domain = c.domain.clone();
 
@@ -121,6 +131,10 @@ where
                                 Some(net4mqtt::proxy::VDataConfig {
                                     receiver: Some(sender.clone()),
                                     ..Default::default()
+                                }),
+                                Some(net4mqtt::proxy::XDataConfig {
+                                    sender: Some(x_sender.clone()),
+                                    receiver: None,
                                 }),
                                 false,
                             )
@@ -164,6 +178,49 @@ where
                             }
                         }
                     })
+            });
+
+            let store_xdata = store.clone();
+            tokio::spawn(async move {
+                while let Some((key, data)) = x_receiver.recv().await {
+                    match key.as_str() {
+                        "events" => match serde_json::from_slice::<api::event::EventBody>(&data) {
+                            Ok(body) => tracing::debug!(?body, "received net4mqtt event"),
+                            Err(err) => tracing::warn!(?err, "failed to decode net4mqtt event"),
+                        },
+                        "streams" => match serde_json::from_slice::<serde_json::Value>(&data) {
+                            Ok(value) => {
+                                let alias = value
+                                    .get("alias")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let streams = value
+                                    .get("streams")
+                                    .and_then(|v| {
+                                        serde_json::from_value::<Vec<api::response::Stream>>(
+                                            v.clone(),
+                                        )
+                                        .ok()
+                                    })
+                                    .unwrap_or_default();
+                                if let Err(e) =
+                                    crate::sse::update_storage(&store_xdata, &alias, streams).await
+                                {
+                                    tracing::warn!(
+                                        alias,
+                                        error = ?e,
+                                        "failed to update storage from net4mqtt"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(?err, "failed to decode net4mqtt streams")
+                            }
+                        },
+                        _ => {}
+                    }
+                }
             });
         }
     }
