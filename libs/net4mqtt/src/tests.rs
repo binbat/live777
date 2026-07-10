@@ -1022,7 +1022,7 @@ async fn test_xdata() {
     let msg_3: Vec<u8> = "333".bytes().collect();
     let msg_4: Vec<u8> = "4444".bytes().collect();
 
-    let (sender_a, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
+    let (sender_a, receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(64);
     let (sender, mut receiver_a) =
         tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
@@ -1046,7 +1046,7 @@ async fn test_xdata() {
         ))
     });
 
-    let (sender_b, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
+    let (sender_b, receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(64);
     let (sender, mut receiver_b) =
         tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
@@ -1070,7 +1070,7 @@ async fn test_xdata() {
         ))
     });
 
-    let (sender_c, receiver) = tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
+    let (sender_c, receiver) = tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(64);
     let (sender, mut receiver_c) =
         tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
@@ -1100,6 +1100,7 @@ async fn test_xdata() {
 
     sender_a
         .send(("a".to_string(), ev.clone(), msg_1.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("a".to_string(), ev.clone(), msg_1.clone())),
@@ -1116,6 +1117,7 @@ async fn test_xdata() {
 
     sender_b
         .send(("b".to_string(), ev.clone(), msg_2.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("b".to_string(), ev.clone(), msg_2.clone())),
@@ -1132,6 +1134,7 @@ async fn test_xdata() {
 
     sender_c
         .send(("c".to_string(), ev.clone(), msg_3.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("c".to_string(), ev.clone(), msg_3.clone())),
@@ -1153,6 +1156,7 @@ async fn test_xdata() {
 
     sender_a
         .send(("a".to_string(), ev.clone(), msg_2.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("a".to_string(), ev.clone(), msg_2.clone())),
@@ -1169,6 +1173,7 @@ async fn test_xdata() {
 
     sender_b
         .send(("b".to_string(), ev.clone(), msg_1.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("b".to_string(), ev.clone(), msg_1.clone())),
@@ -1185,6 +1190,7 @@ async fn test_xdata() {
 
     sender_c
         .send(("c".to_string(), ev.clone(), msg_1.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("c".to_string(), ev.clone(), msg_1.clone())),
@@ -1201,6 +1207,7 @@ async fn test_xdata() {
 
     sender_c
         .send(("c".to_string(), ev.clone(), msg_3.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("c".to_string(), ev.clone(), msg_3.clone())),
@@ -1217,6 +1224,7 @@ async fn test_xdata() {
 
     sender_a
         .send(("a".to_string(), ev.clone(), msg_4.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("a".to_string(), ev.clone(), msg_4.clone())),
@@ -1233,6 +1241,7 @@ async fn test_xdata() {
 
     sender_a
         .send(("a".to_string(), ev.clone(), msg_4.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("a".to_string(), ev.clone(), msg_4.clone())),
@@ -1249,6 +1258,7 @@ async fn test_xdata() {
 
     sender_a
         .send(("a".to_string(), ev.clone(), msg_1.clone()))
+        .await
         .unwrap();
     assert_eq!(
         Some(("a".to_string(), ev.clone(), msg_1.clone())),

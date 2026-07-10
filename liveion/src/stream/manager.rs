@@ -451,32 +451,48 @@ impl Manager {
         let stream_map = self.stream_map.clone();
         tokio::spawn(async move {
             let mut last_sent: Option<Vec<api::response::Stream>> = None;
+
+            async fn send_snapshot(
+                stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
+                streams: &[String],
+                last_sent: &mut Option<Vec<api::response::Stream>>,
+                send: &tokio::sync::mpsc::Sender<Vec<api::response::Stream>>,
+            ) -> bool {
+                let stream_map = stream_map.read().await;
+                let mut infos: Vec<api::response::Stream> = vec![];
+                for (_, forward) in stream_map.iter() {
+                    if !streams.is_empty() && !streams.contains(&forward.stream) {
+                        continue;
+                    }
+                    infos.push(forward.info().await.into());
+                }
+                drop(stream_map);
+                infos.sort_by(|a, b| a.id.cmp(&b.id));
+                for info in &mut infos {
+                    info.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+                    info.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+                }
+                if last_sent.as_ref() == Some(&infos) {
+                    return true;
+                }
+                *last_sent = Some(infos.clone());
+                send.send(infos).await.is_ok()
+            }
+
+            // Send an initial snapshot so the consumer has current state immediately.
+            if !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await {
+                return;
+            }
+
             while let Ok(event) = evnet_recv.recv().await {
                 let stream = match event {
                     Event::Stream(val) => val.stream.stream,
                     Event::Forward(val) => val.stream_id,
                 };
-                if streams.is_empty() || streams.contains(&stream) {
-                    let stream_map = stream_map.read().await;
-                    let mut infos: Vec<api::response::Stream> = vec![];
-                    for (_, forward) in stream_map.iter() {
-                        if !streams.is_empty() && !streams.contains(&forward.stream) {
-                            continue;
-                        }
-                        infos.push(forward.info().await.into());
-                    }
-                    infos.sort_by(|a, b| a.id.cmp(&b.id));
-                    for info in &mut infos {
-                        info.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
-                        info.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
-                    }
-                    if last_sent.as_ref() == Some(&infos) {
-                        continue;
-                    }
-                    last_sent = Some(infos.clone());
-                    if send.send(infos).await.is_err() {
-                        break;
-                    }
+                if (streams.is_empty() || streams.contains(&stream))
+                    && !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await
+                {
+                    break;
                 }
             }
         });

@@ -121,65 +121,91 @@ where
                 tokio::sync::mpsc::unbounded_channel::<(String, String, Vec<u8>)>();
 
             let domain = c.domain.clone();
+            let cancel_net4mqtt = cancel.clone();
 
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
                         loop {
-                            let listener = TcpListener::bind(c.listen).await.unwrap();
-                            match net4mqtt::proxy::local_socks(
-                                &c.mqtt_url,
-                                listener,
-                                ("-", &c.alias.clone()),
-                                Some(c.domain.clone()),
-                                Some(net4mqtt::proxy::VDataConfig {
-                                    receiver: Some(sender.clone()),
-                                    ..Default::default()
-                                }),
-                                Some(net4mqtt::proxy::XDataConfig {
-                                    sender: Some(x_sender.clone()),
-                                    receiver: None,
-                                }),
-                                false,
-                            )
-                            .await
-                            {
-                                Ok(_) => tracing::warn!(
-                                    "net4mqtt service is end, restart net4mqtt service"
-                                ),
-                                Err(e) => error!("mqtt4mqtt error: {:?}", e),
+                            if cancel_net4mqtt.is_cancelled() {
+                                return;
                             }
-                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            let listener = TcpListener::bind(c.listen).await.unwrap();
+                            let alias = c.alias.clone();
+                            tokio::select! {
+                                _ = cancel_net4mqtt.cancelled() => {
+                                    tracing::info!("net4mqtt local_socks shutting down");
+                                    return;
+                                }
+                                result = net4mqtt::proxy::local_socks(
+                                    &c.mqtt_url,
+                                    listener,
+                                    ("-", &alias),
+                                    Some(c.domain.clone()),
+                                    Some(net4mqtt::proxy::VDataConfig {
+                                        receiver: Some(sender.clone()),
+                                        ..Default::default()
+                                    }),
+                                    Some(net4mqtt::proxy::XDataConfig {
+                                        sender: Some(x_sender.clone()),
+                                        receiver: None,
+                                    }),
+                                    false,
+                                ) => {
+                                    match result {
+                                        Ok(_) => tracing::warn!(
+                                            "net4mqtt service is end, restart net4mqtt service"
+                                        ),
+                                        Err(e) => error!("mqtt4mqtt error: {:?}", e),
+                                    }
+                                }
+                            }
+                            tokio::select! {
+                                _ = cancel_net4mqtt.cancelled() => {
+                                    tracing::info!("net4mqtt local_socks shutting down");
+                                    return;
+                                }
+                                _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {}
+                            }
                         }
                     });
             });
 
+            let cancel_discovery = cancel.clone();
             std::thread::spawn(move || {
                 let dns = net4mqtt::kxdns::Kxdns::new(domain);
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
                         loop {
-                            match receiver.recv().await {
-                                Some((agent_id, _local_id, data)) => {
-                                    if data.len() > 5 {
-                                        nodes.write().unwrap().insert(
-                                            agent_id.clone(),
-                                            Node::new(
-                                                "".to_string(),
-                                                NodeKind::Net4mqtt,
-                                                format!("http://{}", dns.registry(&agent_id)),
-                                                UpdateMode::default(),
-                                            ),
-                                        );
-                                    } else {
-                                        nodes.write().unwrap().remove(&agent_id);
-                                    }
+                            tokio::select! {
+                                _ = cancel_discovery.cancelled() => {
+                                    tracing::info!("net4mqtt discovery shutting down");
+                                    return;
                                 }
-                                None => {
-                                    error!("net4mqtt discovery receiver channel closed");
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                msg = receiver.recv() => {
+                                    match msg {
+                                        Some((agent_id, _local_id, data)) => {
+                                            if data.len() > 5 {
+                                                nodes.write().unwrap().insert(
+                                                    agent_id.clone(),
+                                                    Node::new(
+                                                        "".to_string(),
+                                                        NodeKind::Net4mqtt,
+                                                        format!("http://{}", dns.registry(&agent_id)),
+                                                        UpdateMode::default(),
+                                                    ),
+                                                );
+                                            } else {
+                                                nodes.write().unwrap().remove(&agent_id);
+                                            }
+                                        }
+                                        None => {
+                                            error!("net4mqtt discovery receiver channel closed");
+                                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -187,32 +213,49 @@ where
             });
 
             let store_xdata = store.clone();
+            let cancel_xdata = cancel.clone();
             tokio::spawn(async move {
-                while let Some((alias, key, data)) = x_receiver.recv().await {
-                    if key.as_str() != "streams" {
-                        continue;
-                    }
-                    match serde_json::from_slice::<serde_json::Value>(&data) {
-                        Ok(value) => {
-                            let streams = value
-                                .get("streams")
-                                .and_then(|v| {
-                                    serde_json::from_value::<Vec<api::response::Stream>>(v.clone())
-                                        .ok()
-                                })
-                                .unwrap_or_default();
-                            if let Err(e) =
-                                crate::sse::update_storage(&store_xdata, &alias, streams).await
-                            {
-                                tracing::warn!(
-                                    alias,
-                                    error = ?e,
-                                    "failed to update storage from net4mqtt"
-                                );
-                            }
+                loop {
+                    tokio::select! {
+                        _ = cancel_xdata.cancelled() => {
+                            tracing::info!("net4mqtt xdata handler shutting down");
+                            return;
                         }
-                        Err(err) => {
-                            tracing::warn!(?err, "failed to decode net4mqtt streams")
+                        msg = x_receiver.recv() => {
+                            match msg {
+                                Some((alias, key, data)) => {
+                                    if key.as_str() != "streams" {
+                                        continue;
+                                    }
+                                    match serde_json::from_slice::<serde_json::Value>(&data) {
+                                        Ok(value) => {
+                                            let streams = value
+                                                .get("streams")
+                                                .and_then(|v| {
+                                                    serde_json::from_value::<Vec<api::response::Stream>>(v.clone())
+                                                        .ok()
+                                                })
+                                                .unwrap_or_default();
+                                            if let Err(e) =
+                                                crate::sse::update_storage(&store_xdata, &alias, streams).await
+                                            {
+                                                tracing::warn!(
+                                                    alias,
+                                                    error = ?e,
+                                                    "failed to update storage from net4mqtt"
+                                                );
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(?err, "failed to decode net4mqtt streams")
+                                        }
+                                    }
+                                }
+                                None => {
+                                    error!("net4mqtt xdata receiver channel closed");
+                                    return;
+                                }
+                            }
                         }
                     }
                 }

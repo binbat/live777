@@ -1,8 +1,9 @@
-use std::{future::Future, sync::Arc};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use axum::{Router, extract::Request, middleware, response::IntoResponse, routing::get};
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{Level, error, info_span};
 
@@ -122,16 +123,22 @@ where
         )
         .fallback(static_handler);
 
+    let cancel = CancellationToken::new();
+
     #[cfg(feature = "net4mqtt")]
     {
         if let Some(mut c) = cfg.net4mqtt {
             c.validate();
             let stream_manager = app_state.stream_manager.clone();
+            let cancel_net4mqtt = cancel.clone();
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
                         loop {
+                            if cancel_net4mqtt.is_cancelled() {
+                                return;
+                            }
                             let stream_manager = stream_manager.clone();
                             let (x_sender, x_receiver) =
                                 tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(64);
@@ -177,34 +184,49 @@ where
                                 }
                             });
 
-                            match net4mqtt::proxy::agent(
-                                &c.mqtt_url,
-                                &cfg.http.listen.to_string(),
-                                &c.alias.clone(),
-                                Some(net4mqtt::proxy::VDataConfig {
-                                    online: Some(
-                                        serde_json::json!({ "online": true })
-                                            .to_string()
-                                            .bytes()
-                                            .collect(),
-                                    ),
-                                    offline: Some("{}".bytes().collect()),
-                                    ..Default::default()
-                                }),
-                                Some(net4mqtt::proxy::XDataConfig {
-                                    sender: None,
-                                    receiver: Some(x_receiver),
-                                }),
-                            )
-                            .await
-                            {
-                                Ok(_) => tracing::warn!(
-                                    "net4mqtt service is end, restart net4mqtt service"
-                                ),
-                                Err(e) => error!("mqtt4mqtt error: {:?}", e),
+                            let alias = c.alias.clone();
+                            let listen = cfg.http.listen.to_string();
+                            tokio::select! {
+                                _ = cancel_net4mqtt.cancelled() => {
+                                    notify_handle.abort();
+                                    tracing::info!("net4mqtt agent shutting down");
+                                    return;
+                                }
+                                result = net4mqtt::proxy::agent(
+                                    &c.mqtt_url,
+                                    &listen,
+                                    &alias,
+                                    Some(net4mqtt::proxy::VDataConfig {
+                                        online: Some(
+                                            serde_json::json!({ "online": true })
+                                                .to_string()
+                                                .bytes()
+                                                .collect(),
+                                        ),
+                                        offline: Some("{}".bytes().collect()),
+                                        ..Default::default()
+                                    }),
+                                    Some(net4mqtt::proxy::XDataConfig {
+                                        sender: None,
+                                        receiver: Some(x_receiver),
+                                    }),
+                                ) => {
+                                    notify_handle.abort();
+                                    match result {
+                                        Ok(_) => tracing::warn!(
+                                            "net4mqtt service is end, restart net4mqtt service"
+                                        ),
+                                        Err(e) => error!("mqtt4mqtt error: {:?}", e),
+                                    }
+                                }
                             }
-                            notify_handle.abort();
-                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            tokio::select! {
+                                _ = cancel_net4mqtt.cancelled() => {
+                                    tracing::info!("net4mqtt agent shutting down");
+                                    return;
+                                }
+                                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                            }
                         }
                     });
             });
@@ -218,6 +240,7 @@ where
         .with_graceful_shutdown(async move {
             signal.await;
             tracing::info!("Shutdown signal received");
+            cancel.cancel();
 
             #[cfg(feature = "source")]
             {

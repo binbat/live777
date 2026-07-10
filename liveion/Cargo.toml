@@ -33,6 +33,7 @@ serde = { workspace = true, features = ["serde_derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
+tokio-util = { workspace = true }
 async-stream = "0.3.5"
 tracing = { workspace = true }
 webrtc = { workspace = true }

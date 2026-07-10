@@ -169,61 +169,61 @@ impl Storage {
         self.get_cluster()
     }
 
-    pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<(), Error> {
-        match self.list.write().unwrap().get_mut(&alias) {
-            Some(node) => node.streams = target,
-            None => return Err(anyhow!("node not found")),
-        };
-        Ok(())
-    }
-
     pub async fn update_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
         let _guard = self.update_lock.lock().await;
         self.apply_snapshot(alias, streams).await
     }
 
     async fn apply_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
+        // Hold all three indexes at once with a consistent lock order
+        // (list -> session -> stream) so the snapshot is applied atomically
+        // relative to other snapshot updates.
+        let mut list = self.list.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut session_map = self.session.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut stream_map = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+
         // Remove stale alias references contributed by this node.
-        {
-            let mut stream_map = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
-            for aliases in stream_map.values_mut() {
-                aliases.retain(|a| a != alias);
-            }
-            stream_map.retain(|_, aliases| !aliases.is_empty());
+        for aliases in stream_map.values_mut() {
+            aliases.retain(|a| a != alias);
         }
-        {
-            let old_streams = self
-                .list
-                .read()
-                .map_err(|e| anyhow!("{:?}", e))?
-                .get(alias)
-                .map(|node| node.streams.clone())
-                .unwrap_or_default();
-            let mut session_map = self.session.write().map_err(|e| anyhow!("{:?}", e))?;
-            for stream in old_streams {
-                for session in stream.subscribe.sessions {
-                    let key = api::path::session(&stream.id, &session.id);
-                    if let Some(existing_alias) = session_map.get(&key)
-                        && existing_alias == alias
-                    {
-                        session_map.remove(&key);
-                    }
+        stream_map.retain(|_, aliases| !aliases.is_empty());
+
+        // Remove stale session entries contributed by this node.
+        let old_streams = list
+            .get(alias)
+            .map(|node| node.streams.clone())
+            .unwrap_or_default();
+        for stream in old_streams {
+            for session in stream.subscribe.sessions {
+                let key = api::path::session(&stream.id, &session.id);
+                if let Some(existing_alias) = session_map.get(&key)
+                    && existing_alias == alias
+                {
+                    session_map.remove(&key);
                 }
             }
         }
 
-        self.info_put(alias.to_string(), streams.clone()).await?;
+        // Update the node's stream list.
+        let node = list
+            .get_mut(alias)
+            .ok_or_else(|| anyhow!("node not found"))?;
+        node.streams = streams.clone();
+
+        // Rebuild stream/session indexes for the new snapshot.
         for stream in streams {
-            self.stream_put(stream.id.clone(), alias.to_string())
-                .await?;
+            stream_map
+                .entry(stream.id.clone())
+                .or_default()
+                .push(alias.to_string());
             for session in stream.subscribe.sessions {
-                self.session_put(
+                session_map.insert(
                     api::path::session(&stream.id, &session.id),
                     alias.to_string(),
-                )
-                .await?;
+                );
             }
         }
+
         Ok(())
     }
 

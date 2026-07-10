@@ -26,7 +26,8 @@ pub async fn subscribe_streams(
     );
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
+        // SSE is a long-lived stream; do not set a per-request timeout and rely
+        // on TCP keepalive + cancellation for hang detection.
         .tcp_keepalive(Duration::from_secs(30))
         .build()
         .unwrap();

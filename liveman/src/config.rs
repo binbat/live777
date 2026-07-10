@@ -407,6 +407,14 @@ fn default_record_sync_limit() -> u32 {
     200
 }
 
+fn default_auto_record_tick() -> u64 {
+    5_000
+}
+
+fn default_auto_record_max_seconds() -> u64 {
+    86_400
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,12 +445,4 @@ mod tests {
         .unwrap();
         assert_eq!(node.mode, UpdateMode::Sse);
     }
-}
-
-fn default_auto_record_tick() -> u64 {
-    5_000
-}
-
-fn default_auto_record_max_seconds() -> u64 {
-    86_400
 }
