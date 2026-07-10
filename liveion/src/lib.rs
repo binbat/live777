@@ -220,7 +220,7 @@ where
                                         Ok(_) => tracing::warn!(
                                             "net4mqtt service is end, restart net4mqtt service"
                                         ),
-                                        Err(e) => error!("mqtt4mqtt error: {:?}", e),
+                                        Err(e) => error!("net4mqtt error: {:?}", e),
                                     }
                                 }
                             }

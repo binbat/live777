@@ -398,12 +398,17 @@ impl Storage {
     }
 
     async fn update(&mut self) {
-        let update_lock = self.update_lock.clone();
-        let _guard = update_lock.lock().await;
-        if self.time.elapsed() < Duration::from_secs(3) {
-            return;
+        // Throttle check: acquire lock only for the fast in-memory guard,
+        // then release before making any HTTP requests so that concurrent
+        // snapshot updates (SSE / xdata) are not blocked.
+        {
+            let update_lock = self.update_lock.clone();
+            let _guard = update_lock.lock().await;
+            if self.time.elapsed() < Duration::from_secs(3) {
+                return;
+            }
+            self.time = Instant::now();
         }
-        self.time = Instant::now();
 
         self.update_strategy_from(self.get_do_strategy_update_list())
             .await;
@@ -446,6 +451,11 @@ impl Storage {
         } else {
             debug!("update duration: {:?}", duration);
         }
+
+        // Re-acquire the lock only for the fast in-memory snapshot-apply
+        // step so that snapshot writes are serialized.
+        let update_lock = self.update_lock.clone();
+        let _guard = update_lock.lock().await;
 
         for handle in handles {
             let result = tokio::join!(handle);
