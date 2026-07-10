@@ -463,6 +463,7 @@ impl Manager {
         infos
     }
 
+    #[cfg(any(feature = "net4mqtt", feature = "recorder"))]
     pub async fn snapshot(&self, streams: &[String]) -> Vec<api::response::Stream> {
         Self::do_snapshot(&self.stream_map, streams).await
     }

@@ -336,6 +336,56 @@ pub struct XDataConfig {
     pub receiver: Option<Receiver<(String, String, Vec<u8>)>>,
 }
 
+/// Wait for an xdata message from the application and publish it to MQTT.
+///
+/// Returns `Ok(())` when a message was published.
+/// Returns `Err` when the xdata send channel is closed, signaling the
+/// caller should exit the agent loop cleanly (the outer loop will restart).
+async fn xdata_publish_to_mqtt(
+    x_receiver: &mut Option<Receiver<(String, String, Vec<u8>)>>,
+    client: &AsyncClient,
+    prefix: &str,
+    agent_id: &str,
+    local_id: &str,
+) -> Result<(), Error> {
+    let (_sender_id, key, data) = match x_receiver.as_mut() {
+        Some(r) => match r.recv().await {
+            Some(msg) => msg,
+            None => return Err(anyhow!("xdata send channel closed")),
+        },
+        None => std::future::pending().await,
+    };
+    client
+        .publish(
+            topic::build_pub_x(prefix, agent_id, local_id, topic::label::X, &key),
+            QoS::AtMostOnce,
+            false,
+            data,
+        )
+        .await?;
+    Ok(())
+}
+
+/// Forward a received MQTT xdata notification to the application.
+fn handle_xdata_notification(
+    x_sender: &Option<UnboundedSender<(String, String, Vec<u8>)>>,
+    agent_id: &str,
+    local_id: &str,
+    protocol: &str,
+    payload: &[u8],
+) {
+    if let Some(s) = x_sender {
+        let sender_id = if agent_id == topic::NIL {
+            local_id.to_string()
+        } else {
+            agent_id.to_string()
+        };
+        if let Err(e) = s.send((sender_id, protocol.to_string(), payload.to_vec())) {
+            warn!("xdata receiver closed: {:?}", e);
+        }
+    }
+}
+
 /// Agent service
 ///
 /// # Arguments
@@ -376,24 +426,18 @@ pub async fn agent(
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
     loop {
         let sender = sender.clone();
-        let x_sender = x_sender.clone();
         let on_vdata = on_vdata.clone();
         select! {
-            result = async {
-                match x_receiver.as_mut() {
-                    Some(r) => r.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            result = xdata_publish_to_mqtt(
+                &mut x_receiver,
+                &client,
+                &prefix,
+                agent_id,
+                topic::NIL,
+            ) => {
                 match result {
-                    Some((_sender_id, key, data)) => {
-                        client.publish(topic::build_pub_x(&prefix, agent_id, topic::NIL, topic::label::X, &key),
-                            QoS::AtMostOnce,
-                            false,
-                            data
-                        ).await?;
-                    }
-                    None => return Ok(())
+                    Ok(()) => {}
+                    Err(_) => return Ok(()),
                 }
             }
             result = receiver.recv() => {
@@ -423,16 +467,13 @@ pub async fn agent(
                                     }
                                 },
                                 topic::label::X => {
-                                    if let Some(s) = x_sender {
-                                        let sender_id = if agent_id == topic::NIL {
-                                            local_id.to_string()
-                                        } else {
-                                            agent_id.to_string()
-                                        };
-                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
-                                            warn!("xdata receiver closed: {:?}", e);
-                                        }
-                                    }
+                                    handle_xdata_notification(
+                                        &x_sender,
+                                        agent_id,
+                                        local_id,
+                                        protocol,
+                                        &p.payload,
+                                    );
                                 },
                                 _ => {
                                     if !senders.contains_key(&p.topic) {
@@ -496,7 +537,6 @@ pub async fn local_ports_tcp(
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
     loop {
         let sender = sender.clone();
-        let x_sender = x_sender.clone();
         let on_vdata = on_vdata.clone();
         select! {
             Ok((socket, addr)) = listener.accept() => {
@@ -521,21 +561,16 @@ pub async fn local_ports_tcp(
                     } { error!("local vnet error: {}", e) };
                 });
             }
-            result = async {
-                match x_receiver.as_mut() {
-                    Some(r) => r.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            result = xdata_publish_to_mqtt(
+                &mut x_receiver,
+                &client,
+                &prefix,
+                agent_id,
+                local_id,
+            ) => {
                 match result {
-                    Some((_sender_id, key, data)) => {
-                        client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
-                            QoS::AtMostOnce,
-                            false,
-                            data
-                        ).await?;
-                    }
-                    None => return Ok(())
+                    Ok(()) => {}
+                    Err(_) => return Ok(()),
                 }
             }
             result = receiver.recv() => {
@@ -565,16 +600,13 @@ pub async fn local_ports_tcp(
                                     }
                                 },
                                 (topic::label::X, _) => {
-                                    if let Some(s) = x_sender {
-                                        let sender_id = if agent_id == topic::NIL {
-                                            local_id.to_string()
-                                        } else {
-                                            agent_id.to_string()
-                                        };
-                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
-                                            warn!("xdata receiver closed: {:?}", e);
-                                        }
-                                    }
+                                    handle_xdata_notification(
+                                        &x_sender,
+                                        agent_id,
+                                        local_id,
+                                        protocol,
+                                        &p.payload,
+                                    );
                                 },
                                 (_, topic::protocol::KCP | topic::protocol::TCP) => {
                                     if let Some(sender) = senders.get(&p.topic) {
@@ -622,7 +654,6 @@ pub async fn local_ports_udp(
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
     loop {
         let sender = sender.clone();
-        let x_sender = x_sender.clone();
         let on_vdata = on_vdata.clone();
         select! {
             Ok((len, addr)) = sock.recv_from(&mut buf) => {
@@ -630,21 +661,16 @@ pub async fn local_ports_udp(
                     topic::build(&prefix, agent_id, local_id, topic::label::I, topic::protocol::UDP, &addr.to_string(), &target),
                     buf[..len].to_vec())).unwrap();
             }
-            result = async {
-                match x_receiver.as_mut() {
-                    Some(r) => r.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            result = xdata_publish_to_mqtt(
+                &mut x_receiver,
+                &client,
+                &prefix,
+                agent_id,
+                local_id,
+            ) => {
                 match result {
-                    Some((_sender_id, key, data)) => {
-                        client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
-                            QoS::AtMostOnce,
-                            false,
-                            data
-                        ).await?;
-                    }
-                    None => return Ok(())
+                    Ok(()) => {}
+                    Err(_) => return Ok(()),
                 }
             }
             result = receiver.recv() => {
@@ -674,16 +700,13 @@ pub async fn local_ports_udp(
                                     }
                                 },
                                 (topic::label::X, _) => {
-                                    if let Some(s) = x_sender {
-                                        let sender_id = if agent_id == topic::NIL {
-                                            local_id.to_string()
-                                        } else {
-                                            agent_id.to_string()
-                                        };
-                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
-                                            warn!("xdata receiver closed: {:?}", e);
-                                        }
-                                    }
+                                    handle_xdata_notification(
+                                        &x_sender,
+                                        agent_id,
+                                        local_id,
+                                        protocol,
+                                        &p.payload,
+                                    );
                                 },
                                 (_, topic::protocol::UDP) => { let _ = sock.send_to(&p.payload, src).await?; },
                                 (label, protocol) => info!("unknown label: {} and protocol: {}", label, protocol)
@@ -742,7 +765,6 @@ pub async fn local_socks(
     let (sender, mut receiver) = unbounded_channel::<(String, Vec<u8>)>();
     loop {
         let sender = sender.clone();
-        let x_sender = x_sender.clone();
         let on_vdata = on_vdata.clone();
         select! {
             Ok((conn, addr)) = server.accept() => {
@@ -783,21 +805,16 @@ pub async fn local_socks(
                 }
             }
 
-            result = async {
-                match x_receiver.as_mut() {
-                    Some(r) => r.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            result = xdata_publish_to_mqtt(
+                &mut x_receiver,
+                &client,
+                &prefix,
+                agent_id,
+                local_id,
+            ) => {
                 match result {
-                    Some((_sender_id, key, data)) => {
-                        client.publish(topic::build_pub_x(&prefix, agent_id, local_id, topic::label::X, &key),
-                            QoS::AtMostOnce,
-                            false,
-                            data
-                        ).await?;
-                    }
-                    None => return Ok(())
+                    Ok(()) => {}
+                    Err(_) => return Ok(()),
                 }
             }
             result = receiver.recv() => {
@@ -827,16 +844,13 @@ pub async fn local_socks(
                                     }
                                 },
                                 (topic::label::X, _) => {
-                                    if let Some(s) = x_sender {
-                                        let sender_id = if agent_id == topic::NIL {
-                                            local_id.to_string()
-                                        } else {
-                                            agent_id.to_string()
-                                        };
-                                        if let Err(e) = s.send((sender_id, protocol.to_string(), p.payload.to_vec())) {
-                                            warn!("xdata receiver closed: {:?}", e);
-                                        }
-                                    }
+                                    handle_xdata_notification(
+                                        &x_sender,
+                                        agent_id,
+                                        local_id,
+                                        protocol,
+                                        &p.payload,
+                                    );
                                 },
                                 (_, topic::protocol::KCP | topic::protocol::TCP) => {
                                     if let Some(sender) = senders.get(&p.topic) {
