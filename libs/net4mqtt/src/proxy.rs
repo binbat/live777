@@ -393,7 +393,7 @@ pub async fn agent(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = receiver.recv() => {
@@ -406,7 +406,7 @@ pub async fn agent(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = eventloop.poll() => {
@@ -535,7 +535,7 @@ pub async fn local_ports_tcp(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = receiver.recv() => {
@@ -548,7 +548,7 @@ pub async fn local_ports_tcp(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = eventloop.poll() => {
@@ -644,7 +644,7 @@ pub async fn local_ports_udp(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = receiver.recv() => {
@@ -657,7 +657,7 @@ pub async fn local_ports_udp(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = eventloop.poll() => {
@@ -797,7 +797,7 @@ pub async fn local_socks(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = receiver.recv() => {
@@ -810,7 +810,7 @@ pub async fn local_socks(
                             data
                         ).await?;
                     }
-                    None => return Err(anyhow!("recv error"))
+                    None => return Ok(())
                 }
             }
             result = eventloop.poll() => {

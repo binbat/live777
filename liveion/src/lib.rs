@@ -135,6 +135,7 @@ where
             let stream_manager = app_state.stream_manager.clone();
             let cancel_net4mqtt = cancel.clone();
             std::thread::spawn(move || {
+                let listen = cfg.http.listen.to_string();
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(async move {
@@ -154,18 +155,19 @@ where
                                 let mut event_recv = stream_manager_notify.subscribe_event();
                                 let mut last_sent: Option<Vec<api::response::Stream>> = None;
                                 while let Ok(_event) = event_recv.recv().await {
-                                    let mut streams: Vec<api::response::Stream> =
-                                        stream_manager_notify
-                                            .info(vec![])
-                                            .await
-                                            .into_iter()
-                                            .map(|info| info.into())
-                                            .collect();
-                                    streams.sort_by(|a, b| a.id.cmp(&b.id));
-                                    for stream in &mut streams {
-                                        stream.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
-                                        stream.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+                                    // Debounce: wait a short interval and drain
+                                    // additional events so rapid state changes
+                                    // produce only one snapshot.
+                                    let deadline =
+                                        tokio::time::Instant::now() + Duration::from_millis(100);
+                                    loop {
+                                        tokio::select! {
+                                            Ok(_) = event_recv.recv() => {}
+                                            _ = tokio::time::sleep_until(deadline) => break,
+                                        }
                                     }
+
+                                    let streams = stream_manager_notify.snapshot(&[]).await;
                                     if last_sent.as_ref() == Some(&streams) {
                                         continue;
                                     }
@@ -188,7 +190,6 @@ where
                             });
 
                             let alias = c.alias.clone();
-                            let listen = cfg.http.listen.to_string();
                             tokio::select! {
                                 _ = cancel_net4mqtt.cancelled() => {
                                     notify_handle.abort();

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result, anyhow};
 use http::header;
@@ -116,7 +116,7 @@ fn u16_max_value() -> u16 {
 #[derive(Clone)]
 pub struct Storage {
     list: Arc<RwLock<HashMap<String, Node>>>,
-    time: SystemTime,
+    time: Instant,
     client: reqwest::Client,
     stream: Arc<RwLock<HashMap<String, Vec<String>>>>,
     session: Arc<RwLock<HashMap<String, String>>>,
@@ -127,7 +127,7 @@ impl Storage {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
             list: Arc::new(RwLock::new(HashMap::new())),
-            time: SystemTime::now(),
+            time: Instant::now(),
             client,
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
@@ -183,7 +183,8 @@ impl Storage {
     ) -> Result<()> {
         // Hold all three indexes at once with a consistent lock order
         // (list -> session -> stream) so the snapshot is applied atomically
-        // relative to other snapshot updates.
+        // relative to other snapshot updates. These are std::sync::RwLock guards
+        // held for short in-memory operations only; they never cross an await.
         let mut list = list.write().map_err(|e| anyhow!("{:?}", e))?;
         let mut session_map = session.write().map_err(|e| anyhow!("{:?}", e))?;
         let mut stream_map = stream.write().map_err(|e| anyhow!("{:?}", e))?;
@@ -325,7 +326,7 @@ impl Storage {
         Ok((alias, node).into())
     }
 
-    fn get_do_strategy_updata_list(&self) -> HashMap<String, Node> {
+    fn get_do_strategy_update_list(&self) -> HashMap<String, Node> {
         self.get_map_nodes()
             .into_iter()
             .filter(|(_, v)| v.kind != NodeKind::Net4mqtt && v.strategy.is_none())
@@ -399,12 +400,12 @@ impl Storage {
     async fn update(&mut self) {
         let update_lock = self.update_lock.clone();
         let _guard = update_lock.lock().await;
-        if self.time.elapsed().unwrap() < Duration::from_secs(3) {
+        if self.time.elapsed() < Duration::from_secs(3) {
             return;
         }
-        self.time = SystemTime::now();
+        self.time = Instant::now();
 
-        self.update_strategy_from(self.get_do_strategy_updata_list())
+        self.update_strategy_from(self.get_do_strategy_update_list())
             .await;
 
         let start = Instant::now();
@@ -509,7 +510,7 @@ mod tests {
             );
         }
 
-        let list = storage.get_do_strategy_updata_list();
+        let list = storage.get_do_strategy_update_list();
         assert!(list.contains_key("static-0"));
         assert!(!list.contains_key("mqtt-0"));
     }
@@ -529,7 +530,7 @@ mod tests {
             nodes.insert("static-0".to_string(), node);
         }
 
-        let list = storage.get_do_strategy_updata_list();
+        let list = storage.get_do_strategy_update_list();
         assert!(!list.contains_key("static-0"));
     }
 }

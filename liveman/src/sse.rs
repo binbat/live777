@@ -50,10 +50,21 @@ pub async fn subscribe_streams(
             result = client.get(&url).headers(headers.clone()).send() => {
                 match result {
                     Ok(resp) => {
-                        if !resp.status().is_success() {
+                        let status = resp.status();
+                        if !status.is_success() {
+                            if status == http::StatusCode::UNAUTHORIZED
+                                || status == http::StatusCode::FORBIDDEN
+                            {
+                                error!(
+                                    alias,
+                                    status = %status,
+                                    "sse subscribe auth failed, giving up"
+                                );
+                                return;
+                            }
                             warn!(
                                 alias,
-                                status = %resp.status(),
+                                status = %status,
                                 "sse subscribe failed"
                             );
                             select! {
@@ -92,7 +103,7 @@ pub async fn subscribe_streams(
                                                                 "sse streams update"
                                                             );
                                                             if let Err(e) =
-                                                                update_storage(&storage, &alias, streams).await
+                                                                storage.update_snapshot(&alias, streams).await
                                                             {
                                                                 error!(alias, error = ?e, "sse storage update failed");
                                                             }
@@ -138,13 +149,4 @@ pub async fn subscribe_streams(
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {}
         }
     }
-}
-
-pub async fn update_storage(
-    storage: &Storage,
-    alias: &str,
-    streams: Vec<Stream>,
-) -> crate::result::Result<()> {
-    storage.update_snapshot(alias, streams).await?;
-    Ok(())
 }

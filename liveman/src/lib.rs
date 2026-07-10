@@ -237,7 +237,7 @@ where
                                                 })
                                                 .unwrap_or_default();
                                             if let Err(e) =
-                                                crate::sse::update_storage(&store_xdata, &alias, streams).await
+                                                store_xdata.update_snapshot(&alias, streams).await
                                             {
                                                 tracing::warn!(
                                                     alias,

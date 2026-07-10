@@ -442,6 +442,31 @@ impl Manager {
         }
     }
 
+    async fn do_snapshot(
+        stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
+        streams: &[String],
+    ) -> Vec<api::response::Stream> {
+        let stream_map = stream_map.read().await;
+        let mut infos: Vec<api::response::Stream> = vec![];
+        for (_, forward) in stream_map.iter() {
+            if !streams.is_empty() && !streams.contains(&forward.stream) {
+                continue;
+            }
+            infos.push(forward.info().await.into());
+        }
+        drop(stream_map);
+        infos.sort_by(|a, b| a.id.cmp(&b.id));
+        for info in &mut infos {
+            info.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+            info.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+        }
+        infos
+    }
+
+    pub async fn snapshot(&self, streams: &[String]) -> Vec<api::response::Stream> {
+        Self::do_snapshot(&self.stream_map, streams).await
+    }
+
     pub async fn sse_handler(
         &self,
         streams: Vec<String>,
@@ -458,20 +483,7 @@ impl Manager {
                 last_sent: &mut Option<Vec<api::response::Stream>>,
                 send: &tokio::sync::mpsc::Sender<Vec<api::response::Stream>>,
             ) -> bool {
-                let stream_map = stream_map.read().await;
-                let mut infos: Vec<api::response::Stream> = vec![];
-                for (_, forward) in stream_map.iter() {
-                    if !streams.is_empty() && !streams.contains(&forward.stream) {
-                        continue;
-                    }
-                    infos.push(forward.info().await.into());
-                }
-                drop(stream_map);
-                infos.sort_by(|a, b| a.id.cmp(&b.id));
-                for info in &mut infos {
-                    info.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
-                    info.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
-                }
+                let infos = Manager::do_snapshot(stream_map, streams).await;
                 if last_sent.as_ref() == Some(&infos) {
                     return true;
                 }
