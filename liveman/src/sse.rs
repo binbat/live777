@@ -2,13 +2,21 @@ use api::response::Stream;
 use http::header;
 use reqwest::header::{HeaderMap, HeaderValue};
 use tokio::io::AsyncBufReadExt;
+use tokio::select;
 use tokio_stream::StreamExt;
 use tokio_util::io::StreamReader;
-use tracing::{debug, error, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::store::Storage;
 
-pub async fn subscribe_streams(base_url: String, token: String, alias: String, storage: Storage) {
+pub async fn subscribe_streams(
+    base_url: String,
+    token: String,
+    alias: String,
+    storage: Storage,
+    cancel: CancellationToken,
+) {
     let url = format!(
         "{}{}",
         base_url.trim_end_matches('/'),
@@ -22,73 +30,101 @@ pub async fn subscribe_streams(base_url: String, token: String, alias: String, s
     );
 
     loop {
-        match client.get(&url).headers(headers.clone()).send().await {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    warn!(
-                        alias,
-                        status = %resp.status(),
-                        "sse subscribe failed"
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    continue;
-                }
+        select! {
+            _ = cancel.cancelled() => {
+                info!(alias, "sse subscriber cancelled");
+                return;
+            }
+            result = client.get(&url).headers(headers.clone()).send() => {
+                match result {
+                    Ok(resp) => {
+                        if !resp.status().is_success() {
+                            warn!(
+                                alias,
+                                status = %resp.status(),
+                                "sse subscribe failed"
+                            );
+                            select! {
+                                _ = cancel.cancelled() => {
+                                    info!(alias, "sse subscriber cancelled");
+                                    return;
+                                }
+                                _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {}
+                            }
+                            continue;
+                        }
 
-                let stream = resp
-                    .bytes_stream()
-                    .map(|result| result.map_err(std::io::Error::other));
-                let reader = StreamReader::new(stream);
-                let mut lines = reader.lines();
-                let mut data_buf = String::new();
+                        let stream = resp
+                            .bytes_stream()
+                            .map(|result| result.map_err(std::io::Error::other));
+                        let reader = StreamReader::new(stream);
+                        let mut lines = reader.lines();
+                        let mut data_buf = String::new();
 
-                loop {
-                    match lines.next_line().await {
-                        Ok(Some(line)) => {
-                            if line.is_empty() {
-                                if !data_buf.is_empty() {
-                                    match serde_json::from_str::<Vec<Stream>>(&data_buf) {
-                                        Ok(streams) => {
-                                            debug!(
-                                                alias,
-                                                count = streams.len(),
-                                                "sse streams update"
-                                            );
-                                            if let Err(e) =
-                                                update_storage(&storage, &alias, streams).await
-                                            {
-                                                error!(alias, error = ?e, "sse storage update failed");
+                        loop {
+                            select! {
+                                _ = cancel.cancelled() => {
+                                    info!(alias, "sse subscriber cancelled");
+                                    return;
+                                }
+                                line = lines.next_line() => {
+                                    match line {
+                                        Ok(Some(line)) => {
+                                            if line.is_empty() {
+                                                if !data_buf.is_empty() {
+                                                    match serde_json::from_str::<Vec<Stream>>(&data_buf) {
+                                                        Ok(streams) => {
+                                                            debug!(
+                                                                alias,
+                                                                count = streams.len(),
+                                                                "sse streams update"
+                                                            );
+                                                            if let Err(e) =
+                                                                update_storage(&storage, &alias, streams).await
+                                                            {
+                                                                error!(alias, error = ?e, "sse storage update failed");
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(alias, error = ?e, data = %data_buf, "sse parse failed");
+                                                        }
+                                                    }
+                                                    data_buf.clear();
+                                                }
+                                            } else if let Some(value) = line.strip_prefix("data:") {
+                                                let value = value.trim_start_matches(' ');
+                                                if !data_buf.is_empty() {
+                                                    data_buf.push('\n');
+                                                }
+                                                data_buf.push_str(value);
                                             }
                                         }
+                                        Ok(None) => {
+                                            warn!(alias, "sse stream closed");
+                                            break;
+                                        }
                                         Err(e) => {
-                                            warn!(alias, error = ?e, data = %data_buf, "sse parse failed");
+                                            warn!(alias, error = ?e, "sse read error");
+                                            break;
                                         }
                                     }
-                                    data_buf.clear();
                                 }
-                            } else if let Some(value) = line.strip_prefix("data:") {
-                                let value = value.trim_start_matches(' ');
-                                if !data_buf.is_empty() {
-                                    data_buf.push('\n');
-                                }
-                                data_buf.push_str(value);
                             }
                         }
-                        Ok(None) => {
-                            warn!(alias, "sse stream closed");
-                            break;
-                        }
-                        Err(e) => {
-                            warn!(alias, error = ?e, "sse read error");
-                            break;
-                        }
+                    }
+                    Err(e) => {
+                        warn!(alias, error = ?e, "sse request error");
                     }
                 }
             }
-            Err(e) => {
-                warn!(alias, error = ?e, "sse request error");
-            }
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        select! {
+            _ = cancel.cancelled() => {
+                info!(alias, "sse subscriber cancelled");
+                return;
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {}
+        }
     }
 }
 

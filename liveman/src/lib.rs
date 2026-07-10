@@ -4,6 +4,7 @@ use auth::{AuthState, access::access_middleware, validate_middleware};
 use axum::{Router, extract::Request, middleware, response::IntoResponse, routing::post};
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info, info_span};
 
@@ -91,6 +92,7 @@ where
     };
 
     let store = Storage::new(client_mem.build().unwrap());
+    let cancel = CancellationToken::new();
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
         nodes.write().unwrap().insert(
@@ -103,6 +105,7 @@ where
             v.token,
             v.alias,
             store.clone(),
+            cancel.clone(),
         ));
     }
 
@@ -269,7 +272,10 @@ where
     tokio::spawn(tick::record_sync(app_state.clone()));
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(signal)
+        .with_graceful_shutdown(async move {
+            signal.await;
+            cancel.cancel();
+        })
         .await
         .unwrap_or_else(|e| error!("Application error: {e}"));
 }

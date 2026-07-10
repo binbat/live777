@@ -482,7 +482,9 @@ impl Manager {
                         }
                         infos.push(forward.info().await);
                     }
-                    let _ = send.send(infos).await;
+                    if send.send(infos).await.is_err() {
+                        break;
+                    }
                 }
             }
         });
