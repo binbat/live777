@@ -2582,7 +2582,6 @@ dependencies = [
  "http 1.4.0",
  "http-log",
  "iceserver",
- "lazy_static",
  "libwish",
  "livehal",
  "livetwo",
