@@ -203,7 +203,7 @@ where
                                         }
                                         None => {
                                             error!("net4mqtt discovery receiver channel closed");
-                                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                            return;
                                         }
                                     }
                                 }
