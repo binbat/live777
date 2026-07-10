@@ -2576,12 +2576,10 @@ dependencies = [
  "byteorder",
  "bytes",
  "chrono",
- "clap",
  "fs2",
  "glob",
  "h264-reader",
  "http 1.4.0",
- "http-body 1.0.1",
  "http-log",
  "iceserver",
  "lazy_static",
@@ -5724,6 +5722,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

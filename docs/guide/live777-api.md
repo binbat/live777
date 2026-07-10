@@ -160,6 +160,37 @@ For Example:
 
 Response: [204]
 
+## Events
+
+`GET` `/api/sse/events`
+
+Server-Sent Events endpoint. Requires the same auth as admin routes.
+
+Each SSE message is a JSON object:
+
+```json
+{
+  "metrics": {
+    "stream": 0,
+    "publish": 0,
+    "subscribe": 0,
+    "reforward": 0
+  },
+  "event": {
+    "type": "StreamUp",
+    "stream": {
+      "stream": "streamId",
+      "session": "sessionId",
+      "publish": 0,
+      "subscribe": 0,
+      "reforward": 0
+    }
+  }
+}
+```
+
+Event types: `StreamUp`, `StreamDown`, `PublishUp`, `PublishDown`, `SubscribeUp`, `SubscribeDown`, `ReforwardUp`, `ReforwardDown`.
+
 ## Cascade
 
 `POST` `/api/cascade/:streamId`

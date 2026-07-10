@@ -1,8 +1,7 @@
 use crate::config::Config;
 use crate::forward::message::ForwardInfo;
 
-use crate::hook::webhook::WebHook;
-use crate::hook::{Event, EventHook, Stream, StreamEvent, StreamEventType};
+use crate::hook::{Event, Stream, StreamEvent, StreamEventType};
 
 use crate::result::Result;
 
@@ -41,13 +40,6 @@ impl Manager {
         let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         let send = new_broadcast_channel!(4);
-        for web_hook_url in cfg.webhooks.iter() {
-            let webhook = WebHook::new(web_hook_url.clone());
-            let recv = send.subscribe();
-            tokio::spawn(async move {
-                webhook.hook(recv).await;
-            });
-        }
 
         tokio::spawn(Self::publish_check_tick(stream_map.clone(), send.clone()));
         tokio::spawn(Self::subscribe_check_tick(stream_map.clone(), send.clone()));
@@ -677,7 +669,6 @@ impl Manager {
         }
     }
 
-    #[cfg(feature = "recorder")]
     pub fn subscribe_event(&self) -> broadcast::Receiver<Event> {
         self.event_sender.subscribe()
     }

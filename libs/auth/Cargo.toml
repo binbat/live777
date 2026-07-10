@@ -11,7 +11,7 @@ crate-type = ["lib"]
 [dependencies]
 api = { path = "../api" }
 axum = { workspace = true }
-anyhow = { workspace = true, features = ["backtrace"] }
+anyhow = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }

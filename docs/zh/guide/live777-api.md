@@ -160,6 +160,37 @@ Response: [200]
 
 Response: [204]
 
+## 事件
+
+`GET` `/api/sse/events`
+
+Server-Sent Events 端点，和管理接口使用同样的鉴权。
+
+每条 SSE 消息都是一个 JSON 对象：
+
+```json
+{
+  "metrics": {
+    "stream": 0,
+    "publish": 0,
+    "subscribe": 0,
+    "reforward": 0
+  },
+  "event": {
+    "type": "StreamUp",
+    "stream": {
+      "stream": "streamId",
+      "session": "sessionId",
+      "publish": 0,
+      "subscribe": 0,
+      "reforward": 0
+    }
+  }
+}
+```
+
+事件类型：`StreamUp`、`StreamDown`、`PublishUp`、`PublishDown`、`SubscribeUp`、`SubscribeDown`、`ReforwardUp`、`ReforwardDown`。
+
 ## ​级联
 
 `POST` `/api/cascade/:streamId`
