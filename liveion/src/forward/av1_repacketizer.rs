@@ -65,14 +65,14 @@ impl Av1Repacketizer {
     pub fn process(&mut self, packet: &Packet) -> Result<Vec<Packet>> {
         // Detect sequence number gaps.  AV1 depacketization is stateful, so a
         // missing packet makes the current accumulator unusable.
-        if let Some(expected) = self.expected_seq {
-            if packet.header.sequence_number != expected {
-                warn!(
-                    "AV1 RTP sequence gap detected: expected {}, got {}; resetting assembler",
-                    expected, packet.header.sequence_number
-                );
-                self.reset();
-            }
+        if let Some(expected) = self.expected_seq
+            && packet.header.sequence_number != expected
+        {
+            warn!(
+                "AV1 RTP sequence gap detected: expected {}, got {}; resetting assembler",
+                expected, packet.header.sequence_number
+            );
+            self.reset();
         }
         self.expected_seq = Some(packet.header.sequence_number.wrapping_add(1));
 
