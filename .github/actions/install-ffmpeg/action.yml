@@ -46,18 +46,26 @@ runs:
       shell: bash
       run: |
         VCPKG_ROOT=$(cygpath -w '${{ github.workspace }}/vcpkg')
-        VCPKG_INSTALLED=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows')
+        INSTALLED='${{ github.workspace }}/vcpkg/installed/x64-windows'
         echo "VCPKG_ROOT=${VCPKG_ROOT}" >> "$GITHUB_ENV"
         echo "LIBCLANG_PATH=$(cygpath -w '${{ github.workspace }}/clang/lib')" >> "$GITHUB_ENV"
         echo "LLVM_CONFIG_PATH=$(cygpath -w '${{ github.workspace }}/clang/bin/llvm-config')" >> "$GITHUB_ENV"
-        echo "FFMPEG_INCLUDE_DIR=${VCPKG_INSTALLED}/include" >> "$GITHUB_ENV"
-        echo "FFMPEG_LIBS_DIR=${VCPKG_INSTALLED}/lib" >> "$GITHUB_ENV"
-        echo "PKG_CONFIG_PATH=${VCPKG_INSTALLED}/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "FFMPEG_INCLUDE_DIR=$(cygpath -w "$INSTALLED/include")" >> "$GITHUB_ENV"
+        echo "FFMPEG_LIBS_DIR=$(cygpath -w "$INSTALLED/lib")" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$(cygpath -w "$INSTALLED/lib/pkgconfig")" >> "$GITHUB_ENV"
         echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
-        # Put the ffmpeg + codec DLLs on PATH so test binaries can load them at runtime.
-        echo "${VCPKG_INSTALLED}/bin" >> "$GITHUB_PATH"
-        echo "${VCPKG_INSTALLED}/tools/ffmpeg" >> "$GITHUB_PATH"
-        echo "${VCPKG_INSTALLED}/tools/pkgconf" >> "$GITHUB_PATH"
+        # PATH entries must be clean Windows paths. Mixing cygpath backslashes
+        # (e.g. "D:\...\x64-windows") with a trailing "/bin" yields a path
+        # Windows won't search, so the test suite's `ffmpeg` spawn fails with
+        # "program not found". cygpath each full directory separately.
+        echo "$(cygpath -w "$INSTALLED/bin")" >> "$GITHUB_PATH"
+        echo "$(cygpath -w "$INSTALLED/tools/ffmpeg")" >> "$GITHUB_PATH"
+        echo "$(cygpath -w "$INSTALLED/tools/pkgconf")" >> "$GITHUB_PATH"
+        # The matrix tests spawn the ffmpeg CLI to produce source streams, so
+        # fail fast if vcpkg didn't install ffmpeg.exe.
+        test -f "$INSTALLED/tools/ffmpeg/ffmpeg.exe" \
+          || { echo "ERROR: ffmpeg.exe missing from vcpkg install"; \
+               ls -la "$INSTALLED/tools/ffmpeg" "$INSTALLED/bin" 2>&1 | head -40; exit 1; }
 
     # ── macOS ─────────────────────────────────────────────────────────────
     - name: Install FFmpeg (macOS)
