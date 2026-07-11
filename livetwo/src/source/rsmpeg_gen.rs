@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::net::SocketAddr;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
@@ -307,14 +309,30 @@ fn parse_annex_b_hevc_parameter_sets(data: &[u8]) -> Option<(String, String, Str
     Some((vps?, sps?, pps?))
 }
 
+/// Cache of `(width, height, fps)` → sprop string. Opening the libx265
+/// encoder is expensive (~100 ms+), so we memoize results keyed by the
+/// resolution and frame rate triplet.
+static H265_SPROP_CACHE: LazyLock<Mutex<HashMap<(u32, u32, u32), Option<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Open a temporary H265 encoder, encode a few blank frames and extract the SDP
 /// sprop parameters from the emitted Annex B parameter sets. Returns a string
 /// like `sprop-vps=...;sprop-sps=...;sprop-pps=...`.
+///
+/// Results are cached internally; repeated calls with the same `(width, height,
+/// fps)` tuple return the cached result without re-opening the encoder.
 pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
+    let key = (width, height, fps);
+    if let Some(cached) = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return cached.clone();
+    }
+
     let codec = match AVCodec::find_encoder_by_name(c"libx265") {
         Some(codec) => codec,
         None => {
             tracing::debug!("H265 sprop extraction: libx265 encoder not found");
+            let mut cache = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            cache.insert(key, None);
             return None;
         }
     };
@@ -421,6 +439,8 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
 
     if encoded.is_empty() {
         tracing::debug!("H265 sprop extraction: encoder produced no data");
+        let mut cache = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(key, None);
         return None;
     }
 
@@ -443,13 +463,18 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
         }
     }
 
-    let (vps, sps, pps) = parse_annex_b_hevc_parameter_sets(&encoded).or_else(|| {
-        tracing::debug!(
-            encoded_len = encoded.len(),
-            "H265 sprop extraction: failed to parse parameter sets from encoded data"
-        );
-        None
-    })?;
+    let (vps, sps, pps) = match parse_annex_b_hevc_parameter_sets(&encoded) {
+        Some(params) => params,
+        None => {
+            tracing::debug!(
+                encoded_len = encoded.len(),
+                "H265 sprop extraction: failed to parse parameter sets from encoded data"
+            );
+            let mut cache = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            cache.insert(key, None);
+            return None;
+        }
+    };
 
     // x265 with 8-bit 4:2:0 output produces Main profile (profile-id=1) in the
     // Main tier (tier-flag=0). Advertising these parameters makes the SDP more
@@ -457,6 +482,8 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
     // level-id is omitted; RFC 7798 infers 93 (Level 3.1) when absent, which is
     // higher than the levels used by the synthetic sources here.
     let fmtp = format!("profile-id=1;tier-flag=0;sprop-vps={vps};sprop-sps={sps};sprop-pps={pps}");
+    let mut cache = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.insert(key, Some(fmtp.clone()));
     Some(fmtp)
 }
 

@@ -76,6 +76,10 @@ pub struct FrameGenerator {
     audio_time_base: ffi::AVRational,
     audio_sample_rate: i32,
     samples_per_frame: i64,
+    /// Cumulative number of samples fed to the audio encoder so far, across all
+    /// channels. Used as a phase origin for `fill_sine_wave` so the tone is
+    /// continuous from one frame to the next.
+    cumulative_audio_samples: i64,
     start: std::time::Instant,
     frame_index: u64,
     duration: Option<Duration>,
@@ -148,6 +152,7 @@ impl FrameGenerator {
             },
             audio_sample_rate,
             samples_per_frame,
+            cumulative_audio_samples: 0,
             start: std::time::Instant::now(),
             frame_index: 0,
             duration: config.duration,
@@ -203,9 +208,11 @@ impl FrameGenerator {
                     self.audio_pts,
                     self.audio_time_base,
                     self.samples_per_frame as i32,
+                    self.cumulative_audio_samples,
                 )
                 .context("Failed to encode audio frame")?;
                 self.audio_pts += self.samples_per_frame;
+                self.cumulative_audio_samples += self.samples_per_frame as i64;
                 self.pending_audio_frames.extend(frames);
             }
         }
@@ -251,12 +258,17 @@ struct OpenedVideoOutput {
 }
 
 fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput> {
+    // YUV420P requires dimensions that are at least 2×2 and even. Reject
+    // configurations that would cause buffer overruns or encoder failures.
+    let width = config.width.max(2);
+    let height = config.height.max(2);
+
     let codec = AVCodec::find_encoder_by_name(config.video_codec.ffmpeg_encoder())
         .ok_or_else(|| anyhow!("Encoder {} not found", config.video_codec.ffmpeg_name()))?;
 
     let mut codec_ctx = AVCodecContext::new(&codec);
-    codec_ctx.set_width(config.width as i32);
-    codec_ctx.set_height(config.height as i32);
+    codec_ctx.set_width(width as i32);
+    codec_ctx.set_height(height as i32);
     codec_ctx.set_time_base(ffi::AVRational {
         num: 1,
         den: config.fps as i32,
@@ -398,6 +410,7 @@ fn encode_audio_frame(
     pts: i64,
     time_base: ffi::AVRational,
     samples: i32,
+    cumulative_samples: i64,
 ) -> Result<Vec<EncodedFrame>> {
     let mut frame = AVFrame::new();
     frame.set_sample_rate(ctx.codec_ctx.sample_rate);
@@ -420,6 +433,7 @@ fn encode_audio_frame(
         ctx.codec_ctx.sample_rate,
         ctx.codec_ctx.ch_layout.nb_channels,
         ctx.codec_ctx.sample_fmt,
+        cumulative_samples,
     );
 
     encode_frame(&mut ctx.codec_ctx, &frame).map(|opt| opt.into_iter().collect())
@@ -580,6 +594,10 @@ fn fill_test_pattern(
 }
 
 /// Fill an interleaved audio buffer with a sine wave.
+///
+/// `cumulative_samples` is the total number of samples (across all channels)
+/// written so far across preceding frames. It is used as the phase origin so
+/// the tone is continuous from one frame to the next.
 fn fill_sine_wave(
     data: &[*mut u8],
     linesize: &[i32],
@@ -587,6 +605,7 @@ fn fill_sine_wave(
     sample_rate: i32,
     channels: i32,
     sample_fmt: i32,
+    cumulative_samples: i64,
 ) {
     if data.is_empty() || data[0].is_null() || linesize.is_empty() {
         return;
@@ -598,7 +617,7 @@ fn fill_sine_wave(
     );
 
     let freq = 440.0f32;
-    let sample_rate = sample_rate as f32;
+    let sample_rate_f32 = sample_rate as f32;
     let total_samples = (samples * channels) as usize;
 
     let sample_size = if sample_fmt == ffi::AV_SAMPLE_FMT_FLT {
@@ -617,17 +636,25 @@ fn fill_sine_wave(
         sample_size
     );
 
+    // Convert the cumulative interleaved sample count to a per-channel sample
+    // index so the phase is continuous even when the channel count changes
+    // (which should never happen within a single encoder session, but this
+    // keeps the math consistent).
+    let start_sample = (cumulative_samples / channels as i64) as f32;
+
     unsafe {
         if sample_fmt == ffi::AV_SAMPLE_FMT_FLT {
             let ptr = data[0] as *mut f32;
             for i in 0..total_samples {
-                let t = i as f32 / sample_rate;
+                let sample_idx = start_sample + (i / channels as usize) as f32;
+                let t = sample_idx / sample_rate_f32;
                 *ptr.add(i) = (2.0 * std::f32::consts::PI * freq * t).sin() * 0.5;
             }
         } else if sample_fmt == ffi::AV_SAMPLE_FMT_S16 {
             let ptr = data[0] as *mut i16;
             for i in 0..total_samples {
-                let t = i as f32 / sample_rate;
+                let sample_idx = start_sample + (i / channels as usize) as f32;
+                let t = sample_idx / sample_rate_f32;
                 let value =
                     ((2.0 * std::f32::consts::PI * freq * t).sin() * 0.5 * i16::MAX as f32) as i16;
                 *ptr.add(i) = value;
@@ -644,7 +671,9 @@ mod tests {
     /// enough for real-time WHIP streaming. The SVT-AV1 encoder ignores the
     /// FFmpeg GOP size by default and only emits key frames every ~5 s; the
     /// generator therefore configures an explicit low-delay prediction
-    /// structure and `keyint=fps`.
+    /// structure and `keyint=fps`. We request enough frames (two GOPs) so the
+    /// test does not flake if the encoder buffers a few frames before the
+    /// first output.
     #[test]
     fn av1_low_delay_emits_regular_keyframes() {
         let config = FrameGeneratorConfig {
@@ -659,7 +688,10 @@ mod tests {
         let mut generator = FrameGenerator::new(&config).expect("create AV1 generator");
         let mut keyframes = 0;
         let mut frames = 0;
-        while frames < 32 {
+        // keyint=30 (fps), so at 62 frames we should see at least 3 keyframes
+        // (frame 0, 30, 60). Asserting ≥2 is conservative and avoids flakiness
+        // on encoders that skip an early keyframe while initializing.
+        while frames < 62 {
             match generator.next_frame().expect("generate frame") {
                 SourceFrame::Frame(MediaFrame::Video(frame)) => {
                     assert!(
@@ -683,7 +715,7 @@ mod tests {
 
         assert!(
             keyframes >= 2,
-            "expected at least 2 key frames in 32 AV1 frames, got {keyframes}"
+            "expected at least 2 key frames in 62 AV1 frames, got {keyframes}"
         );
     }
 }

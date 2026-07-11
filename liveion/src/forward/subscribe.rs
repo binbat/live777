@@ -147,12 +147,18 @@ impl SubscribeRTCPeerConnection {
         forward_channel: &SubscribeForwardChannel,
         _virtual_sender: &broadcast::Sender<ForwardData>,
     ) -> Option<BoundPublishTrack> {
-        // Check the current binding under a read lock; the actual binding update
-        // happens at the end under a short write lock so we don't block other
-        // tasks while performing async codec/SDP work.
-        let current_rid = {
+        // Read the current binding and publish tracks under their respective
+        // read locks back-to-back without an await point in between. This
+        // avoids seeing a binding that was updated after the publish track
+        // snapshot (or vice versa) due to a task yield.
+        let (current_rid, publish_tracks) = {
             let binding = track_binding_publish_rid.read().await;
-            binding.get(&kind.to_string()).cloned()
+            let rid = binding.get(&kind.to_string()).cloned();
+            // Drop the first read lock before acquiring the second to avoid
+            // any theoretical deadlock from reverse lock ordering.
+            drop(binding);
+            let tracks = publish_tracks.read().await;
+            (rid, tracks)
         };
 
         if current_rid
@@ -162,7 +168,6 @@ impl SubscribeRTCPeerConnection {
             return None;
         }
 
-        let publish_tracks = publish_tracks.read().await;
         if publish_tracks.is_empty() {
             return None;
         }

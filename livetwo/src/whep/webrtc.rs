@@ -197,10 +197,17 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                                     // Decoder cannot keep up; drop the packet to
                                     // avoid unbounded memory growth.
                                     let dropped = drop_count.fetch_add(1, Ordering::Relaxed) + 1;
-                                    debug!(
-                                        "WHEP: {} channel full, dropping packet (total dropped {})",
-                                        kind, dropped
-                                    );
+                                    if dropped <= 10 || dropped % 100 == 0 {
+                                        warn!(
+                                            "WHEP: {} channel full, dropping packet (total dropped {})",
+                                            kind, dropped
+                                        );
+                                    } else {
+                                        debug!(
+                                            "WHEP: {} channel full, dropping packet (total dropped {})",
+                                            kind, dropped
+                                        );
+                                    }
                                 }
                                 Err(_) => {
                                     debug!("WHEP: {} channel receiver dropped, stopping", kind);

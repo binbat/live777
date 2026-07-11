@@ -213,12 +213,19 @@ fn av_packet_from_bytes(data: &[u8]) -> Result<AVPacket> {
     if ret < 0 {
         return Err(anyhow!("av_new_packet failed with {ret}"));
     }
-    // SAFETY: av_new_packet succeeded, so (*pkt).data points to a valid
-    // allocation of exactly len_i32 bytes. data.as_ptr() is valid for reads
-    // of data.len() bytes, and len_i32 == data.len().
+    // SAFETY: av_new_packet succeeded and should guarantee a valid buffer.
+    // We still defensively check for a null data pointer before copying,
+    // since a misbehaving FFmpeg build could violate the contract.
     unsafe {
         let pkt = packet.as_mut_ptr();
-        std::ptr::copy_nonoverlapping(data.as_ptr(), (*pkt).data, data.len());
+        let dst = (*pkt).data;
+        if dst.is_null() {
+            return Err(anyhow!(
+                "av_new_packet returned null data pointer for {} bytes",
+                data.len()
+            ));
+        }
+        std::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
     }
     Ok(packet)
 }

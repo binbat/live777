@@ -21,7 +21,7 @@ const H265_NAL_TYPE_FU: u8 = 49;
 const H265_NAL_TYPE_AP: u8 = 48;
 
 pub trait RePayload {
-    fn payload(&mut self, packet: Packet) -> Vec<Packet>;
+    fn payload(&mut self, packet: &Packet) -> Vec<Packet>;
     fn set_h264_params(&mut self, sps: Vec<u8>, pps: Vec<u8>);
     fn set_h265_params(&mut self, vps: Vec<u8>, sps: Vec<u8>, pps: Vec<u8>);
 }
@@ -41,8 +41,8 @@ impl Default for Forward {
 }
 
 impl RePayload for Forward {
-    fn payload(&mut self, packet: Packet) -> Vec<Packet> {
-        vec![packet]
+    fn payload(&mut self, packet: &Packet) -> Vec<Packet> {
+        vec![packet.clone()]
     }
 
     fn set_h264_params(&mut self, _sps: Vec<u8>, _pps: Vec<u8>) {}
@@ -91,8 +91,12 @@ impl RePayloadBase {
                 self.src_sequence_number.wrapping_add(1),
                 packet.header.sequence_number
             );
+            // Reset the baseline so the next packet re-establishes it instead
+            // of being misidentified as a second gap against the stale baseline.
+            self.has_baseline = false;
+        } else {
+            self.has_baseline = true;
         }
-        self.has_baseline = true;
         self.src_sequence_number = packet.header.sequence_number;
         continuous
     }
@@ -403,8 +407,8 @@ impl RePayloadCodec {
 }
 
 impl RePayload for RePayloadCodec {
-    fn payload(&mut self, packet: Packet) -> Vec<Packet> {
-        let final_data = match self.process(&packet) {
+    fn payload(&mut self, packet: &Packet) -> Vec<Packet> {
+        let final_data = match self.process(packet) {
             Some(data) => Bytes::from(data),
             None => return vec![],
         };

@@ -171,6 +171,10 @@ impl Publisher {
         let mut final_stats = stats.lock().map(|s| s.clone()).unwrap_or_default();
         final_stats.nack_count = rtcp_feedback.nack_count;
         final_stats.pli_count = rtcp_feedback.pli_count;
+        // Compute connected_duration here so it is always set, even when the
+        // write loop exits early (e.g. due to cancellation) and skips its own
+        // duration update.
+        final_stats.connected_duration = connected_at.elapsed();
         info!(
             packets_sent = final_stats.packets_sent,
             connected_ms = final_stats.connected_duration.as_millis() as u64,
@@ -221,7 +225,7 @@ async fn run_write_loop(
     video_track: Arc<TrackLocalStaticRTP>,
     audio_track: Option<Arc<TrackLocalStaticRTP>>,
     stats: Arc<Mutex<SessionStats>>,
-    connected_at: std::time::Instant,
+    _connected_at: std::time::Instant,
     ct: CancellationToken,
 ) {
     let mut first_video = true;
@@ -290,9 +294,6 @@ async fn run_write_loop(
         }
     }
 
-    if let Ok(mut s) = stats.lock() {
-        s.connected_duration = connected_at.elapsed();
-    }
 }
 
 async fn create_peer(
@@ -562,13 +563,19 @@ impl PublisherDiagnostics {
 fn join_states(states: &Mutex<Vec<String>>) -> String {
     states
         .lock()
-        .map(|states| states.join(" -> "))
-        .unwrap_or_else(|_| "<poisoned>".to_string())
+        .map(|s| s.join(" -> "))
+        .unwrap_or_else(|poisoned| format!("{}(poisoned)", poisoned.into_inner().join(" -> ")))
 }
 
 fn push_state(states: &Mutex<Vec<String>>, state: impl std::fmt::Display) {
-    if let Ok(mut states) = states.lock() {
-        states.push(state.to_string());
+    match states.lock() {
+        Ok(mut states) => states.push(state.to_string()),
+        Err(poisoned) => {
+            // Recover the inner data after a panic so diagnostics are still
+            // available for error reporting.
+            let mut states = poisoned.into_inner();
+            states.push(state.to_string());
+        }
     }
 }
 

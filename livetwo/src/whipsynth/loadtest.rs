@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -44,8 +45,22 @@ pub struct LoadtestConfig {
 }
 
 /// Aggregate statistics across all loadtest sessions.
-#[derive(Debug, Clone, Default)]
+///
+/// Each field is an [`AtomicU64`] so concurrent sessions can update counters
+/// without taking a lock.
+#[derive(Debug, Default)]
 pub struct LoadtestStats {
+    pub sessions_connected: AtomicU64,
+    pub sessions_failed: AtomicU64,
+    pub total_packets_sent: AtomicU64,
+    pub total_bytes_sent: AtomicU64,
+    pub total_nack_count: AtomicU64,
+    pub total_pli_count: AtomicU64,
+}
+
+/// Snapshot of [`LoadtestStats`] for reporting.
+#[derive(Debug, Clone, Default)]
+pub struct LoadtestStatsSnapshot {
     pub sessions_total: usize,
     pub sessions_connected: usize,
     pub sessions_failed: usize,
@@ -55,13 +70,27 @@ pub struct LoadtestStats {
     pub total_pli_count: u64,
 }
 
+impl LoadtestStats {
+    fn snapshot(&self) -> LoadtestStatsSnapshot {
+        LoadtestStatsSnapshot {
+            sessions_total: 0, // filled in by caller
+            sessions_connected: self.sessions_connected.load(Ordering::Relaxed) as usize,
+            sessions_failed: self.sessions_failed.load(Ordering::Relaxed) as usize,
+            total_packets_sent: self.total_packets_sent.load(Ordering::Relaxed),
+            total_bytes_sent: self.total_bytes_sent.load(Ordering::Relaxed),
+            total_nack_count: self.total_nack_count.load(Ordering::Relaxed),
+            total_pli_count: self.total_pli_count.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// Run multiple WHIP publishers concurrently.
 ///
 /// Each publisher gets its own rsmpeg encoder, PeerConnection, and WHIP
 /// session. This is the simplest loadtest shape; a future optimization could
 /// share a single encoded-bitstream source across sessions.
-pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Result<LoadtestStats> {
-    let stats = Arc::new(Mutex::new(LoadtestStats::default()));
+pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Result<LoadtestStatsSnapshot> {
+    let stats = Arc::new(LoadtestStats::default());
 
     let mut join_set = JoinSet::new();
     let mut spawned = 0usize;
@@ -80,19 +109,15 @@ pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Resu
             let publisher = Publisher::new(session_config);
             match publisher.run(session_ct).await {
                 Ok(ps) => {
-                    if let Ok(mut s) = session_stats.lock() {
-                        s.sessions_connected += 1;
-                        s.total_packets_sent += ps.packets_sent;
-                        s.total_bytes_sent += ps.bytes_sent;
-                        s.total_nack_count += ps.nack_count;
-                        s.total_pli_count += ps.pli_count;
-                    }
+                    session_stats.sessions_connected.fetch_add(1, Ordering::Relaxed);
+                    session_stats.total_packets_sent.fetch_add(ps.packets_sent, Ordering::Relaxed);
+                    session_stats.total_bytes_sent.fetch_add(ps.bytes_sent, Ordering::Relaxed);
+                    session_stats.total_nack_count.fetch_add(ps.nack_count, Ordering::Relaxed);
+                    session_stats.total_pli_count.fetch_add(ps.pli_count, Ordering::Relaxed);
                 }
                 Err(e) => {
                     warn!(session = i, error = ?e, "loadtest session failed");
-                    if let Ok(mut s) = session_stats.lock() {
-                        s.sessions_failed += 1;
-                    }
+                    session_stats.sessions_failed.fetch_add(1, Ordering::Relaxed);
                 }
             }
         });
@@ -113,7 +138,7 @@ pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Resu
         }
     }
 
-    let mut final_stats = stats.lock().map(|s| s.clone()).unwrap_or_default();
+    let mut final_stats = stats.snapshot();
     final_stats.sessions_total = spawned;
     info!(
         sessions_total = final_stats.sessions_total,

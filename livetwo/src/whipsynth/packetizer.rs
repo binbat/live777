@@ -319,7 +319,9 @@ fn video_payloader(codec: VideoCodec) -> Box<dyn Payloader + Send> {
         VideoCodec::Vp8 => Box::<vp8::Vp8Payloader>::default(),
         VideoCodec::Vp9 => Box::<vp9::Vp9Payloader>::default(),
         VideoCodec::H264 => Box::<h264::H264Payloader>::default(),
-        VideoCodec::H265 => Box::<h265::HevcPayloader>::default(),
+        // H265 uses its own Annex-B payloading path (payload_annex_b); the
+        // Packetizer never calls video_payloader for H265.
+        VideoCodec::H265 => unreachable!("H265 uses payload_annex_b, not the Payloader trait"),
         VideoCodec::Av1 => Box::<av1::Av1Payloader>::default(),
     }
 }

@@ -47,40 +47,11 @@ jobs:
         run: |
           cargo --version
           cargo clippy --version
-      - name: Install ffmpeg
+      - name: Install FFmpeg for rsmpeg
+        uses: ./.github/actions/install-ffmpeg
+      - name: Install Linux native dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y build-essential pkg-config \
-            clang libclang-dev \
-            ffmpeg \
-            libavcodec-dev \
-            libavdevice-dev \
-            libavfilter-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libswresample-dev \
-            libswscale-dev \
-            libcamera-dev \
-            libv4l-dev \
-            libvpx-dev \
-            libx264-dev \
-            libx265-dev \
-            libsvtav1enc-dev \
-            libopus-dev
-      - name: FFmpeg diagnostics
-        run: |
-          which ffmpeg && ffmpeg -version | head -3
-          pkg-config --modversion libavcodec libavutil libavdevice \
-            libavfilter libavformat libswresample libswscale
-          pkg-config --cflags --libs libavcodec
-          clang --version || true
-          find /usr/local /opt -name 'avformat.h' 2>/dev/null || true
-      - name: Bindgen diagnostics
-        run: |
-          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
-          echo "CLANG_PATH=$CLANG_PATH"
-          ldconfig -p | grep libclang || true
-          dpkg -l | grep -E 'clang|llvm|libc6-dev|linux-libc-dev' || true
+          sudo apt-get install -y libcamera-dev libv4l-dev
       - name: Cargo clippy --no-default-features
         run: cargo clippy --all-targets --no-default-features --workspace -- -D warnings
       - name: Cargo clippy default-features
