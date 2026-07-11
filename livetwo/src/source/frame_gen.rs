@@ -258,10 +258,10 @@ struct OpenedVideoOutput {
 }
 
 fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput> {
-    // YUV420P requires dimensions that are at least 2×2 and even. Reject
-    // configurations that would cause buffer overruns or encoder failures.
-    let width = config.width.max(2);
-    let height = config.height.max(2);
+    // YUV420P requires dimensions that are at least 2×2 and even. Round up
+    // to the next even value so the chroma planes and test pattern are safe.
+    let width = (config.width.max(2) + 1) & !1;
+    let height = (config.height.max(2) + 1) & !1;
 
     let codec = AVCodec::find_encoder_by_name(config.video_codec.ffmpeg_encoder())
         .ok_or_else(|| anyhow!("Encoder {} not found", config.video_codec.ffmpeg_name()))?;

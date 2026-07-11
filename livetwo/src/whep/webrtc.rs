@@ -151,82 +151,91 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                 RtpCodecKind::Audio => self.audio_drop_count.clone(),
                 _ => Arc::new(AtomicU64::new(0)),
             };
+            let ct = self.ct.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
                 let mut first_packet = true;
                 loop {
-                    match track_clone.poll().await {
-                        Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
-                            if first_packet {
-                                let first_packet_codec =
-                                    track_clone.codec(rtp_packet.header.ssrc).await;
-                                if let Some(codec) = first_packet_codec {
-                                    let codec_params =
-                                        rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
-                                            rtp_codec: codec.clone(),
-                                            payload_type: rtp_packet.header.payload_type,
-                                        };
-                                    let mut info = codec_info.lock().await;
-                                    match kind {
-                                        RtpCodecKind::Video => {
-                                            info.video_codec = Some(codec_params.clone());
-                                            if let Some(tx) = &video_mime_tx {
-                                                let _ = tx.send(Some(codec.mime_type.clone()));
+                    tokio::select! {
+                        event = track_clone.poll() => {
+                            match event {
+                                Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
+                                    if first_packet {
+                                        let first_packet_codec =
+                                            track_clone.codec(rtp_packet.header.ssrc).await;
+                                        if let Some(codec) = first_packet_codec {
+                                            let codec_params =
+                                                rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+                                                    rtp_codec: codec.clone(),
+                                                    payload_type: rtp_packet.header.payload_type,
+                                                };
+                                            let mut info = codec_info.lock().await;
+                                            match kind {
+                                                RtpCodecKind::Video => {
+                                                    info.video_codec = Some(codec_params.clone());
+                                                    if let Some(tx) = &video_mime_tx {
+                                                        let _ = tx.send(Some(codec.mime_type.clone()));
+                                                    }
+                                                }
+                                                RtpCodecKind::Audio => {
+                                                    info.audio_codec = Some(codec_params);
+                                                }
+                                                _ => {}
                                             }
                                         }
-                                        RtpCodecKind::Audio => {
-                                            info.audio_codec = Some(codec_params);
+                                        first_packet = false;
+                                    }
+                                    let size = rtp_packet.marshal_size();
+                                    if size > buf.len() {
+                                        warn!("WHEP: RTP packet too large ({} bytes)", size);
+                                        continue;
+                                    }
+                                    if let Err(e) = rtp_packet.marshal_to(&mut buf[..size]) {
+                                        warn!("WHEP: Failed to marshal RTP packet: {}", e);
+                                        continue;
+                                    }
+                                    match sender.try_send(buf[..size].to_vec()) {
+                                        Ok(()) => {}
+                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                            // Decoder cannot keep up; drop the packet to
+                                            // avoid unbounded memory growth.
+                                            let dropped = drop_count.fetch_add(1, Ordering::Relaxed) + 1;
+                                            if dropped <= 10 || dropped % 100 == 0 {
+                                                warn!(
+                                                    "WHEP: {} channel full, dropping packet (total dropped {})",
+                                                    kind, dropped
+                                                );
+                                            } else {
+                                                debug!(
+                                                    "WHEP: {} channel full, dropping packet (total dropped {})",
+                                                    kind, dropped
+                                                );
+                                            }
                                         }
-                                        _ => {}
+                                        Err(_) => {
+                                            debug!("WHEP: {} channel receiver dropped, stopping", kind);
+                                            break;
+                                        }
                                     }
                                 }
-                                first_packet = false;
-                            }
-                            let size = rtp_packet.marshal_size();
-                            if size > buf.len() {
-                                warn!("WHEP: RTP packet too large ({} bytes)", size);
-                                continue;
-                            }
-                            if let Err(e) = rtp_packet.marshal_to(&mut buf[..size]) {
-                                warn!("WHEP: Failed to marshal RTP packet: {}", e);
-                                continue;
-                            }
-                            match sender.try_send(buf[..size].to_vec()) {
-                                Ok(()) => {}
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                    // Decoder cannot keep up; drop the packet to
-                                    // avoid unbounded memory growth.
-                                    let dropped = drop_count.fetch_add(1, Ordering::Relaxed) + 1;
-                                    if dropped <= 10 || dropped % 100 == 0 {
-                                        warn!(
-                                            "WHEP: {} channel full, dropping packet (total dropped {})",
-                                            kind, dropped
-                                        );
-                                    } else {
-                                        debug!(
-                                            "WHEP: {} channel full, dropping packet (total dropped {})",
-                                            kind, dropped
-                                        );
-                                    }
-                                }
-                                Err(_) => {
-                                    debug!("WHEP: {} channel receiver dropped, stopping", kind);
+                                Some(TrackRemoteEvent::OnEnded) => {
+                                    info!("WHEP: {} track ended", kind);
                                     break;
                                 }
+                                Some(TrackRemoteEvent::OnRtcpPacket(packets)) => {
+                                    debug!("WHEP: Received {} RTCP packets for {}", packets.len(), kind);
+                                }
+                                None => {
+                                    debug!("WHEP: {} track poll returned None", kind);
+                                    break;
+                                }
+                                _ => {}
                             }
                         }
-                        Some(TrackRemoteEvent::OnEnded) => {
-                            info!("WHEP: {} track ended", kind);
+                        _ = ct.cancelled() => {
+                            info!("WHEP: {} RTP reader cancelled", kind);
                             break;
                         }
-                        Some(TrackRemoteEvent::OnRtcpPacket(packets)) => {
-                            debug!("WHEP: Received {} RTCP packets for {}", packets.len(), kind);
-                        }
-                        None => {
-                            debug!("WHEP: {} track poll returned None", kind);
-                            break;
-                        }
-                        _ => {}
                     }
                 }
                 info!("WHEP: {} RTP reader stopped", kind);
