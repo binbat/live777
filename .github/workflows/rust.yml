@@ -44,7 +44,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          ./vcpkg/vcpkg.exe install ffmpeg:x64-windows-static-md
+          # Enable the external codecs used by livetwo's rsmpeg sources:
+          # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svtav1), Opus (opus).
+          ./vcpkg/vcpkg.exe install "ffmpeg[opus,svtav1,vpx,x264,x265]:x64-windows-static-md"
 
       - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
         if: runner.os == 'Windows'
@@ -70,7 +72,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y build-essential pkg-config \
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev
+            libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev \
+            libvpx-dev libx264-dev libx265-dev libsvtav1-dev libopus-dev
       - name: Show version information
         shell: bash
         run: |
@@ -176,7 +179,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y build-essential pkg-config \
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev
+            libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev \
+            libvpx-dev libx264-dev libx265-dev libsvtav1-dev libopus-dev
 
       # Same FFmpeg install method as the upstream rsmpeg repository.
       - name: Install LLVM and Clang (Windows)
@@ -206,7 +210,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          ./vcpkg/vcpkg.exe install ffmpeg:x64-windows-static-md
+          # Enable the external codecs used by livetwo's rsmpeg sources:
+          # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svtav1), Opus (opus).
+          ./vcpkg/vcpkg.exe install "ffmpeg[opus,svtav1,vpx,x264,x265]:x64-windows-static-md"
 
       - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
         if: runner.os == 'Windows'

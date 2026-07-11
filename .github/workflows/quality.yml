@@ -60,7 +60,12 @@ jobs:
             libswresample-dev \
             libswscale-dev \
             libcamera-dev \
-            libv4l-dev
+            libv4l-dev \
+            libvpx-dev \
+            libx264-dev \
+            libx265-dev \
+            libsvtav1-dev \
+            libopus-dev
       - name: FFmpeg diagnostics
         run: |
           which ffmpeg && ffmpeg -version | head -3
