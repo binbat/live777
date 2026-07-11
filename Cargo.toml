@@ -199,9 +199,9 @@ strip = "symbols"
 panic = "abort"
 
 [patch.crates-io]
-rtc = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
-rtc-ice = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
-rtc-interceptor = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
-rtc-rtcp = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
-rtc-rtp = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
-rtc-shared = { git = "https://github.com/webrtc-rs/rtc", tag = "v0.20.0-rc.2" }
+rtc = { git = "https://github.com/binbat/rtc", rev = "42b09111ffbf0eefa7702a2a8341b4d57a80fb2e" }
+rtc-ice = { git = "https://github.com/binbat/rtc", rev = "42b09111ffbf0eefa7702a2a8341b4d57a80fb2e" }
+rtc-interceptor = { git = "https://github.com/binbat/rtc", rev = "42b09111ffbf0eefa7702a2a8341b4d57a80fb2e" }
+rtc-rtcp = { git = "https://github.com/binbat/rtc", rev = "42b09111ffbf0eefa7702a2a8341b4d57a80fb2e" }
+rtc-rtp = { git = "https://github.com/binbat/rtc", rev = "42b09111ffbf0eefa7702a2a8341b4d57a80fb2e" }
+rtc-shared = { git = "https://github.com/binbat/rtc", rev = "42b09111ffbf0eefa7702a2a8341b4d57a80fb2e" }
