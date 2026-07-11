@@ -109,7 +109,7 @@ pub async fn setup_video_track(
         let mut first_write = true;
 
         let mut handler: Box<dyn RePayload + Send> = match video_codec.mime_type.as_str() {
-            MIME_TYPE_VP8 | MIME_TYPE_VP9 => {
+            MIME_TYPE_VP8 | MIME_TYPE_VP9 | MIME_TYPE_AV1 => {
                 Box::new(RePayloadCodec::new(video_codec.mime_type.clone()))
             }
             MIME_TYPE_H264 => {

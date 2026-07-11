@@ -324,12 +324,42 @@ impl SubscribeRTCPeerConnection {
         true
     }
 
+    fn is_av1_codec(codec: &RTCRtpCodec) -> bool {
+        codec.mime_type.eq_ignore_ascii_case("video/AV1")
+    }
+
+    fn av1_profile(fmtp: &str) -> Option<String> {
+        Self::fmtp_param(fmtp, "profile-id").or_else(|| Self::fmtp_param(fmtp, "profile"))
+    }
+
+    fn av1_codecs_are_compatible(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
+        if !Self::is_av1_codec(candidate) || !Self::is_av1_codec(publisher) {
+            return false;
+        }
+
+        if candidate.clock_rate != publisher.clock_rate || candidate.channels != publisher.channels
+        {
+            return false;
+        }
+
+        match (
+            Self::av1_profile(&publisher.sdp_fmtp_line),
+            Self::av1_profile(&candidate.sdp_fmtp_line),
+        ) {
+            (Some(publisher_profile), Some(candidate_profile)) => {
+                publisher_profile == candidate_profile
+            }
+            _ => true,
+        }
+    }
+
     fn sender_track_codec_compatible(
         sender_track_codec: &RTCRtpCodec,
         selected_codec: &RTCRtpCodec,
     ) -> bool {
         Self::rtp_codecs_match(sender_track_codec, selected_codec)
             || Self::h265_codecs_are_compatible(sender_track_codec, selected_codec)
+            || Self::av1_codecs_are_compatible(sender_track_codec, selected_codec)
     }
 
     async fn select_sender_codec(
@@ -401,6 +431,15 @@ impl SubscribeRTCPeerConnection {
                 .iter()
                 .find(|candidate| {
                     Self::h265_codecs_are_compatible(&candidate.rtp_codec, publisher_codec)
+                })
+                .cloned();
+        }
+
+        if Self::is_av1_codec(publisher_codec) {
+            return codecs
+                .iter()
+                .find(|candidate| {
+                    Self::av1_codecs_are_compatible(&candidate.rtp_codec, publisher_codec)
                 })
                 .cloned();
         }
@@ -1026,5 +1065,92 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn av1_codec_selection_prefers_matching_profile() {
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let profile_1 = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/AV1".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "profile=1;level-idx=5;tier=0".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 47,
+        };
+        let profile_0 = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/AV1".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "profile-id=0;level-idx=5;tier=0".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 41,
+        };
+
+        let selected = SubscribeRTCPeerConnection::select_compatible_codec(
+            RtpCodecKind::Video,
+            &source_codec,
+            &[profile_1, profile_0],
+        )
+        .expect("matching AV1 profile should be selected");
+
+        assert_eq!(selected.payload_type, 41);
+        assert!(selected.rtp_codec.sdp_fmtp_line.contains("profile-id=0"));
+    }
+
+    #[test]
+    fn av1_codecs_with_mismatched_profile_are_incompatible() {
+        let sender_track_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile=1;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(!SubscribeRTCPeerConnection::sender_track_codec_compatible(
+            &sender_track_codec,
+            &selected_codec
+        ));
+    }
+
+    #[test]
+    fn av1_codecs_with_matching_profile_are_compatible() {
+        let sender_track_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile-id=0;level-idx=5;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let selected_codec = RTCRtpCodec {
+            mime_type: "video/AV1".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "profile=0;level-idx=8;tier=0".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        assert!(SubscribeRTCPeerConnection::sender_track_codec_compatible(
+            &sender_track_codec,
+            &selected_codec
+        ));
     }
 }
