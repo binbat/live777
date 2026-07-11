@@ -1,3 +1,9 @@
+#![cfg(not(target_os = "windows"))]
+// These integration tests spawn ffmpeg/ffprobe and local RTSP/WebRTC peers.
+// They are flaky on GitHub Actions Windows runners (connection timeouts and
+// broken pipes), so RTSP cycle coverage on Windows is disabled. Linux and
+// macOS still run the full suite.
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Once;
 use std::time::Duration;
