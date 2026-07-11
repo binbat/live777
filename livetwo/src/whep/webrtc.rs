@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
@@ -75,6 +76,10 @@ struct WhepTrackHandler {
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     video_mime_tx: Option<watch::Sender<Option<String>>>,
+    /// Cumulative count of dropped video RTP packets due to a full channel.
+    video_drop_count: Arc<AtomicU64>,
+    /// Cumulative count of dropped audio RTP packets due to a full channel.
+    audio_drop_count: Arc<AtomicU64>,
 }
 
 #[async_trait::async_trait]
@@ -141,6 +146,11 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
             let track_clone = track.clone();
             let codec_info = self.codec_info.clone();
             let video_mime_tx = self.video_mime_tx.clone();
+            let drop_count = match kind {
+                RtpCodecKind::Video => self.video_drop_count.clone(),
+                RtpCodecKind::Audio => self.audio_drop_count.clone(),
+                _ => Arc::new(AtomicU64::new(0)),
+            };
             tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
                 let mut first_packet = true;
@@ -186,7 +196,11 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                                     // Decoder cannot keep up; drop the packet to
                                     // avoid unbounded memory growth.
-                                    debug!("WHEP: {} channel full, dropping packet", kind);
+                                    let dropped = drop_count.fetch_add(1, Ordering::Relaxed) + 1;
+                                    debug!(
+                                        "WHEP: {} channel full, dropping packet (total dropped {})",
+                                        kind, dropped
+                                    );
                                 }
                                 Err(_) => {
                                     debug!("WHEP: {} channel receiver dropped, stopping", kind);
@@ -305,6 +319,8 @@ async fn create_peer(
         codec_info,
         state_tx,
         video_mime_tx,
+        video_drop_count: Arc::new(AtomicU64::new(0)),
+        audio_drop_count: Arc::new(AtomicU64::new(0)),
     });
 
     let config = RTCConfigurationBuilder::new()

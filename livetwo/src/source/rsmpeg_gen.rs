@@ -56,7 +56,13 @@ impl VideoCodec {
         }
     }
 
-    fn payload_type(&self) -> u8 {
+    /// Default RTP payload type for this codec in the webrtc-rs media engine.
+    ///
+    /// These values match `MediaEngine::register_default_codecs` defaults so
+    /// that WHIP/WHEP negotiation does not remap the payload type. This is the
+    /// canonical definition; other modules reference it rather than
+    /// duplicating the table.
+    pub(crate) fn payload_type(&self) -> u8 {
         match self {
             VideoCodec::Vp8 => 96,
             VideoCodec::Vp9 => 98,
@@ -124,7 +130,13 @@ impl AudioCodec {
         }
     }
 
-    fn payload_type(&self) -> u8 {
+    /// Default RTP payload type for this codec in the webrtc-rs media engine.
+    ///
+    /// These values match `MediaEngine::register_default_codecs` defaults so
+    /// that WHIP/WHEP negotiation does not remap the payload type. This is the
+    /// canonical definition; other modules reference it rather than
+    /// duplicating the table.
+    pub(crate) fn payload_type(&self) -> u8 {
         match self {
             AudioCodec::Opus => 111,
             AudioCodec::G722 => 9,
@@ -245,11 +257,17 @@ fn parse_annex_b_hevc_parameter_sets(data: &[u8]) -> Option<(String, String, Str
     let mut pps = None;
     let mut i = 0;
 
-    while i + 3 < data.len() {
+    // Allow the loop to see a 3-byte start code that begins at data.len() - 3.
+    while i + 3 <= data.len() {
         // Detect start code 00 00 01 or 00 00 00 01.
         let start_code_len = if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
             3
-        } else if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 {
+        } else if i + 4 <= data.len()
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
             4
         } else {
             i += 1;
@@ -258,13 +276,18 @@ fn parse_annex_b_hevc_parameter_sets(data: &[u8]) -> Option<(String, String, Str
 
         let nal_start = i + start_code_len;
         let mut j = nal_start;
-        while j + 3 < data.len() {
-            if data[j] == 0 && data[j + 1] == 0 && (data[j + 2] == 1 || data[j + 3] == 1) {
+        // Resume scanning at the end of the current NAL to keep parsing O(n).
+        while j + 3 <= data.len() {
+            if data[j] == 0
+                && data[j + 1] == 0
+                && (data[j + 2] == 1
+                    || (j + 4 <= data.len() && data[j + 2] == 0 && data[j + 3] == 1))
+            {
                 break;
             }
             j += 1;
         }
-        let nal_end = if j + 3 < data.len() { j } else { data.len() };
+        let nal_end = if j + 3 <= data.len() { j } else { data.len() };
 
         if nal_end > nal_start + 1 {
             let nal = &data[nal_start..nal_end];
@@ -278,7 +301,7 @@ fn parse_annex_b_hevc_parameter_sets(data: &[u8]) -> Option<(String, String, Str
                 _ => {}
             }
         }
-        i = nal_start;
+        i = nal_end;
     }
 
     Some((vps?, sps?, pps?))
@@ -338,6 +361,12 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
             tracing::debug!(error = ?e, frame = i, "H265 sprop extraction: failed to make frame writable");
             continue;
         }
+        // SAFETY: We've verified that all three plane pointers are non-null and
+        // all three line-sizes are positive. The frame is in YUV420P format,
+        // so plane sizes are width×height for Y and (width/2)×(height/2) for
+        // U and V. `write_bytes` writes exactly the number of bytes that the
+        // plane owns (calculated from linesize × height) — no out-of-bounds
+        // write is possible.
         unsafe {
             assert!(
                 !frame.data[0].is_null() && !frame.data[1].is_null() && !frame.data[2].is_null(),

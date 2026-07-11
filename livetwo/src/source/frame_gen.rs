@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -79,11 +80,14 @@ pub struct FrameGenerator {
     frame_index: u64,
     duration: Option<Duration>,
     fps: u32,
-    pending_audio_frames: Vec<EncodedFrame>,
+    pending_audio_frames: VecDeque<EncodedFrame>,
 }
 
 struct OutputContext {
     codec_ctx: AVCodecContext,
+    /// Reusable video frame buffer to avoid allocating an `AVFrame` and its
+    /// underlying buffer for every encoded frame. `None` for audio contexts.
+    frame: Option<AVFrame>,
 }
 
 impl FrameGenerator {
@@ -102,6 +106,7 @@ impl FrameGenerator {
             let ctx = open_video_output(config).context("Failed to open video encoder")?;
             OutputContext {
                 codec_ctx: ctx.codec_ctx,
+                frame: Some(ctx.frame),
             }
         };
 
@@ -110,6 +115,7 @@ impl FrameGenerator {
                 let ctx = open_audio_output(audio_codec).context("Failed to open audio encoder")?;
                 OutputContext {
                     codec_ctx: ctx.codec_ctx,
+                    frame: None,
                 }
             }),
             None => None,
@@ -146,7 +152,7 @@ impl FrameGenerator {
             frame_index: 0,
             duration: config.duration,
             fps: config.fps,
-            pending_audio_frames: Vec::new(),
+            pending_audio_frames: VecDeque::new(),
         })
     }
 
@@ -167,7 +173,7 @@ impl FrameGenerator {
     /// encoder is buffering input frames and no output is available yet (common
     /// for VP9). The caller should throttle based on the frame rate.
     pub fn next_frame(&mut self) -> Result<SourceFrame> {
-        if let Some(frame) = self.pending_audio_frames.pop() {
+        if let Some(frame) = self.pending_audio_frames.pop_front() {
             return Ok(SourceFrame::Frame(MediaFrame::Audio(frame)));
         }
 
@@ -204,15 +210,17 @@ impl FrameGenerator {
             }
         }
 
-        // Throttle to roughly the target frame rate.
+        // Throttle to roughly the target frame rate. Sleep the full remaining
+        // amount so low frame-rate generators (e.g. 1 fps tests) do not wake up
+        // every 10 ms and busy-wait for the next frame.
         let expected_elapsed = Duration::from_secs_f64(self.frame_index as f64 / self.fps as f64);
         if let Some(sleep) = expected_elapsed.checked_sub(self.start.elapsed()) {
-            std::thread::sleep(sleep.min(Duration::from_millis(10)));
+            std::thread::sleep(sleep);
         }
 
         if let Some(frame) = video_frame {
             Ok(SourceFrame::Frame(MediaFrame::Video(frame)))
-        } else if let Some(frame) = self.pending_audio_frames.pop() {
+        } else if let Some(frame) = self.pending_audio_frames.pop_front() {
             Ok(SourceFrame::Frame(MediaFrame::Audio(frame)))
         } else {
             Ok(SourceFrame::Empty)
@@ -239,6 +247,7 @@ impl Drop for FrameGenerator {
 
 struct OpenedVideoOutput {
     codec_ctx: AVCodecContext,
+    frame: AVFrame,
 }
 
 fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput> {
@@ -259,6 +268,16 @@ fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput>
     codec_ctx.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
     codec_ctx.set_gop_size(config.fps as i32);
     codec_ctx.set_max_b_frames(0);
+
+    // Pre-allocate the reusable video frame so each encoded frame only needs
+    // to ensure the buffer is writable rather than creating a new buffer.
+    let mut frame = AVFrame::new();
+    frame.set_width(codec_ctx.width);
+    frame.set_height(codec_ctx.height);
+    frame.set_format(codec_ctx.pix_fmt);
+    frame
+        .alloc_buffer()
+        .context("Failed to allocate reusable video frame buffer")?;
 
     // Codec-specific options.
     let mut opts = match config.video_codec {
@@ -308,7 +327,7 @@ fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput>
         )
     })?;
 
-    Ok(OpenedVideoOutput { codec_ctx })
+    Ok(OpenedVideoOutput { codec_ctx, frame })
 }
 
 struct OpenedAudioOutput {
@@ -355,13 +374,8 @@ fn encode_video_frame(
     pts: i64,
     time_base: ffi::AVRational,
 ) -> Result<Option<EncodedFrame>> {
-    let mut frame = AVFrame::new();
-    frame.set_width(ctx.codec_ctx.width);
-    frame.set_height(ctx.codec_ctx.height);
-    frame.set_format(ctx.codec_ctx.pix_fmt);
-    frame
-        .alloc_buffer()
-        .context("Failed to allocate video frame buffer")?;
+    let codec_ctx = &mut ctx.codec_ctx;
+    let frame = ctx.frame.as_mut().context("reusable video frame missing")?;
     frame
         .make_writable()
         .context("Failed to make video frame writable")?;
@@ -371,12 +385,12 @@ fn encode_video_frame(
     fill_test_pattern(
         &frame.data,
         &frame.linesize,
-        ctx.codec_ctx.width as usize,
-        ctx.codec_ctx.height as usize,
+        codec_ctx.width as usize,
+        codec_ctx.height as usize,
         frame_index,
     );
 
-    encode_frame(ctx, &frame)
+    encode_frame(codec_ctx, frame)
 }
 
 fn encode_audio_frame(
@@ -408,13 +422,13 @@ fn encode_audio_frame(
         ctx.codec_ctx.sample_fmt,
     );
 
-    encode_frame(ctx, &frame).map(|opt| opt.into_iter().collect())
+    encode_frame(&mut ctx.codec_ctx, &frame).map(|opt| opt.into_iter().collect())
 }
 
 /// Send a frame to the encoder and collect all output packets into a single
 /// encoded frame.
-fn encode_frame(ctx: &mut OutputContext, frame: &AVFrame) -> Result<Option<EncodedFrame>> {
-    ctx.codec_ctx
+fn encode_frame(codec_ctx: &mut AVCodecContext, frame: &AVFrame) -> Result<Option<EncodedFrame>> {
+    codec_ctx
         .send_frame(Some(frame))
         .context("Failed to send frame to encoder")?;
 
@@ -423,7 +437,7 @@ fn encode_frame(ctx: &mut OutputContext, frame: &AVFrame) -> Result<Option<Encod
     let mut is_keyframe = false;
 
     loop {
-        let packet = match ctx.codec_ctx.receive_packet() {
+        let packet = match codec_ctx.receive_packet() {
             Ok(packet) => packet,
             Err(rsmpeg::error::RsmpegError::EncoderDrainError) => break,
             Err(e) => return Err(e.into()),
@@ -450,7 +464,7 @@ fn encode_frame(ctx: &mut OutputContext, frame: &AVFrame) -> Result<Option<Encod
         Ok(Some(EncodedFrame {
             data,
             pts,
-            time_base: ctx.codec_ctx.time_base,
+            time_base: codec_ctx.time_base,
             is_keyframe,
         }))
     }

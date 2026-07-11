@@ -74,7 +74,9 @@ enum TrackKind {
 
 struct TrackPacketizer {
     kind: TrackKind,
-    payloader: Box<dyn Payloader + Send>,
+    /// Payloader for RTP packetization. `None` for H265 video, which uses its
+    /// own Annex-B payloading path (`payload_annex_b`) instead.
+    payloader: Option<Box<dyn Payloader + Send>>,
     ssrc: u32,
     payload_type: u8,
     sequence_number: u16,
@@ -87,9 +89,12 @@ impl Packetizer {
     pub fn new(config: &PacketizerConfig) -> Result<Self> {
         let video = Some(TrackPacketizer {
             kind: TrackKind::Video(config.video_codec),
-            payloader: video_payloader(config.video_codec),
+            // H265 uses its own Annex-B payloading path; skip allocating the
+            // unused HevcPayloader.
+            payloader: (config.video_codec != VideoCodec::H265)
+                .then(|| video_payloader(config.video_codec)),
             ssrc: config.video_ssrc,
-            payload_type: video_payload_type(config.video_codec),
+            payload_type: config.video_codec.payload_type(),
             sequence_number: config.video_sequence_start,
             clock_rate: 90_000,
             timestamp_offset: rand::random(),
@@ -97,9 +102,9 @@ impl Packetizer {
 
         let audio = config.audio_codec.map(|audio_codec| TrackPacketizer {
             kind: TrackKind::Audio(audio_codec),
-            payloader: audio_payloader(audio_codec),
+            payloader: Some(audio_payloader(audio_codec)),
             ssrc: config.audio_ssrc,
-            payload_type: audio_payload_type(audio_codec),
+            payload_type: audio_codec.payload_type(),
             sequence_number: config.audio_sequence_start,
             clock_rate: audio_codec.rtp_clock_rate() as u32,
             timestamp_offset: rand::random(),
@@ -179,6 +184,20 @@ impl Packetizer {
         })
     }
 
+    /// Update the video RTP payload type after SDP negotiation.
+    pub fn set_video_payload_type(&mut self, payload_type: u8) {
+        if let Some(track) = self.video.as_mut() {
+            track.payload_type = payload_type;
+        }
+    }
+
+    /// Update the audio RTP payload type after SDP negotiation.
+    pub fn set_audio_payload_type(&mut self, payload_type: u8) {
+        if let Some(track) = self.audio.as_mut() {
+            track.payload_type = payload_type;
+        }
+    }
+
     /// Packetize a video frame into RTP packets.
     pub fn packetize_video(&mut self, frame: &EncodedFrame) -> Result<Vec<Packet>> {
         let track = self.video.as_mut().context("no video track")?;
@@ -194,7 +213,9 @@ impl Packetizer {
         } else {
             track
                 .payloader
-                .payload(MAX_RTP_PAYLOAD_SIZE, &Bytes::from(frame.data.clone()))
+                .as_mut()
+                .context("video payloader missing")?
+                .payload(MAX_RTP_PAYLOAD_SIZE, &Bytes::copy_from_slice(&frame.data))
                 .map_err(|e| anyhow::anyhow!("video payload error: {e}"))?
         };
 
@@ -234,7 +255,9 @@ impl Packetizer {
 
         let payloads = track
             .payloader
-            .payload(MAX_RTP_PAYLOAD_SIZE, &Bytes::from(frame.data.clone()))
+            .as_mut()
+            .context("audio payloader missing")?
+            .payload(MAX_RTP_PAYLOAD_SIZE, &Bytes::copy_from_slice(&frame.data))
             .map_err(|e| anyhow::anyhow!("audio payload error: {e}"))?;
 
         let length = payloads.len();
@@ -281,10 +304,12 @@ fn pts_to_rtp_timestamp(pts: i64, time_base: ffi::AVRational, clock_rate: u32) -
     if den == 0 {
         return 0;
     }
-    let ts = pts
-        .saturating_mul(clock_rate as i64)
-        .saturating_mul(num)
-        .checked_div(den)
+    // Use i128 for the intermediate product so that large PTS values do not
+    // saturate before the final division.
+    let ts = (pts as i128)
+        .saturating_mul(clock_rate as i128)
+        .saturating_mul(num as i128)
+        .checked_div(den as i128)
         .unwrap_or(0);
     ts as u32
 }
@@ -303,28 +328,6 @@ fn audio_payloader(codec: AudioCodec) -> Box<dyn Payloader + Send> {
     match codec {
         AudioCodec::Opus => Box::<opus::OpusPayloader>::default(),
         AudioCodec::G722 => Box::<g7xx::G722Payloader>::default(),
-    }
-}
-
-/// Default RTP payload type for a codec in the webrtc-rs media engine.
-///
-/// These values match the default payload types used by
-/// `MediaEngine::register_default_codecs` so that liveion can route RTP
-/// packets to the correct track before SDP negotiation completes.
-fn video_payload_type(codec: VideoCodec) -> u8 {
-    match codec {
-        VideoCodec::Vp8 => 96,
-        VideoCodec::Vp9 => 98,   // profile-id=0
-        VideoCodec::H264 => 102, // packetization-mode=1;profile-level-id=42001f
-        VideoCodec::H265 => 126,
-        VideoCodec::Av1 => 41,
-    }
-}
-
-fn audio_payload_type(codec: AudioCodec) -> u8 {
-    match codec {
-        AudioCodec::Opus => 111,
-        AudioCodec::G722 => 9,
     }
 }
 

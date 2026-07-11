@@ -58,9 +58,14 @@ pub async fn from_with_state(
     info!("Starting WHEP session: {}", target_url);
 
     // Use bounded channels so a slow consumer cannot cause unbounded memory
-    // growth. The track handlers drop packets when the channel is full.
-    let (video_send, mut video_recv) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
-    let (audio_send, mut audio_recv) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+    // growth. The track handlers drop packets when the channel is full. A
+    // capacity of 512 gives high-bitrate streams more headroom than the
+    // previous 128 without allowing unbounded buffering.
+    const MEDIA_CHANNEL_CAPACITY: usize = 512;
+    let (video_send, mut video_recv) =
+        tokio::sync::mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
+    let (audio_send, mut audio_recv) =
+        tokio::sync::mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
     let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
 
     let mut client = Client::new(whep_url.clone(), Client::get_auth_header_map(token.clone()));

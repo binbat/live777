@@ -147,15 +147,23 @@ impl SubscribeRTCPeerConnection {
         forward_channel: &SubscribeForwardChannel,
         _virtual_sender: &broadcast::Sender<ForwardData>,
     ) -> Option<BoundPublishTrack> {
-        let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
-        let publish_tracks = publish_tracks.read().await;
-        let current_rid = track_binding_publish_rid.get(&kind.to_string());
+        // Check the current binding under a read lock; the actual binding update
+        // happens at the end under a short write lock so we don't block other
+        // tasks while performing async codec/SDP work.
+        let current_rid = {
+            let binding = track_binding_publish_rid.read().await;
+            binding.get(&kind.to_string()).cloned()
+        };
 
-        if publish_tracks.is_empty() {
+        if current_rid
+            .as_ref()
+            .is_some_and(|r| r == constant::RID_DISABLE)
+        {
             return None;
         }
 
-        if current_rid.is_some() && current_rid.cloned().unwrap() == constant::RID_DISABLE {
+        let publish_tracks = publish_tracks.read().await;
+        if publish_tracks.is_empty() {
             return None;
         }
 
@@ -259,7 +267,10 @@ impl SubscribeRTCPeerConnection {
                 .publish_rtcp_sender
                 .send((RtcpMessage::PictureLossIndication, ssrc));
 
-            track_binding_publish_rid.insert(kind.to_string(), publish_track.rid().to_string());
+            {
+                let mut binding = track_binding_publish_rid.write().await;
+                binding.insert(kind.to_string(), publish_track.rid().to_string());
+            }
             return Some(BoundPublishTrack {
                 recv: new_recv,
                 track,
@@ -332,15 +343,18 @@ impl SubscribeRTCPeerConnection {
             })
             .collect();
 
+        // Parse publisher fmtp once so we don't split it again per-key below.
+        let publisher_params: HashMap<String, String> = publisher_fmtp
+            .split(';')
+            .filter_map(|part| {
+                let (k, v) = part.trim().split_once('=')?;
+                Some((k.trim().to_ascii_lowercase(), v.trim().to_owned()))
+            })
+            .collect();
+
         for key in publisher_keys {
-            if let Some(value) = publisher_fmtp.split(';').find_map(|part| {
-                let (param_key, value) = part.trim().split_once('=')?;
-                param_key
-                    .trim()
-                    .eq_ignore_ascii_case(key)
-                    .then(|| value.trim().to_owned())
-            }) {
-                params.push((key.to_owned(), value));
+            if let Some(value) = publisher_params.get(&key.to_ascii_lowercase()) {
+                params.push((key.to_owned(), value.clone()));
             }
         }
 
@@ -351,12 +365,13 @@ impl SubscribeRTCPeerConnection {
             .join(";")
     }
 
-    fn h265_codecs_are_compatible(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
-        if !Self::is_h265_codec(candidate) || !Self::is_h265_codec(publisher) {
+    fn h265_codecs_are_compatible(existing_codec: &RTCRtpCodec, new_codec: &RTCRtpCodec) -> bool {
+        if !Self::is_h265_codec(existing_codec) || !Self::is_h265_codec(new_codec) {
             return false;
         }
 
-        if candidate.clock_rate != publisher.clock_rate || candidate.channels != publisher.channels
+        if existing_codec.clock_rate != new_codec.clock_rate
+            || existing_codec.channels != new_codec.channels
         {
             return false;
         }
@@ -365,21 +380,21 @@ impl SubscribeRTCPeerConnection {
         // that an explicit default on one side does not conflict with an
         // omitted default on the other.
         for key in ["profile-space", "profile-id", "tier-flag"] {
-            let publisher_value = Self::h265_fmtp_param_or_default(&publisher.sdp_fmtp_line, key);
-            let candidate_value = Self::h265_fmtp_param_or_default(&candidate.sdp_fmtp_line, key);
-            if publisher_value != candidate_value {
+            let existing_value =
+                Self::h265_fmtp_param_or_default(&existing_codec.sdp_fmtp_line, key);
+            let new_value = Self::h265_fmtp_param_or_default(&new_codec.sdp_fmtp_line, key);
+            if existing_value != new_value {
                 return false;
             }
         }
 
-        // tx-mode has no defined default. If the candidate specifies it, the
-        // publisher must specify the same value.
+        // tx-mode has no defined default. If the new codec specifies it, the
+        // existing codec must specify the same value.
         match (
-            Self::fmtp_param(&publisher.sdp_fmtp_line, "tx-mode"),
-            Self::fmtp_param(&candidate.sdp_fmtp_line, "tx-mode"),
+            Self::fmtp_param(&existing_codec.sdp_fmtp_line, "tx-mode"),
+            Self::fmtp_param(&new_codec.sdp_fmtp_line, "tx-mode"),
         ) {
-            (Some(publisher_value), Some(candidate_value))
-                if publisher_value == candidate_value => {}
+            (Some(existing_value), Some(new_value)) if existing_value == new_value => {}
             (_, Some(_)) => return false,
             _ => {}
         }
@@ -885,165 +900,171 @@ impl SubscribeRTCPeerConnection {
                             }
 
                             let select_rid = select_layer_body.1;
-                            let mut track_binding_publish_rid = track_binding_publish_rid.write().await;
-                            let publish_tracks = publish_tracks.read().await;
-                            let current_rid = track_binding_publish_rid.get(&kind.to_string()).cloned();
+
+                            // Read the current binding without taking a write lock.
+                            let current_rid = {
+                                let binding = track_binding_publish_rid.read().await;
+                                binding.get(&kind.to_string()).cloned()
+                            };
 
                             if current_rid == Some(select_rid.clone()) {
                                 continue;
                             }
 
-                            let new_rid = match &current_rid {
-                                None => select_rid.clone(),
-                                Some(current_rid) => {
-                                    if current_rid == constant::RID_DISABLE && select_rid == constant::RID_ENABLE {
-                                        track_binding_publish_rid.remove(&kind.to_string());
-
-                                        match &pre_rid {
-                                            None => {
-                                                let next_rid = publish_tracks
-                                                    .iter()
-                                                    .filter(|t| t.kind() == kind)
-                                                    .map(|t| t.rid().to_string())
-                                                    .next();
-
-                                                if next_rid.is_none() {
-                                                    continue;
-                                                }
-                                                next_rid.unwrap()
-                                            }
-                                            Some(pre_rid) => pre_rid.clone(),
-                                        }
-                                    } else {
-                                        select_rid.clone()
-                                    }
-                                }
-                            };
-
-                            if new_rid == constant::RID_DISABLE {
+                            // Disabling the layer is a synchronous map update.
+                            if select_rid == constant::RID_DISABLE {
                                 if let Some(rid) = current_rid {
                                     recv = virtual_sender.subscribe();
                                     track = None;
                                     payload_type = None;
                                     pre_rid = Some(rid);
+                                    {
+                                        let mut binding = track_binding_publish_rid.write().await;
+                                        binding.insert(kind.to_string(), select_rid);
+                                    }
                                 }
-                                track_binding_publish_rid.insert(kind.to_string(), new_rid);
                                 continue;
                             }
 
-                            for publish_track in publish_tracks.iter() {
-                                if publish_track.kind() == kind
-                                    && (publish_track.rid() == new_rid || new_rid == constant::RID_ENABLE)
+                            // Re-enable from disabled: pick the previously active RID or the
+                            // first available publish track of this kind.
+                            let new_rid: Option<String> = match &current_rid {
+                                None => Some(select_rid.clone()),
+                                Some(current_rid)
+                                    if current_rid == constant::RID_DISABLE
+                                        && select_rid == constant::RID_ENABLE =>
                                 {
-                                    if publish_track.generation_id() != forward_channel.generation_id {
-                                        info!(
-                                            "[{}] [{}] {} subscriber session marked stale because codec changed: subscriber_generation={}, publish_generation={}",
-                                            stream,
-                                            id,
-                                            kind,
-                                            forward_channel.generation_id,
-                                            publish_track.generation_id(),
-                                        );
-                                        continue;
+                                    let publish_tracks = publish_tracks.read().await;
+                                    match &pre_rid {
+                                        Some(pre_rid) => Some(pre_rid.clone()),
+                                        None => publish_tracks
+                                            .iter()
+                                            .find(|t| t.kind() == kind)
+                                            .map(|t| t.rid().to_string()),
                                     }
-
-                                    let publisher_codec = match publish_track {
-                                        PublishTrackRemote::Real { track, .. } => {
-                                            let ssrcs = track.ssrcs().await;
-                                            let first_ssrc = ssrcs.first().copied().unwrap_or(0);
-                                            track.codec(first_ssrc).await.unwrap_or_default()
-                                        }
-                                        #[cfg(feature = "source")]
-                                        PublishTrackRemote::Virtual(v) => v.codec_params.rtp_codec.clone(),
-                                    };
-                                    let (codec, new_payload_type) =
-                                        Self::select_sender_codec(&stream, &id, kind, &sender, publisher_codec.clone()).await;
-
-                                    // Reuse the already-bound sender track when the codec is
-                                    // compatible to avoid webrtc-rs' replace_track, which does not
-                                    // re-bind the new track and causes 'track is not binding yet'.
-                                    let sender_track = sender.track();
-                                    let sender_track_codec = sender_track.codec(sender_ssrc).await;
-                                    let track_to_use: Arc<dyn TrackLocal> = if sender_track_codec.as_ref().is_some_and(
-                                        |sender_track_codec| {
-                                            Self::sender_track_codec_compatible(sender_track_codec, &codec)
-                                        }
-                                    ) {
-                                        info!(
-                                            "[{}] [{}] {} layer switch reusing bound sender track: sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
-                                            stream,
-                                            id,
-                                            kind,
-                                            Self::format_codec(sender_track_codec.as_ref().expect("checked above")),
-                                            Self::format_codec(&codec),
-                                            new_payload_type,
-                                            sender_ssrc,
-                                        );
-                                        sender_track.clone()
-                                    } else {
-                                        let new_track = Arc::new(TrackLocalStaticRTP::new(
-                                            MediaStreamTrack::new(
-                                                "webrtc".to_string(),
-                                                format!("{}-{}", "webrtc", kind),
-                                                "webrtc".to_string(),
-                                                kind,
-                                                vec![RTCRtpEncodingParameters {
-                                                    rtp_coding_parameters: RTCRtpCodingParameters {
-                                                        ssrc: Some(sender_ssrc),
-                                                        ..Default::default()
-                                                    },
-                                                    codec: codec.clone(),
-                                                    ..Default::default()
-                                                }],
-                                            ),
-                                        ));
-
-                                        if let Err(e) = sender.replace_track(new_track.clone() as Arc<dyn webrtc::media_stream::track_local::TrackLocal>).await {
-                                            debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
-                                            break;
-                                        }
-
-                                        info!(
-                                            "[{}] [{}] {} layer switch replaced sender track: previous_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
-                                            stream,
-                                            id,
-                                            kind,
-                                            sender_track_codec
-                                                .as_ref()
-                                                .map(Self::format_codec)
-                                                .unwrap_or_else(|| "<none>".to_string()),
-                                            Self::format_codec(&codec),
-                                            new_payload_type,
-                                            sender_ssrc,
-                                        );
-                                        new_track
-                                    };
-
-                                    recv = publish_track.subscribe();
-                                    track = Some(track_to_use);
-                                    payload_type = new_payload_type;
-                                    source_codec = Some(publisher_codec);
-                                    selected_codec = Some(codec);
-                                    transient_write_error_since = None;
-
-                                    let ssrc = match publish_track {
-                                        PublishTrackRemote::Real { track, .. } => {
-                                            let ssrcs = track.ssrcs().await;
-                                            ssrcs.first().copied().unwrap_or(0)
-                                        }
-                                        #[cfg(feature = "source")]
-                                        PublishTrackRemote::Virtual(v) => v.ssrc(),
-                                    };
-
-                                    let _ = forward_channel
-                                        .publish_rtcp_sender
-                                        .send((RtcpMessage::PictureLossIndication, ssrc));
-
-                                    track_binding_publish_rid.insert(kind.to_string(), new_rid.clone());
-                                    info!("[{}] [{}] {} select layer to {}", stream, id, kind, new_rid);
-                                    break;
                                 }
+                                _ => Some(select_rid.clone()),
+                            };
+
+                            let Some(new_rid) = new_rid else { continue; };
+
+                            // Find the target publish track without holding the write lock.
+                            let publish_tracks = publish_tracks.read().await;
+                            let publish_track = publish_tracks.iter().find(|t| {
+                                t.kind() == kind
+                                    && (t.rid() == new_rid || new_rid == constant::RID_ENABLE)
+                            });
+                            let Some(publish_track) = publish_track else { continue; };
+
+                            if publish_track.generation_id() != forward_channel.generation_id {
+                                info!(
+                                    "[{}] [{}] {} subscriber session marked stale because codec changed: subscriber_generation={}, publish_generation={}",
+                                    stream,
+                                    id,
+                                    kind,
+                                    forward_channel.generation_id,
+                                    publish_track.generation_id(),
+                                );
+                                continue;
                             }
+
+                            let publisher_codec = match publish_track {
+                                PublishTrackRemote::Real { track, .. } => {
+                                    let ssrcs = track.ssrcs().await;
+                                    let first_ssrc = ssrcs.first().copied().unwrap_or(0);
+                                    track.codec(first_ssrc).await.unwrap_or_default()
+                                }
+                                #[cfg(feature = "source")]
+                                PublishTrackRemote::Virtual(v) => v.codec_params.rtp_codec.clone(),
+                            };
+                            let (codec, new_payload_type) =
+                                Self::select_sender_codec(&stream, &id, kind, &sender, publisher_codec.clone()).await;
+
+                            // Reuse the already-bound sender track when the codec is
+                            // compatible to avoid webrtc-rs' replace_track, which does not
+                            // re-bind the new track and causes 'track is not binding yet'.
+                            let sender_track = sender.track();
+                            let sender_track_codec = sender_track.codec(sender_ssrc).await;
+                            let track_to_use: Arc<dyn TrackLocal> = if sender_track_codec.as_ref().is_some_and(
+                                |sender_track_codec| {
+                                    Self::sender_track_codec_compatible(sender_track_codec, &codec)
+                                }
+                            ) {
+                                info!(
+                                    "[{}] [{}] {} layer switch reusing bound sender track: sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                                    stream,
+                                    id,
+                                    kind,
+                                    Self::format_codec(sender_track_codec.as_ref().expect("checked above")),
+                                    Self::format_codec(&codec),
+                                    new_payload_type,
+                                    sender_ssrc,
+                                );
+                                sender_track.clone()
+                            } else {
+                                let new_track = Arc::new(TrackLocalStaticRTP::new(
+                                    MediaStreamTrack::new(
+                                        "webrtc".to_string(),
+                                        format!("{}-{}", "webrtc", kind),
+                                        "webrtc".to_string(),
+                                        kind,
+                                        vec![RTCRtpEncodingParameters {
+                                            rtp_coding_parameters: RTCRtpCodingParameters {
+                                                ssrc: Some(sender_ssrc),
+                                                ..Default::default()
+                                            },
+                                            codec: codec.clone(),
+                                            ..Default::default()
+                                        }],
+                                    ),
+                                ));
+
+                                if let Err(e) = sender.replace_track(new_track.clone() as Arc<dyn webrtc::media_stream::track_local::TrackLocal>).await {
+                                    debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
+                                    continue;
+                                }
+
+                                info!(
+                                    "[{}] [{}] {} layer switch replaced sender track: previous_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                                    stream,
+                                    id,
+                                    kind,
+                                    sender_track_codec
+                                        .as_ref()
+                                        .map(Self::format_codec)
+                                        .unwrap_or_else(|| "<none>".to_string()),
+                                    Self::format_codec(&codec),
+                                    new_payload_type,
+                                    sender_ssrc,
+                                );
+                                new_track
+                            };
+
+                            recv = publish_track.subscribe();
+                            track = Some(track_to_use);
+                            payload_type = new_payload_type;
+                            source_codec = Some(publisher_codec);
+                            selected_codec = Some(codec);
+                            transient_write_error_since = None;
+
+                            let ssrc = match publish_track {
+                                PublishTrackRemote::Real { track, .. } => {
+                                    let ssrcs = track.ssrcs().await;
+                                    ssrcs.first().copied().unwrap_or(0)
+                                }
+                                #[cfg(feature = "source")]
+                                PublishTrackRemote::Virtual(v) => v.ssrc(),
+                            };
+
+                            let _ = forward_channel
+                                .publish_rtcp_sender
+                                .send((RtcpMessage::PictureLossIndication, ssrc));
+
+                            {
+                                let mut binding = track_binding_publish_rid.write().await;
+                                binding.insert(kind.to_string(), new_rid.clone());
+                            }
+                            info!("[{}] [{}] {} select layer to {}", stream, id, kind, new_rid);
                         }
                         Err(e) => {
                             debug!("select_layer_recv err : {:?}", e);

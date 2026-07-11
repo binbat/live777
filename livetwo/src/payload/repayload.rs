@@ -70,6 +70,13 @@ impl RePayloadBase {
         }
     }
 
+    /// Verify RTP sequence-number continuity and update the baseline.
+    ///
+    /// Returns `true` when the packet's sequence number is the expected
+    /// successor to the previous packet (or when it is the first packet seen,
+    /// which establishes the baseline). Returns `false` when a gap is
+    /// detected, meaning the buffered fragments belong to an incomplete frame
+    /// that will never be reconstructable; callers should discard the buffer.
     fn verify_sequence_number(&mut self, packet: &Packet) -> bool {
         let continuous = if self.has_baseline {
             let expected = self.src_sequence_number.wrapping_add(1);

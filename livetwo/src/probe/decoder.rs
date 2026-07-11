@@ -194,14 +194,28 @@ impl RtpFrameDecoder {
 }
 
 /// Create an AVPacket that owns a copy of the provided bytes.
+///
+/// # Safety
+///
+/// `av_new_packet` allocates a reference-counted buffer owned by the packet.
+/// The caller is responsible for calling `av_packet_unref` (done by
+/// `AVPacket::drop`). We copy the input bytes into this buffer with
+/// `copy_nonoverlapping`, which is sound because `av_new_packet` has just
+/// allocated exactly `len_i32` bytes and `(*pkt).data` points to the start
+/// of that allocation.
 fn av_packet_from_bytes(data: &[u8]) -> Result<AVPacket> {
     let len_i32 = i32::try_from(data.len())
         .map_err(|_| anyhow!("frame data too large for AVPacket: {} bytes", data.len()))?;
     let mut packet = AVPacket::new();
+    // SAFETY: av_new_packet allocates a fresh buffer of len_i32 bytes and
+    // makes packet own it. The pointer is valid until packet is dropped.
     let ret = unsafe { rsmpeg::ffi::av_new_packet(packet.as_mut_ptr(), len_i32) };
     if ret < 0 {
         return Err(anyhow!("av_new_packet failed with {ret}"));
     }
+    // SAFETY: av_new_packet succeeded, so (*pkt).data points to a valid
+    // allocation of exactly len_i32 bytes. data.as_ptr() is valid for reads
+    // of data.len() bytes, and len_i32 == data.len().
     unsafe {
         let pkt = packet.as_mut_ptr();
         std::ptr::copy_nonoverlapping(data.as_ptr(), (*pkt).data, data.len());

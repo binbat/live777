@@ -16,6 +16,7 @@ use rtc::statistics::StatsSelector;
 use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+use webrtc::media_stream::Track;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 use webrtc::peer_connection::{
@@ -69,7 +70,7 @@ impl Publisher {
         );
 
         let gather_complete = Arc::new(Notify::new());
-        let (peer, packetizer, state_rx, diagnostics) =
+        let (peer, mut packetizer, state_rx, diagnostics) =
             create_peer(&self.config, gather_complete.clone(), ct.clone()).await?;
 
         let video_track = packetizer
@@ -106,6 +107,10 @@ impl Publisher {
 
         wait_for_peer_connected(peer.clone(), state_rx.clone(), diagnostics.clone()).await?;
         info!("WHIP publisher peer connected");
+
+        // After SDP negotiation the answer may have remapped the dynamic payload
+        // types; update the packetizer so the outbound RTP headers match.
+        update_payload_types(&peer, &mut packetizer, &video_track, &audio_track).await;
 
         let connected_at = std::time::Instant::now();
         let stats = Arc::new(Mutex::new(SessionStats::default()));
@@ -174,6 +179,39 @@ impl Publisher {
 
         // Propagate peer/write-loop errors first, then source errors.
         result.and(source_result).map(|_| final_stats)
+    }
+}
+
+/// Pull the negotiated payload types from the peer's RTP senders and apply
+/// them to the packetizer. This ensures outbound RTP headers use the dynamic
+/// payload types assigned by the WHIP answer rather than our default values.
+async fn update_payload_types(
+    peer: &Arc<dyn PeerConnection>,
+    packetizer: &mut Packetizer,
+    video_track: &Arc<TrackLocalStaticRTP>,
+    audio_track: &Option<Arc<TrackLocalStaticRTP>>,
+) {
+    let senders = peer.get_senders().await;
+    for sender in senders {
+        let sender_track = sender.track().clone();
+        let Ok(params) = sender.get_parameters().await else {
+            continue;
+        };
+        let Some(codec) = params.rtp_parameters.codecs.first() else {
+            continue;
+        };
+        let payload_type = codec.payload_type;
+
+        let sender_track_id = sender_track.track_id().await;
+        if sender_track_id == video_track.track_id().await {
+            debug!("whipsynth video payload type negotiated: {}", payload_type);
+            packetizer.set_video_payload_type(payload_type);
+        } else if let Some(audio) = audio_track
+            && sender_track_id == audio.track_id().await
+        {
+            debug!("whipsynth audio payload type negotiated: {}", payload_type);
+            packetizer.set_audio_payload_type(payload_type);
+        }
     }
 }
 
