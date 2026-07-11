@@ -31,8 +31,8 @@ runs:
       shell: bash
       run: |
         # Enable the external codecs used by livetwo's rsmpeg sources:
-        # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svtav1), Opus (opus).
-        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svtav1,vpx,x264,x265]:x64-windows-static-md"
+        # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svt-av1), Opus (opus).
+        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svt-av1,vpx,x264,x265]:x64-windows-static-md"
 
     - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
       if: runner.os == 'Windows'
