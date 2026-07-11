@@ -23,7 +23,7 @@ const MAX_TEMPORAL_UNIT_SIZE: usize = 8 * 1024 * 1024;
 /// after SRTP/DTLS/ICE overhead.
 const AV1_OUTGOING_MTU: usize = 1200;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Av1Repacketizer {
     depacketizer: Av1Depacketizer,
     payloader: Av1Payloader,
@@ -43,7 +43,7 @@ impl Av1Repacketizer {
         Self {
             depacketizer: Av1Depacketizer::new(),
             payloader: Av1Payloader::default(),
-            accumulator: BytesMut::new(),
+            accumulator: BytesMut::with_capacity(128 * 1024),
             expected_seq: None,
             last_timestamp: 0,
         }
@@ -77,7 +77,8 @@ impl Av1Repacketizer {
         self.expected_seq = Some(packet.header.sequence_number.wrapping_add(1));
 
         // Timestamp discontinuity also indicates a new temporal unit or lost
-        // stream state.
+        // stream state.  We do not check SSRC here — RTP-level stream
+        // multiplexing is handled by the higher-level bridge and track layers.
         if self.last_timestamp != 0 && packet.header.timestamp != self.last_timestamp {
             if !self.accumulator.is_empty() {
                 warn!(
@@ -118,6 +119,7 @@ impl Av1Repacketizer {
         // last OBU does not continue into the next packet (Y flag is false).
         if packet.header.marker && self.depacketizer.y {
             warn!("AV1 RTP marker set but last OBU continues (Y=1); malformed packet, dropping");
+            self.reset();
             return Ok(Vec::new());
         }
         if packet.header.marker {

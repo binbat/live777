@@ -183,13 +183,17 @@ impl SourceBridge {
             let mut audio_count = 0u64;
             #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
             let audio_count = 0u64;
+            #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+            let mut video_dropped = 0u64;
+            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
+            let video_dropped = 0u64;
 
             loop {
                 tokio::select! {
                     _ = shutdown_rx1.recv() => {
                         info!(
-                            "[{}] RTP task shutting down, forwarded {} packets (video: {}, audio: {})",
-                            source_id_clone, packet_count, video_count, audio_count
+                            "[{}] RTP task shutting down, forwarded {} packets (video: {}, audio: {}, dropped: {})",
+                            source_id_clone, packet_count, video_count, audio_count, video_dropped
                         );
                         break;
                     }
@@ -233,12 +237,14 @@ impl SourceBridge {
                                                                 Ok(())
                                                             }
                                                             Err(e) => {
+                                                                video_dropped += 1;
                                                                 warn!("[{}] AV1 repacketization failed, dropping packet: {}", source_id_clone, e);
                                                                 Ok(())
                                                             }
                                                         }
                                                     }
                                                     Err(e) => {
+                                                        video_dropped += 1;
                                                         warn!("[{}] Failed to unmarshal AV1 RTP packet, dropping: {}", source_id_clone, e);
                                                         Ok(())
                                                     }
