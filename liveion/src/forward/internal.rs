@@ -35,7 +35,7 @@ use webrtc::peer_connection::{
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, RtpSender};
 
 use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
-use super::message::{CascadeInfo, ForwardEvent, ForwardEventType};
+use super::message::{CascadeInfo, ForwardEvent};
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
@@ -1045,8 +1045,7 @@ impl PeerForwardInternal {
         }
 
         metrics::PUBLISH.inc();
-        self.send_event(ForwardEventType::PublishUp, get_peer_id(&peer))
-            .await;
+        self.send_event().await;
 
         Ok(())
     }
@@ -1080,8 +1079,7 @@ impl PeerForwardInternal {
         info!("[{}] [publish] set none", self.stream);
         metrics::PUBLISH.dec();
 
-        self.send_event(ForwardEventType::PublishDown, get_peer_id(&peer))
-            .await;
+        self.send_event().await;
 
         Ok(())
     }
@@ -1575,13 +1573,11 @@ impl PeerForwardInternal {
         }
 
         metrics::SUBSCRIBE.inc();
-        self.send_event(ForwardEventType::SubscribeUp, get_peer_id(&peer))
-            .await;
+        self.send_event().await;
 
         if cascade.is_some() {
             metrics::REFORWARD.inc();
-            self.send_event(ForwardEventType::ReforwardUp, get_peer_id(&peer))
-                .await;
+            self.send_event().await;
         }
 
         Ok(())
@@ -1628,12 +1624,10 @@ impl PeerForwardInternal {
         }
 
         if flag {
-            self.send_event(ForwardEventType::SubscribeDown, get_peer_id(&peer))
-                .await;
+            self.send_event().await;
 
             if reforward_flat {
-                self.send_event(ForwardEventType::ReforwardDown, get_peer_id(&peer))
-                    .await;
+                self.send_event().await;
             }
 
             Ok(())
@@ -1664,11 +1658,9 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    async fn send_event(&self, r#type: ForwardEventType, session: String) {
+    async fn send_event(&self) {
         let _ = self.event_sender.send(ForwardEvent {
-            r#type,
-            session,
-            stream_info: self.info().await,
+            stream_id: self.stream.clone(),
         });
     }
 }

@@ -9,4 +9,4 @@ authors.workspace = true
 crate-type = ["lib"]
 
 [dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }

@@ -1,4 +1,3 @@
-pub mod event;
 pub mod path;
 pub mod recorder;
 pub mod request;

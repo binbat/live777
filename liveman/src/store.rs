@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result, anyhow};
 use http::header;
@@ -10,6 +10,8 @@ use tracing::{debug, error, trace, warn};
 
 use api::response::Stream;
 use api::strategy::Strategy;
+
+use crate::config::UpdateMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Server {
@@ -30,6 +32,7 @@ pub struct Node {
     pub token: String,
     pub kind: NodeKind,
     pub url: String,
+    pub mode: UpdateMode,
 
     streams: Vec<Stream>,
     pub strategy: Option<Strategy>,
@@ -37,11 +40,12 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(token: String, kind: NodeKind, url: String) -> Self {
+    pub fn new(token: String, kind: NodeKind, url: String, mode: UpdateMode) -> Self {
         Self {
             token,
             kind,
             url,
+            mode,
             ..Default::default()
         }
     }
@@ -112,20 +116,22 @@ fn u16_max_value() -> u16 {
 #[derive(Clone)]
 pub struct Storage {
     list: Arc<RwLock<HashMap<String, Node>>>,
-    time: SystemTime,
+    time: Instant,
     client: reqwest::Client,
     stream: Arc<RwLock<HashMap<String, Vec<String>>>>,
     session: Arc<RwLock<HashMap<String, String>>>,
+    update_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Storage {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
             list: Arc::new(RwLock::new(HashMap::new())),
-            time: SystemTime::now(),
+            time: Instant::now(),
             client,
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
+            update_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -163,11 +169,68 @@ impl Storage {
         self.get_cluster()
     }
 
-    pub async fn info_put(&self, alias: String, target: Vec<Stream>) -> Result<(), Error> {
-        match self.list.write().unwrap().get_mut(&alias) {
-            Some(node) => node.streams = target,
-            None => return Err(anyhow!("node not found")),
-        };
+    pub async fn update_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
+        let _guard = self.update_lock.lock().await;
+        Self::apply_snapshot_body(&self.list, &self.session, &self.stream, alias, streams)
+    }
+
+    fn apply_snapshot_body(
+        list: &Arc<RwLock<HashMap<String, Node>>>,
+        session: &Arc<RwLock<HashMap<String, String>>>,
+        stream: &Arc<RwLock<HashMap<String, Vec<String>>>>,
+        alias: &str,
+        streams: Vec<Stream>,
+    ) -> Result<()> {
+        // Hold all three indexes at once with a consistent lock order
+        // (list -> session -> stream) so the snapshot is applied atomically
+        // relative to other snapshot updates. These are std::sync::RwLock guards
+        // held for short in-memory operations only; they never cross an await.
+        let mut list = list.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut session_map = session.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut stream_map = stream.write().map_err(|e| anyhow!("{:?}", e))?;
+
+        // Remove stale alias references contributed by this node.
+        for aliases in stream_map.values_mut() {
+            aliases.retain(|a| a != alias);
+        }
+        stream_map.retain(|_, aliases| !aliases.is_empty());
+
+        // Remove stale session entries contributed by this node.
+        let old_streams = list
+            .get(alias)
+            .map(|node| node.streams.clone())
+            .unwrap_or_default();
+        for stream in old_streams {
+            for session in stream.subscribe.sessions {
+                let key = api::path::session(&stream.id, &session.id);
+                if let Some(existing_alias) = session_map.get(&key)
+                    && existing_alias == alias
+                {
+                    session_map.remove(&key);
+                }
+            }
+        }
+
+        // Update the node's stream list.
+        let node = list
+            .get_mut(alias)
+            .ok_or_else(|| anyhow!("node not found"))?;
+        node.streams = streams.clone();
+
+        // Rebuild stream/session indexes for the new snapshot.
+        for stream in streams {
+            stream_map
+                .entry(stream.id.clone())
+                .or_default()
+                .push(alias.to_string());
+            for session in stream.subscribe.sessions {
+                session_map.insert(
+                    api::path::session(&stream.id, &session.id),
+                    alias.to_string(),
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -191,13 +254,16 @@ impl Storage {
             .collect())
     }
 
+    // Serialize with snapshot updates so proxy writes are not interleaved
+    // with apply_snapshot_body rebuilding the stream/session indexes.
     pub async fn stream_put(&self, stream: String, alias: String) -> Result<()> {
-        {
-            let mut ctx = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
-            let mut arr = ctx.get(&stream).cloned().unwrap_or(Vec::new());
+        let _guard = self.update_lock.lock().await;
+        let mut ctx = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+        let mut arr = ctx.get(&stream).cloned().unwrap_or(Vec::new());
+        if !arr.contains(&alias) {
             arr.push(alias);
-            ctx.insert(stream, arr);
         }
+        ctx.insert(stream, arr);
         Ok(())
     }
 
@@ -228,7 +294,10 @@ impl Storage {
         self.stream.read().unwrap().clone()
     }
 
+    // Serialize with snapshot updates so proxy writes are not interleaved
+    // with apply_snapshot_body rebuilding the stream/session indexes.
     pub async fn session_put(&self, session: String, alias: String) -> Result<()> {
+        let _guard = self.update_lock.lock().await;
         self.session
             .write()
             .map_err(|e| anyhow!("{:?}", e))?
@@ -257,10 +326,10 @@ impl Storage {
         Ok((alias, node).into())
     }
 
-    fn get_do_strategy_updata_list(&self) -> HashMap<String, Node> {
+    fn get_do_strategy_update_list(&self) -> HashMap<String, Node> {
         self.get_map_nodes()
             .into_iter()
-            .filter(|(_, v)| v.strategy.is_none())
+            .filter(|(_, v)| v.kind != NodeKind::Net4mqtt && v.strategy.is_none())
             .collect()
     }
 
@@ -299,11 +368,6 @@ impl Storage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.stream.write().unwrap().clear();
-
-        // Maybe Don't need clear "session"
-        //self.session.write().unwrap().clear();
-
         for handle in handles {
             let result = tokio::join!(handle);
             match result {
@@ -334,24 +398,35 @@ impl Storage {
     }
 
     async fn update(&mut self) {
-        if self.time.elapsed().unwrap() < Duration::from_secs(3) {
-            return;
+        // Throttle check: acquire lock only for the fast in-memory guard,
+        // then release before making any HTTP requests so that concurrent
+        // snapshot updates (SSE / xdata) are not blocked.
+        {
+            let update_lock = self.update_lock.clone();
+            let _guard = update_lock.lock().await;
+            if self.time.elapsed() < Duration::from_secs(3) {
+                return;
+            }
+            self.time = Instant::now();
         }
-        self.time = SystemTime::now();
 
-        self.update_strategy_from(self.get_do_strategy_updata_list())
+        self.update_strategy_from(self.get_do_strategy_update_list())
             .await;
 
         let start = Instant::now();
-        let servers = self.get_cluster();
+        let poll_nodes: Vec<(String, Node)> = self
+            .get_map_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.kind != NodeKind::Net4mqtt && node.mode == UpdateMode::Poll)
+            .collect();
         let mut requests = Vec::new();
 
-        for server in servers {
+        for (alias, node) in poll_nodes {
             requests.push((
-                server.alias,
+                alias,
                 self.client
-                    .get(format!("{}{}", server.url, &api::path::streams("")))
-                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+                    .get(format!("{}{}", node.url, &api::path::streams("")))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", node.token))
                     .send(),
             ));
         }
@@ -377,10 +452,10 @@ impl Storage {
             debug!("update duration: {:?}", duration);
         }
 
-        self.stream.write().unwrap().clear();
-
-        // Maybe Don't need clear "session"
-        //self.session.write().unwrap().clear();
+        // Re-acquire the lock only for the fast in-memory snapshot-apply
+        // step so that snapshot writes are serialized.
+        let update_lock = self.update_lock.clone();
+        let _guard = update_lock.lock().await;
 
         for handle in handles {
             let result = tokio::join!(handle);
@@ -394,25 +469,14 @@ impl Storage {
                     match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
                             trace!("{:?}", streams.clone());
-                            self.info_put(alias.clone(), streams.clone()).await.unwrap();
-                            for stream in streams {
-                                let target = self.get_map_server().get(&alias).unwrap().clone();
-                                self.stream_put(stream.id.clone(), target.alias.clone())
-                                    .await
-                                    .unwrap();
-
-                                for session in stream.subscribe.sessions {
-                                    match self
-                                        .session_put(
-                                            api::path::session(&stream.id, &session.id),
-                                            target.alias.clone(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(_) => {}
-                                        Err(e) => error!("Put Session Error: {:?}", e),
-                                    }
-                                }
+                            if let Err(e) = Self::apply_snapshot_body(
+                                &self.list,
+                                &self.session,
+                                &self.stream,
+                                &alias,
+                                streams,
+                            ) {
+                                error!("{}: apply snapshot error: {:?}", alias, e);
                             }
                         }
                         Err(e) => error!("Error: {:?}", e),
@@ -424,5 +488,59 @@ impl Storage {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strategy_update_list_skips_net4mqtt_nodes() {
+        let storage = Storage::new(reqwest::Client::new());
+        {
+            let mut nodes = storage.list.write().unwrap();
+            nodes.insert(
+                "static-0".to_string(),
+                Node::new(
+                    "token".to_string(),
+                    NodeKind::Static,
+                    "http://127.0.0.1:7777".to_string(),
+                    UpdateMode::Poll,
+                ),
+            );
+            nodes.insert(
+                "mqtt-0".to_string(),
+                Node::new(
+                    "".to_string(),
+                    NodeKind::Net4mqtt,
+                    "http://mqtt-0.net4mqtt.local:7777".to_string(),
+                    UpdateMode::default(),
+                ),
+            );
+        }
+
+        let list = storage.get_do_strategy_update_list();
+        assert!(list.contains_key("static-0"));
+        assert!(!list.contains_key("mqtt-0"));
+    }
+
+    #[test]
+    fn strategy_update_list_skips_nodes_with_strategy() {
+        let storage = Storage::new(reqwest::Client::new());
+        {
+            let mut nodes = storage.list.write().unwrap();
+            let mut node = Node::new(
+                "token".to_string(),
+                NodeKind::Static,
+                "http://127.0.0.1:7777".to_string(),
+                UpdateMode::Poll,
+            );
+            node.strategy = Some(Strategy::default());
+            nodes.insert("static-0".to_string(), node);
+        }
+
+        let list = storage.get_do_strategy_update_list();
+        assert!(!list.contains_key("static-0"));
     }
 }

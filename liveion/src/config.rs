@@ -26,9 +26,6 @@ pub struct Config {
     #[serde(default)]
     pub net4mqtt: Option<Net4mqtt>,
 
-    #[serde(default)]
-    pub webhook: Webhook,
-
     #[cfg(feature = "recorder")]
     #[serde(default)]
     pub recorder: RecorderConfig,
@@ -51,12 +48,6 @@ impl Net4mqtt {
     pub fn validate(&mut self) {
         self.mqtt_url = self.mqtt_url.replace("{alias}", &self.alias)
     }
-}
-
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
-pub struct Webhook {
-    #[serde(default)]
-    pub webhooks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

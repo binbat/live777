@@ -114,7 +114,7 @@ jobs:
       - name: Install npm dependencies
         run: pnpm install
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}

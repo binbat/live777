@@ -163,6 +163,18 @@ api_token = ""
 ttl = 3600
 ```
 
+## 节点状态更新 {#status}
+
+Liveman 可以通过推送方式获取 Liveion 的流状态，而不只是依赖轮询。
+
+### SSE（用于静态/手动节点）
+
+对于 `[[nodes]]` 下配置的每个节点，Liveman 会自动建立到 Liveion `/api/sse/streams` 端点的 SSE 连接，并在流状态变化时更新本地存储。
+
+### net4mqtt xdata（用于 net4mqtt 发现的节点）
+
+当启用 `net4mqtt` 时，每个 Liveion 节点会定期通过 `xdata`（key 为 `streams`）推送流快照。Liveman 解码后更新对应节点条目。
+
 ## 集群模式
 
 集群模式需要 Liveman，我们也可以通过 [`net4mqtt`](/zh/guide/net4mqtt) 来扩展网络

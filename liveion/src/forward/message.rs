@@ -42,17 +42,5 @@ pub struct CascadeInfo {
 
 #[derive(Clone, Debug)]
 pub struct ForwardEvent {
-    pub r#type: ForwardEventType,
-    pub session: String,
-    pub stream_info: ForwardInfo,
-}
-
-#[derive(Clone, Debug)]
-pub enum ForwardEventType {
-    PublishUp,
-    PublishDown,
-    SubscribeUp,
-    SubscribeDown,
-    ReforwardUp,
-    ReforwardDown,
+    pub stream_id: String,
 }
