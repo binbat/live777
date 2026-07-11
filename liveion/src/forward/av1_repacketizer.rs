@@ -116,7 +116,11 @@ impl Av1Repacketizer {
 
         // A temporal unit is complete when the RTP marker bit is set and the
         // last OBU does not continue into the next packet (Y flag is false).
-        if packet.header.marker && !self.depacketizer.y {
+        if packet.header.marker && self.depacketizer.y {
+            warn!("AV1 RTP marker set but last OBU continues (Y=1); malformed packet, dropping");
+            return Ok(Vec::new());
+        }
+        if packet.header.marker {
             if self.accumulator.is_empty() {
                 debug!("AV1 marker received but accumulator is empty");
                 return Ok(Vec::new());
