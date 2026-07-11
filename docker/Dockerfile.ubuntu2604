@@ -17,13 +17,13 @@ RUN apt-get update -qq \
         npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin pnpm 9.x for compatibility with Ubuntu's Node.js 22 package
-RUN npm install -g pnpm@9
+# Pin pnpm to the version declared in package.json.
+RUN npm install -g pnpm@10.20.0
 
 WORKDIR /app
 
 COPY pnpm-lock.yaml /app/
-RUN pnpm fetch --prod
+RUN pnpm fetch
 
 COPY . .
 RUN pnpm install
@@ -94,10 +94,16 @@ RUN apt-get update -qq \
 
 COPY --from=builder-rust /app/conf/live777.toml /etc/live777/live777.toml
 COPY --from=builder-rust /app/conf/liveman.toml /etc/live777/liveman.toml
+COPY --from=builder-rust /app/conf/livecam.toml /etc/live777/livecam.toml
+COPY --from=builder-rust /app/conf/livevod.toml /etc/live777/livevod.toml
 COPY --from=builder-rust /app/target/release/live777 /usr/local/bin/live777
 COPY --from=builder-rust /app/target/release/liveman /usr/local/bin/liveman
+COPY --from=builder-rust /app/target/release/livecam /usr/local/bin/livecam
+COPY --from=builder-rust /app/target/release/livevod /usr/local/bin/livevod
 COPY --from=builder-rust /app/target/release/whipinto /usr/local/bin/whipinto
 COPY --from=builder-rust /app/target/release/whepfrom /usr/local/bin/whepfrom
+COPY --from=builder-rust /app/target/release/whepprobe /usr/local/bin/whepprobe
+COPY --from=builder-rust /app/target/release/whipsynth /usr/local/bin/whipsynth
 COPY --from=builder-rust /app/target/release/net4mqtt /usr/local/bin/net4mqtt
 
 CMD ["live777"]

@@ -15,6 +15,7 @@ pub struct PlaywrightWhepPlayer {
 }
 
 impl PlaywrightWhepPlayer {
+    #[allow(dead_code)]
     pub fn webkit() -> Self {
         Self {
             browser: Browser::Webkit,

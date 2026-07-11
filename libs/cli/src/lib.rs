@@ -118,6 +118,10 @@ impl From<Codec> for RTCRtpCodec {
 }
 
 impl Codec {
+    /// Return the canonical CLI/SDP codec name for this codec.
+    ///
+    /// This is the inverse of [`codec_from_str`] for the canonical names; the
+    /// parser also accepts the alias "HEVC" for H.265.
     pub fn as_str(&self) -> &'static str {
         match self {
             Codec::Vp8 => "VP8",
@@ -133,6 +137,12 @@ impl Codec {
     }
 }
 
+impl std::fmt::Display for Codec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 pub fn codec_from_str(s: &str) -> Result<Codec> {
     match s.to_uppercase().as_str() {
         "VP8" => Ok(Codec::Vp8),
@@ -142,6 +152,8 @@ pub fn codec_from_str(s: &str) -> Result<Codec> {
         "AV1" => Ok(Codec::AV1),
         "OPUS" => Ok(Codec::Opus),
         "G722" => Ok(Codec::G722),
+        "PCMU" => Ok(Codec::PCMU),
+        "PCMA" => Ok(Codec::PCMA),
         _ => Err(anyhow!("Unknown codec: {}", s)),
     }
 }
@@ -210,5 +222,32 @@ mod tests {
                 rtp_codec.rtcp_feedback
             );
         }
+    }
+
+    #[test]
+    fn codec_as_str_round_trips_through_codec_from_str() {
+        for codec in [
+            Codec::Vp8,
+            Codec::Vp9,
+            Codec::H264,
+            Codec::H265,
+            Codec::AV1,
+            Codec::Opus,
+            Codec::G722,
+            Codec::PCMU,
+            Codec::PCMA,
+        ] {
+            assert_eq!(
+                codec_from_str(codec.as_str()).unwrap(),
+                codec,
+                "{codec:?} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn codec_from_str_accepts_hevc_alias_for_h265() {
+        assert_eq!(codec_from_str("HEVC").unwrap(), Codec::H265);
+        assert_eq!(codec_from_str("hevc").unwrap(), Codec::H265);
     }
 }

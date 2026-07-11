@@ -79,12 +79,12 @@ impl Publisher {
 
         peer.add_track(video_track.clone())
             .await
-            .map_err(|error| anyhow!("{:?}: {}", error, error))?;
+            .map_err(|error| anyhow!("{:?}", error))?;
 
         if let Some(ref audio) = audio_track {
             peer.add_track(audio.clone())
                 .await
-                .map_err(|error| anyhow!("{:?}: {}", error, error))?;
+                .map_err(|error| anyhow!("{:?}", error))?;
         }
 
         info!("WHIP publisher peer created; starting signaling");
@@ -150,8 +150,12 @@ impl Publisher {
         // down the peer connection.
         let rtcp_feedback = collect_rtcp_feedback(&peer).await;
 
-        // Teardown.
-        let _ = source_handle.stop().await;
+        // Teardown. Propagate source errors so a failed encoder does not look
+        // like a successful session.
+        let source_result = source_handle.stop().await;
+        if let Err(e) = &source_result {
+            error!(error = ?e, "WHIP publisher source task failed");
+        }
         if let Err(e) = peer.close().await {
             warn!("Failed to close WHIP publisher peer: {}", e);
         }
@@ -168,12 +172,13 @@ impl Publisher {
             "WHIP publisher session ended"
         );
 
-        result.map(|_| final_stats)
+        // Propagate peer/write-loop errors first, then source errors.
+        result.and(source_result).map(|_| final_stats)
     }
 }
 
 async fn run_write_loop(
-    mut frame_rx: tokio::sync::mpsc::UnboundedReceiver<MediaFrame>,
+    mut frame_rx: tokio::sync::mpsc::Receiver<MediaFrame>,
     mut packetizer: Packetizer,
     video_track: Arc<TrackLocalStaticRTP>,
     audio_track: Option<Arc<TrackLocalStaticRTP>>,

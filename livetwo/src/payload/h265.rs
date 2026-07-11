@@ -389,9 +389,10 @@ const FU_END_BITMASK: u8 = 0x40;
 pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
     let mut payloads = Vec::new();
 
-    // The smallest FU payload we can emit is the 2-byte NAL header plus one
-    // byte of FU header. Guard against callers passing an impossibly small MTU.
-    let max_payload_size = max_payload_size.max(3);
+    // The smallest FU payload we can emit is the 2-byte NAL header, one
+    // byte of FU header, and at least one byte of payload. Guard against
+    // callers passing an impossibly small MTU.
+    let max_payload_size = max_payload_size.max(4);
 
     for nal in NalIterator::new(data) {
         if nal.data.len() < 2 {

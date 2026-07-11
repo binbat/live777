@@ -17,7 +17,6 @@ use super::{PlayResult, Player};
 /// This is the most self-contained baseline: both source and player are in-process
 /// FFmpeg, so browser/ICE/container issues are excluded.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RsmpegWhepReceiver {
     pub timeout_seconds: u64,
     /// Expected video codec. When `None` the probe defaults to VP8.
@@ -37,16 +36,6 @@ impl Default for RsmpegWhepReceiver {
 }
 
 impl RsmpegWhepReceiver {
-    #[allow(dead_code)]
-    pub fn with_codec(codec: Codec) -> Self {
-        Self {
-            timeout_seconds: 10,
-            codec: Some(codec),
-            sprop_params: None,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn with_codec_and_sprop(codec: Codec, sprop_params: String) -> Self {
         Self {
             timeout_seconds: 10,

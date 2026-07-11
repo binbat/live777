@@ -75,18 +75,21 @@ impl SourceHandle {
     }
 }
 
+/// Maximum number of encoded frames buffered between the rsmpeg source task
+/// and the publisher write loop. A small bound prevents memory unbounded growth
+/// under network congestion while keeping the encoder pipelined.
+const SOURCE_FRAME_BUFFER: usize = 16;
+
 /// Spawn an rsmpeg frame generator on a dedicated blocking task.
 ///
-/// Frames are sent on the returned channel. The task stops when the
-/// cancellation token is triggered or the generator is exhausted.
+/// Frames are sent on the returned bounded channel. The task stops when the
+/// cancellation token is triggered, the generator is exhausted, or the consumer
+/// drops the receiver.
 pub fn spawn_rsmpeg_source(
     config: FrameGeneratorConfig,
     ct: CancellationToken,
-) -> Result<(
-    tokio::sync::mpsc::UnboundedReceiver<MediaFrame>,
-    SourceHandle,
-)> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MediaFrame>();
+) -> Result<(tokio::sync::mpsc::Receiver<MediaFrame>, SourceHandle)> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<MediaFrame>(SOURCE_FRAME_BUFFER);
 
     let task_ct = ct.clone();
     let handle = tokio::task::spawn_blocking(move || {
@@ -97,8 +100,12 @@ pub fn spawn_rsmpeg_source(
             }
             match generator.next_frame() {
                 Ok(SourceFrame::Frame(frame)) => {
-                    if tx.send(frame).is_err() {
-                        break;
+                    match tx.blocking_send(frame) {
+                        Ok(()) => {}
+                        Err(_) => {
+                            // Receiver dropped; stop the encoder.
+                            break;
+                        }
                     }
                 }
                 Ok(SourceFrame::Empty) => {

@@ -21,7 +21,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: KyleMayes/install-llvm-action@v1
         with:
-          version: "10.0"
+          version: "18"
           directory: ${{ github.workspace }}/clang
 
       - name: Cache vcpkg (Windows)
@@ -31,7 +31,7 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/vcpkg
-          key: vcpkg-${{ runner.os }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('.github/workflows/rust.yml') }}
 
       - name: Build vcpkg (Windows)
         if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
@@ -53,13 +53,16 @@ jobs:
         shell: bash
         run: |
           VCPKG_ROOT=$(cygpath -w '${{ github.workspace }}/vcpkg')
+          VCPKG_INSTALLED=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md')
           echo "VCPKG_ROOT=${VCPKG_ROOT}" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$(cygpath -w '${{ github.workspace }}/clang/lib')" >> "$GITHUB_ENV"
           echo "LLVM_CONFIG_PATH=$(cygpath -w '${{ github.workspace }}/clang/bin/llvm-config')" >> "$GITHUB_ENV"
-          echo "FFMPEG_INCLUDE_DIR=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/include')" >> "$GITHUB_ENV"
-          echo "FFMPEG_LIBS_DIR=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/lib')" >> "$GITHUB_ENV"
+          echo "FFMPEG_INCLUDE_DIR=${VCPKG_INSTALLED}/include" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIBS_DIR=${VCPKG_INSTALLED}/lib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${VCPKG_INSTALLED}/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "FFMPEG_LINK_MODE=static" >> "$GITHUB_ENV"
-          echo "$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/tools/ffmpeg')" >> "$GITHUB_PATH"
+          echo "${VCPKG_INSTALLED}/tools/ffmpeg" >> "$GITHUB_PATH"
+          echo "${VCPKG_INSTALLED}/tools/pkgconf" >> "$GITHUB_PATH"
       - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -93,16 +96,6 @@ jobs:
           echo "CLANG_PATH=$CLANG_PATH"
           ldconfig -p | grep libclang || true
           dpkg -l | grep -E 'clang|llvm|libc6-dev|linux-libc-dev' || true
-      - name: Prepare FFmpeg binding
-        shell: bash
-        run: |
-          cargo fetch
-          BINDING=$(find "$HOME/.cargo/registry/src" -path '*rusty_ffmpeg-*/src/binding.rs' 2>/dev/null | head -1)
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            BINDING=$(cygpath -w "$BINDING")
-          fi
-          echo "FFMPEG_BINDING_PATH=$BINDING"
-          echo "FFMPEG_BINDING_PATH=$BINDING" >> "$GITHUB_ENV"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
@@ -187,7 +180,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: KyleMayes/install-llvm-action@v1
         with:
-          version: "10.0"
+          version: "18"
           directory: ${{ github.workspace }}/clang
 
       - name: Cache vcpkg (Windows)
@@ -197,7 +190,7 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/vcpkg
-          key: vcpkg-${{ runner.os }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('.github/workflows/rust.yml') }}
 
       - name: Build vcpkg (Windows)
         if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
@@ -219,13 +212,16 @@ jobs:
         shell: bash
         run: |
           VCPKG_ROOT=$(cygpath -w '${{ github.workspace }}/vcpkg')
+          VCPKG_INSTALLED=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md')
           echo "VCPKG_ROOT=${VCPKG_ROOT}" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$(cygpath -w '${{ github.workspace }}/clang/lib')" >> "$GITHUB_ENV"
           echo "LLVM_CONFIG_PATH=$(cygpath -w '${{ github.workspace }}/clang/bin/llvm-config')" >> "$GITHUB_ENV"
-          echo "FFMPEG_INCLUDE_DIR=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/include')" >> "$GITHUB_ENV"
-          echo "FFMPEG_LIBS_DIR=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/lib')" >> "$GITHUB_ENV"
+          echo "FFMPEG_INCLUDE_DIR=${VCPKG_INSTALLED}/include" >> "$GITHUB_ENV"
+          echo "FFMPEG_LIBS_DIR=${VCPKG_INSTALLED}/lib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${VCPKG_INSTALLED}/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "FFMPEG_LINK_MODE=static" >> "$GITHUB_ENV"
-          echo "$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/tools/ffmpeg')" >> "$GITHUB_PATH"
+          echo "${VCPKG_INSTALLED}/tools/ffmpeg" >> "$GITHUB_PATH"
+          echo "${VCPKG_INSTALLED}/tools/pkgconf" >> "$GITHUB_PATH"
 
       - name: Show ffmpeg version
         shell: bash
@@ -247,17 +243,6 @@ jobs:
           echo "CLANG_PATH=$CLANG_PATH"
           ldconfig -p | grep libclang || true
           dpkg -l | grep -E 'clang|llvm|libc6-dev|linux-libc-dev' || true
-
-      - name: Prepare FFmpeg binding
-        shell: bash
-        run: |
-          cargo fetch
-          BINDING=$(find "$HOME/.cargo/registry/src" -path '*rusty_ffmpeg-*/src/binding.rs' 2>/dev/null | head -1)
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            BINDING=$(cygpath -w "$BINDING")
-          fi
-          echo "FFMPEG_BINDING_PATH=$BINDING"
-          echo "FFMPEG_BINDING_PATH=$BINDING" >> "$GITHUB_ENV"
 
       - name: Build
         shell: bash

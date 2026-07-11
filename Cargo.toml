@@ -128,6 +128,8 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "fast-rng"] }
 url = "2.5"
 base64 = "0.22"
+async-trait = "0.1"
+tempfile = "3"
 
 [dev-dependencies]
 http = { workspace = true }
@@ -136,11 +138,10 @@ portpicker = "0.1.1"
 
 api = { path = "libs/api" }
 cli = { path = "libs/cli" }
-playwright-whep = { path = "libs/playwright-whep" }
 reqwest = { workspace = true, features = ["socks", "json"] }
-async-trait = "0.1"
+async-trait = { workspace = true }
 url = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 webrtc = { workspace = true }
 test-case = "3"
 anyhow = { workspace = true }
@@ -174,7 +175,6 @@ opendal = "0.55.0"
 playwright-whep = { path = "libs/playwright-whep", optional = true }
 
 toml = "1.0"
-tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]

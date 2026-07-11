@@ -53,7 +53,7 @@ impl Source for RsmpegVp8Source {
         let height = self.height;
         let fps = self.fps;
 
-        thread::spawn(move || {
+        let join_handle = thread::spawn(move || {
             if let Err(e) = run_rtp_stream(url_c.as_c_str(), width, height, fps, stop_clone.clone())
             {
                 eprintln!("rsmpeg VP8 RTP stream error: {e:?}");
@@ -61,7 +61,7 @@ impl Source for RsmpegVp8Source {
             stop_clone.store(true, Ordering::Relaxed);
         });
 
-        Ok(Box::new(RsmpegHandle { stop }))
+        Ok(Box::new(RsmpegHandle { stop, join_handle }))
     }
 
     fn sdp(&self, listen_addr: SocketAddr) -> String {
@@ -80,11 +80,15 @@ impl Source for RsmpegVp8Source {
 
 struct RsmpegHandle {
     stop: Arc<AtomicBool>,
+    join_handle: thread::JoinHandle<()>,
 }
 
 impl SourceHandle for RsmpegHandle {
     fn stop(self: Box<Self>) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Err(e) = self.join_handle.join() {
+            eprintln!("rsmpeg VP8 source thread panicked: {e:?}");
+        }
     }
 }
 

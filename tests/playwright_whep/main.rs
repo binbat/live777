@@ -93,10 +93,9 @@ where
 }
 
 /// Matrix test for FFmpeg RTP sources played back in a real browser via Playwright.
-#[cfg(all(feature = "whepwright", feature = "rsmpeg"))]
+#[cfg(feature = "whepwright")]
 #[test_matrix(
     [
-        source::rsmpeg_vp8::RsmpegVp8Source::default(),
         source::ffmpeg::FfmpegSource::new(VideoCodec::Vp8),
         source::ffmpeg::FfmpegSource::new(VideoCodec::H264),
     ],
@@ -104,6 +103,21 @@ where
 )]
 #[tokio::test]
 async fn whep_playwright_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// Matrix test for rsmpeg-generated sources played back in a real browser via Playwright.
+#[cfg(all(feature = "whepwright", feature = "rsmpeg"))]
+#[test_matrix(
+    [source::rsmpeg_vp8::RsmpegVp8Source::default()],
+    [player::playwright::PlaywrightWhepPlayer::default()]
+)]
+#[tokio::test]
+async fn whep_playwright_rsmpeg_matrix_test<S, P>(source: S, player: P)
 where
     S: Source,
     P: Player,
@@ -301,15 +315,13 @@ where
 }
 
 /// `whipsynth` codec coverage using the in-process rsmpeg receiver.
-#[cfg(all(feature = "rsmpeg", feature = "rsmpeg"))]
+#[cfg(feature = "rsmpeg")]
 #[test_matrix(
-    [
-        source::whipsynth::WhipgenSource::default(),
-    ],
+    [source::whipsynth::WhipgenSource::default()],
     [player::rsmpeg_receiver::RsmpegWhepReceiver::default()]
 )]
 #[tokio::test]
-async fn whipsynth_codec_matrix_test<S, P>(source: S, player: P)
+async fn whipsynth_vp8_rsmpeg_receiver_test<S, P>(source: S, player: P)
 where
     S: Source,
     P: Player,
@@ -318,7 +330,7 @@ where
 }
 
 /// `whipsynth` H265 coverage using the in-process rsmpeg receiver.
-#[cfg(all(feature = "rsmpeg", feature = "rsmpeg"))]
+#[cfg(feature = "rsmpeg")]
 #[tokio::test]
 async fn whipsynth_h265_rsmpeg_receiver_test() {
     let source = source::whipsynth::WhipgenSource::new(VideoCodec::H265);
@@ -494,6 +506,14 @@ fn assert_playback_ok(player_name: &str, playback: &PlayResult) {
         playback.error
     );
     assert!(playback.connected, "{player_name} did not connect");
+    assert!(
+        playback.video_tracks + playback.audio_tracks > 0,
+        "{player_name} reported no media tracks"
+    );
+    assert!(
+        playback.duration_ms > 0,
+        "{player_name} reported zero duration"
+    );
 
     // Browser playback additionally checks rendered frame dimensions.
     if player_name.starts_with("playwright") {

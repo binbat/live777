@@ -83,13 +83,13 @@ async fn run() -> Result<()> {
     );
 
     let backend = RsmpegProbe {
-        decode_duration: Duration::from_secs(args.decode_duration.min(10)),
+        decode_duration: Duration::from_secs(args.decode_duration),
     };
 
-    let result = backend.probe(&config).await;
+    let result = tokio::time::timeout(config.timeout, backend.probe(&config)).await;
 
     match result {
-        Ok(result) => {
+        Ok(Ok(result)) => {
             print_result(&result, args.output);
             if result.success {
                 info!("=== Probe succeeded ===");
@@ -101,21 +101,28 @@ async fn run() -> Result<()> {
                 ))
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
+            // Emit a structured failure result for JSON consumers, then return
+            // a concise error so the process exits non-zero without dumping the
+            // same diagnostics twice.
             let failed = ProbeResult::failed("rsmpeg", format!("{e:?}"));
             print_result(&failed, args.output);
-            Err(e)
+            Err(anyhow!("Probe failed"))
+        }
+        Err(_) => {
+            let failed =
+                ProbeResult::failed("rsmpeg", format!("timed out after {:?}", config.timeout));
+            print_result(&failed, args.output);
+            Err(anyhow!("Probe timed out"))
         }
     }
 }
 
 fn build_config(args: &Args) -> Result<ProbeConfig> {
-    let codec = args
-        .codec
-        .as_ref()
-        .map(|c| cli::codec_from_str(c))
-        .transpose()
-        .with_context(|| format!("Invalid codec: {}", args.codec.as_deref().unwrap_or("")))?;
+    let codec = match &args.codec {
+        Some(c) => Some(cli::codec_from_str(c).with_context(|| format!("Invalid codec: {c}"))?),
+        None => None,
+    };
 
     Ok(ProbeConfig {
         whep_url: args.whep.clone(),
@@ -128,10 +135,11 @@ fn build_config(args: &Args) -> Result<ProbeConfig> {
 
 fn print_result(result: &ProbeResult, format: OutputFormat) {
     match format {
-        OutputFormat::Json => match serde_json::to_string_pretty(result) {
-            Ok(json) => println!("{json}"),
-            Err(e) => eprintln!("Failed to serialize result: {e}"),
-        },
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(result)
+                .expect("ProbeResult should always be serializable");
+            println!("{json}");
+        }
         OutputFormat::Human => {
             println!("=== WHEP Probe Result ===");
             println!("Backend:        {}", result.backend);

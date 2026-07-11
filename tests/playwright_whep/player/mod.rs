@@ -1,10 +1,10 @@
 pub mod livetwo;
 #[cfg(feature = "whepwright")]
 pub mod playwright;
+#[cfg(feature = "rsmpeg")]
 pub mod rsmpeg_receiver;
 
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct PlayResult {
     pub success: bool,
     pub connected: bool,
