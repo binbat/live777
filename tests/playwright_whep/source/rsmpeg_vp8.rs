@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use rsmpeg::{
     avcodec::{AVCodec, AVCodecContext},
     avformat::AVFormatContextOutput,
-    avutil::{AVFrame, AVRational},
+    avutil::{AVDictionary, AVFrame, AVRational},
     ffi,
 };
 
@@ -122,11 +122,14 @@ fn run_rtp_stream(
     codec_context.set_framerate(AVRational { num: fps, den: 1 });
     codec_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
     codec_context.set_bit_rate(1_000_000);
-    codec_context.set_gop_size(fps);
+    // Short GOP so late-connecting subscribers get a keyframe quickly.
+    codec_context.set_gop_size(fps.min(5));
     codec_context.set_max_b_frames(0);
 
+    let mut opts = AVDictionary::new(c"deadline", c"realtime", 0);
+    opts = opts.set(c"speed", c"4", 0);
     codec_context
-        .open(None)
+        .open(Some(opts))
         .context("Failed to open VP8 encoder")?;
 
     let codecpar = codec_context.extract_codecpar();

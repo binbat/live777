@@ -340,8 +340,7 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
         Some(codec) => codec,
         None => {
             tracing::debug!("H265 sprop extraction: libx265 encoder not found");
-            let mut cache = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-            cache.insert(key, None);
+            // Do not cache failures; the encoder may be installed later.
             return None;
         }
     };
@@ -448,8 +447,7 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
 
     if encoded.is_empty() {
         tracing::debug!("H265 sprop extraction: encoder produced no data");
-        let mut cache = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        cache.insert(key, None);
+        // Do not cache failures; the next attempt may succeed.
         return None;
     }
 
@@ -479,8 +477,7 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
                 encoded_len = encoded.len(),
                 "H265 sprop extraction: failed to parse parameter sets from encoded data"
             );
-            let mut cache = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-            cache.insert(key, None);
+            // Do not cache failures; a later encoder run may produce valid sets.
             return None;
         }
     };

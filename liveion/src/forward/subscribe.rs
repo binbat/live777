@@ -147,18 +147,15 @@ impl SubscribeRTCPeerConnection {
         forward_channel: &SubscribeForwardChannel,
         _virtual_sender: &broadcast::Sender<ForwardData>,
     ) -> Option<BoundPublishTrack> {
-        // Read the current binding and publish tracks under their respective
-        // read locks back-to-back without an await point in between. This
+        // Read the current binding and then clone the publish tracks under
+        // their respective read locks without an await point in between. This
         // avoids seeing a binding that was updated after the publish track
-        // snapshot (or vice versa) due to a task yield.
-        let (current_rid, publish_tracks) = {
+        // snapshot (or vice versa) due to a task yield. The publish tracks are
+        // cloned (they are Arc-based) so the RwLock read guard can be dropped
+        // before any await points below.
+        let current_rid = {
             let binding = track_binding_publish_rid.read().await;
-            let rid = binding.get(&kind.to_string()).cloned();
-            // Drop the first read lock before acquiring the second to avoid
-            // any theoretical deadlock from reverse lock ordering.
-            drop(binding);
-            let tracks = publish_tracks.read().await;
-            (rid, tracks)
+            binding.get(&kind.to_string()).cloned()
         };
 
         if current_rid
@@ -167,6 +164,11 @@ impl SubscribeRTCPeerConnection {
         {
             return None;
         }
+
+        let publish_tracks: Vec<PublishTrackRemote> = {
+            let tracks = publish_tracks.read().await;
+            tracks.iter().cloned().collect()
+        };
 
         if publish_tracks.is_empty() {
             return None;
@@ -419,14 +421,15 @@ impl SubscribeRTCPeerConnection {
     fn h265_candidate_level_sufficient(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
         // level-id in the offer indicates the highest level the receiver can
         // support, so the publisher's level must be <= the candidate's level.
-        // When either side omits level-id, RFC 7798 infers 93 (Level 3.1).
+        // RFC 7798 defines level-id as a base-16 (hex) number; the inferred
+        // default when omitted is 93 (Level 3.1).
         let candidate_level = Self::fmtp_param(&candidate.sdp_fmtp_line, "level-id");
         let publisher_level = Self::fmtp_param(&publisher.sdp_fmtp_line, "level-id");
         let candidate_level = candidate_level
-            .and_then(|v| v.parse::<u32>().ok())
+            .and_then(|v| u32::from_str_radix(&v, 16).ok())
             .unwrap_or(93);
         let publisher_level = publisher_level
-            .and_then(|v| v.parse::<u32>().ok())
+            .and_then(|v| u32::from_str_radix(&v, 16).ok())
             .unwrap_or(93);
         publisher_level <= candidate_level
     }
@@ -922,6 +925,8 @@ impl SubscribeRTCPeerConnection {
                                     recv = virtual_sender.subscribe();
                                     track = None;
                                     payload_type = None;
+                                    source_codec = None;
+                                    selected_codec = None;
                                     pre_rid = Some(rid);
                                     {
                                         let mut binding = track_binding_publish_rid.write().await;

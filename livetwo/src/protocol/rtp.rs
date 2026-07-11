@@ -2,7 +2,6 @@ use anyhow::{Context, Result, anyhow};
 use cli::codec_from_str;
 use sdp::description::common::{Address, ConnectionInformation};
 use sdp::{SessionDescription, description::media::RangedPort};
-use std::fs;
 use std::io::Cursor;
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::Path;
@@ -14,12 +13,37 @@ use tracing::{debug, info};
 use crate::utils;
 use rtsp::constants::media_type;
 
+const SDP_FILE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const SDP_FILE_WAIT_INTERVAL: Duration = Duration::from_millis(100);
+
 pub async fn setup_rtp_input(target_url: &str) -> Result<(rtsp::MediaInfo, String)> {
     info!("Processing RTP input mode");
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     let path = Path::new(target_url);
-    let sdp_bytes = fs::read(path).map_err(|e| anyhow!("Failed to read SDP file: {}", e))?;
+
+    // FFmpeg writes the SDP file asynchronously. Wait for it to contain a
+    // valid-looking session description instead of parsing an empty or partial
+    // file immediately.
+    let sdp_bytes = tokio::time::timeout(SDP_FILE_WAIT_TIMEOUT, async {
+        loop {
+            match tokio::fs::read_to_string(path).await {
+                Ok(contents) if contents.contains("v=") && contents.contains("m=") => {
+                    return contents.into_bytes();
+                }
+                _ => {
+                    tokio::time::sleep(SDP_FILE_WAIT_INTERVAL).await;
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "SDP file was not populated within {:?}",
+            SDP_FILE_WAIT_TIMEOUT
+        )
+    })?;
+
     let sdp =
         sdp_types::Session::parse(&sdp_bytes).map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
 

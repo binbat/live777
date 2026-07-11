@@ -111,27 +111,22 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
             kind, ssrcs, track_id
         );
 
-        // Extract codec info from the track
+        // Report the negotiated mime type as soon as the track is known so
+        // callers (e.g. the rsmpeg probe) can select a decoder without waiting
+        // for the first RTP packet. Do NOT populate codec_info here: the
+        // payload type is not known until the first RTP packet arrives, and
+        // using 0 would cause SDP filtering to discard all payload formats and
+        // produce an invalid "m=video 9 RTP/AVP" line.
         let first_ssrc = ssrcs.first().copied().unwrap_or(0);
         if let Some(codec) = track.codec(first_ssrc).await {
-            let codec_params = rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
-                rtp_codec: codec.clone(),
-                payload_type: 0, // Will be negotiated
-            };
-            let mut info = self.codec_info.lock().await;
-            match kind {
-                RtpCodecKind::Video => {
-                    debug!("WHEP updating video codec: {:?}", codec);
-                    info.video_codec = Some(codec_params.clone());
-                    if let Some(tx) = &self.video_mime_tx {
-                        let _ = tx.send(Some(codec.mime_type.clone()));
-                    }
-                }
-                RtpCodecKind::Audio => {
-                    debug!("WHEP updating audio codec: {:?}", codec);
-                    info.audio_codec = Some(codec_params);
-                }
-                _ => {}
+            debug!(
+                "WHEP on_track codec: kind={}, mime={}",
+                kind, codec.mime_type
+            );
+            if kind == RtpCodecKind::Video
+                && let Some(tx) = &self.video_mime_tx
+            {
+                let _ = tx.send(Some(codec.mime_type.clone()));
             }
         }
 

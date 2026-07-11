@@ -16,8 +16,10 @@ use libwish::Client;
 use tokio::sync::{Notify, watch};
 
 use crate::transport;
+use crate::utils;
 use crate::utils::shutdown::graceful_shutdown;
 use crate::utils::stats::start_stats_monitor;
+use rtsp::constants::media_type;
 
 pub use output::OutputTarget;
 pub use webrtc::setup_whep_peer;
@@ -286,9 +288,32 @@ async fn wait_for_codec_info(
 ) -> Result<rtsp::CodecInfo> {
     const CODEC_WAIT_ATTEMPTS: usize = 300;
 
+    let input = utils::parse_input_url(target_url)?;
+    let has_video_param = input.query_pairs().any(|(k, _)| k == media_type::VIDEO);
+    let has_audio_param = input.query_pairs().any(|(k, _)| k == media_type::AUDIO);
+    let has_any_media_param = has_video_param || has_audio_param;
+
+    // If the caller explicitly requested only video or only audio, wait for
+    // that codec to be observed. Otherwise (no explicit params, or both
+    // requested) wait for at least one of the requested codecs.
+    let wait_for_video = !has_any_media_param || has_video_param;
+    let wait_for_audio = !has_any_media_param || has_audio_param;
+
     for _ in 0..CODEC_WAIT_ATTEMPTS {
         let info = codec_info.lock().await.clone();
-        if info.video_codec.is_some() || info.audio_codec.is_some() {
+        let video_ready = info.video_codec.is_some();
+        let audio_ready = info.audio_codec.is_some();
+
+        let satisfied = if !has_any_media_param {
+            // No explicit media params means "include whatever is published";
+            // return as soon as any codec is observed.
+            video_ready || audio_ready
+        } else {
+            // Wait for every codec that the caller explicitly requested.
+            (!wait_for_video || video_ready) && (!wait_for_audio || audio_ready)
+        };
+
+        if satisfied {
             return Ok(info);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

@@ -65,10 +65,13 @@ impl Source for FfmpegSource {
         for arg in codec.ffmpeg_extra_args() {
             cmd.arg(arg);
         }
+        // Use a short GOP so subscribers that connect after the first keyframe
+        // get another keyframe quickly, even when the encoder is under load.
+        let keyframe_interval = fps.min(5);
         cmd.arg("-g")
-            .arg(fps.to_string())
+            .arg(keyframe_interval.to_string())
             .arg("-keyint_min")
-            .arg(fps.to_string())
+            .arg(keyframe_interval.to_string())
             .arg("-b:v")
             .arg("1000k")
             .arg("-maxrate")

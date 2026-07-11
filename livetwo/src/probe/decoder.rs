@@ -22,11 +22,6 @@ use crate::payload::{RePayload, RePayloadCodec};
 
 /// Assembles RTP payloads into complete encoded frames and decodes them with
 /// FFmpeg through rsmpeg.
-/// Number of consecutive decode errors tolerated before the first successful
-/// frame. This avoids failing on startup noise (e.g. VP8 interframes before the
-/// first keyframe) while still surfacing persistent stream corruption.
-const STARTUP_ERROR_THRESHOLD: u32 = 120;
-
 pub struct RtpFrameDecoder {
     repayload: RePayloadCodec,
     frame_count: u32,
@@ -103,10 +98,9 @@ impl RtpFrameDecoder {
                 // Before the first successful frame, errors are usually startup
                 // noise (e.g. VP8 interframes before the first keyframe). Once
                 // decoding has produced output, treat further errors as fatal.
-                // We also fail if we see many consecutive errors before the
-                // first frame, which indicates a real problem such as a
-                // parameter-set mismatch.
-                if self.frame_count > 0 || self.consecutive_failures >= STARTUP_ERROR_THRESHOLD {
+                // The probe timeout is the ultimate bound, so we do not impose a
+                // separate error-count limit that could flake under load.
+                if self.frame_count > 0 {
                     return Err(e);
                 }
                 warn!(size = frame_data.len(), "Failed to decode frame: {e}");
