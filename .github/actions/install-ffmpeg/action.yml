@@ -110,6 +110,11 @@ runs:
       run: |
         PREFIX="${{ github.workspace }}/ffmpeg-install"
         echo "$PREFIX/bin" >> "$GITHUB_PATH"
+        # rusty_ffmpeg (used by rsmpeg with link_system_ffmpeg) locates FFmpeg
+        # via FFMPEG_PKG_CONFIG_PATH, not PKG_CONFIG_PATH — see rsmpeg's
+        # doc/source-build.md. Set both so the diagnostics step and pkg-config
+        # invocations also resolve the source-built libs.
+        echo "FFMPEG_PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
         echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
         echo "LD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
 
