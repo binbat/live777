@@ -454,6 +454,10 @@ fn encode_frame(codec_ctx: &mut AVCodecContext, frame: &AVFrame) -> Result<Optio
             // Annex-B bitstream.
             is_keyframe |= (packet.flags & ffi::AV_PKT_FLAG_KEY as i32) != 0;
         }
+        // SAFETY: `receive_packet` returned Ok, so `packet.data` points to a
+        // valid allocation of at least `packet.size` bytes. The AVPacket owns
+        // the buffer; we copy the data immediately via `extend_from_slice` so
+        // the slice does not outlive the packet.
         let slice = unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
         data.extend_from_slice(slice);
     }
@@ -482,6 +486,9 @@ fn flush_encoder(ctx: &mut OutputContext) -> Result<Vec<EncodedFrame>> {
             Err(rsmpeg::error::RsmpegError::EncoderDrainError) => break,
             Err(e) => return Err(e.into()),
         };
+        // SAFETY: `receive_packet` returned Ok, so `packet.data` points to a
+        // valid allocation of at least `packet.size` bytes. We copy the data
+        // into a Vec immediately so the slice does not outlive the packet.
         let data = unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
         frames.push(EncodedFrame {
             data: data.to_vec(),

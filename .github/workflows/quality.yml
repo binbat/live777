@@ -65,7 +65,7 @@ jobs:
             libvpx-dev \
             libx264-dev \
             libx265-dev \
-            libsvtav1-dev \
+            libsvtav1enc-dev \
             libopus-dev
       - name: FFmpeg diagnostics
         run: |

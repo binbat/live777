@@ -19,7 +19,7 @@ jobs:
       # Same FFmpeg install method as the upstream rsmpeg repository.
       - name: Install LLVM and Clang (Windows)
         if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@v1
+        uses: KyleMayes/install-llvm-action@v2
         with:
           version: "18"
           directory: ${{ github.workspace }}/clang
@@ -76,7 +76,7 @@ jobs:
           sudo apt-get install -y build-essential pkg-config \
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev \
-            libvpx-dev libx264-dev libx265-dev libsvtav1-dev libopus-dev
+            libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev
       - name: Show version information
         shell: bash
         run: |
@@ -173,12 +173,12 @@ jobs:
           sudo apt-get install -y build-essential pkg-config \
             ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev \
-            libvpx-dev libx264-dev libx265-dev libsvtav1-dev libopus-dev
+            libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev
 
       # Same FFmpeg install method as the upstream rsmpeg repository.
       - name: Install LLVM and Clang (Windows)
         if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@v1
+        uses: KyleMayes/install-llvm-action@v2
         with:
           version: "18"
           directory: ${{ github.workspace }}/clang

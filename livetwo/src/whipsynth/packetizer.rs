@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -331,26 +331,31 @@ fn audio_payloader(codec: AudioCodec) -> Box<dyn Payloader + Send> {
     }
 }
 
-fn video_rtcp_feedback() -> Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback> {
-    vec![
-        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-            typ: "goog-remb".to_owned(),
-            parameter: "".to_owned(),
-        },
-        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-            typ: "ccm".to_owned(),
-            parameter: "fir".to_owned(),
-        },
-        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "".to_owned(),
-        },
-        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "pli".to_owned(),
-        },
-    ]
-}
+/// RTCP feedback parameters common to all video codecs.
+///
+/// Constructed once via `LazyLock` so that repeated calls to `video_rtp_codec`
+/// (once per track) do not re-allocate the same four entries.
+static VIDEO_RTCP_FEEDBACK: LazyLock<Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback>> =
+    LazyLock::new(|| {
+        vec![
+            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+                typ: "goog-remb".to_owned(),
+                parameter: "".to_owned(),
+            },
+            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+                typ: "ccm".to_owned(),
+                parameter: "fir".to_owned(),
+            },
+            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+                typ: "nack".to_owned(),
+                parameter: "".to_owned(),
+            },
+            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+                typ: "nack".to_owned(),
+                parameter: "pli".to_owned(),
+            },
+        ]
+    });
 
 fn video_rtp_codec(
     codec: VideoCodec,
@@ -359,7 +364,7 @@ fn video_rtp_codec(
     height: u32,
     fps: u32,
 ) -> RTCRtpCodec {
-    let rtcp_feedback = video_rtcp_feedback();
+    let rtcp_feedback = VIDEO_RTCP_FEEDBACK.clone();
     match codec {
         VideoCodec::Vp8 => RTCRtpCodec {
             mime_type: MIME_TYPE_VP8.to_owned(),
