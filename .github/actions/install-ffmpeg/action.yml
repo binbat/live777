@@ -60,15 +60,58 @@ runs:
         echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
 
     # ── Linux ─────────────────────────────────────────────────────────────
-    - name: Install FFmpeg development files (Linux)
+    # Ubuntu/Debian patch FFmpeg to privatize AVFormatContext fields (pb,
+    # nb_streams, streams, iformat, oformat, metadata, ...) for ABI
+    # hardening. rsmpeg 0.18.0 accesses those fields directly, so it will
+    # not compile against the apt libavformat-dev (the bindgen output
+    # exposes them as accessor methods or omits them entirely). Build
+    # upstream FFmpeg 8.0 from source — the same configuration rsmpeg's own
+    # CI uses — and cache the install prefix so subsequent runs are fast.
+    - name: Cache FFmpeg build (Linux)
+      if: runner.os == 'Linux'
+      id: cache-ffmpeg
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/ffmpeg-install
+        key: ffmpeg-8.0-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+
+    - name: Build FFmpeg 8.0 from source (Linux)
+      if: runner.os == 'Linux' && steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -e
+        sudo apt-get update -qq
+        # Build tools + codec dev libraries only. The libav* -dev packages
+        # are intentionally NOT installed: Debian's field-privatization
+        # patches break rsmpeg, so we build libav* from upstream source.
+        sudo apt-get install -y build-essential pkg-config nasm yasm \
+          libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev
+
+        PREFIX="${{ github.workspace }}/ffmpeg-install"
+        git clone --depth 1 --branch release/8.0 https://github.com/FFmpeg/FFmpeg ffmpeg-src
+        cd ffmpeg-src
+        ./configure \
+          --prefix="$PREFIX" \
+          --enable-gpl \
+          --enable-shared \
+          --disable-static \
+          --enable-libvpx \
+          --enable-libx264 \
+          --enable-libx265 \
+          --enable-libsvtav1 \
+          --enable-libopus \
+          --disable-doc
+        make -j"$(nproc)"
+        make install
+
+    - name: Expose source-built FFmpeg to rsmpeg (Linux)
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y build-essential pkg-config \
-          ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
-          libswscale-dev libswresample-dev libavdevice-dev libavfilter-dev \
-          libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev
+        PREFIX="${{ github.workspace }}/ffmpeg-install"
+        echo "$PREFIX/bin" >> "$GITHUB_PATH"
+        echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
 
     # ── Diagnostics ───────────────────────────────────────────────────────
     - name: Show version information
