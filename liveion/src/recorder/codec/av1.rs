@@ -777,19 +777,19 @@ mod tests {
         0x40, 0x40, 0x40, 0x41,
     ];
 
-    fn make_packet(payload: &'static [u8], marker: bool, seq: u16) -> Packet {
+    fn make_packet(payload: Bytes, marker: bool, seq: u16) -> Packet {
         let mut pkt = Packet::default();
         pkt.header.marker = marker;
         pkt.header.payload_type = 96;
         pkt.header.sequence_number = seq;
-        pkt.payload = Bytes::from_static(payload);
+        pkt.payload = payload;
         pkt
     }
 
     #[test]
     fn rtp_parser_reassembles_single_packet() {
         let mut parser = Av1RtpParser::new();
-        let pkt = make_packet(RTP_PAYLOAD_SINGLE, true, 17645);
+        let pkt = make_packet(Bytes::from_static(RTP_PAYLOAD_SINGLE), true, 17645);
 
         let result = parser.push_packet(&pkt).expect("push packet");
         assert!(result.is_some(), "parser should output frame at marker");
@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn rtp_parser_handles_aggregated_obus() {
         let mut parser = Av1RtpParser::new();
-        let pkt = make_packet(RTP_PAYLOAD_AGGREGATED, true, 20010);
+        let pkt = make_packet(Bytes::from_static(RTP_PAYLOAD_AGGREGATED), true, 20010);
 
         let result = parser.push_packet(&pkt).expect("push packet");
         assert!(result.is_some(), "parser should output frame at marker");
@@ -811,8 +811,44 @@ mod tests {
         expected.extend_from_slice(SHORT_OBU);
         assert_eq!(result.unwrap().to_vec(), expected);
     }
+
+    #[test]
+    fn rtp_parser_reassembles_fragmented_obu_with_size_field() {
+        // Build a Frame OBU that already carries a low-overhead size field.
+        let mut obu = BytesMut::new();
+        obu.extend_from_slice(&[0x32]); // Frame OBU, no extension, has size field
+        let payload = vec![0xAB; 500];
+        super::write_leb128(&mut obu, payload.len());
+        obu.extend_from_slice(&payload);
+        let obu = obu.freeze();
+
+        let first_fragment_size = 400;
+        let p1_payload = Bytes::from_iter(
+            std::iter::once(0x50) // Z=0, Y=1, W=1
+                .chain(obu[..first_fragment_size].iter().copied()),
+        );
+        let p2_payload = Bytes::from_iter(
+            std::iter::once(0x90) // Z=1, Y=0, W=1
+                .chain(obu[first_fragment_size..].iter().copied()),
+        );
+
+        let mut parser = Av1RtpParser::new();
+        let p1 = make_packet(p1_payload, false, 1000);
+        let p2 = make_packet(p2_payload, true, 1001);
+
+        let result = parser.push_packet(&p1).expect("push first packet");
+        assert!(result.is_none(), "first fragment should not emit a frame");
+
+        let result = parser.push_packet(&p2).expect("push second packet");
+        assert!(
+            result.is_some(),
+            "reassembled frame should be emitted at marker"
+        );
+        assert_eq!(result.unwrap().to_vec(), obu.to_vec());
+    }
+
     use super::{Av1RtpParser, ColorConfig, SequenceHeader, build_av1c_record, read_leb128};
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
     use rtc_rtp::packet::Packet;
 
     #[test]
