@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -89,7 +89,10 @@ impl LoadtestStats {
 /// Each publisher gets its own rsmpeg encoder, PeerConnection, and WHIP
 /// session. This is the simplest loadtest shape; a future optimization could
 /// share a single encoded-bitstream source across sessions.
-pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Result<LoadtestStatsSnapshot> {
+pub async fn run_loadtest(
+    config: LoadtestConfig,
+    ct: CancellationToken,
+) -> Result<LoadtestStatsSnapshot> {
     let stats = Arc::new(LoadtestStats::default());
 
     let mut join_set = JoinSet::new();
@@ -109,15 +112,27 @@ pub async fn run_loadtest(config: LoadtestConfig, ct: CancellationToken) -> Resu
             let publisher = Publisher::new(session_config);
             match publisher.run(session_ct).await {
                 Ok(ps) => {
-                    session_stats.sessions_connected.fetch_add(1, Ordering::Relaxed);
-                    session_stats.total_packets_sent.fetch_add(ps.packets_sent, Ordering::Relaxed);
-                    session_stats.total_bytes_sent.fetch_add(ps.bytes_sent, Ordering::Relaxed);
-                    session_stats.total_nack_count.fetch_add(ps.nack_count, Ordering::Relaxed);
-                    session_stats.total_pli_count.fetch_add(ps.pli_count, Ordering::Relaxed);
+                    session_stats
+                        .sessions_connected
+                        .fetch_add(1, Ordering::Relaxed);
+                    session_stats
+                        .total_packets_sent
+                        .fetch_add(ps.packets_sent, Ordering::Relaxed);
+                    session_stats
+                        .total_bytes_sent
+                        .fetch_add(ps.bytes_sent, Ordering::Relaxed);
+                    session_stats
+                        .total_nack_count
+                        .fetch_add(ps.nack_count, Ordering::Relaxed);
+                    session_stats
+                        .total_pli_count
+                        .fetch_add(ps.pli_count, Ordering::Relaxed);
                 }
                 Err(e) => {
                     warn!(session = i, error = ?e, "loadtest session failed");
-                    session_stats.sessions_failed.fetch_add(1, Ordering::Relaxed);
+                    session_stats
+                        .sessions_failed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         });

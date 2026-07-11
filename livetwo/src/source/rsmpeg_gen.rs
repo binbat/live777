@@ -323,7 +323,11 @@ static H265_SPROP_CACHE: LazyLock<Mutex<HashMap<(u32, u32, u32), Option<String>>
 /// fps)` tuple return the cached result without re-opening the encoder.
 pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
     let key = (width, height, fps);
-    if let Some(cached) = H265_SPROP_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+    if let Some(cached) = H265_SPROP_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+    {
         return cached.clone();
     }
 

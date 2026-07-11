@@ -293,7 +293,6 @@ async fn run_write_loop(
             }
         }
     }
-
 }
 
 async fn create_peer(
