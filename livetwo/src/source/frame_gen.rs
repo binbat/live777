@@ -212,7 +212,7 @@ impl FrameGenerator {
                 )
                 .context("Failed to encode audio frame")?;
                 self.audio_pts += self.samples_per_frame;
-                self.cumulative_audio_samples += self.samples_per_frame as i64;
+                self.cumulative_audio_samples += self.samples_per_frame;
                 self.pending_audio_frames.extend(frames);
             }
         }

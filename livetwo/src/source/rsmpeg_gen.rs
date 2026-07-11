@@ -309,10 +309,15 @@ fn parse_annex_b_hevc_parameter_sets(data: &[u8]) -> Option<(String, String, Str
     Some((vps?, sps?, pps?))
 }
 
+/// Key for the H265 sprop cache: `(width, height, fps)`.
+type H265SpropKey = (u32, u32, u32);
+/// Cached value for an H265 sprop string, or `None` if extraction failed.
+type H265SpropValue = Option<String>;
+
 /// Cache of `(width, height, fps)` → sprop string. Opening the libx265
 /// encoder is expensive (~100 ms+), so we memoize results keyed by the
 /// resolution and frame rate triplet.
-static H265_SPROP_CACHE: LazyLock<Mutex<HashMap<(u32, u32, u32), Option<String>>>> =
+static H265_SPROP_CACHE: LazyLock<Mutex<HashMap<H265SpropKey, H265SpropValue>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Open a temporary H265 encoder, encode a few blank frames and extract the SDP
