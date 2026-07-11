@@ -9,35 +9,6 @@ const TIMESCALE: u32 = 90_000;
 const OBU_TYPE_SEQUENCE_HEADER: u8 = 1;
 const MAX_TEMPORAL_UNIT_SIZE: usize = 3 * 1024 * 1024;
 
-// AV1 aggregation header bit masks (matches rtc-rtp codec::av1)
-const AV1_Z_MASK: u8 = 0b1000_0000;
-const AV1_Y_MASK: u8 = 0b0100_0000;
-const AV1_W_MASK: u8 = 0b0011_0000;
-const AV1_N_MASK: u8 = 0b0000_1000;
-
-fn format_av1_agg_header(header: u8) -> String {
-    let z = (header & AV1_Z_MASK) != 0;
-    let y = (header & AV1_Y_MASK) != 0;
-    let w = (header & AV1_W_MASK) >> 4;
-    let n = (header & AV1_N_MASK) != 0;
-    format!("0x{header:02x} Z={z} Y={y} W={w} N={n}")
-}
-
-fn hex_prefix(bytes: &[u8], max: usize) -> String {
-    let len = bytes.len().min(max);
-    let mut s = String::with_capacity(len * 3);
-    for (i, b) in bytes[..len].iter().enumerate() {
-        if i > 0 {
-            s.push(' ');
-        }
-        s.push_str(&format!("{b:02x}"));
-    }
-    if bytes.len() > max {
-        s.push_str(&format!(" ... ({} bytes total)", bytes.len()));
-    }
-    s
-}
-
 pub struct Av1Adapter {
     sequence_header: Option<Vec<u8>>,
     av1c_record: Option<Vec<u8>>,
@@ -210,9 +181,6 @@ pub struct Av1RtpParser {
     accumulator: BytesMut,
     expected_seq: Option<u16>,
     last_timestamp: u32,
-    /// When a timestamp change finishes a previous temporal unit, that unit is
-    /// returned on the next call so the current packet can still be processed.
-    pending_frame: Option<BytesMut>,
 }
 
 impl Default for Av1RtpParser {
@@ -228,7 +196,6 @@ impl Av1RtpParser {
             accumulator: BytesMut::new(),
             expected_seq: None,
             last_timestamp: 0,
-            pending_frame: None,
         }
     }
 
@@ -237,25 +204,9 @@ impl Av1RtpParser {
         self.accumulator.clear();
         self.expected_seq = None;
         self.last_timestamp = 0;
-        self.pending_frame = None;
     }
 
     pub fn push_packet(&mut self, pkt: &Packet) -> Result<Option<BytesMut>> {
-        // If a previous call produced a pending frame, return it first.
-        if let Some(frame) = self.pending_frame.take() {
-            return Ok(Some(frame));
-        }
-
-        let agg_header = pkt.payload.first().copied().unwrap_or(0);
-        tracing::trace!(
-            "[av1-rtp] packet seq={} ts={} marker={} len={} agg={}",
-            pkt.header.sequence_number,
-            pkt.header.timestamp,
-            pkt.header.marker,
-            pkt.payload.len(),
-            format_av1_agg_header(agg_header),
-        );
-
         // Detect sequence number gaps. AV1 depacketization is stateful, so a
         // missing packet makes the current accumulator unusable.
         if let Some(expected) = self.expected_seq
@@ -270,56 +221,24 @@ impl Av1RtpParser {
         }
         self.expected_seq = Some(pkt.header.sequence_number.wrapping_add(1));
 
-        // Timestamp discontinuity indicates a new temporal unit. The AV1 RTP
-        // spec says a receiver must handle the case where the marker bit is not
-        // set on the last packet of a temporal unit; the boundary is also
-        // indicated by the next packet having an incremented timestamp. Emit the
-        // accumulated unit instead of dropping it.
+        // Timestamp discontinuity also indicates a new temporal unit or lost
+        // stream state.
         if self.last_timestamp != 0 && pkt.header.timestamp != self.last_timestamp {
             if !self.accumulator.is_empty() {
                 tracing::debug!(
-                    "[av1-rtp] timestamp discontinuity ({} -> {}); emitting accumulated temporal unit ({} bytes)",
+                    "[av1-rtp] timestamp discontinuity ({} -> {}); dropping incomplete temporal unit",
                     self.last_timestamp,
-                    pkt.header.timestamp,
-                    self.accumulator.len()
+                    pkt.header.timestamp
                 );
-                self.pending_frame = Some(std::mem::take(&mut self.accumulator));
             }
-            // Reset depacketizer/accumulator state for the new temporal unit,
-            // but keep expected_seq so the current packet is processed normally.
-            self.depacketizer = Av1Depacketizer::new();
-            self.accumulator.clear();
+            self.reset();
         }
         self.last_timestamp = pkt.header.timestamp;
 
-        let obus = match self.depacketizer.depacketize(&pkt.payload) {
-            Ok(obus) => {
-                tracing::trace!(
-                    "[av1-rtp] depacketized seq={} ts={} output_len={}",
-                    pkt.header.sequence_number,
-                    pkt.header.timestamp,
-                    obus.len()
-                );
-                obus
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "[av1-rtp] depacketize error seq={} ts={} marker={} len={} agg={} payload={}: {e}",
-                    pkt.header.sequence_number,
-                    pkt.header.timestamp,
-                    pkt.header.marker,
-                    pkt.payload.len(),
-                    format_av1_agg_header(agg_header),
-                    hex_prefix(&pkt.payload, 64),
-                );
-                // Preserve any already-complete temporal unit before resetting.
-                if self.pending_frame.is_none() && !self.accumulator.is_empty() {
-                    self.pending_frame = Some(std::mem::take(&mut self.accumulator));
-                }
-                self.reset();
-                return Err(anyhow!("AV1 depacketization failed: {e}"));
-            }
-        };
+        let obus = self
+            .depacketizer
+            .depacketize(&pkt.payload)
+            .map_err(|e| anyhow!("AV1 depacketization failed: {e}"))?;
 
         if !obus.is_empty() {
             if self.accumulator.len() + obus.len() > MAX_TEMPORAL_UNIT_SIZE {
@@ -348,35 +267,15 @@ impl Av1RtpParser {
             }
 
             let temporal_unit = std::mem::take(&mut self.accumulator);
-            // Reset the depacketizer for the next temporal unit, but keep
-            // sequence/timestamp tracking so the next packet is processed
-            // normally.
-            self.depacketizer = Av1Depacketizer::new();
             tracing::trace!(
                 "[av1-rtp] temporal unit complete: seq={} size={}",
                 pkt.header.sequence_number,
                 temporal_unit.len()
             );
-
-            if let Some(pending) = self.pending_frame.take() {
-                self.pending_frame = Some(temporal_unit);
-                return Ok(Some(pending));
-            }
             return Ok(Some(temporal_unit));
         }
 
-        if let Some(pending) = self.pending_frame.take() {
-            return Ok(Some(pending));
-        }
         Ok(None)
-    }
-
-    /// Return a pending temporal unit that was held back because of a timestamp
-    /// discontinuity. This should be called when the RTP stream ends so the last
-    /// complete frame is not lost. Unfinished accumulator data (no marker bit
-    /// seen) is intentionally discarded to avoid writing an incomplete frame.
-    pub fn flush(&mut self) -> Option<BytesMut> {
-        self.pending_frame.take()
     }
 }
 
@@ -385,10 +284,6 @@ impl crate::recorder::codec::RtpParser for Av1RtpParser {
 
     fn push_packet(&mut self, pkt: &Packet) -> Result<Option<Self::Output>> {
         self.push_packet(pkt)
-    }
-
-    fn flush(&mut self) -> Option<Self::Output> {
-        self.flush()
     }
 }
 
@@ -916,148 +811,9 @@ mod tests {
         expected.extend_from_slice(SHORT_OBU);
         assert_eq!(result.unwrap().to_vec(), expected);
     }
-
-    fn make_packet_owned(payload: Vec<u8>, marker: bool, seq: u16) -> Packet {
-        let mut pkt = Packet::default();
-        pkt.header.marker = marker;
-        pkt.header.payload_type = 96;
-        pkt.header.sequence_number = seq;
-        pkt.payload = Bytes::from(payload);
-        pkt
-    }
-
-    #[test]
-    fn rtp_parser_emits_frame_on_timestamp_change_when_marker_missing() {
-        // A Frame OBU large enough to be split into two RTP packets.
-        let mut obu = vec![0x30]; // Frame OBU, no extension, no size field
-        obu.extend_from_slice(&[0xAB; 200]);
-
-        let mut payloader = Av1Payloader::default();
-        let packets = payloader
-            .payload(120, &Bytes::from(obu))
-            .expect("packetize AV1 frame");
-        assert_eq!(packets.len(), 2, "frame should be split into two packets");
-
-        let mut parser = Av1RtpParser::new();
-        let mut first = make_packet_owned(packets[0].to_vec(), false, 1);
-        first.header.timestamp = 1000;
-        let mut second = make_packet_owned(packets[1].to_vec(), false, 2);
-        second.header.timestamp = 1000;
-        // Third packet belongs to the next temporal unit and has a new timestamp.
-        let mut third = make_packet(RTP_PAYLOAD_SINGLE, true, 3);
-        third.header.timestamp = 2000;
-
-        assert!(
-            parser.push_packet(&first).unwrap().is_none(),
-            "first fragment should not emit a frame"
-        );
-        assert!(
-            parser.push_packet(&second).unwrap().is_none(),
-            "second fragment without marker should not emit a frame"
-        );
-
-        let result = parser.push_packet(&third).unwrap();
-        assert!(
-            result.is_some(),
-            "timestamp change should emit the accumulated temporal unit"
-        );
-        // The emitted frame contains the reassembled OBU with an added size field.
-        assert!(result.unwrap().len() > 200);
-
-        // The next call returns the frame from the third packet.
-        let next = parser.push_packet(&Packet::default()).unwrap();
-        assert!(
-            next.is_some(),
-            "pending frame from the third packet should be returned"
-        );
-    }
-
-    #[test]
-    fn rtp_parser_recovers_after_depacketize_error() {
-        let mut parser = Av1RtpParser::new();
-
-        // An invalid AV1 RTP payload (only aggregation header, no OBU data).
-        let bad = make_packet(&[0x10], true, 1);
-        assert!(parser.push_packet(&bad).is_err());
-
-        // A subsequent valid packet should still be parsed.
-        let good = make_packet(RTP_PAYLOAD_SINGLE, true, 2);
-        let result = parser.push_packet(&good).unwrap();
-        assert!(
-            result.is_some(),
-            "parser should recover and parse valid packet"
-        );
-    }
-
-    #[test]
-    fn rtp_parser_reassembles_fragmented_obu_with_size_field() {
-        // OBS-style packetization: the OBU already carries a low-overhead size
-        // field and is fragmented across multiple RTP packets (Z/Y flags).
-        let mut obu = BytesMut::new();
-        obu.put_u8(0x32); // Frame OBU, no extension, has size field
-        let payload = vec![0xAB; 500];
-        write_leb128(&mut obu, payload.len());
-        obu.extend_from_slice(&payload);
-        let obu = obu.freeze();
-
-        let first_fragment_size = 400;
-        let mut p1 = vec![0x50]; // Z=0, Y=1, W=1
-        p1.extend_from_slice(&obu[..first_fragment_size]);
-        let mut p2 = vec![0x90]; // Z=1, Y=0, W=1
-        p2.extend_from_slice(&obu[first_fragment_size..]);
-
-        let mut parser = Av1RtpParser::new();
-        assert!(
-            parser
-                .push_packet(&make_packet_owned(p1, false, 1))
-                .unwrap()
-                .is_none(),
-            "first fragment should be buffered"
-        );
-        let result = parser.push_packet(&make_packet_owned(p2, true, 2)).unwrap();
-        assert!(
-            result.is_some(),
-            "reassembled OBU should be emitted at marker"
-        );
-        assert_eq!(result.unwrap().to_vec(), obu.to_vec());
-    }
-
-    #[test]
-    fn rtp_parser_flush_drops_unfinished_temporal_unit() {
-        // A fragmented frame without a marker bit is buffered in the accumulator.
-        // flush() intentionally discards unfinished accumulator data so that an
-        // incomplete temporal unit is not written to the recording.
-        let mut obu = vec![0x30]; // Frame OBU, no extension, no size field
-        obu.extend_from_slice(&[0xAB; 200]);
-
-        let mut payloader = Av1Payloader::default();
-        let packets = payloader
-            .payload(120, &Bytes::from(obu))
-            .expect("packetize AV1 frame");
-        assert_eq!(packets.len(), 2, "frame should be split into two packets");
-
-        let mut parser = Av1RtpParser::new();
-        let first = make_packet_owned(packets[0].to_vec(), false, 1);
-        let second = make_packet_owned(packets[1].to_vec(), false, 2);
-
-        assert!(parser.push_packet(&first).unwrap().is_none());
-        assert!(parser.push_packet(&second).unwrap().is_none());
-
-        let flushed = parser.flush();
-        assert!(
-            flushed.is_none(),
-            "flush should drop unfinished accumulator"
-        );
-    }
-
-    use super::{
-        Av1RtpParser, ColorConfig, SequenceHeader, build_av1c_record, read_leb128, write_leb128,
-    };
-    use bytes::BufMut;
-    use bytes::{Bytes, BytesMut};
-    use rtc_rtp::codec::av1::Av1Payloader;
+    use super::{Av1RtpParser, ColorConfig, SequenceHeader, build_av1c_record, read_leb128};
+    use bytes::Bytes;
     use rtc_rtp::packet::Packet;
-    use rtc_rtp::packetizer::Payloader;
 
     #[test]
     fn leb128_decoding_examples() {

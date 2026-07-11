@@ -101,10 +101,4 @@ pub fn create_video_adapter(codec: VideoCodec) -> Box<dyn CodecAdapter> {
 pub trait RtpParser {
     type Output;
     fn push_packet(&mut self, pkt: &Packet) -> Result<Option<Self::Output>>;
-
-    /// Return any buffered output that is complete but has not yet been
-    /// emitted. The default implementation returns `None`.
-    fn flush(&mut self) -> Option<Self::Output> {
-        None
-    }
 }

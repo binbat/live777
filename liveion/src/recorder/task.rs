@@ -565,18 +565,6 @@ impl RecordingTask {
                 }
             }
 
-            // Flush any pending video frame held back by the AV1 parser (e.g.
-            // a temporal unit emitted on timestamp discontinuity).
-            if let Some(frame) = parser_av1.flush()
-                && let Err(e) = segmenter.push_av1(frame.freeze(), 3000).await
-            {
-                tracing::warn!(
-                    "[recorder] {} failed to flush pending AV1 frame: {}",
-                    stream_name_cloned,
-                    e
-                );
-            }
-
             if let Err(e) = segmenter.flush().await {
                 tracing::debug!("[recorder] {} flush error: {}", stream_name_cloned, e);
                 return RecordingMediaOutcome::Failed;
