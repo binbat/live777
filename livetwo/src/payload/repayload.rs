@@ -106,6 +106,8 @@ impl RePayloadCodec {
             Box::<h264::H264Packet>::default()
         } else if is(MIME_TYPE_HEVC) {
             Box::<h265::H265Packet>::default()
+        } else if is(MIME_TYPE_AV1) {
+            Box::<av1::Av1Depacketizer>::default()
         } else if is(MIME_TYPE_OPUS) {
             Box::<opus::OpusPacket>::default()
         } else {
@@ -120,6 +122,8 @@ impl RePayloadCodec {
             Box::<h264::H264Payloader>::default()
         } else if is(MIME_TYPE_HEVC) {
             Box::<h265::HevcPayloader>::default()
+        } else if is(MIME_TYPE_AV1) {
+            Box::<av1::Av1Payloader>::default()
         } else if is(MIME_TYPE_OPUS) {
             Box::<opus::OpusPayloader>::default()
         } else {
