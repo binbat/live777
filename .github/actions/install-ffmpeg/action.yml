@@ -141,6 +141,18 @@ runs:
         echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
         echo "LD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
 
+    # The source-built FFmpeg binary links against the system codec libraries
+    # (libvpx, libx264, libx265, libsvtav1, libopus). Cache restores only our
+    # install prefix, not the runner's system libraries, so make sure the
+    # runtime packages are present even on cache hits.
+    - name: Install codec runtime libraries (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y libvpx-dev libx264-dev libx265-dev \
+          libsvtav1enc-dev libopus-dev
+
     - name: Pin libclang to LLVM 20 for bindgen (Linux)
       if: runner.os == 'Linux'
       shell: bash
