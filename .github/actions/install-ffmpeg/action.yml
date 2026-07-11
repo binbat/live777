@@ -118,6 +118,25 @@ runs:
         echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
         echo "LD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
 
+    - name: Pin libclang to LLVM 20 for bindgen (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        # rusty_ffmpeg 0.16.7 (used by rsmpeg 0.18.0) depends on bindgen 0.71.
+        # LLVM 22 changed its AST representation (llvm/llvm-project#147835), so
+        # bindgen 0.71 on LLVM 22 generates *opaque* types for AVFormatContext
+        # and AVBitStreamFilter, breaking rsmpeg's direct field access
+        # (rusty_ffmpeg#150, fixed upstream in bindgen 0.72.1 / rusty_ffmpeg
+        # 0.17 — not yet usable here since rsmpeg 0.18.0 pins 0.16.7).
+        # ubuntu-26.04 defaults to LLVM 22; pin bindgen to the pre-installed
+        # LLVM 20 libclang, which predates the AST change.
+        SRC="$(find /usr/lib /usr/lib/llvm-* -name 'libclang-20.so*' 2>/dev/null | head -1)"
+        [ -n "$SRC" ] || { echo "ERROR: libclang-20 not found on runner"; exit 1; }
+        mkdir -p "${{ github.workspace }}/libclang20"
+        ln -sf "$SRC" "${{ github.workspace }}/libclang20/libclang.so"
+        echo "Pinned libclang: $SRC"
+        echo "LIBCLANG_PATH=${{ github.workspace }}/libclang20" >> "$GITHUB_ENV"
+
     # ── Diagnostics ───────────────────────────────────────────────────────
     - name: Show version information
       shell: bash
