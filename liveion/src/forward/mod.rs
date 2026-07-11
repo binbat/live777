@@ -36,6 +36,8 @@ use self::message::CascadeInfo;
 use self::message::ForwardEvent;
 
 #[cfg(feature = "source")]
+pub(crate) mod av1_repacketizer;
+#[cfg(feature = "source")]
 pub(crate) mod channel;
 mod internal;
 mod media;

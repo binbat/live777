@@ -10,7 +10,7 @@ crate-type = ["lib"]
 
 [dependencies]
 anyhow = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "macros"] }
 tracing = { workspace = true }
 base64 = { workspace = true }
 

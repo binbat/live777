@@ -141,6 +141,13 @@ impl SourceManager {
 
         let has_video = video_codec.is_some();
         let has_audio = audio_codec.is_some();
+        let video_codec_name = video_codec.as_ref().and_then(|c| {
+            c.rtp_codec
+                .mime_type
+                .split('/')
+                .nth(1)
+                .map(|s| s.to_string())
+        });
 
         if let Some(codec) = video_codec {
             info!(
@@ -198,7 +205,13 @@ impl SourceManager {
 
         drop(source_guard);
 
-        let mut bridge = SourceBridge::new(stream_id.to_string(), forward, has_video, has_audio);
+        let mut bridge = SourceBridge::new(
+            stream_id.to_string(),
+            forward,
+            has_video,
+            has_audio,
+            video_codec_name,
+        );
 
         if let Some(rtcp_tx) = rtcp_sender {
             bridge.set_rtcp_sender(rtcp_tx);

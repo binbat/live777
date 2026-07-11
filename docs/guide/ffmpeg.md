@@ -101,7 +101,6 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 
 ::: warning
 - Please set `-strict experimental`
-- For whipinto AV1 need `pkt_size<=1200`, `-f rtp "rtp://127.0.0.1:5002?pkt_size=1200"`
 :::
 
 ```bash
@@ -109,7 +108,7 @@ ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p \
 -c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 \
 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 \
 -strict experimental \
--f rtp "rtp://127.0.0.1:5002?pkt_size=1200" -sdp_file input.sdp
+-f rtp "rtp://127.0.0.1:5002" -sdp_file input.sdp
 ```
 
 ## VP8

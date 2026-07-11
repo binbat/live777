@@ -18,6 +18,7 @@ h264 := "libx264 -pix_fmt yuv420p -g 60 -keyint_min 60 -crf 23 -preset ultrafast
 h265 := "libx265 -pix_fmt yuv420p -g 60 -keyint_min 60 -crf 25 -preset ultrafast -tune zerolatency -profile:v main -level 4.1"
 vp8  := "libvpx -pix_fmt yuv420p -g 60 -keyint_min 60 -deadline realtime -speed 4 -b:v 2000k -maxrate 2500k -bufsize 5000k"
 vp9  := "libvpx-vp9 -pix_fmt yuv420p -g 60 -keyint_min 60 -deadline realtime -speed 5 -row-mt 1 -tile-columns 2 -frame-parallel 1 -b:v 1800k -maxrate 2200k -bufsize 4400k"
+av1  := "libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 -strict experimental"
 opus := "libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained"
 
 gst_hd := "video/x-raw,format=I420,width=1280,height=720,framerate=30/1"
@@ -271,6 +272,11 @@ ffmpeg-rtp-vp8:
 ffmpeg-rtp-vp9:
     cargo run --bin=whipinto -- -i {{isdp}} -w {{server}}/whip/{{stream}} --command \
         "ffmpeg -re {{vsrc}} -strict experimental -vcodec {{vp9}} -f rtp rtp://{{host}}:5002 -sdp_file {{isdp}}"
+
+[group('simple-rtp')]
+ffmpeg-rtp-av1:
+    cargo run --bin=whipinto -- -i {{isdp}} -w {{server}}/whip/{{stream}} --command \
+        "ffmpeg -re {{vsrc}} -vcodec {{av1}} -f rtp rtp://{{host}}:5002 -sdp_file {{isdp}}"
 
 # 4K (3840×2160)
 [group('simple-rtp')]
