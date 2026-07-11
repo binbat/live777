@@ -329,8 +329,7 @@ impl SubscribeRTCPeerConnection {
     }
 
     fn av1_profile(fmtp: &str) -> Option<String> {
-        Self::fmtp_param(fmtp, "profile-id")
-            .or_else(|| Self::fmtp_param(fmtp, "profile"))
+        Self::fmtp_param(fmtp, "profile-id").or_else(|| Self::fmtp_param(fmtp, "profile"))
     }
 
     fn av1_codecs_are_compatible(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
