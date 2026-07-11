@@ -32,21 +32,30 @@ runs:
       run: |
         # Enable the external codecs used by livetwo's rsmpeg sources:
         # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svt-av1), Opus (opus).
-        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svt-av1,vpx,x264,x265]:x64-windows-static-md"
+        #
+        # Build the *dynamic* (x64-windows) ffmpeg: with a static build,
+        # rusty_ffmpeg's link_system_ffmpeg only links the 7 av* libs and omits
+        # the transitive codec deps (opus, vpx, x264, x265, svt-av1), causing
+        # unresolved-symbol link errors (opus_strerror, opus_multistream_*,
+        # ...). With a dynamic build the codecs are baked into the av*.dll, so
+        # the av* import libs are sufficient and no per-codec linking is needed.
+        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svt-av1,vpx,x264,x265]:x64-windows"
 
     - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
       if: runner.os == 'Windows'
       shell: bash
       run: |
         VCPKG_ROOT=$(cygpath -w '${{ github.workspace }}/vcpkg')
-        VCPKG_INSTALLED=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows-static-md')
+        VCPKG_INSTALLED=$(cygpath -w '${{ github.workspace }}/vcpkg/installed/x64-windows')
         echo "VCPKG_ROOT=${VCPKG_ROOT}" >> "$GITHUB_ENV"
         echo "LIBCLANG_PATH=$(cygpath -w '${{ github.workspace }}/clang/lib')" >> "$GITHUB_ENV"
         echo "LLVM_CONFIG_PATH=$(cygpath -w '${{ github.workspace }}/clang/bin/llvm-config')" >> "$GITHUB_ENV"
         echo "FFMPEG_INCLUDE_DIR=${VCPKG_INSTALLED}/include" >> "$GITHUB_ENV"
         echo "FFMPEG_LIBS_DIR=${VCPKG_INSTALLED}/lib" >> "$GITHUB_ENV"
         echo "PKG_CONFIG_PATH=${VCPKG_INSTALLED}/lib/pkgconfig" >> "$GITHUB_ENV"
-        echo "FFMPEG_LINK_MODE=static" >> "$GITHUB_ENV"
+        echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
+        # Put the ffmpeg + codec DLLs on PATH so test binaries can load them at runtime.
+        echo "${VCPKG_INSTALLED}/bin" >> "$GITHUB_PATH"
         echo "${VCPKG_INSTALLED}/tools/ffmpeg" >> "$GITHUB_PATH"
         echo "${VCPKG_INSTALLED}/tools/pkgconf" >> "$GITHUB_PATH"
 
