@@ -106,34 +106,72 @@ fn parse_video_codec(media: &sdp_types::Media) -> Option<VideoCodecParams> {
 }
 
 fn parse_audio_codec(media: &sdp_types::Media) -> Option<AudioCodecParams> {
-    let rtpmap = media.attributes.iter().find(|a| a.attribute == "rtpmap")?;
+    // Prefer explicit rtpmap; fall back to well-known static payload types
+    // (RFC 3551) when the sender omits rtpmap, which is common for PCMU/PCMA/G722.
+    if let Some(rtpmap) = media.attributes.iter().find(|a| a.attribute == "rtpmap") {
+        let value = rtpmap.value.as_ref()?;
+        let parts: Vec<&str> = value.split_whitespace().collect();
+        if parts.len() < 2 {
+            return None;
+        }
 
-    let value = rtpmap.value.as_ref()?;
-    let parts: Vec<&str> = value.split_whitespace().collect();
-    if parts.len() < 2 {
-        return None;
+        let payload_type = parts[0].parse().ok()?;
+        let codec_parts: Vec<&str> = parts[1].split('/').collect();
+        if codec_parts.len() < 2 {
+            return None;
+        }
+        let codec = codec_parts[0].to_string();
+        let default_channels = default_audio_channels(&codec);
+
+        return Some(AudioCodecParams {
+            codec,
+            payload_type,
+            clock_rate: codec_parts[1].parse().ok()?,
+            channels: codec_parts
+                .get(2)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(default_channels),
+        });
     }
 
-    let payload_type = parts[0].parse().ok()?;
-    let codec_parts: Vec<&str> = parts[1].split('/').collect();
-    if codec_parts.len() < 2 {
-        return None;
-    }
-    let codec = codec_parts[0].to_string();
-    let default_channels = match codec.to_uppercase().as_str() {
+    // No rtpmap: infer from static payload type in the m= line.
+    let payload_type = media
+        .fmt
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<u8>().ok())?;
+    static_payload_audio_codec(payload_type)
+}
+
+fn default_audio_channels(codec: &str) -> u16 {
+    match codec.to_uppercase().as_str() {
         "G722" | "PCMA" | "PCMU" => 1,
         _ => 2,
-    };
+    }
+}
 
-    Some(AudioCodecParams {
-        codec,
-        payload_type,
-        clock_rate: codec_parts[1].parse().ok()?,
-        channels: codec_parts
-            .get(2)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(default_channels),
-    })
+fn static_payload_audio_codec(payload_type: u8) -> Option<AudioCodecParams> {
+    match payload_type {
+        0 => Some(AudioCodecParams {
+            codec: "PCMU".to_string(),
+            payload_type: 0,
+            clock_rate: 8000,
+            channels: 1,
+        }),
+        8 => Some(AudioCodecParams {
+            codec: "PCMA".to_string(),
+            payload_type: 8,
+            clock_rate: 8000,
+            channels: 1,
+        }),
+        9 => Some(AudioCodecParams {
+            codec: "G722".to_string(),
+            payload_type: 9,
+            clock_rate: 8000,
+            channels: 1,
+        }),
+        _ => None,
+    }
 }
 
 pub fn extract_h264_params(media: &sdp_types::Media) -> Option<(Vec<u8>, Vec<u8>)> {
@@ -482,6 +520,25 @@ a=rtpmap:9 G722/8000
 
         let session = sdp_types::Session::parse(sdp.as_bytes()).unwrap();
         let codec = parse_audio_codec(&session.medias[0]).expect("G722 codec should parse");
+
+        assert_eq!(codec.codec, "G722");
+        assert_eq!(codec.payload_type, 9);
+        assert_eq!(codec.clock_rate, 8000);
+        assert_eq!(codec.channels, 1);
+    }
+
+    #[test]
+    fn test_parse_static_payload_type_without_rtpmap() {
+        let sdp = r#"v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=Test
+c=IN IP4 127.0.0.1
+t=0 0
+m=audio 0 RTP/AVP 9
+"#;
+
+        let session = sdp_types::Session::parse(sdp.as_bytes()).unwrap();
+        let codec = parse_audio_codec(&session.medias[0]).expect("static G722 should parse");
 
         assert_eq!(codec.codec, "G722");
         assert_eq!(codec.payload_type, 9);

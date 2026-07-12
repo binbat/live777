@@ -307,6 +307,9 @@ impl PublishTrackRemote {
             kind: media.first().cloned().unwrap_or_default(),
             codec: media.get(1).cloned().unwrap_or_default(),
             fmtp: raw_codec.sdp_fmtp_line,
+            payload_type: 0,
+            clock_rate: raw_codec.clock_rate,
+            channels: raw_codec.channels,
         };
 
         tokio::spawn(Self::track_forward(
@@ -642,6 +645,9 @@ impl VirtualPublishTrack {
             kind: media.first().cloned().unwrap_or_default(),
             codec: media.get(1).cloned().unwrap_or_default(),
             fmtp: self.codec_params.rtp_codec.sdp_fmtp_line.clone(),
+            payload_type: self.codec_params.payload_type,
+            clock_rate: self.codec_params.rtp_codec.clock_rate,
+            channels: self.codec_params.rtp_codec.channels,
         }
     }
 

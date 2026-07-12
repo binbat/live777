@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters};
 use rtc::shared::marshal::{Marshal, MarshalSize};
@@ -185,7 +186,7 @@ impl rtsp::server::SessionHandler for PullHandler {
         &self,
         path: String,
         _mode: rtsp::SessionMode,
-        _media_info: rtsp::MediaInfo,
+        media_info: rtsp::MediaInfo,
         endpoint: rtsp::SessionEndpoint,
     ) -> Result<()> {
         let stream_id = stream_id_from_path(path, DEFAULT_PULL_STREAM);
@@ -211,15 +212,24 @@ impl rtsp::server::SessionHandler for PullHandler {
                 }
             };
 
-            // Assign fixed interleaved channels: video RTP=0, video RTCP=1,
-            // audio RTP=2, audio RTCP=3.
+            // Use the negotiated TCP interleaved channels when available;
+            // fall back to the fixed UDP channel map (video=0/1, audio=2/3).
+            let channel_for = |kind| match kind {
+                RtpCodecKind::Video => media_info
+                    .video_transport
+                    .as_ref()
+                    .and_then(|t| t.tcp_channels())
+                    .unwrap_or((0, 1)),
+                RtpCodecKind::Audio => media_info
+                    .audio_transport
+                    .as_ref()
+                    .and_then(|t| t.tcp_channels())
+                    .unwrap_or((2, 3)),
+                _ => (0, 1),
+            };
+
             for track in tracks {
-                let rtp_channel = match track.kind() {
-                    RtpCodecKind::Video => 0u8,
-                    RtpCodecKind::Audio => 2u8,
-                    _ => continue,
-                };
-                let rtcp_channel = rtp_channel + 1;
+                let (rtp_channel, rtcp_channel) = channel_for(track.kind());
 
                 // RTP forward.
                 let tx_clone = tx.clone();
@@ -364,12 +374,15 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
     for track in tracks {
         let codec = track.codec();
         let (media, pt, clock_rate, channels) = match codec.codec.as_str() {
-            "h264" => ("video", 96, 90000, None),
-            "h265" | "hevc" => ("video", 97, 90000, None),
-            "vp8" => ("video", 98, 90000, None),
-            "vp9" => ("video", 99, 90000, None),
-            "av1" => ("video", 100, 90000, None),
-            "opus" => ("audio", 111, 48000, Some(2)),
+            "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => {
+                ("video", codec.payload_type, codec.clock_rate, None)
+            }
+            "opus" | "g722" | "pcma" | "pcmu" => (
+                "audio",
+                codec.payload_type,
+                codec.clock_rate,
+                Some(codec.channels as u8),
+            ),
             _ => continue,
         };
 
@@ -390,9 +403,15 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
                 clock_rate
             ));
         }
-        if media == "video" {
-            lines.push(format!("a=fmtp:{} packetization-mode=1", pt));
+        if !codec.fmtp.is_empty() {
+            lines.push(format!("a=fmtp:{} {}", pt, codec.fmtp));
         }
+        let control_id = match track.kind() {
+            RtpCodecKind::Video => "video",
+            RtpCodecKind::Audio => "audio",
+            _ => continue,
+        };
+        lines.push(format!("a=control:{control_id}"));
     }
 
     Ok(lines.join("\r\n") + "\r\n")
@@ -412,75 +431,105 @@ fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
         VideoCodecParams::H264 {
             payload_type,
             clock_rate,
+            sps,
+            pps,
             ..
-        } => RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type: "video/H264".to_string(),
-                clock_rate: *clock_rate,
-                channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
-                        .to_string(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "goog-remb".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "transport-cc".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "ccm".to_owned(),
-                        parameter: "fir".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_owned(),
-                        parameter: "pli".to_owned(),
-                    },
-                ],
-            },
-            payload_type: *payload_type,
-        },
+        } => {
+            let mut sdp_fmtp_line =
+                "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
+                    .to_string();
+            if !sps.is_empty() && !pps.is_empty() {
+                let sps_b64 = BASE64.encode(sps);
+                let pps_b64 = BASE64.encode(pps);
+                sdp_fmtp_line.push_str(&format!(";sprop-parameter-sets={},{}", sps_b64, pps_b64));
+            }
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: "video/H264".to_string(),
+                    clock_rate: *clock_rate,
+                    channels: 0,
+                    sdp_fmtp_line,
+                    rtcp_feedback: vec![
+                        RTCPFeedback {
+                            typ: "goog-remb".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "transport-cc".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "ccm".to_owned(),
+                            parameter: "fir".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "pli".to_owned(),
+                        },
+                    ],
+                },
+                payload_type: *payload_type,
+            }
+        }
         VideoCodecParams::H265 {
             payload_type,
             clock_rate,
+            vps,
+            sps,
+            pps,
             ..
-        } => RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type: "video/H265".to_string(),
-                clock_rate: *clock_rate,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "goog-remb".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "transport-cc".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "ccm".to_owned(),
-                        parameter: "fir".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_owned(),
-                        parameter: "pli".to_owned(),
-                    },
-                ],
-            },
-            payload_type: *payload_type,
-        },
+        } => {
+            let mut parts = Vec::new();
+            if !vps.is_empty() {
+                parts.push(format!("sprop-vps={}", BASE64.encode(vps)));
+            }
+            if !sps.is_empty() {
+                parts.push(format!("sprop-sps={}", BASE64.encode(sps)));
+            }
+            if !pps.is_empty() {
+                parts.push(format!("sprop-pps={}", BASE64.encode(pps)));
+            }
+            let sdp_fmtp_line = if parts.is_empty() {
+                String::new()
+            } else {
+                parts.join(";")
+            };
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: "video/H265".to_string(),
+                    clock_rate: *clock_rate,
+                    channels: 0,
+                    sdp_fmtp_line,
+                    rtcp_feedback: vec![
+                        RTCPFeedback {
+                            typ: "goog-remb".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "transport-cc".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "ccm".to_owned(),
+                            parameter: "fir".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "pli".to_owned(),
+                        },
+                    ],
+                },
+                payload_type: *payload_type,
+            }
+        }
         VideoCodecParams::VP8 {
             payload_type,
             clock_rate,

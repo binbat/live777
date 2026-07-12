@@ -2573,6 +2573,7 @@ dependencies = [
  "auth",
  "axum 0.8.8",
  "axum-extra",
+ "base64 0.22.1",
  "byteorder",
  "bytes",
  "chrono",

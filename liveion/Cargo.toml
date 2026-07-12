@@ -45,6 +45,7 @@ sansio = "1.0"
 rtc-interceptor = { workspace = true }
 rtc-shared = { workspace = true }
 uuid = { workspace = true }
+base64 = { workspace = true }
 
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }

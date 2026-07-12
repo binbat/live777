@@ -378,6 +378,22 @@ impl<H: SessionHandler> RtspServerSession<H> {
             }
         });
 
+        // Keep the RTSP control connection alive for UDP sessions so that
+        // clients (e.g. ffmpeg) do not see an unexpected EOF before TEARDOWN.
+        let stream = self.stream;
+        tokio::spawn(async move {
+            let (mut read_half, mut write_half) = tokio::io::split(stream);
+            let mut buf = [0u8; 1024];
+            loop {
+                match read_half.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+            let _ = write_half.shutdown().await;
+        });
+
         Ok(())
     }
 

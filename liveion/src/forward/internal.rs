@@ -887,17 +887,17 @@ impl PeerForwardInternal {
         // ── Publish: atomic check-and-take under write lock ──
         {
             let mut publish = self.publish.write().await;
-            if let Some(ref p) = *publish {
-                if p.id == id {
-                    let mut session_info = p.info().await;
-                    session_info.state = RTCPeerConnectionState::Closed;
-                    session_info.leave_at = Utc::now().timestamp_millis();
-                    let old = publish.take().unwrap();
-                    drop(publish);
-                    let _ = old.peer.close().await;
-                    self.do_remove_publish_cleanup(session_info).await;
-                    return Ok(true);
-                }
+            if let Some(ref p) = *publish
+                && p.id == id
+            {
+                let mut session_info = p.info().await;
+                session_info.state = RTCPeerConnectionState::Closed;
+                session_info.leave_at = Utc::now().timestamp_millis();
+                let old = publish.take().unwrap();
+                drop(publish);
+                let _ = old.peer.close().await;
+                self.do_remove_publish_cleanup(session_info).await;
+                return Ok(true);
             }
         }
 

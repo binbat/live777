@@ -10,24 +10,23 @@ use tokio_util::sync::CancellationToken;
 mod common;
 use common::shutdown_signal;
 
-// === RTSP Bootstrapping ===
+// === RTSP Cycle ===
 //
-// - ffmpeg → whip into rtsp server
+// Uses liveion's built-in RTSP push/pull servers and livetwo's RTSP client.
 //
 // # stream: A
+// - ffmpeg → liveion RTSP push server (stream a)
 //
-// - whep from rtsp server
-// - whip into rtsp client
+// # stream: A → B
+// - livetwo whip client pulls stream a from liveion RTSP pull server
+// - publishes to liveion WHIP stream b
 //
-// # stream: B
+// # stream: B → C
+// - livetwo whep client pulls liveion WHEP stream b
+// - pushes to liveion RTSP push server (stream c)
 //
-// - whip into rtsp server
-// - whep from rtsp client
-//
-// # stream: C
-//
-// - whep from rtsp server
-// - ffprobe
+// # verify
+// - ffprobe pulls stream c from liveion RTSP pull server
 
 const WEBRTC_ICE_UDP_ADDRS: &str = "127.0.0.1:0";
 
@@ -83,6 +82,22 @@ async fn pick_tcp_port(ip: IpAddr) -> u16 {
         .port()
 }
 
+fn rtsp_url(ip: IpAddr, port: u16, stream_id: &str) -> String {
+    let host = match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{v6}]"),
+    };
+    format!("rtsp://{host}:{port}/{stream_id}")
+}
+
+fn rtsp_target(ip: IpAddr, port: u16, stream_id: &str) -> String {
+    let host = match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{v6}]"),
+    };
+    format!("{host}:{port}/{stream_id}")
+}
+
 #[derive(Clone, Copy)]
 enum Transport {
     Udp,
@@ -120,10 +135,8 @@ impl Transport {
 }
 
 struct Ports {
-    whip: u16,
-    p_ab: u16,
-    p_bc: u16,
-    whep: u16,
+    push: u16,
+    pull: u16,
 }
 
 struct MediaExpectation {
@@ -265,7 +278,6 @@ impl Drop for CycleTasks {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_h264_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -281,7 +293,6 @@ async fn test_livetwo_cycle_rtsp_h264_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_h264_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -297,7 +308,6 @@ async fn test_livetwo_cycle_rtsp_h264_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_h265_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -313,7 +323,6 @@ async fn test_livetwo_cycle_rtsp_h265_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_h265_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -329,7 +338,6 @@ async fn test_livetwo_cycle_rtsp_h265_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp8_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -345,7 +353,6 @@ async fn test_livetwo_cycle_rtsp_vp8_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp8_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -361,7 +368,6 @@ async fn test_livetwo_cycle_rtsp_vp8_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp8_ipv6_udp() {
     // Windows CI coverage intermittently stalls this IPv6 UDP RTSP/WebRTC cycle
     // during socket/ICE teardown. IPv4 UDP, IPv6 TCP, and the other VP8 cycles
@@ -388,7 +394,6 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -404,7 +409,6 @@ async fn test_livetwo_cycle_rtsp_vp8_ipv6_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp9_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -420,7 +424,6 @@ async fn test_livetwo_cycle_rtsp_vp9_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp9_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -436,7 +439,6 @@ async fn test_livetwo_cycle_rtsp_vp9_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_opus_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -452,7 +454,6 @@ async fn test_livetwo_cycle_rtsp_opus_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_opus_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -468,7 +469,6 @@ async fn test_livetwo_cycle_rtsp_opus_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_g722_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -484,7 +484,6 @@ async fn test_livetwo_cycle_rtsp_g722_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_g722_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -500,7 +499,6 @@ async fn test_livetwo_cycle_rtsp_g722_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp8_opus_udp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -516,7 +514,6 @@ async fn test_livetwo_cycle_rtsp_vp8_opus_udp() {
 }
 
 #[tokio::test]
-#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_cycle_rtsp_vp8_opus_tcp() {
     run_rtsp_cycle_test(TestConfig {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -574,7 +571,7 @@ fn build_vp9_command(width: u16, height: u16, transport: Transport) -> String {
 fn build_opus_command(transport: Transport) -> String {
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 \
             {acodec} \
             {} -f rtsp 'rtsp://{{}}'",
         transport.as_ffmpeg_flag()
@@ -583,7 +580,7 @@ fn build_opus_command(transport: Transport) -> String {
 
 fn build_g722_command(transport: Transport) -> String {
     format!(
-        "ffmpeg -re -f lavfi -i sine=frequency=1000 -acodec g722 \
+        "ffmpeg -re -f lavfi -i sine=frequency=1000 -acodec g722 -ar 16000 \
          {} -f rtsp 'rtsp://{{}}'",
         transport.as_ffmpeg_flag()
     )
@@ -614,79 +611,83 @@ async fn run_rtsp_cycle_test_inner(config: TestConfig) {
 
     // Allocate all ports dynamically to avoid conflicts under nextest parallel execution.
     let ports = Ports {
-        whip: pick_tcp_port(config.ip).await,
-        p_ab: pick_tcp_port(config.ip).await,
-        p_bc: pick_tcp_port(config.ip).await,
-        whep: pick_tcp_port(config.ip).await,
+        push: pick_tcp_port(config.ip).await,
+        pull: pick_tcp_port(config.ip).await,
     };
 
-    let (server_addr, server_handle) = setup_liveion_server(config.ip, config.server_port).await;
+    let (server_addr, server_handle) =
+        setup_liveion_server(config.ip, config.server_port, ports.push, ports.pull).await;
     let mut tasks = CycleTasks::new(CancellationToken::new(), server_handle);
 
-    create_default_stream(&server_addr).await;
-
-    // Stream A: ffmpeg → RTSP server → WebRTC
+    // Stream A: ffmpeg → liveion RTSP push server (stream a)
     let stream_a = stream_id("a");
-    let handle_a_whip = tasks.push(
-        "stream_a_whip",
-        start_stream_a_whip(tasks.ct(), &config, &ports, &server_addr, &stream_a).await,
+    let handle_a = tasks.push(
+        "stream_a",
+        start_stream_a(tasks.ct(), &config, &ports, &stream_a).await,
     );
     wait_for_publish_connected_with_diagnostics(
         &server_addr,
         &stream_a,
-        handle_a_whip,
-        ports.whip,
-        server_addr,
+        handle_a,
+        "stream A ffmpeg",
     )
     .await;
     wait_for_media_ready(&server_addr, &stream_a, &config, "stream A publish").await;
     tokio::time::sleep(Duration::from_millis(STREAM_STABILIZATION_MS)).await;
 
-    // Stream A → RTSP server → Stream B
-    tasks.push(
-        "stream_a_whep",
-        start_stream_a_whep(tasks.ct(), &config, &ports, &server_addr, &stream_a).await,
+    // Stream A → B: livetwo whip client pulls stream a from RTSP pull server,
+    // publishes to liveion WHIP stream b.
+    let stream_b = stream_id("b");
+    let handle_a_to_b = tasks.push(
+        "a_to_b",
+        start_a_to_b(
+            tasks.ct(),
+            &config,
+            &ports,
+            &server_addr,
+            &stream_a,
+            &stream_b,
+        )
+        .await,
     );
-    wait_for_subscribe_connected(&server_addr, &stream_a).await;
-    wait_for_media_ready(&server_addr, &stream_a, &config, "stream A WHEP").await;
+    wait_for_publish_connected_with_diagnostics(
+        &server_addr,
+        &stream_b,
+        handle_a_to_b,
+        "A → B whip",
+    )
+    .await;
+    wait_for_media_ready(&server_addr, &stream_b, &config, "stream B publish").await;
     tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
 
-    // Stream B: RTSP client → WebRTC
-    let stream_b = stream_id("b");
-    tasks.push(
-        "stream_b_whip",
-        start_stream_b_whip(tasks.ct(), &config, &ports, &server_addr, &stream_b).await,
-    );
-    wait_for_publish_connected(&server_addr, &stream_b).await;
-    wait_for_media_ready(&server_addr, &stream_b, &config, "stream B publish").await;
-
-    // Stream C: Stream B → RTSP server
+    // Stream B → C: livetwo whep client pulls liveion WHEP stream b,
+    // pushes to liveion RTSP push server (stream c).
     let stream_c = stream_id("c");
-    tasks.push(
-        "stream_c_whip",
-        start_stream_c_whip(tasks.ct(), &config, &ports, &server_addr, &stream_c).await,
-    );
-
-    tasks.push(
-        "stream_b_whep",
-        start_stream_b_whep(tasks.ct(), &config, &ports, &server_addr, &stream_b).await,
+    let handle_b_to_c = tasks.push(
+        "b_to_c",
+        start_b_to_c(
+            tasks.ct(),
+            &config,
+            &ports,
+            &server_addr,
+            &stream_b,
+            &stream_c,
+        )
+        .await,
     );
     wait_for_subscribe_connected(&server_addr, &stream_b).await;
-    wait_for_publish_connected(&server_addr, &stream_c).await;
+    wait_for_publish_connected_with_diagnostics(
+        &server_addr,
+        &stream_c,
+        handle_b_to_c,
+        "B → C whep",
+    )
+    .await;
     wait_for_media_ready(&server_addr, &stream_c, &config, "stream C publish").await;
-    tokio::time::sleep(Duration::from_millis(INTER_STREAM_DELAY_MS)).await;
-
-    // Stream C → RTSP server → ffprobe
-    tasks.push(
-        "stream_c_whep",
-        start_stream_c_whep(tasks.ct(), &config, &ports, &server_addr, &stream_c).await,
-    );
-    wait_for_subscribe_connected(&server_addr, &stream_c).await;
-    wait_for_media_ready(&server_addr, &stream_c, &config, "stream C WHEP").await;
     tokio::time::sleep(Duration::from_millis(FFPROBE_PREPARATION_MS)).await;
 
-    // Verify with ffprobe
-    verify_stream_with_ffprobe(&config, &ports).await;
+    // Verify with ffprobe pulling stream c from RTSP pull server.
+    verify_stream_with_ffprobe(&config, &ports, &stream_c).await;
 
     tasks.shutdown().await;
 }
@@ -701,8 +702,16 @@ async fn run_rtsp_cycle_test_with_timeout(config: TestConfig, hard_timeout: Dura
     }
 }
 
-async fn setup_liveion_server(ip: IpAddr, port: u16) -> (SocketAddr, JoinHandle<()>) {
-    let cfg = liveion::config::Config::default();
+async fn setup_liveion_server(
+    ip: IpAddr,
+    port: u16,
+    push_port: u16,
+    pull_port: u16,
+) -> (SocketAddr, JoinHandle<()>) {
+    let mut cfg = liveion::config::Config::default();
+    cfg.rtsp.push_listen = SocketAddr::new(ip, push_port);
+    cfg.rtsp.pull_listen = SocketAddr::new(ip, pull_port);
+
     let listener = TcpListener::bind(SocketAddr::new(ip, port))
         .await
         .expect("Failed to bind server");
@@ -713,124 +722,58 @@ async fn setup_liveion_server(ip: IpAddr, port: u16) -> (SocketAddr, JoinHandle<
     (addr, handle)
 }
 
-async fn create_default_stream(server_addr: &SocketAddr) {
-    let res = reqwest::Client::new()
-        .post(format!("http://{server_addr}{}", api::path::streams("-")))
-        .send()
-        .await
-        .expect("Failed to create default stream");
+async fn start_stream_a(
+    ct: CancellationToken,
+    config: &TestConfig,
+    ports: &Ports,
+    stream_id: &str,
+) -> JoinHandle<anyhow::Result<()>> {
+    let rtsp_target = rtsp_target(config.ip, ports.push, stream_id);
+    let ffmpeg_cmd = config.ffmpeg_command.replace("{}", &rtsp_target);
 
-    assert_eq!(http::StatusCode::NO_CONTENT, res.status());
-
-    let res = reqwest::get(format!("http://{server_addr}{}", api::path::streams("")))
-        .await
-        .expect("Failed to get streams");
-
-    let body = res
-        .json::<Vec<api::response::Stream>>()
-        .await
-        .expect("Failed to parse streams response");
-
-    assert_eq!(1, body.len(), "Expected exactly one default stream");
+    tokio::spawn(run_ffmpeg(ct, ffmpeg_cmd))
 }
 
-async fn start_stream_a_whip(
+async fn start_a_to_b(
     ct: CancellationToken,
     config: &TestConfig,
     ports: &Ports,
     server_addr: &SocketAddr,
-    stream_id: &str,
+    stream_a_id: &str,
+    stream_b_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, ports.whip);
-    let ffmpeg_cmd = config.ffmpeg_command.replace("{}", &rtsp_addr.to_string());
+    let input_url = format!(
+        "{}{}",
+        rtsp_url(config.ip, ports.pull, stream_a_id),
+        config.transport.as_query_param()
+    );
 
     tokio::spawn(livetwo::whip::into(
         ct,
-        format!("{}://{}", "rtsp-listen", rtsp_addr),
-        format!("http://{server_addr}{}", api::path::whip(stream_id)),
-        None,
-        Some(ffmpeg_cmd),
-    ))
-}
-
-async fn start_stream_a_whep(
-    ct: CancellationToken,
-    config: &TestConfig,
-    ports: &Ports,
-    server_addr: &SocketAddr,
-    stream_id: &str,
-) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, ports.p_ab);
-
-    tokio::spawn(livetwo::whep::from(
-        ct,
-        format!("{}://{}", "rtsp-listen", rtsp_addr),
-        format!("http://{server_addr}{}", api::path::whep(stream_id)),
-        None,
-        None,
+        input_url,
+        format!("http://{server_addr}{}", api::path::whip(stream_b_id)),
         None,
         None,
     ))
 }
 
-async fn start_stream_b_whip(
-    ct: CancellationToken,
-    config: &TestConfig,
-    ports: &Ports,
-    server_addr: &SocketAddr,
-    stream_id: &str,
-) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, ports.p_ab);
-
-    tokio::spawn(livetwo::whip::into(
-        ct,
-        format!(
-            "{}://{}{}",
-            livetwo::SCHEME_RTSP_CLIENT,
-            rtsp_addr,
-            config.transport.as_query_param()
-        ),
-        format!("http://{server_addr}{}", api::path::whip(stream_id)),
-        None,
-        None,
-    ))
-}
-
-async fn start_stream_c_whip(
-    ct: CancellationToken,
-    config: &TestConfig,
-    ports: &Ports,
-    server_addr: &SocketAddr,
-    stream_c_id: &str,
-) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, ports.p_bc);
-
-    tokio::spawn(livetwo::whip::into(
-        ct.clone(),
-        format!("{}://{}", "rtsp-listen", rtsp_addr),
-        format!("http://{server_addr}{}", api::path::whip(stream_c_id)),
-        None,
-        None,
-    ))
-}
-
-async fn start_stream_b_whep(
+async fn start_b_to_c(
     ct: CancellationToken,
     config: &TestConfig,
     ports: &Ports,
     server_addr: &SocketAddr,
     stream_b_id: &str,
+    stream_c_id: &str,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, ports.p_bc);
+    let output_url = format!(
+        "{}{}",
+        rtsp_url(config.ip, ports.push, stream_c_id),
+        config.transport.as_query_param()
+    );
 
     tokio::spawn(livetwo::whep::from(
         ct,
-        format!(
-            "{}://{}{}",
-            livetwo::SCHEME_RTSP_CLIENT,
-            rtsp_addr,
-            config.transport.as_query_param()
-        ),
+        output_url,
         format!("http://{server_addr}{}", api::path::whep(stream_b_id)),
         None,
         None,
@@ -839,43 +782,39 @@ async fn start_stream_b_whep(
     ))
 }
 
-async fn start_stream_c_whep(
-    ct: CancellationToken,
-    config: &TestConfig,
-    ports: &Ports,
-    server_addr: &SocketAddr,
-    stream_id: &str,
-) -> JoinHandle<anyhow::Result<()>> {
-    let rtsp_addr = SocketAddr::new(config.ip, ports.whep);
-
-    tokio::spawn(livetwo::whep::from(
-        ct,
-        format!("{}://{}", "rtsp-listen", rtsp_addr),
-        format!("http://{server_addr}{}", api::path::whep(stream_id)),
-        None,
-        None,
-        None,
-        None,
-    ))
+async fn run_ffmpeg(ct: CancellationToken, command: String) -> anyhow::Result<()> {
+    let mut child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .kill_on_drop(true)
+        .spawn()?;
+    tokio::select! {
+        _ = ct.cancelled() => {
+            let _ = child.kill().await;
+            Ok(())
+        }
+        status = child.wait() => {
+            status.map(|_| ()).map_err(|e| e.into())
+        }
+    }
 }
 
 async fn wait_for_publish_connected_with_diagnostics(
     server_addr: &SocketAddr,
     stream_id: &str,
-    handle_whip: &mut JoinHandle<anyhow::Result<()>>,
-    whip_port: u16,
-    liveion_addr: SocketAddr,
+    handle: &mut JoinHandle<anyhow::Result<()>>,
+    task_label: &str,
 ) {
     let mut last_state = None;
     let mut last_codecs = Vec::new();
     for attempt in 0..MAX_CONNECTION_ATTEMPTS {
-        if handle_whip.is_finished() {
-            let result = handle_whip.await.unwrap();
+        if handle.is_finished() {
+            let result = handle.await.unwrap();
             let result_debug = format!("{:?}", result);
             let ice_hint = rtsp2_ice_candidate_hint(&result_debug);
             panic!(
-                "WHIP task exited before publish connected: result={result_debug}, \
-                 whip_port={whip_port}, liveion={liveion_addr}, stream={stream_id}, \
+                "{task_label} task exited before publish connected: result={result_debug}, \
+                 liveion={server_addr}, stream={stream_id}, \
                  last_state={last_state:?}, last_codecs={last_codecs:?}.{ice_hint}"
             );
         }
@@ -905,23 +844,13 @@ async fn wait_for_publish_connected_with_diagnostics(
         if attempt == MAX_CONNECTION_ATTEMPTS - 1 {
             panic!(
                 "Stream '{}' did not reach connected state after {} attempts; \
-                 whip_port={whip_port}, liveion={liveion_addr}, last_state={:?}, last_codecs={:?}",
+                 liveion={server_addr}, last_state={:?}, last_codecs={:?}",
                 stream_id, MAX_CONNECTION_ATTEMPTS, last_state, last_codecs
             );
         }
 
         tokio::time::sleep(Duration::from_millis(CONNECTION_CHECK_INTERVAL_MS)).await;
     }
-}
-
-async fn wait_for_publish_connected(server_addr: &SocketAddr, stream_id: &str) {
-    wait_for_connection_state(
-        server_addr,
-        stream_id,
-        |stream| !stream.publish.sessions.is_empty(),
-        |stream| stream.publish.sessions[0].state,
-    )
-    .await;
 }
 
 async fn wait_for_subscribe_connected(server_addr: &SocketAddr, stream_id: &str) {
@@ -1024,12 +953,8 @@ async fn wait_for_connection_state<F, G>(
     }
 }
 
-async fn verify_stream_with_ffprobe(config: &TestConfig, ports: &Ports) {
-    let rtsp_url = format!(
-        "{}://{}",
-        livetwo::SCHEME_RTSP_CLIENT,
-        SocketAddr::new(config.ip, ports.whep)
-    );
+async fn verify_stream_with_ffprobe(config: &TestConfig, ports: &Ports, stream_id: &str) {
+    let rtsp_url = rtsp_url(config.ip, ports.pull, stream_id);
 
     let mut last_error = None;
 

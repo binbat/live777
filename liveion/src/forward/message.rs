@@ -31,6 +31,9 @@ pub struct Codec {
     pub kind: String,
     pub codec: String,
     pub fmtp: String,
+    pub payload_type: u8,
+    pub clock_rate: u32,
+    pub channels: u16,
 }
 
 #[derive(Clone, Debug)]
