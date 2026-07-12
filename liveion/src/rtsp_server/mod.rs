@@ -7,7 +7,7 @@ use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecPar
 use rtc::shared::marshal::{Marshal, MarshalSize};
 
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::RtspConfig;
 use crate::forward::track::PublishTrackRemote;
@@ -144,6 +144,12 @@ impl rtsp::server::SessionHandler for PushHandler {
                 let _ = forward.inject_audio_rtp(&data).await;
             }
             info!("RTSP push forward stopped for {}", stream_id);
+            if let Err(e) = manager.stream_delete(stream_id.clone()).await {
+                debug!(
+                    "Failed to delete stream {} on push disconnect: {}",
+                    stream_id, e
+                );
+            }
         });
 
         Ok(())

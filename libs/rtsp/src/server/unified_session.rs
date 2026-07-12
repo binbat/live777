@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
@@ -11,7 +11,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::{Handler, ServerConfig, ServerSession};
 use crate::channels::InterleavedData;
-use crate::constants::{media_type, track};
+use crate::constants::{media_type, net, track};
 use crate::sdp::parse_codecs_from_sdp;
 use crate::tcp_stream::handle_tcp_stream;
 use crate::types::{MediaInfo, SessionMode, TransportInfo};
@@ -227,13 +227,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
 
                     info!("MediaInfo: {:?}", media_info);
 
+                    let p = path.clone().unwrap_or_default();
                     if actual_use_tcp {
-                        let p = path.clone().unwrap_or_default();
                         self.start_tcp_data_transfer(p, media_info.clone()).await?;
-                        return Ok(media_info);
+                    } else {
+                        self.start_udp_data_transfer(p, media_info.clone()).await?;
                     }
-
-                    return Err(anyhow!("UDP transport is not supported with handlers"));
+                    return Ok(media_info);
                 }
                 Method::Teardown => {
                     let response = self.handler.handle_teardown(&request).await?;
@@ -327,6 +327,33 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 );
             }
         }
+
+        Ok(())
+    }
+
+    async fn start_udp_data_transfer(self, path: String, media_info: MediaInfo) -> Result<()> {
+        let (endpoint, server_side) = match self.mode {
+            SessionMode::Push => {
+                let (tx, rx) = unbounded_channel::<InterleavedData>();
+                (SessionEndpoint::Push(rx), ServerSide::Push(tx))
+            }
+            SessionMode::Pull => {
+                let (tx, rx) = unbounded_channel::<InterleavedData>();
+                (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
+            }
+        };
+
+        self.app_handler
+            .on_session(path, self.mode, media_info.clone(), endpoint)
+            .await?;
+
+        let client_addr = self.addr;
+        let mode = self.mode;
+        tokio::spawn(async move {
+            if let Err(e) = run_udp_transfer(mode, client_addr, media_info, server_side).await {
+                error!("UDP transfer error: {}", e);
+            }
+        });
 
         Ok(())
     }
@@ -475,6 +502,125 @@ fn request_path(request: &Request<Vec<u8>>) -> Result<Option<String>> {
         .path_segments()
         .ok_or_else(|| anyhow!("Invalid request URI"))?;
     Ok(segments.next().map(|s| s.to_string()))
+}
+
+async fn run_udp_transfer(
+    mode: SessionMode,
+    client_addr: SocketAddr,
+    media_info: MediaInfo,
+    server_side: ServerSide,
+) -> Result<()> {
+    match mode {
+        SessionMode::Push => {
+            let ServerSide::Push(tx) = server_side else {
+                return Err(anyhow!("Unexpected server side for push"));
+            };
+
+            // Forward incoming video RTP to the handler.
+            if let Some(TransportInfo::Udp {
+                rtp_recv_port: Some(port),
+                ..
+            }) = media_info.video_transport
+            {
+                let socket = bind_udp(&client_addr, port).await?;
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    while let Ok((n, _)) = socket.recv_from(&mut buf).await {
+                        if tx.send((0, buf[..n].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            // Forward incoming audio RTP to the handler.
+            if let Some(TransportInfo::Udp {
+                rtp_recv_port: Some(port),
+                ..
+            }) = media_info.audio_transport
+            {
+                let socket = bind_udp(&client_addr, port).await?;
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    while let Ok((n, _)) = socket.recv_from(&mut buf).await {
+                        if tx.send((2, buf[..n].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            drain_rtcp_ports(&client_addr, &media_info).await?;
+        }
+        SessionMode::Pull => {
+            let ServerSide::Pull(mut rx) = server_side else {
+                return Err(anyhow!("Unexpected server side for pull"));
+            };
+
+            let send_socket = UdpSocket::bind(net::bind_any_for(&client_addr)).await?;
+
+            let mut channel_map: HashMap<u8, u16> = HashMap::new();
+            if let Some(TransportInfo::Udp {
+                rtp_send_port: Some(port),
+                ..
+            }) = media_info.video_transport
+            {
+                channel_map.insert(0, port);
+            }
+            if let Some(TransportInfo::Udp {
+                rtp_send_port: Some(port),
+                ..
+            }) = media_info.audio_transport
+            {
+                channel_map.insert(2, port);
+            }
+
+            tokio::spawn(async move {
+                while let Some((channel, data)) = rx.recv().await {
+                    if let Some(&port) = channel_map.get(&channel) {
+                        let dest = SocketAddr::new(client_addr.ip(), port);
+                        if send_socket.send_to(&data, dest).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            drain_rtcp_ports(&client_addr, &media_info).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn drain_rtcp_ports(client_addr: &SocketAddr, media_info: &MediaInfo) -> Result<()> {
+    let transports = [
+        media_info.video_transport.as_ref(),
+        media_info.audio_transport.as_ref(),
+    ];
+    for transport in transports.into_iter().flatten() {
+        if let TransportInfo::Udp {
+            rtcp_recv_port: Some(port),
+            ..
+        } = transport
+        {
+            let socket = bind_udp(client_addr, *port).await?;
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 2048];
+                while socket.recv_from(&mut buf).await.is_ok() {}
+            });
+        }
+    }
+    Ok(())
+}
+
+async fn bind_udp(addr: &SocketAddr, port: u16) -> Result<UdpSocket> {
+    let bind_addr = net::bind_addr_for(addr, port);
+    UdpSocket::bind(&bind_addr)
+        .await
+        .map_err(|e| anyhow!("Failed to bind UDP socket {}: {}", bind_addr, e))
 }
 
 /// Start a single-port RTSP server that multiplexes sessions by URL path.
