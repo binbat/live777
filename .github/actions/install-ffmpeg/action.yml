@@ -80,6 +80,12 @@ runs:
       if: runner.os == 'macOS'
       shell: bash
       run: |
+        # GitHub-hosted macOS runners may ship with third-party taps that are
+        # not trusted by newer Homebrew versions, causing `brew install` to exit
+        # with a tap-trust error. Remove any such taps before installing; ffmpeg
+        # and pkg-config are provided by homebrew/core so external taps are not
+        # required here.
+        brew untap aws/tap 2>/dev/null || true
         brew install ffmpeg pkg-config
         echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
         echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
