@@ -10,7 +10,9 @@ use tokio::sync::RwLock;
 use crate::constants::server;
 pub use handler::Handler;
 pub use server_session::ServerSession;
-pub use unified_session::{PortUpdate, RtspServerSession, setup_rtsp_server_session};
+pub use unified_session::{
+    PortUpdate, RtspServerSession, SessionEndpoint, SessionHandler, setup_rtsp_server_with_handler,
+};
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {

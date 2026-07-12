@@ -5,15 +5,16 @@ use anyhow::{Result, anyhow};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters};
 use rtc::shared::marshal::{Marshal, MarshalSize};
-use tokio::sync::mpsc::UnboundedReceiver;
+
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::config::RtspConfig;
+use crate::forward::track::PublishTrackRemote;
 use crate::stream::manager::Manager;
 
-const PUSH_STREAM_ID: &str = "rtsp-push";
-const PULL_STREAM_ID: &str = "rtsp-pull";
+const DEFAULT_PUSH_STREAM: &str = "rtsp-push";
+const DEFAULT_PULL_STREAM: &str = "rtsp-pull";
 
 pub async fn start_rtsp_server(
     manager: Arc<Manager>,
@@ -45,74 +46,15 @@ async fn run_push_server(
 ) -> Result<()> {
     info!("Starting RTSP push server on {}", listen);
     let listen_addr = format_bind_addr(listen);
-
-    let (media_info, channels, mut port_update_rx) =
-        rtsp::setup_rtsp_server_session(&listen_addr, Vec::new(), rtsp::SessionMode::Push, true)
-            .await?;
-
-    let (tx, rx) = channels.ok_or_else(|| anyhow!("RTSP push requires TCP interleaved mode"))?;
-
-    setup_push_stream(&manager, media_info).await?;
-    spawn_push_forward(manager.clone(), rx, tx);
-
-    tokio::spawn(async move {
-        while let Some(port_update) = port_update_rx.recv().await {
-            info!(
-                "RTSP push port update connection #{}",
-                port_update.connection_id
-            );
-            // New push connections reuse the existing virtual tracks; the
-            // internal server already re-broadcasts RTP to the latest client.
-        }
-    });
-
-    cancel.cancelled().await;
-    info!("RTSP push server shutting down");
-    Ok(())
-}
-
-async fn setup_push_stream(manager: &Manager, media_info: rtsp::MediaInfo) -> Result<()> {
-    let _ = manager.stream_create(PUSH_STREAM_ID.to_string()).await;
-    let forward = manager.get_or_create_forward(PUSH_STREAM_ID).await;
-
-    if let Some(video) = &media_info.video_codec {
-        let codec = video_codec_to_rtc(video);
-        if let Err(e) = forward.add_virtual_track(RtpCodecKind::Video, codec).await {
-            warn!("Failed to add virtual video track: {:?}", e);
-        }
-    }
-    if let Some(audio) = &media_info.audio_codec {
-        let codec = audio_codec_to_rtc(audio);
-        if let Err(e) = forward.add_virtual_track(RtpCodecKind::Audio, codec).await {
-            warn!("Failed to add virtual audio track: {:?}", e);
-        }
-    }
-
-    Ok(())
-}
-
-fn spawn_push_forward(
-    manager: Arc<Manager>,
-    mut rx: UnboundedReceiver<rtsp::InterleavedData>,
-    _tx: tokio::sync::mpsc::UnboundedSender<rtsp::InterleavedData>,
-) {
-    tokio::spawn(async move {
-        while let Some((channel, data)) = rx.recv().await {
-            let forward = manager.get_or_create_forward(PUSH_STREAM_ID).await;
-            // Channel numbers are not known until the first SETUP handshake,
-            // so dispatch based on payload inspection for the first packets and
-            // then cache the mapping.
-            if channel % 2 == 0 {
-                // Even channels carry RTP in interleaved mode.
-                if forward.inject_video_rtp(&data).await.is_ok() {
-                    continue;
-                }
-                let _ = forward.inject_audio_rtp(&data).await;
-            }
-            // Odd channels carry RTCP; ignored for now.
-        }
-        info!("RTSP push forward stopped");
-    });
+    let handler = PushHandler { manager };
+    rtsp::setup_rtsp_server_with_handler(
+        &listen_addr,
+        rtsp::SessionMode::Push,
+        true,
+        handler,
+        cancel,
+    )
+    .await
 }
 
 async fn run_pull_server(
@@ -122,68 +64,176 @@ async fn run_pull_server(
 ) -> Result<()> {
     info!("Starting RTSP pull server on {}", listen);
     let listen_addr = format_bind_addr(listen);
-
-    // Wait for the pull source stream to exist and have tracks.
-    let forward = wait_for_forward(&manager, PULL_STREAM_ID).await?;
-    let tracks = wait_for_tracks(&forward).await?;
-    let sdp = build_sdp_from_tracks(&tracks)?;
-
-    let (_media_info, channels, mut port_update_rx) = rtsp::setup_rtsp_server_session(
+    let handler = PullHandler { manager };
+    rtsp::setup_rtsp_server_with_handler(
         &listen_addr,
-        sdp.into_bytes(),
         rtsp::SessionMode::Pull,
         true,
+        handler,
+        cancel,
     )
-    .await?;
-
-    let (tx, mut rx) =
-        channels.ok_or_else(|| anyhow!("RTSP pull requires TCP interleaved mode"))?;
-
-    spawn_pull_forward(tracks, tx);
-
-    tokio::spawn(async move {
-        // Drain RTCP channel to keep connection alive.
-        while rx.recv().await.is_some() {}
-    });
-
-    tokio::spawn(async move {
-        while let Some(port_update) = port_update_rx.recv().await {
-            info!(
-                "RTSP pull port update connection #{}",
-                port_update.connection_id
-            );
-        }
-    });
-
-    cancel.cancelled().await;
-    info!("RTSP pull server shutting down");
-    Ok(())
+    .await
 }
 
-fn spawn_pull_forward(
-    tracks: Vec<crate::forward::track::PublishTrackRemote>,
-    tx: tokio::sync::mpsc::UnboundedSender<rtsp::InterleavedData>,
-) {
-    // Assign fixed interleaved channels: video RTP=0, video RTCP=1, audio RTP=2, audio RTCP=3.
-    for track in tracks {
-        let channel = match track.kind() {
-            RtpCodecKind::Video => 0u8,
-            RtpCodecKind::Audio => 2u8,
-            _ => continue,
+struct PushHandler {
+    manager: Arc<Manager>,
+}
+
+#[async_trait::async_trait]
+impl rtsp::server::SessionHandler for PushHandler {
+    async fn on_announce(&self, path: String, sdp: Vec<u8>) -> Result<()> {
+        let stream_id = stream_id_from_path(path, DEFAULT_PUSH_STREAM);
+        let media_info = rtsp::parse_media_info_from_sdp(&sdp)?;
+
+        // Recreate the stream so a new publisher always starts from a clean state.
+        let _ = self.manager.stream_delete(stream_id.clone()).await;
+        self.manager.stream_create(stream_id.clone()).await?;
+        let forward = self.manager.get_or_create_forward(&stream_id).await;
+
+        if let Some(video) = &media_info.video_codec {
+            let codec = video_codec_to_rtc(video);
+            if let Err(e) = forward.add_virtual_track(RtpCodecKind::Video, codec).await {
+                warn!(
+                    "Failed to add virtual video track for {}: {:?}",
+                    stream_id, e
+                );
+            }
+        }
+        if let Some(audio) = &media_info.audio_codec {
+            let codec = audio_codec_to_rtc(audio);
+            if let Err(e) = forward.add_virtual_track(RtpCodecKind::Audio, codec).await {
+                warn!(
+                    "Failed to add virtual audio track for {}: {:?}",
+                    stream_id, e
+                );
+            }
+        }
+
+        info!("RTSP push accepted for stream {}", stream_id);
+        Ok(())
+    }
+
+    async fn on_describe(&self, _path: String) -> Result<Vec<u8>> {
+        Err(anyhow!("DESCRIBE is not supported on the push server"))
+    }
+
+    async fn on_session(
+        &self,
+        path: String,
+        _mode: rtsp::SessionMode,
+        _media_info: rtsp::MediaInfo,
+        endpoint: rtsp::SessionEndpoint,
+    ) -> Result<()> {
+        let stream_id = stream_id_from_path(path, DEFAULT_PUSH_STREAM);
+        let mut rx = match endpoint {
+            rtsp::SessionEndpoint::Push(rx) => rx,
+            _ => return Err(anyhow!("Expected push endpoint")),
         };
-        let tx_clone = tx.clone();
-        let mut packet_rx = track.subscribe();
+
+        let manager = self.manager.clone();
         tokio::spawn(async move {
-            while let Ok(packet) = packet_rx.recv().await {
-                let mut buf = vec![0u8; packet.marshal_size()];
-                if Marshal::marshal_to(&*packet, &mut buf).is_err() {
+            while let Some((channel, data)) = rx.recv().await {
+                if channel % 2 != 0 {
+                    // RTCP: not handled yet.
                     continue;
                 }
-                if tx_clone.send((channel, buf)).is_err() {
-                    break;
+                let forward = manager.get_or_create_forward(&stream_id).await;
+                if forward.inject_video_rtp(&data).await.is_ok() {
+                    continue;
                 }
+                let _ = forward.inject_audio_rtp(&data).await;
+            }
+            info!("RTSP push forward stopped for {}", stream_id);
+        });
+
+        Ok(())
+    }
+}
+
+struct PullHandler {
+    manager: Arc<Manager>,
+}
+
+#[async_trait::async_trait]
+impl rtsp::server::SessionHandler for PullHandler {
+    async fn on_announce(&self, _path: String, _sdp: Vec<u8>) -> Result<()> {
+        Err(anyhow!("ANNOUNCE is not supported on the pull server"))
+    }
+
+    async fn on_describe(&self, path: String) -> Result<Vec<u8>> {
+        let stream_id = stream_id_from_path(path, DEFAULT_PULL_STREAM);
+        let forward = wait_for_forward(&self.manager, &stream_id)
+            .await
+            .map_err(|e| anyhow!("Stream {} not available: {}", stream_id, e))?;
+        let tracks = wait_for_tracks(&forward)
+            .await
+            .map_err(|e| anyhow!("Stream {} has no tracks: {}", stream_id, e))?;
+        Ok(build_sdp_from_tracks(&tracks)?.into_bytes())
+    }
+
+    async fn on_session(
+        &self,
+        path: String,
+        _mode: rtsp::SessionMode,
+        _media_info: rtsp::MediaInfo,
+        endpoint: rtsp::SessionEndpoint,
+    ) -> Result<()> {
+        let stream_id = stream_id_from_path(path, DEFAULT_PULL_STREAM);
+        let tx = match endpoint {
+            rtsp::SessionEndpoint::Pull(tx) => tx,
+            _ => return Err(anyhow!("Expected pull endpoint")),
+        };
+
+        let manager = self.manager.clone();
+        tokio::spawn(async move {
+            let forward = match wait_for_forward(&manager, &stream_id).await {
+                Ok(f) => f,
+                Err(e) => {
+                    error!("RTSP pull forward failed for {}: {}", stream_id, e);
+                    return;
+                }
+            };
+            let tracks = match wait_for_tracks(&forward).await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("RTSP pull no tracks for {}: {}", stream_id, e);
+                    return;
+                }
+            };
+
+            // Assign fixed interleaved channels: video RTP=0, video RTCP=1,
+            // audio RTP=2, audio RTCP=3.
+            for track in tracks {
+                let channel = match track.kind() {
+                    RtpCodecKind::Video => 0u8,
+                    RtpCodecKind::Audio => 2u8,
+                    _ => continue,
+                };
+                let tx_clone = tx.clone();
+                let mut packet_rx = track.subscribe();
+                tokio::spawn(async move {
+                    while let Ok(packet) = packet_rx.recv().await {
+                        let mut buf = vec![0u8; packet.marshal_size()];
+                        if Marshal::marshal_to(&*packet, &mut buf).is_err() {
+                            continue;
+                        }
+                        if tx_clone.send((channel, buf)).is_err() {
+                            break;
+                        }
+                    }
+                });
             }
         });
+
+        Ok(())
+    }
+}
+
+fn stream_id_from_path(path: String, default: &str) -> String {
+    if path.is_empty() {
+        default.to_string()
+    } else {
+        path
     }
 }
 
@@ -200,9 +250,7 @@ async fn wait_for_forward(
     Err(anyhow!("Timeout waiting for forward {}", stream_id))
 }
 
-async fn wait_for_tracks(
-    forward: &crate::forward::PeerForward,
-) -> Result<Vec<crate::forward::track::PublishTrackRemote>> {
+async fn wait_for_tracks(forward: &crate::forward::PeerForward) -> Result<Vec<PublishTrackRemote>> {
     for _ in 0..300 {
         {
             let tracks = forward.internal.publish_tracks.read().await;
@@ -215,7 +263,7 @@ async fn wait_for_tracks(
     Err(anyhow!("Timeout waiting for publish tracks"))
 }
 
-fn build_sdp_from_tracks(tracks: &[crate::forward::track::PublishTrackRemote]) -> Result<String> {
+fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
     let mut lines = vec![
         "v=0".to_string(),
         "o=- 0 0 IN IP4 127.0.0.1".to_string(),

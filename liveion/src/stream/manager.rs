@@ -733,6 +733,7 @@ impl Manager {
         self.event_sender.subscribe()
     }
 
+    #[cfg(any(feature = "rtsp", feature = "recorder"))]
     pub(crate) async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
         let map = self.stream_map.read().await;
         map.get(stream).cloned()

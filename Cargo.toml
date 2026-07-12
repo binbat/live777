@@ -84,6 +84,7 @@ authors = ["BinBat Ltd <hey@binbat.com>"]
 repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
+async-trait = "0.1"
 webrtc = { version = "0.20.0-rc.2", features = ["runtime-tokio"] }
 rtc = "0.20.0-rc.2"
 rtc-ice = "0.20.0-rc.2"
