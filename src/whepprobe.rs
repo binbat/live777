@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use tracing::{Level, info};
 
