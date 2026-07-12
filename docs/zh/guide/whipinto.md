@@ -127,11 +127,11 @@ WebRTC必须满足 `pkt_size<=1200`
 当 `pkt_size > 1200` 时（多数工具默认值 `> 1200`，例如： `ffmpeg` 默认 `1472`)，需要进行解封装后重新封装处理
 :::
 
-不过现在，我们已经在 `VP8` 和 `VP9` 编解码器中支持重新调整 `pkt_size` ，您可以在 `VP8` 和 `VP9` 中使用任意大小的 `pkt_size`值
+不过现在，我们已经在 `AV1`、`VP8` 和 `VP9` 编解码器中支持重新调整 `pkt_size`，您可以在 `AV1`、`VP8` 和 `VP9` 中使用任意大小的 `pkt_size` 值
 
 Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `H265` | `OPUS` | `G722` |
 ----------------- | ------ | ------ | ------ | ------ | ------ | ------ | ------ |
-`pkt_size > 1200` | :shit: | :star: | :star: | :star: | :star: | :star: | :shit: |
+`pkt_size > 1200` | :star: | :star: | :star: | :star: | :star: | :star: | :shit: |
 
 - :star: 正常运行
 - :shit: 不支持

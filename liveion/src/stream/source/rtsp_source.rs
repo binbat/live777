@@ -556,6 +556,40 @@ impl RtspSource {
                 },
                 payload_type: *payload_type,
             },
+            VideoCodecParams::AV1 {
+                payload_type,
+                clock_rate,
+            } => RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: "video/AV1".to_string(),
+                    clock_rate: *clock_rate,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-id=0".to_string(),
+                    rtcp_feedback: vec![
+                        RTCPFeedback {
+                            typ: "goog-remb".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "transport-cc".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "ccm".to_owned(),
+                            parameter: "fir".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "".to_owned(),
+                        },
+                        RTCPFeedback {
+                            typ: "nack".to_owned(),
+                            parameter: "pli".to_owned(),
+                        },
+                    ],
+                },
+                payload_type: *payload_type,
+            },
         }
     }
 

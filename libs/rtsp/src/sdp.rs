@@ -94,6 +94,10 @@ fn parse_video_codec(media: &sdp_types::Media) -> Option<VideoCodecParams> {
             payload_type,
             clock_rate,
         }),
+        "AV1" => Some(VideoCodecParams::AV1 {
+            payload_type,
+            clock_rate,
+        }),
         _ => {
             warn!("Unsupported video codec: {}", codec_name);
             None
@@ -447,6 +451,33 @@ a=rtpmap:96 VP8/90000
             assert_eq!(clock_rate, 90000);
         } else {
             panic!("Expected VP8 codec");
+        }
+    }
+
+    #[test]
+    fn test_parse_video_codec_av1() {
+        let sdp = r#"v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=Test
+c=IN IP4 127.0.0.1
+t=0 0
+m=video 5004 RTP/AVP 96
+a=rtpmap:96 AV1/90000
+"#;
+
+        let session = sdp_types::Session::parse(sdp.as_bytes()).unwrap();
+        let codec = parse_video_codec(&session.medias[0]);
+
+        assert!(codec.is_some());
+        if let Some(VideoCodecParams::AV1 {
+            payload_type,
+            clock_rate,
+        }) = codec
+        {
+            assert_eq!(payload_type, 96);
+            assert_eq!(clock_rate, 90000);
+        } else {
+            panic!("Expected AV1 codec");
         }
     }
 

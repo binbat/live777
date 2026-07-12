@@ -127,11 +127,11 @@ WebRTC must need `pkt_size<=1200`
 If `pkt_size > 1200` (most tool default `> 1200`, for example: `ffmpeg` default `1472`), we need to de-payload after re-payload
 :::
 
-But now, We support re-size `pkt_size` in `VP8` and `VP9`, You can use any `pkt_size` value in `VP8` and `VP9`
+But now, We support re-size `pkt_size` in `AV1`, `VP8` and `VP9`, You can use any `pkt_size` value in `AV1`, `VP8` and `VP9`
 
 Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `H265` | `OPUS` | `G722` |
 ----------------- | ------ | ------ | ------ | ------ | ------ | ------ | ------ |
-`pkt_size > 1200` | :shit: | :star: | :star: | :star: | :star: | :star: | :shit: |
+`pkt_size > 1200` | :star: | :star: | :star: | :star: | :star: | :star: | :shit: |
 
 - :star: It's working
 - :shit: Don't support

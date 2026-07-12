@@ -1,12 +1,13 @@
 use super::{CodecAdapter, TrackKind};
 use anyhow::{Result, anyhow};
 use bytes::{BufMut, Bytes, BytesMut};
+use rtc_rtp::codec::av1::Av1Depacketizer;
 use rtc_rtp::packet::Packet;
+use rtc_rtp::packetizer::Depacketizer;
 
 const TIMESCALE: u32 = 90_000;
 const OBU_TYPE_SEQUENCE_HEADER: u8 = 1;
 const MAX_TEMPORAL_UNIT_SIZE: usize = 3 * 1024 * 1024;
-const MAX_OBUS_PER_TEMPORAL_UNIT: usize = 10;
 
 pub struct Av1Adapter {
     sequence_header: Option<Vec<u8>>,
@@ -176,12 +177,10 @@ impl CodecAdapter for Av1Adapter {
 }
 
 pub struct Av1RtpParser {
-    first_packet_received: bool,
-    fragments: Vec<Vec<u8>>,
-    fragments_size: usize,
-    fragment_next_seq: Option<u16>,
-    temporal_unit: Vec<Vec<u8>>,
-    temporal_unit_size: usize,
+    depacketizer: Av1Depacketizer,
+    accumulator: BytesMut,
+    expected_seq: Option<u16>,
+    last_timestamp: Option<u32>,
 }
 
 impl Default for Av1RtpParser {
@@ -193,220 +192,99 @@ impl Default for Av1RtpParser {
 impl Av1RtpParser {
     pub fn new() -> Self {
         Self {
-            first_packet_received: false,
-            fragments: Vec::new(),
-            fragments_size: 0,
-            fragment_next_seq: None,
-            temporal_unit: Vec::new(),
-            temporal_unit_size: 0,
+            depacketizer: Av1Depacketizer::new(),
+            accumulator: BytesMut::new(),
+            expected_seq: None,
+            last_timestamp: None,
         }
     }
 
-    fn reset_fragments(&mut self) {
-        self.fragments.clear();
-        self.fragments_size = 0;
-        self.fragment_next_seq = None;
-    }
-
-    fn reset_temporal_unit(&mut self) {
-        self.temporal_unit.clear();
-        self.temporal_unit_size = 0;
-    }
-
-    fn decode_obus(&mut self, pkt: &Packet) -> Result<Option<Vec<Vec<u8>>>> {
-        if pkt.payload.len() < 2 {
-            self.reset_fragments();
-            return Err(anyhow!("invalid payload size"));
-        }
-
-        let header = pkt.payload[0];
-        let z = (header & 0x80) != 0;
-        let y = (header & 0x40) != 0;
-        let w = (header >> 4) & 0x03;
-        let mut payload = &pkt.payload[1..];
-        let mut obus = Vec::new();
-
-        tracing::trace!(
-            "[av1-rtp] aggregation header: z={}, y={}, w={}, payload_len={}",
-            z,
-            y,
-            w,
-            pkt.payload.len()
-        );
-
-        while !payload.is_empty() {
-            let obu = if w == 0 || (obus.len() as u8) < (w - 1) {
-                let (size, leb_len) = read_leb128(payload)?;
-                payload = &payload[leb_len..];
-
-                if size == 0 || payload.len() < size {
-                    self.reset_fragments();
-                    return Err(anyhow!("invalid OBU size"));
-                }
-
-                let obu = payload[..size].to_vec();
-                tracing::trace!(
-                    "[av1-rtp] extracted OBU: size={}, header=0x{:02x}",
-                    size,
-                    obu.first().copied().unwrap_or(0)
-                );
-                payload = &payload[size..];
-                obu
-            } else {
-                let obu = payload.to_vec();
-                tracing::trace!(
-                    "[av1-rtp] extracted final OBU: size={}, header=0x{:02x}",
-                    obu.len(),
-                    obu.first().copied().unwrap_or(0)
-                );
-                payload = &[];
-                obu
-            };
-
-            obus.push(obu);
-        }
-
-        if w != 0 && obus.len() != w as usize {
-            self.reset_fragments();
-            return Err(anyhow!("invalid W field"));
-        }
-
-        if z {
-            if self.fragments_size == 0 {
-                self.reset_fragments();
-                if !self.first_packet_received {
-                    return Ok(None);
-                }
-                return Err(anyhow!(
-                    "received a subsequent fragment without previous fragments"
-                ));
-            }
-
-            self.first_packet_received = true;
-
-            if let Some(expected) = self.fragment_next_seq
-                && pkt.header.sequence_number != expected
-            {
-                self.reset_fragments();
-                return Ok(None);
-            }
-
-            self.fragments_size += obus[0].len();
-            if self.fragments_size > MAX_TEMPORAL_UNIT_SIZE {
-                let size = self.fragments_size;
-                self.reset_fragments();
-                return Err(anyhow!(
-                    "temporal unit size ({size}) exceeds maximum allowed"
-                ));
-            }
-
-            self.fragments.push(obus[0].clone());
-            self.fragment_next_seq = Some(pkt.header.sequence_number.wrapping_add(1));
-
-            if obus.len() == 1 && y {
-                return Ok(None);
-            }
-
-            obus[0] = join_fragments(&self.fragments, self.fragments_size);
-            self.reset_fragments();
-        } else {
-            self.first_packet_received = true;
-        }
-
-        if y {
-            if let Some(last) = obus.pop() {
-                self.fragments_size = last.len();
-                self.fragments.clear();
-                self.fragments.push(last);
-                self.fragment_next_seq = Some(pkt.header.sequence_number.wrapping_add(1));
-
-                if obus.is_empty() {
-                    return Ok(None);
-                }
-            } else {
-                return Ok(None);
-            }
-        } else {
-            self.fragment_next_seq = Some(pkt.header.sequence_number.wrapping_add(1));
-        }
-
-        Ok(Some(obus))
+    fn reset(&mut self) {
+        self.depacketizer = Av1Depacketizer::new();
+        self.accumulator.clear();
+        self.expected_seq = None;
+        self.last_timestamp = None;
     }
 
     pub fn push_packet(&mut self, pkt: &Packet) -> Result<Option<BytesMut>> {
-        let obus = match self.decode_obus(pkt)? {
-            Some(obus) => obus,
-            None => return Ok(None),
+        // Detect sequence number gaps. AV1 depacketization is stateful, so a
+        // missing packet makes the current accumulator unusable.
+        if let Some(expected) = self.expected_seq
+            && pkt.header.sequence_number != expected
+        {
+            tracing::debug!(
+                "[av1-rtp] sequence gap detected: expected {}, got {}; resetting",
+                expected,
+                pkt.header.sequence_number
+            );
+            self.reset();
+        }
+        self.expected_seq = Some(pkt.header.sequence_number.wrapping_add(1));
+
+        // Timestamp discontinuity also indicates a new temporal unit or lost
+        // stream state. Use Option rather than sentinel 0, since RTP timestamp
+        // 0 is a legitimate value.
+        if let Some(last) = self.last_timestamp
+            && pkt.header.timestamp != last
+        {
+            if !self.accumulator.is_empty() {
+                tracing::debug!(
+                    "[av1-rtp] timestamp discontinuity ({} -> {}); dropping incomplete temporal unit",
+                    last,
+                    pkt.header.timestamp
+                );
+            }
+            self.reset();
+        }
+        self.last_timestamp = Some(pkt.header.timestamp);
+
+        // On depacketization failure the parser's internal state (depacketizer
+        // buffer, accumulator) is indeterminate; reset before propagating so a
+        // malformed packet can't corrupt the next temporal unit.
+        let obus = match self.depacketizer.depacketize(&pkt.payload) {
+            Ok(obus) => obus,
+            Err(e) => {
+                self.reset();
+                return Err(anyhow!("AV1 depacketization failed: {e}"));
+            }
         };
 
-        let obu_count = self.temporal_unit.len() + obus.len();
-        if obu_count > MAX_OBUS_PER_TEMPORAL_UNIT {
-            self.reset_temporal_unit();
-            return Err(anyhow!(
-                "OBU count ({obu_count}) exceeds maximum allowed ({MAX_OBUS_PER_TEMPORAL_UNIT})"
-            ));
-        }
-
-        let additional_size: usize = obus.iter().map(|obu| obu.len()).sum();
-        if self.temporal_unit_size + additional_size > MAX_TEMPORAL_UNIT_SIZE {
-            let size = self.temporal_unit_size + additional_size;
-            self.reset_temporal_unit();
-            return Err(anyhow!(
-                "temporal unit size ({size}) exceeds maximum allowed ({MAX_TEMPORAL_UNIT_SIZE})"
-            ));
-        }
-
-        self.temporal_unit.extend(obus);
-        self.temporal_unit_size += additional_size;
-
-        if !pkt.header.marker {
-            return Ok(None);
-        }
-
-        if self.temporal_unit.is_empty() {
-            return Ok(None);
-        }
-
-        let bitstream = pack_temporal_unit(&self.temporal_unit);
-        self.reset_temporal_unit();
-        Ok(Some(bitstream))
-    }
-}
-
-fn join_fragments(fragments: &[Vec<u8>], total_size: usize) -> Vec<u8> {
-    let mut joined = Vec::with_capacity(total_size);
-    for fragment in fragments {
-        joined.extend_from_slice(fragment);
-    }
-    joined
-}
-
-fn pack_temporal_unit(obus: &[Vec<u8>]) -> BytesMut {
-    let capacity: usize = obus
-        .iter()
-        .map(|obu| {
-            if obu.is_empty() {
-                return 0;
+        if !obus.is_empty() {
+            if self.accumulator.len() + obus.len() > MAX_TEMPORAL_UNIT_SIZE {
+                let size = self.accumulator.len() + obus.len();
+                self.reset();
+                return Err(anyhow!(
+                    "temporal unit size ({size}) exceeds maximum allowed ({MAX_TEMPORAL_UNIT_SIZE})"
+                ));
             }
-            let payload_len = obu.len().saturating_sub(1);
-            1 + leb128_size(payload_len) + payload_len
-        })
-        .sum();
-
-    let mut buf = BytesMut::with_capacity(capacity);
-    for obu in obus {
-        if obu.is_empty() {
-            continue;
+            self.accumulator.extend_from_slice(&obus);
         }
 
-        let payload_len = obu.len() - 1;
-        let header = obu[0] | 0x02;
-        buf.put_u8(header);
-        write_leb128(&mut buf, payload_len);
-        buf.extend_from_slice(&obu[1..]);
-    }
+        // A temporal unit is complete when the RTP marker bit is set and the
+        // last OBU does not continue into the next packet (Y flag is false).
+        if pkt.header.marker && self.depacketizer.y {
+            self.reset();
+            return Err(anyhow!(
+                "marker set but last OBU continues (Y=1); malformed packet, temporal unit dropped"
+            ));
+        }
 
-    buf
+        if pkt.header.marker {
+            if self.accumulator.is_empty() {
+                return Ok(None);
+            }
+
+            let temporal_unit = std::mem::take(&mut self.accumulator);
+            tracing::trace!(
+                "[av1-rtp] temporal unit complete: seq={} size={}",
+                pkt.header.sequence_number,
+                temporal_unit.len()
+            );
+            return Ok(Some(temporal_unit));
+        }
+
+        Ok(None)
+    }
 }
 
 impl crate::recorder::codec::RtpParser for Av1RtpParser {
@@ -564,19 +442,8 @@ struct SequenceHeader {
 
 #[derive(Clone, Debug)]
 struct ColorConfig {
-    #[allow(dead_code)]
-    high_bit_depth: bool,
-    #[allow(dead_code)]
-    twelve_bit: bool,
     bit_depth: u8,
     mono_chrome: bool,
-    #[allow(dead_code)]
-    color_primaries: u8,
-    #[allow(dead_code)]
-    transfer_characteristics: u8,
-    #[allow(dead_code)]
-    matrix_coefficients: u8,
-    color_range: bool,
     subsampling_x: bool,
     subsampling_y: bool,
     chroma_sample_position: u8,
@@ -708,9 +575,8 @@ impl SequenceHeader {
 impl ColorConfig {
     fn parse(seq_profile: u8, br: &mut BitReader<'_>) -> Result<Self> {
         let high_bit_depth = br.read_flag()?;
-        let mut twelve_bit = false;
         let bit_depth = if seq_profile == 2 && high_bit_depth {
-            twelve_bit = br.read_flag()?;
+            let twelve_bit = br.read_flag()?;
             if twelve_bit { 12 } else { 10 }
         } else if high_bit_depth {
             10
@@ -735,23 +601,22 @@ impl ColorConfig {
                 (2, 2, 2)
             };
 
-        let color_range;
         let mut subsampling_x = true;
         let mut subsampling_y = true;
         let mut chroma_sample_position = 0u8;
 
         if mono_chrome {
-            color_range = br.read_flag()?;
+            br.skip_bits(1)?; // color_range
         } else if color_description_present_flag
             && color_primaries == 1
             && transfer_characteristics == 13
             && matrix_coefficients == 0
         {
-            color_range = true;
+            // Implicit 4:4:4 subsampling and full range; no bits to read.
             subsampling_x = false;
             subsampling_y = false;
         } else {
-            color_range = br.read_flag()?;
+            br.skip_bits(1)?; // color_range
             match seq_profile {
                 0 => {
                     subsampling_x = true;
@@ -782,14 +647,8 @@ impl ColorConfig {
         }
 
         Ok(Self {
-            high_bit_depth,
-            twelve_bit,
             bit_depth,
             mono_chrome,
-            color_primaries,
-            transfer_characteristics,
-            matrix_coefficients,
-            color_range,
             subsampling_x,
             subsampling_y,
             chroma_sample_position,
@@ -857,21 +716,14 @@ fn build_codec_string(info: &SequenceHeader) -> String {
     };
 
     let bit_depth = info.color_config.bit_depth;
-    let chroma = if info.color_config.mono_chrome {
-        0
-    } else if info.color_config.subsampling_x && info.color_config.subsampling_y {
-        1
-    } else if info.color_config.subsampling_x && !info.color_config.subsampling_y {
-        2
-    } else {
-        3
-    };
-    let color_range = if info.color_config.color_range { 1 } else { 0 };
-    let chroma_pos = info.color_config.chroma_sample_position;
 
+    // Browsers accept the minimal AV1 codec string reliably:
+    // av01.<profile>.<level><tier>.<bitDepth>
+    // Adding chroma subsampling / color metadata often causes
+    // MediaSource.isTypeSupported to return false in practice.
     format!(
-        "av01.{}.{}{:02}.{:02}.{}.{}.{}",
-        profile, tier_char, level, bit_depth, chroma, color_range, chroma_pos
+        "av01.{}.{:02}{}.{:02}",
+        profile, level, tier_char, bit_depth
     )
 }
 
@@ -917,6 +769,10 @@ fn build_av1c_record(info: &SequenceHeader, sequence_header_with_size: &[u8]) ->
 
 #[cfg(test)]
 mod tests {
+    use super::{Av1RtpParser, ColorConfig, SequenceHeader, build_av1c_record, read_leb128};
+    use bytes::{Bytes, BytesMut};
+    use rtc_rtp::packet::Packet;
+
     const SHORT_OBU: &[u8] = &[
         0x0a, 0x0e, 0x00, 0x00, 0x00, 0x4a, 0xab, 0xbf, 0xc3, 0x77, 0x6b, 0xe4, 0x40, 0x40, 0x40,
         0x41,
@@ -933,52 +789,75 @@ mod tests {
         0x40, 0x40, 0x40, 0x41,
     ];
 
-    fn make_packet(payload: &'static [u8], marker: bool, seq: u16) -> Packet {
+    fn make_packet(payload: Bytes, marker: bool, seq: u16) -> Packet {
         let mut pkt = Packet::default();
         pkt.header.marker = marker;
         pkt.header.payload_type = 96;
         pkt.header.sequence_number = seq;
-        pkt.payload = Bytes::from_static(payload);
+        pkt.payload = payload;
         pkt
     }
 
     #[test]
     fn rtp_parser_reassembles_single_packet() {
         let mut parser = Av1RtpParser::new();
-        let pkt = make_packet(RTP_PAYLOAD_SINGLE, true, 17645);
+        let pkt = make_packet(Bytes::from_static(RTP_PAYLOAD_SINGLE), true, 17645);
 
         let result = parser.push_packet(&pkt).expect("push packet");
         assert!(result.is_some(), "parser should output frame at marker");
 
-        let expected = {
-            let obus = vec![SHORT_OBU.to_vec()];
-            pack_temporal_unit(&obus).to_vec()
-        };
-
-        assert_eq!(result.unwrap().to_vec(), expected);
+        // Upstream depacketizer preserves OBUs that already carry size fields.
+        assert_eq!(result.unwrap().to_vec(), SHORT_OBU);
     }
 
     #[test]
     fn rtp_parser_handles_aggregated_obus() {
         let mut parser = Av1RtpParser::new();
-        let pkt = make_packet(RTP_PAYLOAD_AGGREGATED, true, 20010);
+        let pkt = make_packet(Bytes::from_static(RTP_PAYLOAD_AGGREGATED), true, 20010);
 
         let result = parser.push_packet(&pkt).expect("push packet");
         assert!(result.is_some(), "parser should output frame at marker");
 
-        let expected = {
-            let obus = vec![SHORT_OBU.to_vec(), SHORT_OBU.to_vec()];
-            pack_temporal_unit(&obus).to_vec()
-        };
-
+        let mut expected = Vec::with_capacity(SHORT_OBU.len() * 2);
+        expected.extend_from_slice(SHORT_OBU);
+        expected.extend_from_slice(SHORT_OBU);
         assert_eq!(result.unwrap().to_vec(), expected);
     }
-    use super::{
-        Av1RtpParser, ColorConfig, SequenceHeader, build_av1c_record, pack_temporal_unit,
-        read_leb128,
-    };
-    use bytes::Bytes;
-    use rtc_rtp::packet::Packet;
+
+    #[test]
+    fn rtp_parser_reassembles_fragmented_obu_with_size_field() {
+        // Build a Frame OBU that already carries a low-overhead size field.
+        let mut obu = BytesMut::new();
+        obu.extend_from_slice(&[0x32]); // Frame OBU, no extension, has size field
+        let payload = vec![0xAB; 500];
+        super::write_leb128(&mut obu, payload.len());
+        obu.extend_from_slice(&payload);
+        let obu = obu.freeze();
+
+        let first_fragment_size = 400;
+        let p1_payload = Bytes::from_iter(
+            std::iter::once(0x50) // Z=0, Y=1, W=1
+                .chain(obu[..first_fragment_size].iter().copied()),
+        );
+        let p2_payload = Bytes::from_iter(
+            std::iter::once(0x90) // Z=1, Y=0, W=1
+                .chain(obu[first_fragment_size..].iter().copied()),
+        );
+
+        let mut parser = Av1RtpParser::new();
+        let p1 = make_packet(p1_payload, false, 1000);
+        let p2 = make_packet(p2_payload, true, 1001);
+
+        let result = parser.push_packet(&p1).expect("push first packet");
+        assert!(result.is_none(), "first fragment should not emit a frame");
+
+        let result = parser.push_packet(&p2).expect("push second packet");
+        assert!(
+            result.is_some(),
+            "reassembled frame should be emitted at marker"
+        );
+        assert_eq!(result.unwrap().to_vec(), obu.to_vec());
+    }
 
     #[test]
     fn leb128_decoding_examples() {
@@ -1004,14 +883,8 @@ mod tests {
             max_frame_width_minus1: 1919,
             max_frame_height_minus1: 1079,
             color_config: ColorConfig {
-                high_bit_depth: false,
-                twelve_bit: false,
                 bit_depth: 8,
                 mono_chrome: false,
-                color_primaries: 2,
-                transfer_characteristics: 2,
-                matrix_coefficients: 2,
-                color_range: false,
                 subsampling_x: true,
                 subsampling_y: true,
                 chroma_sample_position: 0,

@@ -4345,7 +4345,7 @@ dependencies = [
 [[package]]
 name = "rtc"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "hex",
@@ -4379,7 +4379,7 @@ dependencies = [
 [[package]]
 name = "rtc-datachannel"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "log",
@@ -4391,7 +4391,7 @@ dependencies = [
 [[package]]
 name = "rtc-dtls"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4424,7 +4424,7 @@ dependencies = [
 [[package]]
 name = "rtc-ice"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "crc",
@@ -4442,7 +4442,7 @@ dependencies = [
 [[package]]
 name = "rtc-interceptor"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "log",
  "rand 0.10.2",
@@ -4456,7 +4456,7 @@ dependencies = [
 [[package]]
 name = "rtc-interceptor-derive"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4466,7 +4466,7 @@ dependencies = [
 [[package]]
 name = "rtc-mdns"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "log",
@@ -4478,7 +4478,7 @@ dependencies = [
 [[package]]
 name = "rtc-media"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "byteorder",
  "bytes",
@@ -4491,7 +4491,7 @@ dependencies = [
 [[package]]
 name = "rtc-rtcp"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "rtc-shared",
@@ -4500,7 +4500,7 @@ dependencies = [
 [[package]]
 name = "rtc-rtp"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "memchr",
@@ -4512,7 +4512,7 @@ dependencies = [
 [[package]]
 name = "rtc-sctp"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "crc32c",
@@ -4527,7 +4527,7 @@ dependencies = [
 [[package]]
 name = "rtc-sdp"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "rand 0.10.2",
  "rtc-shared",
@@ -4537,7 +4537,7 @@ dependencies = [
 [[package]]
 name = "rtc-shared"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4558,7 +4558,7 @@ dependencies = [
 [[package]]
 name = "rtc-srtp"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "aead",
  "aes",
@@ -4577,7 +4577,7 @@ dependencies = [
 [[package]]
 name = "rtc-stun"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -4595,7 +4595,7 @@ dependencies = [
 [[package]]
 name = "rtc-turn"
 version = "0.20.0-rc.2"
-source = "git+https://github.com/webrtc-rs/rtc?tag=v0.20.0-rc.2#34d06c3b6f5d153f15342b2dee9f391da1fe1148"
+source = "git+https://github.com/webrtc-rs/rtc?rev=de84c7c872164ff6f473e814cb3b99afb3a5e422#de84c7c872164ff6f473e814cb3b99afb3a5e422"
 dependencies = [
  "bytes",
  "log",

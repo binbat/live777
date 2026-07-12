@@ -75,6 +75,10 @@ pub enum VideoCodecParams {
         payload_type: u8,
         clock_rate: u32,
     },
+    AV1 {
+        payload_type: u8,
+        clock_rate: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +172,14 @@ impl CodecFingerprint {
             VideoCodecParams::VP9 { clock_rate, .. } => Self {
                 kind: MediaKind::Video,
                 mime_type: normalize_mime_type("video/VP9"),
+                clock_rate: *clock_rate,
+                channels: None,
+                fmtp: Some(normalize_fmtp("profile-id=0")),
+                codec_private_hash: None,
+            },
+            VideoCodecParams::AV1 { clock_rate, .. } => Self {
+                kind: MediaKind::Video,
+                mime_type: normalize_mime_type("video/AV1"),
                 clock_rate: *clock_rate,
                 channels: None,
                 fmtp: Some(normalize_fmtp("profile-id=0")),
@@ -312,6 +324,10 @@ impl From<cli::Codec> for VideoCodecParams {
                 payload_type: 96,
                 clock_rate: 90000,
             },
+            cli::Codec::AV1 => VideoCodecParams::AV1 {
+                payload_type: 96,
+                clock_rate: 90000,
+            },
             _ => VideoCodecParams::H264 {
                 payload_type: 96,
                 clock_rate: 90000,
@@ -395,6 +411,15 @@ impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
             VideoCodecParams::VP9 { clock_rate, .. } => {
                 rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     mime_type: "video/VP9".to_string(),
+                    clock_rate,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-id=0".to_string(),
+                    rtcp_feedback: video_rtcp_feedback(),
+                }
+            }
+            VideoCodecParams::AV1 { clock_rate, .. } => {
+                rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
+                    mime_type: "video/AV1".to_string(),
                     clock_rate,
                     channels: 0,
                     sdp_fmtp_line: "profile-id=0".to_string(),
@@ -651,6 +676,10 @@ mod tests {
                 vps: vec![],
                 sps: vec![],
                 pps: vec![],
+            },
+            VideoCodecParams::AV1 {
+                payload_type: 96,
+                clock_rate: 90000,
             },
         ];
 

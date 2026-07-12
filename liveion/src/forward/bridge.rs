@@ -1,10 +1,13 @@
 use super::PeerForward;
+use crate::forward::av1_repacketizer::Av1Repacketizer;
 use crate::forward::rtcp::RtcpMessage;
 use crate::stream::source::{MediaPacket, StateChangeEvent};
 use anyhow::Result;
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 use anyhow::anyhow;
-use rtc::shared::marshal::Marshal;
+use rtc::shared::marshal::{Marshal, Unmarshal};
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+use rtc_rtp::packet::Packet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -80,6 +83,7 @@ pub struct SourceBridge {
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 
     channel_mapping: ChannelMapping,
+    av1_repacketizer: Option<Av1Repacketizer>,
 
     #[cfg(feature = "source")]
     rtcp_to_source_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
@@ -88,8 +92,19 @@ pub struct SourceBridge {
 }
 
 impl SourceBridge {
-    pub fn new(source_id: String, forward: PeerForward, has_video: bool, has_audio: bool) -> Self {
+    pub fn new(
+        source_id: String,
+        forward: PeerForward,
+        has_video: bool,
+        has_audio: bool,
+        video_codec_name: Option<String>,
+    ) -> Self {
         let channel_mapping = ChannelMapping::new(has_video, has_audio);
+        let av1_repacketizer = video_codec_name
+            .as_deref()
+            .map(|name| name.eq_ignore_ascii_case("AV1"))
+            .unwrap_or(false)
+            .then(Av1Repacketizer::new);
 
         Self {
             source_id,
@@ -97,6 +112,7 @@ impl SourceBridge {
             tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             shutdown_tx: None,
             channel_mapping,
+            av1_repacketizer,
             #[cfg(feature = "source")]
             rtcp_to_source_tx: None,
             #[cfg(feature = "source")]
@@ -143,6 +159,7 @@ impl SourceBridge {
         let source_id_clone = self.source_id.clone();
         let mut shutdown_rx1 = shutdown_tx.subscribe();
         let channel_mapping = self.channel_mapping;
+        let mut av1_repacketizer = self.av1_repacketizer.take();
 
         let rtp_task = tokio::spawn(async move {
             info!(
@@ -166,13 +183,17 @@ impl SourceBridge {
             let mut audio_count = 0u64;
             #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
             let audio_count = 0u64;
+            #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+            let mut video_dropped = 0u64;
+            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
+            let video_dropped = 0u64;
 
             loop {
                 tokio::select! {
                     _ = shutdown_rx1.recv() => {
                         info!(
-                            "[{}] RTP task shutting down, forwarded {} packets (video: {}, audio: {})",
-                            source_id_clone, packet_count, video_count, audio_count
+                            "[{}] RTP task shutting down, forwarded {} packets (video: {}, audio: {}, dropped: {})",
+                            source_id_clone, packet_count, video_count, audio_count, video_dropped
                         );
                         break;
                     }
@@ -203,7 +224,34 @@ impl SourceBridge {
                                                     source_id_clone, video_count, data.len()
                                                 );
                                             }
-                                            forward_clone.inject_video_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
+                                            if let Some(ref mut repacketizer) = av1_repacketizer {
+                                                match Packet::unmarshal(&mut &data[..]) {
+                                                    Ok(packet) => {
+                                                        match repacketizer.process(&packet) {
+                                                            Ok(packets) => {
+                                                                for packet in packets {
+                                                                    if let Err(e) = forward_clone.inject_video_rtp_packet(std::sync::Arc::new(packet)).await {
+                                                                        error!("[{}] Failed to inject repacketized AV1 RTP packet: {:?}", source_id_clone, e);
+                                                                    }
+                                                                }
+                                                                Ok(())
+                                                            }
+                                                            Err(e) => {
+                                                                video_dropped += 1;
+                                                                warn!("[{}] AV1 repacketization failed, dropping packet: {}", source_id_clone, e);
+                                                                Ok(())
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        video_dropped += 1;
+                                                        warn!("[{}] Failed to unmarshal AV1 RTP packet, dropping: {}", source_id_clone, e);
+                                                        Ok(())
+                                                    }
+                                                }
+                                            } else {
+                                                forward_clone.inject_video_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
+                                            }
                                         } else if channel_mapping.is_audio_rtp(channel) {
                                             audio_count += 1;
                                             if audio_count % LOG_PACKET_INTERVAL == 1 {
@@ -553,5 +601,167 @@ impl Drop for SourceBridge {
         if let Some(tx) = &self.shutdown_tx {
             let _ = tx.send(());
         }
+    }
+}
+
+#[cfg(all(test, any(feature = "source-rtsp", feature = "source-sdp")))]
+mod integration_tests {
+    use super::*;
+    use crate::forward::PeerForward;
+    use bytes::BytesMut;
+    use rtc::rtp::header::Header;
+    use rtc::rtp::packet::Packet;
+    use rtc::rtp_transceiver::rtp_sender::{
+        RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
+    };
+    use rtc::shared::marshal::MarshalSize;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+
+    fn build_av1_obu(payload: &[u8]) -> bytes::Bytes {
+        let mut obu = BytesMut::with_capacity(1 + payload.len());
+        obu.extend_from_slice(&[0x30]); // Frame OBU, no size field
+        obu.extend_from_slice(payload);
+        obu.freeze()
+    }
+
+    fn build_av1_rtp_packet(seq: u16, timestamp: u32, marker: bool, obu: &[u8]) -> Packet {
+        let mut payload = BytesMut::with_capacity(1 + obu.len());
+        payload.extend_from_slice(&[0x10]); // aggregation header: W=1
+        payload.extend_from_slice(obu);
+
+        Packet {
+            header: Header {
+                version: 2,
+                marker,
+                payload_type: 96,
+                sequence_number: seq,
+                timestamp,
+                ssrc: 0xDEADBEEF,
+                ..Default::default()
+            },
+            payload: payload.freeze(),
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_repacketizes_oversized_av1_rtp() {
+        let forward = PeerForward::new(
+            "av1-repacketizer-test",
+            vec![],
+            vec![],
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
+        );
+
+        let codec = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/AV1".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![
+                    RTCPFeedback {
+                        typ: "nack".to_owned(),
+                        parameter: "".to_owned(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_owned(),
+                        parameter: "pli".to_owned(),
+                    },
+                ],
+            },
+            payload_type: 96,
+        };
+
+        forward
+            .add_virtual_track(RtpCodecKind::Video, codec)
+            .await
+            .expect("add virtual track");
+
+        let mut track_subscribe = {
+            let tracks = forward.internal.publish_tracks.read().await;
+            let track = tracks
+                .iter()
+                .find(|t| t.kind() == RtpCodecKind::Video)
+                .expect("video track exists");
+            track.subscribe()
+        };
+
+        let mut bridge = SourceBridge::new(
+            "av1-test".to_owned(),
+            forward,
+            true,
+            false,
+            Some("AV1".to_owned()),
+        );
+
+        let (rtcp_tx, _rtcp_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        bridge.set_rtcp_sender(rtcp_tx);
+
+        let (rtp_tx, rtp_rx) = broadcast::channel(16);
+        let (_state_tx, state_rx) = broadcast::channel(4);
+
+        bridge
+            .start_bridging(rtp_rx, state_rx)
+            .await
+            .expect("start bridging");
+
+        // Send a single AV1 temporal unit larger than 1200 bytes.
+        let obu = build_av1_obu(&[0xAB; 3000]);
+        let packet = build_av1_rtp_packet(1, 1000, true, &obu);
+        let raw_packet = {
+            let mut buf = vec![0u8; packet.marshal_size()];
+            rtc::shared::marshal::Marshal::marshal_to(&packet, &mut buf).expect("marshal packet");
+            buf
+        };
+
+        rtp_tx
+            .send(MediaPacket::Rtp {
+                channel: 0,
+                data: raw_packet.into(),
+            })
+            .expect("send rtp");
+
+        // Wait for repacketized packets to arrive on the virtual track.
+        let mut received = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(timeout, track_subscribe.recv()).await {
+                Ok(Ok(pkt)) => {
+                    let is_marker = pkt.header.marker;
+                    received.push(pkt);
+                    if is_marker {
+                        break;
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => panic!("timeout waiting for repacketized AV1 packets"),
+            }
+        }
+
+        assert!(
+            !received.is_empty(),
+            "should receive repacketized AV1 packets"
+        );
+        assert!(
+            received.len() > 1,
+            "oversized temporal unit should be split into multiple packets"
+        );
+
+        for (i, pkt) in received.iter().enumerate() {
+            assert!(
+                pkt.payload.len() <= 1200,
+                "packet {} payload {} exceeds 1200 bytes",
+                i,
+                pkt.payload.len()
+            );
+        }
+
+        assert!(received.last().unwrap().header.marker);
+
+        bridge.stop().await.expect("stop bridge");
     }
 }
