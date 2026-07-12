@@ -151,8 +151,7 @@ async fn answer_payload_type(peer: &Arc<dyn PeerConnection>, codec: &RTCRtpCodec
             if name != expected_name || clock_rate != codec.clock_rate {
                 continue;
             }
-            if let (Some(expected), Some(offered)) =
-                (nonzero_channels(codec.channels), channels)
+            if let (Some(expected), Some(offered)) = (nonzero_channels(codec.channels), channels)
                 && expected != offered
             {
                 continue;
@@ -182,6 +181,22 @@ async fn answer_payload_type(peer: &Arc<dyn PeerConnection>, codec: &RTCRtpCodec
     }
 
     None
+}
+
+/// Refresh the payload type from the negotiated answer if the cache has expired.
+async fn refresh_payload_type(
+    peer: &Arc<dyn PeerConnection>,
+    sender: &Arc<dyn RtpSender>,
+    codec: &RTCRtpCodec,
+    current_pt: &mut u8,
+    refreshed_at: &mut Instant,
+) {
+    if refreshed_at.elapsed() >= SENDER_PT_REFRESH_INTERVAL {
+        if let Some(pt) = sender_payload_type(peer, sender, codec).await {
+            *current_pt = pt;
+        }
+        *refreshed_at = Instant::now();
+    }
 }
 
 struct RtpPacketLog {
@@ -340,14 +355,14 @@ pub async fn setup_video_track(
                     );
 
                     packet.header.ssrc = video_ssrc;
-                    if payload_type_refreshed_at.elapsed() >= SENDER_PT_REFRESH_INTERVAL {
-                        if let Some(pt) =
-                            sender_payload_type(&peer, &video_sender, &video_codec).await
-                        {
-                            payload_type = pt;
-                        }
-                        payload_type_refreshed_at = Instant::now();
-                    }
+                    refresh_payload_type(
+                        &peer,
+                        &video_sender,
+                        &video_codec,
+                        &mut payload_type,
+                        &mut payload_type_refreshed_at,
+                    )
+                    .await;
                     packet.header.payload_type = payload_type;
 
                     let packet_log = RtpPacketLog::from(&packet);
@@ -414,14 +429,14 @@ pub async fn setup_audio_track(
                 for mut packet in handler.payload(packet) {
                     trace!("Sending audio packet: {}", packet);
                     packet.header.ssrc = audio_ssrc;
-                    if payload_type_refreshed_at.elapsed() >= SENDER_PT_REFRESH_INTERVAL {
-                        if let Some(pt) =
-                            sender_payload_type(&peer, &audio_sender, &audio_codec).await
-                        {
-                            payload_type = pt;
-                        }
-                        payload_type_refreshed_at = Instant::now();
-                    }
+                    refresh_payload_type(
+                        &peer,
+                        &audio_sender,
+                        &audio_codec,
+                        &mut payload_type,
+                        &mut payload_type_refreshed_at,
+                    )
+                    .await;
                     packet.header.payload_type = payload_type;
 
                     let packet_log = RtpPacketLog::from(&packet);
@@ -477,10 +492,7 @@ mod tests {
 
     #[test]
     fn fmtp_satisfies_requires_all_required_parameters() {
-        assert!(!fmtp_satisfies(
-            "profile-id=0;level-idx=5",
-            "profile-id=0"
-        ));
+        assert!(!fmtp_satisfies("profile-id=0;level-idx=5", "profile-id=0"));
     }
 
     #[test]
@@ -489,5 +501,12 @@ mod tests {
             parse_fmtp("profile-id=0 ; level-idx=5;;"),
             vec![("profile-id", "0"), ("level-idx", "5")]
         );
+    }
+
+    #[test]
+    fn nonzero_channels_filters_zero() {
+        assert_eq!(nonzero_channels(0), None);
+        assert_eq!(nonzero_channels(1), Some(1));
+        assert_eq!(nonzero_channels(2), Some(2));
     }
 }
