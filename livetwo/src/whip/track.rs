@@ -35,6 +35,15 @@ fn parse_fmtp(fmtp: &str) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// Return the channel count only if it is non-zero.
+fn nonzero_channels(channels: u16) -> Option<u32> {
+    if channels == 0 {
+        None
+    } else {
+        Some(channels as u32)
+    }
+}
+
 /// Check whether `offered_fmtp` satisfies all parameters in `required_fmtp`.
 ///
 /// In SDP negotiation the remote answer may include additional parameters
@@ -135,8 +144,17 @@ async fn answer_payload_type(peer: &Arc<dyn PeerConnection>, codec: &RTCRtpCodec
                 .next()
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
+            // rtpmap may include an optional channel count for audio codecs,
+            // e.g. "opus/48000/2". Compare it when both sides declare one.
+            let channels = spec_parts.next().and_then(|s| s.parse::<u32>().ok());
 
             if name != expected_name || clock_rate != codec.clock_rate {
+                continue;
+            }
+            if let (Some(expected), Some(offered)) =
+                (nonzero_channels(codec.channels), channels)
+                && expected != offered
+            {
                 continue;
             }
 
