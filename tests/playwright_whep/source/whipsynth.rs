@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::Result;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::{Source, SourceHandle, VideoCodec};
@@ -108,27 +109,34 @@ impl Source for WhipgenSource {
             width: self.width,
             height: self.height,
             fps: self.fps,
-            duration: Some(Duration::from_secs(30)),
+            // Tests only need a few seconds of media; 30 s wastes time and
+            // keeps the publisher alive after teardown.
+            duration: Some(Duration::from_secs(10)),
         };
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let publisher = livetwo::whipsynth::Publisher::new(config);
             if let Err(e) = publisher.run(run_ct).await {
                 tracing::error!(error = ?e, "whipsynth publisher error");
             }
         });
 
-        Ok(Box::new(WhipgenHandle { ct }))
+        Ok(Box::new(WhipgenHandle { ct, handle }))
     }
 }
 
 struct WhipgenHandle {
     ct: CancellationToken,
+    handle: JoinHandle<()>,
 }
 
+#[async_trait::async_trait]
 impl SourceHandle for WhipgenHandle {
-    fn stop(self: Box<Self>) {
+    async fn stop(self: Box<Self>) {
         self.ct.cancel();
+        if let Err(e) = self.handle.await {
+            tracing::error!(error = ?e, "whipsynth publisher task failed during stop");
+        }
     }
 }
 

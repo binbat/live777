@@ -1,4 +1,4 @@
-# WhepPlay
+# WhepWright
 
 `whepwright` is a browser-based WHEP playback tester. It launches a real browser
 (Chromium, Firefox, or WebKit) via Playwright, subscribes to a WHEP endpoint,

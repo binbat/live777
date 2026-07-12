@@ -8,8 +8,9 @@ pub mod whipsynth;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+#[async_trait::async_trait]
 pub trait SourceHandle: Send {
-    fn stop(self: Box<Self>);
+    async fn stop(self: Box<Self>);
 }
 
 pub trait Source: Send + Sync {

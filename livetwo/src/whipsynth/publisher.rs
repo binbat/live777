@@ -44,6 +44,8 @@ pub struct PublisherConfig {
     pub height: u32,
     pub fps: u32,
     pub duration: Option<Duration>,
+    /// STUN server URL used for ICE gathering.
+    pub stun_server: String,
 }
 
 /// Direct WHIP publisher that feeds encoded frames from a local source into a
@@ -245,7 +247,14 @@ async fn run_write_loop(
                                     }
                                     let payload_len = packet.payload.len();
                                     if let Err(e) = video_track.write_rtp(packet).await {
-                                        debug!("Failed to write video RTP: {}", e);
+                                        if let Ok(mut s) = stats.lock() {
+                                            s.failed_writes += 1;
+                                            if s.failed_writes == 1 {
+                                                warn!("Failed to write video RTP: {}", e);
+                                            } else {
+                                                debug!("Failed to write video RTP: {}", e);
+                                            }
+                                        }
                                     } else if let Ok(mut s) = stats.lock() {
                                         s.packets_sent += 1;
                                         s.bytes_sent += (12 + payload_len) as u64;
@@ -268,7 +277,14 @@ async fn run_write_loop(
                                         }
                                         let payload_len = packet.payload.len();
                                         if let Err(e) = audio.write_rtp(packet).await {
-                                            debug!("Failed to write audio RTP: {}", e);
+                                            if let Ok(mut s) = stats.lock() {
+                                                s.failed_writes += 1;
+                                                if s.failed_writes == 1 {
+                                                    warn!("Failed to write audio RTP: {}", e);
+                                                } else {
+                                                    debug!("Failed to write audio RTP: {}", e);
+                                                }
+                                            }
                                         } else if let Ok(mut s) = stats.lock() {
                                             s.packets_sent += 1;
                                             s.bytes_sent += (12 + payload_len) as u64;
@@ -416,7 +432,7 @@ async fn create_peer(
 
     let ice_config = RTCConfigurationBuilder::new()
         .with_ice_servers(vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            urls: vec![config.stun_server.clone()],
             username: "".to_string(),
             credential: "".to_string(),
         }])

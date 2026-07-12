@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use rtc::peer_connection::configuration::media_engine::*;
 use rtc::rtp::{
     codec::*,
@@ -77,6 +77,9 @@ impl RePayloadBase {
     /// which establishes the baseline). Returns `false` when a gap is
     /// detected, meaning the buffered fragments belong to an incomplete frame
     /// that will never be reconstructable; callers should discard the buffer.
+    ///
+    /// After a gap, the next packet re-establishes the baseline regardless of
+    /// its marker bit, because the previous frame's fragments were discarded.
     fn verify_sequence_number(&mut self, packet: &Packet) -> bool {
         let continuous = if self.has_baseline {
             let expected = self.src_sequence_number.wrapping_add(1);
@@ -298,7 +301,7 @@ impl RePayloadCodec {
 impl RePayloadCodec {
     /// Process an inbound RTP packet and return the complete encoded frame when
     /// the marker bit indicates the end of a frame.
-    pub fn process(&mut self, packet: &Packet) -> Option<Vec<u8>> {
+    pub fn process(&mut self, packet: &Packet) -> Option<Bytes> {
         let continuous = self.base.verify_sequence_number(packet);
         if !continuous {
             // A gap means the buffered fragments belong to a previous frame that
@@ -336,21 +339,20 @@ impl RePayloadCodec {
 
                             if start_bit {
                                 let reconstructed_byte0 = (data[0] & 0x81) | (fu_type << 1);
-                                let mut result = Vec::with_capacity(6 + data.len() - 3);
+                                let mut result = BytesMut::with_capacity(6 + data.len() - 3);
                                 result.extend_from_slice(&START_CODE_4);
-                                result.push(reconstructed_byte0);
-                                result.push(data[1]);
+                                result.extend_from_slice(&[reconstructed_byte0, data[1]]);
                                 result.extend_from_slice(&data[3..]);
-                                self.base.buffer.push(Bytes::from(result));
+                                self.base.buffer.push(result.freeze());
                                 debug!("FU start - added start code and NAL header");
                             } else {
-                                self.base.buffer.push(Bytes::from(data[3..].to_vec()));
+                                self.base.buffer.push(Bytes::copy_from_slice(&data[3..]));
                                 debug!("FU continuation - added payload only");
                             }
                         } else {
                             debug!("Converting non-FU H.265 to Annex B");
-                            let converted = Bytes::from(self.convert_h265_to_annex_b(&data));
-                            self.base.buffer.push(converted);
+                            let converted = self.convert_h265_to_annex_b(&data);
+                            self.base.buffer.push(Bytes::from(converted));
                         }
                     } else {
                         self.base.buffer.push(data);
@@ -367,7 +369,12 @@ impl RePayloadCodec {
 
         if packet.header.marker {
             self.frame_count += 1;
-            let combined_data = Bytes::from(self.base.buffer.concat());
+            let total_len: usize = self.base.buffer.iter().map(|b| b.len()).sum();
+            let mut combined = BytesMut::with_capacity(total_len);
+            for chunk in &self.base.buffer {
+                combined.extend_from_slice(chunk);
+            }
+            let combined_data = combined.freeze();
 
             if combined_data.is_empty() {
                 warn!("Empty frame data, skipping");
@@ -403,7 +410,7 @@ impl RePayloadCodec {
             };
 
             self.base.clear_buffer();
-            Some(final_data.to_vec())
+            Some(final_data)
         } else {
             None
         }
@@ -413,7 +420,7 @@ impl RePayloadCodec {
 impl RePayload for RePayloadCodec {
     fn payload(&mut self, packet: &Packet) -> Vec<Packet> {
         let final_data = match self.process(packet) {
-            Some(data) => Bytes::from(data),
+            Some(data) => data,
             None => return vec![],
         };
 

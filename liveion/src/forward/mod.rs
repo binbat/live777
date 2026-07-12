@@ -39,6 +39,7 @@ use self::message::ForwardEvent;
 pub(crate) mod av1_repacketizer;
 #[cfg(feature = "source")]
 pub(crate) mod channel;
+mod codec_compat;
 mod internal;
 mod media;
 pub mod message;

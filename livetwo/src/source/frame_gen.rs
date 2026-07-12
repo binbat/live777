@@ -75,7 +75,7 @@ pub struct FrameGenerator {
     video_time_base: ffi::AVRational,
     audio_time_base: ffi::AVRational,
     audio_sample_rate: i32,
-    samples_per_frame: i64,
+    samples_per_frame: i32,
     /// Cumulative number of samples fed to the audio encoder so far, across all
     /// channels. Used as a phase origin for `fill_sine_wave` so the tone is
     /// continuous from one frame to the next.
@@ -106,6 +106,14 @@ impl FrameGenerator {
             "Creating rsmpeg frame generator"
         );
 
+        let samples_per_frame = config
+            .audio_codec
+            .map(|c| match c {
+                AudioCodec::Opus => 960, // 20 ms at 48 kHz
+                AudioCodec::G722 => 320, // 20 ms at 16 kHz
+            })
+            .unwrap_or(960);
+
         let video_ctx = {
             let ctx = open_video_output(config).context("Failed to open video encoder")?;
             OutputContext {
@@ -116,24 +124,17 @@ impl FrameGenerator {
 
         let audio_ctx = match config.audio_codec {
             Some(audio_codec) => Some({
-                let ctx = open_audio_output(audio_codec).context("Failed to open audio encoder")?;
+                let ctx = open_audio_output(audio_codec, samples_per_frame)
+                    .context("Failed to open audio encoder")?;
                 OutputContext {
                     codec_ctx: ctx.codec_ctx,
-                    frame: None,
+                    frame: ctx.frame,
                 }
             }),
             None => None,
         };
 
         let audio_sample_rate = config.audio_codec.map(|c| c.sample_rate()).unwrap_or(48000);
-
-        let samples_per_frame = config
-            .audio_codec
-            .map(|c| match c {
-                AudioCodec::Opus => 960, // 20 ms at 48 kHz
-                AudioCodec::G722 => 320, // 20 ms at 16 kHz
-            })
-            .unwrap_or(960) as i64;
 
         Ok(Self {
             video_codec: config.video_codec,
@@ -202,17 +203,18 @@ impl FrameGenerator {
         if let Some(ref mut audio) = self.audio_ctx {
             let sample_rate = self.audio_sample_rate as i64;
             let target_audio_pts = self.video_pts * sample_rate / self.fps as i64;
-            while self.audio_pts + self.samples_per_frame <= target_audio_pts {
+            let samples_per_frame = self.samples_per_frame as i64;
+            while self.audio_pts + samples_per_frame <= target_audio_pts {
                 let frames = encode_audio_frame(
                     audio,
                     self.audio_pts,
                     self.audio_time_base,
-                    self.samples_per_frame as i32,
+                    self.samples_per_frame,
                     self.cumulative_audio_samples,
                 )
                 .context("Failed to encode audio frame")?;
-                self.audio_pts += self.samples_per_frame;
-                self.cumulative_audio_samples += self.samples_per_frame;
+                self.audio_pts += samples_per_frame;
+                self.cumulative_audio_samples += samples_per_frame;
                 self.pending_audio_frames.extend(frames);
             }
         }
@@ -248,7 +250,9 @@ impl FrameGenerator {
 
 impl Drop for FrameGenerator {
     fn drop(&mut self) {
-        let _ = self.flush();
+        if let Err(e) = self.flush() {
+            tracing::warn!(error = ?e, "FrameGenerator flush failed during drop");
+        }
     }
 }
 
@@ -344,9 +348,10 @@ fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput>
 
 struct OpenedAudioOutput {
     codec_ctx: AVCodecContext,
+    frame: Option<AVFrame>,
 }
 
-fn open_audio_output(audio_codec: AudioCodec) -> Result<OpenedAudioOutput> {
+fn open_audio_output(audio_codec: AudioCodec, samples_per_frame: i32) -> Result<OpenedAudioOutput> {
     let codec = AVCodec::find_encoder_by_name(audio_codec.ffmpeg_encoder())
         .ok_or_else(|| anyhow!("Encoder {} not found", audio_codec.ffmpeg_name()))?;
 
@@ -377,7 +382,20 @@ fn open_audio_output(audio_codec: AudioCodec) -> Result<OpenedAudioOutput> {
         .open(Some(opts))
         .with_context(|| format!("Failed to open {} encoder", audio_codec.ffmpeg_name()))?;
 
-    Ok(OpenedAudioOutput { codec_ctx })
+    // Pre-allocate a reusable audio frame sized for one packet duration.
+    let mut frame = AVFrame::new();
+    frame.set_sample_rate(codec_ctx.sample_rate);
+    frame.set_format(codec_ctx.sample_fmt);
+    frame.set_nb_samples(samples_per_frame);
+    frame.set_ch_layout(codec_ctx.ch_layout);
+    frame
+        .alloc_buffer()
+        .context("Failed to allocate reusable audio frame buffer")?;
+
+    Ok(OpenedAudioOutput {
+        codec_ctx,
+        frame: Some(frame),
+    })
 }
 
 fn encode_video_frame(
@@ -412,14 +430,24 @@ fn encode_audio_frame(
     samples: i32,
     cumulative_samples: i64,
 ) -> Result<Vec<EncodedFrame>> {
-    let mut frame = AVFrame::new();
-    frame.set_sample_rate(ctx.codec_ctx.sample_rate);
-    frame.set_format(ctx.codec_ctx.sample_fmt);
-    frame.set_nb_samples(samples);
-    frame.set_ch_layout(ctx.codec_ctx.ch_layout);
-    frame
-        .alloc_buffer()
-        .context("Failed to allocate audio frame buffer")?;
+    let frame = ctx.frame.as_mut().context("reusable audio frame missing")?;
+
+    // The encoder may require a different buffer layout after open(). If the
+    // reusable frame's parameters no longer match, reallocate it.
+    if frame.sample_rate != ctx.codec_ctx.sample_rate
+        || frame.format != ctx.codec_ctx.sample_fmt
+        || frame.nb_samples != samples
+        || frame.ch_layout.nb_channels != ctx.codec_ctx.ch_layout.nb_channels
+    {
+        frame.set_sample_rate(ctx.codec_ctx.sample_rate);
+        frame.set_format(ctx.codec_ctx.sample_fmt);
+        frame.set_nb_samples(samples);
+        frame.set_ch_layout(ctx.codec_ctx.ch_layout);
+        frame
+            .alloc_buffer()
+            .context("Failed to reallocate reusable audio frame buffer")?;
+    }
+
     frame
         .make_writable()
         .context("Failed to make audio frame writable")?;
@@ -434,9 +462,10 @@ fn encode_audio_frame(
         ctx.codec_ctx.ch_layout.nb_channels,
         ctx.codec_ctx.sample_fmt,
         cumulative_samples,
-    );
+    )
+    .context("Failed to fill audio sine wave")?;
 
-    encode_frame(&mut ctx.codec_ctx, &frame).map(|opt| opt.into_iter().collect())
+    encode_frame(&mut ctx.codec_ctx, frame).map(|opt| opt.into_iter().collect())
 }
 
 /// Send a frame to the encoder and collect all output packets into a single
@@ -459,6 +488,10 @@ fn encode_frame(codec_ctx: &mut AVCodecContext, frame: &AVFrame) -> Result<Optio
 
         debug!(pts = packet.pts, size = packet.size, "encoded packet");
 
+        if packet.size <= 0 {
+            continue;
+        }
+
         if data.is_empty() {
             pts = packet.pts;
             is_keyframe = (packet.flags & ffi::AV_PKT_FLAG_KEY as i32) != 0;
@@ -468,10 +501,11 @@ fn encode_frame(codec_ctx: &mut AVCodecContext, frame: &AVFrame) -> Result<Optio
             // Annex-B bitstream.
             is_keyframe |= (packet.flags & ffi::AV_PKT_FLAG_KEY as i32) != 0;
         }
-        // SAFETY: `receive_packet` returned Ok, so `packet.data` points to a
-        // valid allocation of at least `packet.size` bytes. The AVPacket owns
-        // the buffer; we copy the data immediately via `extend_from_slice` so
-        // the slice does not outlive the packet.
+        // SAFETY: `receive_packet` returned Ok and `packet.size` is positive,
+        // so `packet.data` points to a valid allocation of at least
+        // `packet.size` bytes. The AVPacket owns the buffer; we copy the data
+        // immediately via `extend_from_slice` so the slice does not outlive the
+        // packet.
         let slice = unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
         data.extend_from_slice(slice);
     }
@@ -500,9 +534,13 @@ fn flush_encoder(ctx: &mut OutputContext) -> Result<Vec<EncodedFrame>> {
             Err(rsmpeg::error::RsmpegError::EncoderDrainError) => break,
             Err(e) => return Err(e.into()),
         };
-        // SAFETY: `receive_packet` returned Ok, so `packet.data` points to a
-        // valid allocation of at least `packet.size` bytes. We copy the data
-        // into a Vec immediately so the slice does not outlive the packet.
+        if packet.size <= 0 {
+            continue;
+        }
+        // SAFETY: `receive_packet` returned Ok and `packet.size` is positive,
+        // so `packet.data` points to a valid allocation of at least
+        // `packet.size` bytes. We copy the data into a Vec immediately so the
+        // slice does not outlive the packet.
         let data = unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
         frames.push(EncodedFrame {
             data: data.to_vec(),
@@ -606,9 +644,9 @@ fn fill_sine_wave(
     channels: i32,
     sample_fmt: i32,
     cumulative_samples: i64,
-) {
+) -> Result<()> {
     if data.is_empty() || data[0].is_null() || linesize.is_empty() {
-        return;
+        return Ok(());
     }
     assert!(
         linesize[0] > 0,
@@ -625,7 +663,9 @@ fn fill_sine_wave(
     } else if sample_fmt == ffi::AV_SAMPLE_FMT_S16 {
         std::mem::size_of::<i16>()
     } else {
-        return;
+        return Err(anyhow!(
+            "unsupported audio sample format {sample_fmt} for sine wave generation"
+        ));
     };
     let buffer_size = linesize[0] as usize;
     assert!(
@@ -661,6 +701,7 @@ fn fill_sine_wave(
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

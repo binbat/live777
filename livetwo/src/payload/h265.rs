@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tracing::{debug, trace, warn};
 
 const NAL_UNIT_TYPE_MASK: u8 = 0x3F;
@@ -78,12 +78,11 @@ impl H265Processor {
     }
 
     fn simple_hash(&self, data: &[u8]) -> u64 {
-        let len = data.len().min(32);
-        let mut hash: u64 = 0;
-        for &byte in data[..len].iter() {
-            hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
-        }
-        hash.wrapping_add(data.len() as u64)
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn has_annex_b_start_code(data: &[u8]) -> bool {
@@ -396,6 +395,10 @@ pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
 
     for nal in NalIterator::new(data) {
         if nal.data.len() < 2 {
+            warn!(
+                len = nal.data.len(),
+                "Skipping H.265 NAL unit shorter than 2 bytes"
+            );
             continue;
         }
 
@@ -423,13 +426,13 @@ pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
                 fu_header |= FU_END_BITMASK;
             }
 
-            let mut fu_packet = Vec::with_capacity(3 + chunk_size);
-            fu_packet.push((nal_header[0] & 0x81) | (nal_type::H265_NAL_FU << 1));
-            fu_packet.push(nal_header[1]);
-            fu_packet.push(fu_header);
+            let mut fu_packet = BytesMut::with_capacity(3 + chunk_size);
+            fu_packet.extend_from_slice(&[(nal_header[0] & 0x81) | (nal_type::H265_NAL_FU << 1)]);
+            fu_packet.extend_from_slice(&[nal_header[1]]);
+            fu_packet.extend_from_slice(&[fu_header]);
             fu_packet.extend_from_slice(&fu_payload_data[fu_offset..fu_offset + chunk_size]);
 
-            payloads.push(Bytes::from(fu_packet));
+            payloads.push(fu_packet.freeze());
 
             fu_offset += chunk_size;
             is_first = false;

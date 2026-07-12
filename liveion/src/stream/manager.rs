@@ -448,7 +448,7 @@ impl Manager {
     ) -> Vec<api::response::Stream> {
         let stream_map = stream_map.read().await;
         let mut infos: Vec<api::response::Stream> = vec![];
-        for (_, forward) in stream_map.iter() {
+        for forward in stream_map.values() {
             if !streams.is_empty() && !streams.contains(&forward.stream) {
                 continue;
             }

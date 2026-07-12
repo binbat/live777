@@ -37,9 +37,10 @@ whepprobe -w http://localhost:7777/whep/live --output json
 |------|--------|------|
 | `-w`, `--whep` | 必填 | WHEP 端点 URL |
 | `-t`, `--token` | 无 | WHIP/WHEP 认证使用的 Bearer token |
-| `--codec` | 自动检测 | 预期视频编码：`vp8`、`vp9`、`h264`、`h265`、`av1` |
+| `-v` | `warn` | 提高日志级别（`-v` info，`-vv` debug，`-vvv` trace） |
+| `--codec` | 自动检测 | 预期视频编码：`vp8`、`vp9`、`h264`、`h265`、`av1`。`rsmpeg` 后端会从 WHEP 会话自动检测编码，因此该选项仅影响报告结果。 |
 | `--sprop-params` | 无 | H.265 sprop 参数（`sprop-vps=...;sprop-sps=...;sprop-pps=...`） |
-| `--decode-duration` | `5` | WHEP 连接成功后持续解码的秒数 |
+| `--decode-duration` | `5` | WHEP 连接成功后持续解码的秒数。超过 `10` 的值会被静默截断。 |
 | `--output` | `human` | 输出格式：`human`、`json` |
 | `--timeout` | `30` | 整体超时时间（秒） |
 
@@ -53,14 +54,16 @@ whepprobe -w http://localhost:7777/whep/live --output json
 探测逻辑位于 `livetwo::probe`，可以被集成测试或其他 Rust 工具复用：
 
 ```rust
+use cli::Codec;
 use livetwo::probe::{ProbeBackend, ProbeConfig};
 use livetwo::probe::rsmpeg::RsmpegProbe;
 use std::time::Duration;
 
+// RsmpegProbe 需要 `livetwo` 启用 `rsmpeg` feature 才能使用。
 let config = ProbeConfig {
     whep_url: "http://localhost:7777/whep/live".to_string(),
     timeout: Duration::from_secs(30),
-    codec: Some(cli::Codec::Vp8),
+    codec: Some(Codec::Vp8),
     sprop_params: None,
     token: None,
 };

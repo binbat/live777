@@ -17,13 +17,13 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/vcpkg
-        key: vcpkg-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+        key: vcpkg-2026.06.24-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
 
     - name: Build vcpkg (Windows)
       if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        git clone https://github.com/microsoft/vcpkg --depth 1
+        git clone https://github.com/microsoft/vcpkg --depth 1 --branch 2026.06.24
         ./vcpkg/bootstrap-vcpkg.bat
 
     - name: Install FFmpeg via vcpkg (Windows)
@@ -58,7 +58,9 @@ runs:
         # CLI is not installed. Grab a prebuilt ffmpeg binary for the test
         # suite's `ffmpeg` spawns while keeping the vcpkg libs for rsmpeg.
         if ! command -v ffmpeg >/dev/null 2>&1; then
-          choco install ffmpeg -y --no-progress
+          # Pin the Chocolatey package so CI stays reproducible and doesn't
+          # randomly pull a newer major version.
+          choco install ffmpeg --version=8.1.2 -y --no-progress
         fi
         FFMPEG_BIN_DIR=$(dirname "$(command -v ffmpeg)")
         # PATH entries must be clean Windows paths. Mixing cygpath backslashes
@@ -96,7 +98,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/ffmpeg-install
-        key: ffmpeg-8.0-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+        key: ffmpeg-n8.0-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
 
     - name: Build FFmpeg 8.0 from source (Linux)
       if: runner.os == 'Linux' && steps.cache-ffmpeg.outputs.cache-hit != 'true'
@@ -111,7 +113,7 @@ runs:
           libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev
 
         PREFIX="${{ github.workspace }}/ffmpeg-install"
-        git clone --depth 1 --branch release/8.0 https://github.com/FFmpeg/FFmpeg ffmpeg-src
+        git clone --depth 1 --branch n8.0 https://github.com/FFmpeg/FFmpeg ffmpeg-src
         cd ffmpeg-src
         ./configure \
           --prefix="$PREFIX" \

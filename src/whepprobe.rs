@@ -33,7 +33,9 @@ struct Args {
     #[arg(long, default_value_t = 30)]
     timeout: u64,
 
-    /// Expected video codec: vp8, vp9, h264, h265, av1
+    /// Expected video codec: vp8, vp9, h264, h265, av1.
+    /// The rsmpeg backend auto-detects the codec from the WHEP session, so
+    /// this option only affects the reported result.
     #[arg(long)]
     codec: Option<String>,
 
@@ -52,13 +54,18 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("Error: {e:?}");
-        std::process::exit(1);
-    }
+    let code = match run().await {
+        Ok(true) => 0,
+        Ok(false) => 1,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            1
+        }
+    };
+    std::process::exit(code);
 }
 
-async fn run() -> Result<()> {
+async fn run() -> Result<bool> {
     let args = Args::parse();
 
     let (log_level, webrtc_level) = match args.verbose {
@@ -90,30 +97,25 @@ async fn run() -> Result<()> {
 
     match result {
         Ok(Ok(result)) => {
+            let success = result.success;
             print_result(&result, args.output);
-            if result.success {
+            if success {
                 info!("=== Probe succeeded ===");
-                Ok(())
-            } else {
-                Err(anyhow!(
-                    "Probe failed: {}",
-                    result.error.as_deref().unwrap_or("unknown error")
-                ))
             }
+            Ok(success)
         }
         Ok(Err(e)) => {
-            // Emit a structured failure result for JSON consumers, then return
-            // a concise error so the process exits non-zero without dumping the
-            // same diagnostics twice.
+            // Emit a structured failure result for JSON consumers without
+            // duplicating the diagnostics on stderr.
             let failed = ProbeResult::failed("rsmpeg", format!("{e:?}"));
             print_result(&failed, args.output);
-            Err(anyhow!("Probe failed"))
+            Ok(false)
         }
         Err(_) => {
             let failed =
                 ProbeResult::failed("rsmpeg", format!("timed out after {:?}", config.timeout));
             print_result(&failed, args.output);
-            Err(anyhow!("Probe timed out"))
+            Ok(false)
         }
     }
 }

@@ -118,7 +118,8 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
         // using 0 would cause SDP filtering to discard all payload formats and
         // produce an invalid "m=video 9 RTP/AVP" line.
         let first_ssrc = ssrcs.first().copied().unwrap_or(0);
-        if let Some(codec) = track.codec(first_ssrc).await {
+        let on_track_codec = track.codec(first_ssrc).await;
+        if let Some(codec) = &on_track_codec {
             debug!(
                 "WHEP on_track codec: kind={}, mime={}",
                 kind, codec.mime_type
@@ -144,8 +145,9 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
             let drop_count = match kind {
                 RtpCodecKind::Video => self.video_drop_count.clone(),
                 RtpCodecKind::Audio => self.audio_drop_count.clone(),
-                _ => Arc::new(AtomicU64::new(0)),
+                _ => unreachable!("sender is only Some for video/audio"),
             };
+            let on_track_codec = on_track_codec.clone();
             let ct = self.ct.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
@@ -156,8 +158,10 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                             match event {
                                 Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
                                     if first_packet {
-                                        let first_packet_codec =
-                                            track_clone.codec(rtp_packet.header.ssrc).await;
+                                        let first_packet_codec = track_clone
+                                            .codec(rtp_packet.header.ssrc)
+                                            .await
+                                            .or(on_track_codec.clone());
                                         if let Some(codec) = first_packet_codec {
                                             let codec_params =
                                                 rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
@@ -168,7 +172,10 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                                             match kind {
                                                 RtpCodecKind::Video => {
                                                     info.video_codec = Some(codec_params.clone());
-                                                    if let Some(tx) = &video_mime_tx {
+                                                    // Only report the MIME type from the first
+                                                    // packet if on_track did not already provide
+                                                    // it, avoiding duplicate watch-channel updates.
+                                                    if on_track_codec.is_none() && let Some(tx) = &video_mime_tx {
                                                         let _ = tx.send(Some(codec.mime_type.clone()));
                                                     }
                                                 }

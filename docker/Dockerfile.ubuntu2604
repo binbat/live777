@@ -1,5 +1,7 @@
-# Multi-stage Dockerfile for building live777 on Ubuntu 26.04 (Resolute)
-# Uses the distribution's FFmpeg 8.0 development packages for rsmpeg.
+# Multi-stage Dockerfile for building live777 on Ubuntu 26.04 (Resolute).
+# Builds upstream FFmpeg 8.0 from source for rsmpeg: the Ubuntu libav*-dev
+# packages are patched to privatize AVFormatContext fields, which breaks
+# rsmpeg's bindgen-based field access.
 
 # -----------------------------------------------------------------------------
 # Stage 1: Build WebUI assets
@@ -42,14 +44,9 @@ RUN apt-get update -qq \
         ca-certificates \
         curl \
         pkg-config \
-        ffmpeg \
-        libavcodec-dev \
-        libavdevice-dev \
-        libavfilter-dev \
-        libavformat-dev \
-        libavutil-dev \
-        libswresample-dev \
-        libswscale-dev \
+        nasm \
+        yasm \
+        rustup \
         libcamera-dev \
         libv4l-dev \
         libvpx-dev \
@@ -59,10 +56,30 @@ RUN apt-get update -qq \
         libopus-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust stable via rustup
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain stable --profile minimal
+# Install Rust stable via the distribution rustup package.
+RUN rustup default stable
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build upstream FFmpeg 8.0 from source. The shared install goes into
+# /usr/local so the runtime stage can copy the libraries alongside the
+# live777 binaries.
+RUN git clone --depth 1 --branch n8.0 https://github.com/FFmpeg/FFmpeg /tmp/ffmpeg-src \
+    && cd /tmp/ffmpeg-src \
+    && ./configure \
+        --prefix=/usr/local \
+        --enable-gpl \
+        --enable-shared \
+        --disable-static \
+        --enable-libvpx \
+        --enable-libx264 \
+        --enable-libx265 \
+        --enable-libsvtav1 \
+        --enable-libopus \
+        --disable-doc \
+    && make -j"$(nproc)" \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/ffmpeg-src
 
 WORKDIR /app
 
@@ -75,7 +92,8 @@ COPY --from=builder-node /app/assets/ assets
 # binding into the build context.
 # ENV FFMPEG_BINDING_PATH=/app/.github/rusty_ffmpeg_binding.rs
 
-RUN cargo build --release --all-targets --all-features
+# Only build the binaries we actually ship in the runtime image.
+RUN cargo build --release --bins --all-features
 
 # -----------------------------------------------------------------------------
 # Stage 3: Minimal runtime image
@@ -91,6 +109,11 @@ RUN apt-get update -qq \
         libcamera0.7 \
         libv4l-0t64 \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy the source-built FFmpeg libraries so the binaries link against the
+# exact libraries they were built with.
+COPY --from=builder-rust /usr/local/lib /usr/local/lib
+ENV LD_LIBRARY_PATH=/usr/local/lib
 
 COPY --from=builder-rust /app/conf/live777.toml /etc/live777/live777.toml
 COPY --from=builder-rust /app/conf/liveman.toml /etc/live777/liveman.toml

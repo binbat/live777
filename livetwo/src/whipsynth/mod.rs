@@ -15,6 +15,7 @@ pub use source::SourceHandle;
 pub struct SessionStats {
     pub packets_sent: u64,
     pub bytes_sent: u64,
+    pub failed_writes: u64,
     pub nack_count: u64,
     pub pli_count: u64,
     pub connected_duration: Duration,

@@ -83,11 +83,15 @@ struct RsmpegHandle {
     join_handle: thread::JoinHandle<()>,
 }
 
+#[async_trait::async_trait]
 impl SourceHandle for RsmpegHandle {
-    fn stop(self: Box<Self>) {
+    async fn stop(self: Box<Self>) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Err(e) = self.join_handle.join() {
-            eprintln!("rsmpeg VP8 source thread panicked: {e:?}");
+        let join_handle = self.join_handle;
+        match tokio::task::spawn_blocking(move || join_handle.join()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("rsmpeg VP8 source thread panicked: {e:?}"),
+            Err(e) => eprintln!("failed to await rsmpeg VP8 source thread: {e:?}"),
         }
     }
 }

@@ -54,6 +54,15 @@ struct Args {
     /// Milliseconds to wait between spawning each loadtest session.
     #[arg(long, default_value_t = 100, hide = true)]
     spawn_interval_ms: u64,
+
+    /// Overall timeout in seconds. If the publisher cannot connect or the
+    /// loadtest cannot finish within this time, exit with an error.
+    #[arg(long, default_value_t = 60)]
+    timeout: u64,
+
+    /// STUN server URL used for ICE gathering.
+    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
+    stun_server: String,
 }
 
 #[tokio::main]
@@ -68,16 +77,16 @@ async fn main() -> Result<()> {
 async fn run() -> Result<()> {
     let args = Args::parse();
 
-    let log_level = match args.verbose {
-        0 => Level::WARN,
-        1 => Level::INFO,
-        2 => Level::DEBUG,
-        _ => Level::TRACE,
+    let (log_level, webrtc_level) = match args.verbose {
+        0 => (Level::WARN, Level::ERROR),
+        1 => (Level::INFO, Level::WARN),
+        2 => (Level::DEBUG, Level::INFO),
+        _ => (Level::TRACE, Level::DEBUG),
     };
 
     log::set(format!(
-        "whipsynth={},livetwo={},webrtc=error",
-        log_level, log_level,
+        "whipsynth={},livetwo={},webrtc={}",
+        log_level, log_level, webrtc_level,
     ));
 
     let video_codec_cli = cli::codec_from_str(&args.video_codec)
@@ -106,6 +115,7 @@ async fn run() -> Result<()> {
         height: args.height,
         fps: args.fps,
         duration: args.duration.map(Duration::from_secs),
+        stun_server: args.stun_server.clone(),
     };
 
     info!(
@@ -122,6 +132,7 @@ async fn run() -> Result<()> {
     );
 
     let ct = CancellationToken::new();
+    let timeout = Duration::from_secs(args.timeout);
 
     if args.count > 1 {
         let loadtest_config = livetwo::whipsynth::LoadtestConfig {
@@ -135,6 +146,10 @@ async fn run() -> Result<()> {
                 let stats = result?;
                 info!(?stats, "Loadtest finished");
             }
+            _ = tokio::time::sleep(timeout) => {
+                ct.cancel();
+                return Err(anyhow!("loadtest timed out after {:?}", timeout));
+            }
             _ = utils::shutdown_signal() => {
                 info!("Shutdown signal received, stopping loadtest");
                 ct.cancel();
@@ -146,6 +161,10 @@ async fn run() -> Result<()> {
         tokio::select! {
             result = publisher.run(ct.clone()) => {
                 let _stats = result?;
+            }
+            _ = tokio::time::sleep(timeout) => {
+                ct.cancel();
+                return Err(anyhow!("publisher timed out after {:?}", timeout));
             }
             _ = utils::shutdown_signal() => {
                 info!("Shutdown signal received, stopping publisher");

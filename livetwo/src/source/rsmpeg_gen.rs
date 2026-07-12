@@ -85,7 +85,9 @@ impl VideoCodec {
                  a=fmtp:{pt} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
             ),
             VideoCodec::H265 => format!("a=rtpmap:{pt} H265/90000"),
-            VideoCodec::Av1 => format!("a=rtpmap:{pt} AV1/90000"),
+            // FFmpeg's RTP muxer uses the AV1X encoding name for OBU streams
+            // with temporal delimiters, which is what our packetizer expects.
+            VideoCodec::Av1 => format!("a=rtpmap:{pt} AV1X/90000"),
         }
     }
 
@@ -344,6 +346,12 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
             return None;
         }
     };
+    // H.265/x265 requires even dimensions for YUV420P. Round up to the next
+    // even value so the advertised sprop resolution matches the actual encoded
+    // stream produced by FrameGenerator.
+    let width = (width.max(2) + 1) & !1;
+    let height = (height.max(2) + 1) & !1;
+
     let mut codec_ctx = AVCodecContext::new(&codec);
     codec_ctx.set_width(width as i32);
     codec_ctx.set_height(height as i32);

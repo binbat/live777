@@ -137,7 +137,6 @@ serde_json = { workspace = true }
 portpicker = "0.1.1"
 
 api = { path = "libs/api" }
-cli = { path = "libs/cli" }
 reqwest = { workspace = true, features = ["socks", "json"] }
 async-trait = { workspace = true }
 url = { workspace = true }
@@ -145,7 +144,6 @@ tempfile = { workspace = true }
 webrtc = { workspace = true }
 test-case = "3"
 anyhow = { workspace = true }
-rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
 
 [dependencies]
@@ -160,8 +158,9 @@ storage = { path = "libs/storage" }
 api = { path = "libs/api" }
 version = { path = "libs/version" }
 
-cli = { path = "libs/cli" }
+cli = { path = "libs/cli", optional = true }
 clap = { workspace = true, features = ["derive"] }
+rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"], optional = true }
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["process"] }
 tokio-util = { workspace = true }
@@ -204,7 +203,7 @@ native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
 
 # Enables rsmpeg-based tools (whepprobe, whipsynth) and livetwo rsmpeg support
-rsmpeg = ["livetwo/rsmpeg"]
+rsmpeg = ["livetwo/rsmpeg", "dep:rsmpeg", "dep:cli"]
 
 # WHEP browser playback tester (Playwright-based)
 whepwright = ["dep:playwright-whep"]

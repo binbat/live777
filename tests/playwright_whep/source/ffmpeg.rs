@@ -112,9 +112,11 @@ struct FfmpegHandle {
     child: Child,
 }
 
+#[async_trait::async_trait]
 impl SourceHandle for FfmpegHandle {
-    fn stop(mut self: Box<Self>) {
+    async fn stop(mut self: Box<Self>) {
         let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut child = self.child;
+        let _ = tokio::task::spawn_blocking(move || child.wait()).await;
     }
 }

@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use libwish::Client;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 use webrtc::peer_connection::RTCPeerConnectionState;
 
 use crate::probe::{ProbeBackend, ProbeConfig, ProbeResult};
@@ -65,12 +65,19 @@ impl ProbeBackend for RsmpegProbe {
         let codec_info = Arc::new(Mutex::new(rtsp::CodecInfo::new()));
         let (video_mime_tx, mut video_mime_rx) = tokio::sync::watch::channel(None::<String>);
 
+        let audio_bytes_received = Arc::new(AtomicU64::new(0));
         let drain_ct = ct.clone();
+        let drain_bytes = audio_bytes_received.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = audio_rx.recv() => {}
-                    _ = drain_ct.cancelled() => break,
+                    Some(packet) = audio_rx.recv() => {
+                        drain_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                    }
+                    _ = drain_ct.cancelled() => {
+                        debug!("rsmpeg probe audio drain task cancelled");
+                        break;
+                    }
                 }
             }
         });
@@ -109,10 +116,14 @@ impl ProbeBackend for RsmpegProbe {
             error: None,
         };
 
+        // The overall probe must respect config.timeout across all phases:
+        // connection, codec detection, and decoding.
+        let deadline = start + config.timeout;
+
         let connected = wait_for_state(
             &mut state_rx,
             RTCPeerConnectionState::Connected,
-            config.timeout,
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
         )
         .await?;
 
@@ -122,13 +133,18 @@ impl ProbeBackend for RsmpegProbe {
         if !connected {
             ct.cancel();
             result.error = Some("WHEP peer connection did not reach Connected".to_string());
+            graceful_shutdown("WHEP", &mut client, peer).await;
             return Ok(result);
         }
 
-        // Wait briefly for the track to report its negotiated codec. If the
-        // track never reports its mime type we cannot reliably decode the
-        // stream, so fail the probe instead of guessing a fallback codec.
-        let mime_type = match wait_for_video_mime(&mut video_mime_rx, Duration::from_secs(5)).await
+        // Wait briefly for the track to report its negotiated codec. Use the
+        // remaining probe budget, capped at 5 s so a missing track fails fast.
+        let mime_type = match wait_for_video_mime(
+            &mut video_mime_rx,
+            Duration::from_secs(5)
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await
         {
             Ok(mime) => mime,
             Err(e) => {
@@ -141,7 +157,20 @@ impl ProbeBackend for RsmpegProbe {
         };
         info!("WHEP peer connected, video mime type: {mime_type}");
 
-        let decode_duration = self.decode_duration.min(Duration::from_secs(10));
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        // Keep a small margin for the decoder thread to shut down cleanly.
+        let decode_duration = self
+            .decode_duration
+            .min(Duration::from_secs(10))
+            .min(remaining.saturating_sub(Duration::from_secs(2)));
+        if decode_duration.is_zero() {
+            ct.cancel();
+            result.error = Some("probe timeout expired before decoding could start".to_string());
+            graceful_shutdown("WHEP", &mut client, peer).await;
+            result.duration_ms = start.elapsed().as_millis() as u64;
+            return Ok(result);
+        }
+
         let sprop_params = config.sprop_params.clone();
         let (packet_tx, packet_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -150,11 +179,19 @@ impl ProbeBackend for RsmpegProbe {
         // Forward RTP packets from the async WebRTC reader to the blocking
         // FFmpeg decoder thread. Stop when cancelled or when the decode window
         // has elapsed so the probe cannot outlive its timeout.
+        //
+        // Note: if packet_tx.send(packet) blocks because the decoder thread is
+        // not consuming, the sleep branch will not fire. The decoder thread uses
+        // a short recv_timeout loop and will drop packet_rx on its own timeout,
+        // which unblocks the forwarder and lets it exit.
         let forward_ct = ct.clone();
+        let video_bytes_received = Arc::new(AtomicU64::new(0));
+        let forward_bytes = video_bytes_received.clone();
         let forward_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     Some(packet) = video_rx.recv() => {
+                        forward_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
                         if packet_tx.send(packet).is_err() {
                             break;
                         }
@@ -165,8 +202,9 @@ impl ProbeBackend for RsmpegProbe {
             }
         });
 
+        let decoder_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
         let decode_result = tokio::time::timeout(
-            Duration::from_secs(20),
+            decoder_timeout,
             tokio::task::spawn_blocking(move || {
                 crate::probe::decoder::run_ffi_decoder(
                     mime_type,
@@ -200,6 +238,9 @@ impl ProbeBackend for RsmpegProbe {
                 result.error = Some("decoder timed out".to_string());
             }
         }
+
+        result.video_bytes_received = video_bytes_received.load(Ordering::Relaxed);
+        result.audio_bytes_received = audio_bytes_received.load(Ordering::Relaxed);
 
         ct.cancel();
         graceful_shutdown("WHEP", &mut client, peer).await;

@@ -22,6 +22,12 @@ use crate::payload::{RePayload, RePayloadCodec};
 
 /// Assembles RTP payloads into complete encoded frames and decodes them with
 /// FFmpeg through rsmpeg.
+/// Maximum decode failures allowed before the first successful frame. This
+/// prevents obviously broken streams (wrong sprop, corrupted first packet,
+/// mismatched codec) from spinning until the outer timeout, while still
+/// tolerating startup noise such as VP8 interframes before the first keyframe.
+const MAX_EARLY_FAILURES: u32 = 100;
+
 pub struct RtpFrameDecoder {
     repayload: RePayloadCodec,
     frame_count: u32,
@@ -29,7 +35,7 @@ pub struct RtpFrameDecoder {
     height: u32,
     codec_context: AVCodecContext,
     codec_context_open: bool,
-    consecutive_failures: u32,
+    early_failure_count: u32,
 }
 
 impl RtpFrameDecoder {
@@ -83,7 +89,7 @@ impl RtpFrameDecoder {
             height: 0,
             codec_context,
             codec_context_open: false,
-            consecutive_failures: 0,
+            early_failure_count: 0,
         })
     }
 
@@ -94,18 +100,25 @@ impl RtpFrameDecoder {
 
         if let Some(frame_data) = self.repayload.process(&packet) {
             if let Err(e) = self.decode_packet(&frame_data) {
-                self.consecutive_failures += 1;
                 // Before the first successful frame, errors are usually startup
                 // noise (e.g. VP8 interframes before the first keyframe). Once
                 // decoding has produced output, treat further errors as fatal.
-                // The probe timeout is the ultimate bound, so we do not impose a
-                // separate error-count limit that could flake under load.
                 if self.frame_count > 0 {
                     return Err(e);
                 }
-                warn!(size = frame_data.len(), "Failed to decode frame: {e}");
+                self.early_failure_count += 1;
+                if self.early_failure_count > MAX_EARLY_FAILURES {
+                    return Err(e.context(format!(
+                        "failed to decode first frame after {MAX_EARLY_FAILURES} attempts"
+                    )));
+                }
+                warn!(
+                    attempt = self.early_failure_count,
+                    size = frame_data.len(),
+                    "Failed to decode frame: {e}"
+                );
             } else {
-                self.consecutive_failures = 0;
+                self.early_failure_count = 0;
             }
         }
 
