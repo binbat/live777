@@ -14,7 +14,7 @@ runs:
     - name: Cache vcpkg (Windows)
       if: runner.os == 'Windows'
       id: cache-vcpkg
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/vcpkg
         key: vcpkg-master-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
@@ -101,7 +101,7 @@ runs:
     - name: Cache FFmpeg build (Linux)
       if: runner.os == 'Linux'
       id: cache-ffmpeg
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/ffmpeg-install
         key: ffmpeg-n8.0-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
