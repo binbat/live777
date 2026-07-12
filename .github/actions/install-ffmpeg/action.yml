@@ -39,7 +39,7 @@ runs:
         # unresolved-symbol link errors (opus_strerror, opus_multistream_*,
         # ...). With a dynamic build the codecs are baked into the av*.dll, so
         # the av* import libs are sufficient and no per-codec linking is needed.
-        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svt-av1,vpx,x264,x265]:x64-windows"
+        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svtav1,vpx,x264,x265]:x64-windows"
 
     - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
       if: runner.os == 'Windows'
