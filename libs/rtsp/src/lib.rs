@@ -5,15 +5,18 @@ pub mod headers {
 }
 
 pub mod channels;
+#[cfg(feature = "client")]
 pub mod client;
 pub mod constants;
 pub mod sdp;
+#[cfg(feature = "server")]
 pub mod server;
 pub mod tcp_stream;
 pub mod transport_manager;
 pub mod types;
 
 pub use channels::{InterleavedChannel, InterleavedData, RtspChannels};
+#[cfg(feature = "client")]
 pub use client::{AuthParams, RtspMode, RtspSession, setup_rtsp_session};
 pub use constants::{
     buffer, client as client_constants, media_type, method_str, server as server_constants, track,
@@ -23,6 +26,7 @@ pub use sdp::{
     extract_h264_params, extract_h265_params, filter_sdp, parse_codecs_from_sdp,
     parse_media_info_from_sdp,
 };
+#[cfg(feature = "server")]
 pub use server::{
     Handler, PortUpdate, RtspServer, ServerConfig, ServerSession, setup_rtsp_server_session,
 };
@@ -34,14 +38,18 @@ pub use types::{
 
 pub mod prelude {
     pub use crate::{
-        AudioCodecParams, AuthParams, CodecFingerprint, CodecInfo, Handler, InterleavedChannel,
-        InterleavedData, MediaInfo, MediaKind, MediaProfile, Message, Method, PortUpdate, Request,
-        Response, RtspChannels, RtspMode, RtspServer, RtspSession, ServerConfig, ServerSession,
+        AudioCodecParams, CodecFingerprint, CodecInfo, InterleavedChannel, InterleavedData,
+        MediaInfo, MediaKind, MediaProfile, Message, Method, Request, Response, RtspChannels,
         SessionMode, StatusCode, TransportConfig, TransportInfo, TransportManager, UdpPortInfo,
         Url, Version, VideoCodecParams,
         constants::{buffer, media_type},
         extract_h264_params, extract_h265_params, filter_sdp, headers, parse_media_info_from_sdp,
-        setup_rtsp_server_session, setup_rtsp_session,
+    };
+    #[cfg(feature = "client")]
+    pub use crate::{AuthParams, RtspMode, RtspSession, setup_rtsp_session};
+    #[cfg(feature = "server")]
+    pub use crate::{
+        Handler, PortUpdate, RtspServer, ServerConfig, ServerSession, setup_rtsp_server_session,
     };
 }
 
@@ -64,6 +72,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "client")]
     fn test_rtsp_mode_conversion() {
         let pull_mode = RtspMode::Pull;
         let session_mode = pull_mode.to_session_mode();

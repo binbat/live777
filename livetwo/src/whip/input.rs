@@ -1,15 +1,13 @@
 use anyhow::Result;
-use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::SCHEME_RTSP_CLIENT;
 use crate::protocol;
 use crate::utils;
-use crate::{SCHEME_RTSP_CLIENT, SCHEME_RTSP_SERVER};
 
 #[derive(Debug, Clone)]
 pub enum InputScheme {
-    RtspServer,
     RtspClient,
     Rtp,
 }
@@ -20,7 +18,6 @@ pub struct InputSource {
     target_host: String,
     listen_host: String,
     interleaved_channels: Option<rtsp::channels::InterleavedChannel>,
-    port_update_rx: Option<UnboundedReceiver<rtsp::PortUpdate>>,
 }
 
 impl InputSource {
@@ -36,7 +33,6 @@ impl InputSource {
             target_host,
             listen_host,
             interleaved_channels: None,
-            port_update_rx: None,
         }
     }
 
@@ -64,10 +60,6 @@ impl InputSource {
         self.interleaved_channels.take()
     }
 
-    pub fn take_port_update_rx(&mut self) -> Option<UnboundedReceiver<rtsp::PortUpdate>> {
-        self.port_update_rx.take()
-    }
-
     pub fn address_config(&self) -> (&str, &str) {
         (&self.target_host, &self.listen_host)
     }
@@ -79,12 +71,11 @@ impl InputSource {
             target_host: self.target_host.clone(),
             listen_host: self.listen_host.clone(),
             interleaved_channels: None,
-            port_update_rx: None,
         }
     }
 }
 
-pub async fn setup_input_source(ct: CancellationToken, target_url: &str) -> Result<InputSource> {
+pub async fn setup_input_source(_ct: CancellationToken, target_url: &str) -> Result<InputSource> {
     let input = utils::parse_input_url(target_url)?;
     info!("Processing input URL: {}", input);
 
@@ -92,33 +83,20 @@ pub async fn setup_input_source(ct: CancellationToken, target_url: &str) -> Resu
     info!("Target host: {}, Listen host: {}", target_host, listen_host);
 
     let scheme = match input.scheme() {
-        SCHEME_RTSP_SERVER => InputScheme::RtspServer,
         SCHEME_RTSP_CLIENT => InputScheme::RtspClient,
         _ => InputScheme::Rtp,
     };
 
-    let (media_info, final_host, final_listen_host, channels, port_update_rx) = match scheme {
-        InputScheme::RtspServer => {
-            let video_port = input.port().unwrap_or(0);
-            let (media_info, channels, port_update_rx) =
-                protocol::rtsp::setup_server_for_push(ct, &listen_host, video_port).await?;
-            (
-                media_info,
-                target_host,
-                listen_host,
-                channels,
-                Some(port_update_rx),
-            )
-        }
+    let (media_info, final_host, final_listen_host, channels) = match scheme {
         InputScheme::RtspClient => {
             let (media_info, channels) =
                 protocol::rtsp::setup_client_for_pull(target_url, &target_host).await?;
-            (media_info, target_host, listen_host, channels, None)
+            (media_info, target_host, listen_host, channels)
         }
         InputScheme::Rtp => {
             let (media_info, host) = protocol::rtp::setup_rtp_input(target_url).await?;
             let listen_host = utils::host::derive_listen_host(&host);
-            (media_info, host, listen_host, None, None)
+            (media_info, host, listen_host, None)
         }
     };
 
@@ -128,6 +106,5 @@ pub async fn setup_input_source(ct: CancellationToken, target_url: &str) -> Resu
         target_host: final_host,
         listen_host: final_listen_host,
         interleaved_channels: channels,
-        port_update_rx,
     })
 }

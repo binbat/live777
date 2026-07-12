@@ -85,6 +85,7 @@ async fn pick_tcp_port(ip: IpAddr) -> u16 {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_h264_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -113,6 +114,7 @@ async fn test_livetwo_rtsp_h264_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_h264_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -141,6 +143,7 @@ async fn test_livetwo_rtsp_h264_tcp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_h265_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -169,6 +172,7 @@ async fn test_livetwo_rtsp_h265_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_h265_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -197,6 +201,7 @@ async fn test_livetwo_rtsp_h265_tcp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp8_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -225,6 +230,7 @@ async fn test_livetwo_rtsp_vp8_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp8_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -253,6 +259,7 @@ async fn test_livetwo_rtsp_vp8_tcp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp8_ipv6_udp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
@@ -281,6 +288,7 @@ async fn test_livetwo_rtsp_vp8_ipv6_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp8_ipv6_tcp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
@@ -311,6 +319,7 @@ async fn test_livetwo_rtsp_vp8_ipv6_tcp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp9_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -341,6 +350,7 @@ async fn test_livetwo_rtsp_vp9_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp9_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -371,6 +381,7 @@ async fn test_livetwo_rtsp_vp9_tcp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -397,6 +408,7 @@ async fn test_livetwo_rtsp_opus_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -423,6 +435,7 @@ async fn test_livetwo_rtsp_opus_tcp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_g722_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -449,6 +462,7 @@ async fn test_livetwo_rtsp_g722_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_g722_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -475,6 +489,7 @@ async fn test_livetwo_rtsp_g722_tcp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp8_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -507,6 +522,7 @@ async fn test_livetwo_rtsp_vp8_opus_udp() {
 }
 
 #[tokio::test]
+#[ignore = "rtsp-listen removed from livetwo; will be reimplemented via liveion RTSP server"]
 async fn test_livetwo_rtsp_vp8_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
@@ -586,11 +602,7 @@ async fn helper_livetwo_rtsp(
     let ct = CancellationToken::new();
     let handle_whip = tokio::spawn(livetwo::whip::into(
         ct.clone(),
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, whip_port)
-        ),
+        format!("{}://{}", "rtsp-listen", SocketAddr::new(ip, whip_port)),
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         Some(format!(
@@ -646,11 +658,7 @@ async fn helper_livetwo_rtsp(
 
     let handle_whep = tokio::spawn(livetwo::whep::from(
         ct.clone(),
-        format!(
-            "{}://{}",
-            livetwo::SCHEME_RTSP_SERVER,
-            SocketAddr::new(ip, whep_port)
-        ),
+        format!("{}://{}", "rtsp-listen", SocketAddr::new(ip, whep_port)),
         format!("http://{addr}{}", api::path::whep("-")),
         None,
         None,

@@ -152,7 +152,7 @@ pub async fn from(
     let output_target = output_handle.await??;
     info!("Output target configured: {:?}", output_target.scheme());
 
-    let initial_transport_handle = start_initial_transport_task(
+    start_initial_transport_task(
         ct.clone(),
         1,
         video_broadcast_tx.subscribe(),
@@ -160,58 +160,6 @@ pub async fn from(
         output_target,
         peer.clone(),
     );
-
-    if let Some(mut port_update_rx) = initial_transport_handle.port_update_rx {
-        let peer_clone = peer.clone();
-        let video_broadcast_tx_clone = video_broadcast_tx.clone();
-        let audio_broadcast_tx_clone = audio_broadcast_tx.clone();
-        let ct_clone = ct.clone();
-        tokio::spawn(async move {
-            let mut transport_handles: Vec<tokio::task::JoinHandle<()>> =
-                vec![initial_transport_handle.task_handle];
-
-            loop {
-                tokio::select! {
-                    Some(port_update) = port_update_rx.recv() => {
-                        info!(
-                            "Port update received for connection #{}: {:?}",
-                            port_update.connection_id, port_update.media_info
-                        );
-
-                        if port_update.connection_id == 1 {
-                            continue;
-                        }
-
-                        info!(
-                            "Starting transport task for reconnection #{}",
-                            port_update.connection_id
-                        );
-                        let handle = start_transport_task(
-                            ct_clone.clone(),
-                            port_update.connection_id,
-                            video_broadcast_tx_clone.subscribe(),
-                            audio_broadcast_tx_clone.subscribe(),
-                            port_update.media_info,
-                            peer_clone.clone(),
-                        );
-
-                        transport_handles.push(handle);
-                        info!(
-                            "Transport task started for connection #{}",
-                            port_update.connection_id
-                        );
-
-                        transport_handles.retain(|h| !h.is_finished());
-                        info!("Active transport tasks: {}", transport_handles.len());
-                    }
-                    _ = ct_clone.cancelled() => {
-                        info!("Port update listener shutting down");
-                        break;
-                    }
-                }
-            }
-        });
-    }
 
     if child.as_ref().is_some() {
         let child_clone = child.clone();
@@ -268,116 +216,12 @@ async fn wait_for_codec_info(
     ))
 }
 
-struct InitialTransportHandle {
-    task_handle: tokio::task::JoinHandle<()>,
-    port_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<rtsp::PortUpdate>>,
-}
-
 fn start_initial_transport_task(
     ct: CancellationToken,
     connection_id: u32,
     mut video_rx: broadcast::Receiver<Vec<u8>>,
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
-    mut output_target: OutputTarget,
-    peer: Arc<dyn PeerConnection>,
-) -> InitialTransportHandle {
-    let port_update_rx = output_target.take_port_update_rx();
-
-    let task_handle = tokio::spawn(async move {
-        info!("Transport task #{} started", connection_id);
-
-        let (video_tx, video_rx_unbounded) = unbounded_channel();
-        let (audio_tx, audio_rx_unbounded) = unbounded_channel();
-
-        let ct_clone = ct.clone();
-        let video_forwarder = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    result = video_rx.recv() => {
-                        match result {
-                            Ok(data) => {
-                                if video_tx.send(data).is_err() {
-                                    info!("Connection #{} video channel closed", connection_id);
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                warn!(
-                                    "Connection #{} video lagged by {} messages",
-                                    connection_id, n
-                                );
-                            }
-                            Err(broadcast::error::RecvError::Closed) => {
-                                info!("Connection #{} video broadcast closed", connection_id);
-                                break;
-                            }
-                        }
-                    }
-                    _ = ct_clone.cancelled() => {
-                        info!("Connection #{} video forwarder shutting down", connection_id);
-                        break;
-                    }
-                }
-            }
-        });
-
-        let ct_clone = ct.clone();
-        let audio_forwarder = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    result = audio_rx.recv() => {
-                        match result {
-                            Ok(data) => {
-                                if audio_tx.send(data).is_err() {
-                                    info!("Connection #{} audio channel closed", connection_id);
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                warn!(
-                                    "Connection #{} audio lagged by {} messages",
-                                    connection_id, n
-                                );
-                            }
-                            Err(broadcast::error::RecvError::Closed) => {
-                                info!("Connection #{} audio broadcast closed", connection_id);
-                                break;
-                            }
-                        }
-                    }
-                    _ = ct_clone.cancelled() => {
-                        info!("Connection #{} audio forwarder shutting down", connection_id);
-                        break;
-                    }
-                }
-            }
-        });
-
-        transport::connect_webrtc_to_output(
-            video_rx_unbounded,
-            audio_rx_unbounded,
-            output_target,
-            peer,
-        )
-        .await;
-
-        let _ = tokio::join!(video_forwarder, audio_forwarder);
-
-        info!("Transport task #{} stopped", connection_id);
-    });
-
-    InitialTransportHandle {
-        task_handle,
-        port_update_rx,
-    }
-}
-
-fn start_transport_task(
-    ct: CancellationToken,
-    connection_id: u32,
-    mut video_rx: broadcast::Receiver<Vec<u8>>,
-    mut audio_rx: broadcast::Receiver<Vec<u8>>,
-    media_info: rtsp::MediaInfo,
+    output_target: OutputTarget,
     peer: Arc<dyn PeerConnection>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -449,8 +293,6 @@ fn start_transport_task(
                 }
             }
         });
-
-        let output_target = OutputTarget::from_media_info(media_info);
 
         transport::connect_webrtc_to_output(
             video_rx_unbounded,

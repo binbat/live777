@@ -9,6 +9,5 @@ pub mod whip;
 mod test;
 
 pub const PREFIX_LIB: &str = "WEBRTC";
-pub const SCHEME_RTSP_SERVER: &str = "rtsp-listen";
 pub const SCHEME_RTSP_CLIENT: &str = "rtsp";
 pub const SCHEME_RTP_SDP: &str = "sdp";
