@@ -105,16 +105,22 @@ async fn answer_payload_type(peer: &Arc<dyn PeerConnection>, codec: &RTCRtpCodec
         // The answer lists PTs in order of preference; use the first one that
         // matches our codec name, clock rate and fmtp parameters.
         for pt_str in &media.media_name.formats {
-            let pt: u8 = pt_str.parse().ok()?;
+            let Ok(pt) = pt_str.parse::<u8>() else {
+                continue;
+            };
             let rtpmap_prefix = format!("{pt} ");
-            let rtpmap = media.attributes.iter().find(|attr| {
+            let Some(rtpmap) = media.attributes.iter().find(|attr| {
                 attr.key == "rtpmap"
                     && attr
                         .value
                         .as_ref()
                         .is_some_and(|v| v.starts_with(&rtpmap_prefix))
-            })?;
-            let value = rtpmap.value.as_ref()?;
+            }) else {
+                continue;
+            };
+            let Some(value) = rtpmap.value.as_ref() else {
+                continue;
+            };
             let mut parts = value.split_whitespace();
             let _pt = parts.next()?;
             let codec_spec = parts.next()?;
