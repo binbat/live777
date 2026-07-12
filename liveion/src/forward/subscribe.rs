@@ -1294,7 +1294,7 @@ mod tests {
             mime_type: "video/AV1".to_string(),
             clock_rate: 90000,
             channels: 0,
-            sdp_fmtp_line: "profile=0;level-idx=8;tier=0".to_string(),
+            sdp_fmtp_line: "profile=0;level-idx=3;tier=0".to_string(),
             rtcp_feedback: vec![],
         };
 

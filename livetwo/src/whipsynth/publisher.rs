@@ -430,13 +430,17 @@ async fn create_peer(
         diagnostics: diagnostics.clone(),
     });
 
-    let ice_config = RTCConfigurationBuilder::new()
-        .with_ice_servers(vec![RTCIceServer {
-            urls: vec![config.stun_server.clone()],
-            username: "".to_string(),
-            credential: "".to_string(),
-        }])
-        .build();
+    let ice_config = if config.stun_server.trim().is_empty() {
+        RTCConfigurationBuilder::new().build()
+    } else {
+        RTCConfigurationBuilder::new()
+            .with_ice_servers(vec![RTCIceServer {
+                urls: vec![config.stun_server.clone()],
+                username: "".to_string(),
+                credential: "".to_string(),
+            }])
+            .build()
+    };
 
     let peer: Arc<dyn PeerConnection> = Arc::new(
         PeerConnectionBuilder::new()

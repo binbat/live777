@@ -112,7 +112,7 @@ impl Source for WhipgenSource {
             // Tests only need a few seconds of media; 30 s wastes time and
             // keeps the publisher alive after teardown.
             duration: Some(Duration::from_secs(10)),
-            stun_server: "stun:stun.l.google.com:19302".to_owned(),
+            stun_server: String::new(),
         };
 
         let handle = tokio::spawn(async move {
