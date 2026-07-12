@@ -21,7 +21,7 @@ use crate::payload::{Forward, RePayload, RePayloadCodec};
 
 const SENDER_PT_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Parse a fmtp string into key/value pairs.
+/// Parse a semicolon-separated fmtp string into key/value pairs.
 fn parse_fmtp(fmtp: &str) -> Vec<(&str, &str)> {
     fmtp.split(';')
         .map(|part| part.trim())
@@ -35,15 +35,20 @@ fn parse_fmtp(fmtp: &str) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// Check whether `candidate_fmtp` satisfies all parameters in `codec_fmtp`.
-fn fmtp_compatible(candidate_fmtp: &str, codec_fmtp: &str) -> bool {
-    if codec_fmtp.is_empty() {
+/// Check whether `offered_fmtp` satisfies all parameters in `required_fmtp`.
+///
+/// In SDP negotiation the remote answer may include additional parameters
+/// beyond what our local codec declared (e.g. `level-idx` or `tier` for AV1),
+/// so extra keys in `offered_fmtp` are ignored. Any parameter that appears in
+/// `required_fmtp` must be present in `offered_fmtp` with the exact same value.
+fn fmtp_satisfies(required_fmtp: &str, offered_fmtp: &str) -> bool {
+    if required_fmtp.is_empty() {
         return true;
     }
-    let candidate = parse_fmtp(candidate_fmtp);
-    parse_fmtp(codec_fmtp)
+    let offered = parse_fmtp(offered_fmtp);
+    parse_fmtp(required_fmtp)
         .iter()
-        .all(|(key, value)| candidate.iter().any(|(k, v)| k == key && v == value))
+        .all(|(key, value)| offered.iter().any(|(k, v)| k == key && v == value))
 }
 
 /// Resolve the negotiated payload type for a sender's track codec.
@@ -149,7 +154,7 @@ async fn answer_payload_type(peer: &Arc<dyn PeerConnection>, codec: &RTCRtpCodec
                     .and_then(|attr| attr.value.as_ref())
                     .map(|v| v.strip_prefix(&fmtp_prefix).unwrap_or(v))
                     .unwrap_or_default();
-                if !fmtp_compatible(candidate_fmtp, &codec.sdp_fmtp_line) {
+                if !fmtp_satisfies(&codec.sdp_fmtp_line, candidate_fmtp) {
                     continue;
                 }
             }
@@ -429,5 +434,42 @@ mod tests {
 
         assert_eq!(error_kind, "dtls_not_started");
         assert!(!is_fatal_write_rtp_error_kind(error_kind));
+    }
+
+    #[test]
+    fn fmtp_satisfies_empty_required_is_always_compatible() {
+        assert!(fmtp_satisfies("", "profile-id=0"));
+        assert!(fmtp_satisfies("", ""));
+    }
+
+    #[test]
+    fn fmtp_satisfies_requires_exact_value_match() {
+        assert!(fmtp_satisfies("profile-id=0", "profile-id=0"));
+        assert!(!fmtp_satisfies("profile-id=0", "profile-id=2"));
+    }
+
+    #[test]
+    fn fmtp_satisfies_ignores_extra_offered_parameters() {
+        // The remote answer may be more specific than our local codec.
+        assert!(fmtp_satisfies(
+            "profile-id=0",
+            "profile-id=0;level-idx=5;tier=0"
+        ));
+    }
+
+    #[test]
+    fn fmtp_satisfies_requires_all_required_parameters() {
+        assert!(!fmtp_satisfies(
+            "profile-id=0;level-idx=5",
+            "profile-id=0"
+        ));
+    }
+
+    #[test]
+    fn parse_fmtp_handles_whitespace_and_empty_parts() {
+        assert_eq!(
+            parse_fmtp("profile-id=0 ; level-idx=5;;"),
+            vec![("profile-id", "0"), ("level-idx", "5")]
+        );
     }
 }
