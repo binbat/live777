@@ -20,6 +20,7 @@ pub struct ForwardInfo {
 pub struct SessionInfo {
     pub id: String,
     pub create_at: i64,
+    pub leave_at: i64,
     pub state: RTCPeerConnectionState,
     pub cascade: Option<CascadeInfo>,
     pub has_data_channel: bool,

@@ -1,6 +1,6 @@
 import { useState, useRef, useImperativeHandle } from 'preact/hooks';
 import { TargetedEvent, forwardRef } from 'preact/compat';
-import { Button, Input, Modal } from 'react-daisyui';
+import { Input, Modal } from 'react-daisyui';
 
 import { createStream } from '../api';
 
@@ -90,8 +90,8 @@ export const NewStreamDialog = forwardRef<INewStreamDialog, Props>((props, ref) 
             </Modal.Body>
             <Modal.Actions>
                 <form method="dialog" className="flex gap-2">
-                    <Button type="button" onClick={onConfirmNewStreamId}>Confirm</Button>
-                    <Button type="button" onClick={closeDialog}>Cancel</Button>
+                    <button type="button" className="btn" onClick={onConfirmNewStreamId}>Confirm</button>
+                    <button type="button" className="btn" onClick={closeDialog}>Cancel</button>
                 </form>
             </Modal.Actions>
         </Modal>

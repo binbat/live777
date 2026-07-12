@@ -70,6 +70,7 @@ impl PublishRTCPeerConnection {
         SessionInfo {
             id: self.id.clone(),
             create_at: self.create_at,
+            leave_at: 0,
             state,
             cascade: self.cascade.clone(),
             has_data_channel: self.media_info.has_data_channel,

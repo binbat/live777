@@ -4,9 +4,10 @@ import { type ReactNode } from 'preact/compat';
 import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
-import { type CapabilityProbeStatus, type Stream, deleteStream, getRecordingStatus, getStreams, probeRecorderFeature, startRecording, stopRecording } from '../api';
+import { type CapabilityProbeStatus, type SessionConnectionState, type Stream, deleteStream, getRecordingStatus, getStreams, parseStreamsSSE, probeRecorderFeature, startRecording, stopRecording } from '../api';
 import { formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
+import { useStreamSSE } from '../hooks/use-stream-sse';
 import { TokenContext } from '../context';
 
 import { type IClientsDialog, ClientsDialog } from './dialog-clients';
@@ -24,8 +25,15 @@ async function getStreamsSorted(): Promise<Stream[]> {
     }
 }
 
+const ACTIVE_STATES: SessionConnectionState[] = ['new', 'connecting', 'connected'];
+
+function countActiveSessions(sessions: { state: SessionConnectionState }[]): number {
+    return sessions.filter(s => ACTIVE_STATES.includes(s.state)).length;
+}
+
 export interface StreamTableProps {
     getStreams?: () => Promise<Stream[]>;
+    streamsSSEUrl?: string;
     getWhepUrl?: (streamId: string) => string;
     getWhipUrl?: (streamId: string) => string;
     showCascade?: boolean;
@@ -39,8 +47,62 @@ export interface StreamTableProps {
     };
 }
 
+interface StreamsDataSource {
+    data: Stream[];
+    isRefreshing: boolean;
+    updateData: () => void;
+    toggleTimer: () => void;
+    connectionStatus?: 'connected' | 'connecting' | 'reconnecting' | 'disconnected' | 'error';
+}
+
+function useStreamsDataSource(
+    getStreams: () => Promise<Stream[]>,
+    streamsSSEUrl: string | undefined,
+    token: string,
+): StreamsDataSource {
+    const [sseEnabled, setSseEnabled] = useState(true);
+    const sse = useStreamSSE(
+        {
+            url: streamsSSEUrl ?? null,
+            token,
+            parse: parseStreamsSSE,
+            enabled: sseEnabled,
+        },
+        [],
+    );
+    const polling = useRefreshTimer([], getStreams);
+
+    if (streamsSSEUrl) {
+        let connectionStatus: StreamsDataSource['connectionStatus'] = 'connecting';
+        if (!sseEnabled) {
+            connectionStatus = 'disconnected';
+        } else if (sse.error) {
+            connectionStatus = 'error';
+        } else if (sse.connected) {
+            connectionStatus = 'connected';
+        } else if (sse.reconnecting) {
+            connectionStatus = 'reconnecting';
+        }
+
+        return {
+            data: sse.data,
+            isRefreshing: sseEnabled,
+            updateData: sse.reconnect,
+            toggleTimer: () => setSseEnabled(enabled => !enabled),
+            connectionStatus,
+        };
+    }
+
+    return polling;
+}
+
 export function StreamsTable(props: StreamTableProps) {
-    const streams = useRefreshTimer([], props.getStreams ?? getStreamsSorted);
+    const tokenContext = useContext(TokenContext);
+    const streams = useStreamsDataSource(
+        props.getStreams ?? getStreamsSorted,
+        props.streamsSSEUrl,
+        tokenContext.token,
+    );
     const [selectedStreamId, setSelectedStreamId] = useState('');
     const refCascadePull = useRef<ICascadeDialog>(null);
     const refCascadePush = useRef<ICascadeDialog>(null);
@@ -52,7 +114,6 @@ export function StreamsTable(props: StreamTableProps) {
     const [previewStreams, setPreviewStreams] = useState<string[]>([]);
     const [previewStreamId, setPreviewStreamId] = useState('');
     const refPreviewStreams = useRef<Map<string, IPreviewDialog>>(new Map());
-    const tokenContext = useContext(TokenContext);
     const features = {
         player: true,
         debugger: true,
@@ -271,6 +332,19 @@ export function StreamsTable(props: StreamTableProps) {
                     >Cascade Pull
                     </Button>
                 ) : null}
+                {streams.connectionStatus ? (
+                    <span
+                        title={`SSE ${streams.connectionStatus}`}
+                        className={`
+                            inline-block size-2 rounded-full
+                            ${streams.connectionStatus === 'connected' ? 'bg-success' : ''}
+                            ${streams.connectionStatus === 'connecting' ? 'bg-warning animate-pulse' : ''}
+                            ${streams.connectionStatus === 'reconnecting' ? 'bg-base-300 animate-pulse' : ''}
+                            ${streams.connectionStatus === 'error' ? 'bg-error' : ''}
+                            ${streams.connectionStatus === 'disconnected' ? 'bg-base-300' : ''}
+                        `}
+                    />
+                ) : null}
                 <Button
                     size="sm"
                     color="ghost"
@@ -298,9 +372,9 @@ export function StreamsTable(props: StreamTableProps) {
                     {streams.data.length > 0 ? streams.data.map(i =>
                         <Table.Row>
                             <span>{i.id}</span>
-                            <span>{i.publish.sessions.length}</span>
-                            <span>{i.subscribe.sessions.length}</span>
-                            <span>{i.publish.sessions.filter(t => t.cascade).length + i.subscribe.sessions.filter(t => t.cascade).length}</span>
+                            <span>{countActiveSessions(i.publish.sessions)}</span>
+                            <span>{countActiveSessions(i.subscribe.sessions)}</span>
+                            <span>{countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade))}</span>
                             <span>{formatTime(i.createdAt)}</span>
                             <div className="flex gap-1">
                                 <Button
