@@ -543,6 +543,15 @@ impl PublishTrackRemote {
         }
     }
 
+    #[cfg(feature = "rtsp")]
+    pub(crate) async fn source_ssrc(&self) -> u32 {
+        match self {
+            Self::Real { track, .. } => track.ssrcs().await.first().copied().unwrap_or(0),
+            #[cfg(feature = "source")]
+            Self::Virtual(v) => v.ssrc(),
+        }
+    }
+
     #[cfg(feature = "source")]
     pub(crate) fn inject_rtp(&self, packet: Arc<Packet>) -> Result<(), String> {
         match self {

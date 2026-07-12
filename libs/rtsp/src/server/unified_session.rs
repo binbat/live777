@@ -58,6 +58,12 @@ pub trait SessionHandler: Send + Sync + 'static {
         media_info: MediaInfo,
         endpoint: SessionEndpoint,
     ) -> Result<()>;
+
+    /// Called for every incoming RTCP packet (UDP RTCP port or TCP interleaved
+    /// odd channel). The default implementation ignores it.
+    async fn on_rtcp(&self, _path: String, _data: Vec<u8>) -> Result<()> {
+        Ok(())
+    }
 }
 
 enum ServerSide {
@@ -287,8 +293,9 @@ impl<H: SessionHandler> RtspServerSession<H> {
             }
         };
 
+        let app_handler = self.app_handler.clone();
         self.app_handler
-            .on_session(path, self.mode, media_info, endpoint)
+            .on_session(path.clone(), self.mode, media_info, endpoint)
             .await?;
 
         let stream = self.stream;
@@ -321,10 +328,16 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         }
                     }
                 });
-                // Drain incoming RTCP/TEARDOWN frames so the read half stays alive.
-                tokio::spawn(
-                    async move { while let Some(_data) = data_from_stream_rx.recv().await {} },
-                );
+                // Handle incoming RTCP/TEARDOWN frames so the read half stays alive.
+                tokio::spawn(async move {
+                    while let Some((channel, data)) = data_from_stream_rx.recv().await {
+                        if channel % 2 != 0
+                            && app_handler.on_rtcp(path.clone(), data).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
             }
         }
 
@@ -343,14 +356,24 @@ impl<H: SessionHandler> RtspServerSession<H> {
             }
         };
 
+        let app_handler = self.app_handler.clone();
         self.app_handler
-            .on_session(path, self.mode, media_info.clone(), endpoint)
+            .on_session(path.clone(), self.mode, media_info.clone(), endpoint)
             .await?;
 
         let client_addr = self.addr;
         let mode = self.mode;
         tokio::spawn(async move {
-            if let Err(e) = run_udp_transfer(mode, client_addr, media_info, server_side).await {
+            if let Err(e) = run_udp_transfer(
+                mode,
+                client_addr,
+                media_info,
+                server_side,
+                app_handler,
+                path,
+            )
+            .await
+            {
                 error!("UDP transfer error: {}", e);
             }
         });
@@ -509,6 +532,8 @@ async fn run_udp_transfer(
     client_addr: SocketAddr,
     media_info: MediaInfo,
     server_side: ServerSide,
+    app_handler: Arc<dyn SessionHandler>,
+    path: String,
 ) -> Result<()> {
     match mode {
         SessionMode::Push => {
@@ -552,7 +577,7 @@ async fn run_udp_transfer(
                 });
             }
 
-            drain_rtcp_ports(&client_addr, &media_info).await?;
+            drain_rtcp_ports(&client_addr, &media_info, app_handler, path).await?;
         }
         SessionMode::Pull => {
             let ServerSide::Pull(mut rx) = server_side else {
@@ -564,17 +589,21 @@ async fn run_udp_transfer(
             let mut channel_map: HashMap<u8, u16> = HashMap::new();
             if let Some(TransportInfo::Udp {
                 rtp_send_port: Some(port),
+                rtcp_send_port: Some(rtcp_port),
                 ..
             }) = media_info.video_transport
             {
                 channel_map.insert(0, port);
+                channel_map.insert(1, rtcp_port);
             }
             if let Some(TransportInfo::Udp {
                 rtp_send_port: Some(port),
+                rtcp_send_port: Some(rtcp_port),
                 ..
             }) = media_info.audio_transport
             {
                 channel_map.insert(2, port);
+                channel_map.insert(3, rtcp_port);
             }
 
             tokio::spawn(async move {
@@ -588,14 +617,19 @@ async fn run_udp_transfer(
                 }
             });
 
-            drain_rtcp_ports(&client_addr, &media_info).await?;
+            drain_rtcp_ports(&client_addr, &media_info, app_handler, path).await?;
         }
     }
 
     Ok(())
 }
 
-async fn drain_rtcp_ports(client_addr: &SocketAddr, media_info: &MediaInfo) -> Result<()> {
+async fn drain_rtcp_ports(
+    client_addr: &SocketAddr,
+    media_info: &MediaInfo,
+    app_handler: Arc<dyn SessionHandler>,
+    path: String,
+) -> Result<()> {
     let transports = [
         media_info.video_transport.as_ref(),
         media_info.audio_transport.as_ref(),
@@ -607,9 +641,16 @@ async fn drain_rtcp_ports(client_addr: &SocketAddr, media_info: &MediaInfo) -> R
         } = transport
         {
             let socket = bind_udp(client_addr, *port).await?;
+            let app_handler = app_handler.clone();
+            let path = path.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 2048];
-                while socket.recv_from(&mut buf).await.is_ok() {}
+                while let Ok((n, _)) = socket.recv_from(&mut buf).await {
+                    let data = buf[..n].to_vec();
+                    if app_handler.on_rtcp(path.clone(), data).await.is_err() {
+                        break;
+                    }
+                }
             });
         }
     }

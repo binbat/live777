@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
@@ -10,8 +11,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::RtspConfig;
+use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::PublishTrackRemote;
 use crate::stream::manager::Manager;
+use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 
 const DEFAULT_PUSH_STREAM: &str = "rtsp-push";
 const DEFAULT_PULL_STREAM: &str = "rtsp-pull";
@@ -210,11 +214,14 @@ impl rtsp::server::SessionHandler for PullHandler {
             // Assign fixed interleaved channels: video RTP=0, video RTCP=1,
             // audio RTP=2, audio RTCP=3.
             for track in tracks {
-                let channel = match track.kind() {
+                let rtp_channel = match track.kind() {
                     RtpCodecKind::Video => 0u8,
                     RtpCodecKind::Audio => 2u8,
                     _ => continue,
                 };
+                let rtcp_channel = rtp_channel + 1;
+
+                // RTP forward.
                 let tx_clone = tx.clone();
                 let mut packet_rx = track.subscribe();
                 tokio::spawn(async move {
@@ -223,13 +230,90 @@ impl rtsp::server::SessionHandler for PullHandler {
                         if Marshal::marshal_to(&*packet, &mut buf).is_err() {
                             continue;
                         }
-                        if tx_clone.send((channel, buf)).is_err() {
+                        if tx_clone.send((rtp_channel, buf)).is_err() {
                             break;
+                        }
+                    }
+                });
+
+                // RTCP sender reports.
+                let tx_clone = tx.clone();
+                let track = track.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    loop {
+                        interval.tick().await;
+                        if let Some(packet) = track.generate_sender_report() {
+                            match packet.marshal() {
+                                Ok(buf) => {
+                                    if tx_clone.send((rtcp_channel, buf.to_vec())).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("Failed to marshal sender report: {}", e);
+                                }
+                            }
                         }
                     }
                 });
             }
         });
+
+        Ok(())
+    }
+
+    async fn on_rtcp(&self, path: String, data: Vec<u8>) -> Result<()> {
+        let stream_id = stream_id_from_path(path, DEFAULT_PULL_STREAM);
+        let packets = match rtc_rtcp::packet::unmarshal(&mut data.as_slice()) {
+            Ok(packets) => packets,
+            Err(e) => {
+                debug!("Failed to parse RTCP for stream {}: {}", stream_id, e);
+                return Ok(());
+            }
+        };
+
+        let Some(forward) = self.manager.get_forward(&stream_id).await else {
+            return Ok(());
+        };
+
+        for packet in packets {
+            let any = packet.as_any();
+            let (is_pli, media_ssrc) =
+                if let Some(pli) = any.downcast_ref::<PictureLossIndication>() {
+                    (true, pli.media_ssrc)
+                } else if let Some(fir) = any.downcast_ref::<FullIntraRequest>() {
+                    (false, fir.media_ssrc)
+                } else {
+                    continue;
+                };
+
+            let tracks = forward.internal.publish_tracks.read().await;
+            let mut matches = false;
+            for t in tracks.iter() {
+                if t.kind() == RtpCodecKind::Video && t.source_ssrc().await == media_ssrc {
+                    matches = true;
+                    break;
+                }
+            }
+            drop(tracks);
+
+            if matches {
+                let msg = if is_pli {
+                    RtcpMessage::PictureLossIndication
+                } else {
+                    RtcpMessage::_FullIntraRequest
+                };
+                let _ = forward
+                    .internal
+                    .publish_rtcp_channel
+                    .send((msg, media_ssrc));
+                debug!(
+                    "Forwarded RTCP keyframe request {:?} for stream {} ssrc {}",
+                    msg, stream_id, media_ssrc
+                );
+            }
+        }
 
         Ok(())
     }
