@@ -180,7 +180,7 @@ pub struct Av1RtpParser {
     depacketizer: Av1Depacketizer,
     accumulator: BytesMut,
     expected_seq: Option<u16>,
-    last_timestamp: u32,
+    last_timestamp: Option<u32>,
 }
 
 impl Default for Av1RtpParser {
@@ -195,7 +195,7 @@ impl Av1RtpParser {
             depacketizer: Av1Depacketizer::new(),
             accumulator: BytesMut::new(),
             expected_seq: None,
-            last_timestamp: 0,
+            last_timestamp: None,
         }
     }
 
@@ -203,7 +203,7 @@ impl Av1RtpParser {
         self.depacketizer = Av1Depacketizer::new();
         self.accumulator.clear();
         self.expected_seq = None;
-        self.last_timestamp = 0;
+        self.last_timestamp = None;
     }
 
     pub fn push_packet(&mut self, pkt: &Packet) -> Result<Option<BytesMut>> {
@@ -222,23 +222,32 @@ impl Av1RtpParser {
         self.expected_seq = Some(pkt.header.sequence_number.wrapping_add(1));
 
         // Timestamp discontinuity also indicates a new temporal unit or lost
-        // stream state.
-        if self.last_timestamp != 0 && pkt.header.timestamp != self.last_timestamp {
+        // stream state. Use Option rather than sentinel 0, since RTP timestamp
+        // 0 is a legitimate value.
+        if let Some(last) = self.last_timestamp
+            && pkt.header.timestamp != last
+        {
             if !self.accumulator.is_empty() {
                 tracing::debug!(
                     "[av1-rtp] timestamp discontinuity ({} -> {}); dropping incomplete temporal unit",
-                    self.last_timestamp,
+                    last,
                     pkt.header.timestamp
                 );
             }
             self.reset();
         }
-        self.last_timestamp = pkt.header.timestamp;
+        self.last_timestamp = Some(pkt.header.timestamp);
 
-        let obus = self
-            .depacketizer
-            .depacketize(&pkt.payload)
-            .map_err(|e| anyhow!("AV1 depacketization failed: {e}"))?;
+        // On depacketization failure the parser's internal state (depacketizer
+        // buffer, accumulator) is indeterminate; reset before propagating so a
+        // malformed packet can't corrupt the next temporal unit.
+        let obus = match self.depacketizer.depacketize(&pkt.payload) {
+            Ok(obus) => obus,
+            Err(e) => {
+                self.reset();
+                return Err(anyhow!("AV1 depacketization failed: {e}"));
+            }
+        };
 
         if !obus.is_empty() {
             if self.accumulator.len() + obus.len() > MAX_TEMPORAL_UNIT_SIZE {
@@ -254,11 +263,10 @@ impl Av1RtpParser {
         // A temporal unit is complete when the RTP marker bit is set and the
         // last OBU does not continue into the next packet (Y flag is false).
         if pkt.header.marker && self.depacketizer.y {
-            tracing::warn!(
-                "[av1-rtp] marker set but last OBU continues (Y=1); malformed packet, dropping"
-            );
             self.reset();
-            return Ok(None);
+            return Err(anyhow!(
+                "marker set but last OBU continues (Y=1); malformed packet, temporal unit dropped"
+            ));
         }
 
         if pkt.header.marker {
@@ -761,6 +769,10 @@ fn build_av1c_record(info: &SequenceHeader, sequence_header_with_size: &[u8]) ->
 
 #[cfg(test)]
 mod tests {
+    use super::{Av1RtpParser, ColorConfig, SequenceHeader, build_av1c_record, read_leb128};
+    use bytes::{Bytes, BytesMut};
+    use rtc_rtp::packet::Packet;
+
     const SHORT_OBU: &[u8] = &[
         0x0a, 0x0e, 0x00, 0x00, 0x00, 0x4a, 0xab, 0xbf, 0xc3, 0x77, 0x6b, 0xe4, 0x40, 0x40, 0x40,
         0x41,
@@ -846,10 +858,6 @@ mod tests {
         );
         assert_eq!(result.unwrap().to_vec(), obu.to_vec());
     }
-
-    use super::{Av1RtpParser, ColorConfig, SequenceHeader, build_av1c_record, read_leb128};
-    use bytes::{Bytes, BytesMut};
-    use rtc_rtp::packet::Packet;
 
     #[test]
     fn leb128_decoding_examples() {
