@@ -167,6 +167,7 @@ recorder = ["liveion/recorder", "liveman/recorder"]
 source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
 source-all = ["liveion/source-all"]
+rtsp = ["liveion/rtsp"]
 
 # Native source infrastructure (required by all capture-/encoder-* features)
 native-source = ["liveion/native-source"]

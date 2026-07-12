@@ -141,6 +141,11 @@ impl SourceManager {
 
         let has_video = video_codec.is_some();
         let has_audio = audio_codec.is_some();
+        #[cfg(any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "native-source"
+        ))]
         let video_codec_name = video_codec.as_ref().and_then(|c| {
             c.rtp_codec
                 .mime_type
@@ -210,6 +215,11 @@ impl SourceManager {
             forward,
             has_video,
             has_audio,
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "native-source"
+            ))]
             video_codec_name,
         );
 

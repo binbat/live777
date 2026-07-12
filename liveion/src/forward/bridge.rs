@@ -1,11 +1,18 @@
 use super::PeerForward;
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "native-source"
+))]
 use crate::forward::av1_repacketizer::Av1Repacketizer;
 use crate::forward::rtcp::RtcpMessage;
 use crate::stream::source::{MediaPacket, StateChangeEvent};
 use anyhow::Result;
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 use anyhow::anyhow;
-use rtc::shared::marshal::{Marshal, Unmarshal};
+use rtc::shared::marshal::Marshal;
+#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+use rtc::shared::marshal::Unmarshal;
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
 use rtc_rtp::packet::Packet;
 use std::sync::Arc;
@@ -83,6 +90,11 @@ pub struct SourceBridge {
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 
     channel_mapping: ChannelMapping,
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "native-source"
+    ))]
     av1_repacketizer: Option<Av1Repacketizer>,
 
     #[cfg(feature = "source")]
@@ -97,9 +109,19 @@ impl SourceBridge {
         forward: PeerForward,
         has_video: bool,
         has_audio: bool,
+        #[cfg(any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "native-source"
+        ))]
         video_codec_name: Option<String>,
     ) -> Self {
         let channel_mapping = ChannelMapping::new(has_video, has_audio);
+        #[cfg(any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "native-source"
+        ))]
         let av1_repacketizer = video_codec_name
             .as_deref()
             .map(|name| name.eq_ignore_ascii_case("AV1"))
@@ -112,6 +134,11 @@ impl SourceBridge {
             tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             shutdown_tx: None,
             channel_mapping,
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "native-source"
+            ))]
             av1_repacketizer,
             #[cfg(feature = "source")]
             rtcp_to_source_tx: None,
@@ -159,6 +186,11 @@ impl SourceBridge {
         let source_id_clone = self.source_id.clone();
         let mut shutdown_rx1 = shutdown_tx.subscribe();
         let channel_mapping = self.channel_mapping;
+        #[cfg(any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "native-source"
+        ))]
         let mut av1_repacketizer = self.av1_repacketizer.take();
 
         let rtp_task = tokio::spawn(async move {

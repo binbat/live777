@@ -686,7 +686,10 @@ impl Manager {
     }
 
     #[cfg(feature = "source")]
-    async fn get_or_create_forward(&self, stream_id: &str) -> crate::forward::PeerForward {
+    pub(crate) async fn get_or_create_forward(
+        &self,
+        stream_id: &str,
+    ) -> crate::forward::PeerForward {
         let mut stream_map = self.stream_map.write().await;
 
         if let Some(forward) = stream_map.get(stream_id) {
@@ -730,8 +733,7 @@ impl Manager {
         self.event_sender.subscribe()
     }
 
-    #[cfg(feature = "recorder")]
-    pub async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
+    pub(crate) async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
         let map = self.stream_map.read().await;
         map.get(stream).cloned()
     }
