@@ -57,7 +57,7 @@ impl ProbeBackend for RsmpegProbe {
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(RTCPeerConnectionState::New);
         // Use a bounded channel so a slow decoder cannot cause unbounded memory
         // growth. Backpressure will propagate to the WebRTC track reader.
-        let (video_tx, mut video_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+        let (video_tx, mut video_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
         // The rsmpeg probe only decodes video; give audio a small bounded
         // channel and drain it so audio RTP does not accumulate in the WebRTC
         // stack and spam the logs with drop warnings.

@@ -28,7 +28,9 @@ pub struct RsmpegWhepReceiver {
 impl Default for RsmpegWhepReceiver {
     fn default() -> Self {
         Self {
-            timeout_seconds: 10,
+            // CI runners can be slow to start the decoder and receive the first
+            // keyframe; give the probe a generous budget.
+            timeout_seconds: 20,
             codec: None,
             sprop_params: None,
         }
@@ -38,7 +40,7 @@ impl Default for RsmpegWhepReceiver {
 impl RsmpegWhepReceiver {
     pub fn with_codec_and_sprop(codec: Codec, sprop_params: String) -> Self {
         Self {
-            timeout_seconds: 10,
+            timeout_seconds: 20,
             codec: Some(codec),
             sprop_params: Some(sprop_params),
         }
