@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -117,7 +118,8 @@ impl<H: SessionHandler> RtspServerSession<H> {
         let mut audio_channels: Option<(u8, u8)> = None;
         let mut video_ports: Option<(u16, u16, u16, u16)> = None;
         let mut audio_ports: Option<(u16, u16, u16, u16)> = None;
-        let mut actual_use_tcp = false;
+        let mut established_transport: Option<bool> = None;
+        let session_cancel = CancellationToken::new();
 
         loop {
             let request = self.read_request().await?;
@@ -171,6 +173,23 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     let client_wants_tcp =
                         transport_str.contains("TCP") || transport_str.contains("interleaved");
 
+                    if let Some(prev) = established_transport {
+                        if prev != client_wants_tcp {
+                            warn!(
+                                "Rejecting SETUP for {}: mixed TCP/UDP transport is not supported",
+                                self.addr
+                            );
+                            let response =
+                                Response::builder(Version::V1_0, StatusCode::UnsupportedTransport)
+                                    .header(headers::CSEQ, self.handler.cseq().to_string())
+                                    .empty();
+                            self.send_response(&response.map_body(|_| vec![])).await?;
+                            return Err(anyhow!("Mixed TCP/UDP transport is not supported"));
+                        }
+                    } else {
+                        established_transport = Some(client_wants_tcp);
+                    }
+
                     let uri = request
                         .request_uri()
                         .map(|u| u.to_string())
@@ -186,7 +205,6 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     };
 
                     if client_wants_tcp {
-                        actual_use_tcp = true;
                         let (response, rtp_ch, rtcp_ch) = self.handle_setup_tcp(&request).await?;
 
                         if is_video {
@@ -199,7 +217,6 @@ impl<H: SessionHandler> RtspServerSession<H> {
 
                         self.send_response(&response).await?;
                     } else {
-                        actual_use_tcp = false;
                         let (response, client_rtp, client_rtcp, server_rtp, server_rtcp) =
                             self.handle_setup_udp(&request).await?;
 
@@ -239,7 +256,8 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     };
                     self.send_response(&response).await?;
 
-                    let media_info = if actual_use_tcp {
+                    let use_tcp = established_transport.unwrap_or(false);
+                    let media_info = if use_tcp {
                         self.build_media_info_tcp(video_channels, audio_channels)?
                     } else {
                         self.build_media_info_udp(video_ports, audio_ports)?
@@ -248,18 +266,24 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     info!("MediaInfo: {:?}", media_info);
 
                     let p = path.clone().unwrap_or_default();
-                    if actual_use_tcp {
+                    if use_tcp {
                         self.start_tcp_data_transfer(p, media_info.clone(), session_mode)
                             .await?;
                     } else {
-                        self.start_udp_data_transfer(p, media_info.clone(), session_mode)
-                            .await?;
+                        self.start_udp_data_transfer(
+                            p,
+                            media_info.clone(),
+                            session_mode,
+                            session_cancel.clone(),
+                        )
+                        .await?;
                     }
                     return Ok(media_info);
                 }
                 Method::Teardown => {
                     let response = self.handler.handle_teardown(&request).await?;
                     self.send_response(&response).await?;
+                    session_cancel.cancel();
                 }
                 _ => {
                     warn!("Unsupported method: {:?}", request.method());
@@ -378,6 +402,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         path: String,
         media_info: MediaInfo,
         session_mode: SessionMode,
+        cancel: CancellationToken,
     ) -> Result<()> {
         const DATA_CHANNEL_CAPACITY: usize = 1024;
         let (data_to_stream_tx, data_to_stream_rx) =
@@ -405,6 +430,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         let client_addr = self.addr;
         let video_sockets = self.video_udp_sockets.take();
         let audio_sockets = self.audio_udp_sockets.take();
+        let run_cancel = cancel.clone();
         tokio::spawn(async move {
             if let Err(e) = run_udp_transfer(
                 session_mode,
@@ -416,6 +442,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 path,
                 video_sockets,
                 audio_sockets,
+                run_cancel,
             )
             .await
             {
@@ -428,6 +455,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         // Minimal RTSP message handling: respond to OPTIONS/GET_PARAMETER and
         // honour TEARDOWN so clients can close cleanly.
         let stream = self.stream;
+        let control_cancel = cancel.clone();
         tokio::spawn(async move {
             let (mut read_half, mut write_half) = tokio::io::split(stream);
             let mut buffer = Vec::with_capacity(4096);
@@ -471,6 +499,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 }
             }
             let _ = write_half.shutdown().await;
+            control_cancel.cancel();
         });
 
         Ok(())
@@ -717,6 +746,7 @@ async fn run_udp_transfer(
     path: String,
     video_sockets: Option<(UdpSocket, UdpSocket)>,
     audio_sockets: Option<(UdpSocket, UdpSocket)>,
+    cancel: CancellationToken,
 ) -> Result<()> {
     let (video_rtp, video_rtcp) = video_sockets.map_or((None, None), |(r, c)| (Some(r), Some(c)));
     let (audio_rtp, audio_rtcp) = audio_sockets.map_or((None, None), |(r, c)| (Some(r), Some(c)));
@@ -738,11 +768,22 @@ async fn run_udp_transfer(
                     None => bind_udp(&client_addr, port).await?,
                 };
                 let tx = tx.clone();
+                let recv_cancel = cancel.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 2048];
-                    while let Ok((n, _)) = socket.recv_from(&mut buf).await {
-                        if tx.send((0, buf[..n].to_vec())).await.is_err() {
-                            break;
+                    loop {
+                        tokio::select! {
+                            _ = recv_cancel.cancelled() => break,
+                            result = socket.recv_from(&mut buf) => {
+                                match result {
+                                    Ok((n, _)) => {
+                                        if tx.send((0, buf[..n].to_vec())).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
                         }
                     }
                 });
@@ -759,11 +800,22 @@ async fn run_udp_transfer(
                     None => bind_udp(&client_addr, port).await?,
                 };
                 let tx = tx.clone();
+                let recv_cancel = cancel.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 2048];
-                    while let Ok((n, _)) = socket.recv_from(&mut buf).await {
-                        if tx.send((2, buf[..n].to_vec())).await.is_err() {
-                            break;
+                    loop {
+                        tokio::select! {
+                            _ = recv_cancel.cancelled() => break,
+                            result = socket.recv_from(&mut buf) => {
+                                match result {
+                                    Ok((n, _)) => {
+                                        if tx.send((2, buf[..n].to_vec())).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
                         }
                     }
                 });
@@ -815,25 +867,36 @@ async fn run_udp_transfer(
                     None
                 }
             });
+            let send_cancel = cancel.clone();
             tokio::spawn(async move {
-                while let Some((channel, data)) = data_to_stream_rx.recv().await {
-                    let send_port = match channel {
-                        0 => video_rtp_send,
-                        1 => video_rtcp_send,
-                        2 => audio_rtp_send,
-                        3 => audio_rtcp_send,
-                        _ => None,
-                    };
-                    if let Some(port) = send_port {
-                        let dest = SocketAddr::new(client_addr.ip(), port);
-                        if send_socket.send_to(&data, dest).await.is_err() {
-                            break;
+                loop {
+                    tokio::select! {
+                        _ = send_cancel.cancelled() => break,
+                        maybe_frame = data_to_stream_rx.recv() => {
+                            match maybe_frame {
+                                Some((channel, data)) => {
+                                    let send_port = match channel {
+                                        0 => video_rtp_send,
+                                        1 => video_rtcp_send,
+                                        2 => audio_rtp_send,
+                                        3 => audio_rtcp_send,
+                                        _ => None,
+                                    };
+                                    if let Some(port) = send_port {
+                                        let dest = SocketAddr::new(client_addr.ip(), port);
+                                        if send_socket.send_to(&data, dest).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                None => break,
+                            }
                         }
                     }
                 }
             });
 
-            drain_rtcp_ports(video_rtcp, audio_rtcp, app_handler, path).await?;
+            drain_rtcp_ports(video_rtcp, audio_rtcp, app_handler, path, cancel.clone()).await?;
         }
         SessionMode::Pull => {
             let ServerSide::Pull(mut rx) = server_side else {
@@ -862,18 +925,29 @@ async fn run_udp_transfer(
                 channel_map.insert(3, rtcp_port);
             }
 
+            let send_cancel = cancel.clone();
             tokio::spawn(async move {
-                while let Some((channel, data)) = rx.recv().await {
-                    if let Some(&port) = channel_map.get(&channel) {
-                        let dest = SocketAddr::new(client_addr.ip(), port);
-                        if send_socket.send_to(&data, dest).await.is_err() {
-                            break;
+                loop {
+                    tokio::select! {
+                        _ = send_cancel.cancelled() => break,
+                        maybe_frame = rx.recv() => {
+                            match maybe_frame {
+                                Some((channel, data)) => {
+                                    if let Some(&port) = channel_map.get(&channel) {
+                                        let dest = SocketAddr::new(client_addr.ip(), port);
+                                        if send_socket.send_to(&data, dest).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                None => break,
+                            }
                         }
                     }
                 }
             });
 
-            drain_rtcp_ports(video_rtcp, audio_rtcp, app_handler, path).await?;
+            drain_rtcp_ports(video_rtcp, audio_rtcp, app_handler, path, cancel.clone()).await?;
         }
         SessionMode::Mixed => unreachable!("session mode must be resolved"),
     }
@@ -886,16 +960,28 @@ async fn drain_rtcp_ports(
     audio_rtcp: Option<UdpSocket>,
     app_handler: Arc<dyn SessionHandler>,
     path: String,
+    cancel: CancellationToken,
 ) -> Result<()> {
     for socket in [video_rtcp, audio_rtcp].into_iter().flatten() {
         let app_handler = app_handler.clone();
         let path = path.clone();
+        let rtcp_cancel = cancel.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 2048];
-            while let Ok((n, _)) = socket.recv_from(&mut buf).await {
-                let data = buf[..n].to_vec();
-                if app_handler.on_rtcp(path.clone(), data).await.is_err() {
-                    break;
+            loop {
+                tokio::select! {
+                    _ = rtcp_cancel.cancelled() => break,
+                    result = socket.recv_from(&mut buf) => {
+                        match result {
+                            Ok((n, _)) => {
+                                let data = buf[..n].to_vec();
+                                if app_handler.on_rtcp(path.clone(), data).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
                 }
             }
         });
@@ -937,7 +1023,8 @@ where
     let sessions: Arc<RwLock<HashMap<String, ServerSession>>> =
         Arc::new(RwLock::new(HashMap::new()));
     let config = Arc::new(config);
-    let mut connection_count = 0u32;
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let mut connection_count = 0u64;
 
     let cleanup_sessions = sessions.clone();
     let cleanup_cancel = cancel.child_token();
@@ -971,7 +1058,7 @@ where
             res = listener.accept() => {
                 match res {
                     Ok((socket, addr)) => {
-                        let active = sessions.read().await.len();
+                        let active = active_connections.load(Ordering::Relaxed);
                         if active >= config.max_connections {
                             warn!(
                                 "RTSP server at max connections ({}/{}), rejecting {}",
@@ -981,8 +1068,10 @@ where
                             continue;
                         }
 
+                        active_connections.fetch_add(1, Ordering::Relaxed);
                         connection_count += 1;
                         let conn_id = connection_count;
+                        let active_connections = active_connections.clone();
                         info!("RTSP client #{} connected from {}", conn_id, addr);
 
                         let session = RtspServerSession::new(
@@ -1006,6 +1095,7 @@ where
                                     warn!("Connection #{} error: {}", conn_id, e);
                                 }
                             }
+                            active_connections.fetch_sub(1, Ordering::Relaxed);
                         });
                     }
                     Err(e) => {
