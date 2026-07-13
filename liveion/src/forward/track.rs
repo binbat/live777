@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -267,6 +267,7 @@ pub(crate) enum PublishTrackRemote {
         rid: String,
         kind: RtpCodecKind,
         codec: Codec,
+        payload_type: Arc<AtomicU8>,
         track: Arc<dyn TrackRemote>,
         rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
     },
@@ -307,20 +308,18 @@ impl PublishTrackRemote {
             kind: media.first().cloned().unwrap_or_default(),
             codec: media.get(1).cloned().unwrap_or_default(),
             fmtp: raw_codec.sdp_fmtp_line,
-            // TODO: WebRTC TrackRemote only exposes RTCRtpCodec capabilities, so the
-            // negotiated payload type is not available here. RTSP DESCRIBE currently
-            // advertises payload type 0 for real tracks; this needs to be resolved
-            // before RTSP pull of WHIP-published streams is fully interoperable.
             payload_type: 0,
             clock_rate: raw_codec.clock_rate,
             channels: raw_codec.channels,
         };
+        let payload_type = Arc::new(AtomicU8::new(0));
 
         tokio::spawn(Self::track_forward(
             stream.clone(),
             id.clone(),
             track.clone(),
             rtp_sender.clone(),
+            payload_type.clone(),
             connected_gate,
             twcc_ext_id,
             native_twcc_bound,
@@ -332,6 +331,7 @@ impl PublishTrackRemote {
             rid,
             kind,
             codec,
+            payload_type,
             track,
             rtp_broadcast: Arc::new(rtp_sender),
         }
@@ -343,6 +343,7 @@ impl PublishTrackRemote {
         id: String,
         track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
+        payload_type: Arc<AtomicU8>,
         connected_gate: Option<watch::Receiver<webrtc::peer_connection::RTCPeerConnectionState>>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
@@ -407,6 +408,17 @@ impl PublishTrackRemote {
                         rtp_packet.header.sequence_number,
                         rtp_packet.header.timestamp
                     );
+
+                    // Capture the negotiated payload type from the first received RTP
+                    // packet. WebRTC TrackRemote only exposes codec capabilities, not the
+                    // negotiated payload type, so we learn it from the wire.
+                    if payload_type.load(Ordering::Relaxed) == 0 {
+                        payload_type.store(rtp_packet.header.payload_type, Ordering::Relaxed);
+                        info!(
+                            "[{}] [{}] [track] detected payload type: {}",
+                            stream, id, rtp_packet.header.payload_type
+                        );
+                    }
 
                     // --- TWCC inbound probe ---
                     let total = packets_total.fetch_add(1, Ordering::Relaxed) + 1;
@@ -544,7 +556,18 @@ impl PublishTrackRemote {
 
     pub(crate) fn codec(&self) -> Codec {
         match self {
-            Self::Real { codec, .. } => codec.clone(),
+            Self::Real {
+                codec,
+                payload_type,
+                ..
+            } => {
+                let mut codec = codec.clone();
+                let pt = payload_type.load(Ordering::Relaxed);
+                if pt != 0 {
+                    codec.payload_type = pt;
+                }
+                codec
+            }
             #[cfg(feature = "source")]
             Self::Virtual(v) => v.codec(),
         }
