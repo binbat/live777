@@ -1,3 +1,5 @@
+#![cfg(feature = "rtsp")]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Once;
 use std::time::Duration;
