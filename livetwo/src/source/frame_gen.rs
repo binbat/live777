@@ -7,7 +7,7 @@ use rsmpeg::avutil::{AVChannelLayout, AVDictionary, AVFrame};
 use rsmpeg::ffi;
 use tracing::{debug, info};
 
-use super::rsmpeg_gen::{AudioCodec, VideoCodec};
+use super::rsmpeg_gen::{AudioCodec, VideoCodec, h265_encoder_opts};
 use crate::whipsynth::source::SourceFrame;
 
 /// A single encoded media frame produced by the rsmpeg generator.
@@ -297,31 +297,28 @@ fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput>
         .context("Failed to allocate reusable video frame buffer")?;
 
     // Codec-specific options.
-    let mut opts = match config.video_codec {
-        VideoCodec::Vp8 => AVDictionary::new(c"deadline", c"realtime", 0),
-        VideoCodec::Vp9 => AVDictionary::new(c"deadline", c"realtime", 0),
-        VideoCodec::H264 => AVDictionary::new(c"profile", c"baseline", 0),
-        VideoCodec::H265 => AVDictionary::new(c"preset", c"ultrafast", 0),
-        VideoCodec::Av1 => AVDictionary::new(c"preset", c"10", 0),
-    };
-    match config.video_codec {
+    let opts = match config.video_codec {
         VideoCodec::Vp8 => {
-            opts = opts.set(c"speed", c"4", 0);
-            opts = opts.set(c"b", c"200000", 0);
+            let mut o = AVDictionary::new(c"deadline", c"realtime", 0);
+            o = o.set(c"speed", c"4", 0);
+            o = o.set(c"b", c"200000", 0);
+            o
         }
         VideoCodec::Vp9 => {
-            opts = opts.set(c"profile", c"0", 0);
-            opts = opts.set(c"speed", c"6", 0);
+            let mut o = AVDictionary::new(c"deadline", c"realtime", 0);
+            o = o.set(c"profile", c"0", 0);
+            o = o.set(c"speed", c"6", 0);
+            o
         }
         VideoCodec::H264 => {
-            opts = opts.set(c"level", c"3.1", 0);
-            opts = opts.set(c"tune", c"zerolatency", 0);
+            let mut o = AVDictionary::new(c"profile", c"baseline", 0);
+            o = o.set(c"level", c"3.1", 0);
+            o = o.set(c"tune", c"zerolatency", 0);
+            o
         }
-        VideoCodec::H265 => {
-            opts = opts.set(c"tune", c"zerolatency", 0);
-            opts = opts.set(c"crf", c"28", 0);
-        }
+        VideoCodec::H265 => h265_encoder_opts(),
         VideoCodec::Av1 => {
+            let mut o = AVDictionary::new(c"preset", c"10", 0);
             // Low-delay prediction structure and an explicit key-frame interval
             // are required for real-time WHIP streaming. Without `keyint` the
             // SVT-AV1 encoder ignores the FFmpeg GOP size and emits key frames
@@ -333,9 +330,10 @@ fn open_video_output(config: &FrameGeneratorConfig) -> Result<OpenedVideoOutput>
                 config.fps
             ))
             .context("invalid SVT-AV1 parameters")?;
-            opts = opts.set(c"svtav1-params", svt_params.as_c_str(), 0);
+            o = o.set(c"svtav1-params", svt_params.as_c_str(), 0);
+            o
         }
-    }
+    };
 
     codec_ctx.open(Some(opts)).with_context(|| {
         format!(

@@ -34,6 +34,7 @@ pub struct Av1Assembler {
     accumulator: BytesMut,
     expected_seq: Option<u16>,
     last_timestamp: Option<u32>,
+    max_temporal_unit_size: usize,
 }
 
 impl Default for Av1Assembler {
@@ -55,7 +56,16 @@ impl Av1Assembler {
             accumulator: BytesMut::with_capacity(capacity),
             expected_seq: None,
             last_timestamp: None,
+            max_temporal_unit_size: MAX_TEMPORAL_UNIT_SIZE,
         }
+    }
+
+    /// Override the maximum accumulated temporal-unit size before the assembler
+    /// resets. The recorder path uses a tighter bound than the forward path to
+    /// keep per-stream peak heap lower.
+    pub fn with_max_size(mut self, max: usize) -> Self {
+        self.max_temporal_unit_size = max;
+        self
     }
 
     /// Reset internal state.  Call after packet loss, a parse error, or when
@@ -131,11 +141,12 @@ impl Av1Assembler {
 
         // ── Accumulate OBUs ─────────────────────────────────────────────
         if !obus.is_empty() {
-            if self.accumulator.len() + obus.len() > MAX_TEMPORAL_UNIT_SIZE {
+            if self.accumulator.len() + obus.len() > self.max_temporal_unit_size {
                 let size = self.accumulator.len() + obus.len();
                 self.reset();
                 return Err(anyhow!(
-                    "AV1 temporal unit exceeded maximum size ({size} > {MAX_TEMPORAL_UNIT_SIZE}); dropped"
+                    "AV1 temporal unit exceeded maximum size ({size} > {}); dropped",
+                    self.max_temporal_unit_size
                 ));
             }
             self.accumulator.extend_from_slice(&obus);

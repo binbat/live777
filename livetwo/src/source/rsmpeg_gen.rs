@@ -178,6 +178,16 @@ fn drain_encoded_packets(codec_ctx: &mut AVCodecContext, encoded: &mut Vec<u8>) 
     }
 }
 
+/// libx265 encoder options (preset / tune / crf) shared by the frame generator
+/// and the H265 sprop extractor, so the advertised sprop is derived from the
+/// same encoder configuration as the actual streamed bitstream.
+pub(crate) fn h265_encoder_opts() -> AVDictionary {
+    let mut opts = AVDictionary::new(c"preset", c"ultrafast", 0);
+    opts = opts.set(c"tune", c"zerolatency", 0);
+    opts = opts.set(c"crf", c"28", 0);
+    opts
+}
+
 /// Open a temporary H265 encoder, encode a few blank frames and extract the SDP
 /// sprop parameters from the emitted Annex B parameter sets. Returns a string
 /// like `sprop-vps=...;sprop-sps=...;sprop-pps=...`.
@@ -223,9 +233,7 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
     codec_ctx.set_gop_size(fps as i32);
     codec_ctx.set_max_b_frames(0);
 
-    let mut opts = AVDictionary::new(c"preset", c"ultrafast", 0);
-    opts = opts.set(c"tune", c"zerolatency", 0);
-    opts = opts.set(c"crf", c"28", 0);
+    let opts = h265_encoder_opts();
 
     if let Err(e) = codec_ctx.open(Some(opts)) {
         tracing::debug!(error = ?e, "H265 sprop extraction: failed to open libx265 encoder");

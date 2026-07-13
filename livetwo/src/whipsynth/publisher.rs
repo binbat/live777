@@ -238,26 +238,7 @@ async fn run_write_loop(
                     Some(MediaFrame::Video(encoded)) => {
                         match packetizer.packetize_video(&encoded) {
                             Ok(packets) => {
-                                for packet in packets {
-                                    if first_video {
-                                        info!("First video RTP packet written to WebRTC sender");
-                                        first_video = false;
-                                    }
-                                    let payload_len = packet.payload.len();
-                                    if let Err(e) = video_track.write_rtp(packet).await {
-                                        if let Ok(mut s) = stats.lock() {
-                                            s.failed_writes += 1;
-                                            if s.failed_writes == 1 {
-                                                warn!("Failed to write video RTP: {}", e);
-                                            } else {
-                                                debug!("Failed to write video RTP: {}", e);
-                                            }
-                                        }
-                                    } else if let Ok(mut s) = stats.lock() {
-                                        s.packets_sent += 1;
-                                        s.bytes_sent += (12 + payload_len) as u64;
-                                    }
-                                }
+                                write_packets(&video_track, packets, &stats, &mut first_video, "video").await;
                             }
                             Err(e) => {
                                 error!("Failed to packetize video frame: {}", e);
@@ -268,26 +249,7 @@ async fn run_write_loop(
                         if let Some(ref audio) = audio_track {
                             match packetizer.packetize_audio(&encoded) {
                                 Ok(packets) => {
-                                    for packet in packets {
-                                        if first_audio {
-                                            info!("First audio RTP packet written to WebRTC sender");
-                                            first_audio = false;
-                                        }
-                                        let payload_len = packet.payload.len();
-                                        if let Err(e) = audio.write_rtp(packet).await {
-                                            if let Ok(mut s) = stats.lock() {
-                                                s.failed_writes += 1;
-                                                if s.failed_writes == 1 {
-                                                    warn!("Failed to write audio RTP: {}", e);
-                                                } else {
-                                                    debug!("Failed to write audio RTP: {}", e);
-                                                }
-                                            }
-                                        } else if let Ok(mut s) = stats.lock() {
-                                            s.packets_sent += 1;
-                                            s.bytes_sent += (12 + payload_len) as u64;
-                                        }
-                                    }
+                                    write_packets(audio, packets, &stats, &mut first_audio, "audio").await;
                                 }
                                 Err(e) => {
                                     error!("Failed to packetize audio frame: {}", e);
@@ -305,6 +267,39 @@ async fn run_write_loop(
                 debug!("Publisher write loop cancelled");
                 break;
             }
+        }
+    }
+}
+
+/// Write a batch of RTP packets to a track, updating session stats.
+///
+/// Shared by the video and audio write paths. `first` is flipped to `false`
+/// after the first packet so the "first packet" log fires once per kind.
+async fn write_packets(
+    track: &Arc<TrackLocalStaticRTP>,
+    packets: Vec<rtc::rtp::packet::Packet>,
+    stats: &Arc<Mutex<SessionStats>>,
+    first: &mut bool,
+    kind: &str,
+) {
+    for packet in packets {
+        if *first {
+            info!("First {kind} RTP packet written to WebRTC sender");
+            *first = false;
+        }
+        let payload_len = packet.payload.len();
+        if let Err(e) = track.write_rtp(packet).await {
+            if let Ok(mut s) = stats.lock() {
+                s.failed_writes += 1;
+                if s.failed_writes == 1 {
+                    warn!("Failed to write {kind} RTP: {}", e);
+                } else {
+                    debug!("Failed to write {kind} RTP: {}", e);
+                }
+            }
+        } else if let Ok(mut s) = stats.lock() {
+            s.packets_sent += 1;
+            s.bytes_sent += (12 + payload_len) as u64;
         }
     }
 }

@@ -175,6 +175,12 @@ impl CodecAdapter for Av1Adapter {
 
 use crate::forward::av1_assembler::Av1Assembler;
 
+/// Maximum accumulated temporal-unit size for the recorder path. Tighter than
+/// the forward assembler's 8 MiB default to keep per-recording peak heap lower
+/// under runaway/corrupt streams; bounded by resets on packet loss and
+/// timestamp discontinuities.
+const RECORDER_MAX_TEMPORAL_UNIT_SIZE: usize = 3 * 1024 * 1024;
+
 pub struct Av1RtpParser {
     assembler: Av1Assembler,
 }
@@ -188,7 +194,7 @@ impl Default for Av1RtpParser {
 impl Av1RtpParser {
     pub fn new() -> Self {
         Self {
-            assembler: Av1Assembler::new(),
+            assembler: Av1Assembler::new().with_max_size(RECORDER_MAX_TEMPORAL_UNIT_SIZE),
         }
     }
 
