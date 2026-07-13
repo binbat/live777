@@ -440,7 +440,7 @@ impl PeerForward {
         None
     }
 
-    #[cfg(feature = "recorder")]
+    #[cfg(any(feature = "recorder", feature = "rtsp"))]
     pub fn subscribe_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.internal.subscribe_publish_tracks_change()
     }

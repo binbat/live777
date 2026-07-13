@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::{RwLock, broadcast};
+
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
@@ -29,7 +31,10 @@ pub async fn start_rtsp_server(
 ) {
     info!("Starting RTSP server on {}", config.listen);
     let listen_addr = format_bind_addr(config.listen);
-    let handler = RtspHandler { manager };
+    let handler = RtspHandler {
+        manager,
+        stream_ready: Arc::new(RwLock::new(HashMap::new())),
+    };
     let server_config = ServerConfig {
         listen_addr: config.listen,
         max_connections: config.max_connections,
@@ -52,8 +57,10 @@ pub async fn start_rtsp_server(
     });
 }
 
+#[derive(Clone)]
 struct RtspHandler {
     manager: Arc<Manager>,
+    stream_ready: Arc<RwLock<HashMap<String, broadcast::Sender<()>>>>,
 }
 
 #[async_trait::async_trait]
@@ -86,13 +93,15 @@ impl rtsp::server::SessionHandler for RtspHandler {
             }
         }
 
+        self.notify_stream_ready(&stream_id).await;
+
         info!("RTSP push accepted for stream {}", stream_id);
         Ok(())
     }
 
     async fn on_describe(&self, path: String) -> Result<Vec<u8>> {
         let stream_id = stream_id_from_path(path);
-        let forward = wait_for_forward(&self.manager, &stream_id)
+        let forward = wait_for_forward(&self.manager, &self.stream_ready, &stream_id)
             .await
             .map_err(|e| anyhow!("Stream {} not available: {}", stream_id, e))?;
         let tracks = wait_for_tracks(&forward)
@@ -162,8 +171,10 @@ impl rtsp::server::SessionHandler for RtspHandler {
                 };
 
                 let manager = self.manager.clone();
+                let stream_ready = self.stream_ready.clone();
                 tokio::spawn(async move {
-                    let forward = match wait_for_forward(&manager, &stream_id).await {
+                    let forward = match wait_for_forward(&manager, &stream_ready, &stream_id).await
+                    {
                         Ok(f) => f,
                         Err(e) => {
                             error!("RTSP pull forward failed for {}: {}", stream_id, e);
@@ -333,30 +344,64 @@ async fn forward_rtcp_to_publish(manager: &Manager, stream_id: &str, data: &[u8]
     }
 }
 
+impl RtspHandler {
+    async fn notify_stream_ready(&self, stream_id: &str) {
+        let map = self.stream_ready.read().await;
+        if let Some(tx) = map.get(stream_id) {
+            let _ = tx.send(());
+        }
+    }
+}
+
 async fn wait_for_forward(
     manager: &Manager,
+    stream_ready: &Arc<RwLock<HashMap<String, broadcast::Sender<()>>>>,
     stream_id: &str,
 ) -> Result<crate::forward::PeerForward> {
-    for _ in 0..300 {
+    if let Some(forward) = manager.get_forward(stream_id).await {
+        return Ok(forward);
+    }
+
+    let mut rx = {
+        let mut map = stream_ready.write().await;
         if let Some(forward) = manager.get_forward(stream_id).await {
             return Ok(forward);
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-    Err(anyhow!("Timeout waiting for forward {}", stream_id))
+        let tx = map
+            .entry(stream_id.to_string())
+            .or_insert_with(|| broadcast::channel(1).0);
+        tx.subscribe()
+    };
+
+    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        .await
+        .map_err(|_| anyhow!("Timeout waiting for forward {}", stream_id))?
+        .map_err(|_| anyhow!("Stream ready channel closed for {}", stream_id))?;
+
+    manager
+        .get_forward(stream_id)
+        .await
+        .ok_or_else(|| anyhow!("Forward {} disappeared", stream_id))
 }
 
 async fn wait_for_tracks(forward: &crate::forward::PeerForward) -> Result<Vec<PublishTrackRemote>> {
-    for _ in 0..300 {
+    let mut rx = forward.subscribe_tracks_change();
+
+    loop {
         {
             let tracks = forward.internal.publish_tracks.read().await;
             if !tracks.is_empty() {
                 return Ok(tracks.clone());
             }
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        tokio::select! {
+            _ = rx.recv() => continue,
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                return Err(anyhow!("Timeout waiting for publish tracks"));
+            }
+        }
     }
-    Err(anyhow!("Timeout waiting for publish tracks"))
 }
 
 fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
