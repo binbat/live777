@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,7 @@ use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecPar
 use rtc::shared::marshal::{Marshal, MarshalSize};
 
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::config::RtspConfig;
 use crate::forward::rtcp::RtcpMessage;
@@ -109,18 +110,34 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     _ => return Err(anyhow!("Expected push endpoint")),
                 };
 
+                let forward = self.manager.get_or_create_forward(&stream_id).await;
+                let channel_to_kind = build_channel_kind_map(&media_info);
+
                 let manager = self.manager.clone();
                 tokio::spawn(async move {
                     while let Some((channel, data)) = rx.recv().await {
+                        let Some(&kind) = channel_to_kind.get(&channel) else {
+                            continue;
+                        };
+
                         if channel % 2 != 0 {
-                            // RTCP: not handled yet.
+                            // RTCP from the push client: forward keyframe requests
+                            // to the publisher.
+                            forward_rtcp_to_publish(&manager, &stream_id, &data).await;
                             continue;
                         }
-                        let forward = manager.get_or_create_forward(&stream_id).await;
-                        if forward.inject_video_rtp(&data).await.is_ok() {
-                            continue;
+
+                        let result = match kind {
+                            RtpCodecKind::Video => forward.inject_video_rtp(&data).await,
+                            RtpCodecKind::Audio => forward.inject_audio_rtp(&data).await,
+                            _ => continue,
+                        };
+                        if let Err(e) = result {
+                            trace!(
+                                "Failed to inject {:?} RTP for stream {}: {:?}",
+                                kind, stream_id, e
+                            );
                         }
-                        let _ = forward.inject_audio_rtp(&data).await;
                     }
                     info!("RTSP push forward stopped for {}", stream_id);
                     if let Err(e) = manager.stream_delete(stream_id.clone()).await {
@@ -221,56 +238,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
 
     async fn on_rtcp(&self, path: String, data: Vec<u8>) -> Result<()> {
         let stream_id = stream_id_from_path(path);
-        let packets = match rtc_rtcp::packet::unmarshal(&mut data.as_slice()) {
-            Ok(packets) => packets,
-            Err(e) => {
-                debug!("Failed to parse RTCP for stream {}: {}", stream_id, e);
-                return Ok(());
-            }
-        };
-
-        let Some(forward) = self.manager.get_forward(&stream_id).await else {
-            return Ok(());
-        };
-
-        for packet in packets {
-            let any = packet.as_any();
-            let (is_pli, media_ssrc) =
-                if let Some(pli) = any.downcast_ref::<PictureLossIndication>() {
-                    (true, pli.media_ssrc)
-                } else if let Some(fir) = any.downcast_ref::<FullIntraRequest>() {
-                    (false, fir.media_ssrc)
-                } else {
-                    continue;
-                };
-
-            let tracks = forward.internal.publish_tracks.read().await;
-            let mut matches = false;
-            for t in tracks.iter() {
-                if t.kind() == RtpCodecKind::Video && t.source_ssrc().await == media_ssrc {
-                    matches = true;
-                    break;
-                }
-            }
-            drop(tracks);
-
-            if matches {
-                let msg = if is_pli {
-                    RtcpMessage::PictureLossIndication
-                } else {
-                    RtcpMessage::_FullIntraRequest
-                };
-                let _ = forward
-                    .internal
-                    .publish_rtcp_channel
-                    .send((msg, media_ssrc));
-                debug!(
-                    "Forwarded RTCP keyframe request {:?} for stream {} ssrc {}",
-                    msg, stream_id, media_ssrc
-                );
-            }
-        }
-
+        forward_rtcp_to_publish(&self.manager, &stream_id, &data).await;
         Ok(())
     }
 }
@@ -280,6 +248,81 @@ fn stream_id_from_path(path: String) -> String {
         DEFAULT_STREAM.to_string()
     } else {
         path
+    }
+}
+
+/// Build a map from interleaved channel number to codec kind using the
+/// negotiated transport. TCP channels come from the SETUP response; UDP falls
+/// back to the fixed channel map (video=0/1, audio=2/3).
+fn build_channel_kind_map(media_info: &rtsp::MediaInfo) -> HashMap<u8, RtpCodecKind> {
+    let mut map = HashMap::new();
+
+    if let Some(ref transport) = media_info.video_transport {
+        let (rtp, rtcp) = transport.tcp_channels().unwrap_or((0, 1));
+        map.insert(rtp, RtpCodecKind::Video);
+        map.insert(rtcp, RtpCodecKind::Video);
+    }
+
+    if let Some(ref transport) = media_info.audio_transport {
+        let (rtp, rtcp) = transport.tcp_channels().unwrap_or((2, 3));
+        map.insert(rtp, RtpCodecKind::Audio);
+        map.insert(rtcp, RtpCodecKind::Audio);
+    }
+
+    map
+}
+
+/// Parse incoming RTCP from a pull client and forward PLI/FIR to the publisher
+/// when the SSRC matches the current video track.
+async fn forward_rtcp_to_publish(manager: &Manager, stream_id: &str, data: &[u8]) {
+    let mut reader = data;
+    let packets = match rtc_rtcp::packet::unmarshal(&mut reader) {
+        Ok(packets) => packets,
+        Err(e) => {
+            debug!("Failed to parse RTCP for stream {}: {}", stream_id, e);
+            return;
+        }
+    };
+
+    let Some(forward) = manager.get_forward(stream_id).await else {
+        return;
+    };
+
+    for packet in packets {
+        let any = packet.as_any();
+        let (is_pli, media_ssrc) = if let Some(pli) = any.downcast_ref::<PictureLossIndication>() {
+            (true, pli.media_ssrc)
+        } else if let Some(fir) = any.downcast_ref::<FullIntraRequest>() {
+            (false, fir.media_ssrc)
+        } else {
+            continue;
+        };
+
+        let tracks = forward.internal.publish_tracks.read().await;
+        let mut matches = false;
+        for t in tracks.iter() {
+            if t.kind() == RtpCodecKind::Video && t.source_ssrc().await == media_ssrc {
+                matches = true;
+                break;
+            }
+        }
+        drop(tracks);
+
+        if matches {
+            let msg = if is_pli {
+                RtcpMessage::PictureLossIndication
+            } else {
+                RtcpMessage::_FullIntraRequest
+            };
+            let _ = forward
+                .internal
+                .publish_rtcp_channel
+                .send((msg, media_ssrc));
+            debug!(
+                "Forwarded RTCP keyframe request {:?} for stream {} ssrc {}",
+                msg, stream_id, media_ssrc
+            );
+        }
     }
 }
 

@@ -11,7 +11,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::{Handler, ServerConfig, ServerSession};
 use crate::channels::InterleavedData;
-use crate::constants::{media_type, net, track};
+use crate::constants::{media_type, net};
 use crate::sdp::parse_codecs_from_sdp;
 use crate::tcp_stream::handle_tcp_stream;
 use crate::types::{MediaInfo, SessionMode, TransportInfo};
@@ -167,35 +167,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         .map(|u| u.to_string())
                         .unwrap_or_default();
 
-                    let is_video = if uri.contains(media_type::VIDEO)
-                        || uri.contains(track::VIDEO_TRACK_ID)
-                        || uri.contains(track::VIDEO_STREAM_ID)
-                    {
-                        true
-                    } else if uri.contains(media_type::AUDIO)
-                        || uri.contains(track::AUDIO_TRACK_ID)
-                        || uri.contains(track::AUDIO_STREAM_ID)
-                    {
-                        false
-                    } else {
+                    let is_video = {
                         let sdp_bytes = self
                             .handler
                             .sdp_content()
                             .ok_or_else(|| anyhow!("No SDP"))?;
                         let sdp = sdp_types::Session::parse(sdp_bytes)?;
-
-                        let has_video = sdp.medias.iter().any(|m| m.media == media_type::VIDEO);
-                        let has_audio = sdp.medias.iter().any(|m| m.media == media_type::AUDIO);
-
-                        if has_video && !has_audio {
-                            true
-                        } else if !has_video && has_audio {
-                            false
-                        } else if has_video && has_audio {
-                            video_channels.is_none() && video_ports.is_none()
-                        } else {
-                            true
-                        }
+                        resolve_setup_media_kind(&uri, &sdp, video_channels, video_ports)
                     };
 
                     if client_wants_tcp {
@@ -573,6 +551,82 @@ fn request_path(request: &Request<Vec<u8>>) -> Result<Option<String>> {
         .path_segments()
         .ok_or_else(|| anyhow!("Invalid request URI"))?;
     Ok(segments.next().map(|s| s.to_string()))
+}
+
+/// Resolve whether a SETUP request targets the video media.
+///
+/// Resolution order:
+/// 1. Match against each media's `a=control` attribute.
+/// 2. Explicit `video` / `audio` keywords in the URI.
+/// 3. `streamid=N` / `trackID=N` refers to the N-th media in the SDP.
+/// 4. Fallback based on the number of media and SETUP order.
+fn resolve_setup_media_kind(
+    uri: &str,
+    sdp: &sdp_types::Session,
+    video_channels: Option<(u8, u8)>,
+    video_ports: Option<(u16, u16, u16, u16)>,
+) -> bool {
+    let uri_lower = uri.to_lowercase();
+
+    // 1. Match against control attributes.
+    for media in &sdp.medias {
+        let is_video = media.media == media_type::VIDEO;
+        let matched = media.attributes.iter().any(|a| {
+            a.attribute == "control"
+                && a.value.as_ref().is_some_and(|control| {
+                    let control_lower = control.to_lowercase();
+                    if control_lower == "*" {
+                        return false;
+                    }
+                    uri_lower.ends_with(&control_lower)
+                        || uri_lower.contains(&format!("/{}", control_lower))
+                })
+        });
+        if matched {
+            return is_video;
+        }
+    }
+
+    // 2. Explicit video/audio keywords.
+    if uri_lower.contains(media_type::VIDEO) {
+        return true;
+    }
+    if uri_lower.contains(media_type::AUDIO) {
+        return false;
+    }
+
+    // 3. streamid=N / trackID=N
+    if let Some(index) = parse_track_index(uri)
+        && let Some(media) = sdp.medias.get(index)
+    {
+        return media.media == media_type::VIDEO;
+    }
+
+    // 4. Fallback.
+    let has_video = sdp.medias.iter().any(|m| m.media == media_type::VIDEO);
+    let has_audio = sdp.medias.iter().any(|m| m.media == media_type::AUDIO);
+    match (has_video, has_audio) {
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) => video_channels.is_none() && video_ports.is_none(),
+        (false, false) => true,
+    }
+}
+
+fn parse_track_index(uri: &str) -> Option<usize> {
+    let uri_lower = uri.to_lowercase();
+    for prefix in ["streamid=", "trackid="] {
+        if let Some(start) = uri_lower.find(prefix) {
+            let rest = &uri_lower[start + prefix.len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            if end > 0 {
+                return rest[..end].parse().ok();
+            }
+        }
+    }
+    None
 }
 
 async fn run_udp_transfer(
