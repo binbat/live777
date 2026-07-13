@@ -2,7 +2,9 @@
 
 A Pure Single SFU Server for WebRTC.
 
-Only `WHIP` / `WHEP` protocol supported.
+`WHIP` / `WHEP` protocols are supported by default. When built with the `rtsp`
+feature, liveion can also act as an RTSP server: push media in via
+`ANNOUNCE/RECORD` and pull media out via `DESCRIBE/PLAY`.
 
 a core SFU server, If you need a single server, use this
 
@@ -12,6 +14,7 @@ a core SFU server, If you need a single server, use this
 | -------- | ----------------------------------- | -------------- |
 | `WHIP`   | `AV1`, `VP9`, `VP8`, `H265`, `H264` | `Opus`, `G722` |
 | `WHEP`   | `AV1`, `VP9`, `VP8`, `H265`, `H264` | `Opus`, `G722` |
+| `RTSP`   | `AV1`, `VP9`, `VP8`, `H265`, `H264` | `Opus`, `G722` |
 
 ![live777-apps](/live777-apps.excalidraw.svg)
 
@@ -96,4 +99,27 @@ live777 Cascade have two mode:
 > 2. Live777 Don't support `negotiated`, `{ id: 42, negotiated: true }` this don't support
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
+
+## RTSP Server
+
+Build with the `rtsp` feature to expose an RTSP server alongside WHIP/WHEP:
+
+```bash
+cargo build --release --bin live777 --features rtsp
+```
+
+Configure the listen addresses in `live777.toml`:
+
+```toml
+[rtsp]
+push_listen = "0.0.0.0:8554"   # ANNOUNCE/RECORD input
+pull_listen = "0.0.0.0:8555"   # DESCRIBE/PLAY output
+```
+
+- Push media into a stream: `rtsp://host:8554/{stream_id}`
+- Pull media from a stream: `rtsp://host:8555/{stream_id}`
+
+Both UDP and TCP (`RTP/AVP/TCP`) transports are supported. The first URL path
+segment is used as the liveion stream identifier. Authentication is not yet
+implemented for the RTSP interface.
 

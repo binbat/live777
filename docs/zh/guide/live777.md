@@ -2,7 +2,8 @@
 
 一个为 WebRTC 而生的 SFU 服务器。
 
-仅支持 `WHIP` / `WHEP` 协议.
+默认支持 `WHIP` / `WHEP` 协议。启用 `rtsp` feature 后，liveion 还可以作为
+RTSP 服务器运行：通过 `ANNOUNCE/RECORD` 推流，通过 `DESCRIBE/PLAY` 拉流。
 
 a core SFU server, If you need a single server, use this
 
@@ -12,6 +13,7 @@ a core SFU server, If you need a single server, use this
 | -------- | ----------------------------------- | -------------- |
 | `WHIP`   | `AV1`, `VP9`, `VP8`, `H265`, `H264` | `Opus`, `G722` |
 | `WHEP`   | `AV1`, `VP9`, `VP8`, `H265`, `H264` | `Opus`, `G722` |
+| `RTSP`   | `AV1`, `VP9`, `VP8`, `H265`, `H264` | `Opus`, `G722` |
 
 ![live777-apps](/live777-apps.excalidraw.svg)
 
@@ -98,3 +100,24 @@ live777 Cascade 有两种模式：
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
 
+## RTSP 服务器
+
+使用 `rtsp` feature 编译，即可在 WHIP/WHEP 之外暴露 RTSP 服务：
+
+```bash
+cargo build --release --bin live777 --features rtsp
+```
+
+在 `live777.toml` 中配置监听地址：
+
+```toml
+[rtsp]
+push_listen = "0.0.0.0:8554"   # ANNOUNCE/RECORD 输入
+pull_listen = "0.0.0.0:8555"   # DESCRIBE/PLAY 输出
+```
+
+- 推流地址：`rtsp://host:8554/{stream_id}`
+- 拉流地址：`rtsp://host:8555/{stream_id}`
+
+同时支持 UDP 和 TCP（`RTP/AVP/TCP`）传输。URL 的第一段路径作为 liveion 的流
+标识符。RTSP 接口目前尚未实现认证。

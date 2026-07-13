@@ -217,3 +217,10 @@ root = "./storage"
 # alias = "liveion-0"
 # `client_id={alias}` use alias as MQTT `client_id`
 # mqtt_url = "mqtt://localhost:1883/net4mqtt?client_id={alias}"
+
+# Default disabled `--features=rtsp`
+# [rtsp]
+# Listen address for RTSP server input (PUSH / ANNOUNCE-RECORD)
+# push_listen = "0.0.0.0:8554"
+# Listen address for RTSP server output (PULL / DESCRIBE-PLAY)
+# pull_listen = "0.0.0.0:8555"
