@@ -46,20 +46,6 @@ pub struct FrameGeneratorConfig {
     pub duration: Option<Duration>,
 }
 
-impl FrameGeneratorConfig {
-    /// Build a frame generator config from the legacy RTP-oriented config.
-    pub fn from_generator_config(config: &super::rsmpeg_gen::GeneratorConfig) -> Self {
-        Self {
-            video_codec: config.video_codec,
-            audio_codec: config.audio_codec,
-            width: config.width,
-            height: config.height,
-            fps: config.fps,
-            duration: config.duration,
-        }
-    }
-}
-
 /// Encoded-frame generator backed by FFmpeg/rsmpeg.
 ///
 /// The generator produces synchronized video and audio frames at the requested

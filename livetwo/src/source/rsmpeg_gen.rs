@@ -75,40 +75,6 @@ impl VideoCodec {
             VideoCodec::Av1 => 41,
         }
     }
-
-    fn sdp_rtpmap(&self, pt: u8) -> String {
-        match self {
-            VideoCodec::Vp8 => format!("a=rtpmap:{pt} VP8/90000"),
-            VideoCodec::Vp9 => format!("a=rtpmap:{pt} VP9/90000"),
-            VideoCodec::H264 => format!(
-                "a=rtpmap:{pt} H264/90000\r\n\
-                 a=fmtp:{pt} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
-            ),
-            VideoCodec::H265 => format!("a=rtpmap:{pt} H265/90000"),
-            // FFmpeg's RTP muxer uses the AV1X encoding name for OBU streams
-            // with temporal delimiters, which is what our packetizer expects.
-            VideoCodec::Av1 => format!("a=rtpmap:{pt} AV1X/90000"),
-        }
-    }
-
-    /// Optional `a=fmtp:` line for this codec.
-    fn sdp_fmtp(
-        &self,
-        pt: u8,
-        sprop_params: Option<&str>,
-        width: u32,
-        height: u32,
-        fps: u32,
-    ) -> Option<String> {
-        match self {
-            VideoCodec::H265 => sprop_params.map(|s| format!("a=fmtp:{pt} {s}")),
-            VideoCodec::Av1 => Some(format!(
-                "a=fmtp:{pt} profile-id=0;level-idx={};tier=0",
-                crate::whipsynth::packetizer::av1_level_idx(width, height, fps)
-            )),
-            _ => None,
-        }
-    }
 }
 
 impl AudioCodec {
@@ -170,19 +136,6 @@ impl AudioCodec {
         }
     }
 
-    fn sdp_rtpmap(&self, pt: u8) -> String {
-        match self {
-            AudioCodec::Opus => {
-                format!(
-                    "a=rtpmap:{pt} OPUS/{sample_rate}/{channels}\r\n\
-                         a=fmtp:{pt} minptime=10;useinbandfec=1",
-                    sample_rate = self.rtp_clock_rate(),
-                    channels = self.channels()
-                )
-            }
-            AudioCodec::G722 => format!("a=rtpmap:{pt} G722/8000"),
-        }
-    }
 }
 
 /// Configuration for the synthetic rsmpeg generator.
@@ -202,55 +155,9 @@ pub struct GeneratorConfig {
     pub video_port: u16,
     pub audio_port: u16,
     /// H265 sprop parameters (`sprop-vps=...;sprop-sps=...;sprop-pps=...`).
-    /// When `None` and the video codec is H265, `generate_sdp` will try to
+    /// When `None` and the video codec is H265, the packetizer will try to
     /// derive them by opening a temporary encoder.
     pub sprop_params: Option<String>,
-}
-
-/// Generate an SDP describing the synthetic stream.
-pub fn generate_sdp(config: &GeneratorConfig) -> String {
-    let video_pt = config.video_codec.payload_type();
-    let host = config.target_addr.ip().to_string();
-    let mut sdp = format!(
-        "v=0\r\n\
-         o=- 0 0 IN IP4 {host}\r\n\
-         s=rsmpeg synthetic stream\r\n\
-         c=IN IP4 {host}\r\n\
-         t=0 0\r\n"
-    );
-
-    let derived_sprop = if config.video_codec == VideoCodec::H265 && config.sprop_params.is_none() {
-        extract_h265_sprop(config.width, config.height, config.fps)
-    } else {
-        None
-    };
-    let sprop_params = config.sprop_params.as_deref().or(derived_sprop.as_deref());
-
-    sdp.push_str(&format!(
-        "m=video {} RTP/AVP {video_pt}\r\n{rtpmap}\r\n",
-        config.video_port,
-        rtpmap = config.video_codec.sdp_rtpmap(video_pt)
-    ));
-    if let Some(fmtp) = config.video_codec.sdp_fmtp(
-        video_pt,
-        sprop_params,
-        config.width,
-        config.height,
-        config.fps,
-    ) {
-        sdp.push_str(&format!("{fmtp}\r\n"));
-    }
-
-    if let Some(audio_codec) = config.audio_codec {
-        let audio_pt = audio_codec.payload_type();
-        sdp.push_str(&format!(
-            "m=audio {} RTP/AVP {audio_pt}\r\n{rtpmap}\r\n",
-            config.audio_port,
-            rtpmap = audio_codec.sdp_rtpmap(audio_pt)
-        ));
-    }
-
-    sdp
 }
 
 /// Parse HEVC parameter sets from an Annex B bitstream and return base64-encoded
