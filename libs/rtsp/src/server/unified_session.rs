@@ -201,7 +201,25 @@ impl<H: SessionHandler> RtspServerSession<H> {
                             .sdp_content()
                             .ok_or_else(|| anyhow!("No SDP"))?;
                         let sdp = sdp_types::Session::parse(sdp_bytes)?;
-                        resolve_setup_media_kind(&uri, &sdp, video_channels, video_ports)
+                        match resolve_setup_media_kind(
+                            &uri,
+                            &sdp,
+                            video_channels,
+                            video_ports,
+                            audio_channels,
+                            audio_ports,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                warn!("SETUP media resolution failed for {}: {}", self.addr, e);
+                                let response =
+                                    Response::builder(Version::V1_0, StatusCode::BadRequest)
+                                        .header(headers::CSEQ, self.handler.cseq().to_string())
+                                        .empty();
+                                self.send_response(&response.map_body(|_| vec![])).await?;
+                                return Err(e);
+                            }
+                        }
                     };
 
                     if client_wants_tcp {
@@ -656,13 +674,18 @@ fn request_path(request: &Request<Vec<u8>>) -> Result<Option<String>> {
 /// 1. Match against each media's `a=control` attribute.
 /// 2. Explicit `video` / `audio` keywords in the URI.
 /// 3. `streamid=N` / `trackID=N` refers to the N-th media in the SDP.
-/// 4. Fallback based on the number of media and SETUP order.
+/// 4. Fallback based on whether video or audio has already been set up.
+///
+/// Returns an error when the target cannot be disambiguated (e.g. both media
+/// are present and neither has been set up yet).
 fn resolve_setup_media_kind(
     uri: &str,
     sdp: &sdp_types::Session,
     video_channels: Option<(u8, u8)>,
     video_ports: Option<(u16, u16, u16, u16)>,
-) -> bool {
+    audio_channels: Option<(u8, u8)>,
+    audio_ports: Option<(u16, u16, u16, u16)>,
+) -> Result<bool> {
     let uri_lower = uri.to_lowercase();
 
     // 1. Match against control attributes.
@@ -680,7 +703,7 @@ fn resolve_setup_media_kind(
                 })
         });
         if matched {
-            return is_video;
+            return Ok(is_video);
         }
     }
 
@@ -688,10 +711,10 @@ fn resolve_setup_media_kind(
     // stream ID like "myvideo" does not confuse audio-only streams.
     if let Some(segment) = last_path_segment(&uri_lower) {
         if segment == media_type::VIDEO {
-            return true;
+            return Ok(true);
         }
         if segment == media_type::AUDIO {
-            return false;
+            return Ok(false);
         }
     }
 
@@ -699,17 +722,30 @@ fn resolve_setup_media_kind(
     if let Some(index) = parse_track_index(uri)
         && let Some(media) = sdp.medias.get(index)
     {
-        return media.media == media_type::VIDEO;
+        return Ok(media.media == media_type::VIDEO);
     }
 
-    // 4. Fallback.
+    // 4. Fallback based on already-negotiated transports.
     let has_video = sdp.medias.iter().any(|m| m.media == media_type::VIDEO);
     let has_audio = sdp.medias.iter().any(|m| m.media == media_type::AUDIO);
     match (has_video, has_audio) {
-        (true, false) => true,
-        (false, true) => false,
-        (true, true) => video_channels.is_none() && video_ports.is_none(),
-        (false, false) => true,
+        (true, false) => Ok(true),
+        (false, true) => Ok(false),
+        (true, true) => {
+            let video_setup = video_channels.is_some() || video_ports.is_some();
+            let audio_setup = audio_channels.is_some() || audio_ports.is_some();
+            match (video_setup, audio_setup) {
+                (false, true) => Ok(true),  // audio already set up, this must be video
+                (true, false) => Ok(false), // video already set up, this must be audio
+                (true, true) => Err(anyhow!(
+                    "Both video and audio transports are already configured"
+                )),
+                (false, false) => Err(anyhow!(
+                    "Ambiguous SETUP target; supply a=control, streamid or trackID"
+                )),
+            }
+        }
+        (false, false) => Ok(true),
     }
 }
 

@@ -60,6 +60,8 @@ pub enum VideoCodecParams {
         clock_rate: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         profile_level_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        packetization_mode: Option<u8>,
         sps: Vec<u8>,
         pps: Vec<u8>,
     },
@@ -141,6 +143,7 @@ impl CodecFingerprint {
             VideoCodecParams::H264 {
                 clock_rate,
                 profile_level_id,
+                packetization_mode,
                 sps,
                 pps,
                 ..
@@ -149,7 +152,7 @@ impl CodecFingerprint {
                 mime_type: normalize_mime_type("video/H264"),
                 clock_rate: *clock_rate,
                 channels: None,
-                fmtp: h264_fmtp(profile_level_id.as_deref()),
+                fmtp: h264_fmtp(profile_level_id.as_deref(), *packetization_mode),
                 codec_private_hash: hash_parts([sps.as_slice(), pps.as_slice()]),
             },
             VideoCodecParams::H265 {
@@ -221,11 +224,11 @@ fn normalize_fmtp(fmtp: &str) -> String {
     params.join(";")
 }
 
-fn h264_fmtp(profile_level_id: Option<&str>) -> Option<String> {
-    let mut parts = vec![
-        "level-asymmetry-allowed=1".to_string(),
-        "packetization-mode=1".to_string(),
-    ];
+fn h264_fmtp(profile_level_id: Option<&str>, packetization_mode: Option<u8>) -> Option<String> {
+    let mut parts = vec!["level-asymmetry-allowed=1".to_string()];
+    if let Some(mode) = packetization_mode {
+        parts.push(format!("packetization-mode={}", mode));
+    }
     if let Some(profile_level_id) = profile_level_id
         && !profile_level_id.is_empty()
     {
@@ -311,6 +314,7 @@ impl From<cli::Codec> for VideoCodecParams {
                 payload_type: 96,
                 clock_rate: 90000,
                 profile_level_id: Some("42001f".to_string()),
+                packetization_mode: Some(1),
                 sps: Vec::new(),
                 pps: Vec::new(),
             },
@@ -338,6 +342,7 @@ impl From<cli::Codec> for VideoCodecParams {
                 payload_type: 96,
                 clock_rate: 90000,
                 profile_level_id: None,
+                packetization_mode: Some(1),
                 sps: Vec::new(),
                 pps: Vec::new(),
             },
@@ -385,14 +390,22 @@ impl From<cli::Codec> for AudioCodecParams {
 impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
     fn from(params: VideoCodecParams) -> Self {
         match params {
-            VideoCodecParams::H264 { clock_rate, .. } => {
+            VideoCodecParams::H264 {
+                clock_rate,
+                profile_level_id,
+                packetization_mode,
+                ..
+            } => {
+                let profile = profile_level_id.as_deref().unwrap_or("42001f");
+                let mode = packetization_mode.unwrap_or(1);
                 rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
                     mime_type: "video/H264".to_string(),
                     clock_rate,
                     channels: 0,
-                    sdp_fmtp_line:
-                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
-                            .to_string(),
+                    sdp_fmtp_line: format!(
+                        "level-asymmetry-allowed=1;packetization-mode={};profile-level-id={}",
+                        mode, profile
+                    ),
                     rtcp_feedback: video_rtcp_feedback(),
                 }
             }
@@ -535,6 +548,7 @@ mod tests {
                 payload_type: 96,
                 clock_rate: 90000,
                 profile_level_id: Some("42001f".to_string()),
+                packetization_mode: Some(1),
                 sps: vec![1, 2, 3],
                 pps: vec![4, 5],
             }),
@@ -547,6 +561,7 @@ mod tests {
                 payload_type: 96,
                 clock_rate: 90000,
                 profile_level_id: Some("42001f".to_string()),
+                packetization_mode: Some(1),
                 sps: vec![9, 9, 9],
                 pps: vec![4, 5],
             }),
@@ -673,6 +688,7 @@ mod tests {
                 payload_type: 96,
                 clock_rate: 90000,
                 profile_level_id: None,
+                packetization_mode: Some(1),
                 sps: vec![],
                 pps: vec![],
             },

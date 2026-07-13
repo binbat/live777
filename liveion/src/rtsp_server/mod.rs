@@ -185,6 +185,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
                 });
 
                 let manager = self.manager.clone();
+                let stream_ready = self.stream_ready.clone();
                 tokio::spawn(async move {
                     while let Some((channel, data)) = rx.recv().await {
                         let Some(&kind) = channel_to_kind.get(&channel) else {
@@ -217,6 +218,8 @@ impl rtsp::server::SessionHandler for RtspHandler {
                             stream_id, e
                         );
                     }
+                    let mut map = stream_ready.write().await;
+                    map.remove(&stream_id);
                 });
             }
             rtsp::SessionMode::Pull => {
@@ -420,20 +423,33 @@ async fn wait_for_forward(
         return Ok(forward);
     }
 
-    let mut rx = {
+    let tx = {
         let mut map = stream_ready.write().await;
         if let Some(forward) = manager.get_forward(stream_id).await {
             return Ok(forward);
         }
-        let tx = map
-            .entry(stream_id.to_string())
-            .or_insert_with(|| broadcast::channel(1).0);
-        tx.subscribe()
+        map.entry(stream_id.to_string())
+            .or_insert_with(|| broadcast::channel(1).0)
+            .clone()
     };
 
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
-        .await
-        .map_err(|_| anyhow!("Timeout waiting for forward {}", stream_id))?
+    let wait_result = {
+        let mut rx = tx.subscribe();
+        tokio::time::timeout(Duration::from_secs(30), rx.recv()).await
+    };
+
+    if wait_result.is_err() {
+        // Timed out waiting for a publisher. Clean up the coordination entry
+        // if no other pull clients are still waiting for this stream.
+        let mut map = stream_ready.write().await;
+        if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
+            map.remove(stream_id);
+        }
+        return Err(anyhow!("Timeout waiting for forward {}", stream_id));
+    }
+
+    wait_result
+        .unwrap()
         .map_err(|_| anyhow!("Stream ready channel closed for {}", stream_id))?;
 
     manager
@@ -531,13 +547,15 @@ fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
             payload_type,
             clock_rate,
             profile_level_id,
+            packetization_mode,
             sps,
             pps,
         } => {
             let profile = profile_level_id.as_deref().unwrap_or("42001f");
+            let mode = packetization_mode.unwrap_or(1);
             let mut sdp_fmtp_line = format!(
-                "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
-                profile
+                "level-asymmetry-allowed=1;packetization-mode={};profile-level-id={}",
+                mode, profile
             );
             if !sps.is_empty() && !pps.is_empty() {
                 let sps_b64 = BASE64.encode(sps);

@@ -65,11 +65,14 @@ fn parse_video_codec(media: &sdp_types::Media) -> Option<VideoCodecParams> {
         "H264" => {
             let (sps, pps) = extract_h264_params(media).unwrap_or_else(|| (Vec::new(), Vec::new()));
             let profile_level_id = extract_profile_level_id(media);
+            let packetization_mode =
+                extract_fmtp_param(media, "packetization-mode=").and_then(|v| v.parse().ok());
 
             Some(VideoCodecParams::H264 {
                 payload_type,
                 clock_rate,
                 profile_level_id,
+                packetization_mode,
                 sps,
                 pps,
             })
