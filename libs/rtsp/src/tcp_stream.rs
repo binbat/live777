@@ -289,7 +289,7 @@ fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<(usize, bool, Option<u
 
 fn build_keep_alive_response(cseq: u32) -> Vec<u8> {
     format!(
-        "RTSP/1.0 200 OK\r\nCSeq: {}\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD, GET_PARAMETER, SET_PARAMETER\r\nContent-Length: 0\r\n\r\n",
+        "RTSP/1.0 200 OK\r\nCSeq: {}\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD, GET_PARAMETER\r\nContent-Length: 0\r\n\r\n",
         cseq
     )
     .into_bytes()

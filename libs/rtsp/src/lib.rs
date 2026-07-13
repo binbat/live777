@@ -20,7 +20,7 @@ pub use channels::{InterleavedChannel, InterleavedData, RtspChannels};
 pub use client::{AuthParams, RtspMode, RtspSession, setup_rtsp_session};
 pub use constants::{
     buffer, client as client_constants, media_type, method_str, server as server_constants, track,
-    transport,
+    transport, udp_route,
 };
 pub use sdp::{
     extract_h264_params, extract_h265_params, filter_sdp, parse_codecs_from_sdp,
@@ -28,7 +28,7 @@ pub use sdp::{
 };
 #[cfg(feature = "server")]
 pub use server::{
-    Handler, PortUpdate, RtspServer, ServerConfig, ServerSession, SessionEndpoint, SessionHandler,
+    Handler, PortUpdate, ServerConfig, ServerSession, SessionEndpoint, SessionHandler,
     setup_rtsp_server_with_handler,
 };
 pub use transport_manager::{TransportConfig, TransportManager, UdpPortInfo, UdpSocketPair};
@@ -50,7 +50,7 @@ pub mod prelude {
     pub use crate::{AuthParams, RtspMode, RtspSession, setup_rtsp_session};
     #[cfg(feature = "server")]
     pub use crate::{
-        Handler, PortUpdate, RtspServer, ServerConfig, ServerSession, SessionEndpoint,
+        Handler, PortUpdate, ServerConfig, ServerSession, SessionEndpoint,
         SessionHandler, setup_rtsp_server_with_handler,
     };
 }

@@ -20,7 +20,7 @@ use crate::forward::track::PublishTrackRemote;
 use crate::stream::manager::Manager;
 use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
 use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
-use rtsp::ServerConfig;
+use rtsp::{ServerConfig, udp_route};
 
 const DEFAULT_STREAM: &str = "rtsp";
 
@@ -254,13 +254,13 @@ impl rtsp::server::SessionHandler for RtspHandler {
                             .video_transport
                             .as_ref()
                             .and_then(|t| t.tcp_channels())
-                            .unwrap_or((0, 1)),
+                            .unwrap_or((udp_route::VIDEO_RTP, udp_route::VIDEO_RTCP)),
                         RtpCodecKind::Audio => media_info
                             .audio_transport
                             .as_ref()
                             .and_then(|t| t.tcp_channels())
-                            .unwrap_or((2, 3)),
-                        _ => (0, 1),
+                            .unwrap_or((udp_route::AUDIO_RTP, udp_route::AUDIO_RTCP)),
+                        _ => (udp_route::VIDEO_RTP, udp_route::VIDEO_RTCP),
                     };
 
                     for track in tracks {
@@ -337,13 +337,17 @@ fn build_channel_kind_map(media_info: &rtsp::MediaInfo) -> HashMap<u8, RtpCodecK
     let mut map = HashMap::new();
 
     if let Some(ref transport) = media_info.video_transport {
-        let (rtp, rtcp) = transport.tcp_channels().unwrap_or((0, 1));
+        let (rtp, rtcp) = transport
+            .tcp_channels()
+            .unwrap_or((udp_route::VIDEO_RTP, udp_route::VIDEO_RTCP));
         map.insert(rtp, RtpCodecKind::Video);
         map.insert(rtcp, RtpCodecKind::Video);
     }
 
     if let Some(ref transport) = media_info.audio_transport {
-        let (rtp, rtcp) = transport.tcp_channels().unwrap_or((2, 3));
+        let (rtp, rtcp) = transport
+            .tcp_channels()
+            .unwrap_or((udp_route::AUDIO_RTP, udp_route::AUDIO_RTCP));
         map.insert(rtp, RtpCodecKind::Audio);
         map.insert(rtcp, RtpCodecKind::Audio);
     }

@@ -13,7 +13,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::{Handler, ServerConfig, ServerSession};
 use crate::channels::InterleavedData;
-use crate::constants::{media_type, net};
+use crate::constants::{media_type, net, udp_route};
 use crate::sdp::parse_codecs_from_sdp;
 use crate::tcp_stream::handle_tcp_stream;
 use crate::types::{MediaInfo, SessionMode, TransportInfo};
@@ -140,7 +140,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         session_mode = SessionMode::Pull;
                     }
 
-                    let p = request_path(&request)?.unwrap_or_default();
+                    let p = request_path(&request)?;
                     let sdp = self.app_handler.on_describe(p.clone()).await?;
                     self.handler.set_sdp(sdp);
                     path = Some(p);
@@ -156,7 +156,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         session_mode = SessionMode::Push;
                     }
 
-                    let p = request_path(&request)?.unwrap_or_default();
+                    let p = request_path(&request)?;
                     let sdp = request.body().to_vec();
                     self.app_handler.on_announce(p.clone(), sdp.clone()).await?;
                     self.handler.set_sdp(sdp);
@@ -256,10 +256,10 @@ impl<H: SessionHandler> RtspServerSession<H> {
 
                         if is_video {
                             video_channels = Some((rtp_ch, rtcp_ch));
-                            info!("Video TCP channels: RTP={}, RTCP={}", rtp_ch, rtcp_ch);
+                            debug!("Video TCP channels: RTP={}, RTCP={}", rtp_ch, rtcp_ch);
                         } else {
                             audio_channels = Some((rtp_ch, rtcp_ch));
-                            info!("Audio TCP channels: RTP={}, RTCP={}", rtp_ch, rtcp_ch);
+                            debug!("Audio TCP channels: RTP={}, RTCP={}", rtp_ch, rtcp_ch);
                         }
 
                         self.send_response(&response).await?;
@@ -326,11 +326,17 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     self.send_response(&response).await?;
 
                     let use_tcp = established_transport.unwrap_or(false);
-                    let media_info = if use_tcp {
+                    let mut media_info = if use_tcp {
                         self.build_media_info_tcp(video_channels, audio_channels)?
                     } else {
                         self.build_media_info_udp(video_ports, audio_ports)?
                     };
+
+                    // Audio-only streams may have transport assigned to
+                    // `video_transport` when the SETUP resolver can't match the
+                    // control URL to a media section. Normalize so downstream
+                    // consumers always find the transport on `audio_transport`.
+                    media_info.normalize_audio_only();
 
                     info!("MediaInfo: {:?}", media_info);
 
@@ -726,14 +732,14 @@ where
     }
 }
 
-fn request_path(request: &Request<Vec<u8>>) -> Result<Option<String>> {
+fn request_path(request: &Request<Vec<u8>>) -> Result<String> {
     let uri = request
         .request_uri()
         .ok_or_else(|| anyhow!("Missing request URI"))?;
     let mut segments = uri
         .path_segments()
         .ok_or_else(|| anyhow!("Invalid request URI"))?;
-    Ok(segments.next().map(|s| s.to_string()))
+    Ok(segments.next().map(|s| s.to_string()).unwrap_or_default())
 }
 
 /// Resolve whether a SETUP request targets the video media.
@@ -843,13 +849,13 @@ fn parse_track_index(uri: &str) -> Option<usize> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_udp_transfer(
+async fn run_udp_transfer<H: SessionHandler>(
     mode: SessionMode,
     client_addr: SocketAddr,
     media_info: MediaInfo,
     server_side: ServerSide,
     mut data_to_stream_rx: Receiver<InterleavedData>,
-    app_handler: Arc<dyn SessionHandler>,
+    app_handler: Arc<H>,
     path: String,
     video_sockets: Option<(UdpSocket, UdpSocket)>,
     audio_sockets: Option<(UdpSocket, UdpSocket)>,
@@ -870,6 +876,9 @@ async fn run_udp_transfer(
                 ..
             }) = media_info.video_transport
             {
+                // Prefer the socket already allocated during SETUP; fall back to
+                // binding a fresh one only when the handler didn't pre-allocate
+                // (e.g. an SDP-injected source without a formal SETUP handshake).
                 let socket = match video_rtp {
                     Some(rtp) => rtp,
                     None => bind_udp(&client_addr, port).await?,
@@ -884,8 +893,14 @@ async fn run_udp_transfer(
                             result = socket.recv_from(&mut buf) => {
                                 match result {
                                     Ok((n, _)) => {
-                                        if tx.send((0, buf[..n].to_vec())).await.is_err() {
-                                            break;
+                                        match tx.try_send((udp_route::VIDEO_RTP, buf[..n].to_vec())) {
+                                            Ok(()) => {}
+                                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                                // Drop frame under backpressure; UDP is lossy.
+                                            }
+                                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                                break;
+                                            }
                                         }
                                     }
                                     Err(_) => break,
@@ -904,6 +919,7 @@ async fn run_udp_transfer(
             {
                 let socket = match audio_rtp {
                     Some(rtp) => rtp,
+                    // Same fallback as the video leg above.
                     None => bind_udp(&client_addr, port).await?,
                 };
                 let tx = tx.clone();
@@ -916,8 +932,14 @@ async fn run_udp_transfer(
                             result = socket.recv_from(&mut buf) => {
                                 match result {
                                     Ok((n, _)) => {
-                                        if tx.send((2, buf[..n].to_vec())).await.is_err() {
-                                            break;
+                                        match tx.try_send((udp_route::AUDIO_RTP, buf[..n].to_vec())) {
+                                            Ok(()) => {}
+                                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                                // Drop frame under backpressure; UDP is lossy.
+                                            }
+                                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                                break;
+                                            }
                                         }
                                     }
                                     Err(_) => break,
@@ -929,51 +951,68 @@ async fn run_udp_transfer(
             }
 
             // Forward outgoing RTP/RTCP back to the push client.
+            // Each session binds one ephemeral send socket. For deployments
+            // with many concurrent sessions, consider sharing `Arc<UdpSocket>`
+            // across sessions (a single socket can `send_to` any destination).
             let send_socket = UdpSocket::bind(net::bind_any_for(&client_addr)).await?;
-            let video_rtp_send = media_info.video_transport.as_ref().and_then(|t| {
-                if let TransportInfo::Udp {
-                    rtp_send_port: Some(port),
-                    ..
-                } = t
-                {
-                    Some(*port)
-                } else {
-                    None
-                }
-            });
-            let video_rtcp_send = media_info.video_transport.as_ref().and_then(|t| {
-                if let TransportInfo::Udp {
-                    rtcp_send_port: Some(port),
-                    ..
-                } = t
-                {
-                    Some(*port)
-                } else {
-                    None
-                }
-            });
-            let audio_rtp_send = media_info.audio_transport.as_ref().and_then(|t| {
-                if let TransportInfo::Udp {
-                    rtp_send_port: Some(port),
-                    ..
-                } = t
-                {
-                    Some(*port)
-                } else {
-                    None
-                }
-            });
-            let audio_rtcp_send = media_info.audio_transport.as_ref().and_then(|t| {
-                if let TransportInfo::Udp {
-                    rtcp_send_port: Some(port),
-                    ..
-                } = t
-                {
-                    Some(*port)
-                } else {
-                    None
-                }
-            });
+
+            let video_rtp_send =
+                media_info.video_transport.as_ref().and_then(
+                    |t| {
+                        if let TransportInfo::Udp {
+                            rtp_send_port: Some(port),
+                            ..
+                        } = t
+                        {
+                            Some(*port)
+                        } else {
+                            None
+                        }
+                    },
+                );
+            let video_rtcp_send =
+                media_info.video_transport.as_ref().and_then(
+                    |t| {
+                        if let TransportInfo::Udp {
+                            rtcp_send_port: Some(port),
+                            ..
+                        } = t
+                        {
+                            Some(*port)
+                        } else {
+                            None
+                        }
+                    },
+                );
+            let audio_rtp_send =
+                media_info.audio_transport.as_ref().and_then(
+                    |t| {
+                        if let TransportInfo::Udp {
+                            rtp_send_port: Some(port),
+                            ..
+                        } = t
+                        {
+                            Some(*port)
+                        } else {
+                            None
+                        }
+                    },
+                );
+            let audio_rtcp_send =
+                media_info.audio_transport.as_ref().and_then(
+                    |t| {
+                        if let TransportInfo::Udp {
+                            rtcp_send_port: Some(port),
+                            ..
+                        } = t
+                        {
+                            Some(*port)
+                        } else {
+                            None
+                        }
+                    },
+                );
+
             let send_cancel = cancel.clone();
             tokio::spawn(async move {
                 loop {
@@ -983,10 +1022,10 @@ async fn run_udp_transfer(
                             match maybe_frame {
                                 Some((channel, data)) => {
                                     let send_port = match channel {
-                                        0 => video_rtp_send,
-                                        1 => video_rtcp_send,
-                                        2 => audio_rtp_send,
-                                        3 => audio_rtcp_send,
+                                        udp_route::VIDEO_RTP => video_rtp_send,
+                                        udp_route::VIDEO_RTCP => video_rtcp_send,
+                                        udp_route::AUDIO_RTP => audio_rtp_send,
+                                        udp_route::AUDIO_RTCP => audio_rtcp_send,
                                         _ => None,
                                     };
                                     if let Some(port) = send_port {
@@ -1019,8 +1058,8 @@ async fn run_udp_transfer(
                 ..
             }) = media_info.video_transport
             {
-                channel_map.insert(0, port);
-                channel_map.insert(1, rtcp_port);
+                channel_map.insert(udp_route::VIDEO_RTP, port);
+                channel_map.insert(udp_route::VIDEO_RTCP, rtcp_port);
             }
             if let Some(TransportInfo::Udp {
                 rtp_send_port: Some(port),
@@ -1028,8 +1067,8 @@ async fn run_udp_transfer(
                 ..
             }) = media_info.audio_transport
             {
-                channel_map.insert(2, port);
-                channel_map.insert(3, rtcp_port);
+                channel_map.insert(udp_route::AUDIO_RTP, port);
+                channel_map.insert(udp_route::AUDIO_RTCP, rtcp_port);
             }
 
             let send_cancel = cancel.clone();
@@ -1065,10 +1104,10 @@ async fn run_udp_transfer(
 /// Spawn RTCP receiver tasks for active UDP sockets. Each task forwards
 /// incoming RTCP packets to `app_handler.on_rtcp()`. Tasks exit when `cancel`
 /// is cancelled (e.g. on TEARDOWN or control connection close).
-fn spawn_rtcp_drain(
+fn spawn_rtcp_drain<H: SessionHandler>(
     video_rtcp: Option<UdpSocket>,
     audio_rtcp: Option<UdpSocket>,
-    app_handler: Arc<dyn SessionHandler>,
+    app_handler: Arc<H>,
     path: String,
     cancel: CancellationToken,
 ) {
@@ -1111,7 +1150,7 @@ struct ConnectionGuard(Arc<AtomicUsize>);
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        self.0.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -1177,7 +1216,7 @@ where
             res = listener.accept() => {
                 match res {
                     Ok((socket, addr)) => {
-                        let active = active_connections.load(Ordering::Relaxed);
+                        let active = active_connections.load(Ordering::Acquire);
                         if active >= config.max_connections {
                             warn!(
                                 "RTSP server at max connections ({}/{}), rejecting {}",
@@ -1193,7 +1232,7 @@ where
                             continue;
                         }
 
-                        active_connections.fetch_add(1, Ordering::Relaxed);
+                        active_connections.fetch_add(1, Ordering::Release);
                         connection_count += 1;
                         let conn_id = connection_count;
                         let guard = ConnectionGuard(active_connections.clone());

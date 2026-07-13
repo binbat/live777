@@ -87,7 +87,7 @@ impl Handler {
             .header(headers::CSEQ, self.cseq.to_string())
             .header(
                 headers::PUBLIC,
-                "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD",
+                "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD, GET_PARAMETER",
             )
             .empty();
         Ok(response.map_body(|_| vec![]))
@@ -373,7 +373,7 @@ mod tests {
 
     fn dummy_handler() -> Handler {
         Handler::new(
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8554),
             Arc::new(RwLock::new(HashMap::new())),
             ServerConfig::default(),
         )
