@@ -243,11 +243,12 @@ async fn test_livetwo_rtp_vp8_opus() {
         "ffmpeg -re -f lavfi -i sine=frequency=1000 -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an"
     );
 
+    // The source command ends with `-an`, so audio is intentionally disabled.
     helper_livetwo_rtp(
         ip,
         &prefix,
         Detect {
-            audio: Some(2),
+            audio: None,
             video: Some((width, height)),
         },
     )
@@ -267,11 +268,12 @@ async fn test_livetwo_rtp_h264_g722() {
         "ffmpeg -re -f lavfi -i sine=frequency=1000 -re -f lavfi -i testsrc=size={width}x{height}:rate=30 {acodec} {vcodec} -an",
     );
 
+    // The source command ends with `-an`, so audio is intentionally disabled.
     helper_livetwo_rtp(
         ip,
         &prefix,
         Detect {
-            audio: Some(1),
+            audio: None,
             video: Some((width, height)),
         },
     )
@@ -281,11 +283,14 @@ async fn test_livetwo_rtp_h264_g722() {
 async fn helper_livetwo_rtp(ip: IpAddr, prefix: &str, detect: Detect) {
     init_tracing();
 
-    let whip_port = alloc_udp_ports(ip, 1);
+    // Each RTP flow also uses the next consecutive port for RTCP. Reserve
+    // enough contiguous ports so that the WHIP source, WHEP output, ffprobe
+    // and RTCP listeners do not collide with each other or with later tests.
+    let whip_port = alloc_udp_ports(ip, 2);
     let whep_port = if detect.audio.is_some() && detect.video.is_some() {
-        alloc_udp_ports(ip, 3)
+        alloc_udp_ports(ip, 4)
     } else {
-        alloc_udp_ports(ip, 1)
+        alloc_udp_ports(ip, 2)
     };
 
     let cfg = liveion::config::Config::default();

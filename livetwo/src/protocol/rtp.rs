@@ -1,9 +1,8 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use cli::codec_from_str;
 use sdp::description::common::{Address, ConnectionInformation};
 use sdp::{SessionDescription, description::media::RangedPort};
-use std::fs::{self, File};
-use std::io::{Cursor, Write};
+use std::io::Cursor;
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::Path;
 use std::sync::Arc;
@@ -14,12 +13,37 @@ use tracing::{debug, info};
 use crate::utils;
 use rtsp::constants::media_type;
 
+const SDP_FILE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const SDP_FILE_WAIT_INTERVAL: Duration = Duration::from_millis(100);
+
 pub async fn setup_rtp_input(target_url: &str) -> Result<(rtsp::MediaInfo, String)> {
     info!("Processing RTP input mode");
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     let path = Path::new(target_url);
-    let sdp_bytes = fs::read(path).map_err(|e| anyhow!("Failed to read SDP file: {}", e))?;
+
+    // FFmpeg writes the SDP file asynchronously. Wait for it to contain a
+    // valid-looking session description instead of parsing an empty or partial
+    // file immediately.
+    let sdp_bytes = tokio::time::timeout(SDP_FILE_WAIT_TIMEOUT, async {
+        loop {
+            match tokio::fs::read_to_string(path).await {
+                Ok(contents) if contents.contains("v=") && contents.contains("m=") => {
+                    return contents.into_bytes();
+                }
+                _ => {
+                    tokio::time::sleep(SDP_FILE_WAIT_INTERVAL).await;
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "SDP file was not populated within {:?}",
+            SDP_FILE_WAIT_TIMEOUT
+        )
+    })?;
+
     let sdp =
         sdp_types::Session::parse(&sdp_bytes).map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
 
@@ -109,9 +133,9 @@ pub async fn setup_rtp_output(
         }
     }
 
-    let video_port = video_port.and_then(|p| if video_codec.is_some() { Some(p) } else { None });
+    let video_port = video_port.filter(|_| video_codec.is_some());
 
-    let audio_port = audio_port.and_then(|p| if audio_codec.is_some() { Some(p) } else { None });
+    let audio_port = audio_port.filter(|_| audio_codec.is_some());
 
     let media_info = rtsp::MediaInfo {
         video_transport: video_port.map(|port| rtsp::TransportInfo::Udp {
@@ -192,12 +216,16 @@ pub async fn setup_rtp_output(
     let file_path = sdp_filename.unwrap_or_else(|| "output.sdp".to_string());
     debug!("SDP written to {:?}", file_path);
 
-    let mut file = File::options()
+    let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(file_path)?;
-    file.write_all(sdp.as_bytes())?;
+        .open(&file_path)
+        .await
+        .with_context(|| format!("Failed to open SDP file {file_path}"))?;
+    tokio::io::AsyncWriteExt::write_all(&mut file, sdp.as_bytes())
+        .await
+        .with_context(|| format!("Failed to write SDP file {file_path}"))?;
 
     notify.notify_one();
     debug!("Sent signal to start child process");

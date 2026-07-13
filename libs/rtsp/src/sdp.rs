@@ -385,6 +385,14 @@ pub fn filter_sdp(
                     key: "control".to_string(),
                     value: Some("streamid=0".to_string()),
                 });
+
+                // Safety net: if the requested payload type did not match any
+                // format (e.g. payload_type was still 0 before negotiation),
+                // drop the media section instead of emitting invalid SDP such as
+                // "m=video 9 RTP/AVP".
+                if media.media_name.formats.is_empty() {
+                    return false;
+                }
             }
         } else if media.media_name.media == media_type::AUDIO {
             if audio_codec.is_none() {
@@ -420,6 +428,10 @@ pub fn filter_sdp(
                     key: "control".to_string(),
                     value: Some("streamid=1".to_string()),
                 });
+
+                if media.media_name.formats.is_empty() {
+                    return false;
+                }
             }
         } else {
             return false;

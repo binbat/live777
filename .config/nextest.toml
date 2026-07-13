@@ -12,7 +12,7 @@ fail-fast = false
 
 # Unit tests and lib tests run with limited parallelism.
 [[profile.default.overrides]]
-filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests))'
+filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests) | binary(playwright_whep))'
 test-group = 'resource-limited'
 
 # Integration test binaries exercise ffmpeg, local sockets, and/or real browsers;
@@ -22,7 +22,7 @@ filter = 'binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(
 test-group = 'serial-integration'
 
 [[profile.ci.overrides]]
-filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests) | (package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))))'
+filter = 'not (binary(rtp) | binary(rtsp) | binary(rtsp2) | binary(channel) | binary(tests) | binary(playwright_whep) | (package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))))'
 test-group = 'resource-limited'
 
 [[profile.ci.overrides]]

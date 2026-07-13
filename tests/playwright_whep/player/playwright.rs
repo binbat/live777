@@ -14,6 +14,16 @@ pub struct PlaywrightWhepPlayer {
     pub browser: Browser,
 }
 
+impl PlaywrightWhepPlayer {
+    #[allow(dead_code)]
+    pub fn webkit() -> Self {
+        Self {
+            browser: Browser::Webkit,
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for PlaywrightWhepPlayer {
     fn default() -> Self {
         Self {
@@ -55,6 +65,9 @@ impl Player for PlaywrightWhepPlayer {
             connected: subscribe.connected,
             video_width: subscribe.video_width,
             video_height: subscribe.video_height,
+            video_tracks: subscribe.video_tracks as u32,
+            audio_tracks: subscribe.audio_tracks as u32,
+            duration_ms: subscribe.duration_ms,
             error: subscribe.error,
         })
     }

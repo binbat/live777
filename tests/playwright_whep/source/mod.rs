@@ -1,16 +1,57 @@
 pub mod ffmpeg;
+pub mod gstreamer_vp8;
+#[cfg(feature = "rsmpeg")]
+pub mod rsmpeg_vp8;
+#[cfg(feature = "rsmpeg")]
+pub mod whipsynth;
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
+#[async_trait::async_trait]
 pub trait SourceHandle: Send {
-    fn stop(self: Box<Self>);
+    async fn stop(self: Box<Self>);
 }
 
 pub trait Source: Send + Sync {
     fn name(&self) -> &'static str;
     fn start(&self, target_addr: SocketAddr) -> anyhow::Result<Box<dyn SourceHandle>>;
     fn sdp(&self, listen_addr: SocketAddr) -> String;
+
+    /// Whether this source produces an audio track in addition to video.
+    fn has_audio(&self) -> bool {
+        false
+    }
+
+    /// Start the source with separate video and optional audio destinations.
+    ///
+    /// Defaults to [`Self::start`] for video-only sources.
+    fn start_with_audio(
+        &self,
+        video_addr: SocketAddr,
+        _audio_addr: Option<SocketAddr>,
+    ) -> anyhow::Result<Box<dyn SourceHandle>> {
+        self.start(video_addr)
+    }
+
+    /// Build an SDP with separate video and optional audio ports.
+    ///
+    /// Defaults to [`Self::sdp`] for video-only sources.
+    fn sdp_with_audio(&self, video_addr: SocketAddr, _audio_addr: Option<SocketAddr>) -> String {
+        self.sdp(video_addr)
+    }
+
+    /// Whether this source publishes directly to a WHIP endpoint instead of
+    /// emitting RTP to a local address.
+    fn publishes_directly(&self) -> bool {
+        false
+    }
+
+    /// Start direct WHIP publishing. Only called when [`Self::publishes_directly`]
+    /// returns `true`.
+    fn start_direct(&self, _whip_url: &str) -> anyhow::Result<Box<dyn SourceHandle>> {
+        anyhow::bail!("direct publishing not supported by this source")
+    }
 
     /// Wait until the source is producing frames and it is safe to subscribe.
     ///
@@ -24,16 +65,34 @@ pub trait Source: Send + Sync {
 
 /// Supported video codecs for the RTP test sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum VideoCodec {
     Vp8,
     H264,
+    H265,
+    Vp9,
+    Av1,
 }
 
+#[allow(dead_code)]
 impl VideoCodec {
     pub fn as_str(&self) -> &'static str {
         match self {
             VideoCodec::Vp8 => "VP8",
             VideoCodec::H264 => "H264",
+            VideoCodec::H265 => "H265",
+            VideoCodec::Vp9 => "VP9",
+            VideoCodec::Av1 => "AV1",
+        }
+    }
+
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            VideoCodec::Vp8 => "video/VP8",
+            VideoCodec::H264 => "video/H264",
+            VideoCodec::H265 => "video/H265",
+            VideoCodec::Vp9 => "video/VP9",
+            VideoCodec::Av1 => "video/AV1",
         }
     }
 
@@ -45,6 +104,9 @@ impl VideoCodec {
         match self {
             VideoCodec::Vp8 => 96,
             VideoCodec::H264 => 102,
+            VideoCodec::H265 => 126,
+            VideoCodec::Vp9 => 98,
+            VideoCodec::Av1 => 41,
         }
     }
 
@@ -53,6 +115,21 @@ impl VideoCodec {
         match self {
             VideoCodec::Vp8 => "libvpx",
             VideoCodec::H264 => "libx264",
+            VideoCodec::H265 => "libx265",
+            VideoCodec::Vp9 => "libvpx-vp9",
+            VideoCodec::Av1 => "libsvtav1",
+        }
+    }
+
+    /// RTP payload name (the encoding name in `a=rtpmap` and the value ffmpeg's
+    /// RTP muxer accepts for the `?codec=` query), e.g. `VP8`, `AV1`.
+    pub fn rtp_payload_name(&self) -> &'static str {
+        match self {
+            VideoCodec::Vp8 => "VP8",
+            VideoCodec::H264 => "H264",
+            VideoCodec::H265 => "H265",
+            VideoCodec::Vp9 => "VP9",
+            VideoCodec::Av1 => "AV1",
         }
     }
 
@@ -79,17 +156,46 @@ impl VideoCodec {
                 "-tune",
                 "zerolatency",
             ],
+            VideoCodec::H265 => &[
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "ultrafast",
+                "-tune",
+                "zerolatency",
+            ],
+            VideoCodec::Vp9 => &[
+                "-strict",
+                "experimental",
+                "-pix_fmt",
+                "yuv420p",
+                "-deadline",
+                "realtime",
+                "-speed",
+                "4",
+            ],
+            VideoCodec::Av1 => &[
+                "-strict",
+                "experimental",
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "8",
+                "-svtav1-params",
+                "tune=0",
+            ],
         }
     }
 
     /// SDP `a=rtpmap:` line for this codec.
     pub fn sdp_rtpmap(&self, payload_type: u8) -> String {
+        let name = self.rtp_payload_name();
         match self {
-            VideoCodec::Vp8 => format!("a=rtpmap:{payload_type} VP8/90000"),
             VideoCodec::H264 => format!(
-                "a=rtpmap:{payload_type} H264/90000\r\n\
+                "a=rtpmap:{payload_type} {name}/90000\r\n\
                  a=fmtp:{payload_type} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
             ),
+            _ => format!("a=rtpmap:{payload_type} {name}/90000"),
         }
     }
 }

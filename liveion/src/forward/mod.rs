@@ -38,11 +38,19 @@ use self::message::ForwardEvent;
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
+    feature = "native-source",
+    feature = "recorder"
+))]
+pub(crate) mod av1_assembler;
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
     feature = "native-source"
 ))]
 pub(crate) mod av1_repacketizer;
 #[cfg(feature = "source")]
 pub(crate) mod channel;
+mod codec_compat;
 mod internal;
 mod media;
 pub mod message;
@@ -98,12 +106,11 @@ pub struct VideoTrackInfo {
 }
 
 impl PeerForward {
-    #[cfg(feature = "source")]
     pub fn new(
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
-        channel: Option<ChannelConfig>,
+        #[cfg(feature = "source")] channel: Option<ChannelConfig>,
         strategy: api::strategy::Strategy,
     ) -> Self {
         PeerForward {
@@ -113,26 +120,8 @@ impl PeerForward {
                 stream,
                 ice_server,
                 ice_udp_addrs,
+                #[cfg(feature = "source")]
                 channel,
-                strategy,
-            )),
-        }
-    }
-
-    #[cfg(not(feature = "source"))]
-    pub fn new(
-        stream: impl ToString,
-        ice_server: Vec<RTCIceServer>,
-        ice_udp_addrs: Vec<SocketAddr>,
-        strategy: api::strategy::Strategy,
-    ) -> Self {
-        PeerForward {
-            stream: stream.to_string(),
-            publish_lock: Arc::new(Mutex::new(())),
-            internal: Arc::new(PeerForwardInternal::new(
-                stream,
-                ice_server,
-                ice_udp_addrs,
                 strategy,
             )),
         }

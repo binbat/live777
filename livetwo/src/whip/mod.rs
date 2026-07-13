@@ -19,6 +19,7 @@ use cli::create_child;
 use libwish::Client;
 
 pub use input::InputSource;
+pub use webrtc::format_ice_stats;
 pub(crate) use webrtc::log_rtcp_feedback_packet;
 pub use webrtc::setup_whip_peer;
 

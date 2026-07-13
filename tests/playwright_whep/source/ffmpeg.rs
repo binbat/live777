@@ -34,6 +34,9 @@ impl Source for FfmpegSource {
         match self.codec {
             VideoCodec::Vp8 => "ffmpeg-vp8",
             VideoCodec::H264 => "ffmpeg-h264",
+            VideoCodec::H265 => "ffmpeg-h265",
+            VideoCodec::Vp9 => "ffmpeg-vp9",
+            VideoCodec::Av1 => "ffmpeg-av1",
         }
     }
 
@@ -45,9 +48,11 @@ impl Source for FfmpegSource {
         let payload_type = codec.payload_type();
         let encoder = codec.ffmpeg_encoder();
 
-        // For the codecs we support the FFmpeg encoder name is also the RTP
-        // muxer codec name.
-        let rtp_codec_name = encoder;
+        // `?codec=` takes the RTP payload name. FFmpeg also infers it from the
+        // encoder's codec id, so the value is belt-and-braces, but we pass the
+        // canonical name regardless. AV1/VP9 RTP packetization is experimental,
+        // so their `ffmpeg_extra_args` pass `-strict experimental` (without it
+        // ffmpeg refuses to write the header).
 
         let mut cmd = Command::new("ffmpeg");
         cmd.arg("-re")
@@ -60,10 +65,13 @@ impl Source for FfmpegSource {
         for arg in codec.ffmpeg_extra_args() {
             cmd.arg(arg);
         }
+        // Use a short GOP so subscribers that connect after the first keyframe
+        // get another keyframe quickly, even when the encoder is under load.
+        let keyframe_interval = fps.min(5);
         cmd.arg("-g")
-            .arg(fps.to_string())
+            .arg(keyframe_interval.to_string())
             .arg("-keyint_min")
-            .arg(fps.to_string())
+            .arg(keyframe_interval.to_string())
             .arg("-b:v")
             .arg("1000k")
             .arg("-maxrate")
@@ -74,7 +82,10 @@ impl Source for FfmpegSource {
             .arg(payload_type.to_string())
             .arg("-f")
             .arg("rtp")
-            .arg(format!("rtp://{target_addr}?codec={rtp_codec_name}"));
+            .arg(format!(
+                "rtp://{target_addr}?codec={}",
+                codec.rtp_payload_name()
+            ));
 
         let child = cmd
             .spawn()
@@ -104,9 +115,11 @@ struct FfmpegHandle {
     child: Child,
 }
 
+#[async_trait::async_trait]
 impl SourceHandle for FfmpegHandle {
-    fn stop(mut self: Box<Self>) {
+    async fn stop(mut self: Box<Self>) {
         let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut child = self.child;
+        let _ = tokio::task::spawn_blocking(move || child.wait()).await;
     }
 }

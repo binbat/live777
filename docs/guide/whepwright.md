@@ -1,8 +1,10 @@
-# WhepPlay
+# WhepWright
 
 `whepwright` is a browser-based WHEP playback tester. It launches a real browser
 (Chromium, Firefox, or WebKit) via Playwright, subscribes to a WHEP endpoint,
 and verifies that the browser WebRTC stack can receive and render the stream.
+
+For fast, headless decoding with FFmpeg, see [`WhepProbe`](whepprobe).
 
 ## Build
 

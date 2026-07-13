@@ -101,14 +101,23 @@ assert!(result.subscribe.as_ref().unwrap().success);
 The crate is demonstrated in `tests/playwright_whep/`, which:
 
 - starts a `liveion` server with CORS enabled,
-- publishes a VP8/H264 test stream via WHIP using an external FFmpeg process,
+- publishes a VP8 test stream via WHIP,
 - runs the browser WHEP player through the bundled test page,
 - asserts that the browser successfully receives and renders video.
 
-Run it with:
+With only the `whepwright` feature, the default matrix test uses an external
+`ffmpeg` process as the WHIP source:
 
 ```bash
 cargo test --test playwright_whep --features whepwright
 ```
 
-The test source requires a working `ffmpeg` binary on `PATH`.
+The external `ffmpeg` binary must be available on `PATH`.
+
+When both `whepwright` and `rsmpeg` are enabled, the test uses a built-in
+`rsmpeg`-based source instead of an external FFmpeg process. This requires
+FFmpeg development libraries on the system (probed via `pkg-config`):
+
+```bash
+cargo test --test playwright_whep --features "whepwright rsmpeg"
+```

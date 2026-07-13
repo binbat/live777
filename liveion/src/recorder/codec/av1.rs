@@ -1,13 +1,10 @@
 use super::{CodecAdapter, TrackKind};
 use anyhow::{Result, anyhow};
 use bytes::{BufMut, Bytes, BytesMut};
-use rtc_rtp::codec::av1::Av1Depacketizer;
 use rtc_rtp::packet::Packet;
-use rtc_rtp::packetizer::Depacketizer;
 
 const TIMESCALE: u32 = 90_000;
 const OBU_TYPE_SEQUENCE_HEADER: u8 = 1;
-const MAX_TEMPORAL_UNIT_SIZE: usize = 3 * 1024 * 1024;
 
 pub struct Av1Adapter {
     sequence_header: Option<Vec<u8>>,
@@ -176,11 +173,16 @@ impl CodecAdapter for Av1Adapter {
     }
 }
 
+use crate::forward::av1_assembler::Av1Assembler;
+
+/// Maximum accumulated temporal-unit size for the recorder path. Tighter than
+/// the forward assembler's 8 MiB default to keep per-recording peak heap lower
+/// under runaway/corrupt streams; bounded by resets on packet loss and
+/// timestamp discontinuities.
+const RECORDER_MAX_TEMPORAL_UNIT_SIZE: usize = 3 * 1024 * 1024;
+
 pub struct Av1RtpParser {
-    depacketizer: Av1Depacketizer,
-    accumulator: BytesMut,
-    expected_seq: Option<u16>,
-    last_timestamp: Option<u32>,
+    assembler: Av1Assembler,
 }
 
 impl Default for Av1RtpParser {
@@ -192,98 +194,12 @@ impl Default for Av1RtpParser {
 impl Av1RtpParser {
     pub fn new() -> Self {
         Self {
-            depacketizer: Av1Depacketizer::new(),
-            accumulator: BytesMut::new(),
-            expected_seq: None,
-            last_timestamp: None,
+            assembler: Av1Assembler::new().with_max_size(RECORDER_MAX_TEMPORAL_UNIT_SIZE),
         }
-    }
-
-    fn reset(&mut self) {
-        self.depacketizer = Av1Depacketizer::new();
-        self.accumulator.clear();
-        self.expected_seq = None;
-        self.last_timestamp = None;
     }
 
     pub fn push_packet(&mut self, pkt: &Packet) -> Result<Option<BytesMut>> {
-        // Detect sequence number gaps. AV1 depacketization is stateful, so a
-        // missing packet makes the current accumulator unusable.
-        if let Some(expected) = self.expected_seq
-            && pkt.header.sequence_number != expected
-        {
-            tracing::debug!(
-                "[av1-rtp] sequence gap detected: expected {}, got {}; resetting",
-                expected,
-                pkt.header.sequence_number
-            );
-            self.reset();
-        }
-        self.expected_seq = Some(pkt.header.sequence_number.wrapping_add(1));
-
-        // Timestamp discontinuity also indicates a new temporal unit or lost
-        // stream state. Use Option rather than sentinel 0, since RTP timestamp
-        // 0 is a legitimate value.
-        if let Some(last) = self.last_timestamp
-            && pkt.header.timestamp != last
-        {
-            if !self.accumulator.is_empty() {
-                tracing::debug!(
-                    "[av1-rtp] timestamp discontinuity ({} -> {}); dropping incomplete temporal unit",
-                    last,
-                    pkt.header.timestamp
-                );
-            }
-            self.reset();
-        }
-        self.last_timestamp = Some(pkt.header.timestamp);
-
-        // On depacketization failure the parser's internal state (depacketizer
-        // buffer, accumulator) is indeterminate; reset before propagating so a
-        // malformed packet can't corrupt the next temporal unit.
-        let obus = match self.depacketizer.depacketize(&pkt.payload) {
-            Ok(obus) => obus,
-            Err(e) => {
-                self.reset();
-                return Err(anyhow!("AV1 depacketization failed: {e}"));
-            }
-        };
-
-        if !obus.is_empty() {
-            if self.accumulator.len() + obus.len() > MAX_TEMPORAL_UNIT_SIZE {
-                let size = self.accumulator.len() + obus.len();
-                self.reset();
-                return Err(anyhow!(
-                    "temporal unit size ({size}) exceeds maximum allowed ({MAX_TEMPORAL_UNIT_SIZE})"
-                ));
-            }
-            self.accumulator.extend_from_slice(&obus);
-        }
-
-        // A temporal unit is complete when the RTP marker bit is set and the
-        // last OBU does not continue into the next packet (Y flag is false).
-        if pkt.header.marker && self.depacketizer.y {
-            self.reset();
-            return Err(anyhow!(
-                "marker set but last OBU continues (Y=1); malformed packet, temporal unit dropped"
-            ));
-        }
-
-        if pkt.header.marker {
-            if self.accumulator.is_empty() {
-                return Ok(None);
-            }
-
-            let temporal_unit = std::mem::take(&mut self.accumulator);
-            tracing::trace!(
-                "[av1-rtp] temporal unit complete: seq={} size={}",
-                pkt.header.sequence_number,
-                temporal_unit.len()
-            );
-            return Ok(Some(temporal_unit));
-        }
-
-        Ok(None)
+        self.assembler.feed(pkt)
     }
 }
 

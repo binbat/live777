@@ -1,6 +1,8 @@
-# WhepPlay
+# WhepWright
 
 `whepwright` 是一个基于浏览器的 WHEP 播放测试工具。它通过 Playwright 启动真实浏览器（Chromium、Firefox 或 WebKit），订阅 WHEP 端点，并验证浏览器 WebRTC 协议栈能否正常接收和渲染视频流。
+
+如果需要使用 FFmpeg 进行快速无头解码，请查看 [`WhepProbe`](whepprobe)。
 
 ## 构建
 

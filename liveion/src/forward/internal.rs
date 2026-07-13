@@ -649,7 +649,11 @@ pub(crate) struct PeerForwardInternal {
     negotiated_twcc_ext_id: std::sync::atomic::AtomicU8,
     /// RTCP egress counters from the probe interceptor (None until publish peer created)
     rtcp_egress_counters: std::sync::Mutex<Option<std::sync::Arc<rtcp_egress_probe::Counters>>>,
-    /// Set by the publish interceptor once native TWCC receiver binding is active.
+    /// Set to `true` by the publish interceptor (`RtcpEgressProbe`) once native
+    /// TWCC receiver binding is active on any remote stream. `PeerForwardInternal`
+    /// never reads this field directly — the `Arc` is cloned into the interceptor
+    /// and `SharedManualTwccFeedback` so they can coordinate native vs. manual TWCC
+    /// across the publish interceptor chain and all per-track TWCC senders.
     native_twcc_bound: Arc<AtomicBool>,
     /// Shared manual TWCC fallback for all tracks in a publish peer.
     manual_twcc_feedback: std::sync::Mutex<Option<SharedManualTwccFeedback>>,
@@ -663,12 +667,11 @@ pub(crate) struct PeerForwardInternal {
 }
 
 impl PeerForwardInternal {
-    #[cfg(feature = "source")]
     pub(crate) fn new(
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
-        channel: Option<ChannelConfig>,
+        #[cfg(feature = "source")] channel: Option<ChannelConfig>,
         strategy: api::strategy::Strategy,
     ) -> Self {
         PeerForwardInternal {
@@ -698,45 +701,8 @@ impl PeerForwardInternal {
             manual_twcc_feedback: std::sync::Mutex::new(None),
             media_generation_id: RwLock::new(0),
             last_publish_profile: RwLock::new(None),
+            #[cfg(feature = "source")]
             channel,
-            strategy,
-        }
-    }
-
-    #[cfg(not(feature = "source"))]
-    pub(crate) fn new(
-        stream: impl ToString,
-        ice_server: Vec<RTCIceServer>,
-        ice_udp_addrs: Vec<SocketAddr>,
-        strategy: api::strategy::Strategy,
-    ) -> Self {
-        PeerForwardInternal {
-            stream: stream.to_string(),
-            create_at: Utc::now().timestamp_millis(),
-            publish_leave_at: RwLock::new(0),
-            subscribe_leave_at: RwLock::new(Utc::now().timestamp_millis()),
-            publish: RwLock::new(None),
-            publish_tracks: Arc::new(RwLock::new(Vec::new())),
-            publish_tracks_change: new_broadcast_channel!(16),
-            publish_rtcp_channel: new_broadcast_channel!(48),
-            subscribe_group: RwLock::new(Vec::new()),
-            closed_publish_sessions: RwLock::new(Vec::new()),
-            closed_subscribe_sessions: RwLock::new(Vec::new()),
-            data_channel_forward: DataChannelForward {
-                publish: new_broadcast_channel!(1024),
-                subscribe: new_broadcast_channel!(1024),
-            },
-            ice_server,
-            ice_udp_addrs,
-            event_sender: new_broadcast_channel!(16),
-            publish_peer_ref: Mutex::new(None),
-            publish_peer_state_rx: Mutex::new(None),
-            negotiated_twcc_ext_id: AtomicU8::new(0),
-            rtcp_egress_counters: std::sync::Mutex::new(None),
-            native_twcc_bound: Arc::new(AtomicBool::new(false)),
-            manual_twcc_feedback: std::sync::Mutex::new(None),
-            media_generation_id: RwLock::new(0),
-            last_publish_profile: RwLock::new(None),
             strategy,
         }
     }
@@ -927,7 +893,7 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    async fn data_channel_forward(
+    fn data_channel_forward(
         dc: Arc<dyn DataChannel>,
         sender: broadcast::Sender<Vec<u8>>,
         receiver: broadcast::Receiver<Vec<u8>>,
@@ -941,7 +907,7 @@ impl PeerForwardInternal {
                 match dc_rx.poll().await {
                     Some(webrtc::data_channel::DataChannelEvent::OnMessage(data)) => {
                         if let Err(err) = sender.send(data.data.to_vec()) {
-                            info!("send data channel err: {}", err);
+                            debug!("send data channel err: {}", err);
                             return;
                         }
                     }
@@ -1354,7 +1320,7 @@ impl PeerForwardInternal {
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
         let connection_state_rx = self.publish_peer_state_rx.lock().await.clone();
-        Self::data_channel_forward(dc, sender, receiver, connection_state_rx).await;
+        Self::data_channel_forward(dc, sender, receiver, connection_state_rx);
         Ok(())
     }
 
@@ -1759,7 +1725,7 @@ impl PeerForwardInternal {
     ) -> Result<()> {
         let sender = self.data_channel_forward.publish.clone();
         let receiver = self.data_channel_forward.subscribe.subscribe();
-        Self::data_channel_forward(dc, sender, receiver, None).await;
+        Self::data_channel_forward(dc, sender, receiver, None);
         Ok(())
     }
 
