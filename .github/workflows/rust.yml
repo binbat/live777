@@ -54,7 +54,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   build:
-    needs: [test]
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +78,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libcamera-dev libv4l-dev
+          sudo apt-get install -y -qq libcamera-dev libv4l-dev
       - name: Install FFmpeg for rsmpeg
         uses: ./.github/actions/install-ffmpeg
       - name: Build

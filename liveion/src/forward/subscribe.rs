@@ -276,7 +276,14 @@ impl SubscribeRTCPeerConnection {
 
             {
                 let mut binding = track_binding_publish_rid.write().await;
-                binding.insert(kind.to_string(), publish_track.rid().to_string());
+                // Validate: only update if the binding hasn't been changed
+                // by a concurrent handler since we read current_rid above.
+                // (Currently the handlers are sequential within this task,
+                // but this guards against future refactors that introduce
+                // parallelism.)
+                if binding.get(&kind.to_string()).map(|r| r.as_str()) == current_rid.as_deref() {
+                    binding.insert(kind.to_string(), publish_track.rid().to_string());
+                }
             }
             return Some(BoundPublishTrack {
                 recv: new_recv,
@@ -670,16 +677,18 @@ impl SubscribeRTCPeerConnection {
 
                             // Disabling the layer is a synchronous map update.
                             if select_rid == constant::RID_DISABLE {
-                                if let Some(rid) = current_rid {
+                                if let Some(ref rid) = current_rid {
                                     recv = virtual_sender.subscribe();
                                     track = None;
                                     payload_type = None;
                                     source_codec = None;
                                     selected_codec = None;
-                                    pre_rid = Some(rid);
+                                    pre_rid = Some(rid.clone());
                                     {
                                         let mut binding = track_binding_publish_rid.write().await;
-                                        binding.insert(kind.to_string(), select_rid);
+                                        if binding.get(&kind.to_string()).map(|r| r.as_str()) == current_rid.as_deref() {
+                                            binding.insert(kind.to_string(), select_rid);
+                                        }
                                     }
                                 }
                                 continue;
@@ -821,7 +830,12 @@ impl SubscribeRTCPeerConnection {
 
                             {
                                 let mut binding = track_binding_publish_rid.write().await;
-                                binding.insert(kind.to_string(), new_rid.clone());
+                                // Validate: only update if the binding hasn't changed
+                                // since we read current_rid above. Guards against
+                                // future refactors that introduce parallel handlers.
+                                if binding.get(&kind.to_string()).map(|r| r.as_str()) == current_rid.as_deref() {
+                                    binding.insert(kind.to_string(), new_rid.clone());
+                                }
                             }
                             info!("[{}] [{}] {} select layer to {}", stream, id, kind, new_rid);
                         }

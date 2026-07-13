@@ -35,6 +35,8 @@ use self::media::MediaInfo;
 use self::message::CascadeInfo;
 use self::message::ForwardEvent;
 
+#[cfg(any(feature = "source", feature = "recorder"))]
+pub(crate) mod av1_assembler;
 #[cfg(feature = "source")]
 pub(crate) mod av1_repacketizer;
 #[cfg(feature = "source")]
