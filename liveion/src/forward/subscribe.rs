@@ -1018,6 +1018,63 @@ mod tests {
     }
 
     #[test]
+    fn h265_codec_selection_accepts_subscriber_omitting_level_id() {
+        // A subscriber offer that omits level-id (common from Safari/WebKit)
+        // must not be rejected just because the publisher advertises a high
+        // level. The level gate only applies when both sides declare level-id.
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let subscriber = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/H265".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 49,
+        };
+
+        let selected =
+            select_compatible_codec(RtpCodecKind::Video, &source_codec, &[subscriber])
+                .expect("subscriber omitting level-id should match a high-level publisher");
+        assert_eq!(selected.payload_type, 49);
+    }
+
+    #[test]
+    fn h265_codec_selection_rejects_insufficient_subscriber_level() {
+        // When both sides declare level-id, a subscriber whose level is below
+        // the publisher's cannot receive the stream.
+        let source_codec = RTCRtpCodec {
+            mime_type: "video/H265".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            rtcp_feedback: vec![],
+        };
+        let subscriber = RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "video/H265".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-id=93;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 49,
+        };
+
+        assert!(
+            select_compatible_codec(RtpCodecKind::Video, &source_codec, &[subscriber]).is_none(),
+            "subscriber at Level 3.1 cannot receive a Level 6.0 stream"
+        );
+    }
+
+    #[test]
     fn h265_codec_selection_accepts_missing_candidate_profile_id() {
         // Browsers such as Safari/WebKit may omit profile-id from their offer;
         // the inferred default is Main profile (profile-id=1), so a Main-profile

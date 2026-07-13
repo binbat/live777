@@ -126,17 +126,26 @@ pub fn h265_fmtp_param_or_default(fmtp: &str, key: &str) -> String {
 pub fn h265_candidate_level_sufficient(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
     // level-id in the offer indicates the highest level the receiver can
     // support, so the publisher's level must be <= the candidate's level.
-    // RFC 7798 defines level-id as a base-16 (hex) number; the inferred
-    // default when omitted is 93 (Level 3.1).
+    // RFC 7798 defines level-id as a *decimal* integer equal to
+    // general_level_idc (e.g. 93 = Level 3.1, 180 = Level 6.0).
+    //
+    // Only enforce the comparison when both sides explicitly declare level-id.
+    // Browsers such as Safari/WebKit commonly omit level-id from their offer;
+    // treating an omitted value as "no level limit declared" avoids rejecting
+    // subscribers that previously matched before this gate existed.
     let candidate_level = fmtp_param(&candidate.sdp_fmtp_line, "level-id");
     let publisher_level = fmtp_param(&publisher.sdp_fmtp_line, "level-id");
-    let candidate_level = candidate_level
-        .and_then(|v| u32::from_str_radix(&v, 16).ok())
-        .unwrap_or(93);
-    let publisher_level = publisher_level
-        .and_then(|v| u32::from_str_radix(&v, 16).ok())
-        .unwrap_or(93);
-    publisher_level <= candidate_level
+    let (Some(candidate_level), Some(publisher_level)) = (candidate_level, publisher_level) else {
+        return true;
+    };
+    match (
+        candidate_level.parse::<u32>(),
+        publisher_level.parse::<u32>(),
+    ) {
+        (Ok(candidate_level), Ok(publisher_level)) => publisher_level <= candidate_level,
+        // Don't reject on an unparseable fmtp value.
+        _ => true,
+    }
 }
 
 /// AV1 fmtp may differ by `profile`/`profile-id`, `level-idx` and `tier`
