@@ -58,6 +58,15 @@ where
                 return Err(anyhow!("Connection closed"));
             }
 
+            if self.read_buffer.len() + n > buffer::MAX_BUFFER_SIZE {
+                return Err(anyhow!(
+                    "RTSP response buffer limit exceeded ({} + {} > {}); closing connection",
+                    self.read_buffer.len(),
+                    n,
+                    buffer::MAX_BUFFER_SIZE
+                ));
+            }
+
             self.read_buffer.extend_from_slice(&temp_buf[..n]);
 
             match Message::parse(&self.read_buffer) {
@@ -484,9 +493,9 @@ pub async fn setup_rtsp_session(
     mode: RtspMode,
     use_tcp: bool,
 ) -> Result<(MediaInfo, Option<InterleavedChannel>)> {
-    use tokio::sync::mpsc::channel;
+    use crate::channels::DEFAULT_CHANNEL_CAPACITY;
 
-    const DATA_CHANNEL_CAPACITY: usize = 1024;
+    use tokio::sync::mpsc::channel;
 
     let mut url = Url::parse(rtsp_url)?;
     info!("Connecting to RTSP server: {}", rtsp_url);
@@ -596,21 +605,24 @@ pub async fn setup_rtsp_session(
         }
 
         let (data_from_stream_tx, data_from_stream_rx) =
-            channel::<(u8, Vec<u8>)>(DATA_CHANNEL_CAPACITY);
+            channel::<(u8, Vec<u8>)>(DEFAULT_CHANNEL_CAPACITY);
         let (data_to_stream_tx, data_to_stream_rx) =
-            channel::<(u8, Vec<u8>)>(DATA_CHANNEL_CAPACITY);
+            channel::<(u8, Vec<u8>)>(DEFAULT_CHANNEL_CAPACITY);
 
         let stream = session.into_stream();
         let session_mode = mode.to_session_mode();
 
-        let cancel = CancellationToken::new();
+        // The client TCP stream is torn down when the returned channel halves
+        // are dropped (closing the receiver/sender) or the TCP socket errors.
+        // No external CancellationToken is needed here — channel closure is
+        // the teardown signal for the client side.
         tokio::spawn(async move {
             if let Err(e) = crate::tcp_stream::handle_tcp_stream(
                 stream,
                 session_mode,
                 data_from_stream_tx,
                 data_to_stream_rx,
-                cancel,
+                CancellationToken::new(),
                 false,
             )
             .await

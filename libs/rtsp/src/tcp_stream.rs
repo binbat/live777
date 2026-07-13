@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
@@ -32,29 +32,12 @@ impl InterleavedSender for Sender<InterleavedFrame> {
 }
 
 #[async_trait::async_trait]
-impl InterleavedSender for UnboundedSender<InterleavedFrame> {
-    async fn send_interleaved(
-        &self,
-        data: InterleavedFrame,
-    ) -> Result<(), SendError<InterleavedFrame>> {
-        self.send(data)
-    }
-}
-
-#[async_trait::async_trait]
 pub(crate) trait InterleavedReceiver: Send {
     async fn recv_interleaved(&mut self) -> Option<InterleavedFrame>;
 }
 
 #[async_trait::async_trait]
 impl InterleavedReceiver for Receiver<InterleavedFrame> {
-    async fn recv_interleaved(&mut self) -> Option<InterleavedFrame> {
-        self.recv().await
-    }
-}
-
-#[async_trait::async_trait]
-impl InterleavedReceiver for UnboundedReceiver<InterleavedFrame> {
     async fn recv_interleaved(&mut self) -> Option<InterleavedFrame> {
         self.recv().await
     }

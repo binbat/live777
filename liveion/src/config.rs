@@ -525,31 +525,66 @@ impl SourceConfig {
 #[cfg(feature = "rtsp")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RtspConfig {
-    /// Listen address for the RTSP server. The same port handles both push
-    /// (ANNOUNCE/RECORD) and pull (DESCRIBE/PLAY) sessions.
+    /// RTSP server listen URL.  Accepts two forms:
+    ///
+    /// - `rtsp://[user:pass@]host:port` — full URL; when credentials are
+    ///   present Digest authentication is enabled automatically.
+    /// - `host:port` — bare socket address (no auth).
+    ///
+    /// Examples: `rtsp://admin:secret@0.0.0.0:8554`, `0.0.0.0:8554`
     #[serde(default = "default_rtsp_listen")]
-    pub listen: std::net::SocketAddr,
-    /// Maximum number of concurrent RTSP sessions. New connections are refused
-    /// when this limit is reached.
+    pub listen: String,
+    /// Maximum number of concurrent RTSP sessions.  New connections are
+    /// refused when this limit is reached.
     #[serde(default = "default_rtsp_max_connections")]
     pub max_connections: usize,
-    /// RTSP session timeout in seconds. Sessions without activity are cleaned
-    /// up after this duration.
+    /// RTSP session timeout in seconds.  Sessions without activity are
+    /// cleaned up after this duration.
     #[serde(default = "default_rtsp_session_timeout")]
     pub session_timeout: u64,
-    /// When true, require Digest authentication for RTSP ANNOUNCE, DESCRIBE
-    /// and SETUP requests.
-    #[serde(default)]
-    pub enable_auth: bool,
-    /// Username required when `enable_auth` is true.
-    #[serde(default)]
-    pub username: String,
-    /// Password required when `enable_auth` is true.
-    #[serde(default)]
-    pub password: String,
-    /// Realm advertised in the `WWW-Authenticate` challenge.
+    /// Realm advertised in the `WWW-Authenticate` challenge.  Only used
+    /// when credentials are present in the listen URL.
     #[serde(default = "default_rtsp_realm")]
     pub realm: String,
+}
+
+/// Parsed form of [`RtspConfig::listen`].
+#[derive(Debug, Clone)]
+pub struct RtspListen {
+    pub addr: std::net::SocketAddr,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl RtspListen {
+    pub fn parse(listen: &str) -> Result<Self, String> {
+        // `rtsp://[user:pass@]host:port`
+        if let Some(rest) = listen.strip_prefix("rtsp://") {
+            let (authority, host_port) = rest
+                .split_once('@')
+                .map(|(a, h)| (Some(a), h))
+                .unwrap_or((None, rest));
+            let addr: std::net::SocketAddr = host_port
+                .parse()
+                .map_err(|e| format!("invalid RTSP listen address '{host_port}': {e}"))?;
+            let (username, password) = authority
+                .and_then(|a| a.split_once(':'))
+                .map(|(u, p)| (u.to_string(), Some(p.to_string())))
+                .or_else(|| authority.map(|u| (u.to_string(), None)))
+                .unzip();
+            Ok(Self { addr, username, password: password.flatten() })
+        } else {
+            // Bare `host:port`
+            let addr: std::net::SocketAddr = listen
+                .parse()
+                .map_err(|e| format!("invalid RTSP listen address '{listen}': {e}"))?;
+            Ok(Self { addr, username: None, password: None })
+        }
+    }
+
+    pub fn enable_auth(&self) -> bool {
+        self.username.is_some()
+    }
 }
 
 #[cfg(feature = "rtsp")]
@@ -559,17 +594,14 @@ impl Default for RtspConfig {
             listen: default_rtsp_listen(),
             max_connections: default_rtsp_max_connections(),
             session_timeout: default_rtsp_session_timeout(),
-            enable_auth: false,
-            username: String::new(),
-            password: String::new(),
             realm: default_rtsp_realm(),
         }
     }
 }
 
 #[cfg(feature = "rtsp")]
-fn default_rtsp_listen() -> std::net::SocketAddr {
-    std::net::SocketAddr::from_str("0.0.0.0:8554").unwrap()
+fn default_rtsp_listen() -> String {
+    "0.0.0.0:8554".to_string()
 }
 
 #[cfg(feature = "rtsp")]

@@ -268,6 +268,10 @@ pub(crate) enum PublishTrackRemote {
         kind: RtpCodecKind,
         codec: Codec,
         payload_type: Arc<AtomicU8>,
+        /// Set to true once the first RTP packet arrives and we learn the
+        /// negotiated payload type from the wire.  Using a separate flag
+        /// avoids treating PT=0 (valid PCMU audio) as "not yet detected".
+        payload_type_seen: Arc<AtomicBool>,
         track: Arc<dyn TrackRemote>,
         rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
     },
@@ -313,6 +317,7 @@ impl PublishTrackRemote {
             channels: raw_codec.channels,
         };
         let payload_type = Arc::new(AtomicU8::new(0));
+        let payload_type_seen = Arc::new(AtomicBool::new(false));
 
         tokio::spawn(Self::track_forward(
             stream.clone(),
@@ -320,6 +325,7 @@ impl PublishTrackRemote {
             track.clone(),
             rtp_sender.clone(),
             payload_type.clone(),
+            payload_type_seen.clone(),
             connected_gate,
             twcc_ext_id,
             native_twcc_bound,
@@ -332,6 +338,7 @@ impl PublishTrackRemote {
             kind,
             codec,
             payload_type,
+            payload_type_seen,
             track,
             rtp_broadcast: Arc::new(rtp_sender),
         }
@@ -344,6 +351,7 @@ impl PublishTrackRemote {
         track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
         payload_type: Arc<AtomicU8>,
+        payload_type_seen: Arc<AtomicBool>,
         connected_gate: Option<watch::Receiver<webrtc::peer_connection::RTCPeerConnectionState>>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
@@ -412,7 +420,7 @@ impl PublishTrackRemote {
                     // Capture the negotiated payload type from the first received RTP
                     // packet. WebRTC TrackRemote only exposes codec capabilities, not the
                     // negotiated payload type, so we learn it from the wire.
-                    if payload_type.load(Ordering::Relaxed) == 0 {
+                    if !payload_type_seen.swap(true, Ordering::Relaxed) {
                         payload_type.store(rtp_packet.header.payload_type, Ordering::Relaxed);
                         info!(
                             "[{}] [{}] [track] detected payload type: {}",
@@ -559,12 +567,12 @@ impl PublishTrackRemote {
             Self::Real {
                 codec,
                 payload_type,
+                payload_type_seen,
                 ..
             } => {
                 let mut codec = codec.clone();
-                let pt = payload_type.load(Ordering::Relaxed);
-                if pt != 0 {
-                    codec.payload_type = pt;
+                if payload_type_seen.load(Ordering::Relaxed) {
+                    codec.payload_type = payload_type.load(Ordering::Relaxed);
                 }
                 codec
             }

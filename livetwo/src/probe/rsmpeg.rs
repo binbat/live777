@@ -203,19 +203,30 @@ impl ProbeBackend for RsmpegProbe {
         });
 
         let decoder_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let decode_result = tokio::time::timeout(
-            decoder_timeout,
-            tokio::task::spawn_blocking(move || {
-                crate::probe::decoder::run_ffi_decoder(
-                    mime_type,
-                    sprop_params.as_deref(),
-                    packet_rx,
-                    cancelled_clone,
-                    decode_duration + Duration::from_secs(2),
-                )
-            }),
-        )
-        .await;
+        let decoder_handle = tokio::task::spawn_blocking(move || {
+            crate::probe::decoder::run_ffi_decoder(
+                mime_type,
+                sprop_params.as_deref(),
+                packet_rx,
+                cancelled_clone,
+                decode_duration + Duration::from_secs(2),
+            )
+        });
+
+        let abort_handle = decoder_handle.abort_handle();
+        let decode_result = {
+            let decoder = decoder_handle;
+            let abort = abort_handle;
+            tokio::select! {
+                res = decoder => Ok(res),
+                _ = tokio::time::sleep(decoder_timeout) => {
+                    // Abort the blocking task so the decoder thread does
+                    // not keep consuming CPU after the probe has timed out.
+                    abort.abort();
+                    Err(tokio::time::error::Elapsed::new())
+                }
+            }
+        };
 
         cancelled.store(true, Ordering::Relaxed);
         let _ = forward_handle.await;

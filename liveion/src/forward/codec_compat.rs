@@ -47,7 +47,14 @@ pub fn merge_h265_sprop(publisher_fmtp: &str, selected_fmtp: &str) -> String {
         .split(';')
         .filter(|part| !part.trim().is_empty())
         .filter_map(|part| {
-            let (key, value) = part.trim().split_once('=')?;
+            let part = part.trim();
+            let (key, value) = match part.split_once('=') {
+                Some(split) => split,
+                None => {
+                    tracing::trace!("Ignoring fmtp part without '=': {part:?}");
+                    return None;
+                }
+            };
             let key = key.trim();
             if publisher_keys.iter().any(|k| k.eq_ignore_ascii_case(key)) {
                 return None;

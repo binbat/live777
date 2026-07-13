@@ -23,7 +23,7 @@ use rtc::peer_connection::configuration::interceptor_registry::{
 };
 use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RTCPFeedback, RtpCodecKind,
 };
 use webrtc::data_channel::DataChannel;
 use webrtc::media_stream::track_remote::TrackRemote;
@@ -42,6 +42,24 @@ use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
 const CLOSED_SESSION_TTL_MS: i64 = 30_000;
 
+fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
+    #[cfg(any(feature = "rtsp", feature = "source"))]
+    {
+        return rtsp::video_rtcp_feedback();
+    }
+    #[cfg(not(any(feature = "rtsp", feature = "source")))]
+    {
+        vec![
+            RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
+            RTCPFeedback { typ: "transport-cc".to_owned(), parameter: "".to_owned() },
+            RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
+            RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },
+            RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+        ]
+    }
+}
+
+#[cfg(any(feature = "rtsp", feature = "source"))]
 fn ensure_video_rtcp_feedback(codec: &mut RTCRtpCodec) {
     for feedback in rtsp::video_rtcp_feedback() {
         if !codec.rtcp_feedback.iter().any(|existing| {
@@ -51,6 +69,9 @@ fn ensure_video_rtcp_feedback(codec: &mut RTCRtpCodec) {
         }
     }
 }
+
+#[cfg(not(any(feature = "rtsp", feature = "source")))]
+fn ensure_video_rtcp_feedback(_codec: &mut RTCRtpCodec) {}
 
 fn format_codec_for_log(codec: &RTCRtpCodec) -> String {
     format!(
@@ -1465,12 +1486,13 @@ impl PeerForwardInternal {
     ) -> Result<Option<Arc<dyn RtpSender>>> {
         Ok(if recv_sender > 0 {
             let default_codec = if kind == RtpCodecKind::Video {
+                let fb = video_rtcp_feedback();
                 RTCRtpCodec {
                     mime_type: MIME_TYPE_VP8.to_owned(),
                     clock_rate: 90000,
                     channels: 0,
                     sdp_fmtp_line: "".to_owned(),
-                    rtcp_feedback: rtsp::video_rtcp_feedback(),
+                    rtcp_feedback: fb,
                 }
             } else {
                 RTCRtpCodec {

@@ -101,7 +101,6 @@ impl Av1Assembler {
             );
             self.reset();
         }
-        self.expected_seq = Some(packet.header.sequence_number.wrapping_add(1));
 
         // ── Timestamp discontinuity ─────────────────────────────────────
         // Use Option rather than sentinel 0 — RTP timestamp 0 is a
@@ -117,6 +116,10 @@ impl Av1Assembler {
             }
             self.reset();
         }
+
+        // Set expected_seq AFTER the timestamp discontinuity check so that a
+        // reset triggered by a timestamp jump does not clear it back to None.
+        self.expected_seq = Some(packet.header.sequence_number.wrapping_add(1));
         self.last_timestamp = Some(packet.header.timestamp);
 
         // ── Depacketize ─────────────────────────────────────────────────

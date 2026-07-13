@@ -14,7 +14,7 @@ use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::config::RtspConfig;
+use crate::config::{RtspConfig, RtspListen};
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::PublishTrackRemote;
 use crate::stream::manager::Manager;
@@ -29,19 +29,21 @@ pub async fn start_rtsp_server(
     config: RtspConfig,
     cancel: CancellationToken,
 ) {
-    info!("Starting RTSP server on {}", config.listen);
-    let listen_addr = format_bind_addr(config.listen);
+    let listen = RtspListen::parse(&config.listen)
+        .unwrap_or_else(|e| panic!("invalid RTSP listen URL '{}': {e}", config.listen));
+    info!("Starting RTSP server on {} (auth: {})", listen.addr, listen.enable_auth());
+    let listen_addr = format_bind_addr(listen.addr);
     let handler = RtspHandler {
         manager,
         stream_ready: Arc::new(RwLock::new(HashMap::new())),
     };
     let server_config = ServerConfig {
-        listen_addr: config.listen,
+        listen_addr: listen.addr,
         max_connections: config.max_connections,
         session_timeout: config.session_timeout,
-        enable_auth: config.enable_auth,
-        username: config.username.clone(),
-        password: config.password.clone(),
+        enable_auth: listen.enable_auth(),
+        username: listen.username.clone().unwrap_or_default(),
+        password: listen.password.clone().unwrap_or_default(),
         realm: config.realm.clone(),
     };
 
@@ -419,15 +421,24 @@ async fn forward_rtcp_to_publish(manager: &Manager, stream_id: &str, data: &[u8]
             continue;
         };
 
-        let tracks = forward.internal.publish_tracks.read().await;
+        // Collect video track references while holding the read lock, then
+        // release before awaiting source_ssrc() so writers on publish_tracks
+        // (e.g. codec renegotiation) are not starved.
+        let video_tracks: Vec<_> = {
+            let tracks = forward.internal.publish_tracks.read().await;
+            tracks
+                .iter()
+                .filter(|t| t.kind() == RtpCodecKind::Video)
+                .cloned()
+                .collect()
+        };
         let mut matches = false;
-        for t in tracks.iter() {
-            if t.kind() == RtpCodecKind::Video && t.source_ssrc().await == media_ssrc {
+        for t in &video_tracks {
+            if t.source_ssrc().await == media_ssrc {
                 matches = true;
                 break;
             }
         }
-        drop(tracks);
 
         if matches {
             let msg = if is_pli {
@@ -480,19 +491,31 @@ async fn wait_for_forward(
         tokio::time::timeout(Duration::from_secs(30), rx.recv()).await
     };
 
-    if wait_result.is_err() {
-        // Timed out waiting for a publisher. Clean up the coordination entry
-        // if no other pull clients are still waiting for this stream.
-        let mut map = stream_ready.write().await;
-        if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
-            map.remove(stream_id);
+    match wait_result {
+        Err(_elapsed) => {
+            // Timed out waiting for a publisher. Clean up the coordination
+            // entry if no other pull clients are still waiting for this stream.
+            let mut map = stream_ready.write().await;
+            if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
+                map.remove(stream_id);
+            }
+            return Err(anyhow!("Timeout waiting for forward {}", stream_id));
         }
-        return Err(anyhow!("Timeout waiting for forward {}", stream_id));
+        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+            // The broadcast channel cycled past unread messages (e.g. a
+            // re-announce overwrote the notification). Clean up the stale
+            // coordination entry and report the lag error.
+            let mut map = stream_ready.write().await;
+            if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
+                map.remove(stream_id);
+            }
+            return Err(anyhow!("Stream ready notification lagged for {}", stream_id));
+        }
+        Ok(Err(_)) => {
+            return Err(anyhow!("Stream ready channel closed for {}", stream_id));
+        }
+        Ok(Ok(())) => {}
     }
-
-    wait_result
-        .unwrap()
-        .map_err(|_| anyhow!("Stream ready channel closed for {}", stream_id))?;
 
     // The forward is now available. Remove the coordination entry so it does
     // not linger for the lifetime of the stream; new pull clients will find
@@ -538,13 +561,27 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
 
     for track in tracks {
         let codec = track.codec();
-        let (media, pt, clock_rate, channels) = match codec.codec.as_str() {
+        // When a WHIP-published stream is described before the first RTP
+        // packet arrives, the negotiated payload type is still 0 (not yet
+        // detected).  Default to 96 (dynamic PT range) for video and use the
+        // static PT defined in RFC 3551 for well-known audio codecs so the
+        // SDP remains valid.
+        let pt = if codec.payload_type != 0 {
+            codec.payload_type
+        } else {
+            match codec.codec.as_str() {
+                "pcma" => 8,
+                "pcmu" => 0,
+                "g722" => 9,
+                _ => 96,
+            }
+        };
+        let (media, clock_rate, channels) = match codec.codec.as_str() {
             "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => {
-                ("video", codec.payload_type, codec.clock_rate, None)
+                ("video", codec.clock_rate, None)
             }
             "opus" | "g722" | "pcma" | "pcmu" => (
                 "audio",
-                codec.payload_type,
                 codec.clock_rate,
                 Some(codec.channels as u8),
             ),
@@ -589,7 +626,7 @@ fn format_bind_addr(addr: SocketAddr) -> String {
     }
 }
 
-fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
+pub(crate) fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
     use rtsp::VideoCodecParams;
 
     let (mime, pt, clock_rate, fmtp) = match codec {

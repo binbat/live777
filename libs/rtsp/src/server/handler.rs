@@ -124,7 +124,7 @@ impl Handler {
             "RTSP ANNOUNCE SDP media summary: {}",
             summarize_sdp_media(&sdp_content)
         );
-        self.sdp_content = Some(sdp_content);
+        self.set_sdp(sdp_content);
 
         let session_id = self.get_or_create_session().await;
         debug!("Created session: {} for {}", session_id, self.addr);

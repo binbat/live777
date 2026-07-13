@@ -108,11 +108,14 @@ live777 Cascade 有两种模式：
 cargo build --release --bin live777 --features rtsp
 ```
 
-在 `live777.toml` 中配置监听地址：
+在 `live777.toml` 中配置监听 URL。当 URL 中包含凭据时，自动启用 Digest 认证：
 
 ```toml
 [rtsp]
+# 无认证：
 listen = "0.0.0.0:8554"
+# 启用 Digest 认证：
+# listen = "rtsp://admin:secret@0.0.0.0:8554"
 ```
 
 同一个端口同时处理推流和拉流：
@@ -120,5 +123,4 @@ listen = "0.0.0.0:8554"
 - 推流地址：`rtsp://host:8554/{stream_id}`（`ANNOUNCE` + `RECORD`）
 - 拉流地址：`rtsp://host:8554/{stream_id}`（`DESCRIBE` + `PLAY`）
 
-同时支持 UDP 和 TCP（`RTP/AVP/TCP`）传输。URL 的第一段路径作为 liveion 的流
-标识符。RTSP 接口目前尚未实现认证。
+同时支持 UDP 和 TCP（`RTP/AVP/TCP`）传输。URL 的第一段路径作为 liveion 的流标识符。

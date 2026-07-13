@@ -221,8 +221,12 @@ impl FrameGenerator {
         }
 
         // Throttle to roughly the target frame rate. Sleep the full remaining
-        // amount so low frame-rate generators (e.g. 1 fps tests) do not wake up
-        // every 10 ms and busy-wait for the next frame.
+        // Sleep for the frame interval so low frame-rate generators (e.g. 1 fps
+        // tests) do not wake up every 10 ms and busy-wait for the next frame.
+        // `std::thread::sleep` is used because FrameGenerator is `!Send` (it
+        // holds raw FFmpeg pointers in OutputContext) and runs on a
+        // `spawn_blocking` thread — sleeping here does not block the async
+        // runtime, though it does occupy a blocking-pool thread.
         let expected_elapsed = Duration::from_secs_f64(self.frame_index as f64 / self.fps as f64);
         if let Some(sleep) = expected_elapsed.checked_sub(self.start.elapsed()) {
             std::thread::sleep(sleep);
@@ -239,13 +243,18 @@ impl FrameGenerator {
 
     /// Flush remaining encoder output and close the generator.
     pub fn flush(&mut self) -> Result<()> {
+        let mut result = Ok(());
         if let Some(ref mut video) = self.video_ctx {
-            let _ = flush_encoder(video)?;
+            if let Err(e) = flush_encoder(video) {
+                result = Err(e.into());
+            }
         }
         if let Some(ref mut audio) = self.audio_ctx {
-            let _ = flush_encoder(audio)?;
+            if let Err(e) = flush_encoder(audio) {
+                result = Err(e.into());
+            }
         }
-        Ok(())
+        result
     }
 }
 

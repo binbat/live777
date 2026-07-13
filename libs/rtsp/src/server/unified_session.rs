@@ -428,7 +428,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         cancel: CancellationToken,
         guard: ConnectionGuard,
     ) -> Result<()> {
-        const DATA_CHANNEL_CAPACITY: usize = 1024;
+        use crate::channels::DEFAULT_CHANNEL_CAPACITY as DATA_CHANNEL_CAPACITY;
         let (data_from_stream_tx, mut data_from_stream_rx) =
             channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
         let (data_to_stream_tx, data_to_stream_rx) =
@@ -525,7 +525,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         cancel: CancellationToken,
         guard: ConnectionGuard,
     ) -> Result<()> {
-        const DATA_CHANNEL_CAPACITY: usize = 1024;
+        use crate::channels::DEFAULT_CHANNEL_CAPACITY as DATA_CHANNEL_CAPACITY;
         let (data_to_stream_tx, data_to_stream_rx) =
             channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
         let (endpoint, server_side) = match session_mode {
@@ -784,7 +784,7 @@ async fn update_session_activity(
 
 /// Read a complete RTSP message from `reader`, accumulating into `buffer`.
 /// Consumed bytes are drained from `buffer` before the message is returned.
-async fn read_rtsp_message<R>(reader: &mut R, buffer: &mut Vec<u8>) -> Result<Message<Vec<u8>>>
+pub(crate) async fn read_rtsp_message<R>(reader: &mut R, buffer: &mut Vec<u8>) -> Result<Message<Vec<u8>>>
 where
     R: AsyncReadExt + Unpin,
 {
@@ -959,39 +959,8 @@ async fn run_udp_transfer<H: SessionHandler>(
                 ..
             }) = media_info.video_transport
             {
-                // Prefer the socket already allocated during SETUP; fall back to
-                // binding a fresh one only when the handler didn't pre-allocate
-                // (e.g. an SDP-injected source without a formal SETUP handshake).
-                let socket = match video_rtp {
-                    Some(rtp) => rtp,
-                    None => bind_udp(&client_addr, port).await?,
-                };
-                let tx = tx.clone();
-                let recv_cancel = cancel.clone();
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 2048];
-                    loop {
-                        tokio::select! {
-                            _ = recv_cancel.cancelled() => break,
-                            result = socket.recv_from(&mut buf) => {
-                                match result {
-                                    Ok((n, _)) => {
-                                        match tx.try_send((udp_route::VIDEO_RTP, buf[..n].to_vec())) {
-                                            Ok(()) => {}
-                                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                                // Drop frame under backpressure; UDP is lossy.
-                                            }
-                                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(_) => break,
-                                }
-                            }
-                        }
-                    }
-                });
+                let socket = socket_or_bind(video_rtp, &client_addr, port).await?;
+                spawn_udp_recv(socket, udp_route::VIDEO_RTP, tx.clone(), cancel.clone());
             }
 
             // Forward incoming audio RTP to the handler.
@@ -1000,44 +969,17 @@ async fn run_udp_transfer<H: SessionHandler>(
                 ..
             }) = media_info.audio_transport
             {
-                let socket = match audio_rtp {
-                    Some(rtp) => rtp,
-                    // Same fallback as the video leg above.
-                    None => bind_udp(&client_addr, port).await?,
-                };
-                let tx = tx.clone();
-                let recv_cancel = cancel.clone();
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 2048];
-                    loop {
-                        tokio::select! {
-                            _ = recv_cancel.cancelled() => break,
-                            result = socket.recv_from(&mut buf) => {
-                                match result {
-                                    Ok((n, _)) => {
-                                        match tx.try_send((udp_route::AUDIO_RTP, buf[..n].to_vec())) {
-                                            Ok(()) => {}
-                                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                                // Drop frame under backpressure; UDP is lossy.
-                                            }
-                                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(_) => break,
-                                }
-                            }
-                        }
-                    }
-                });
+                let socket = socket_or_bind(audio_rtp, &client_addr, port).await?;
+                spawn_udp_recv(socket, udp_route::AUDIO_RTP, tx.clone(), cancel.clone());
             }
 
             // Forward outgoing RTP/RTCP back to the push client.
-            // Each session binds one ephemeral send socket. For deployments
-            // with many concurrent sessions, consider sharing `Arc<UdpSocket>`
-            // across sessions (a single socket can `send_to` any destination).
-            let send_socket = UdpSocket::bind(net::bind_any_for(&client_addr)).await?;
+            // Bind to the client-facing IP so the kernel selects the correct
+            // source address on multi-homed hosts. Each session binds one
+            // ephemeral send socket. For deployments with many concurrent
+            // sessions, consider sharing `Arc<UdpSocket>` across sessions
+            // (a single socket can `send_to` any destination).
+            let send_socket = UdpSocket::bind(net::bind_on_ip(client_addr.ip())).await?;
 
             let video_rtp_send = media_info.video_transport.as_ref().and_then(|t| {
                 if let TransportInfo::Udp {
@@ -1120,7 +1062,9 @@ async fn run_udp_transfer<H: SessionHandler>(
                 return Err(anyhow!("Unexpected server side for pull"));
             };
 
-            let send_socket = UdpSocket::bind(net::bind_any_for(&client_addr)).await?;
+            // Bind to the client-facing IP for correct source address
+            // selection on multi-homed hosts.
+            let send_socket = UdpSocket::bind(net::bind_on_ip(client_addr.ip())).await?;
 
             let mut channel_map: HashMap<u8, u16> = HashMap::new();
             if let Some(TransportInfo::Udp {
@@ -1215,6 +1159,48 @@ async fn bind_udp(addr: &SocketAddr, port: u16) -> Result<UdpSocket> {
         .map_err(|e| anyhow!("Failed to bind UDP socket {}: {}", bind_addr, e))
 }
 
+/// Return the pre-allocated socket if available, otherwise bind a fresh one.
+async fn socket_or_bind(
+    pre_allocated: Option<UdpSocket>,
+    addr: &SocketAddr,
+    port: u16,
+) -> Result<UdpSocket> {
+    match pre_allocated {
+        Some(s) => Ok(s),
+        None => bind_udp(addr, port).await,
+    }
+}
+
+/// Spawn a task that reads RTP packets from `socket` and forwards them to `tx`
+/// with the given routing key. Dropped frames are expected under UDP semantics.
+fn spawn_udp_recv(
+    socket: UdpSocket,
+    key: u8,
+    tx: Sender<InterleavedData>,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 2048];
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                result = socket.recv_from(&mut buf) => {
+                    match result {
+                        Ok((n, _)) => {
+                            match tx.try_send((key, buf[..n].to_vec())) {
+                                Ok(()) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Decrements the active-connection counter when dropped, even if the spawned
 /// session task panics.
 pub(crate) struct ConnectionGuard(Arc<AtomicUsize>);
@@ -1255,10 +1241,16 @@ where
     let active_connections = Arc::new(AtomicUsize::new(0));
     let mut connection_count = 0u64;
 
+    // Derive the cleanup interval from the configured session timeout:
+    // 1/4 of the timeout, clamped to 1–60 s.  This avoids busy-write-
+    // locking the sessions map every 5 s when the timeout is 600 s, and
+    // ensures short timeouts (e.g. 15 s) are serviced promptly.
+    let cleanup_interval_secs = (config.session_timeout / 4).clamp(1, 60);
+
     let cleanup_sessions = sessions.clone();
     let cleanup_cancel = cancel.child_token();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut interval = tokio::time::interval(Duration::from_secs(cleanup_interval_secs));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {

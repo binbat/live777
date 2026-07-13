@@ -220,11 +220,11 @@ root = "./storage"
 
 # Default disabled `--features=rtsp`
 # [rtsp]
-# Listen address for the RTSP server. The same port handles push
-# (ANNOUNCE/RECORD) and pull (DESCRIBE/PLAY) sessions.
+# RTSP server listen URL.  The same port handles push (ANNOUNCE/RECORD) and
+# pull (DESCRIBE/PLAY) sessions.  When credentials are present in the URL,
+# Digest authentication is enabled automatically.
+#
+# No auth:            listen = "0.0.0.0:8554"
+# With auth:          listen = "rtsp://admin:secret@0.0.0.0:8554"
 # listen = "0.0.0.0:8554"
-# Enable Digest authentication for ANNOUNCE/DESCRIBE/SETUP.
-# enable_auth = false
-# username = "live777"
-# password = "live777"
 # realm = "live777"
