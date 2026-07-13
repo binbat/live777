@@ -283,6 +283,7 @@ where
                 .split(';')
                 .next()
                 .unwrap_or_default()
+                .trim()
                 .to_string();
             if self.session_id.is_none() {
                 self.session_id = Some(session_id);
@@ -383,6 +384,7 @@ where
                 .split(';')
                 .next()
                 .unwrap_or_default()
+                .trim()
                 .to_string();
             if self.session_id.is_none() {
                 self.session_id = Some(session_id);
@@ -456,17 +458,18 @@ where
 fn parse_server_ports(transport: &str) -> Result<(u16, u16)> {
     for part in transport.split(';') {
         let part = part.trim();
-        if part.starts_with("server_port=") {
-            let ports = part.strip_prefix("server_port=").unwrap();
-            let mut parts = ports.split('-');
+        if let Some(value) = part.strip_prefix("server_port=") {
+            let mut parts = value.trim().split('-').map(str::trim);
             let rtp = parts
                 .next()
+                .filter(|s| !s.is_empty())
                 .and_then(|s| s.parse().ok())
-                .ok_or_else(|| anyhow!("Invalid RTP port"))?;
+                .ok_or_else(|| anyhow!("Invalid RTP port in server_port"))?;
             let rtcp = parts
                 .next()
+                .filter(|s| !s.is_empty())
                 .and_then(|s| s.parse().ok())
-                .ok_or_else(|| anyhow!("Invalid RTCP port"))?;
+                .ok_or_else(|| anyhow!("Invalid RTCP port in server_port"))?;
             return Ok((rtp, rtcp));
         }
     }
@@ -495,8 +498,10 @@ pub async fn setup_rtsp_session(
     let stream = tokio::net::TcpStream::connect(&addr).await?;
     let auth_params = AuthParams::from_url(&url);
 
-    url.set_username("").unwrap();
-    url.set_password(None).unwrap();
+    url.set_username("")
+        .map_err(|_| anyhow!("Failed to clear URL username"))?;
+    url.set_password(None)
+        .map_err(|_| anyhow!("Failed to clear URL password"))?;
 
     let auth = auth_params.unwrap_or_else(|| AuthParams::new(String::new(), String::new()));
     let mut session = RtspSession::new(stream, url.to_string(), auth);

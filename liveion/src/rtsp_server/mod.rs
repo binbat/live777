@@ -193,9 +193,9 @@ impl rtsp::server::SessionHandler for RtspHandler {
                         };
 
                         if channel % 2 != 0 {
-                            // RTCP from the push client: forward keyframe requests
-                            // to the publisher.
-                            forward_rtcp_to_publish(&manager, &stream_id, &data).await;
+                            // RTCP from the push client. The push client is the
+                            // publisher, so do not echo its own keyframe requests
+                            // back to itself.
                             continue;
                         }
 

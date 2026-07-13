@@ -133,6 +133,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 }
                 Method::Describe => {
                     if session_mode == SessionMode::Push {
+                        self.send_method_not_allowed(&request).await?;
                         return Err(anyhow!("DESCRIBE is not supported on a push session"));
                     }
                     if session_mode == SessionMode::Mixed {
@@ -148,6 +149,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 }
                 Method::Announce => {
                     if session_mode == SessionMode::Pull {
+                        self.send_method_not_allowed(&request).await?;
                         return Err(anyhow!("ANNOUNCE is not supported on a pull session"));
                     }
                     if session_mode == SessionMode::Mixed {
@@ -163,15 +165,24 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     self.send_response(&response).await?;
                 }
                 Method::Setup => {
-                    let transport_header = request
-                        .header(&rtsp_types::headers::TRANSPORT)
-                        .ok_or_else(|| anyhow!("Missing Transport header"))?;
+                    let transport_header = match request.header(&rtsp_types::headers::TRANSPORT) {
+                        Some(h) => h,
+                        None => {
+                            warn!("SETUP missing Transport header from {}", self.addr);
+                            let response = Response::builder(Version::V1_0, StatusCode::BadRequest)
+                                .header(headers::CSEQ, self.handler.cseq().to_string())
+                                .empty();
+                            self.send_response(&response.map_body(|_| vec![])).await?;
+                            return Err(anyhow!("Missing Transport header"));
+                        }
+                    };
 
                     let transport_str = transport_header.as_str();
                     debug!("Client requested transport: {}", transport_str);
 
+                    let transport_lower = transport_str.to_ascii_lowercase();
                     let client_wants_tcp =
-                        transport_str.contains("TCP") || transport_str.contains("interleaved");
+                        transport_lower.contains("tcp") || transport_lower.contains("interleaved");
 
                     if let Some(prev) = established_transport {
                         if prev != client_wants_tcp {
@@ -302,9 +313,11 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     let response = self.handler.handle_teardown(&request).await?;
                     self.send_response(&response).await?;
                     session_cancel.cancel();
+                    break Ok(MediaInfo::default());
                 }
                 _ => {
                     warn!("Unsupported method: {:?}", request.method());
+                    self.send_method_not_allowed(&request).await?;
                 }
             }
         }
@@ -615,6 +628,17 @@ impl<H: SessionHandler> RtspServerSession<H> {
         Ok(())
     }
 
+    async fn send_method_not_allowed(&mut self, _request: &Request<Vec<u8>>) -> Result<()> {
+        let response = Response::builder(Version::V1_0, StatusCode::MethodNotAllowed)
+            .header(headers::CSEQ, self.handler.cseq().to_string())
+            .header(
+                headers::ALLOW,
+                "OPTIONS, DESCRIBE, ANNOUNCE, SETUP, PLAY, RECORD, TEARDOWN",
+            )
+            .empty();
+        self.send_response(&response.map_body(|_| vec![])).await
+    }
+
     async fn read_request(&mut self) -> Result<Request<Vec<u8>>> {
         let message = read_rtsp_message(&mut self.stream, &mut self.read_buffer).await?;
         match message {
@@ -648,6 +672,13 @@ where
             }
             Err(rtsp_types::ParseError::Incomplete(_)) => {}
             Err(e) => return Err(anyhow!("Failed to parse RTSP message: {:?}", e)),
+        }
+
+        if buffer.len() >= crate::constants::buffer::MAX_BUFFER_SIZE {
+            return Err(anyhow!(
+                "RTSP message buffer limit exceeded ({} bytes); closing connection",
+                buffer.len()
+            ));
         }
 
         let n = reader.read(&mut temp_buf).await?;
@@ -698,8 +729,11 @@ fn resolve_setup_media_kind(
                     if control_lower == "*" {
                         return false;
                     }
-                    uri_lower.ends_with(&control_lower)
-                        || uri_lower.contains(&format!("/{}", control_lower))
+                    // Require the control value to match the end of the URI as a
+                    // complete segment, avoiding false positives like control
+                    // "track1" matching URI ending in "track10".
+                    uri_lower == control_lower
+                        || uri_lower.ends_with(&format!("/{}", control_lower))
                 })
         });
         if matched {
@@ -1032,6 +1066,16 @@ async fn bind_udp(addr: &SocketAddr, port: u16) -> Result<UdpSocket> {
         .map_err(|e| anyhow!("Failed to bind UDP socket {}: {}", bind_addr, e))
 }
 
+/// Decrements the active-connection counter when dropped, even if the spawned
+/// session task panics.
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Start a single-port RTSP server that multiplexes sessions by URL path.
 ///
 /// The server runs until `cancel` is cancelled. The application logic for each
@@ -1113,7 +1157,7 @@ where
                         active_connections.fetch_add(1, Ordering::Relaxed);
                         connection_count += 1;
                         let conn_id = connection_count;
-                        let active_connections = active_connections.clone();
+                        let guard = ConnectionGuard(active_connections.clone());
                         info!("RTSP client #{} connected from {}", conn_id, addr);
 
                         let session = RtspServerSession::new(
@@ -1126,6 +1170,7 @@ where
                         );
 
                         tokio::spawn(async move {
+                            let _guard = guard;
                             match session.handle_session().await {
                                 Ok(media_info) => {
                                     info!(
@@ -1137,7 +1182,6 @@ where
                                     warn!("Connection #{} error: {}", conn_id, e);
                                 }
                             }
-                            active_connections.fetch_sub(1, Ordering::Relaxed);
                         });
                     }
                     Err(e) => {
