@@ -377,6 +377,33 @@ struct NalUnit<'a> {
     data: &'a [u8],
 }
 
+/// Extract the first VPS, SPS and PPS NAL units from an Annex B bitstream.
+///
+/// Returns the raw NAL unit bytes (including the 2-byte HEVC NAL header) for
+/// each parameter set that is present. Used to build SDP `sprop-vps/sps/pps`
+/// values. Returns `None` unless all three are found.
+pub(crate) fn extract_hevc_parameter_sets(data: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut vps = None;
+    let mut sps = None;
+    let mut pps = None;
+    for nal in NalIterator::new(data) {
+        if nal.data.len() < 2 {
+            continue;
+        }
+        let unit_type = (nal.data[0] >> 1) & NAL_UNIT_TYPE_MASK;
+        match unit_type {
+            nal_type::H265_NAL_VPS if vps.is_none() => vps = Some(nal.data.to_vec()),
+            nal_type::H265_NAL_SPS if sps.is_none() => sps = Some(nal.data.to_vec()),
+            nal_type::H265_NAL_PPS if pps.is_none() => pps = Some(nal.data.to_vec()),
+            _ => {}
+        }
+        if vps.is_some() && sps.is_some() && pps.is_some() {
+            break;
+        }
+    }
+    Some((vps?, sps?, pps?))
+}
+
 const FU_START_BITMASK: u8 = 0x80;
 const FU_END_BITMASK: u8 = 0x40;
 

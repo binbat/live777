@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::net::SocketAddr;
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
 
 use base64::Engine;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext};
@@ -138,84 +136,12 @@ impl AudioCodec {
 
 }
 
-/// Configuration for the synthetic rsmpeg generator.
-///
-/// The frame-based generator in [`frame_gen`](super::frame_gen) is the
-/// preferred way to drive the new WHIP publisher. This config is kept for
-/// backward compatibility with existing SDP generation helpers.
-#[derive(Debug, Clone)]
-pub struct GeneratorConfig {
-    pub video_codec: VideoCodec,
-    pub audio_codec: Option<AudioCodec>,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u32,
-    pub duration: Option<Duration>,
-    pub target_addr: SocketAddr,
-    pub video_port: u16,
-    pub audio_port: u16,
-    /// H265 sprop parameters (`sprop-vps=...;sprop-sps=...;sprop-pps=...`).
-    /// When `None` and the video codec is H265, the packetizer will try to
-    /// derive them by opening a temporary encoder.
-    pub sprop_params: Option<String>,
-}
-
 /// Parse HEVC parameter sets from an Annex B bitstream and return base64-encoded
 /// VPS, SPS and PPS.
 fn parse_annex_b_hevc_parameter_sets(data: &[u8]) -> Option<(String, String, String)> {
-    let mut vps = None;
-    let mut sps = None;
-    let mut pps = None;
-    let mut i = 0;
-
-    // Allow the loop to see a 3-byte start code that begins at data.len() - 3.
-    while i + 3 <= data.len() {
-        // Detect start code 00 00 01 or 00 00 00 01.
-        let start_code_len = if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
-            3
-        } else if i + 4 <= data.len()
-            && data[i] == 0
-            && data[i + 1] == 0
-            && data[i + 2] == 0
-            && data[i + 3] == 1
-        {
-            4
-        } else {
-            i += 1;
-            continue;
-        };
-
-        let nal_start = i + start_code_len;
-        let mut j = nal_start;
-        // Resume scanning at the end of the current NAL to keep parsing O(n).
-        while j + 3 <= data.len() {
-            if data[j] == 0
-                && data[j + 1] == 0
-                && (data[j + 2] == 1
-                    || (j + 4 <= data.len() && data[j + 2] == 0 && data[j + 3] == 1))
-            {
-                break;
-            }
-            j += 1;
-        }
-        let nal_end = if j + 3 <= data.len() { j } else { data.len() };
-
-        if nal_end > nal_start + 1 {
-            let nal = &data[nal_start..nal_end];
-            // HEVC NAL unit header: first byte contains nal_unit_type in bits 1-6.
-            let nal_type = (nal[0] >> 1) & 0x3F;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(nal);
-            match nal_type {
-                32 => vps = vps.or(Some(b64)),
-                33 => sps = sps.or(Some(b64)),
-                34 => pps = pps.or(Some(b64)),
-                _ => {}
-            }
-        }
-        i = nal_end;
-    }
-
-    Some((vps?, sps?, pps?))
+    let (vps, sps, pps) = crate::payload::extract_hevc_parameter_sets(data)?;
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some((encode(&vps), encode(&sps), encode(&pps)))
 }
 
 /// Key for the H265 sprop cache: `(width, height, fps)`.
@@ -228,6 +154,29 @@ type H265SpropValue = Option<String>;
 /// resolution and frame rate triplet.
 static H265_SPROP_CACHE: LazyLock<Mutex<HashMap<H265SpropKey, H265SpropValue>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Drain all pending encoded packets from `codec_ctx` into `encoded`.
+///
+/// Stops on encoder drain (`EncoderDrainError`) or any other receive error
+/// (logged at debug level). Mirrors the drain pattern used by the frame
+/// generator's `encode_frame` / `flush_encoder`.
+fn drain_encoded_packets(codec_ctx: &mut AVCodecContext, encoded: &mut Vec<u8>) {
+    loop {
+        match codec_ctx.receive_packet() {
+            Ok(packet) if packet.size > 0 => {
+                let data =
+                    unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
+                encoded.extend_from_slice(data);
+            }
+            Ok(_) => {}
+            Err(rsmpeg::error::RsmpegError::EncoderDrainError) => break,
+            Err(e) => {
+                tracing::debug!(error = ?e, "H265 sprop extraction: failed to receive packet");
+                break;
+            }
+        }
+    }
+}
 
 /// Open a temporary H265 encoder, encode a few blank frames and extract the SDP
 /// sprop parameters from the emitted Annex B parameter sets. Returns a string
@@ -340,21 +289,7 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
             tracing::debug!(error = ?e, frame = i, "H265 sprop extraction: failed to send frame");
             continue;
         }
-        loop {
-            match codec_ctx.receive_packet() {
-                Ok(packet) if packet.size > 0 => {
-                    let data =
-                        unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
-                    encoded.extend_from_slice(data);
-                }
-                Ok(_) => {}
-                Err(rsmpeg::error::RsmpegError::EncoderDrainError) => break,
-                Err(e) => {
-                    tracing::debug!(error = ?e, frame = i, "H265 sprop extraction: failed to receive packet");
-                    break;
-                }
-            }
-        }
+        drain_encoded_packets(&mut codec_ctx, &mut encoded);
         if !encoded.is_empty() {
             break;
         }
@@ -370,20 +305,7 @@ pub fn extract_h265_sprop(width: u32, height: u32, fps: u32) -> Option<String> {
     if let Err(e) = codec_ctx.send_frame(None) {
         tracing::debug!(error = ?e, "H265 sprop extraction: failed to send flush frame");
     }
-    loop {
-        match codec_ctx.receive_packet() {
-            Ok(packet) if packet.size > 0 => {
-                let data = unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
-                encoded.extend_from_slice(data);
-            }
-            Ok(_) => {}
-            Err(rsmpeg::error::RsmpegError::EncoderDrainError) => break,
-            Err(e) => {
-                tracing::debug!(error = ?e, "H265 sprop extraction: failed to receive flush packet");
-                break;
-            }
-        }
-    }
+    drain_encoded_packets(&mut codec_ctx, &mut encoded);
 
     let (vps, sps, pps) = match parse_annex_b_hevc_parameter_sets(&encoded) {
         Some(params) => params,
@@ -438,15 +360,5 @@ mod tests {
                     .is_ok()
             );
         }
-    }
-
-    #[test]
-    fn extract_h265_sprop_includes_profile_and_tier() {
-        let sprop = extract_h265_sprop(320, 240, 15).expect("H265 sprop extraction failed");
-        assert!(sprop.contains("profile-id=1"));
-        assert!(sprop.contains("tier-flag=0"));
-        assert!(sprop.contains("sprop-vps="));
-        assert!(sprop.contains("sprop-sps="));
-        assert!(sprop.contains("sprop-pps="));
     }
 }

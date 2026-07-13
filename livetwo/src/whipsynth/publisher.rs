@@ -9,9 +9,7 @@ use rtc::peer_connection::configuration::interceptor_registry::{
 use rtc::peer_connection::configuration::media_engine::{
     MIME_TYPE_AV1, MIME_TYPE_HEVC, MediaEngine,
 };
-use rtc::rtp_transceiver::rtp_sender::{
-    RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
-};
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind};
 use rtc::statistics::StatsSelector;
 use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
@@ -28,7 +26,7 @@ use webrtc::peer_connection::{
 use crate::source::{AudioCodec, MediaFrame, VideoCodec, extract_h265_sprop};
 use crate::utils;
 use crate::whipsynth::SessionStats;
-use crate::whipsynth::packetizer::{Packetizer, PacketizerConfig};
+use crate::whipsynth::packetizer::{Packetizer, PacketizerConfig, VIDEO_RTCP_FEEDBACK};
 use crate::whipsynth::source::{frame_generator_config, spawn_rsmpeg_source};
 
 const WAIT_FOR_PEER_CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
@@ -340,24 +338,7 @@ async fn create_peer(
                     clock_rate: 90_000,
                     channels: 0,
                     sdp_fmtp_line: sprop.clone(),
-                    rtcp_feedback: vec![
-                        RTCPFeedback {
-                            typ: "goog-remb".to_owned(),
-                            parameter: "".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "ccm".to_owned(),
-                            parameter: "fir".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".to_owned(),
-                            parameter: "".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".to_owned(),
-                            parameter: "pli".to_owned(),
-                        },
-                    ],
+                    rtcp_feedback: VIDEO_RTCP_FEEDBACK.clone(),
                 },
                 payload_type: 126,
             },
@@ -380,24 +361,7 @@ async fn create_peer(
                     clock_rate: 90_000,
                     channels: 0,
                     sdp_fmtp_line: format!("profile-id=0;level-idx={level_idx};tier=0"),
-                    rtcp_feedback: vec![
-                        RTCPFeedback {
-                            typ: "goog-remb".to_owned(),
-                            parameter: "".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "ccm".to_owned(),
-                            parameter: "fir".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".to_owned(),
-                            parameter: "".to_owned(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".to_owned(),
-                            parameter: "pli".to_owned(),
-                        },
-                    ],
+                    rtcp_feedback: VIDEO_RTCP_FEEDBACK.clone(),
                 },
                 payload_type: 41,
             },

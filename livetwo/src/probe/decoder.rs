@@ -141,6 +141,14 @@ impl RtpFrameDecoder {
             return Err(e.into());
         }
 
+        self.drain_frames()
+    }
+
+    /// Drain all decoded frames currently available from the decoder.
+    ///
+    /// Updates `frame_count`/`width`/`height` for each frame and stops on drain
+    /// or flush. Shared by `decode_packet` (per-packet) and `finish` (flush).
+    fn drain_frames(&mut self) -> Result<()> {
         loop {
             match self.codec_context.receive_frame() {
                 Ok(frame) => {
@@ -159,7 +167,6 @@ impl RtpFrameDecoder {
                 Err(e) => return Err(e.into()),
             }
         }
-
         Ok(())
     }
 
@@ -182,20 +189,7 @@ impl RtpFrameDecoder {
         {
             return Err(e.into());
         }
-        loop {
-            match self.codec_context.receive_frame() {
-                Ok(frame) => {
-                    self.frame_count += 1;
-                    self.width = frame.width as u32;
-                    self.height = frame.height as u32;
-                }
-                Err(
-                    rsmpeg::error::RsmpegError::DecoderDrainError
-                    | rsmpeg::error::RsmpegError::DecoderFlushedError,
-                ) => break,
-                Err(e) => return Err(e.into()),
-            }
-        }
+        self.drain_frames()?;
         Ok((self.width, self.height, self.frame_count))
     }
 }

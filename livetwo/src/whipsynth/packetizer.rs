@@ -337,7 +337,7 @@ fn audio_payloader(codec: AudioCodec) -> Box<dyn Payloader + Send> {
 ///
 /// Constructed once via `LazyLock` so that repeated calls to `video_rtp_codec`
 /// (once per track) do not re-allocate the same four entries.
-static VIDEO_RTCP_FEEDBACK: LazyLock<Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback>> =
+pub(crate) static VIDEO_RTCP_FEEDBACK: LazyLock<Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback>> =
     LazyLock::new(|| {
         vec![
             rtc::rtp_transceiver::rtp_sender::RTCPFeedback {

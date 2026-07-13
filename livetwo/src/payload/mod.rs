@@ -5,7 +5,7 @@ mod repayload;
 pub use repayload::{Forward, RePayload, RePayloadCodec};
 
 pub(crate) use h264::H264Processor;
-pub(crate) use h265::{H265Processor, payload_annex_b};
+pub(crate) use h265::{H265Processor, extract_hevc_parameter_sets, payload_annex_b};
 
 /// RTP outbound MTU
 /// https://github.com/webrtc-rs/webrtc/blob/dcfefd7b48dc2bb9ecf50ea66c304f62719a6c4a/webrtc/src/track/mod.rs#L10C12-L10C49

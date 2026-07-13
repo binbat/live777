@@ -6,4 +6,4 @@ pub mod rsmpeg_gen;
 #[cfg(feature = "rsmpeg")]
 pub use frame_gen::{EncodedFrame, FrameGenerator, FrameGeneratorConfig, MediaFrame};
 #[cfg(feature = "rsmpeg")]
-pub use rsmpeg_gen::{AudioCodec, GeneratorConfig, VideoCodec, extract_h265_sprop};
+pub use rsmpeg_gen::{AudioCodec, VideoCodec, extract_h265_sprop};
