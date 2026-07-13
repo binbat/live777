@@ -1,25 +1,24 @@
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::types::SessionMode;
 
 pub type InterleavedData = (u8, Vec<u8>);
-pub type InterleavedChannel = (
-    UnboundedSender<InterleavedData>,
-    UnboundedReceiver<InterleavedData>,
-);
+pub type InterleavedChannel = (Sender<InterleavedData>, Receiver<InterleavedData>);
+
+const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
 
 pub struct RtspChannels {
-    recv_tx: UnboundedSender<InterleavedData>,
-    recv_rx: Option<UnboundedReceiver<InterleavedData>>,
+    recv_tx: Sender<InterleavedData>,
+    recv_rx: Option<Receiver<InterleavedData>>,
 
-    send_tx: UnboundedSender<InterleavedData>,
-    send_rx: Option<UnboundedReceiver<InterleavedData>>,
+    send_tx: Sender<InterleavedData>,
+    send_rx: Option<Receiver<InterleavedData>>,
 }
 
 impl RtspChannels {
     pub fn new() -> Self {
-        let (recv_tx, recv_rx) = unbounded_channel::<InterleavedData>();
-        let (send_tx, send_rx) = unbounded_channel::<InterleavedData>();
+        let (recv_tx, recv_rx) = channel::<InterleavedData>(DEFAULT_CHANNEL_CAPACITY);
+        let (send_tx, send_rx) = channel::<InterleavedData>(DEFAULT_CHANNEL_CAPACITY);
 
         Self {
             recv_tx,
@@ -43,7 +42,7 @@ impl RtspChannels {
         }
     }
 
-    pub fn get_internal_rx(&mut self, mode: SessionMode) -> UnboundedReceiver<InterleavedData> {
+    pub fn get_internal_rx(&mut self, mode: SessionMode) -> Receiver<InterleavedData> {
         match mode {
             SessionMode::Pull => self.recv_rx.take().expect("recv_rx already taken"),
             SessionMode::Push => self.send_rx.take().expect("send_rx already taken"),
@@ -51,7 +50,7 @@ impl RtspChannels {
         }
     }
 
-    pub fn get_sender(&self, mode: SessionMode) -> UnboundedSender<InterleavedData> {
+    pub fn get_sender(&self, mode: SessionMode) -> Sender<InterleavedData> {
         match mode {
             SessionMode::Pull => self.recv_tx.clone(),
             SessionMode::Push => self.send_tx.clone(),
@@ -82,9 +81,9 @@ mod tests {
         let channels = RtspChannels::new();
 
         let pull_sender = channels.get_sender(SessionMode::Pull);
-        assert!(pull_sender.send((0, vec![1])).is_ok());
+        assert!(pull_sender.try_send((0, vec![1])).is_ok());
 
         let push_sender = channels.get_sender(SessionMode::Push);
-        assert!(push_sender.send((1, vec![2])).is_ok());
+        assert!(push_sender.try_send((1, vec![2])).is_ok());
     }
 }

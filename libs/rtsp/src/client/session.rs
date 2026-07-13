@@ -480,7 +480,9 @@ pub async fn setup_rtsp_session(
     mode: RtspMode,
     use_tcp: bool,
 ) -> Result<(MediaInfo, Option<InterleavedChannel>)> {
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc::channel;
+
+    const DATA_CHANNEL_CAPACITY: usize = 1024;
 
     let mut url = Url::parse(rtsp_url)?;
     info!("Connecting to RTSP server: {}", rtsp_url);
@@ -587,8 +589,10 @@ pub async fn setup_rtsp_session(
             RtspMode::Push => session.send_record_request().await?,
         }
 
-        let (data_from_stream_tx, data_from_stream_rx) = unbounded_channel::<(u8, Vec<u8>)>();
-        let (data_to_stream_tx, data_to_stream_rx) = unbounded_channel::<(u8, Vec<u8>)>();
+        let (data_from_stream_tx, data_from_stream_rx) =
+            channel::<(u8, Vec<u8>)>(DATA_CHANNEL_CAPACITY);
+        let (data_to_stream_tx, data_to_stream_rx) =
+            channel::<(u8, Vec<u8>)>(DATA_CHANNEL_CAPACITY);
 
         let stream = session.into_stream();
         let session_mode = mode.to_session_mode();
