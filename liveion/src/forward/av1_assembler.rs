@@ -9,7 +9,7 @@
 //! output directly.  Callers that need to re-packetize (e.g. the forward
 //! bridge) feed the output into an [`Av1Payloader`].
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use bytes::BytesMut;
 use rtc_rtp::codec::av1::Av1Depacketizer;
 use rtc_rtp::packet::Packet;
@@ -110,10 +110,16 @@ impl Av1Assembler {
         self.last_timestamp = Some(packet.header.timestamp);
 
         // ── Depacketize ─────────────────────────────────────────────────
-        let obus = self
-            .depacketizer
-            .depacketize(&packet.payload)
-            .with_context(|| "AV1 depacketization failed")?;
+        // Reset before propagating the error so the caller can keep feeding
+        // packets without reusing stale depacketizer/sequence state — matches
+        // the module contract and the other error paths below.
+        let obus = match self.depacketizer.depacketize(&packet.payload) {
+            Ok(obus) => obus,
+            Err(e) => {
+                self.reset();
+                return Err(anyhow::Error::new(e).context("AV1 depacketization failed"));
+            }
+        };
 
         trace!(
             "AV1 depacketized: seq={} marker={} y={} len={}",

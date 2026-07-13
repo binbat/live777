@@ -48,9 +48,14 @@ impl Source for FfmpegSource {
         let payload_type = codec.payload_type();
         let encoder = codec.ffmpeg_encoder();
 
-        // FFmpeg's RTP muxer names VP9 `VP9` and AV1 `AV1X` in the SDP.
+        // FFmpeg's RTP muxer expects the RTP payload name for the `?codec=`
+        // query. VP8/H264/H265 are inferred from the encoder codec id when the
+        // name is unrecognized, but VP9 and AV1 need their explicit payload
+        // names (`VP9`, `AV1X`) — passing the encoder name (`libvpx-vp9`)
+        // fails to resolve.
         let rtp_codec_name = match codec {
             VideoCodec::Av1 => "av1x",
+            VideoCodec::Vp9 => "VP9",
             _ => encoder,
         };
 

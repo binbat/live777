@@ -20,6 +20,10 @@ const START_CODE_4: [u8; 4] = [0, 0, 0, 1];
 const H265_NAL_TYPE_FU: u8 = 49;
 const H265_NAL_TYPE_AP: u8 = 48;
 
+/// AV1 RTP aggregation-header Y bit: the last OBU in this packet continues
+/// into the next packet. See draft-ietf-payload-av1-rtp/sec.
+const AV1_Y_MASK: u8 = 0b0100_0000;
+
 pub trait RePayload {
     fn payload(&mut self, packet: &Packet) -> Vec<Packet>;
     fn set_h264_params(&mut self, sps: Vec<u8>, pps: Vec<u8>);
@@ -177,6 +181,10 @@ impl RePayloadCodec {
             h265_processor,
             frame_count: 0,
         }
+    }
+
+    fn is_av1(&self) -> bool {
+        self.mime_type.eq_ignore_ascii_case(MIME_TYPE_AV1)
     }
 
     fn convert_h265_to_annex_b(&self, data: &[u8]) -> Vec<u8> {
@@ -345,6 +353,14 @@ impl RePayloadCodec {
                                 result.extend_from_slice(&data[3..]);
                                 self.base.buffer.push(result.freeze());
                                 debug!("FU start - added start code and NAL header");
+                            } else if self.base.buffer.is_empty() {
+                                // FU continuation extends a prior FU-start. An empty
+                                // buffer means that start was lost (e.g. a sequence
+                                // gap dropped it), so this fragment is an orphan:
+                                // appending its raw bytes would assemble corrupt
+                                // Annex-B. Drop it and keep skipping until the next
+                                // FU-start or self-contained NAL resyncs the stream.
+                                debug!("FU continuation with empty buffer, dropping orphan fragment");
                             } else {
                                 self.base.buffer.push(Bytes::copy_from_slice(&data[3..]));
                                 debug!("FU continuation - added payload only");
@@ -368,6 +384,24 @@ impl RePayloadCodec {
         }
 
         if packet.header.marker {
+            // AV1: a marker bit with Y=1 means the last OBU continues into a
+            // packet that will never arrive (marker ends the temporal unit).
+            // The depacketizer has buffered that fragment internally, so the
+            // assembled data would be truncated. Drop the unit and recreate
+            // the depacketizer to clear the held-back fragment — mirrors
+            // liveion's Av1Assembler, which resets and errors on this case.
+            if self.is_av1()
+                && !packet.payload.is_empty()
+                && (packet.payload[0] & AV1_Y_MASK) != 0
+            {
+                warn!(
+                    "AV1 RTP marker set but last OBU continues (Y=1); dropping malformed temporal unit"
+                );
+                self.base.clear_buffer();
+                self.decoder = Box::<av1::Av1Depacketizer>::default();
+                return None;
+            }
+
             self.frame_count += 1;
             let total_len: usize = self.base.buffer.iter().map(|b| b.len()).sum();
             let mut combined = BytesMut::with_capacity(total_len);
@@ -477,5 +511,53 @@ impl RePayload for RePayloadCodec {
                 processor.set_params(vps, sps, pps);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn av1_packet(marker: bool, aggregation_header: u8) -> Packet {
+        // Aggregation header + a minimal Frame OBU (type 6, no size field).
+        let payload = Bytes::from(vec![aggregation_header, 0x30, 0x01, 0x02, 0x03]);
+        Packet {
+            header: rtc::rtp::header::Header {
+                version: 2,
+                marker,
+                payload_type: 96,
+                sequence_number: 1,
+                timestamp: 1000,
+                ssrc: 0x1234,
+                ..Default::default()
+            },
+            payload,
+        }
+    }
+
+    /// `marker=1` with `Y=0` is a normal end of temporal unit: the frame is
+    /// emitted.
+    #[test]
+    fn av1_marker_without_y_emits_frame() {
+        let mut codec = RePayloadCodec::new(MIME_TYPE_AV1.to_owned());
+        // 0x10 = W=1, Y=0, Z=0, N=0
+        let pkt = av1_packet(true, 0x10);
+        let frame = codec.process(&pkt);
+        assert!(frame.is_some(), "normal marker frame should be emitted");
+    }
+
+    /// `marker=1` with `Y=1` is malformed (last OBU continues but no packet
+    /// follows): the truncated temporal unit must be dropped, not emitted.
+    #[test]
+    fn av1_marker_with_y_drops_malformed_unit() {
+        let mut codec = RePayloadCodec::new(MIME_TYPE_AV1.to_owned());
+        // 0x50 = W=1, Y=1, Z=0, N=0
+        let pkt = av1_packet(true, 0x50);
+        let frame = codec.process(&pkt);
+        assert!(
+            frame.is_none(),
+            "marker + Y=1 must drop the malformed temporal unit"
+        );
     }
 }

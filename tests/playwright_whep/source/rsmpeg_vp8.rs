@@ -103,6 +103,9 @@ fn run_rtp_stream(
     fps: u32,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
+    if fps == 0 {
+        return Err(anyhow!("fps must be greater than 0"));
+    }
     let width = width as i32;
     let height = height as i32;
     let fps = fps as i32;

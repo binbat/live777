@@ -83,6 +83,21 @@ struct OutputContext {
 impl FrameGenerator {
     /// Create a new generator from the supplied configuration.
     pub fn new(config: &FrameGeneratorConfig) -> Result<Self> {
+        // Guard against `fps == 0`: it would otherwise produce a zero-denominator
+        // time base and a divide-by-zero / `Duration::from_secs_f64(+inf)` panic
+        // in `next_frame`. FFmpeg may or may not reject it first depending on
+        // the codec, so validate explicitly.
+        if config.fps == 0 {
+            return Err(anyhow!("frame rate (fps) must be greater than 0"));
+        }
+        if config.width == 0 || config.height == 0 {
+            return Err(anyhow!(
+                "resolution must be greater than 0 (got {}x{})",
+                config.width,
+                config.height
+            ));
+        }
+
         info!(
             video_codec = ?config.video_codec,
             audio_codec = ?config.audio_codec,
@@ -743,6 +758,28 @@ mod tests {
         assert!(
             keyframes >= 2,
             "expected at least 2 key frames in 62 AV1 frames, got {keyframes}"
+        );
+    }
+
+    /// `fps == 0` would otherwise divide by zero in `next_frame`; `new` must
+    /// reject it up front with a clear error.
+    #[test]
+    fn rejects_zero_fps() {
+        let config = FrameGeneratorConfig {
+            video_codec: VideoCodec::Av1,
+            audio_codec: None,
+            width: 128,
+            height: 128,
+            fps: 0,
+            duration: None,
+        };
+        let err = FrameGenerator::new(&config)
+            .err()
+            .expect("zero fps should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("frame rate"),
+            "expected frame-rate error, got: {msg}"
         );
     }
 }
