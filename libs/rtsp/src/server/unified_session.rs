@@ -233,6 +233,25 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         }
                     };
 
+                    let already_setup = if is_video {
+                        video_channels.is_some() || video_ports.is_some()
+                    } else {
+                        audio_channels.is_some() || audio_ports.is_some()
+                    };
+                    if already_setup {
+                        warn!(
+                            "Duplicate SETUP for {} media from {}",
+                            if is_video { "video" } else { "audio" },
+                            self.addr
+                        );
+                        let response =
+                            Response::builder(Version::V1_0, StatusCode::MethodNotValidInThisState)
+                                .header(headers::CSEQ, self.handler.cseq().to_string())
+                                .empty();
+                        self.send_response(&response.map_body(|_| vec![])).await?;
+                        return Err(anyhow!("Duplicate SETUP for the same media"));
+                    }
+
                     if client_wants_tcp {
                         let (response, rtp_ch, rtcp_ch) = self.handle_setup_tcp(&request).await?;
 
@@ -278,6 +297,24 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     if session_mode == SessionMode::Mixed {
                         return Err(anyhow!("Session mode must be resolved before PLAY/RECORD"));
                     }
+
+                    let has_transport = video_channels.is_some()
+                        || video_ports.is_some()
+                        || audio_channels.is_some()
+                        || audio_ports.is_some();
+                    if !has_transport {
+                        warn!(
+                            "PLAY/RECORD received from {} without prior SETUP",
+                            self.addr
+                        );
+                        let response =
+                            Response::builder(Version::V1_0, StatusCode::MethodNotValidInThisState)
+                                .header(headers::CSEQ, self.handler.cseq().to_string())
+                                .empty();
+                        self.send_response(&response.map_body(|_| vec![])).await?;
+                        return Err(anyhow!("PLAY/RECORD without SETUP"));
+                    }
+
                     let response = match session_mode {
                         SessionMode::Pull => self.handler.handle_play(&request).await?,
                         SessionMode::Push => self.handler.handle_record(&request).await?,
