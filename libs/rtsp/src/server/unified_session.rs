@@ -207,14 +207,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         .unwrap_or_default();
 
                     let is_video = {
-                        let sdp_bytes = self
+                        let sdp = self
                             .handler
-                            .sdp_content()
+                            .parsed_sdp()
                             .ok_or_else(|| anyhow!("No SDP"))?;
-                        let sdp = sdp_types::Session::parse(sdp_bytes)?;
                         match resolve_setup_media_kind(
                             &uri,
-                            &sdp,
+                            sdp,
                             video_channels,
                             video_ports,
                             audio_channels,
@@ -295,7 +294,9 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 }
                 Method::Play | Method::Record => {
                     if session_mode == SessionMode::Mixed {
-                        return Err(anyhow!("Session mode must be resolved before PLAY/RECORD"));
+                        return Err(anyhow!(
+                            "Session mode must be resolved before PLAY/RECORD"
+                        ));
                     }
 
                     let has_transport = video_channels.is_some()
@@ -318,7 +319,9 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     let response = match session_mode {
                         SessionMode::Pull => self.handler.handle_play(&request).await?,
                         SessionMode::Push => self.handler.handle_record(&request).await?,
-                        SessionMode::Mixed => unreachable!(),
+                        SessionMode::Mixed => {
+                            return Err(anyhow!("Session mode must be resolved before PLAY/RECORD"))
+                        }
                     };
                     self.send_response(&response).await?;
 
@@ -410,7 +413,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
                 (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
             }
-            SessionMode::Mixed => unreachable!("session mode must be resolved"),
+            SessionMode::Mixed => return Err(anyhow!("session mode must be resolved")),
         };
 
         let app_handler = self.app_handler.clone();
@@ -487,7 +490,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
                 (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
             }
-            SessionMode::Mixed => unreachable!("session mode must be resolved"),
+            SessionMode::Mixed => return Err(anyhow!("session mode must be resolved")),
         };
 
         let app_handler = self.app_handler.clone();
@@ -641,15 +644,12 @@ impl<H: SessionHandler> RtspServerSession<H> {
         Option<crate::types::VideoCodecParams>,
         Option<crate::types::AudioCodecParams>,
     )> {
-        let sdp_bytes = self
+        let sdp = self
             .handler
-            .sdp_content()
+            .parsed_sdp()
             .ok_or_else(|| anyhow!("No SDP content"))?;
 
-        let sdp = sdp_types::Session::parse(sdp_bytes)
-            .map_err(|e| anyhow!("Failed to parse SDP: {}", e))?;
-
-        let codecs = parse_codecs_from_sdp(&sdp)?;
+        let codecs = parse_codecs_from_sdp(sdp)?;
         info!(
             "RTSP parsed codecs: video={:?}, audio={:?}",
             codecs.0, codecs.1
@@ -1003,7 +1003,7 @@ async fn run_udp_transfer(
                 }
             });
 
-            drain_rtcp_ports(video_rtcp, audio_rtcp, app_handler, path, cancel.clone()).await?;
+            spawn_rtcp_drain(video_rtcp, audio_rtcp, app_handler, path, cancel.clone());
         }
         SessionMode::Pull => {
             let ServerSide::Pull(mut rx) = server_side else {
@@ -1054,21 +1054,24 @@ async fn run_udp_transfer(
                 }
             });
 
-            drain_rtcp_ports(video_rtcp, audio_rtcp, app_handler, path, cancel.clone()).await?;
+            spawn_rtcp_drain(video_rtcp, audio_rtcp, app_handler, path, cancel.clone());
         }
-        SessionMode::Mixed => unreachable!("session mode must be resolved"),
+        SessionMode::Mixed => return Err(anyhow!("session mode must be resolved")),
     }
 
     Ok(())
 }
 
-async fn drain_rtcp_ports(
+/// Spawn RTCP receiver tasks for active UDP sockets. Each task forwards
+/// incoming RTCP packets to `app_handler.on_rtcp()`. Tasks exit when `cancel`
+/// is cancelled (e.g. on TEARDOWN or control connection close).
+fn spawn_rtcp_drain(
     video_rtcp: Option<UdpSocket>,
     audio_rtcp: Option<UdpSocket>,
     app_handler: Arc<dyn SessionHandler>,
     path: String,
     cancel: CancellationToken,
-) -> Result<()> {
+) {
     for socket in [video_rtcp, audio_rtcp].into_iter().flatten() {
         let app_handler = app_handler.clone();
         let path = path.clone();
@@ -1093,7 +1096,6 @@ async fn drain_rtcp_ports(
             }
         });
     }
-    Ok(())
 }
 
 async fn bind_udp(addr: &SocketAddr, port: u16) -> Result<UdpSocket> {

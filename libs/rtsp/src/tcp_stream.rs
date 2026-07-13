@@ -268,8 +268,21 @@ fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<(usize, bool, Option<u
         }
         Err(rtsp_types::ParseError::Incomplete(_)) => Ok(None),
         Err(e) => {
-            warn!("Failed to parse RTSP message: {:?}, skipping byte", e);
-            Ok(Some((1, false, None)))
+            // Parse failed — the buffer starts with non-'$' bytes but is not a
+            // valid RTSP message. Scan forward to the next '$' (interleaved
+            // frame) or "RTSP/" (next RTSP message) so we don't desync the
+            // interleaved parser.
+            let skip = buffer
+                .iter()
+                .position(|&b| b == b'$')
+                .or_else(|| buffer.windows(5).position(|w| w == b"RTSP/"))
+                .unwrap_or(buffer.len());
+            let skip = if skip == 0 { 1 } else { skip };
+            warn!(
+                "Failed to parse RTSP message: {:?}, skipping {} bytes to next sync point",
+                e, skip
+            );
+            Ok(Some((skip, false, None)))
         }
     }
 }

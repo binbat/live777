@@ -5,7 +5,6 @@ pub use auth::AuthParams;
 pub use session::{RtspSession, setup_rtsp_session};
 
 use crate::types::SessionMode;
-use tokio::net::UdpSocket;
 
 #[derive(Clone, Debug)]
 pub enum RtspMode {
@@ -34,14 +33,7 @@ impl From<SessionMode> for RtspMode {
         match mode {
             SessionMode::Pull => RtspMode::Pull,
             SessionMode::Push => RtspMode::Push,
-            SessionMode::Mixed => panic!("Mixed mode is server-only"),
+            SessionMode::Mixed => unreachable!("Mixed mode is server-only"),
         }
     }
-}
-
-pub struct ClientUdpSockets {
-    pub video_rtp: Option<UdpSocket>,
-    pub video_rtcp: Option<UdpSocket>,
-    pub audio_rtp: Option<UdpSocket>,
-    pub audio_rtcp: Option<UdpSocket>,
 }

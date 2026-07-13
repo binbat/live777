@@ -23,7 +23,7 @@ use rtc::peer_connection::configuration::interceptor_registry::{
 };
 use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCPFeedback, RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
 use webrtc::data_channel::DataChannel;
 use webrtc::media_stream::track_remote::TrackRemote;
@@ -42,33 +42,8 @@ use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
 const CLOSED_SESSION_TTL_MS: i64 = 30_000;
 
-fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
-    vec![
-        RTCPFeedback {
-            typ: "goog-remb".to_owned(),
-            parameter: "".to_owned(),
-        },
-        RTCPFeedback {
-            typ: "transport-cc".to_owned(),
-            parameter: "".to_owned(),
-        },
-        RTCPFeedback {
-            typ: "ccm".to_owned(),
-            parameter: "fir".to_owned(),
-        },
-        RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "".to_owned(),
-        },
-        RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "pli".to_owned(),
-        },
-    ]
-}
-
 fn ensure_video_rtcp_feedback(codec: &mut RTCRtpCodec) {
-    for feedback in video_rtcp_feedback() {
+    for feedback in rtsp::video_rtcp_feedback() {
         if !codec.rtcp_feedback.iter().any(|existing| {
             existing.typ == feedback.typ && existing.parameter == feedback.parameter
         }) {
@@ -1529,7 +1504,7 @@ impl PeerForwardInternal {
                     clock_rate: 90000,
                     channels: 0,
                     sdp_fmtp_line: "".to_owned(),
-                    rtcp_feedback: video_rtcp_feedback(),
+                    rtcp_feedback: rtsp::video_rtcp_feedback(),
                 }
             } else {
                 RTCRtpCodec {

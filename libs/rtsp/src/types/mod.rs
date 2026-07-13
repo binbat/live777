@@ -449,7 +449,7 @@ impl From<VideoCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
     }
 }
 
-fn video_rtcp_feedback() -> Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback> {
+pub fn video_rtcp_feedback() -> Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback> {
     vec![
         rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
             typ: "goog-remb".to_string(),

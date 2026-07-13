@@ -18,6 +18,9 @@ pub struct Handler {
     sessions: Arc<RwLock<HashMap<String, ServerSession>>>,
     config: ServerConfig,
     sdp_content: Option<Vec<u8>>,
+    /// Cached parsed SDP, populated on `set_sdp` so that callers
+    /// (`resolve_setup_media_kind`, `parse_codecs`) don't re-parse.
+    parsed_sdp: Option<sdp_types::Session>,
     next_channel: u8,
     /// UDP sockets allocated during the most recent SETUP. Kept open so the
     /// advertised server ports cannot be stolen before the data transfer starts.
@@ -38,6 +41,7 @@ impl Handler {
             sessions,
             config,
             sdp_content: None,
+            parsed_sdp: None,
             next_channel: 0,
             udp_rtp_socket: None,
             udp_rtcp_socket: None,
@@ -45,7 +49,17 @@ impl Handler {
     }
 
     pub fn set_sdp(&mut self, sdp: Vec<u8>) {
-        self.sdp_content = Some(sdp);
+        match sdp_types::Session::parse(&sdp) {
+            Ok(parsed) => {
+                self.parsed_sdp = Some(parsed);
+                self.sdp_content = Some(sdp);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse SDP in set_sdp: {}", e);
+                self.sdp_content = Some(sdp);
+                self.parsed_sdp = None;
+            }
+        }
     }
 
     pub fn cseq(&self) -> u32 {
@@ -54,6 +68,10 @@ impl Handler {
 
     pub fn sdp_content(&self) -> Option<&Vec<u8>> {
         self.sdp_content.as_ref()
+    }
+
+    pub fn parsed_sdp(&self) -> Option<&sdp_types::Session> {
+        self.parsed_sdp.as_ref()
     }
 
     pub fn client_addr(&self) -> SocketAddr {

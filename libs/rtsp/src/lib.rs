@@ -34,7 +34,7 @@ pub use server::{
 pub use transport_manager::{TransportConfig, TransportManager, UdpPortInfo, UdpSocketPair};
 pub use types::{
     AudioCodecParams, CodecFingerprint, CodecInfo, MediaInfo, MediaKind, MediaProfile, SessionMode,
-    TransportInfo, VideoCodecParams,
+    TransportInfo, VideoCodecParams, video_rtcp_feedback,
 };
 
 pub mod prelude {
