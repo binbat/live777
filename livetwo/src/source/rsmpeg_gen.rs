@@ -133,7 +133,6 @@ impl AudioCodec {
             AudioCodec::G722 => 1,
         }
     }
-
 }
 
 /// Parse HEVC parameter sets from an Annex B bitstream and return base64-encoded
@@ -164,8 +163,7 @@ fn drain_encoded_packets(codec_ctx: &mut AVCodecContext, encoded: &mut Vec<u8>) 
     loop {
         match codec_ctx.receive_packet() {
             Ok(packet) if packet.size > 0 => {
-                let data =
-                    unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
+                let data = unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) };
                 encoded.extend_from_slice(data);
             }
             Ok(_) => {}

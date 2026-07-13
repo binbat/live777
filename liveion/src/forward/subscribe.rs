@@ -318,8 +318,7 @@ impl SubscribeRTCPeerConnection {
             return (publisher_codec, None);
         }
 
-        let matched =
-            select_compatible_codec(&publisher_codec, &params.rtp_parameters.codecs);
+        let matched = select_compatible_codec(&publisher_codec, &params.rtp_parameters.codecs);
 
         let selected = match matched {
             Some(c) => c,
@@ -919,11 +918,8 @@ mod tests {
             payload_type: 102,
         };
 
-        let selected = select_compatible_codec(
-            &source_codec,
-            &[high_profile, baseline_profile],
-        )
-        .expect("matching H264 codec should be selected");
+        let selected = select_compatible_codec(&source_codec, &[high_profile, baseline_profile])
+            .expect("matching H264 codec should be selected");
 
         assert_eq!(selected.payload_type, 102);
         assert_eq!(selected.rtp_codec.sdp_fmtp_line, source_codec.sdp_fmtp_line);
@@ -959,11 +955,8 @@ mod tests {
             payload_type: 49,
         };
 
-        let selected = select_compatible_codec(
-            &source_codec,
-            &[main_10_profile, main_profile],
-        )
-        .expect("matching H265 profile should be selected");
+        let selected = select_compatible_codec(&source_codec, &[main_10_profile, main_profile])
+            .expect("matching H265 profile should be selected");
 
         assert_eq!(selected.payload_type, 49);
         assert!(selected.rtp_codec.sdp_fmtp_line.contains("profile-id=1"));
@@ -1038,9 +1031,8 @@ mod tests {
             payload_type: 49,
         };
 
-        let selected =
-            select_compatible_codec(&source_codec, &[subscriber])
-                .expect("subscriber omitting level-id should match a high-level publisher");
+        let selected = select_compatible_codec(&source_codec, &[subscriber])
+            .expect("subscriber omitting level-id should match a high-level publisher");
         assert_eq!(selected.payload_type, 49);
     }
 
@@ -1284,10 +1276,7 @@ mod tests {
             payload_type: 96,
         };
 
-        assert!(
-            select_compatible_codec(&source_codec, &[subscriber_vp8],)
-                .is_none()
-        );
+        assert!(select_compatible_codec(&source_codec, &[subscriber_vp8],).is_none());
     }
 
     #[test]
@@ -1320,9 +1309,8 @@ mod tests {
             payload_type: 41,
         };
 
-        let selected =
-            select_compatible_codec(&source_codec, &[profile_1, profile_0])
-                .expect("matching AV1 profile should be selected");
+        let selected = select_compatible_codec(&source_codec, &[profile_1, profile_0])
+            .expect("matching AV1 profile should be selected");
 
         assert_eq!(selected.payload_type, 41);
         assert!(selected.rtp_codec.sdp_fmtp_line.contains("profile-id=0"));

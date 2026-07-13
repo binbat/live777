@@ -293,7 +293,10 @@ mod tests {
         let mut a = Av1Assembler::new();
         assert!(a.feed(&pkt1).unwrap().is_none());
         let result = a.feed(&pkt2).unwrap();
-        assert!(result.is_some(), "new timestamp should reset and emit new TU");
+        assert!(
+            result.is_some(),
+            "new timestamp should reset and emit new TU"
+        );
         assert_eq!(result.unwrap().len(), 203); // 1B hdr + 200 payload + 2B size field
     }
 

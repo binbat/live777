@@ -337,27 +337,28 @@ fn audio_payloader(codec: AudioCodec) -> Box<dyn Payloader + Send> {
 ///
 /// Constructed once via `LazyLock` so that repeated calls to `video_rtp_codec`
 /// (once per track) do not re-allocate the same four entries.
-pub(crate) static VIDEO_RTCP_FEEDBACK: LazyLock<Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback>> =
-    LazyLock::new(|| {
-        vec![
-            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-                typ: "goog-remb".to_owned(),
-                parameter: "".to_owned(),
-            },
-            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-                typ: "ccm".to_owned(),
-                parameter: "fir".to_owned(),
-            },
-            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-                typ: "nack".to_owned(),
-                parameter: "".to_owned(),
-            },
-            rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
-                typ: "nack".to_owned(),
-                parameter: "pli".to_owned(),
-            },
-        ]
-    });
+pub(crate) static VIDEO_RTCP_FEEDBACK: LazyLock<
+    Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback>,
+> = LazyLock::new(|| {
+    vec![
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "goog-remb".to_owned(),
+            parameter: "".to_owned(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "ccm".to_owned(),
+            parameter: "fir".to_owned(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "".to_owned(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "pli".to_owned(),
+        },
+    ]
+});
 
 fn video_rtp_codec(
     codec: VideoCodec,

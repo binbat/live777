@@ -360,7 +360,9 @@ impl RePayloadCodec {
                                 // appending its raw bytes would assemble corrupt
                                 // Annex-B. Drop it and keep skipping until the next
                                 // FU-start or self-contained NAL resyncs the stream.
-                                debug!("FU continuation with empty buffer, dropping orphan fragment");
+                                debug!(
+                                    "FU continuation with empty buffer, dropping orphan fragment"
+                                );
                             } else {
                                 self.base.buffer.push(Bytes::copy_from_slice(&data[3..]));
                                 debug!("FU continuation - added payload only");
@@ -390,9 +392,7 @@ impl RePayloadCodec {
             // assembled data would be truncated. Drop the unit and recreate
             // the depacketizer to clear the held-back fragment — mirrors
             // liveion's Av1Assembler, which resets and errors on this case.
-            if self.is_av1()
-                && !packet.payload.is_empty()
-                && (packet.payload[0] & AV1_Y_MASK) != 0
+            if self.is_av1() && !packet.payload.is_empty() && (packet.payload[0] & AV1_Y_MASK) != 0
             {
                 warn!(
                     "AV1 RTP marker set but last OBU continues (Y=1); dropping malformed temporal unit"

@@ -853,7 +853,9 @@ impl PeerForwardInternal {
         // ── Publish: atomic check-and-take under write lock ──
         {
             let mut publish = self.publish.write().await;
-            if let Some(ref p) = *publish && p.id == id {
+            if let Some(ref p) = *publish
+                && p.id == id
+            {
                 let mut session_info = p.info().await;
                 session_info.state = RTCPeerConnectionState::Closed;
                 session_info.leave_at = Utc::now().timestamp_millis();
