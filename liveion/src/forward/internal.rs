@@ -23,7 +23,7 @@ use rtc::peer_connection::configuration::interceptor_registry::{
 };
 use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RTCPFeedback, RtpCodecKind,
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
 use webrtc::data_channel::DataChannel;
 use webrtc::media_stream::track_remote::TrackRemote;
@@ -50,11 +50,26 @@ fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
     #[cfg(not(any(feature = "rtsp", feature = "source")))]
     {
         vec![
-            RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
-            RTCPFeedback { typ: "transport-cc".to_owned(), parameter: "".to_owned() },
-            RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
-            RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },
-            RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+            RTCPFeedback {
+                typ: "goog-remb".to_owned(),
+                parameter: "".to_owned(),
+            },
+            RTCPFeedback {
+                typ: "transport-cc".to_owned(),
+                parameter: "".to_owned(),
+            },
+            RTCPFeedback {
+                typ: "ccm".to_owned(),
+                parameter: "fir".to_owned(),
+            },
+            RTCPFeedback {
+                typ: "nack".to_owned(),
+                parameter: "".to_owned(),
+            },
+            RTCPFeedback {
+                typ: "nack".to_owned(),
+                parameter: "pli".to_owned(),
+            },
         ]
     }
 }

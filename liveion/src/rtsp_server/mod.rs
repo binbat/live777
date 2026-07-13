@@ -31,7 +31,11 @@ pub async fn start_rtsp_server(
 ) {
     let listen = RtspListen::parse(&config.listen)
         .unwrap_or_else(|e| panic!("invalid RTSP listen URL '{}': {e}", config.listen));
-    info!("Starting RTSP server on {} (auth: {})", listen.addr, listen.enable_auth());
+    info!(
+        "Starting RTSP server on {} (auth: {})",
+        listen.addr,
+        listen.enable_auth()
+    );
     let listen_addr = format_bind_addr(listen.addr);
     let handler = RtspHandler {
         manager,
@@ -509,7 +513,10 @@ async fn wait_for_forward(
             if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
                 map.remove(stream_id);
             }
-            return Err(anyhow!("Stream ready notification lagged for {}", stream_id));
+            return Err(anyhow!(
+                "Stream ready notification lagged for {}",
+                stream_id
+            ));
         }
         Ok(Err(_)) => {
             return Err(anyhow!("Stream ready channel closed for {}", stream_id));
@@ -577,14 +584,10 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
             }
         };
         let (media, clock_rate, channels) = match codec.codec.as_str() {
-            "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => {
-                ("video", codec.clock_rate, None)
+            "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => ("video", codec.clock_rate, None),
+            "opus" | "g722" | "pcma" | "pcmu" => {
+                ("audio", codec.clock_rate, Some(codec.channels as u8))
             }
-            "opus" | "g722" | "pcma" | "pcmu" => (
-                "audio",
-                codec.clock_rate,
-                Some(codec.channels as u8),
-            ),
             _ => continue,
         };
 

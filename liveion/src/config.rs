@@ -572,13 +572,21 @@ impl RtspListen {
                 .map(|(u, p)| (u.to_string(), Some(p.to_string())))
                 .or_else(|| authority.map(|u| (u.to_string(), None)))
                 .unzip();
-            Ok(Self { addr, username, password: password.flatten() })
+            Ok(Self {
+                addr,
+                username,
+                password: password.flatten(),
+            })
         } else {
             // Bare `host:port`
             let addr: std::net::SocketAddr = listen
                 .parse()
                 .map_err(|e| format!("invalid RTSP listen address '{listen}': {e}"))?;
-            Ok(Self { addr, username: None, password: None })
+            Ok(Self {
+                addr,
+                username: None,
+                password: None,
+            })
         }
     }
 

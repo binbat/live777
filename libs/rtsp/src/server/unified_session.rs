@@ -784,7 +784,10 @@ async fn update_session_activity(
 
 /// Read a complete RTSP message from `reader`, accumulating into `buffer`.
 /// Consumed bytes are drained from `buffer` before the message is returned.
-pub(crate) async fn read_rtsp_message<R>(reader: &mut R, buffer: &mut Vec<u8>) -> Result<Message<Vec<u8>>>
+pub(crate) async fn read_rtsp_message<R>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+) -> Result<Message<Vec<u8>>>
 where
     R: AsyncReadExt + Unpin,
 {
