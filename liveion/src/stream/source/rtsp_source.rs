@@ -16,7 +16,7 @@ use rtc::rtp_transceiver::rtp_sender::RTCPFeedback;
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
 #[cfg(feature = "source")]
-type RtcpSender = Arc<RwLock<Option<mpsc::UnboundedSender<(u8, Vec<u8>)>>>>;
+type RtcpSender = Arc<RwLock<Option<mpsc::Sender<(u8, Vec<u8>)>>>>;
 
 #[cfg(feature = "source")]
 struct RtspClientContext {
@@ -88,7 +88,7 @@ impl RtspSource {
                         data.len()
                     );
 
-                    if let Err(e) = tx_clone.send((1, data)) {
+                    if let Err(e) = tx_clone.send((1, data)).await {
                         error!("[{}] Failed to forward RTCP: {}", stream_id, e);
                         break;
                     }
@@ -348,7 +348,7 @@ impl RtspSource {
 
     async fn receive_rtp_loop(
         stream_id: &str,
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<(u8, Vec<u8>)>,
+        rx: &mut tokio::sync::mpsc::Receiver<(u8, Vec<u8>)>,
         rtp_tx: &broadcast::Sender<MediaPacket>,
         shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
     ) -> Result<()> {
@@ -559,12 +559,13 @@ impl RtspSource {
             VideoCodecParams::AV1 {
                 payload_type,
                 clock_rate,
+                profile_id,
             } => RTCRtpCodecParameters {
                 rtp_codec: RTCRtpCodec {
                     mime_type: "video/AV1".to_string(),
                     clock_rate: *clock_rate,
                     channels: 0,
-                    sdp_fmtp_line: "profile-id=0".to_string(),
+                    sdp_fmtp_line: format!("profile-id={}", profile_id.as_deref().unwrap_or("0")),
                     rtcp_feedback: vec![
                         RTCPFeedback {
                             typ: "goog-remb".to_owned(),
