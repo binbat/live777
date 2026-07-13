@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
@@ -127,15 +127,12 @@ where
                 trace!("Read {} bytes from TCP stream", n);
 
                 if buffer.len() + n > buffer::MAX_BUFFER_SIZE {
-                    warn!(
-                        "Buffer size limit reached ({} + {} > {}), clearing buffer",
+                    return Err(anyhow!(
+                        "TCP read buffer limit exceeded ({} + {} > {}); closing connection",
                         buffer.len(),
                         n,
                         buffer::MAX_BUFFER_SIZE
-                    );
-                    buffer.clear();
-
-                    continue;
+                    ));
                 }
 
                 buffer.extend_from_slice(&temp_buffer[..n]);
@@ -225,17 +222,9 @@ fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>
     }
 
     let channel = buffer[1];
+    // The interleaved header length field is 16-bit, so `length` is naturally
+    // bounded by `u16::MAX` which equals `MAX_FRAME_SIZE`.
     let length = u16::from_be_bytes([buffer[2], buffer[3]]) as usize;
-
-    if length > buffer::MAX_FRAME_SIZE {
-        warn!(
-            "Interleaved frame too large: {} bytes (max: {}), skipping",
-            length,
-            buffer::MAX_FRAME_SIZE
-        );
-
-        return Ok(Some((channel, Vec::new(), buffer::INTERLEAVED_HEADER_SIZE)));
-    }
 
     let total_size = buffer::INTERLEAVED_HEADER_SIZE + length;
     if buffer.len() < total_size {
@@ -395,20 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_oversized_frame() {
-        const TEST_MAX_FRAME_SIZE: usize = 50000;
-
-        let length = (TEST_MAX_FRAME_SIZE + 1) as u16;
+    fn test_parse_max_length_frame_header() {
+        // The interleaved length field is 16-bit; verify a frame header at the
+        // upper boundary is recognized as incomplete when payload is missing.
+        let length = buffer::MAX_FRAME_SIZE as u16;
         let data = vec![b'$', 0, (length >> 8) as u8, (length & 0xFF) as u8];
 
         let result = parse_interleaved_frame(&data).unwrap();
-        if length as usize > buffer::MAX_FRAME_SIZE {
-            assert!(result.is_some());
-            let (channel, frame_data, consumed) = result.unwrap();
-            assert_eq!(channel, 0);
-            assert_eq!(frame_data.len(), 0);
-            assert_eq!(consumed, 4);
-        }
+        assert!(result.is_none());
     }
 
     #[test]

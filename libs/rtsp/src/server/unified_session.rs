@@ -1100,6 +1100,12 @@ where
                                 "RTSP server at max connections ({}/{}), rejecting {}",
                                 active, config.max_connections, addr
                             );
+                            let mut socket = socket;
+                            let response = b"RTSP/1.0 503 Service Unavailable\r\nCSeq: 0\r\nContent-Length: 0\r\n\r\n";
+                            if let Err(e) = socket.write_all(response).await {
+                                debug!("Failed to write 503 response to {}: {}", addr, e);
+                            }
+                            let _ = socket.flush().await;
                             drop(socket);
                             continue;
                         }

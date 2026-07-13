@@ -37,7 +37,7 @@ pub mod buffer {
 
     pub const MAX_BUFFER_SIZE: usize = 2 * 1024 * 1024;
 
-    pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
+    pub const MAX_FRAME_SIZE: usize = u16::MAX as usize;
 
     pub const INTERLEAVED_HEADER_SIZE: usize = 4;
 }

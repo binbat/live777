@@ -673,6 +673,10 @@ pub async fn setup_rtsp_session(
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("Missing session ID"))?;
+        let session_url = session
+            .url
+            .parse::<Url>()
+            .map_err(|e| anyhow!("Invalid session URL: {}", e))?;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
@@ -683,7 +687,7 @@ pub async fn setup_rtsp_session(
                 interval.tick().await;
 
                 let options_request = Request::builder(Method::Options, Version::V1_0)
-                    .request_uri(session.url.parse::<Url>().unwrap())
+                    .request_uri(session_url.clone())
                     .header(headers::CSEQ, session.cseq.to_string())
                     .header(headers::USER_AGENT, client::USER_AGENT)
                     .header(headers::SESSION, session_id.as_str())
