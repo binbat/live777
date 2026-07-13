@@ -307,6 +307,10 @@ impl PublishTrackRemote {
             kind: media.first().cloned().unwrap_or_default(),
             codec: media.get(1).cloned().unwrap_or_default(),
             fmtp: raw_codec.sdp_fmtp_line,
+            // TODO: WebRTC TrackRemote only exposes RTCRtpCodec capabilities, so the
+            // negotiated payload type is not available here. RTSP DESCRIBE currently
+            // advertises payload type 0 for real tracks; this needs to be resolved
+            // before RTSP pull of WHIP-published streams is fully interoperable.
             payload_type: 0,
             clock_rate: raw_codec.clock_rate,
             channels: raw_codec.channels,

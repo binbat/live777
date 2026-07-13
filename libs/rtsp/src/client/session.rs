@@ -17,6 +17,7 @@ pub struct RtspSession<T> {
     auth_params: AuthParams,
     pub session_id: Option<String>,
     next_channel: u8,
+    read_buffer: Vec<u8>,
 }
 
 impl<T> RtspSession<T>
@@ -31,6 +32,7 @@ where
             auth_params,
             session_id: None,
             next_channel: 0,
+            read_buffer: Vec::with_capacity(buffer::RTSP_RESPONSE_BUFFER_SIZE),
         }
     }
 
@@ -47,18 +49,32 @@ where
     }
 
     pub async fn read_response(&mut self) -> Result<Response<Vec<u8>>> {
-        let mut buffer = vec![0; buffer::RTSP_RESPONSE_BUFFER_SIZE];
-        let n = self.stream.read(&mut buffer).await?;
-        if n == 0 {
-            return Err(anyhow!("Connection closed"));
-        }
-        let (message, _) = Message::parse(&buffer[..n])?;
-        match message {
-            Message::Response(response) => {
-                trace!("Received RTSP response: {}", response.status());
-                Ok(response)
+        let mut temp_buf = [0u8; buffer::RTSP_RESPONSE_BUFFER_SIZE];
+
+        loop {
+            let n = self.stream.read(&mut temp_buf).await?;
+            if n == 0 {
+                return Err(anyhow!("Connection closed"));
             }
-            _ => Err(anyhow!("Expected a response message")),
+
+            self.read_buffer.extend_from_slice(&temp_buf[..n]);
+
+            match Message::parse(&self.read_buffer) {
+                Ok((Message::Response(response), consumed)) => {
+                    trace!("Received RTSP response: {}", response.status());
+                    self.read_buffer.drain(..consumed);
+                    return Ok(response);
+                }
+                Ok(_) => {
+                    return Err(anyhow!("Expected a response message"));
+                }
+                Err(rtsp_types::ParseError::Incomplete(_)) => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow!("Failed to parse RTSP response: {:?}", e));
+                }
+            }
         }
     }
 

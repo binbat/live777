@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
@@ -18,6 +19,10 @@ pub struct Handler {
     config: ServerConfig,
     sdp_content: Option<Vec<u8>>,
     next_channel: u8,
+    /// UDP sockets allocated during the most recent SETUP. Kept open so the
+    /// advertised server ports cannot be stolen before the data transfer starts.
+    udp_rtp_socket: Option<UdpSocket>,
+    udp_rtcp_socket: Option<UdpSocket>,
 }
 
 impl Handler {
@@ -34,6 +39,8 @@ impl Handler {
             config,
             sdp_content: None,
             next_channel: 0,
+            udp_rtp_socket: None,
+            udp_rtcp_socket: None,
         }
     }
 
@@ -133,12 +140,12 @@ impl Handler {
 
         let bind_addr = net::bind_any_for(&self.addr);
 
-        let temp_rtp = tokio::net::UdpSocket::bind(&bind_addr).await?;
-        let temp_rtcp = tokio::net::UdpSocket::bind(&bind_addr).await?;
-        let server_rtp_port = temp_rtp.local_addr()?.port();
-        let server_rtcp_port = temp_rtcp.local_addr()?.port();
-        drop(temp_rtp);
-        drop(temp_rtcp);
+        let rtp_socket = UdpSocket::bind(&bind_addr).await?;
+        let rtcp_socket = UdpSocket::bind(&bind_addr).await?;
+        let server_rtp_port = rtp_socket.local_addr()?.port();
+        let server_rtcp_port = rtcp_socket.local_addr()?.port();
+        self.udp_rtp_socket = Some(rtp_socket);
+        self.udp_rtcp_socket = Some(rtcp_socket);
 
         debug!(
             "Allocated server ports: RTP={}, RTCP={}",
@@ -165,6 +172,15 @@ impl Handler {
             server_rtp_port,
             server_rtcp_port,
         ))
+    }
+
+    /// Take the UDP sockets allocated by the last SETUP and return them to the
+    /// caller. Returns `None` if SETUP has not yet been called for this session.
+    pub fn take_udp_sockets(&mut self) -> Option<(UdpSocket, UdpSocket)> {
+        match (self.udp_rtp_socket.take(), self.udp_rtcp_socket.take()) {
+            (Some(rtp), Some(rtcp)) => Some((rtp, rtcp)),
+            _ => None,
+        }
     }
 
     fn parse_client_ports(&self, transport_str: &str) -> Result<(u16, u16)> {

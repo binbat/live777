@@ -34,7 +34,6 @@ pub async fn start_rtsp_server(
         if let Err(e) = rtsp::setup_rtsp_server_with_handler(
             &listen_addr,
             rtsp::SessionMode::Mixed,
-            true,
             handler,
             cancel,
         )
