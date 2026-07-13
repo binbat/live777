@@ -27,10 +27,14 @@ pub struct PortUpdate {
 /// Endpoint handed to the application handler when an RTSP PLAY/RECORD
 /// session has been negotiated.
 pub enum SessionEndpoint {
-    /// PUSH mode: the server will forward incoming RTP data to this receiver.
-    Push(UnboundedReceiver<InterleavedData>),
-    /// PULL mode: the server expects the application to send RTP data on this
-    /// sender.
+    /// PUSH mode: the server will forward incoming RTP/RTCP data to `rx`, and
+    /// the application can send RTP/RTCP data back to the client on `tx`.
+    Push(
+        UnboundedReceiver<InterleavedData>,
+        UnboundedSender<InterleavedData>,
+    ),
+    /// PULL mode: the server expects the application to send RTP/RTCP data on
+    /// this sender.
     Pull(UnboundedSender<InterleavedData>),
 }
 
@@ -305,7 +309,10 @@ impl<H: SessionHandler> RtspServerSession<H> {
         let (endpoint, server_side) = match session_mode {
             SessionMode::Push => {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
-                (SessionEndpoint::Push(rx), ServerSide::Push(tx))
+                (
+                    SessionEndpoint::Push(rx, data_to_stream_tx.clone()),
+                    ServerSide::Push(tx),
+                )
             }
             SessionMode::Pull => {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
@@ -338,8 +345,9 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         }
                     }
                 });
-                // Nothing to send back to a PUSH client.
-                drop(data_to_stream_tx);
+                // `data_to_stream_tx` was handed to the application handler via
+                // `SessionEndpoint::Push` so it can send RTCP feedback to the
+                // push client when needed.
             }
             ServerSide::Pull(mut rx) => {
                 tokio::spawn(async move {
@@ -371,10 +379,14 @@ impl<H: SessionHandler> RtspServerSession<H> {
         media_info: MediaInfo,
         session_mode: SessionMode,
     ) -> Result<()> {
+        let (data_to_stream_tx, data_to_stream_rx) = unbounded_channel::<InterleavedData>();
         let (endpoint, server_side) = match session_mode {
             SessionMode::Push => {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
-                (SessionEndpoint::Push(rx), ServerSide::Push(tx))
+                (
+                    SessionEndpoint::Push(rx, data_to_stream_tx),
+                    ServerSide::Push(tx),
+                )
             }
             SessionMode::Pull => {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
@@ -397,6 +409,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 client_addr,
                 media_info,
                 server_side,
+                data_to_stream_rx,
                 app_handler,
                 path,
                 video_sockets,
@@ -697,6 +710,7 @@ async fn run_udp_transfer(
     client_addr: SocketAddr,
     media_info: MediaInfo,
     server_side: ServerSide,
+    mut data_to_stream_rx: UnboundedReceiver<InterleavedData>,
     app_handler: Arc<dyn SessionHandler>,
     path: String,
     video_sockets: Option<(UdpSocket, UdpSocket)>,
@@ -752,6 +766,70 @@ async fn run_udp_transfer(
                     }
                 });
             }
+
+            // Forward outgoing RTP/RTCP back to the push client.
+            let send_socket = UdpSocket::bind(net::bind_any_for(&client_addr)).await?;
+            let video_rtp_send = media_info.video_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
+            let video_rtcp_send = media_info.video_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtcp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
+            let audio_rtp_send = media_info.audio_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
+            let audio_rtcp_send = media_info.audio_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtcp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
+            tokio::spawn(async move {
+                while let Some((channel, data)) = data_to_stream_rx.recv().await {
+                    let send_port = match channel {
+                        0 => video_rtp_send,
+                        1 => video_rtcp_send,
+                        2 => audio_rtp_send,
+                        3 => audio_rtcp_send,
+                        _ => None,
+                    };
+                    if let Some(port) = send_port {
+                        let dest = SocketAddr::new(client_addr.ip(), port);
+                        if send_socket.send_to(&data, dest).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
 
             drain_rtcp_ports(video_rtcp, audio_rtcp, app_handler, path).await?;
         }

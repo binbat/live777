@@ -121,13 +121,68 @@ impl rtsp::server::SessionHandler for RtspHandler {
 
         match mode {
             rtsp::SessionMode::Push => {
-                let mut rx = match endpoint {
-                    rtsp::SessionEndpoint::Push(rx) => rx,
+                let (mut rx, tx) = match endpoint {
+                    rtsp::SessionEndpoint::Push(rx, tx) => (rx, tx),
                     _ => return Err(anyhow!("Expected push endpoint")),
                 };
 
                 let forward = self.manager.get_or_create_forward(&stream_id).await;
                 let channel_to_kind = build_channel_kind_map(&media_info);
+
+                // Forward RTCP keyframe requests from pull subscribers back to the
+                // push client on its RTCP channel.
+                let rtcp_channel = media_info
+                    .video_transport
+                    .as_ref()
+                    .and_then(|t| t.tcp_channels())
+                    .map(|(_, rtcp)| rtcp)
+                    .unwrap_or(1);
+                let mut rtcp_rx = forward.internal.publish_rtcp_channel.subscribe();
+                let stream_id_for_rtcp = stream_id.clone();
+                tokio::spawn(async move {
+                    while let Ok((msg, ssrc)) = rtcp_rx.recv().await {
+                        let packet = match msg {
+                            RtcpMessage::PictureLossIndication => {
+                                let pli = PictureLossIndication {
+                                    sender_ssrc: 0,
+                                    media_ssrc: ssrc,
+                                };
+                                match pli.marshal() {
+                                    Ok(buf) => buf.to_vec(),
+                                    Err(e) => {
+                                        debug!(
+                                            "Failed to marshal PLI for {}: {}",
+                                            stream_id_for_rtcp, e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            RtcpMessage::_FullIntraRequest => {
+                                let fir = FullIntraRequest {
+                                    sender_ssrc: 0,
+                                    media_ssrc: ssrc,
+                                    fir: vec![],
+                                };
+                                match fir.marshal() {
+                                    Ok(buf) => buf.to_vec(),
+                                    Err(e) => {
+                                        debug!(
+                                            "Failed to marshal FIR for {}: {}",
+                                            stream_id_for_rtcp, e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            _ => continue,
+                        };
+                        if tx.send((rtcp_channel, packet)).is_err() {
+                            debug!("RTCP feedback channel closed for {}", stream_id_for_rtcp);
+                            break;
+                        }
+                    }
+                });
 
                 let manager = self.manager.clone();
                 tokio::spawn(async move {
