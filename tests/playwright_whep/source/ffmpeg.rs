@@ -48,16 +48,11 @@ impl Source for FfmpegSource {
         let payload_type = codec.payload_type();
         let encoder = codec.ffmpeg_encoder();
 
-        // FFmpeg's RTP muxer expects the RTP payload name for the `?codec=`
-        // query. VP8/H264/H265 are inferred from the encoder codec id when the
-        // name is unrecognized, but VP9 and AV1 need their explicit payload
-        // names (`VP9`, `AV1X`) — passing the encoder name (`libvpx-vp9`)
-        // fails to resolve.
-        let rtp_codec_name = match codec {
-            VideoCodec::Av1 => "av1x",
-            VideoCodec::Vp9 => "VP9",
-            _ => encoder,
-        };
+        // `?codec=` takes the RTP payload name. FFmpeg also infers it from the
+        // encoder's codec id, so the value is belt-and-braces, but we pass the
+        // canonical name regardless. AV1/VP9 RTP packetization is experimental,
+        // so their `ffmpeg_extra_args` pass `-strict experimental` (without it
+        // ffmpeg refuses to write the header).
 
         let mut cmd = Command::new("ffmpeg");
         cmd.arg("-re")
@@ -87,7 +82,10 @@ impl Source for FfmpegSource {
             .arg(payload_type.to_string())
             .arg("-f")
             .arg("rtp")
-            .arg(format!("rtp://{target_addr}?codec={rtp_codec_name}"));
+            .arg(format!(
+                "rtp://{target_addr}?codec={}",
+                codec.rtp_payload_name()
+            ));
 
         let child = cmd
             .spawn()

@@ -121,6 +121,18 @@ impl VideoCodec {
         }
     }
 
+    /// RTP payload name (the encoding name in `a=rtpmap` and the value ffmpeg's
+    /// RTP muxer accepts for the `?codec=` query), e.g. `VP8`, `AV1`.
+    pub fn rtp_payload_name(&self) -> &'static str {
+        match self {
+            VideoCodec::Vp8 => "VP8",
+            VideoCodec::H264 => "H264",
+            VideoCodec::H265 => "H265",
+            VideoCodec::Vp9 => "VP9",
+            VideoCodec::Av1 => "AV1",
+        }
+    }
+
     /// Extra FFmpeg arguments required for a stable RTP stream.
     pub fn ffmpeg_extra_args(&self) -> &'static [&'static str] {
         match self {
@@ -153,6 +165,8 @@ impl VideoCodec {
                 "zerolatency",
             ],
             VideoCodec::Vp9 => &[
+                "-strict",
+                "experimental",
                 "-pix_fmt",
                 "yuv420p",
                 "-deadline",
@@ -161,6 +175,8 @@ impl VideoCodec {
                 "4",
             ],
             VideoCodec::Av1 => &[
+                "-strict",
+                "experimental",
                 "-pix_fmt",
                 "yuv420p",
                 "-preset",
@@ -173,15 +189,13 @@ impl VideoCodec {
 
     /// SDP `a=rtpmap:` line for this codec.
     pub fn sdp_rtpmap(&self, payload_type: u8) -> String {
+        let name = self.rtp_payload_name();
         match self {
-            VideoCodec::Vp8 => format!("a=rtpmap:{payload_type} VP8/90000"),
             VideoCodec::H264 => format!(
-                "a=rtpmap:{payload_type} H264/90000\r\n\
+                "a=rtpmap:{payload_type} {name}/90000\r\n\
                  a=fmtp:{payload_type} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
             ),
-            VideoCodec::H265 => format!("a=rtpmap:{payload_type} H265/90000"),
-            VideoCodec::Vp9 => format!("a=rtpmap:{payload_type} VP9/90000"),
-            VideoCodec::Av1 => format!("a=rtpmap:{payload_type} AV1/90000"),
+            _ => format!("a=rtpmap:{payload_type} {name}/90000"),
         }
     }
 }
