@@ -18,76 +18,40 @@ use crate::stream::manager::Manager;
 use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
 use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 
-const DEFAULT_PUSH_STREAM: &str = "rtsp-push";
-const DEFAULT_PULL_STREAM: &str = "rtsp-pull";
+const DEFAULT_STREAM: &str = "rtsp";
 
 pub async fn start_rtsp_server(
     manager: Arc<Manager>,
     config: RtspConfig,
     cancel: CancellationToken,
 ) {
-    let push_manager = manager.clone();
-    let pull_manager = manager.clone();
-    let push_cancel = cancel.clone();
-    let pull_cancel = cancel;
+    info!("Starting RTSP server on {}", config.listen);
+    let listen_addr = format_bind_addr(config.listen);
+    let handler = RtspHandler { manager };
 
     tokio::spawn(async move {
-        if let Err(e) = run_push_server(push_manager, config.push_listen, push_cancel).await {
-            error!("RTSP push server error: {}", e);
+        if let Err(e) = rtsp::setup_rtsp_server_with_handler(
+            &listen_addr,
+            rtsp::SessionMode::Mixed,
+            true,
+            handler,
+            cancel,
+        )
+        .await
+        {
+            error!("RTSP server error: {}", e);
         }
     });
-
-    tokio::spawn(async move {
-        if let Err(e) = run_pull_server(pull_manager, config.pull_listen, pull_cancel).await {
-            error!("RTSP pull server error: {}", e);
-        }
-    });
 }
 
-async fn run_push_server(
-    manager: Arc<Manager>,
-    listen: SocketAddr,
-    cancel: CancellationToken,
-) -> Result<()> {
-    info!("Starting RTSP push server on {}", listen);
-    let listen_addr = format_bind_addr(listen);
-    let handler = PushHandler { manager };
-    rtsp::setup_rtsp_server_with_handler(
-        &listen_addr,
-        rtsp::SessionMode::Push,
-        true,
-        handler,
-        cancel,
-    )
-    .await
-}
-
-async fn run_pull_server(
-    manager: Arc<Manager>,
-    listen: SocketAddr,
-    cancel: CancellationToken,
-) -> Result<()> {
-    info!("Starting RTSP pull server on {}", listen);
-    let listen_addr = format_bind_addr(listen);
-    let handler = PullHandler { manager };
-    rtsp::setup_rtsp_server_with_handler(
-        &listen_addr,
-        rtsp::SessionMode::Pull,
-        true,
-        handler,
-        cancel,
-    )
-    .await
-}
-
-struct PushHandler {
+struct RtspHandler {
     manager: Arc<Manager>,
 }
 
 #[async_trait::async_trait]
-impl rtsp::server::SessionHandler for PushHandler {
+impl rtsp::server::SessionHandler for RtspHandler {
     async fn on_announce(&self, path: String, sdp: Vec<u8>) -> Result<()> {
-        let stream_id = stream_id_from_path(path, DEFAULT_PUSH_STREAM);
+        let stream_id = stream_id_from_path(path);
         let media_info = rtsp::parse_media_info_from_sdp(&sdp)?;
 
         // Recreate the stream so a new publisher always starts from a clean state.
@@ -118,61 +82,8 @@ impl rtsp::server::SessionHandler for PushHandler {
         Ok(())
     }
 
-    async fn on_describe(&self, _path: String) -> Result<Vec<u8>> {
-        Err(anyhow!("DESCRIBE is not supported on the push server"))
-    }
-
-    async fn on_session(
-        &self,
-        path: String,
-        _mode: rtsp::SessionMode,
-        _media_info: rtsp::MediaInfo,
-        endpoint: rtsp::SessionEndpoint,
-    ) -> Result<()> {
-        let stream_id = stream_id_from_path(path, DEFAULT_PUSH_STREAM);
-        let mut rx = match endpoint {
-            rtsp::SessionEndpoint::Push(rx) => rx,
-            _ => return Err(anyhow!("Expected push endpoint")),
-        };
-
-        let manager = self.manager.clone();
-        tokio::spawn(async move {
-            while let Some((channel, data)) = rx.recv().await {
-                if channel % 2 != 0 {
-                    // RTCP: not handled yet.
-                    continue;
-                }
-                let forward = manager.get_or_create_forward(&stream_id).await;
-                if forward.inject_video_rtp(&data).await.is_ok() {
-                    continue;
-                }
-                let _ = forward.inject_audio_rtp(&data).await;
-            }
-            info!("RTSP push forward stopped for {}", stream_id);
-            if let Err(e) = manager.stream_delete(stream_id.clone()).await {
-                debug!(
-                    "Failed to delete stream {} on push disconnect: {}",
-                    stream_id, e
-                );
-            }
-        });
-
-        Ok(())
-    }
-}
-
-struct PullHandler {
-    manager: Arc<Manager>,
-}
-
-#[async_trait::async_trait]
-impl rtsp::server::SessionHandler for PullHandler {
-    async fn on_announce(&self, _path: String, _sdp: Vec<u8>) -> Result<()> {
-        Err(anyhow!("ANNOUNCE is not supported on the pull server"))
-    }
-
     async fn on_describe(&self, path: String) -> Result<Vec<u8>> {
-        let stream_id = stream_id_from_path(path, DEFAULT_PULL_STREAM);
+        let stream_id = stream_id_from_path(path);
         let forward = wait_for_forward(&self.manager, &stream_id)
             .await
             .map_err(|e| anyhow!("Stream {} not available: {}", stream_id, e))?;
@@ -185,96 +96,131 @@ impl rtsp::server::SessionHandler for PullHandler {
     async fn on_session(
         &self,
         path: String,
-        _mode: rtsp::SessionMode,
+        mode: rtsp::SessionMode,
         media_info: rtsp::MediaInfo,
         endpoint: rtsp::SessionEndpoint,
     ) -> Result<()> {
-        let stream_id = stream_id_from_path(path, DEFAULT_PULL_STREAM);
-        let tx = match endpoint {
-            rtsp::SessionEndpoint::Pull(tx) => tx,
-            _ => return Err(anyhow!("Expected pull endpoint")),
-        };
+        let stream_id = stream_id_from_path(path);
 
-        let manager = self.manager.clone();
-        tokio::spawn(async move {
-            let forward = match wait_for_forward(&manager, &stream_id).await {
-                Ok(f) => f,
-                Err(e) => {
-                    error!("RTSP pull forward failed for {}: {}", stream_id, e);
-                    return;
-                }
-            };
-            let tracks = match wait_for_tracks(&forward).await {
-                Ok(t) => t,
-                Err(e) => {
-                    error!("RTSP pull no tracks for {}: {}", stream_id, e);
-                    return;
-                }
-            };
+        match mode {
+            rtsp::SessionMode::Push => {
+                let mut rx = match endpoint {
+                    rtsp::SessionEndpoint::Push(rx) => rx,
+                    _ => return Err(anyhow!("Expected push endpoint")),
+                };
 
-            // Use the negotiated TCP interleaved channels when available;
-            // fall back to the fixed UDP channel map (video=0/1, audio=2/3).
-            let channel_for = |kind| match kind {
-                RtpCodecKind::Video => media_info
-                    .video_transport
-                    .as_ref()
-                    .and_then(|t| t.tcp_channels())
-                    .unwrap_or((0, 1)),
-                RtpCodecKind::Audio => media_info
-                    .audio_transport
-                    .as_ref()
-                    .and_then(|t| t.tcp_channels())
-                    .unwrap_or((2, 3)),
-                _ => (0, 1),
-            };
-
-            for track in tracks {
-                let (rtp_channel, rtcp_channel) = channel_for(track.kind());
-
-                // RTP forward.
-                let tx_clone = tx.clone();
-                let mut packet_rx = track.subscribe();
+                let manager = self.manager.clone();
                 tokio::spawn(async move {
-                    while let Ok(packet) = packet_rx.recv().await {
-                        let mut buf = vec![0u8; packet.marshal_size()];
-                        if Marshal::marshal_to(&*packet, &mut buf).is_err() {
+                    while let Some((channel, data)) = rx.recv().await {
+                        if channel % 2 != 0 {
+                            // RTCP: not handled yet.
                             continue;
                         }
-                        if tx_clone.send((rtp_channel, buf)).is_err() {
-                            break;
+                        let forward = manager.get_or_create_forward(&stream_id).await;
+                        if forward.inject_video_rtp(&data).await.is_ok() {
+                            continue;
                         }
+                        let _ = forward.inject_audio_rtp(&data).await;
                     }
-                });
-
-                // RTCP sender reports.
-                let tx_clone = tx.clone();
-                let track = track.clone();
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_secs(5));
-                    loop {
-                        interval.tick().await;
-                        if let Some(packet) = track.generate_sender_report() {
-                            match packet.marshal() {
-                                Ok(buf) => {
-                                    if tx_clone.send((rtcp_channel, buf.to_vec())).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    debug!("Failed to marshal sender report: {}", e);
-                                }
-                            }
-                        }
+                    info!("RTSP push forward stopped for {}", stream_id);
+                    if let Err(e) = manager.stream_delete(stream_id.clone()).await {
+                        debug!(
+                            "Failed to delete stream {} on push disconnect: {}",
+                            stream_id, e
+                        );
                     }
                 });
             }
-        });
+            rtsp::SessionMode::Pull => {
+                let tx = match endpoint {
+                    rtsp::SessionEndpoint::Pull(tx) => tx,
+                    _ => return Err(anyhow!("Expected pull endpoint")),
+                };
+
+                let manager = self.manager.clone();
+                tokio::spawn(async move {
+                    let forward = match wait_for_forward(&manager, &stream_id).await {
+                        Ok(f) => f,
+                        Err(e) => {
+                            error!("RTSP pull forward failed for {}: {}", stream_id, e);
+                            return;
+                        }
+                    };
+                    let tracks = match wait_for_tracks(&forward).await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            error!("RTSP pull no tracks for {}: {}", stream_id, e);
+                            return;
+                        }
+                    };
+
+                    // Use the negotiated TCP interleaved channels when available;
+                    // fall back to the fixed UDP channel map (video=0/1, audio=2/3).
+                    let channel_for = |kind| match kind {
+                        RtpCodecKind::Video => media_info
+                            .video_transport
+                            .as_ref()
+                            .and_then(|t| t.tcp_channels())
+                            .unwrap_or((0, 1)),
+                        RtpCodecKind::Audio => media_info
+                            .audio_transport
+                            .as_ref()
+                            .and_then(|t| t.tcp_channels())
+                            .unwrap_or((2, 3)),
+                        _ => (0, 1),
+                    };
+
+                    for track in tracks {
+                        let (rtp_channel, rtcp_channel) = channel_for(track.kind());
+
+                        // RTP forward.
+                        let tx_clone = tx.clone();
+                        let mut packet_rx = track.subscribe();
+                        tokio::spawn(async move {
+                            while let Ok(packet) = packet_rx.recv().await {
+                                let mut buf = vec![0u8; packet.marshal_size()];
+                                if Marshal::marshal_to(&*packet, &mut buf).is_err() {
+                                    continue;
+                                }
+                                if tx_clone.send((rtp_channel, buf)).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+
+                        // RTCP sender reports.
+                        let tx_clone = tx.clone();
+                        let track = track.clone();
+                        tokio::spawn(async move {
+                            let mut interval = tokio::time::interval(Duration::from_secs(5));
+                            loop {
+                                interval.tick().await;
+                                if let Some(packet) = track.generate_sender_report() {
+                                    match packet.marshal() {
+                                        Ok(buf) => {
+                                            if tx_clone.send((rtcp_channel, buf.to_vec())).is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            debug!("Failed to marshal sender report: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+            rtsp::SessionMode::Mixed => unreachable!("session mode must be resolved"),
+        }
 
         Ok(())
     }
 
     async fn on_rtcp(&self, path: String, data: Vec<u8>) -> Result<()> {
-        let stream_id = stream_id_from_path(path, DEFAULT_PULL_STREAM);
+        let stream_id = stream_id_from_path(path);
         let packets = match rtc_rtcp::packet::unmarshal(&mut data.as_slice()) {
             Ok(packets) => packets,
             Err(e) => {
@@ -329,9 +275,9 @@ impl rtsp::server::SessionHandler for PullHandler {
     }
 }
 
-fn stream_id_from_path(path: String, default: &str) -> String {
+fn stream_id_from_path(path: String) -> String {
     if path.is_empty() {
-        default.to_string()
+        DEFAULT_STREAM.to_string()
     } else {
         path
     }

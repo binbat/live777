@@ -7,6 +7,9 @@ use std::net::SocketAddr;
 pub enum SessionMode {
     Push,
     Pull,
+    /// Single port handles both push and pull sessions, determined by the
+    /// first client request (ANNOUNCE/RECORD vs DESCRIBE/PLAY).
+    Mixed,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

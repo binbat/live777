@@ -34,6 +34,7 @@ impl From<SessionMode> for RtspMode {
         match mode {
             SessionMode::Pull => RtspMode::Pull,
             SessionMode::Push => RtspMode::Push,
+            SessionMode::Mixed => panic!("Mixed mode is server-only"),
         }
     }
 }

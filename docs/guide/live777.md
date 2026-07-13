@@ -108,16 +108,17 @@ Build with the `rtsp` feature to expose an RTSP server alongside WHIP/WHEP:
 cargo build --release --bin live777 --features rtsp
 ```
 
-Configure the listen addresses in `live777.toml`:
+Configure the listen address in `live777.toml`:
 
 ```toml
 [rtsp]
-push_listen = "0.0.0.0:8554"   # ANNOUNCE/RECORD input
-pull_listen = "0.0.0.0:8555"   # DESCRIBE/PLAY output
+listen = "0.0.0.0:8554"
 ```
 
-- Push media into a stream: `rtsp://host:8554/{stream_id}`
-- Pull media from a stream: `rtsp://host:8555/{stream_id}`
+The same port handles both directions:
+
+- Push media into a stream: `rtsp://host:8554/{stream_id}` (`ANNOUNCE` + `RECORD`)
+- Pull media from a stream: `rtsp://host:8554/{stream_id}` (`DESCRIBE` + `PLAY`)
 
 Both UDP and TCP (`RTP/AVP/TCP`) transports are supported. The first URL path
 segment is used as the liveion stream identifier. Authentication is not yet

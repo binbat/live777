@@ -91,8 +91,7 @@ async fn test_livetwo_rtsp_h264_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -103,8 +102,7 @@ async fn test_livetwo_rtsp_h264_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -119,8 +117,7 @@ async fn test_livetwo_rtsp_h264_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -131,8 +128,7 @@ async fn test_livetwo_rtsp_h264_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -147,8 +143,7 @@ async fn test_livetwo_rtsp_h265_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -159,8 +154,7 @@ async fn test_livetwo_rtsp_h265_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -175,8 +169,7 @@ async fn test_livetwo_rtsp_h265_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -187,8 +180,7 @@ async fn test_livetwo_rtsp_h265_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -203,8 +195,7 @@ async fn test_livetwo_rtsp_vp8_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -215,8 +206,7 @@ async fn test_livetwo_rtsp_vp8_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -231,8 +221,7 @@ async fn test_livetwo_rtsp_vp8_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -243,8 +232,7 @@ async fn test_livetwo_rtsp_vp8_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -259,8 +247,7 @@ async fn test_livetwo_rtsp_vp8_ipv6_udp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -271,8 +258,7 @@ async fn test_livetwo_rtsp_vp8_ipv6_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -287,8 +273,7 @@ async fn test_livetwo_rtsp_vp8_ipv6_tcp() {
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -301,8 +286,7 @@ async fn test_livetwo_rtsp_vp8_ipv6_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -317,8 +301,7 @@ async fn test_livetwo_rtsp_vp9_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -331,8 +314,7 @@ async fn test_livetwo_rtsp_vp9_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -347,8 +329,7 @@ async fn test_livetwo_rtsp_vp9_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -361,8 +342,7 @@ async fn test_livetwo_rtsp_vp9_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: None,
             video: Some((width, height)),
@@ -377,8 +357,7 @@ async fn test_livetwo_rtsp_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
@@ -387,8 +366,7 @@ async fn test_livetwo_rtsp_opus_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: Some(2),
             video: None,
@@ -403,8 +381,7 @@ async fn test_livetwo_rtsp_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let acodec = "-acodec libopus -ar 48000 -ac 2 -b:a 48k -application voip -frame_duration 10 -vbr constrained";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec} -rtsp_transport tcp");
@@ -413,8 +390,7 @@ async fn test_livetwo_rtsp_opus_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: Some(2),
             video: None,
@@ -429,8 +405,7 @@ async fn test_livetwo_rtsp_g722_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let acodec = "-acodec g722 -ar 16000";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec}");
@@ -439,8 +414,7 @@ async fn test_livetwo_rtsp_g722_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: Some(1),
             video: None,
@@ -455,8 +429,7 @@ async fn test_livetwo_rtsp_g722_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let acodec = "-acodec g722 -ar 16000";
     let prefix = format!("ffmpeg -re -f lavfi -i sine=frequency=1000 {acodec} -rtsp_transport tcp");
@@ -465,8 +438,7 @@ async fn test_livetwo_rtsp_g722_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: Some(1),
             video: None,
@@ -481,8 +453,7 @@ async fn test_livetwo_rtsp_vp8_opus_udp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -497,8 +468,7 @@ async fn test_livetwo_rtsp_vp8_opus_udp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: Some(2),
             video: Some((width, height)),
@@ -513,8 +483,7 @@ async fn test_livetwo_rtsp_vp8_opus_tcp() {
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
-    let push_port: u16 = 0;
-    let pull_port: u16 = 0;
+    let rtsp_port: u16 = 0;
 
     let width = 1280;
     let height = 720;
@@ -529,8 +498,7 @@ async fn test_livetwo_rtsp_vp8_opus_tcp() {
         ip,
         port,
         &prefix,
-        push_port,
-        pull_port,
+        rtsp_port,
         Detect {
             audio: Some(2),
             video: Some((width, height)),
@@ -544,40 +512,33 @@ async fn helper_livetwo_rtsp(
     ip: IpAddr,
     port: u16,
     prefix: &str,
-    push_port: u16,
-    pull_port: u16,
+    rtsp_port: u16,
     detect: Detect,
     transport: Transport,
 ) {
     init_rtsp_test_environment();
 
-    let push_port = if push_port == 0 {
+    let rtsp_port = if rtsp_port == 0 {
         pick_tcp_port(ip).await
     } else {
-        push_port
-    };
-    let pull_port = if pull_port == 0 {
-        pick_tcp_port(ip).await
-    } else {
-        pull_port
+        rtsp_port
     };
 
     let mut cfg = liveion::config::Config::default();
-    cfg.rtsp.push_listen = SocketAddr::new(ip, push_port);
-    cfg.rtsp.pull_listen = SocketAddr::new(ip, pull_port);
+    cfg.rtsp.listen = SocketAddr::new(ip, rtsp_port);
 
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
-    // Wait briefly for the RTSP servers to start listening.
+    // Wait briefly for the RTSP server to start listening.
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let stream_id = "-";
     let ct = CancellationToken::new();
 
-    let push_url = rtsp_url(ip, push_port, stream_id);
+    let push_url = rtsp_url(ip, rtsp_port, stream_id);
     let ffmpeg_cmd = format!("{prefix} -f rtsp '{push_url}'");
     let ffmpeg_handle = tokio::spawn(run_ffmpeg(ct.clone(), ffmpeg_cmd));
 
@@ -608,7 +569,7 @@ async fn helper_livetwo_rtsp(
         if ffmpeg_handle.is_finished() {
             let result_ffmpeg = ffmpeg_handle.await.unwrap();
             panic!(
-                "ffmpeg task exited before publish connected: result={result_ffmpeg:?}, push_port={push_port}, pull_port={pull_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}"
+                "ffmpeg task exited before publish connected: result={result_ffmpeg:?}, rtsp_port={rtsp_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}"
             );
         }
 
@@ -617,14 +578,14 @@ async fn helper_livetwo_rtsp(
 
     assert!(
         result.is_some(),
-        "Publish session did not reach Connected state with codecs within {}ms: push_port={push_port}, pull_port={pull_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}",
+        "Publish session did not reach Connected state with codecs within {}ms: rtsp_port={rtsp_port}, liveion={addr}, last_state={last_state:?}, last_codecs={last_codecs:?}",
         CONNECTION_WAIT_ATTEMPTS * 100,
     );
 
-    // Wait a moment for media to flow through to the pull server.
+    // Wait a moment for media to flow through to the pull side.
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
-    let input_url = rtsp_url(ip, pull_port, stream_id);
+    let input_url = rtsp_url(ip, rtsp_port, stream_id);
     let output = Command::new("ffprobe")
         .args(transport.ffprobe_args())
         .args([

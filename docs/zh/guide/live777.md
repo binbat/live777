@@ -112,12 +112,13 @@ cargo build --release --bin live777 --features rtsp
 
 ```toml
 [rtsp]
-push_listen = "0.0.0.0:8554"   # ANNOUNCE/RECORD 输入
-pull_listen = "0.0.0.0:8555"   # DESCRIBE/PLAY 输出
+listen = "0.0.0.0:8554"
 ```
 
-- 推流地址：`rtsp://host:8554/{stream_id}`
-- 拉流地址：`rtsp://host:8555/{stream_id}`
+同一个端口同时处理推流和拉流：
+
+- 推流地址：`rtsp://host:8554/{stream_id}`（`ANNOUNCE` + `RECORD`）
+- 拉流地址：`rtsp://host:8554/{stream_id}`（`DESCRIBE` + `PLAY`）
 
 同时支持 UDP 和 TCP（`RTP/AVP/TCP`）传输。URL 的第一段路径作为 liveion 的流
 标识符。RTSP 接口目前尚未实现认证。

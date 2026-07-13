@@ -525,30 +525,22 @@ impl SourceConfig {
 #[cfg(feature = "rtsp")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RtspConfig {
-    /// Listen address for RTSP server input (PUSH / ANNOUNCE-RECORD).
-    #[serde(default = "default_rtsp_push_listen")]
-    pub push_listen: std::net::SocketAddr,
-    /// Listen address for RTSP server output (PULL / DESCRIBE-PLAY).
-    #[serde(default = "default_rtsp_pull_listen")]
-    pub pull_listen: std::net::SocketAddr,
+    /// Listen address for the RTSP server. The same port handles both push
+    /// (ANNOUNCE/RECORD) and pull (DESCRIBE/PLAY) sessions.
+    #[serde(default = "default_rtsp_listen")]
+    pub listen: std::net::SocketAddr,
 }
 
 #[cfg(feature = "rtsp")]
 impl Default for RtspConfig {
     fn default() -> Self {
         Self {
-            push_listen: default_rtsp_push_listen(),
-            pull_listen: default_rtsp_pull_listen(),
+            listen: default_rtsp_listen(),
         }
     }
 }
 
 #[cfg(feature = "rtsp")]
-fn default_rtsp_push_listen() -> std::net::SocketAddr {
+fn default_rtsp_listen() -> std::net::SocketAddr {
     std::net::SocketAddr::from_str("0.0.0.0:8554").unwrap()
-}
-
-#[cfg(feature = "rtsp")]
-fn default_rtsp_pull_listen() -> std::net::SocketAddr {
-    std::net::SocketAddr::from_str("0.0.0.0:8555").unwrap()
 }

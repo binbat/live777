@@ -103,6 +103,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
             self.mode, self.addr
         );
 
+        let mut session_mode = self.mode;
         let mut path: Option<String> = None;
         let mut video_channels: Option<(u8, u8)> = None;
         let mut audio_channels: Option<(u8, u8)> = None;
@@ -120,6 +121,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     self.send_response(&response).await?;
                 }
                 Method::Describe => {
+                    if session_mode == SessionMode::Push {
+                        return Err(anyhow!("DESCRIBE is not supported on a push session"));
+                    }
+                    if session_mode == SessionMode::Mixed {
+                        session_mode = SessionMode::Pull;
+                    }
+
                     let p = request_path(&request)?.unwrap_or_default();
                     let sdp = self.app_handler.on_describe(p.clone()).await?;
                     self.handler.set_sdp(sdp);
@@ -128,6 +136,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     self.send_response(&response).await?;
                 }
                 Method::Announce => {
+                    if session_mode == SessionMode::Pull {
+                        return Err(anyhow!("ANNOUNCE is not supported on a pull session"));
+                    }
+                    if session_mode == SessionMode::Mixed {
+                        session_mode = SessionMode::Push;
+                    }
+
                     let p = request_path(&request)?.unwrap_or_default();
                     let sdp = request.body().to_vec();
                     self.app_handler.on_announce(p.clone(), sdp.clone()).await?;
@@ -219,9 +234,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     }
                 }
                 Method::Play | Method::Record => {
-                    let response = match self.mode {
+                    if session_mode == SessionMode::Mixed {
+                        return Err(anyhow!("Session mode must be resolved before PLAY/RECORD"));
+                    }
+                    let response = match session_mode {
                         SessionMode::Pull => self.handler.handle_play(&request).await?,
                         SessionMode::Push => self.handler.handle_record(&request).await?,
+                        SessionMode::Mixed => unreachable!(),
                     };
                     self.send_response(&response).await?;
 
@@ -235,9 +254,11 @@ impl<H: SessionHandler> RtspServerSession<H> {
 
                     let p = path.clone().unwrap_or_default();
                     if actual_use_tcp {
-                        self.start_tcp_data_transfer(p, media_info.clone()).await?;
+                        self.start_tcp_data_transfer(p, media_info.clone(), session_mode)
+                            .await?;
                     } else {
-                        self.start_udp_data_transfer(p, media_info.clone()).await?;
+                        self.start_udp_data_transfer(p, media_info.clone(), session_mode)
+                            .await?;
                     }
                     return Ok(media_info);
                 }
@@ -278,11 +299,16 @@ impl<H: SessionHandler> RtspServerSession<H> {
             .await
     }
 
-    async fn start_tcp_data_transfer(self, path: String, media_info: MediaInfo) -> Result<()> {
+    async fn start_tcp_data_transfer(
+        self,
+        path: String,
+        media_info: MediaInfo,
+        session_mode: SessionMode,
+    ) -> Result<()> {
         let (data_from_stream_tx, mut data_from_stream_rx) = unbounded_channel::<InterleavedData>();
         let (data_to_stream_tx, data_to_stream_rx) = unbounded_channel::<InterleavedData>();
 
-        let (endpoint, server_side) = match self.mode {
+        let (endpoint, server_side) = match session_mode {
             SessionMode::Push => {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
                 (SessionEndpoint::Push(rx), ServerSide::Push(tx))
@@ -291,18 +317,19 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
                 (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
             }
+            SessionMode::Mixed => unreachable!("session mode must be resolved"),
         };
 
         let app_handler = self.app_handler.clone();
         self.app_handler
-            .on_session(path.clone(), self.mode, media_info, endpoint)
+            .on_session(path.clone(), session_mode, media_info, endpoint)
             .await?;
 
         let stream = self.stream;
-        let mode = self.mode;
         tokio::spawn(async move {
             if let Err(e) =
-                handle_tcp_stream(stream, mode, data_from_stream_tx, data_to_stream_rx).await
+                handle_tcp_stream(stream, session_mode, data_from_stream_tx, data_to_stream_rx)
+                    .await
             {
                 error!("TCP stream handler error: {}", e);
             }
@@ -344,8 +371,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
         Ok(())
     }
 
-    async fn start_udp_data_transfer(self, path: String, media_info: MediaInfo) -> Result<()> {
-        let (endpoint, server_side) = match self.mode {
+    async fn start_udp_data_transfer(
+        self,
+        path: String,
+        media_info: MediaInfo,
+        session_mode: SessionMode,
+    ) -> Result<()> {
+        let (endpoint, server_side) = match session_mode {
             SessionMode::Push => {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
                 (SessionEndpoint::Push(rx), ServerSide::Push(tx))
@@ -354,18 +386,18 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 let (tx, rx) = unbounded_channel::<InterleavedData>();
                 (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
             }
+            SessionMode::Mixed => unreachable!("session mode must be resolved"),
         };
 
         let app_handler = self.app_handler.clone();
         self.app_handler
-            .on_session(path.clone(), self.mode, media_info.clone(), endpoint)
+            .on_session(path.clone(), session_mode, media_info.clone(), endpoint)
             .await?;
 
         let client_addr = self.addr;
-        let mode = self.mode;
         tokio::spawn(async move {
             if let Err(e) = run_udp_transfer(
-                mode,
+                session_mode,
                 client_addr,
                 media_info,
                 server_side,
@@ -635,6 +667,7 @@ async fn run_udp_transfer(
 
             drain_rtcp_ports(&client_addr, &media_info, app_handler, path).await?;
         }
+        SessionMode::Mixed => unreachable!("session mode must be resolved"),
     }
 
     Ok(())

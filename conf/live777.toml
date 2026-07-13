@@ -220,7 +220,6 @@ root = "./storage"
 
 # Default disabled `--features=rtsp`
 # [rtsp]
-# Listen address for RTSP server input (PUSH / ANNOUNCE-RECORD)
-# push_listen = "0.0.0.0:8554"
-# Listen address for RTSP server output (PULL / DESCRIBE-PLAY)
-# pull_listen = "0.0.0.0:8555"
+# Listen address for the RTSP server. The same port handles push
+# (ANNOUNCE/RECORD) and pull (DESCRIBE/PLAY) sessions.
+# listen = "0.0.0.0:8554"

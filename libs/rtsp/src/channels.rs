@@ -39,6 +39,7 @@ impl RtspChannels {
                 let recv_rx = self.recv_rx.take().expect("recv_rx already taken");
                 (self.send_tx.clone(), recv_rx)
             }
+            SessionMode::Mixed => panic!("Mixed mode must be resolved before allocating channels"),
         }
     }
 
@@ -46,6 +47,7 @@ impl RtspChannels {
         match mode {
             SessionMode::Pull => self.recv_rx.take().expect("recv_rx already taken"),
             SessionMode::Push => self.send_rx.take().expect("send_rx already taken"),
+            SessionMode::Mixed => panic!("Mixed mode must be resolved before allocating channels"),
         }
     }
 
@@ -53,6 +55,7 @@ impl RtspChannels {
         match mode {
             SessionMode::Pull => self.recv_tx.clone(),
             SessionMode::Push => self.send_tx.clone(),
+            SessionMode::Mixed => panic!("Mixed mode must be resolved before allocating channels"),
         }
     }
 }
