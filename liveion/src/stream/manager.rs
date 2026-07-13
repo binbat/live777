@@ -227,19 +227,12 @@ impl Manager {
         );
         #[cfg(feature = "source")]
         let channel = entry.and_then(|entry| entry.channel.clone());
-        #[cfg(feature = "source")]
         let forward = PeerForward::new(
             stream.clone(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
+            #[cfg(feature = "source")]
             channel,
-            strategy,
-        );
-        #[cfg(not(feature = "source"))]
-        let forward = PeerForward::new(
-            stream.clone(),
-            self.config.ice_servers.clone(),
-            self.config.ice_udp_addrs.clone(),
             strategy,
         );
         let subscribe_event = forward.subscribe_event();

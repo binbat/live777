@@ -319,7 +319,7 @@ impl SubscribeRTCPeerConnection {
         }
 
         let matched =
-            select_compatible_codec(kind, &publisher_codec, &params.rtp_parameters.codecs);
+            select_compatible_codec(&publisher_codec, &params.rtp_parameters.codecs);
 
         let selected = match matched {
             Some(c) => c,
@@ -920,7 +920,6 @@ mod tests {
         };
 
         let selected = select_compatible_codec(
-            RtpCodecKind::Video,
             &source_codec,
             &[high_profile, baseline_profile],
         )
@@ -961,7 +960,6 @@ mod tests {
         };
 
         let selected = select_compatible_codec(
-            RtpCodecKind::Video,
             &source_codec,
             &[main_10_profile, main_profile],
         )
@@ -1041,7 +1039,7 @@ mod tests {
         };
 
         let selected =
-            select_compatible_codec(RtpCodecKind::Video, &source_codec, &[subscriber])
+            select_compatible_codec(&source_codec, &[subscriber])
                 .expect("subscriber omitting level-id should match a high-level publisher");
         assert_eq!(selected.payload_type, 49);
     }
@@ -1069,7 +1067,7 @@ mod tests {
         };
 
         assert!(
-            select_compatible_codec(RtpCodecKind::Video, &source_codec, &[subscriber]).is_none(),
+            select_compatible_codec(&source_codec, &[subscriber]).is_none(),
             "subscriber at Level 3.1 cannot receive a Level 6.0 stream"
         );
     }
@@ -1287,7 +1285,7 @@ mod tests {
         };
 
         assert!(
-            select_compatible_codec(RtpCodecKind::Video, &source_codec, &[subscriber_vp8],)
+            select_compatible_codec(&source_codec, &[subscriber_vp8],)
                 .is_none()
         );
     }
@@ -1323,7 +1321,7 @@ mod tests {
         };
 
         let selected =
-            select_compatible_codec(RtpCodecKind::Video, &source_codec, &[profile_1, profile_0])
+            select_compatible_codec(&source_codec, &[profile_1, profile_0])
                 .expect("matching AV1 profile should be selected");
 
         assert_eq!(selected.payload_type, 41);

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind};
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
 pub fn rtp_codecs_match(left: &RTCRtpCodec, right: &RTCRtpCodec) -> bool {
     left.mime_type.eq_ignore_ascii_case(&right.mime_type)
@@ -223,7 +223,6 @@ pub fn sender_track_codec_compatible(
 }
 
 pub fn select_compatible_codec(
-    _kind: RtpCodecKind,
     publisher_codec: &RTCRtpCodec,
     codecs: &[RTCRtpCodecParameters],
 ) -> Option<RTCRtpCodecParameters> {

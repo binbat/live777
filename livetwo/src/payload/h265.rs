@@ -382,6 +382,7 @@ struct NalUnit<'a> {
 /// Returns the raw NAL unit bytes (including the 2-byte HEVC NAL header) for
 /// each parameter set that is present. Used to build SDP `sprop-vps/sps/pps`
 /// values. Returns `None` unless all three are found.
+#[cfg(feature = "rsmpeg")]
 pub(crate) fn extract_hevc_parameter_sets(data: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let mut vps = None;
     let mut sps = None;
