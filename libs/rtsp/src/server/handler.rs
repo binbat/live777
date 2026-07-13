@@ -6,6 +6,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
+use crate::auth::{self, generate_digest_response};
 use crate::constants::net;
 use crate::{Request, Response, StatusCode, Version, headers};
 
@@ -26,6 +27,10 @@ pub struct Handler {
     /// advertised server ports cannot be stolen before the data transfer starts.
     udp_rtp_socket: Option<UdpSocket>,
     udp_rtcp_socket: Option<UdpSocket>,
+    /// Nonce used for Digest authentication across the session.
+    auth_nonce: String,
+    /// Whether this session has already authenticated successfully.
+    auth_succeeded: bool,
 }
 
 impl Handler {
@@ -45,6 +50,8 @@ impl Handler {
             next_channel: 0,
             udp_rtp_socket: None,
             udp_rtcp_socket: None,
+            auth_nonce: uuid::Uuid::new_v4().to_string(),
+            auth_succeeded: false,
         }
     }
 
@@ -106,6 +113,9 @@ impl Handler {
         request: &Request<Vec<u8>>,
     ) -> Result<Response<Vec<u8>>> {
         debug!("Handling ANNOUNCE request from {}", self.addr);
+        if let Err(response) = self.check_auth(request) {
+            return Ok(response);
+        }
         let sdp_content = request.body().to_vec();
         if let Ok(sdp_str) = std::str::from_utf8(&sdp_content) {
             debug!("Received SDP:\n{}", sdp_str);
@@ -259,9 +269,12 @@ impl Handler {
 
     pub async fn handle_describe(
         &mut self,
-        _request: &Request<Vec<u8>>,
+        request: &Request<Vec<u8>>,
     ) -> Result<Response<Vec<u8>>> {
         debug!("Handling DESCRIBE request from {}", self.addr);
+        if let Err(response) = self.check_auth(request) {
+            return Ok(response);
+        }
 
         let sdp_content = self
             .sdp_content
@@ -339,6 +352,64 @@ impl Handler {
             }
         }
     }
+
+    /// Check Digest authentication for the request. Returns `Ok(())` when auth
+    /// is disabled or the request is authenticated. Returns `Err(response)`
+    /// with a `401 Unauthorized` challenge when authentication is required but
+    /// missing or invalid.
+    pub fn check_auth(&mut self, request: &Request<Vec<u8>>) -> Result<(), Response<Vec<u8>>> {
+        if !self.config.enable_auth {
+            return Ok(());
+        }
+        if self.auth_succeeded {
+            return Ok(());
+        }
+
+        let Some(auth_header) = request.header(&headers::AUTHORIZATION) else {
+            return Err(self.build_auth_challenge());
+        };
+
+        let (username, realm, nonce, uri, response) = match auth::parse_authorization(auth_header) {
+            Ok(v) => v,
+            Err(_) => return Err(self.build_auth_challenge()),
+        };
+
+        if realm != self.config.realm || nonce != self.auth_nonce {
+            return Err(self.build_auth_challenge());
+        }
+        if username != self.config.username {
+            return Err(self.build_auth_challenge());
+        }
+
+        let method: &str = request.method().into();
+        let expected = generate_digest_response(
+            &self.config.username,
+            &self.config.password,
+            &uri,
+            &self.config.realm,
+            &self.auth_nonce,
+            method,
+        );
+
+        if expected != response {
+            return Err(self.build_auth_challenge());
+        }
+
+        self.auth_succeeded = true;
+        Ok(())
+    }
+
+    fn build_auth_challenge(&self) -> Response<Vec<u8>> {
+        let www_auth = format!(
+            "Digest realm=\"{}\", nonce=\"{}\"",
+            self.config.realm, self.auth_nonce
+        );
+        Response::builder(Version::V1_0, StatusCode::Unauthorized)
+            .header(headers::CSEQ, self.cseq.to_string())
+            .header(headers::WWW_AUTHENTICATE, www_auth)
+            .empty()
+            .map_body(|_| vec![])
+    }
 }
 
 fn summarize_sdp_media(sdp: &[u8]) -> String {
@@ -377,6 +448,7 @@ fn summarize_sdp_media(sdp: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Method, Url};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn dummy_handler() -> Handler {
@@ -423,5 +495,83 @@ mod tests {
             h.parse_client_ports("RTP/AVP;unicast;client_port=5004-5005-5006")
                 .is_err()
         );
+    }
+
+    fn auth_handler() -> Handler {
+        Handler::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8554),
+            Arc::new(RwLock::new(HashMap::new())),
+            ServerConfig {
+                enable_auth: true,
+                username: "live777".to_string(),
+                password: "secret".to_string(),
+                realm: "test-realm".to_string(),
+                ..ServerConfig::default()
+            },
+        )
+    }
+
+    fn auth_request_with(nonce: &str, response: &str) -> Request<Vec<u8>> {
+        Request::builder(Method::Describe, Version::V1_0)
+            .request_uri("rtsp://127.0.0.1:8554/stream".parse::<Url>().unwrap())
+            .header(
+                headers::AUTHORIZATION,
+                format!(
+                    "Digest username=\"live777\", realm=\"test-realm\", nonce=\"{}\", uri=\"/stream\", response=\"{}\"",
+                    nonce, response
+                ),
+            )
+            .header(headers::CSEQ, "1")
+            .empty()
+            .map_body(|_| vec![])
+    }
+
+    #[test]
+    fn auth_disabled_allows_request() {
+        let mut h = dummy_handler();
+        let req = auth_request_with("nonce", "anything");
+        assert!(h.check_auth(&req).is_ok());
+    }
+
+    #[test]
+    fn auth_missing_returns_challenge() {
+        let mut h = auth_handler();
+        let req = Request::builder(Method::Describe, Version::V1_0)
+            .request_uri("rtsp://127.0.0.1:8554/stream".parse::<Url>().unwrap())
+            .header(headers::CSEQ, "1")
+            .empty()
+            .map_body(|_| vec![]);
+
+        let resp = h.check_auth(&req).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::Unauthorized);
+        assert!(resp.header(&headers::WWW_AUTHENTICATE).is_some());
+    }
+
+    #[test]
+    fn auth_valid_digest_succeeds() {
+        let mut h = auth_handler();
+        let nonce = h.auth_nonce.clone();
+        let expected = generate_digest_response(
+            "live777",
+            "secret",
+            "/stream",
+            "test-realm",
+            &nonce,
+            "DESCRIBE",
+        );
+        let req = auth_request_with(&nonce, &expected);
+
+        assert!(h.check_auth(&req).is_ok());
+        // Second request should be allowed without re-authenticating.
+        assert!(h.check_auth(&req).is_ok());
+    }
+
+    #[test]
+    fn auth_invalid_digest_returns_challenge() {
+        let mut h = auth_handler();
+        let req = auth_request_with(&h.auth_nonce, "wrongresponse");
+
+        let resp = h.check_auth(&req).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::Unauthorized);
     }
 }

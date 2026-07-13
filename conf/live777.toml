@@ -223,3 +223,8 @@ root = "./storage"
 # Listen address for the RTSP server. The same port handles push
 # (ANNOUNCE/RECORD) and pull (DESCRIBE/PLAY) sessions.
 # listen = "0.0.0.0:8554"
+# Enable Digest authentication for ANNOUNCE/DESCRIBE/SETUP.
+# enable_auth = false
+# username = "live777"
+# password = "live777"
+# realm = "live777"

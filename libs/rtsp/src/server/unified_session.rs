@@ -77,6 +77,14 @@ enum ServerSide {
     Pull(Receiver<InterleavedData>),
 }
 
+/// Result of a fully handled RTSP session.
+pub(crate) enum SessionResult {
+    /// PLAY/RECORD was sent and data transfer has started.
+    Established(Box<MediaInfo>),
+    /// TEARDOWN was received before data transfer began.
+    Teardown,
+}
+
 pub struct RtspServerSession<H: SessionHandler> {
     handler: Handler,
     app_handler: Arc<H>,
@@ -114,7 +122,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         }
     }
 
-    pub(crate) async fn handle_session(mut self, guard: ConnectionGuard) -> Result<MediaInfo> {
+    pub(crate) async fn handle_session(mut self, guard: ConnectionGuard) -> Result<SessionResult> {
         debug!(
             "Starting RTSP session: mode={:?}, addr={}",
             self.mode, self.addr
@@ -173,6 +181,11 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     self.send_response(&response).await?;
                 }
                 Method::Setup => {
+                    if let Err(response) = self.handler.check_auth(&request) {
+                        self.send_response(&response).await?;
+                        return Err(anyhow!("RTSP SETUP authentication required"));
+                    }
+
                     let transport_header = match request.header(&rtsp_types::headers::TRANSPORT) {
                         Some(h) => h,
                         None => {
@@ -365,13 +378,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         )
                         .await?;
                     }
-                    return Ok(media_info);
+                    return Ok(SessionResult::Established(Box::new(media_info)));
                 }
                 Method::Teardown => {
                     let response = self.handler.handle_teardown(&request).await?;
                     self.send_response(&response).await?;
                     session_cancel.cancel();
-                    break Ok(MediaInfo::default());
+                    break Ok(SessionResult::Teardown);
                 }
                 _ => {
                     warn!("Unsupported method: {:?}", request.method());
@@ -561,12 +574,15 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 path,
                 video_sockets,
                 audio_sockets,
-                run_cancel,
+                run_cancel.clone(),
             )
             .await
             {
                 error!("UDP transfer error: {}", e);
             }
+            // Data plane is done; stop the control keep-alive so the connection
+            // counter and session state are released promptly.
+            run_cancel.cancel();
         });
 
         // Keep the RTSP control connection alive for UDP sessions so that
@@ -581,7 +597,15 @@ impl<H: SessionHandler> RtspServerSession<H> {
             let mut buffer = Vec::with_capacity(4096);
 
             loop {
-                match read_rtsp_message(&mut read_half, &mut buffer).await {
+                let message = tokio::select! {
+                    _ = control_cancel.cancelled() => {
+                        debug!("UDP control connection cancelled");
+                        break;
+                    }
+                    result = read_rtsp_message(&mut read_half, &mut buffer) => result,
+                };
+
+                match message {
                     Ok(Message::Request(request)) => {
                         let cseq = request
                             .header(&headers::CSEQ)
@@ -1297,11 +1321,14 @@ where
 
                         tokio::spawn(async move {
                             match session.handle_session(guard).await {
-                                Ok(media_info) => {
+                                Ok(SessionResult::Established(media_info)) => {
                                     info!(
                                         "Connection #{} session established: {:?}",
                                         conn_id, media_info
                                     );
+                                }
+                                Ok(SessionResult::Teardown) => {
+                                    info!("Connection #{} session torn down", conn_id);
                                 }
                                 Err(e) => {
                                     warn!("Connection #{} error: {}", conn_id, e);

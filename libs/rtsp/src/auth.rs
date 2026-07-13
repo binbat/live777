@@ -120,6 +120,57 @@ pub fn parse_auth_header(header: &headers::HeaderValue) -> Result<(String, Strin
     Ok((realm, nonce))
 }
 
+/// Parse a Digest `Authorization` header and return the captured fields.
+pub fn parse_authorization(
+    header: &headers::HeaderValue,
+) -> Result<(String, String, String, String, String)> {
+    let header_str = header.as_str();
+    let params_str = header_str
+        .strip_prefix("Digest ")
+        .ok_or_else(|| anyhow!("Expected Digest authorization, got: {}", header_str))?
+        .trim();
+
+    let mut username = String::new();
+    let mut realm = String::new();
+    let mut nonce = String::new();
+    let mut uri = String::new();
+    let mut response = String::new();
+
+    for part in params_str.split(',') {
+        let part = part.trim();
+        if let Some((key, value)) = part.split_once('=') {
+            let key = key.trim();
+            let value = value.trim().trim_matches('"');
+            match key {
+                "username" => username = value.to_string(),
+                "realm" => realm = value.to_string(),
+                "nonce" => nonce = value.to_string(),
+                "uri" => uri = value.to_string(),
+                "response" => response = value.to_string(),
+                _ => {}
+            }
+        }
+    }
+
+    if username.is_empty() {
+        return Err(anyhow!("Missing 'username' in Authorization header"));
+    }
+    if realm.is_empty() {
+        return Err(anyhow!("Missing 'realm' in Authorization header"));
+    }
+    if nonce.is_empty() {
+        return Err(anyhow!("Missing 'nonce' in Authorization header"));
+    }
+    if uri.is_empty() {
+        return Err(anyhow!("Missing 'uri' in Authorization header"));
+    }
+    if response.is_empty() {
+        return Err(anyhow!("Missing 'response' in Authorization header"));
+    }
+
+    Ok((username, realm, nonce, uri, response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +198,18 @@ mod tests {
         let response =
             generate_digest_response("user", "pass", "/stream", "RTSP", "abc123", "DESCRIBE");
         assert!(!response.is_empty());
+    }
+
+    #[test]
+    fn test_parse_authorization() {
+        let header = headers::HeaderValue::from(
+            "Digest username=\"user\", realm=\"RTSP\", nonce=\"abc123\", uri=\"/stream\", response=\"deadbeef\"",
+        );
+        let (username, realm, nonce, uri, response) = parse_authorization(&header).unwrap();
+        assert_eq!(username, "user");
+        assert_eq!(realm, "RTSP");
+        assert_eq!(nonce, "abc123");
+        assert_eq!(uri, "/stream");
+        assert_eq!(response, "deadbeef");
     }
 }

@@ -537,6 +537,19 @@ pub struct RtspConfig {
     /// up after this duration.
     #[serde(default = "default_rtsp_session_timeout")]
     pub session_timeout: u64,
+    /// When true, require Digest authentication for RTSP ANNOUNCE, DESCRIBE
+    /// and SETUP requests.
+    #[serde(default)]
+    pub enable_auth: bool,
+    /// Username required when `enable_auth` is true.
+    #[serde(default)]
+    pub username: String,
+    /// Password required when `enable_auth` is true.
+    #[serde(default)]
+    pub password: String,
+    /// Realm advertised in the `WWW-Authenticate` challenge.
+    #[serde(default = "default_rtsp_realm")]
+    pub realm: String,
 }
 
 #[cfg(feature = "rtsp")]
@@ -546,6 +559,10 @@ impl Default for RtspConfig {
             listen: default_rtsp_listen(),
             max_connections: default_rtsp_max_connections(),
             session_timeout: default_rtsp_session_timeout(),
+            enable_auth: false,
+            username: String::new(),
+            password: String::new(),
+            realm: default_rtsp_realm(),
         }
     }
 }
@@ -563,4 +580,9 @@ fn default_rtsp_max_connections() -> usize {
 #[cfg(feature = "rtsp")]
 fn default_rtsp_session_timeout() -> u64 {
     rtsp::server_constants::DEFAULT_SESSION_TIMEOUT
+}
+
+#[cfg(feature = "rtsp")]
+fn default_rtsp_realm() -> String {
+    "live777".to_string()
 }

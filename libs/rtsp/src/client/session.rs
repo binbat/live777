@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace};
 
 use super::RtspMode;
-use super::auth::{AuthParams, generate_digest_response, parse_auth_header};
+use crate::auth::{AuthParams, generate_digest_response, parse_auth_header};
 use crate::channels::InterleavedChannel;
 use crate::constants::{buffer, client, media_type, net};
 use crate::transport_manager::{TransportConfig, UdpPortInfo};

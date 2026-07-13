@@ -17,6 +17,9 @@ pub struct ServerConfig {
     pub max_connections: usize,
     pub session_timeout: u64,
     pub enable_auth: bool,
+    pub username: String,
+    pub password: String,
+    pub realm: String,
 }
 
 impl Default for ServerConfig {
@@ -26,6 +29,9 @@ impl Default for ServerConfig {
             max_connections: server::DEFAULT_MAX_CONNECTIONS,
             session_timeout: server::DEFAULT_SESSION_TIMEOUT,
             enable_auth: false,
+            username: String::new(),
+            password: String::new(),
+            realm: "live777".to_string(),
         }
     }
 }

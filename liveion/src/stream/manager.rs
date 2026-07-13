@@ -292,14 +292,12 @@ impl Manager {
             "Publishing to stream: {}, offer type: {:?}",
             stream, offer.sdp_type
         );
-        let mut stream_map = self.stream_map.write().await;
-        let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whip {
-            let raw_forward = self.do_stream_create(stream.clone()).await;
-            stream_map.insert(stream.clone(), raw_forward.clone());
-            forward = Some(raw_forward);
-        }
-        drop(stream_map);
+        let forward = self
+            .get_or_create_forward_for_operation(
+                &stream,
+                self.config.effective_strategy(&stream).auto_create_whip,
+            )
+            .await;
 
         match forward {
             Some(forward) => forward.set_publish(offer).await,
@@ -317,20 +315,48 @@ impl Manager {
             stream,
             offer.sdp.len()
         );
-        let mut stream_map = self.stream_map.write().await;
-        let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whep {
-            let raw_forward = self.do_stream_create(stream.clone()).await;
-            stream_map.insert(stream.clone(), raw_forward.clone());
-            forward = Some(raw_forward);
-        }
-        drop(stream_map);
+        let forward = self
+            .get_or_create_forward_for_operation(
+                &stream,
+                self.config.effective_strategy(&stream).auto_create_whep,
+            )
+            .await;
 
         if let Some(forward) = forward {
             Ok(forward.add_subscribe(offer).await?)
         } else {
             Err(AppError::stream_not_found("stream not exists"))
         }
+    }
+
+    /// Look up an existing forward under a read lock; if absent and
+    /// `auto_create` is true, create it outside of any lock and insert it
+    /// under a brief write lock. Closes a racily-created duplicate to avoid
+    /// leaking PeerForward resources.
+    async fn get_or_create_forward_for_operation(
+        &self,
+        stream: &str,
+        auto_create: bool,
+    ) -> Option<PeerForward> {
+        {
+            let stream_map = self.stream_map.read().await;
+            if let Some(forward) = stream_map.get(stream) {
+                return Some(forward.clone());
+            }
+        }
+
+        if !auto_create {
+            return None;
+        }
+
+        let raw_forward = self.do_stream_create(stream.to_string()).await;
+        let mut stream_map = self.stream_map.write().await;
+        if let Some(existing) = stream_map.get(stream) {
+            let _ = raw_forward.close().await;
+            return Some(existing.clone());
+        }
+        stream_map.insert(stream.to_string(), raw_forward.clone());
+        Some(raw_forward)
     }
 
     pub async fn add_ice_candidate(
@@ -427,14 +453,12 @@ impl Manager {
         src: String,
         token: Option<String>,
     ) -> Result<()> {
-        let mut stream_map = self.stream_map.write().await;
-        let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whip {
-            let raw_forward = self.do_stream_create(stream.clone()).await;
-            stream_map.insert(stream.clone(), raw_forward.clone());
-            forward = Some(raw_forward);
-        }
-        drop(stream_map);
+        let forward = self
+            .get_or_create_forward_for_operation(
+                &stream,
+                self.config.effective_strategy(&stream).auto_create_whip,
+            )
+            .await;
 
         match forward {
             Some(forward) => forward.publish_pull(src, token).await,

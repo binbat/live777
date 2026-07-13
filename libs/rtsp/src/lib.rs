@@ -4,6 +4,7 @@ pub mod headers {
     pub use rtsp_types::headers::*;
 }
 
+pub mod auth;
 pub mod channels;
 #[cfg(feature = "client")]
 pub mod client;

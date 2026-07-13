@@ -39,7 +39,10 @@ pub async fn start_rtsp_server(
         listen_addr: config.listen,
         max_connections: config.max_connections,
         session_timeout: config.session_timeout,
-        enable_auth: false,
+        enable_auth: config.enable_auth,
+        username: config.username.clone(),
+        password: config.password.clone(),
+        realm: config.realm.clone(),
     };
 
     tokio::spawn(async move {
@@ -72,7 +75,13 @@ impl rtsp::server::SessionHandler for RtspHandler {
         // Recreate the stream so a new publisher always starts from a clean state.
         let _ = self.manager.stream_delete(stream_id.clone()).await;
         self.manager.stream_create(stream_id.clone()).await?;
-        let forward = self.manager.get_or_create_forward(&stream_id).await;
+        // stream_create already inserted the forward; get_forward is sufficient
+        // and avoids an unnecessary second insertion path.
+        let forward = self
+            .manager
+            .get_forward(&stream_id)
+            .await
+            .ok_or_else(|| anyhow!("Forward {} disappeared after create", stream_id))?;
 
         if let Some(video) = &media_info.video_codec {
             let codec = video_codec_to_rtc(video);
@@ -484,6 +493,14 @@ async fn wait_for_forward(
     wait_result
         .unwrap()
         .map_err(|_| anyhow!("Stream ready channel closed for {}", stream_id))?;
+
+    // The forward is now available. Remove the coordination entry so it does
+    // not linger for the lifetime of the stream; new pull clients will find
+    // the forward directly via manager.get_forward().
+    {
+        let mut map = stream_ready.write().await;
+        map.remove(stream_id);
+    }
 
     manager
         .get_forward(stream_id)
