@@ -1,6 +1,8 @@
 use anyhow::Result;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 
@@ -14,12 +16,17 @@ pub async fn handle_tcp_stream(
     data_to_stream_rx: UnboundedReceiver<(u8, Vec<u8>)>,
 ) -> Result<()> {
     let (read_half, write_half) = tokio::io::split(stream);
+    let writer = Arc::new(Mutex::new(write_half));
 
     info!("Starting TCP interleaved stream handler (mode: {:?})", mode);
 
-    let read_task = tokio::spawn(handle_read_stream(read_half, data_from_stream_tx));
+    let read_task = tokio::spawn(handle_read_stream(
+        read_half,
+        writer.clone(),
+        data_from_stream_tx,
+    ));
 
-    let write_task = tokio::spawn(handle_write_stream(write_half, data_to_stream_rx));
+    let write_task = tokio::spawn(handle_write_stream(writer, data_to_stream_rx));
 
     let (read_result, write_result) = tokio::join!(read_task, write_task);
 
@@ -39,7 +46,11 @@ pub async fn handle_tcp_stream(
     Ok(())
 }
 
-async fn handle_read_stream<R>(mut reader: R, tx: UnboundedSender<(u8, Vec<u8>)>) -> Result<()>
+async fn handle_read_stream<R>(
+    mut reader: R,
+    writer: Arc<Mutex<WriteHalf<TcpStream>>>,
+    tx: UnboundedSender<(u8, Vec<u8>)>,
+) -> Result<()>
 where
     R: AsyncReadExt + Unpin,
 {
@@ -95,14 +106,31 @@ where
 
                 if !buffer.is_empty() && buffer[0] != b'$' {
                     match try_parse_rtsp_message(&buffer)? {
-                        Some((consumed, true)) => {
+                        Some((consumed, true, _)) => {
                             info!("Received TEARDOWN in data stream, closing session");
                             buffer.drain(..consumed);
                             break;
                         }
-                        Some((consumed, false)) => {
+                        Some((consumed, false, Some(cseq))) => {
                             debug!(
-                                "Skipping non-TEARDOWN RTSP message in data stream ({} bytes)",
+                                "Responding to keep-alive RTSP message in data stream ({} bytes)",
+                                consumed
+                            );
+                            buffer.drain(..consumed);
+                            let response = build_keep_alive_response(cseq);
+                            let mut writer = writer.lock().await;
+                            if let Err(e) = writer.write_all(&response).await {
+                                error!("TCP keep-alive write error: {}", e);
+                                return Err(e.into());
+                            }
+                            if let Err(e) = writer.flush().await {
+                                error!("TCP keep-alive flush error: {}", e);
+                                return Err(e.into());
+                            }
+                        }
+                        Some((consumed, false, None)) => {
+                            debug!(
+                                "Skipping non-keep-alive RTSP message in data stream ({} bytes)",
                                 consumed
                             );
                             buffer.drain(..consumed);
@@ -169,35 +197,51 @@ fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>
     Ok(Some((channel, data, total_size)))
 }
 
-/// Parse an RTSP message from the buffer. Returns `Ok(Some((consumed, is_teardown)))`
-/// where `is_teardown` is true only for TEARDOWN requests. Non-TEARDOWN messages are
-/// consumed (drained) but do NOT break the read loop.
-fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<(usize, bool)>> {
+/// Parse an RTSP message from the buffer. Returns `Ok(Some((consumed, is_teardown, cseq)))`
+/// where `is_teardown` is true only for TEARDOWN requests and `cseq` is the request CSeq
+/// when the message is an OPTIONS or GET_PARAMETER keep-alive request.
+fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<(usize, bool, Option<u32>)>> {
     match rtsp_types::Message::<Vec<u8>>::parse(buffer) {
         Ok((msg, consumed)) => {
-            if let rtsp_types::Message::Request(req) = msg
-                && matches!(req.method(), rtsp_types::Method::Teardown)
-            {
-                return Ok(Some((consumed, true)));
+            if let rtsp_types::Message::Request(req) = msg {
+                if matches!(req.method(), rtsp_types::Method::Teardown) {
+                    return Ok(Some((consumed, true, None)));
+                }
+                let is_keep_alive = matches!(
+                    req.method(),
+                    rtsp_types::Method::Options | rtsp_types::Method::GetParameter
+                );
+                let cseq = if is_keep_alive {
+                    req.header(&rtsp_types::headers::CSEQ)
+                        .and_then(|h| h.as_str().parse().ok())
+                } else {
+                    None
+                };
+                return Ok(Some((consumed, false, cseq)));
             }
 
-            Ok(Some((consumed, false)))
+            Ok(Some((consumed, false, None)))
         }
         Err(rtsp_types::ParseError::Incomplete(_)) => Ok(None),
         Err(e) => {
             warn!("Failed to parse RTSP message: {:?}, skipping byte", e);
-            Ok(Some((1, false)))
+            Ok(Some((1, false, None)))
         }
     }
 }
 
-async fn handle_write_stream<W>(
-    mut writer: W,
+fn build_keep_alive_response(cseq: u32) -> Vec<u8> {
+    format!(
+        "RTSP/1.0 200 OK\r\nCSeq: {}\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD, GET_PARAMETER, SET_PARAMETER\r\nContent-Length: 0\r\n\r\n",
+        cseq
+    )
+    .into_bytes()
+}
+
+async fn handle_write_stream(
+    writer: Arc<Mutex<WriteHalf<TcpStream>>>,
     mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
-) -> Result<()>
-where
-    W: AsyncWriteExt + Unpin,
-{
+) -> Result<()> {
     let mut total_frames = 0u64;
     let mut total_bytes = 0u64;
 
@@ -219,6 +263,7 @@ where
             data.len()
         );
 
+        let mut writer = writer.lock().await;
         if let Err(e) = writer.write_all(&frame).await {
             error!("TCP write error: {}", e);
             return Err(e.into());
