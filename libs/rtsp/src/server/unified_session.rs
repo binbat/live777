@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::RwLock;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
@@ -29,13 +29,10 @@ pub struct PortUpdate {
 pub enum SessionEndpoint {
     /// PUSH mode: the server will forward incoming RTP/RTCP data to `rx`, and
     /// the application can send RTP/RTCP data back to the client on `tx`.
-    Push(
-        UnboundedReceiver<InterleavedData>,
-        UnboundedSender<InterleavedData>,
-    ),
+    Push(Receiver<InterleavedData>, Sender<InterleavedData>),
     /// PULL mode: the server expects the application to send RTP/RTCP data on
     /// this sender.
-    Pull(UnboundedSender<InterleavedData>),
+    Pull(Sender<InterleavedData>),
 }
 
 /// Application-provided handler for per-path RTSP sessions.
@@ -72,8 +69,8 @@ pub trait SessionHandler: Send + Sync + 'static {
 }
 
 enum ServerSide {
-    Push(UnboundedSender<InterleavedData>),
-    Pull(UnboundedReceiver<InterleavedData>),
+    Push(Sender<InterleavedData>),
+    Pull(Receiver<InterleavedData>),
 }
 
 pub struct RtspServerSession<H: SessionHandler> {
@@ -303,19 +300,22 @@ impl<H: SessionHandler> RtspServerSession<H> {
         media_info: MediaInfo,
         session_mode: SessionMode,
     ) -> Result<()> {
-        let (data_from_stream_tx, mut data_from_stream_rx) = unbounded_channel::<InterleavedData>();
-        let (data_to_stream_tx, data_to_stream_rx) = unbounded_channel::<InterleavedData>();
+        const DATA_CHANNEL_CAPACITY: usize = 1024;
+        let (data_from_stream_tx, mut data_from_stream_rx) =
+            channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
+        let (data_to_stream_tx, data_to_stream_rx) =
+            channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
 
         let (endpoint, server_side) = match session_mode {
             SessionMode::Push => {
-                let (tx, rx) = unbounded_channel::<InterleavedData>();
+                let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
                 (
                     SessionEndpoint::Push(rx, data_to_stream_tx.clone()),
                     ServerSide::Push(tx),
                 )
             }
             SessionMode::Pull => {
-                let (tx, rx) = unbounded_channel::<InterleavedData>();
+                let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
                 (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
             }
             SessionMode::Mixed => unreachable!("session mode must be resolved"),
@@ -340,7 +340,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
             ServerSide::Push(tx) => {
                 tokio::spawn(async move {
                     while let Some(data) = data_from_stream_rx.recv().await {
-                        if tx.send(data).is_err() {
+                        if tx.send(data).await.is_err() {
                             break;
                         }
                     }
@@ -352,7 +352,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
             ServerSide::Pull(mut rx) => {
                 tokio::spawn(async move {
                     while let Some(data) = rx.recv().await {
-                        if data_to_stream_tx.send(data).is_err() {
+                        if data_to_stream_tx.send(data).await.is_err() {
                             break;
                         }
                     }
@@ -379,17 +379,19 @@ impl<H: SessionHandler> RtspServerSession<H> {
         media_info: MediaInfo,
         session_mode: SessionMode,
     ) -> Result<()> {
-        let (data_to_stream_tx, data_to_stream_rx) = unbounded_channel::<InterleavedData>();
+        const DATA_CHANNEL_CAPACITY: usize = 1024;
+        let (data_to_stream_tx, data_to_stream_rx) =
+            channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
         let (endpoint, server_side) = match session_mode {
             SessionMode::Push => {
-                let (tx, rx) = unbounded_channel::<InterleavedData>();
+                let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
                 (
                     SessionEndpoint::Push(rx, data_to_stream_tx),
                     ServerSide::Push(tx),
                 )
             }
             SessionMode::Pull => {
-                let (tx, rx) = unbounded_channel::<InterleavedData>();
+                let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
                 (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
             }
             SessionMode::Mixed => unreachable!("session mode must be resolved"),
@@ -710,7 +712,7 @@ async fn run_udp_transfer(
     client_addr: SocketAddr,
     media_info: MediaInfo,
     server_side: ServerSide,
-    mut data_to_stream_rx: UnboundedReceiver<InterleavedData>,
+    mut data_to_stream_rx: Receiver<InterleavedData>,
     app_handler: Arc<dyn SessionHandler>,
     path: String,
     video_sockets: Option<(UdpSocket, UdpSocket)>,
@@ -739,7 +741,7 @@ async fn run_udp_transfer(
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 2048];
                     while let Ok((n, _)) = socket.recv_from(&mut buf).await {
-                        if tx.send((0, buf[..n].to_vec())).is_err() {
+                        if tx.send((0, buf[..n].to_vec())).await.is_err() {
                             break;
                         }
                     }
@@ -760,7 +762,7 @@ async fn run_udp_transfer(
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 2048];
                     while let Ok((n, _)) = socket.recv_from(&mut buf).await {
-                        if tx.send((2, buf[..n].to_vec())).is_err() {
+                        if tx.send((2, buf[..n].to_vec())).await.is_err() {
                             break;
                         }
                     }

@@ -177,7 +177,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
                             }
                             _ => continue,
                         };
-                        if tx.send((rtcp_channel, packet)).is_err() {
+                        if tx.send((rtcp_channel, packet)).await.is_err() {
                             debug!("RTCP feedback channel closed for {}", stream_id_for_rtcp);
                             break;
                         }
@@ -272,7 +272,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
                                 if Marshal::marshal_to(&*packet, &mut buf).is_err() {
                                     continue;
                                 }
-                                if tx_clone.send((rtp_channel, buf)).is_err() {
+                                if tx_clone.send((rtp_channel, buf)).await.is_err() {
                                     break;
                                 }
                             }
@@ -288,7 +288,10 @@ impl rtsp::server::SessionHandler for RtspHandler {
                                 if let Some(packet) = track.generate_sender_report() {
                                     match packet.marshal() {
                                         Ok(buf) => {
-                                            if tx_clone.send((rtcp_channel, buf.to_vec())).is_err()
+                                            if tx_clone
+                                                .send((rtcp_channel, buf.to_vec()))
+                                                .await
+                                                .is_err()
                                             {
                                                 break;
                                             }

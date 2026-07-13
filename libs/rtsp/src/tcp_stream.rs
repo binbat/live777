@@ -3,18 +3,72 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::constants::buffer;
 use crate::types::SessionMode;
 
-pub async fn handle_tcp_stream(
+pub type InterleavedFrame = (u8, Vec<u8>);
+
+#[async_trait::async_trait]
+pub(crate) trait InterleavedSender: Send + Sync {
+    async fn send_interleaved(
+        &self,
+        data: InterleavedFrame,
+    ) -> Result<(), SendError<InterleavedFrame>>;
+}
+
+#[async_trait::async_trait]
+impl InterleavedSender for Sender<InterleavedFrame> {
+    async fn send_interleaved(
+        &self,
+        data: InterleavedFrame,
+    ) -> Result<(), SendError<InterleavedFrame>> {
+        self.send(data).await
+    }
+}
+
+#[async_trait::async_trait]
+impl InterleavedSender for UnboundedSender<InterleavedFrame> {
+    async fn send_interleaved(
+        &self,
+        data: InterleavedFrame,
+    ) -> Result<(), SendError<InterleavedFrame>> {
+        self.send(data)
+    }
+}
+
+#[async_trait::async_trait]
+pub(crate) trait InterleavedReceiver: Send {
+    async fn recv_interleaved(&mut self) -> Option<InterleavedFrame>;
+}
+
+#[async_trait::async_trait]
+impl InterleavedReceiver for Receiver<InterleavedFrame> {
+    async fn recv_interleaved(&mut self) -> Option<InterleavedFrame> {
+        self.recv().await
+    }
+}
+
+#[async_trait::async_trait]
+impl InterleavedReceiver for UnboundedReceiver<InterleavedFrame> {
+    async fn recv_interleaved(&mut self) -> Option<InterleavedFrame> {
+        self.recv().await
+    }
+}
+
+pub(crate) async fn handle_tcp_stream<S, R>(
     stream: TcpStream,
     mode: SessionMode,
-    data_from_stream_tx: UnboundedSender<(u8, Vec<u8>)>,
-    data_to_stream_rx: UnboundedReceiver<(u8, Vec<u8>)>,
-) -> Result<()> {
+    data_from_stream_tx: S,
+    data_to_stream_rx: R,
+) -> Result<()>
+where
+    S: InterleavedSender + 'static,
+    R: InterleavedReceiver + 'static,
+{
     let (read_half, write_half) = tokio::io::split(stream);
     let writer = Arc::new(Mutex::new(write_half));
 
@@ -46,13 +100,14 @@ pub async fn handle_tcp_stream(
     Ok(())
 }
 
-async fn handle_read_stream<R>(
+async fn handle_read_stream<R, S>(
     mut reader: R,
     writer: Arc<Mutex<WriteHalf<TcpStream>>>,
-    tx: UnboundedSender<(u8, Vec<u8>)>,
+    tx: S,
 ) -> Result<()>
 where
     R: AsyncReadExt + Unpin,
+    S: InterleavedSender,
 {
     let mut buffer = Vec::with_capacity(buffer::TCP_READ_BUFFER_SIZE);
     let mut temp_buffer = vec![0u8; buffer::TCP_READ_BUFFER_SIZE];
@@ -94,7 +149,7 @@ where
                         consumed
                     );
 
-                    if let Err(e) = tx.send((channel, data)) {
+                    if let Err(e) = tx.send_interleaved((channel, data)).await {
                         error!("Failed to forward data from stream: {}", e);
                         return Err(e.into());
                     }
@@ -238,14 +293,14 @@ fn build_keep_alive_response(cseq: u32) -> Vec<u8> {
     .into_bytes()
 }
 
-async fn handle_write_stream(
-    writer: Arc<Mutex<WriteHalf<TcpStream>>>,
-    mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
-) -> Result<()> {
+async fn handle_write_stream<R>(writer: Arc<Mutex<WriteHalf<TcpStream>>>, mut rx: R) -> Result<()>
+where
+    R: InterleavedReceiver,
+{
     let mut total_frames = 0u64;
     let mut total_bytes = 0u64;
 
-    while let Some((channel, data)) = rx.recv().await {
+    while let Some((channel, data)) = rx.recv_interleaved().await {
         if data.len() > buffer::MAX_FRAME_SIZE {
             error!(
                 "Frame too large to send: {} bytes (max: {}), dropping",
