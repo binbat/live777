@@ -184,19 +184,39 @@ impl Handler {
     }
 
     fn parse_client_ports(&self, transport_str: &str) -> Result<(u16, u16)> {
-        let client_ports: Vec<&str> = transport_str
-            .split("client_port=")
-            .nth(1)
-            .and_then(|s| s.split(';').next())
-            .ok_or_else(|| anyhow!("Missing client_port"))?
-            .split('-')
-            .collect();
+        let value = transport_str
+            .split(';')
+            .map(str::trim)
+            .find(|param| {
+                param
+                    .split('=')
+                    .next()
+                    .map(str::trim)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("client_port"))
+            })
+            .and_then(|param| param.split('=').nth(1))
+            .ok_or_else(|| anyhow!("Missing client_port in Transport header"))?
+            .trim();
 
-        if client_ports.len() != 2 {
-            return Err(anyhow!("Invalid port format"));
+        let mut ports = value.split('-').map(str::trim);
+        let rtp_port = ports
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("Missing RTP port in client_port"))?
+            .parse::<u16>()
+            .map_err(|e| anyhow!("Invalid RTP port in client_port: {}", e))?;
+        let rtcp_port = ports
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("Missing RTCP port in client_port"))?
+            .parse::<u16>()
+            .map_err(|e| anyhow!("Invalid RTCP port in client_port: {}", e))?;
+
+        if ports.next().is_some() {
+            return Err(anyhow!("Too many ports in client_port"));
         }
 
-        Ok((client_ports[0].parse()?, client_ports[1].parse()?))
+        Ok((rtp_port, rtcp_port))
     }
 
     async fn get_or_create_session(&mut self) -> String {
@@ -326,4 +346,56 @@ fn summarize_sdp_media(sdp: &[u8]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn dummy_handler() -> Handler {
+        Handler::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            Arc::new(RwLock::new(HashMap::new())),
+            ServerConfig::default(),
+        )
+    }
+
+    #[test]
+    fn parse_client_ports_standard_format() {
+        let h = dummy_handler();
+        assert_eq!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port=5004-5005;server_port=6004-6005")
+                .unwrap(),
+            (5004, 5005)
+        );
+    }
+
+    #[test]
+    fn parse_client_ports_with_whitespace() {
+        let h = dummy_handler();
+        assert_eq!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port = 5004 - 5005")
+                .unwrap(),
+            (5004, 5005)
+        );
+    }
+
+    #[test]
+    fn parse_client_ports_missing_rtcp() {
+        let h = dummy_handler();
+        assert!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port=5004")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_client_ports_extra_ports() {
+        let h = dummy_handler();
+        assert!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port=5004-5005-5006")
+                .is_err()
+        );
+    }
 }
