@@ -18,6 +18,7 @@ use crate::forward::track::PublishTrackRemote;
 use crate::stream::manager::Manager;
 use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
 use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+use rtsp::ServerConfig;
 
 const DEFAULT_STREAM: &str = "rtsp";
 
@@ -29,12 +30,19 @@ pub async fn start_rtsp_server(
     info!("Starting RTSP server on {}", config.listen);
     let listen_addr = format_bind_addr(config.listen);
     let handler = RtspHandler { manager };
+    let server_config = ServerConfig {
+        listen_addr: config.listen,
+        max_connections: config.max_connections,
+        session_timeout: config.session_timeout,
+        enable_auth: false,
+    };
 
     tokio::spawn(async move {
         if let Err(e) = rtsp::setup_rtsp_server_with_handler(
             &listen_addr,
             rtsp::SessionMode::Mixed,
             handler,
+            server_config,
             cancel,
         )
         .await

@@ -529,6 +529,14 @@ pub struct RtspConfig {
     /// (ANNOUNCE/RECORD) and pull (DESCRIBE/PLAY) sessions.
     #[serde(default = "default_rtsp_listen")]
     pub listen: std::net::SocketAddr,
+    /// Maximum number of concurrent RTSP sessions. New connections are refused
+    /// when this limit is reached.
+    #[serde(default = "default_rtsp_max_connections")]
+    pub max_connections: usize,
+    /// RTSP session timeout in seconds. Sessions without activity are cleaned
+    /// up after this duration.
+    #[serde(default = "default_rtsp_session_timeout")]
+    pub session_timeout: u64,
 }
 
 #[cfg(feature = "rtsp")]
@@ -536,6 +544,8 @@ impl Default for RtspConfig {
     fn default() -> Self {
         Self {
             listen: default_rtsp_listen(),
+            max_connections: default_rtsp_max_connections(),
+            session_timeout: default_rtsp_session_timeout(),
         }
     }
 }
@@ -543,4 +553,14 @@ impl Default for RtspConfig {
 #[cfg(feature = "rtsp")]
 fn default_rtsp_listen() -> std::net::SocketAddr {
     std::net::SocketAddr::from_str("0.0.0.0:8554").unwrap()
+}
+
+#[cfg(feature = "rtsp")]
+fn default_rtsp_max_connections() -> usize {
+    rtsp::server_constants::DEFAULT_MAX_CONNECTIONS
+}
+
+#[cfg(feature = "rtsp")]
+fn default_rtsp_session_timeout() -> u64 {
+    rtsp::server_constants::DEFAULT_SESSION_TIMEOUT
 }

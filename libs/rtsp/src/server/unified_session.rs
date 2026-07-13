@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::RwLock;
@@ -120,6 +121,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         loop {
             let request = self.read_request().await?;
             self.handler.update_cseq(&request);
+            self.handler.update_activity().await;
 
             match request.method() {
                 Method::Options => {
@@ -836,14 +838,15 @@ pub async fn setup_rtsp_server_with_handler<H>(
     listen_addr: &str,
     mode: SessionMode,
     handler: H,
+    config: ServerConfig,
     cancel: CancellationToken,
 ) -> Result<()>
 where
     H: SessionHandler,
 {
     info!(
-        "Setting up RTSP server: addr={}, mode={:?}",
-        listen_addr, mode
+        "Setting up RTSP server: addr={}, mode={:?}, max_connections={}",
+        listen_addr, mode, config.max_connections
     );
 
     let listener = TcpListener::bind(listen_addr).await?;
@@ -851,7 +854,33 @@ where
     info!("RTSP server listening on {}", local_addr);
 
     let handler = Arc::new(handler);
+    let sessions: Arc<RwLock<HashMap<String, ServerSession>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let config = Arc::new(config);
     let mut connection_count = 0u32;
+
+    let cleanup_sessions = sessions.clone();
+    let cleanup_cancel = cancel.child_token();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = cleanup_cancel.cancelled() => return,
+            }
+            let mut sessions = cleanup_sessions.write().await;
+            let now = std::time::Instant::now();
+            sessions.retain(|id, session| {
+                if session.is_expired(now) {
+                    tracing::info!("Removing expired RTSP session: {}", id);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    });
 
     loop {
         tokio::select! {
@@ -862,17 +891,25 @@ where
             res = listener.accept() => {
                 match res {
                     Ok((socket, addr)) => {
+                        let active = sessions.read().await.len();
+                        if active >= config.max_connections {
+                            warn!(
+                                "RTSP server at max connections ({}/{}), rejecting {}",
+                                active, config.max_connections, addr
+                            );
+                            drop(socket);
+                            continue;
+                        }
+
                         connection_count += 1;
                         let conn_id = connection_count;
                         info!("RTSP client #{} connected from {}", conn_id, addr);
 
-                        let sessions = Arc::new(RwLock::new(HashMap::new()));
-                        let config = ServerConfig::default();
                         let session = RtspServerSession::new(
                             socket,
                             addr,
-                            sessions,
-                            config,
+                            sessions.clone(),
+                            (*config).clone(),
                             mode,
                             handler.clone(),
                         );

@@ -284,6 +284,15 @@ impl Handler {
             self.cseq = cseq_header.as_str().parse().unwrap_or(0);
         }
     }
+
+    pub async fn update_activity(&self) {
+        if let Some(session_id) = &self.session_id {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.update_activity();
+            }
+        }
+    }
 }
 
 fn summarize_sdp_media(sdp: &[u8]) -> String {
