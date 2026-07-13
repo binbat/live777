@@ -40,6 +40,8 @@ use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
+const CLOSED_SESSION_TTL_MS: i64 = 30_000;
+
 fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
     vec![
         RTCPFeedback {
@@ -106,15 +108,17 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 .await
                 .clone()
                 .and_then(|w| w.upgrade());
+            if let Ok(mut s) = self.connection_state.write() {
+                *s = state;
+            }
+            let _ = self.connection_state_tx.send(state);
+            internal.send_event().await;
+
             if let Some(pc) = pc {
                 info!(
                     "[{}] [publish] connection state changed: {}",
                     internal.stream, state
                 );
-                if let Ok(mut s) = self.connection_state.write() {
-                    *s = state;
-                }
-                let _ = self.connection_state_tx.send(state);
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
@@ -237,19 +241,22 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
             *s = state;
         }
         let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
-        if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
-            info!(
-                "[{}] [subscribe] connection state changed: {}",
-                internal.stream, state
-            );
-            match state {
-                RTCPeerConnectionState::Failed => {
-                    let _ = pc.close().await;
+        if let Some(internal) = self.internal.upgrade() {
+            internal.send_event().await;
+            if let Some(pc) = pc {
+                info!(
+                    "[{}] [subscribe] connection state changed: {}",
+                    internal.stream, state
+                );
+                match state {
+                    RTCPeerConnectionState::Failed => {
+                        let _ = pc.close().await;
+                    }
+                    RTCPeerConnectionState::Closed => {
+                        let _ = internal.remove_subscribe(pc).await;
+                    }
+                    _ => {}
                 }
-                RTCPeerConnectionState::Closed => {
-                    let _ = internal.remove_subscribe(pc).await;
-                }
-                _ => {}
             }
         }
     }
@@ -654,6 +661,8 @@ pub(crate) struct PeerForwardInternal {
     pub(crate) publish_tracks_change: broadcast::Sender<()>,
     pub(crate) publish_rtcp_channel: broadcast::Sender<(RtcpMessage, u32)>,
     pub(crate) subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
+    closed_publish_sessions: RwLock<Vec<SessionInfo>>,
+    closed_subscribe_sessions: RwLock<Vec<SessionInfo>>,
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
     ice_udp_addrs: Vec<SocketAddr>,
@@ -697,6 +706,8 @@ impl PeerForwardInternal {
             publish_tracks_change: new_broadcast_channel!(16),
             publish_rtcp_channel: new_broadcast_channel!(48),
             subscribe_group: RwLock::new(Vec::new()),
+            closed_publish_sessions: RwLock::new(Vec::new()),
+            closed_subscribe_sessions: RwLock::new(Vec::new()),
             data_channel_forward: DataChannelForward {
                 publish: new_broadcast_channel!(1024),
                 subscribe: new_broadcast_channel!(1024),
@@ -734,6 +745,8 @@ impl PeerForwardInternal {
             publish_tracks_change: new_broadcast_channel!(16),
             publish_rtcp_channel: new_broadcast_channel!(48),
             subscribe_group: RwLock::new(Vec::new()),
+            closed_publish_sessions: RwLock::new(Vec::new()),
+            closed_subscribe_sessions: RwLock::new(Vec::new()),
             data_channel_forward: DataChannelForward {
                 publish: new_broadcast_channel!(1024),
                 subscribe: new_broadcast_channel!(1024),
@@ -785,6 +798,7 @@ impl PeerForwardInternal {
                 Some(SessionInfo {
                     id: "virtual-source".to_string(),
                     create_at: self.create_at,
+                    leave_at: 0,
                     state: RTCPeerConnectionState::Connected,
                     cascade: None,
                     has_data_channel: false,
@@ -793,12 +807,42 @@ impl PeerForwardInternal {
                 publish_session_info
             };
 
+        let now = Utc::now().timestamp_millis();
+        let closed_publish_sessions = self.closed_publish_sessions.read().await;
+        let recent_closed_publish: Vec<SessionInfo> = closed_publish_sessions
+            .iter()
+            .filter(|s| now - s.leave_at < CLOSED_SESSION_TTL_MS)
+            .cloned()
+            .collect();
+        drop(closed_publish_sessions);
+
+        let closed_subscribe_sessions = self.closed_subscribe_sessions.read().await;
+        let recent_closed_subscribe: Vec<SessionInfo> = closed_subscribe_sessions
+            .iter()
+            .filter(|s| now - s.leave_at < CLOSED_SESSION_TTL_MS)
+            .cloned()
+            .collect();
+        drop(closed_subscribe_sessions);
+
+        for closed in recent_closed_subscribe.iter() {
+            if !subscribe_session_infos.iter().any(|s| s.id == closed.id) {
+                subscribe_session_infos.push(closed.clone());
+            }
+        }
+
+        let final_publish_session_info = effective_publish_session_info.or_else(|| {
+            recent_closed_publish
+                .iter()
+                .max_by_key(|s| s.leave_at)
+                .cloned()
+        });
+
         ForwardInfo {
             id: self.stream.clone(),
             create_at: self.create_at,
             publish_leave_at: *self.publish_leave_at.read().await,
             subscribe_leave_at: *self.subscribe_leave_at.read().await,
-            publish_session_info: effective_publish_session_info,
+            publish_session_info: final_publish_session_info,
             subscribe_session_infos,
             codecs: publish_tracks.iter().map(|track| track.codec()).collect(),
             has_virtual_publisher,
@@ -840,17 +884,41 @@ impl PeerForwardInternal {
     }
 
     pub(crate) async fn remove_peer(&self, id: String) -> Result<bool> {
-        let publish = self.publish.read().await;
-        if publish.is_some() && publish.as_ref().unwrap().id == id {
-            publish.as_ref().unwrap().peer.close().await?;
-            return Ok(true);
+        // ── Publish: atomic check-and-take under write lock ──
+        {
+            let mut publish = self.publish.write().await;
+            if let Some(ref p) = *publish {
+                if p.id == id {
+                    let mut session_info = p.info().await;
+                    session_info.state = RTCPeerConnectionState::Closed;
+                    session_info.leave_at = Utc::now().timestamp_millis();
+                    let old = publish.take().unwrap();
+                    drop(publish);
+                    let _ = old.peer.close().await;
+                    self.do_remove_publish_cleanup(session_info).await;
+                    return Ok(true);
+                }
+            }
         }
 
-        let subscribe_group = self.subscribe_group.read().await;
-        for subscribe in subscribe_group.iter() {
-            if subscribe.id == id {
-                subscribe.peer.close().await?;
-                break;
+        // ── Subscribe: atomic check-and-remove under write lock ──
+        {
+            let mut subscribe_group = self.subscribe_group.write().await;
+            let pos = subscribe_group.iter().position(|s| s.id == id);
+            if let Some(i) = pos {
+                let old = subscribe_group.remove(i);
+                let is_empty = subscribe_group.is_empty();
+                drop(subscribe_group);
+                let reforward = self.do_remove_subscribe_cleanup(&old).await;
+                let _ = old.peer.close().await;
+                if is_empty {
+                    *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
+                }
+                self.send_event().await;
+                if reforward {
+                    self.send_event().await;
+                }
+                return Ok(true);
             }
         }
 
@@ -1051,18 +1119,34 @@ impl PeerForwardInternal {
     }
 
     pub(crate) async fn remove_publish(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
-        {
+        let closed_session = {
             let mut publish = self.publish.write().await;
             if publish.is_none() {
-                return Err(AppError::throw("publish is none"));
+                // Already removed (e.g. the Closed callback fired before this
+                // manual call). Treat as success so callers don't see a spurious
+                // error from a benign double-remove.
+                return Ok(());
             }
 
             if publish.as_ref().unwrap().id != get_peer_id(&peer) {
                 return Err(AppError::throw("publish not myself"));
             }
 
+            let mut session_info = publish.as_ref().unwrap().info().await;
+            session_info.state = RTCPeerConnectionState::Closed;
+            session_info.leave_at = Utc::now().timestamp_millis();
             *publish = None;
-        }
+            session_info
+        };
+
+        self.do_remove_publish_cleanup(closed_session).await;
+        Ok(())
+    }
+
+    /// Shared cleanup after a publish session has been taken out of `self.publish`.
+    /// Callers must have already set `self.publish` to `None` and prepared the
+    /// `SessionInfo` with the final state and `leave_at` timestamp.
+    async fn do_remove_publish_cleanup(&self, closed_session: SessionInfo) {
         *self.publish_peer_state_rx.lock().await = None;
 
         {
@@ -1076,12 +1160,15 @@ impl PeerForwardInternal {
             *publish_leave_at = Utc::now().timestamp_millis();
         }
 
+        {
+            let mut closed_publish_sessions = self.closed_publish_sessions.write().await;
+            closed_publish_sessions.push(closed_session);
+        }
+
         info!("[{}] [publish] set none", self.stream);
         metrics::PUBLISH.dec();
 
         self.send_event().await;
-
-        Ok(())
     }
 
     pub async fn publish_is_svc(&self) -> bool {
@@ -1584,55 +1671,98 @@ impl PeerForwardInternal {
     }
 
     pub async fn remove_subscribe(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
-        let mut flag = false;
-        #[allow(unused_mut)]
-        let mut reforward_flat = false;
         let session = get_peer_id(&peer);
-
-        {
+        let (found, reforward_flat, is_empty) = {
             let mut subscribe_peers = self.subscribe_group.write().await;
-            for i in 0..subscribe_peers.len() {
-                let subscribe = &mut subscribe_peers[i];
-                if subscribe.id == session {
-                    flag = true;
-                    metrics::SUBSCRIBE.dec();
-
-                    #[cfg(feature = "cascade")]
-                    if let Some(cascade) = subscribe.cascade.clone() {
-                        reforward_flat = true;
-                        metrics::REFORWARD.dec();
-
-                        let client = Client::build(
-                            cascade.target_url.clone().unwrap(),
-                            cascade.session_url.clone(),
-                            Client::get_authorization_header_map(cascade.token.clone()),
-                        );
-
-                        tokio::spawn(async move {
-                            let _ = client.remove_resource().await;
-                        });
-                    }
-
-                    subscribe_peers.remove(i);
-                    break;
-                }
+            let pos = subscribe_peers.iter().position(|s| s.id == session);
+            if let Some(i) = pos {
+                let old = subscribe_peers.remove(i);
+                let is_empty = subscribe_peers.is_empty();
+                drop(subscribe_peers);
+                let reforward = self.do_remove_subscribe_cleanup(&old).await;
+                (true, reforward, is_empty)
+            } else {
+                (false, false, false)
             }
+        };
 
-            if subscribe_peers.is_empty() {
+        if found {
+            if is_empty {
                 *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
             }
-        }
-
-        if flag {
             self.send_event().await;
-
             if reforward_flat {
                 self.send_event().await;
             }
-
             Ok(())
         } else {
-            Err(AppError::throw("not found session"))
+            // Already removed — idempotent no-op (see remove_publish).
+            Ok(())
+        }
+    }
+
+    /// Shared cleanup after a subscribe session has been removed from
+    /// `self.subscribe_group`.  The caller must have already removed the entry
+    /// from the vec (so the write lock is released before this runs).
+    ///
+    /// Returns `true` when a cascade reforward was torn down (the caller should
+    /// emit an extra `send_event` for it).
+    async fn do_remove_subscribe_cleanup(&self, subscribe: &SubscribeRTCPeerConnection) -> bool {
+        #[allow(unused_mut)]
+        let mut reforward_flat = false;
+
+        #[cfg(feature = "cascade")]
+        if let Some(cascade) = subscribe.cascade.clone() {
+            reforward_flat = true;
+            metrics::REFORWARD.dec();
+
+            let client = Client::build(
+                cascade.target_url.clone().unwrap(),
+                cascade.session_url.clone(),
+                Client::get_authorization_header_map(cascade.token.clone()),
+            );
+
+            tokio::spawn(async move {
+                let _ = client.remove_resource().await;
+            });
+        }
+
+        let mut session_info = subscribe.info().await;
+        session_info.state = RTCPeerConnectionState::Closed;
+        session_info.leave_at = Utc::now().timestamp_millis();
+
+        {
+            let mut closed_subscribe_sessions = self.closed_subscribe_sessions.write().await;
+            closed_subscribe_sessions.push(session_info);
+        }
+
+        metrics::SUBSCRIBE.dec();
+        reforward_flat
+    }
+
+    pub(crate) async fn cleanup_closed_sessions(&self) {
+        let now = Utc::now().timestamp_millis();
+        let mut removed = false;
+        {
+            let mut closed_publish_sessions = self.closed_publish_sessions.write().await;
+            let before = closed_publish_sessions.len();
+            closed_publish_sessions.retain(|s| now - s.leave_at < CLOSED_SESSION_TTL_MS);
+            if closed_publish_sessions.len() != before {
+                removed = true;
+            }
+        }
+        {
+            let mut closed_subscribe_sessions = self.closed_subscribe_sessions.write().await;
+            let before = closed_subscribe_sessions.len();
+            closed_subscribe_sessions.retain(|s| now - s.leave_at < CLOSED_SESSION_TTL_MS);
+            if closed_subscribe_sessions.len() != before {
+                removed = true;
+            }
+        }
+        // Purging an expired closed session changes the snapshot, so push an
+        // event so SSE clients drop it instead of showing a stale ghost row.
+        if removed {
+            self.send_event().await;
         }
     }
 
@@ -1659,6 +1789,7 @@ impl PeerForwardInternal {
     }
 
     async fn send_event(&self) {
+        trace!("[{}] send forward event", self.stream);
         let _ = self.event_sender.send(ForwardEvent {
             stream_id: self.stream.clone(),
         });

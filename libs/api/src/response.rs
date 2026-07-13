@@ -37,6 +37,7 @@ pub struct PubSub {
 pub struct Session {
     pub id: String,
     pub created_at: i64,
+    pub leave_at: i64,
     pub state: RTCPeerConnectionState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeInfo>,

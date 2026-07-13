@@ -31,7 +31,6 @@ node_modules
 dist
 dist-ssr
 *.local
-AGENTS.md
 .agents/
 
 # Editor directories and files

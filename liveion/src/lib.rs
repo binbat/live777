@@ -43,8 +43,9 @@ pub async fn serve<F>(cfg: Config, listener: TcpListener, signal: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    let cancel = CancellationToken::new();
     let app_state = AppState {
-        stream_manager: Arc::new(Manager::new(cfg.clone()).await),
+        stream_manager: Arc::new(Manager::new(cfg.clone(), cancel.clone()).await),
         config: cfg.clone(),
     };
 
@@ -125,8 +126,6 @@ where
                 .on_failure(tower_http::trace::DefaultOnFailure::new().level(Level::INFO)),
         )
         .fallback(static_handler);
-
-    let cancel = CancellationToken::new();
 
     #[cfg(feature = "net4mqtt")]
     {

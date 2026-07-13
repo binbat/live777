@@ -47,6 +47,7 @@ impl From<crate::forward::message::SessionInfo> for api::response::Session {
         api::response::Session {
             id: value.id,
             created_at: value.create_at,
+            leave_at: value.leave_at,
             state: convert_connect_state(value.state),
             cascade: value.cascade.map(|reforward| {
                 #[cfg(feature = "cascade")]

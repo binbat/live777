@@ -70,6 +70,7 @@ export function Liveion() {
 
         return (
             <StreamsTable
+                streamsSSEUrl={api.STREAMS_SSE_URL}
                 showCascade={cascadeAvailable}
                 features={{ debugger: true, player: true, recording: recorderAvailable, autoDetectRecording: false, recordingPlayback: recorderAvailable }}
             />

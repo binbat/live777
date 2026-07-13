@@ -170,6 +170,10 @@ impl PeerForward {
         &self.internal.strategy
     }
 
+    pub(crate) async fn cleanup_closed_sessions(&self) {
+        self.internal.cleanup_closed_sessions().await;
+    }
+
     #[cfg(feature = "source")]
     pub async fn get_subscribe_peer(&self, session_id: &str) -> Option<Arc<dyn PeerConnection>> {
         let subscribe_group = self.internal.subscribe_group.read().await;

@@ -26,7 +26,7 @@ export function deleteStream(streamId: string) {
     return w.url(`/api/streams/${streamId}`).delete().res();
 }
 
-type SessionConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed';
+export type SessionConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed';
 
 export interface Stream {
     id: string;
@@ -44,6 +44,7 @@ export interface Stream {
 export interface Session {
     id: string;
     createdAt: number;
+    leaveAt: number;
     state: SessionConnectionState;
     cascade?: {
         sourceUrl?: string;
@@ -61,6 +62,13 @@ export interface Cascade {
 
 export function getStreams() {
     return w.url('/api/streams/').get().json<Stream[]>();
+}
+
+export const STREAMS_SSE_URL = '/api/sse/streams';
+
+export function parseStreamsSSE(data: string): Stream[] {
+    const streams = JSON.parse(data) as Stream[];
+    return streams.sort((a, b) => a.createdAt - b.createdAt);
 }
 
 export function cascade(streamId: string, params: Cascade) {

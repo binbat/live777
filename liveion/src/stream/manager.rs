@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
@@ -29,6 +30,7 @@ pub struct Manager {
     stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
     config: ManagerConfig,
     event_sender: broadcast::Sender<Event>,
+    cancel: CancellationToken,
     #[cfg(feature = "source")]
     pub source_manager: SourceManager,
 }
@@ -36,18 +38,27 @@ pub struct Manager {
 pub type Response = (RTCSessionDescription, String);
 
 impl Manager {
-    pub async fn new(config: Config) -> Self {
+    pub async fn new(config: Config, cancel: CancellationToken) -> Self {
         let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         let send = new_broadcast_channel!(4);
 
-        tokio::spawn(Self::publish_check_tick(stream_map.clone(), send.clone()));
-        tokio::spawn(Self::subscribe_check_tick(stream_map.clone(), send.clone()));
+        tokio::spawn(Self::publish_check_tick(
+            stream_map.clone(),
+            send.clone(),
+            cancel.clone(),
+        ));
+        tokio::spawn(Self::subscribe_check_tick(
+            stream_map.clone(),
+            send.clone(),
+            cancel.clone(),
+        ));
 
         Manager {
             stream_map,
             config: cfg,
             event_sender: send,
+            cancel,
             #[cfg(feature = "source")]
             source_manager: SourceManager::new(),
         }
@@ -56,12 +67,18 @@ impl Manager {
     async fn publish_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
         event_sender: broadcast::Sender<Event>,
+        cancel: CancellationToken,
     ) {
         loop {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                _ = cancel.cancelled() => return,
+            }
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
+                forward.cleanup_closed_sessions().await;
+
                 let timeout = forward.strategy().auto_delete_whip.0;
                 if timeout < 0 {
                     continue;
@@ -116,12 +133,18 @@ impl Manager {
     async fn subscribe_check_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
         event_sender: broadcast::Sender<Event>,
+        cancel: CancellationToken,
     ) {
         loop {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                _ = cancel.cancelled() => return,
+            }
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
+                // Closed-session cleanup runs in publish_check_tick only, so we
+                // don't duplicate the work (and the resulting events) each tick.
                 let timeout = forward.strategy().auto_delete_whep.0;
                 if timeout < 0 {
                     continue;
@@ -178,6 +201,7 @@ impl Manager {
         hook_event: broadcast::Sender<Event>,
     ) {
         while let Ok(event) = stream_event.recv().await {
+            trace!("forward event for stream {}", event.stream_id);
             let _ = hook_event.send(Event::Forward(event));
         }
     }
@@ -475,6 +499,7 @@ impl Manager {
         let (send, recv) = tokio::sync::mpsc::channel(64);
         let mut event_recv = self.event_sender.subscribe();
         let stream_map = self.stream_map.clone();
+        let cancel = self.cancel.clone();
         tokio::spawn(async move {
             let mut last_sent: Option<Vec<api::response::Stream>> = None;
 
@@ -488,6 +513,7 @@ impl Manager {
                 if last_sent.as_ref() == Some(&infos) {
                     return true;
                 }
+                trace!("sse send snapshot with {} streams", infos.len());
                 *last_sent = Some(infos.clone());
                 send.send(infos).await.is_ok()
             }
@@ -497,15 +523,22 @@ impl Manager {
                 return;
             }
 
-            while let Ok(event) = event_recv.recv().await {
-                let stream = match event {
-                    Event::Stream(val) => val.stream.stream,
-                    Event::Forward(val) => val.stream_id,
-                };
-                if (streams.is_empty() || streams.contains(&stream))
-                    && !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await
-                {
-                    break;
+            loop {
+                tokio::select! {
+                    Ok(event) = event_recv.recv() => {
+                        let stream = match event {
+                            Event::Stream(val) => val.stream.stream,
+                            Event::Forward(val) => val.stream_id,
+                        };
+                        if (streams.is_empty() || streams.contains(&stream))
+                            && !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await
+                        {
+                            break;
+                        }
+                    }
+                    _ = cancel.cancelled() => {
+                        break;
+                    }
                 }
             }
         });

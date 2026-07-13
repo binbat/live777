@@ -42,6 +42,7 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                         <span>ID</span>
                         <span>State</span>
                         <span>Creation Time</span>
+                        <span>Leave Time</span>
                         <span>Operation</span>
                     </Table.Head>
                     <Table.Body>
@@ -50,9 +51,10 @@ export const ClientsDialog = forwardRef<IClientsDialog, Props>((props: Props, re
                                 <span>{c.id + (c.reforward ? '(reforward)' : '')}</span>
                                 <span>{c.state}</span>
                                 <span>{formatTime(c.createdAt)}</span>
-                                <Button size="sm" color="error" onClick={() => handleKickClient(props.id, c.id)}>Kick</Button>
+                                <span>{c.leaveAt ? formatTime(c.leaveAt) : '-'}</span>
+                                <Button size="sm" color="error" onClick={() => handleKickClient(props.id, c.id)} disabled={c.state === 'closed'}>Kick</Button>
                             </Table.Row>
-                        ): <tr><td colspan={4} className="text-center">N/A</td></tr>}
+                        ): <tr><td colspan={5} className="text-center">N/A</td></tr>}
                     </Table.Body>
                 </Table>
             </Modal.Body>
