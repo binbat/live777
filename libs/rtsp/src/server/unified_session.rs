@@ -53,13 +53,16 @@ pub trait SessionHandler: Send + Sync + 'static {
     async fn on_describe(&self, path: String) -> Result<Vec<u8>>;
 
     /// Called when the RTSP session has been established (after PLAY/RECORD).
-    /// The server provides a [`SessionEndpoint`] matching the session mode.
+    /// The server provides a [`SessionEndpoint`] matching the session mode and
+    /// a session-scoped [`CancellationToken`] that fires on TEARDOWN or server
+    /// shutdown, allowing the handler to stop spawned tasks cleanly.
     async fn on_session(
         &self,
         path: String,
         mode: SessionMode,
         media_info: MediaInfo,
         endpoint: SessionEndpoint,
+        cancel: CancellationToken,
     ) -> Result<()>;
 
     /// Called for every incoming RTCP packet (UDP RTCP port or TCP interleaved
@@ -83,6 +86,9 @@ pub struct RtspServerSession<H: SessionHandler> {
     read_buffer: Vec<u8>,
     video_udp_sockets: Option<(UdpSocket, UdpSocket)>,
     audio_udp_sockets: Option<(UdpSocket, UdpSocket)>,
+    /// Server-level cancellation token. Made a child of this so that server
+    /// shutdown propagates into all session data tasks.
+    cancel: CancellationToken,
 }
 
 impl<H: SessionHandler> RtspServerSession<H> {
@@ -93,6 +99,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         config: ServerConfig,
         mode: SessionMode,
         app_handler: Arc<H>,
+        cancel: CancellationToken,
     ) -> Self {
         Self {
             handler: Handler::new(addr, sessions, config),
@@ -103,10 +110,11 @@ impl<H: SessionHandler> RtspServerSession<H> {
             read_buffer: Vec::with_capacity(8192),
             video_udp_sockets: None,
             audio_udp_sockets: None,
+            cancel,
         }
     }
 
-    pub async fn handle_session(mut self) -> Result<MediaInfo> {
+    pub(crate) async fn handle_session(mut self, guard: ConnectionGuard) -> Result<MediaInfo> {
         debug!(
             "Starting RTSP session: mode={:?}, addr={}",
             self.mode, self.addr
@@ -119,7 +127,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         let mut video_ports: Option<(u16, u16, u16, u16)> = None;
         let mut audio_ports: Option<(u16, u16, u16, u16)> = None;
         let mut established_transport: Option<bool> = None;
-        let session_cancel = CancellationToken::new();
+        let session_cancel = self.cancel.child_token();
 
         loop {
             let request = self.read_request().await?;
@@ -207,10 +215,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         .unwrap_or_default();
 
                     let is_video = {
-                        let sdp = self
-                            .handler
-                            .parsed_sdp()
-                            .ok_or_else(|| anyhow!("No SDP"))?;
+                        let sdp = self.handler.parsed_sdp().ok_or_else(|| anyhow!("No SDP"))?;
                         match resolve_setup_media_kind(
                             &uri,
                             sdp,
@@ -294,9 +299,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 }
                 Method::Play | Method::Record => {
                     if session_mode == SessionMode::Mixed {
-                        return Err(anyhow!(
-                            "Session mode must be resolved before PLAY/RECORD"
-                        ));
+                        return Err(anyhow!("Session mode must be resolved before PLAY/RECORD"));
                     }
 
                     let has_transport = video_channels.is_some()
@@ -320,7 +323,9 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         SessionMode::Pull => self.handler.handle_play(&request).await?,
                         SessionMode::Push => self.handler.handle_record(&request).await?,
                         SessionMode::Mixed => {
-                            return Err(anyhow!("Session mode must be resolved before PLAY/RECORD"))
+                            return Err(anyhow!(
+                                "Session mode must be resolved before PLAY/RECORD"
+                            ));
                         }
                     };
                     self.send_response(&response).await?;
@@ -342,14 +347,21 @@ impl<H: SessionHandler> RtspServerSession<H> {
 
                     let p = path.clone().unwrap_or_default();
                     if use_tcp {
-                        self.start_tcp_data_transfer(p, media_info.clone(), session_mode)
-                            .await?;
+                        self.start_tcp_data_transfer(
+                            p,
+                            media_info.clone(),
+                            session_mode,
+                            session_cancel.child_token(),
+                            guard,
+                        )
+                        .await?;
                     } else {
                         self.start_udp_data_transfer(
                             p,
                             media_info.clone(),
                             session_mode,
-                            session_cancel.clone(),
+                            session_cancel.child_token(),
+                            guard,
                         )
                         .await?;
                     }
@@ -400,6 +412,8 @@ impl<H: SessionHandler> RtspServerSession<H> {
         path: String,
         media_info: MediaInfo,
         session_mode: SessionMode,
+        cancel: CancellationToken,
+        guard: ConnectionGuard,
     ) -> Result<()> {
         const DATA_CHANNEL_CAPACITY: usize = 1024;
         let (data_from_stream_tx, mut data_from_stream_rx) =
@@ -424,14 +438,27 @@ impl<H: SessionHandler> RtspServerSession<H> {
 
         let app_handler = self.app_handler.clone();
         self.app_handler
-            .on_session(path.clone(), session_mode, media_info, endpoint)
+            .on_session(
+                path.clone(),
+                session_mode,
+                media_info,
+                endpoint,
+                cancel.clone(),
+            )
             .await?;
 
         let stream = self.stream;
         tokio::spawn(async move {
-            if let Err(e) =
-                handle_tcp_stream(stream, session_mode, data_from_stream_tx, data_to_stream_rx)
-                    .await
+            let _guard = guard;
+            if let Err(e) = handle_tcp_stream(
+                stream,
+                session_mode,
+                data_from_stream_tx,
+                data_to_stream_rx,
+                cancel,
+                session_mode == SessionMode::Pull,
+            )
+            .await
             {
                 error!("TCP stream handler error: {}", e);
             }
@@ -458,7 +485,10 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         }
                     }
                 });
-                // Handle incoming RTCP/TEARDOWN frames so the read half stays alive.
+                // Handle incoming RTCP frames so the read half stays alive. In
+                // Pull mode the client should only send RTCP on odd channels;
+                // even-channel RTP is filtered inside handle_tcp_stream to avoid
+                // filling this bounded channel and stalling the session.
                 tokio::spawn(async move {
                     while let Some((channel, data)) = data_from_stream_rx.recv().await {
                         if channel % 2 != 0
@@ -480,6 +510,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         media_info: MediaInfo,
         session_mode: SessionMode,
         cancel: CancellationToken,
+        guard: ConnectionGuard,
     ) -> Result<()> {
         const DATA_CHANNEL_CAPACITY: usize = 1024;
         let (data_to_stream_tx, data_to_stream_rx) =
@@ -499,9 +530,20 @@ impl<H: SessionHandler> RtspServerSession<H> {
             SessionMode::Mixed => return Err(anyhow!("session mode must be resolved")),
         };
 
+        // Capture session state before `self` is consumed so the UDP control
+        // connection can keep the session alive.
+        let sessions = self.handler.sessions();
+        let session_id = self.handler.session_id().cloned();
+
         let app_handler = self.app_handler.clone();
         self.app_handler
-            .on_session(path.clone(), session_mode, media_info.clone(), endpoint)
+            .on_session(
+                path.clone(),
+                session_mode,
+                media_info.clone(),
+                endpoint,
+                cancel.clone(),
+            )
             .await?;
 
         let client_addr = self.addr;
@@ -534,6 +576,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         let stream = self.stream;
         let control_cancel = cancel.clone();
         tokio::spawn(async move {
+            let _guard = guard;
             let (mut read_half, mut write_half) = tokio::io::split(stream);
             let mut buffer = Vec::with_capacity(4096);
 
@@ -565,6 +608,12 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         }
                         if write_half.write_all(&out).await.is_err() {
                             break;
+                        }
+
+                        // Any RTSP request on the control connection means the
+                        // session is still active.
+                        if let Some(ref id) = session_id {
+                            update_session_activity(sessions.clone(), id.clone()).await;
                         }
 
                         if request.method() == Method::Teardown {
@@ -696,6 +745,16 @@ impl<H: SessionHandler> RtspServerSession<H> {
             }
             _ => Err(anyhow!("Expected request, got response")),
         }
+    }
+}
+
+async fn update_session_activity(
+    sessions: Arc<RwLock<HashMap<String, ServerSession>>>,
+    session_id: String,
+) {
+    let mut sessions = sessions.write().await;
+    if let Some(session) = sessions.get_mut(&session_id) {
+        session.update_activity();
     }
 }
 
@@ -956,62 +1015,50 @@ async fn run_udp_transfer<H: SessionHandler>(
             // across sessions (a single socket can `send_to` any destination).
             let send_socket = UdpSocket::bind(net::bind_any_for(&client_addr)).await?;
 
-            let video_rtp_send =
-                media_info.video_transport.as_ref().and_then(
-                    |t| {
-                        if let TransportInfo::Udp {
-                            rtp_send_port: Some(port),
-                            ..
-                        } = t
-                        {
-                            Some(*port)
-                        } else {
-                            None
-                        }
-                    },
-                );
-            let video_rtcp_send =
-                media_info.video_transport.as_ref().and_then(
-                    |t| {
-                        if let TransportInfo::Udp {
-                            rtcp_send_port: Some(port),
-                            ..
-                        } = t
-                        {
-                            Some(*port)
-                        } else {
-                            None
-                        }
-                    },
-                );
-            let audio_rtp_send =
-                media_info.audio_transport.as_ref().and_then(
-                    |t| {
-                        if let TransportInfo::Udp {
-                            rtp_send_port: Some(port),
-                            ..
-                        } = t
-                        {
-                            Some(*port)
-                        } else {
-                            None
-                        }
-                    },
-                );
-            let audio_rtcp_send =
-                media_info.audio_transport.as_ref().and_then(
-                    |t| {
-                        if let TransportInfo::Udp {
-                            rtcp_send_port: Some(port),
-                            ..
-                        } = t
-                        {
-                            Some(*port)
-                        } else {
-                            None
-                        }
-                    },
-                );
+            let video_rtp_send = media_info.video_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
+            let video_rtcp_send = media_info.video_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtcp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
+            let audio_rtp_send = media_info.audio_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
+            let audio_rtcp_send = media_info.audio_transport.as_ref().and_then(|t| {
+                if let TransportInfo::Udp {
+                    rtcp_send_port: Some(port),
+                    ..
+                } = t
+                {
+                    Some(*port)
+                } else {
+                    None
+                }
+            });
 
             let send_cancel = cancel.clone();
             tokio::spawn(async move {
@@ -1146,7 +1193,7 @@ async fn bind_udp(addr: &SocketAddr, port: u16) -> Result<UdpSocket> {
 
 /// Decrements the active-connection counter when dropped, even if the spawned
 /// session task panics.
-struct ConnectionGuard(Arc<AtomicUsize>);
+pub(crate) struct ConnectionGuard(Arc<AtomicUsize>);
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
@@ -1245,11 +1292,11 @@ where
                             (*config).clone(),
                             mode,
                             handler.clone(),
+                            cancel.clone(),
                         );
 
                         tokio::spawn(async move {
-                            let _guard = guard;
-                            match session.handle_session().await {
+                            match session.handle_session(guard).await {
                                 Ok(media_info) => {
                                     info!(
                                         "Connection #{} session established: {:?}",

@@ -78,6 +78,14 @@ impl Handler {
         self.addr
     }
 
+    pub fn session_id(&self) -> Option<&String> {
+        self.session_id.as_ref()
+    }
+
+    pub fn sessions(&self) -> Arc<RwLock<HashMap<String, ServerSession>>> {
+        self.sessions.clone()
+    }
+
     pub async fn handle_options(
         &mut self,
         _request: &Request<Vec<u8>>,

@@ -5,6 +5,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::constants::buffer;
@@ -64,6 +65,11 @@ pub(crate) async fn handle_tcp_stream<S, R>(
     mode: SessionMode,
     data_from_stream_tx: S,
     data_to_stream_rx: R,
+    cancel: CancellationToken,
+    // When true, drop incoming even-channel (RTP) frames. This is used on the
+    // server side in Pull mode where the client should only send RTCP on odd
+    // channels, so unexpected RTP echo must not fill the bounded RTCP channel.
+    drop_incoming_even: bool,
 ) -> Result<()>
 where
     S: InterleavedSender + 'static,
@@ -78,6 +84,8 @@ where
         read_half,
         writer.clone(),
         data_from_stream_tx,
+        cancel.clone(),
+        drop_incoming_even,
     ));
 
     let write_task = tokio::spawn(handle_write_stream(writer, data_to_stream_rx));
@@ -104,6 +112,8 @@ async fn handle_read_stream<R, S>(
     mut reader: R,
     writer: Arc<Mutex<WriteHalf<TcpStream>>>,
     tx: S,
+    cancel: CancellationToken,
+    drop_incoming_even: bool,
 ) -> Result<()>
 where
     R: AsyncReadExt + Unpin,
@@ -115,92 +125,110 @@ where
     let mut total_bytes = 0u64;
 
     loop {
-        match reader.read(&mut temp_buffer).await {
-            Ok(0) => {
-                info!(
-                    "TCP stream closed by peer (processed {} frames, {} bytes)",
-                    total_frames, total_bytes
-                );
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                info!("TCP stream handler cancelled");
                 break;
             }
-            Ok(n) => {
-                trace!("Read {} bytes from TCP stream", n);
+            result = reader.read(&mut temp_buffer) => {
+                match result {
+                    Ok(0) => {
+                        info!(
+                            "TCP stream closed by peer (processed {} frames, {} bytes)",
+                            total_frames, total_bytes
+                        );
+                        break;
+                    }
+                    Ok(n) => {
+                        trace!("Read {} bytes from TCP stream", n);
 
-                if buffer.len() + n > buffer::MAX_BUFFER_SIZE {
-                    return Err(anyhow!(
-                        "TCP read buffer limit exceeded ({} + {} > {}); closing connection",
-                        buffer.len(),
-                        n,
-                        buffer::MAX_BUFFER_SIZE
-                    ));
-                }
+                        if buffer.len() + n > buffer::MAX_BUFFER_SIZE {
+                            return Err(anyhow!(
+                                "TCP read buffer limit exceeded ({} + {} > {}); closing connection",
+                                buffer.len(),
+                                n,
+                                buffer::MAX_BUFFER_SIZE
+                            ));
+                        }
 
-                buffer.extend_from_slice(&temp_buffer[..n]);
-                total_bytes += n as u64;
+                        buffer.extend_from_slice(&temp_buffer[..n]);
+                        total_bytes += n as u64;
 
-                while let Some((channel, data, consumed)) = parse_interleaved_frame(&buffer)? {
-                    trace!(
-                        "Parsed interleaved frame: channel={}, length={}, consumed={}",
-                        channel,
-                        data.len(),
-                        consumed
-                    );
+                        while let Some((channel, data, consumed)) = parse_interleaved_frame(&buffer)? {
+                            trace!(
+                                "Parsed interleaved frame: channel={}, length={}, consumed={}",
+                                channel,
+                                data.len(),
+                                consumed
+                            );
 
-                    if let Err(e) = tx.send_interleaved((channel, data)).await {
-                        error!("Failed to forward data from stream: {}", e);
+                            // When acting as a Pull server, the client should only send
+                            // RTCP on odd channels. Drop unexpected even-channel (RTP)
+                            // frames before they can fill the bounded RTCP channel and
+                            // stall the session.
+                            if drop_incoming_even && channel % 2 == 0 {
+                                trace!("Dropping unexpected incoming RTP frame on channel {}", channel);
+                                buffer.drain(..consumed);
+                                continue;
+                            }
+
+                            if let Err(e) = tx.send_interleaved((channel, data)).await {
+                                error!("Failed to forward data from stream: {}", e);
+                                return Err(e.into());
+                            }
+
+                            total_frames += 1;
+
+                            buffer.drain(..consumed);
+                        }
+
+                        if !buffer.is_empty() && buffer[0] != b'$' {
+                            match try_parse_rtsp_message(&buffer)? {
+                                Some((consumed, true, _)) => {
+                                    info!("Received TEARDOWN in data stream, closing session");
+                                    buffer.drain(..consumed);
+                                    break;
+                                }
+                                Some((consumed, false, Some(cseq))) => {
+                                    debug!(
+                                        "Responding to keep-alive RTSP message in data stream ({} bytes)",
+                                        consumed
+                                    );
+                                    buffer.drain(..consumed);
+                                    let response = build_keep_alive_response(cseq);
+                                    let mut writer = writer.lock().await;
+                                    if let Err(e) = writer.write_all(&response).await {
+                                        error!("TCP keep-alive write error: {}", e);
+                                        return Err(e.into());
+                                    }
+                                    if let Err(e) = writer.flush().await {
+                                        error!("TCP keep-alive flush error: {}", e);
+                                        return Err(e.into());
+                                    }
+                                }
+                                Some((consumed, false, None)) => {
+                                    debug!(
+                                        "Skipping non-keep-alive RTSP message in data stream ({} bytes)",
+                                        consumed
+                                    );
+                                    buffer.drain(..consumed);
+                                }
+                                None => {}
+                            }
+                        }
+
+                        if buffer.len() > buffer::MAX_BUFFER_SIZE / 2 {
+                            warn!(
+                                "Buffer size is large: {} bytes (may indicate slow consumer)",
+                                buffer.len()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!("TCP read error: {}", e);
                         return Err(e.into());
                     }
-
-                    total_frames += 1;
-
-                    buffer.drain(..consumed);
                 }
-
-                if !buffer.is_empty() && buffer[0] != b'$' {
-                    match try_parse_rtsp_message(&buffer)? {
-                        Some((consumed, true, _)) => {
-                            info!("Received TEARDOWN in data stream, closing session");
-                            buffer.drain(..consumed);
-                            break;
-                        }
-                        Some((consumed, false, Some(cseq))) => {
-                            debug!(
-                                "Responding to keep-alive RTSP message in data stream ({} bytes)",
-                                consumed
-                            );
-                            buffer.drain(..consumed);
-                            let response = build_keep_alive_response(cseq);
-                            let mut writer = writer.lock().await;
-                            if let Err(e) = writer.write_all(&response).await {
-                                error!("TCP keep-alive write error: {}", e);
-                                return Err(e.into());
-                            }
-                            if let Err(e) = writer.flush().await {
-                                error!("TCP keep-alive flush error: {}", e);
-                                return Err(e.into());
-                            }
-                        }
-                        Some((consumed, false, None)) => {
-                            debug!(
-                                "Skipping non-keep-alive RTSP message in data stream ({} bytes)",
-                                consumed
-                            );
-                            buffer.drain(..consumed);
-                        }
-                        None => {}
-                    }
-                }
-
-                if buffer.len() > buffer::MAX_BUFFER_SIZE / 2 {
-                    warn!(
-                        "Buffer size is large: {} bytes (may indicate slow consumer)",
-                        buffer.len()
-                    );
-                }
-            }
-            Err(e) => {
-                error!("TCP read error: {}", e);
-                return Err(e.into());
             }
         }
     }

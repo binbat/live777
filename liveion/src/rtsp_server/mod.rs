@@ -116,6 +116,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
         mode: rtsp::SessionMode,
         media_info: rtsp::MediaInfo,
         endpoint: rtsp::SessionEndpoint,
+        cancel: CancellationToken,
     ) -> Result<()> {
         let stream_id = stream_id_from_path(path);
 
@@ -139,47 +140,58 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     .unwrap_or(1);
                 let mut rtcp_rx = forward.internal.publish_rtcp_channel.subscribe();
                 let stream_id_for_rtcp = stream_id.clone();
+                let push_cancel = cancel.child_token();
+                let rtcp_cancel = push_cancel.clone();
                 tokio::spawn(async move {
-                    while let Ok((msg, ssrc)) = rtcp_rx.recv().await {
-                        let packet = match msg {
-                            RtcpMessage::PictureLossIndication => {
-                                let pli = PictureLossIndication {
-                                    sender_ssrc: 0,
-                                    media_ssrc: ssrc,
+                    loop {
+                        tokio::select! {
+                            _ = rtcp_cancel.cancelled() => break,
+                            result = rtcp_rx.recv() => {
+                                let (msg, ssrc) = match result {
+                                    Ok(v) => v,
+                                    Err(_) => break,
                                 };
-                                match pli.marshal() {
-                                    Ok(buf) => buf.to_vec(),
-                                    Err(e) => {
-                                        debug!(
-                                            "Failed to marshal PLI for {}: {}",
-                                            stream_id_for_rtcp, e
-                                        );
-                                        continue;
+                                let packet = match msg {
+                                    RtcpMessage::PictureLossIndication => {
+                                        let pli = PictureLossIndication {
+                                            sender_ssrc: 0,
+                                            media_ssrc: ssrc,
+                                        };
+                                        match pli.marshal() {
+                                            Ok(buf) => buf.to_vec(),
+                                            Err(e) => {
+                                                debug!(
+                                                    "Failed to marshal PLI for {}: {}",
+                                                    stream_id_for_rtcp, e
+                                                );
+                                                continue;
+                                            }
+                                        }
                                     }
+                                    RtcpMessage::_FullIntraRequest => {
+                                        let fir = FullIntraRequest {
+                                            sender_ssrc: 0,
+                                            media_ssrc: ssrc,
+                                            fir: vec![],
+                                        };
+                                        match fir.marshal() {
+                                            Ok(buf) => buf.to_vec(),
+                                            Err(e) => {
+                                                debug!(
+                                                    "Failed to marshal FIR for {}: {}",
+                                                    stream_id_for_rtcp, e
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    _ => continue,
+                                };
+                                if tx.send((rtcp_channel, packet)).await.is_err() {
+                                    debug!("RTCP feedback channel closed for {}", stream_id_for_rtcp);
+                                    break;
                                 }
                             }
-                            RtcpMessage::_FullIntraRequest => {
-                                let fir = FullIntraRequest {
-                                    sender_ssrc: 0,
-                                    media_ssrc: ssrc,
-                                    fir: vec![],
-                                };
-                                match fir.marshal() {
-                                    Ok(buf) => buf.to_vec(),
-                                    Err(e) => {
-                                        debug!(
-                                            "Failed to marshal FIR for {}: {}",
-                                            stream_id_for_rtcp, e
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-                            _ => continue,
-                        };
-                        if tx.send((rtcp_channel, packet)).await.is_err() {
-                            debug!("RTCP feedback channel closed for {}", stream_id_for_rtcp);
-                            break;
                         }
                     }
                 });
@@ -212,6 +224,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
                         }
                     }
                     info!("RTSP push forward stopped for {}", stream_id);
+                    push_cancel.cancel();
                     if let Err(e) = manager.stream_delete(stream_id.clone()).await {
                         debug!(
                             "Failed to delete stream {} on push disconnect: {}",
@@ -228,6 +241,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     _ => return Err(anyhow!("Expected pull endpoint")),
                 };
 
+                let pull_cancel = cancel.child_token();
                 let manager = self.manager.clone();
                 let stream_ready = self.stream_ready.clone();
                 tokio::spawn(async move {
@@ -269,14 +283,24 @@ impl rtsp::server::SessionHandler for RtspHandler {
                         // RTP forward.
                         let tx_clone = tx.clone();
                         let mut packet_rx = track.subscribe();
+                        let task_cancel = pull_cancel.child_token();
                         tokio::spawn(async move {
-                            while let Ok(packet) = packet_rx.recv().await {
-                                let mut buf = vec![0u8; packet.marshal_size()];
-                                if Marshal::marshal_to(&*packet, &mut buf).is_err() {
-                                    continue;
-                                }
-                                if tx_clone.send((rtp_channel, buf)).await.is_err() {
-                                    break;
+                            loop {
+                                tokio::select! {
+                                    _ = task_cancel.cancelled() => break,
+                                    result = packet_rx.recv() => {
+                                        let packet = match result {
+                                            Ok(p) => p,
+                                            Err(_) => break,
+                                        };
+                                        let mut buf = vec![0u8; packet.marshal_size()];
+                                        if Marshal::marshal_to(&*packet, &mut buf).is_err() {
+                                            continue;
+                                        }
+                                        if tx_clone.send((rtp_channel, buf)).await.is_err() {
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         });
@@ -284,23 +308,28 @@ impl rtsp::server::SessionHandler for RtspHandler {
                         // RTCP sender reports.
                         let tx_clone = tx.clone();
                         let track = track.clone();
+                        let task_cancel = pull_cancel.child_token();
                         tokio::spawn(async move {
                             let mut interval = tokio::time::interval(Duration::from_secs(5));
                             loop {
-                                interval.tick().await;
-                                if let Some(packet) = track.generate_sender_report() {
-                                    match packet.marshal() {
-                                        Ok(buf) => {
-                                            if tx_clone
-                                                .send((rtcp_channel, buf.to_vec()))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
+                                tokio::select! {
+                                    _ = task_cancel.cancelled() => break,
+                                    _ = interval.tick() => {
+                                        if let Some(packet) = track.generate_sender_report() {
+                                            match packet.marshal() {
+                                                Ok(buf) => {
+                                                    if tx_clone
+                                                        .send((rtcp_channel, buf.to_vec()))
+                                                        .await
+                                                        .is_err()
+                                                    {
+                                                        break;
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    debug!("Failed to marshal sender report: {}", e);
+                                                }
                                             }
-                                        }
-                                        Err(e) => {
-                                            debug!("Failed to marshal sender report: {}", e);
                                         }
                                     }
                                 }
@@ -602,7 +631,12 @@ fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
         VideoCodecParams::VP9 {
             payload_type,
             clock_rate,
-        } => ("video/VP9", *payload_type, *clock_rate, "profile-id=0".to_string()),
+        } => (
+            "video/VP9",
+            *payload_type,
+            *clock_rate,
+            "profile-id=0".to_string(),
+        ),
         VideoCodecParams::AV1 {
             payload_type,
             clock_rate,

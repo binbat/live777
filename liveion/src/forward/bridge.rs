@@ -571,11 +571,12 @@ impl SourceBridge {
                     break;
                 }
                 _ = interval.tick() => {
+                    // Read subscriber info before locking publish_tracks to avoid
+                    // a nested RwLock read that can deadlock with queued writers.
+                    let forward_info = forward.info().await;
                     let tracks = forward.internal.publish_tracks.read().await;
 
                     for track in tracks.iter() {
-                        let forward_info = forward.info().await;
-
                         for subscribe_info in &forward_info.subscribe_session_infos {
                             if let Some(peer) = forward.get_subscribe_peer(&subscribe_info.id).await {
                                 for transceiver in peer.get_transceivers().await {

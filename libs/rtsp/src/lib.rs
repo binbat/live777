@@ -50,8 +50,8 @@ pub mod prelude {
     pub use crate::{AuthParams, RtspMode, RtspSession, setup_rtsp_session};
     #[cfg(feature = "server")]
     pub use crate::{
-        Handler, PortUpdate, ServerConfig, ServerSession, SessionEndpoint,
-        SessionHandler, setup_rtsp_server_with_handler,
+        Handler, PortUpdate, ServerConfig, ServerSession, SessionEndpoint, SessionHandler,
+        setup_rtsp_server_with_handler,
     };
 }
 

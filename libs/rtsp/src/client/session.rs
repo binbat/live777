@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace};
 
 use super::RtspMode;
@@ -602,12 +603,15 @@ pub async fn setup_rtsp_session(
         let stream = session.into_stream();
         let session_mode = mode.to_session_mode();
 
+        let cancel = CancellationToken::new();
         tokio::spawn(async move {
             if let Err(e) = crate::tcp_stream::handle_tcp_stream(
                 stream,
                 session_mode,
                 data_from_stream_tx,
                 data_to_stream_rx,
+                cancel,
+                false,
             )
             .await
             {
