@@ -1,11 +1,11 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Result, anyhow};
 use libwish::Client;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::shared::marshal::{Marshal, MarshalSize};
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
@@ -26,9 +26,11 @@ const DATA_CHANNEL_LABEL: &str = "control";
 pub async fn setup_whep_peer(
     ct: CancellationToken,
     client: &mut Client,
-    video_send: UnboundedSender<Vec<u8>>,
-    audio_send: UnboundedSender<Vec<u8>>,
+    video_send: mpsc::Sender<Vec<u8>>,
+    audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+    video_mime_tx: Option<watch::Sender<Option<String>>>,
 ) -> Result<(
     Arc<dyn PeerConnection>,
     RTCSessionDescription,
@@ -48,6 +50,8 @@ pub async fn setup_whep_peer(
         gather_complete.clone(),
         dc_recv_tx,
         dc_send_rx,
+        state_tx,
+        video_mime_tx,
     )
     .await?;
 
@@ -67,15 +71,24 @@ pub async fn setup_whep_peer(
 struct WhepTrackHandler {
     ct: CancellationToken,
     gather_complete: Arc<Notify>,
-    video_send: Option<UnboundedSender<Vec<u8>>>,
-    audio_send: Option<UnboundedSender<Vec<u8>>>,
+    video_send: Option<mpsc::Sender<Vec<u8>>>,
+    audio_send: Option<mpsc::Sender<Vec<u8>>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+    video_mime_tx: Option<watch::Sender<Option<String>>>,
+    /// Cumulative count of dropped video RTP packets due to a full channel.
+    video_drop_count: Arc<AtomicU64>,
+    /// Cumulative count of dropped audio RTP packets due to a full channel.
+    audio_drop_count: Arc<AtomicU64>,
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for WhepTrackHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         info!("WHEP connection state changed: {}", state);
+        if let Some(tx) = &self.state_tx {
+            let _ = tx.send(state);
+        }
         match state {
             RTCPeerConnectionState::Failed => {
                 self.ct.cancel();
@@ -98,24 +111,23 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
             kind, ssrcs, track_id
         );
 
-        // Extract codec info from the track
+        // Report the negotiated mime type as soon as the track is known so
+        // callers (e.g. the rsmpeg probe) can select a decoder without waiting
+        // for the first RTP packet. Do NOT populate codec_info here: the
+        // payload type is not known until the first RTP packet arrives, and
+        // using 0 would cause SDP filtering to discard all payload formats and
+        // produce an invalid "m=video 9 RTP/AVP" line.
         let first_ssrc = ssrcs.first().copied().unwrap_or(0);
-        if let Some(codec) = track.codec(first_ssrc).await {
-            let codec_params = rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
-                rtp_codec: codec.clone(),
-                payload_type: 0, // Will be negotiated
-            };
-            let mut info = self.codec_info.lock().await;
-            match kind {
-                RtpCodecKind::Video => {
-                    debug!("WHEP updating video codec: {:?}", codec);
-                    info.video_codec = Some(codec_params);
-                }
-                RtpCodecKind::Audio => {
-                    debug!("WHEP updating audio codec: {:?}", codec);
-                    info.audio_codec = Some(codec_params);
-                }
-                _ => {}
+        let on_track_codec = track.codec(first_ssrc).await;
+        if let Some(codec) = &on_track_codec {
+            debug!(
+                "WHEP on_track codec: kind={}, mime={}",
+                kind, codec.mime_type
+            );
+            if kind == RtpCodecKind::Video
+                && let Some(tx) = &self.video_mime_tx
+            {
+                let _ = tx.send(Some(codec.mime_type.clone()));
             }
         }
 
@@ -129,60 +141,103 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
         if let Some(sender) = sender {
             let track_clone = track.clone();
             let codec_info = self.codec_info.clone();
+            let video_mime_tx = self.video_mime_tx.clone();
+            let drop_count = match kind {
+                RtpCodecKind::Video => self.video_drop_count.clone(),
+                RtpCodecKind::Audio => self.audio_drop_count.clone(),
+                _ => unreachable!("sender is only Some for video/audio"),
+            };
+            let on_track_codec = on_track_codec.clone();
+            let ct = self.ct.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
                 let mut first_packet = true;
                 loop {
-                    match track_clone.poll().await {
-                        Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
-                            if first_packet {
-                                let first_packet_codec =
-                                    track_clone.codec(rtp_packet.header.ssrc).await;
-                                if let Some(codec) = first_packet_codec {
-                                    let codec_params =
-                                        rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
-                                            rtp_codec: codec.clone(),
-                                            payload_type: rtp_packet.header.payload_type,
-                                        };
-                                    let mut info = codec_info.lock().await;
-                                    match kind {
-                                        RtpCodecKind::Video => {
-                                            info.video_codec = Some(codec_params);
+                    tokio::select! {
+                        event = track_clone.poll() => {
+                            match event {
+                                Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
+                                    if first_packet {
+                                        let first_packet_codec = track_clone
+                                            .codec(rtp_packet.header.ssrc)
+                                            .await
+                                            .or(on_track_codec.clone());
+                                        if let Some(codec) = first_packet_codec {
+                                            let codec_params =
+                                                rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+                                                    rtp_codec: codec.clone(),
+                                                    payload_type: rtp_packet.header.payload_type,
+                                                };
+                                            let mut info = codec_info.lock().await;
+                                            match kind {
+                                                RtpCodecKind::Video => {
+                                                    info.video_codec = Some(codec_params.clone());
+                                                    // Only report the MIME type from the first
+                                                    // packet if on_track did not already provide
+                                                    // it, avoiding duplicate watch-channel updates.
+                                                    if on_track_codec.is_none() && let Some(tx) = &video_mime_tx {
+                                                        let _ = tx.send(Some(codec.mime_type.clone()));
+                                                    }
+                                                }
+                                                RtpCodecKind::Audio => {
+                                                    info.audio_codec = Some(codec_params);
+                                                }
+                                                _ => {}
+                                            }
                                         }
-                                        RtpCodecKind::Audio => {
-                                            info.audio_codec = Some(codec_params);
+                                        first_packet = false;
+                                    }
+                                    let size = rtp_packet.marshal_size();
+                                    if size > buf.len() {
+                                        warn!("WHEP: RTP packet too large ({} bytes)", size);
+                                        continue;
+                                    }
+                                    if let Err(e) = rtp_packet.marshal_to(&mut buf[..size]) {
+                                        warn!("WHEP: Failed to marshal RTP packet: {}", e);
+                                        continue;
+                                    }
+                                    match sender.try_send(buf[..size].to_vec()) {
+                                        Ok(()) => {}
+                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                            // Decoder cannot keep up; drop the packet to
+                                            // avoid unbounded memory growth.
+                                            let dropped = drop_count.fetch_add(1, Ordering::Relaxed) + 1;
+                                            if dropped <= 10 || dropped % 100 == 0 {
+                                                warn!(
+                                                    "WHEP: {} channel full, dropping packet (total dropped {})",
+                                                    kind, dropped
+                                                );
+                                            } else {
+                                                debug!(
+                                                    "WHEP: {} channel full, dropping packet (total dropped {})",
+                                                    kind, dropped
+                                                );
+                                            }
                                         }
-                                        _ => {}
+                                        Err(_) => {
+                                            debug!("WHEP: {} channel receiver dropped, stopping", kind);
+                                            break;
+                                        }
                                     }
                                 }
-                                first_packet = false;
-                            }
-                            let size = rtp_packet.marshal_size();
-                            if size > buf.len() {
-                                warn!("WHEP: RTP packet too large ({} bytes)", size);
-                                continue;
-                            }
-                            if let Err(e) = rtp_packet.marshal_to(&mut buf[..size]) {
-                                warn!("WHEP: Failed to marshal RTP packet: {}", e);
-                                continue;
-                            }
-                            if sender.send(buf[..size].to_vec()).is_err() {
-                                debug!("WHEP: {} channel receiver dropped, stopping", kind);
-                                break;
+                                Some(TrackRemoteEvent::OnEnded) => {
+                                    info!("WHEP: {} track ended", kind);
+                                    break;
+                                }
+                                Some(TrackRemoteEvent::OnRtcpPacket(packets)) => {
+                                    debug!("WHEP: Received {} RTCP packets for {}", packets.len(), kind);
+                                }
+                                None => {
+                                    debug!("WHEP: {} track poll returned None", kind);
+                                    break;
+                                }
+                                _ => {}
                             }
                         }
-                        Some(TrackRemoteEvent::OnEnded) => {
-                            info!("WHEP: {} track ended", kind);
+                        _ = ct.cancelled() => {
+                            info!("WHEP: {} RTP reader cancelled", kind);
                             break;
                         }
-                        Some(TrackRemoteEvent::OnRtcpPacket(packets)) => {
-                            debug!("WHEP: Received {} RTCP packets for {}", packets.len(), kind);
-                        }
-                        None => {
-                            debug!("WHEP: {} track poll returned None", kind);
-                            break;
-                        }
-                        _ => {}
                     }
                 }
                 info!("WHEP: {} RTP reader stopped", kind);
@@ -259,14 +314,17 @@ fn setup_data_channel_loop(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_peer(
     ct: CancellationToken,
-    video_send: UnboundedSender<Vec<u8>>,
-    audio_send: UnboundedSender<Vec<u8>>,
+    video_send: mpsc::Sender<Vec<u8>>,
+    audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
     gather_complete: Arc<Notify>,
     dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
     dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+    video_mime_tx: Option<watch::Sender<Option<String>>>,
 ) -> Result<Arc<dyn PeerConnection>> {
     let mut media_engine = MediaEngine::default();
     media_engine.register_default_codecs()?;
@@ -277,6 +335,10 @@ async fn create_peer(
         video_send: Some(video_send),
         audio_send: Some(audio_send),
         codec_info,
+        state_tx,
+        video_mime_tx,
+        video_drop_count: Arc::new(AtomicU64::new(0)),
+        audio_drop_count: Arc::new(AtomicU64::new(0)),
     });
 
     let config = RTCConfigurationBuilder::new()

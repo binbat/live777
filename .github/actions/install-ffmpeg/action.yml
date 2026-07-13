@@ -1,0 +1,204 @@
+name: Install FFmpeg for rsmpeg
+description: Install FFmpeg libraries and headers on Linux, macOS, or Windows (via vcpkg)
+runs:
+  using: composite
+  steps:
+    # ── Windows ───────────────────────────────────────────────────────────
+    - name: Install LLVM and Clang (Windows)
+      if: runner.os == 'Windows'
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "18"
+        directory: ${{ github.workspace }}/clang
+
+    - name: Cache vcpkg (Windows)
+      if: runner.os == 'Windows'
+      id: cache-vcpkg
+      uses: actions/cache@v5
+      with:
+        path: ${{ github.workspace }}/vcpkg
+        key: vcpkg-master-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+
+    - name: Build vcpkg (Windows)
+      if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        git clone https://github.com/microsoft/vcpkg --depth 1 --branch master
+        ./vcpkg/bootstrap-vcpkg.bat
+
+    - name: Install FFmpeg via vcpkg (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        # Enable the external codecs used by livetwo's rsmpeg sources:
+        # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svt-av1), Opus (opus).
+        #
+        # Build the *dynamic* (x64-windows) ffmpeg: with a static build,
+        # rusty_ffmpeg's link_system_ffmpeg only links the 7 av* libs and omits
+        # the transitive codec deps (opus, vpx, x264, x265, svt-av1), causing
+        # unresolved-symbol link errors (opus_strerror, opus_multistream_*,
+        # ...). With a dynamic build the codecs are baked into the av*.dll, so
+        # the av* import libs are sufficient and no per-codec linking is needed.
+        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svt-av1,vpx,x264,x265]:x64-windows"
+
+    - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        VCPKG_ROOT=$(cygpath -w '${{ github.workspace }}/vcpkg')
+        INSTALLED='${{ github.workspace }}/vcpkg/installed/x64-windows'
+        echo "VCPKG_ROOT=${VCPKG_ROOT}" >> "$GITHUB_ENV"
+        echo "LIBCLANG_PATH=$(cygpath -w '${{ github.workspace }}/clang/lib')" >> "$GITHUB_ENV"
+        echo "LLVM_CONFIG_PATH=$(cygpath -w '${{ github.workspace }}/clang/bin/llvm-config')" >> "$GITHUB_ENV"
+        echo "FFMPEG_INCLUDE_DIR=$(cygpath -w "$INSTALLED/include")" >> "$GITHUB_ENV"
+        echo "FFMPEG_LIBS_DIR=$(cygpath -w "$INSTALLED/lib")" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$(cygpath -w "$INSTALLED/lib/pkgconfig")" >> "$GITHUB_ENV"
+        echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
+        # vcpkg's ffmpeg port builds libraries only (--disable-ffmpeg), so the
+        # CLI is not installed. Grab a prebuilt ffmpeg binary for the test
+        # suite's `ffmpeg` spawns while keeping the vcpkg libs for rsmpeg.
+        if ! command -v ffmpeg >/dev/null 2>&1; then
+          # Pin the Chocolatey package so CI stays reproducible and doesn't
+          # randomly pull a newer major version.
+          choco install ffmpeg --version=8.1.2 -y --no-progress
+        fi
+        FFMPEG_BIN_DIR=$(dirname "$(command -v ffmpeg)")
+        # PATH entries must be clean Windows paths. Mixing cygpath backslashes
+        # (e.g. "D:\...\x64-windows") with a trailing "/bin" yields a path
+        # Windows won't search, so the test suite's `ffmpeg` spawn fails with
+        # "program not found". cygpath each full directory separately.
+        echo "$(cygpath -w "$INSTALLED/bin")" >> "$GITHUB_PATH"
+        echo "$(cygpath -w "$FFMPEG_BIN_DIR")" >> "$GITHUB_PATH"
+        echo "$(cygpath -w "$INSTALLED/tools/pkgconf")" >> "$GITHUB_PATH"
+        # The matrix tests spawn the ffmpeg CLI to produce source streams, so
+        # fail fast if ffmpeg.exe is not on PATH.
+        command -v ffmpeg >/dev/null 2>&1 \
+          || { echo "ERROR: ffmpeg.exe not available on PATH after install"; exit 1; }
+
+    # ── macOS ─────────────────────────────────────────────────────────────
+    - name: Install FFmpeg (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        # GitHub-hosted macOS runners may ship with third-party taps that are
+        # not trusted by newer Homebrew versions, causing `brew install` to exit
+        # with a tap-trust error. Remove any such taps before installing; ffmpeg
+        # and pkg-config are provided by homebrew/core so external taps are not
+        # required here.
+        brew untap aws/tap 2>/dev/null || true
+        brew install ffmpeg pkg-config
+        echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+        echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+
+    # ── Linux ─────────────────────────────────────────────────────────────
+    # Ubuntu/Debian patch FFmpeg to privatize AVFormatContext fields (pb,
+    # nb_streams, streams, iformat, oformat, metadata, ...) for ABI
+    # hardening. rsmpeg 0.18.0 accesses those fields directly, so it will
+    # not compile against the apt libavformat-dev (the bindgen output
+    # exposes them as accessor methods or omits them entirely). Build
+    # upstream FFmpeg 8.0 from source — the same configuration rsmpeg's own
+    # CI uses — and cache the install prefix so subsequent runs are fast.
+    - name: Cache FFmpeg build (Linux)
+      if: runner.os == 'Linux'
+      id: cache-ffmpeg
+      uses: actions/cache@v5
+      with:
+        path: ${{ github.workspace }}/ffmpeg-install
+        key: ffmpeg-n8.0-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+
+    - name: Build FFmpeg 8.0 from source (Linux)
+      if: runner.os == 'Linux' && steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -e
+        sudo apt-get update -qq
+        # Build tools + codec dev libraries only. The libav* -dev packages
+        # are intentionally NOT installed: Debian's field-privatization
+        # patches break rsmpeg, so we build libav* from upstream source.
+        sudo apt-get install -y build-essential pkg-config nasm yasm \
+          libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev
+
+        PREFIX="${{ github.workspace }}/ffmpeg-install"
+        git clone --depth 1 --branch n8.0 https://github.com/FFmpeg/FFmpeg ffmpeg-src
+        cd ffmpeg-src
+        ./configure \
+          --prefix="$PREFIX" \
+          --enable-gpl \
+          --enable-shared \
+          --disable-static \
+          --enable-libvpx \
+          --enable-libx264 \
+          --enable-libx265 \
+          --enable-libsvtav1 \
+          --enable-libopus \
+          --disable-doc
+        make -j"$(nproc)"
+        make install
+
+    - name: Expose source-built FFmpeg to rsmpeg (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        PREFIX="${{ github.workspace }}/ffmpeg-install"
+        echo "$PREFIX/bin" >> "$GITHUB_PATH"
+        # rusty_ffmpeg (used by rsmpeg with link_system_ffmpeg) locates FFmpeg
+        # via FFMPEG_PKG_CONFIG_PATH, not PKG_CONFIG_PATH — see rsmpeg's
+        # doc/source-build.md. Set both so the diagnostics step and pkg-config
+        # invocations also resolve the source-built libs.
+        echo "FFMPEG_PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
+
+    # The source-built FFmpeg binary links against the system codec libraries
+    # (libvpx, libx264, libx265, libsvtav1, libopus). Cache restores only our
+    # install prefix, not the runner's system libraries, so make sure the
+    # runtime packages are present even on cache hits.
+    - name: Install codec runtime libraries (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y libvpx-dev libx264-dev libx265-dev \
+          libsvtav1enc-dev libopus-dev
+
+    - name: Pin libclang to LLVM 20 for bindgen (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        # rusty_ffmpeg 0.16.7 (used by rsmpeg 0.18.0) depends on bindgen 0.71.
+        # LLVM 22 changed its AST representation (llvm/llvm-project#147835), so
+        # bindgen 0.71 on LLVM 22 generates *opaque* types for AVFormatContext
+        # and AVBitStreamFilter, breaking rsmpeg's direct field access
+        # (rusty_ffmpeg#150, fixed upstream in bindgen 0.72.1 / rusty_ffmpeg
+        # 0.17 — not yet usable here since rsmpeg 0.18.0 pins 0.16.7).
+        # ubuntu-26.04 defaults to LLVM 22; pin bindgen to the pre-installed
+        # LLVM 20 libclang, which predates the AST change.
+        SRC="$(find /usr/lib /usr/lib/llvm-* -name 'libclang-20.so*' 2>/dev/null | head -1)"
+        [ -n "$SRC" ] || { echo "ERROR: libclang-20 not found on runner"; exit 1; }
+        mkdir -p "${{ github.workspace }}/libclang20"
+        ln -sf "$SRC" "${{ github.workspace }}/libclang20/libclang.so"
+        echo "Pinned libclang: $SRC"
+        echo "LIBCLANG_PATH=${{ github.workspace }}/libclang20" >> "$GITHUB_ENV"
+
+    # ── Diagnostics ───────────────────────────────────────────────────────
+    - name: Show version information
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" == "Windows" ]; then
+          ffmpeg -version || true
+          ffprobe -version || true
+        else
+          ffmpeg -version
+          ffprobe -version
+          pkg-config --modversion libavcodec libavutil libavdevice \
+            libavfilter libavformat libswresample libswscale || true
+        fi
+
+    - name: Bindgen diagnostics
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        echo "LIBCLANG_PATH=$LIBCLANG_PATH"
+        echo "CLANG_PATH=$CLANG_PATH"
+        ldconfig -p | grep libclang || true
+        dpkg -l | grep -E 'clang|llvm|libc6-dev|linux-libc-dev' || true

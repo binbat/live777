@@ -6,7 +6,7 @@ on:
 
 jobs:
   webui:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -17,12 +17,12 @@ jobs:
       - name: Setup Biome
         uses: biomejs/setup-biome@v2
         with:
-          version: latest
+          version: 2.3.3
       - name: Run Biome
         run: biome ci .
 
   format:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -37,7 +37,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -47,12 +47,18 @@ jobs:
         run: |
           cargo --version
           cargo clippy --version
+      - name: Install FFmpeg for rsmpeg
+        uses: ./.github/actions/install-ffmpeg
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcamera-dev libv4l-dev
       - name: Cargo clippy --no-default-features
         run: cargo clippy --all-targets --no-default-features --workspace -- -D warnings
       - name: Cargo clippy default-features
         run: cargo clippy --all-targets --workspace -- -D warnings
       - name: Cargo clippy no webui
-        run: cargo clippy --all-targets --features=net4mqtt,recorder,source-all --workspace -- -D warnings
+        run: cargo clippy --all-targets --features=net4mqtt,recorder,cascade,rsmpeg,source-all --workspace -- -D warnings
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
@@ -65,11 +71,6 @@ jobs:
         run: pnpm install
       - name: Build WebUI
         run: pnpm -r build
-      - name: Install Linux native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcamera-dev libv4l-dev
-
       - name: Cargo clippy --all-features
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 

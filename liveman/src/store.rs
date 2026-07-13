@@ -341,7 +341,7 @@ impl Storage {
             requests.push((
                 alias,
                 self.client
-                    .get(format!("{}{}", server.url, &api::path::strategy()))
+                    .get(format!("{}{}", server.url, api::path::strategy()))
                     .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
                     .send(),
             ));
@@ -425,7 +425,7 @@ impl Storage {
             requests.push((
                 alias,
                 self.client
-                    .get(format!("{}{}", node.url, &api::path::streams("")))
+                    .get(format!("{}{}", node.url, api::path::streams("")))
                     .header(header::AUTHORIZATION, format!("Bearer {}", node.token))
                     .send(),
             ));

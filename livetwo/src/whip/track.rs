@@ -346,7 +346,7 @@ pub async fn setup_video_track(
                     packet.header.sequence_number, packet.header.timestamp, packet.header.marker
                 );
 
-                for mut packet in handler.payload(packet) {
+                for mut packet in handler.payload(&packet) {
                     trace!(
                         "Sending video packet: seq={}, ts={}, marker={}",
                         packet.header.sequence_number,
@@ -426,7 +426,7 @@ pub async fn setup_audio_track(
         while let Some(data) = audio_rx.recv().await {
             if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
                 trace!("Received audio packet: {}", packet);
-                for mut packet in handler.payload(packet) {
+                for mut packet in handler.payload(&packet) {
                     trace!("Sending audio packet: {}", packet);
                     packet.header.ssrc = audio_ssrc;
                     refresh_payload_type(

@@ -6,16 +6,12 @@
 //! it with a smaller MTU before it reaches the WebRTC subscriber path.
 
 use anyhow::{Context, Result};
-use bytes::BytesMut;
-use rtc_rtp::codec::av1::{Av1Depacketizer, Av1Payloader};
+use rtc_rtp::codec::av1::Av1Payloader;
 use rtc_rtp::packet::Packet;
-use rtc_rtp::packetizer::{Depacketizer, Payloader};
-use tracing::{debug, trace, warn};
+use rtc_rtp::packetizer::Payloader;
+use tracing::trace;
 
-/// Maximum accumulated temporal unit size.  Resets the assembler if a single
-/// temporal unit grows beyond this, to avoid unbounded memory growth on packet
-/// loss or malformed streams.
-const MAX_TEMPORAL_UNIT_SIZE: usize = 8 * 1024 * 1024;
+use super::av1_assembler::Av1Assembler;
 
 /// Target RTP payload size for repacketized AV1 packets.
 ///
@@ -25,11 +21,8 @@ const AV1_OUTGOING_MTU: usize = 1200;
 
 #[derive(Debug)]
 pub struct Av1Repacketizer {
-    depacketizer: Av1Depacketizer,
+    assembler: Av1Assembler,
     payloader: Av1Payloader,
-    accumulator: BytesMut,
-    expected_seq: Option<u16>,
-    last_timestamp: u32,
 }
 
 impl Default for Av1Repacketizer {
@@ -41,20 +34,9 @@ impl Default for Av1Repacketizer {
 impl Av1Repacketizer {
     pub fn new() -> Self {
         Self {
-            depacketizer: Av1Depacketizer::new(),
+            assembler: Av1Assembler::new(),
             payloader: Av1Payloader::default(),
-            accumulator: BytesMut::with_capacity(128 * 1024),
-            expected_seq: None,
-            last_timestamp: 0,
         }
-    }
-
-    /// Reset internal state, e.g. after packet loss or a parse error.
-    fn reset(&mut self) {
-        self.depacketizer = Av1Depacketizer::new();
-        self.accumulator.clear();
-        self.expected_seq = None;
-        self.last_timestamp = 0;
     }
 
     /// Process one incoming AV1 RTP packet and return zero or more repacketized
@@ -63,112 +45,49 @@ impl Av1Repacketizer {
     /// Sequence numbers in returned packets are placeholders and are rewritten
     /// later by `VirtualPublishTrack::inject_rtp`.
     pub fn process(&mut self, packet: &Packet) -> Result<Vec<Packet>> {
-        // Detect sequence number gaps.  AV1 depacketization is stateful, so a
-        // missing packet makes the current accumulator unusable.
-        if let Some(expected) = self.expected_seq
-            && packet.header.sequence_number != expected
-        {
-            warn!(
-                "AV1 RTP sequence gap detected: expected {}, got {}; resetting assembler",
-                expected, packet.header.sequence_number
-            );
-            self.reset();
-        }
-        self.expected_seq = Some(packet.header.sequence_number.wrapping_add(1));
+        let Some(temporal_unit) = self.assembler.feed(packet)? else {
+            return Ok(Vec::new());
+        };
 
-        // Timestamp discontinuity also indicates a new temporal unit or lost
-        // stream state.  We do not check SSRC here — RTP-level stream
-        // multiplexing is handled by the higher-level bridge and track layers.
-        if self.last_timestamp != 0 && packet.header.timestamp != self.last_timestamp {
-            if !self.accumulator.is_empty() {
-                warn!(
-                    "AV1 RTP timestamp discontinuity ({} -> {}); dropping incomplete temporal unit",
-                    self.last_timestamp, packet.header.timestamp
-                );
-            }
-            self.reset();
-        }
-        self.last_timestamp = packet.header.timestamp;
+        // Repacketize the assembled temporal unit.
+        let temporal_unit = temporal_unit.freeze();
+        let payloads = self
+            .payloader
+            .payload(AV1_OUTGOING_MTU, &temporal_unit)
+            .with_context(|| "AV1 repacketization failed")?;
 
-        let obus = self
-            .depacketizer
-            .depacketize(&packet.payload)
-            .with_context(|| "AV1 depacketization failed")?;
+        let total = payloads.len();
+        let mut output = Vec::with_capacity(total);
+
+        for (idx, payload) in payloads.into_iter().enumerate() {
+            let mut header = packet.header.clone();
+            header.marker = idx == total - 1;
+            header.sequence_number = 0; // rewritten by VirtualPublishTrack
+            header.padding = false;
+            header.extension = false;
+            header.extension_profile = 0;
+            header.extensions.clear();
+            header.extensions_padding = 0;
+
+            output.push(Packet { header, payload });
+        }
 
         trace!(
-            "AV1 depacketized: seq={} marker={} y={} len={}",
+            "AV1 repacketized: seq={} timestamp={} {} packets, last_marker={}",
             packet.header.sequence_number,
-            packet.header.marker,
-            self.depacketizer.y,
-            obus.len()
+            packet.header.timestamp,
+            output.len(),
+            output.last().map(|p| p.header.marker).unwrap_or(false)
         );
 
-        if !obus.is_empty() {
-            if self.accumulator.len() + obus.len() > MAX_TEMPORAL_UNIT_SIZE {
-                warn!(
-                    "AV1 temporal unit exceeded maximum size ({} bytes); resetting assembler",
-                    MAX_TEMPORAL_UNIT_SIZE
-                );
-                self.reset();
-                return Ok(Vec::new());
-            }
-            self.accumulator.extend_from_slice(&obus);
-        }
-
-        // A temporal unit is complete when the RTP marker bit is set and the
-        // last OBU does not continue into the next packet (Y flag is false).
-        if packet.header.marker && self.depacketizer.y {
-            warn!("AV1 RTP marker set but last OBU continues (Y=1); malformed packet, dropping");
-            self.reset();
-            return Ok(Vec::new());
-        }
-        if packet.header.marker {
-            if self.accumulator.is_empty() {
-                debug!("AV1 marker received but accumulator is empty");
-                return Ok(Vec::new());
-            }
-
-            let accumulated = std::mem::take(&mut self.accumulator).freeze();
-            let payloads = self
-                .payloader
-                .payload(AV1_OUTGOING_MTU, &accumulated)
-                .with_context(|| "AV1 repacketization failed")?;
-
-            let total = payloads.len();
-            let mut output = Vec::with_capacity(total);
-
-            for (idx, payload) in payloads.into_iter().enumerate() {
-                let mut header = packet.header.clone();
-                header.marker = idx == total - 1;
-                header.sequence_number = 0; // rewritten by VirtualPublishTrack
-                header.padding = false;
-                header.extension = false;
-                header.extension_profile = 0;
-                header.extensions.clear();
-                header.extensions_padding = 0;
-
-                output.push(Packet { header, payload });
-            }
-
-            trace!(
-                "AV1 repacketized: seq={} timestamp={} {} packets, last_marker={}",
-                packet.header.sequence_number,
-                packet.header.timestamp,
-                output.len(),
-                output.last().map(|p| p.header.marker).unwrap_or(false)
-            );
-
-            return Ok(output);
-        }
-
-        Ok(Vec::new())
+        Ok(output)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
     use rtc_rtp::header::Header;
 
     /// Build a minimal AV1 OBU: Frame OBU (type=6) without extension and without

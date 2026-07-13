@@ -31,7 +31,7 @@ pub async fn force_check_times(
 }
 
 async fn force_check(client: reqwest::Client, server: Server, stream: String) -> Result<(), Error> {
-    let url = format!("{}{}", server.url, &api::path::streams(""));
+    let url = format!("{}{}", server.url, api::path::streams(""));
 
     let response = client.get(url).send().await?;
 
@@ -68,7 +68,7 @@ pub async fn cascade_push(
 ) -> Result<(), Error> {
     let mut headers = HeaderMap::new();
     headers.append(header::CONTENT_TYPE, "application/json".parse().unwrap());
-    let url = format!("{}{}", server_src.url, &api::path::cascade(&stream));
+    let url = format!("{}{}", server_src.url, api::path::cascade(&stream));
     let body = serde_json::to_string(&Cascade {
         target_url: Some(format!(
             "{}{}",
@@ -127,7 +127,7 @@ pub async fn cascade_pull(
     let mut headers = HeaderMap::new();
     headers.append(header::CONTENT_TYPE, "application/json".parse().unwrap());
 
-    let url = format!("{}{}", server_dst.url, &api::path::cascade(&stream));
+    let url = format!("{}{}", server_dst.url, api::path::cascade(&stream));
 
     let body = serde_json::to_string(&Cascade {
         source_url: Some(format!("{}/whep/{}", server_src.url, stream)),
