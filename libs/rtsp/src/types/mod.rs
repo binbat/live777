@@ -81,6 +81,8 @@ pub enum VideoCodecParams {
     AV1 {
         payload_type: u8,
         clock_rate: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile_id: Option<String>,
     },
 }
 
@@ -330,6 +332,7 @@ impl From<cli::Codec> for VideoCodecParams {
             cli::Codec::AV1 => VideoCodecParams::AV1 {
                 payload_type: 96,
                 clock_rate: 90000,
+                profile_id: Some("0".to_string()),
             },
             _ => VideoCodecParams::H264 {
                 payload_type: 96,
@@ -683,6 +686,7 @@ mod tests {
             VideoCodecParams::AV1 {
                 payload_type: 96,
                 clock_rate: 90000,
+                profile_id: Some("0".to_string()),
             },
         ];
 

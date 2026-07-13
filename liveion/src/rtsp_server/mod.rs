@@ -419,13 +419,15 @@ fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
         VideoCodecParams::H264 {
             payload_type,
             clock_rate,
+            profile_level_id,
             sps,
             pps,
-            ..
         } => {
-            let mut sdp_fmtp_line =
-                "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
-                    .to_string();
+            let profile = profile_level_id.as_deref().unwrap_or("42001f");
+            let mut sdp_fmtp_line = format!(
+                "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
+                profile
+            );
             if !sps.is_empty() && !pps.is_empty() {
                 let sps_b64 = BASE64.encode(sps);
                 let pps_b64 = BASE64.encode(pps);
@@ -589,12 +591,13 @@ fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
         VideoCodecParams::AV1 {
             payload_type,
             clock_rate,
+            profile_id,
         } => RTCRtpCodecParameters {
             rtp_codec: RTCRtpCodec {
                 mime_type: "video/AV1".to_string(),
                 clock_rate: *clock_rate,
                 channels: 0,
-                sdp_fmtp_line: "profile-id=0".to_string(),
+                sdp_fmtp_line: format!("profile-id={}", profile_id.as_deref().unwrap_or("0")),
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "goog-remb".to_owned(),

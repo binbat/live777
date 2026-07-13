@@ -94,10 +94,15 @@ fn parse_video_codec(media: &sdp_types::Media) -> Option<VideoCodecParams> {
             payload_type,
             clock_rate,
         }),
-        "AV1" => Some(VideoCodecParams::AV1 {
-            payload_type,
-            clock_rate,
-        }),
+        "AV1" => {
+            let profile_id = extract_av1_profile_id(media);
+
+            Some(VideoCodecParams::AV1 {
+                payload_type,
+                clock_rate,
+                profile_id,
+            })
+        }
         _ => {
             warn!("Unsupported video codec: {}", codec_name);
             None
@@ -306,6 +311,14 @@ pub fn extract_h265_params(media: &sdp_types::Media) -> Option<(Vec<u8>, Vec<u8>
 }
 
 fn extract_profile_level_id(media: &sdp_types::Media) -> Option<String> {
+    extract_fmtp_param(media, "profile-level-id=")
+}
+
+fn extract_av1_profile_id(media: &sdp_types::Media) -> Option<String> {
+    extract_fmtp_param(media, "profile-id=")
+}
+
+fn extract_fmtp_param(media: &sdp_types::Media, prefix: &str) -> Option<String> {
     media
         .attributes
         .iter()
@@ -313,8 +326,11 @@ fn extract_profile_level_id(media: &sdp_types::Media) -> Option<String> {
         .and_then(|a| a.value.as_ref())
         .and_then(|value| {
             for param in value.split(';') {
-                if let Some(profile) = param.trim().strip_prefix("profile-level-id=") {
-                    return Some(profile.to_string());
+                let trimmed = param.trim();
+                // Some fmtp lines include the payload type before the first parameter.
+                let candidate = trimmed.split_whitespace().nth(1).unwrap_or(trimmed);
+                if let Some(v) = candidate.strip_prefix(prefix) {
+                    return Some(v.to_string());
                 }
             }
             None
@@ -498,10 +514,12 @@ a=rtpmap:96 AV1/90000
         if let Some(VideoCodecParams::AV1 {
             payload_type,
             clock_rate,
+            profile_id,
         }) = codec
         {
             assert_eq!(payload_type, 96);
             assert_eq!(clock_rate, 90000);
+            assert_eq!(profile_id, Some("0".to_string()));
         } else {
             panic!("Expected AV1 codec");
         }
