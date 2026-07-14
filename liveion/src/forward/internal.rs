@@ -42,8 +42,33 @@ use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
 const CLOSED_SESSION_TTL_MS: i64 = 30_000;
 
+fn video_rtcp_feedback() -> Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback> {
+    vec![
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "goog-remb".to_string(),
+            parameter: "".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "transport-cc".to_string(),
+            parameter: "".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "ccm".to_string(),
+            parameter: "fir".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "".to_string(),
+        },
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "pli".to_string(),
+        },
+    ]
+}
+
 fn ensure_video_rtcp_feedback(codec: &mut RTCRtpCodec) {
-    for feedback in rtsp::video_rtcp_feedback() {
+    for feedback in video_rtcp_feedback() {
         if !codec.rtcp_feedback.iter().any(|existing| {
             existing.typ == feedback.typ && existing.parameter == feedback.parameter
         }) {
@@ -1470,7 +1495,7 @@ impl PeerForwardInternal {
                     clock_rate: 90000,
                     channels: 0,
                     sdp_fmtp_line: "".to_owned(),
-                    rtcp_feedback: rtsp::video_rtcp_feedback(),
+                    rtcp_feedback: video_rtcp_feedback(),
                 }
             } else {
                 RTCRtpCodec {
