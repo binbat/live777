@@ -203,6 +203,14 @@ impl SubscribeRTCPeerConnection {
                 PublishTrackRemote::Virtual(v) => v.codec_params.rtp_codec.clone(),
             };
 
+            // Normalize the publisher codec to match what the sender was
+            // created with: zero constraint byte in profile-level-id, strip
+            // sprop-parameter-sets.  Without this, rtp_codecs_match won't
+            // find the exact match (PT 103) and select_compatible_codec
+            // falls back to the first H264 in MediaEngine order (PT 119,
+            // High Profile) which Chrome rejects.
+            let publisher_codec = Self::normalize_publisher_codec(publisher_codec);
+
             let (codec, payload_type) =
                 Self::select_sender_codec(stream, id, kind, sender, publisher_codec.clone()).await;
 
@@ -303,6 +311,52 @@ impl SubscribeRTCPeerConnection {
         )
     }
 
+    /// Normalize a publisher codec so it can be matched against the
+    /// subscriber's sender codecs.  Zeroes the H264 profile-level-id
+    /// constraint byte and strips sprop keys (browsers get SPS/PPS
+    /// in-band).  The sender was already created with the normalized
+    /// codec; this ensures `rtp_codecs_match` finds the exact match.
+    fn normalize_publisher_codec(mut codec: RTCRtpCodec) -> RTCRtpCodec {
+        use crate::forward::codec_compat::{is_av1_codec, is_h264_codec, is_h265_codec};
+        if is_h264_codec(&codec) || is_h265_codec(&codec) || is_av1_codec(&codec) {
+            // H264: strip sprop-parameter-sets (browsers receive SPS/PPS
+            // in-band).  H265: keep sprop-vps/sps/pps — they are required
+            // for webrtc-rs sender codec matching in internal.rs.
+            let sprop_keys: &[&str] = if is_h264_codec(&codec) {
+                &["sprop-parameter-sets"]
+            } else {
+                &[]
+            };
+            let plid_key: Option<&str> =
+                if is_h264_codec(&codec) { Some("profile-level-id") } else { None };
+            codec.sdp_fmtp_line = codec
+                .sdp_fmtp_line
+                .split(';')
+                .filter_map(|part| {
+                    let trimmed = part.trim();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    if let Some((k, v)) = trimmed.split_once('=') {
+                        let key = k.trim();
+                        if sprop_keys.iter().any(|sk| key.eq_ignore_ascii_case(sk)) {
+                            return None;
+                        }
+                        if let Some(plk) = plid_key {
+                            if key.eq_ignore_ascii_case(plk) && v.len() == 6 {
+                                let normalized = format!("{}00{}", &v[0..2], &v[4..6]).to_ascii_lowercase();
+                                return Some(format!("{}={}", key, normalized));
+                            }
+                        }
+                    }
+                    Some(trimmed.to_owned())
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+        }
+        codec
+    }
+
     async fn select_sender_codec(
         stream: &str,
         id: &str,
@@ -317,6 +371,29 @@ impl SubscribeRTCPeerConnection {
         if params.rtp_parameters.codecs.is_empty() {
             return (publisher_codec, None);
         }
+
+        // Log the full sender codec list to diagnose PT selection issues.
+        let codec_list: Vec<String> = params
+            .rtp_parameters
+            .codecs
+            .iter()
+            .map(|c| {
+                format!(
+                    "pt={}/{}",
+                    c.payload_type,
+                    c.rtp_codec.mime_type
+                )
+            })
+            .collect();
+        info!(
+            "[{}] [{}] {} sender codecs ({}): {:?}; publisher={}",
+            stream,
+            id,
+            kind,
+            codec_list.len(),
+            codec_list,
+            Self::format_codec(&publisher_codec)
+        );
 
         let matched = select_compatible_codec(&publisher_codec, &params.rtp_parameters.codecs);
 
@@ -338,16 +415,9 @@ impl SubscribeRTCPeerConnection {
             return (publisher_codec, None);
         }
 
-        // Preserve H265 sprop parameters from the publisher so the subscriber's
-        // SDP answer includes them. Browsers need sprop-vps/sps/pps to
-        // initialize an H265 decoder.
-        let mut selected_rtp_codec = selected.rtp_codec.clone();
-        if is_h265_codec(&selected_rtp_codec) {
-            selected_rtp_codec.sdp_fmtp_line = merge_h265_sprop(
-                &publisher_codec.sdp_fmtp_line,
-                &selected_rtp_codec.sdp_fmtp_line,
-            );
-        }
+        // Use the selected codec as-is without merging publisher sprop.
+        // Browsers receive SPS/PPS/VPS in-band from the RTP stream.
+        let selected_rtp_codec = selected.rtp_codec.clone();
 
         let mut updated_params = params.clone();
         for encoding in updated_params.encodings.iter_mut() {
@@ -550,10 +620,57 @@ impl SubscribeRTCPeerConnection {
                                     // Publisher-side MID/RID/TWCC extension ids may not match
                                     // the WHEP subscriber's extmap, while the subscriber already
                                     // has this SSRC declared in its SDP answer.
+
                                     packet.header.extension = false;
                                     packet.header.extension_profile = 0;
                                     packet.header.extensions.clear();
                                     packet.header.extensions_padding = 0;
+
+                                    // Fix H264 STAP-A NRI header.
+                                    // ffmpeg's RTSP muxer sets NRI=0 in
+                                    // the STAP-A header byte, but
+                                    // RFC 6184 §5.6 requires NRI to be
+                                    // the maximum of all aggregated NAL
+                                    // units.  Chrome enforces this and
+                                    // silently drops STAP-A packets
+                                    // with incorrect NRI.
+                                    if packet.payload.len() > 1
+                                        && (packet.payload[0] & 0x1F) == 24
+                                    {
+                                        let mut max_nri: u8 = 0;
+                                        let mut pos = 1usize;
+                                        let payload = &packet.payload;
+                                        while pos + 2 <= payload.len() {
+                                            let size =
+                                                u16::from_be_bytes([
+                                                    payload[pos],
+                                                    payload[pos + 1],
+                                                ]) as usize;
+                                            pos += 2;
+                                            if size == 0
+                                                || pos + size > payload.len()
+                                            {
+                                                break;
+                                            }
+                                            let nri =
+                                                (payload[pos] >> 5) & 0x03;
+                                            if nri > max_nri {
+                                                max_nri = nri;
+                                            }
+                                            pos += size;
+                                        }
+                                        if max_nri > 0 {
+                                            let mut payload_mut =
+                                                packet.payload.to_vec();
+                                            payload_mut[0] = (payload_mut[0]
+                                                & 0x9F)
+                                                | (max_nri << 5);
+                                            packet.payload =
+                                                bytes::Bytes::from(payload_mut);
+                                        }
+                                    }
+
+                                    // H264 STAP-A NRI fix applied above when needed.
 
                                     if let Err(err) = track.write_rtp(packet).await {
                                         if Self::is_transient_track_write_error(&err) {
@@ -612,21 +729,11 @@ impl SubscribeRTCPeerConnection {
                                     transient_write_error_since = None;
                                     if first_packet {
                                         info!(
-                                            "[{}] [{}] {} first RTP packet written successfully: source_codec={}, selected_codec={}, payload_type={:?}, outgoing_payload_type={}, ssrc={}",
-                                            stream,
-                                            id,
-                                            kind,
-                                            source_codec
-                                                .as_ref()
-                                                .map(Self::format_codec)
-                                                .unwrap_or_else(|| "<none>".to_string()),
-                                            selected_codec
-                                                .as_ref()
-                                                .map(Self::format_codec)
-                                                .unwrap_or_else(|| "<none>".to_string()),
-                                            payload_type,
-                                            outgoing_payload_type,
-                                            sender_ssrc,
+                                            "[{}] [{}] {} first RTP packet written: source_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                                            stream, id, kind,
+                                            source_codec.as_ref().map(Self::format_codec).unwrap_or_else(|| "<none>".to_string()),
+                                            selected_codec.as_ref().map(Self::format_codec).unwrap_or_else(|| "<none>".to_string()),
+                                            payload_type, sender_ssrc,
                                         );
                                         if kind == RtpCodecKind::Video {
                                             let _ = forward_channel
@@ -645,10 +752,10 @@ impl SubscribeRTCPeerConnection {
                                             );
                                         }
                                         first_packet = false;
-                                    }
-                                }
-                            }
-                        }
+                                    } // if first_packet
+                            } // Some(ref track)
+                            } // match track
+                        } // Ok(packet)
                         Err(err) => {
                             warn!("[{}] [{}] {} rtp receiver err: {}", stream, id, kind, err);
                         }

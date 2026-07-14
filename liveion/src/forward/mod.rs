@@ -34,6 +34,10 @@ use self::media::MediaInfo;
 #[cfg(feature = "cascade")]
 use self::message::CascadeInfo;
 use self::message::ForwardEvent;
+use self::codec_compat::{
+    fmtp_param, fmtp_param_case_preserving, is_h264_codec, is_h265_codec,
+    remove_fmtp_key, replace_fmtp_key,
+};
 
 #[cfg(any(
     feature = "source-rtsp",
@@ -50,7 +54,7 @@ pub(crate) mod av1_assembler;
 pub(crate) mod av1_repacketizer;
 #[cfg(feature = "source")]
 pub(crate) mod channel;
-mod codec_compat;
+pub(crate) mod codec_compat;
 mod internal;
 mod media;
 pub mod message;
@@ -462,6 +466,78 @@ impl PeerForward {
 
 // subscribe
 impl PeerForward {
+    /// Inject the publisher's H264/H265 codec parameters into the WHEP answer
+    /// SDP.  Chrome creates a decoder only for the *first* codec of each type
+    /// listed in the m=video line.  We update every H264 fmtp to match the
+    /// publisher's actual packetization-mode and add sprop so Chrome
+    /// initializes its decoder correctly regardless of which PT it picks.
+    async fn inject_publisher_sprop(&self, sdp: &str) -> String {
+        let video_codec = self.internal.publisher_codec(RtpCodecKind::Video).await;
+        let Some(ref codec) = video_codec else {
+            tracing::debug!("inject_publisher_sprop: no publisher codec, returning SDP unchanged");
+            return sdp.to_owned();
+        };
+
+        let mut lines: Vec<String> = sdp.lines().map(|l| l.to_owned()).collect();
+
+        if is_h264_codec(codec) {
+            let pub_pkt_mode =
+                fmtp_param(&codec.sdp_fmtp_line, "packetization-mode");
+            let pub_profile_level_id = fmtp_param_case_preserving(
+                &codec.sdp_fmtp_line,
+                "profile-level-id",
+            );
+            let pub_sprop = fmtp_param_case_preserving(
+                &codec.sdp_fmtp_line,
+                "sprop-parameter-sets",
+            );
+
+            for line in lines.iter_mut() {
+                if !line.starts_with("a=fmtp:") {
+                    continue;
+                }
+                if !line.contains("profile-level-id") {
+                    continue;
+                }
+                if let Some(ref mode) = pub_pkt_mode {
+                    *line = replace_fmtp_key(line, "packetization-mode", mode);
+                }
+                if let Some(plid) = pub_profile_level_id {
+                    if plid.len() == 6 {
+                        let normalized =
+                            format!("{}00{}", &plid[0..2], &plid[4..6])
+                                .to_ascii_lowercase();
+                        *line = replace_fmtp_key(
+                            line,
+                            "profile-level-id",
+                            &normalized,
+                        );
+                    }
+                }
+                if let Some(ref sprop) = pub_sprop {
+                    *line = remove_fmtp_key(line, "sprop-parameter-sets");
+                    *line = format!("{};sprop-parameter-sets={}", line.trim_end_matches(';'), sprop);
+                }
+            }
+        }
+
+        if is_h265_codec(codec) {
+            for key in ["sprop-vps", "sprop-sps", "sprop-pps"] {
+                if let Some(value) = fmtp_param_case_preserving(&codec.sdp_fmtp_line, key) {
+                    for line in lines.iter_mut() {
+                        // H265 fmtp lines are identified by level-id.
+                        if line.starts_with("a=fmtp:") && line.contains("level-id") {
+                            *line = remove_fmtp_key(line, key);
+                            *line = format!("{};{}={}", line.trim_end_matches(';'), key, value);
+                        }
+                    }
+                }
+            }
+        }
+
+        lines.join("\r\n") + "\r\n"
+    }
+
     pub async fn add_subscribe(
         &self,
         mut offer: RTCSessionDescription,
@@ -475,6 +551,12 @@ impl PeerForward {
             peer_complete(offer, peer.clone(), gather_complete).await?,
             get_peer_id(&peer),
         );
+
+        // Inject the publisher's H264/H265 codec parameters into the answer
+        // so browsers can initialize their decoders without waiting for
+        // in-band parameter sets.
+        let mut sdp = sdp;
+        sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
         let _ = self
             .internal

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
 pub fn rtp_codecs_match(left: &RTCRtpCodec, right: &RTCRtpCodec) -> bool {
@@ -19,63 +17,24 @@ pub fn fmtp_param(fmtp: &str, key: &str) -> Option<String> {
     })
 }
 
+/// Extract a fmtp parameter value without lowercasing. Use this for
+/// binary/base64-encoded values (sprop-parameter-sets, sprop-vps, etc.).
+pub fn fmtp_param_case_preserving<'a>(fmtp: &'a str, key: &str) -> Option<&'a str> {
+    fmtp.split(';').find_map(|part| {
+        let (param_key, value) = part.trim().split_once('=')?;
+        param_key
+            .trim()
+            .eq_ignore_ascii_case(key)
+            .then_some(value.trim())
+    })
+}
+
 pub fn is_h265_codec(codec: &RTCRtpCodec) -> bool {
     codec.mime_type.eq_ignore_ascii_case("video/H265")
 }
 
 pub fn is_av1_codec(codec: &RTCRtpCodec) -> bool {
     codec.mime_type.eq_ignore_ascii_case("video/AV1")
-}
-
-/// Merge H265 parameters from the publisher fmtp into the selected
-/// subscriber fmtp. Existing selected parameters are preserved, except for
-/// bitstream-describing parameters (profile-space, profile-id, tier-flag,
-/// level-id and sprop-*) which are taken from the publisher so the answer
-/// accurately describes the stream being forwarded.
-pub fn merge_h265_sprop(publisher_fmtp: &str, selected_fmtp: &str) -> String {
-    let publisher_keys = [
-        "profile-space",
-        "profile-id",
-        "tier-flag",
-        "level-id",
-        "sprop-vps",
-        "sprop-sps",
-        "sprop-pps",
-    ];
-
-    let mut params: Vec<(String, String)> = selected_fmtp
-        .split(';')
-        .filter(|part| !part.trim().is_empty())
-        .filter_map(|part| {
-            let (key, value) = part.trim().split_once('=')?;
-            let key = key.trim();
-            if publisher_keys.iter().any(|k| k.eq_ignore_ascii_case(key)) {
-                return None;
-            }
-            Some((key.to_owned(), value.trim().to_owned()))
-        })
-        .collect();
-
-    // Parse publisher fmtp once so we don't split it again per-key below.
-    let publisher_params: HashMap<String, String> = publisher_fmtp
-        .split(';')
-        .filter_map(|part| {
-            let (k, v) = part.trim().split_once('=')?;
-            Some((k.trim().to_ascii_lowercase(), v.trim().to_owned()))
-        })
-        .collect();
-
-    for key in publisher_keys {
-        if let Some(value) = publisher_params.get(&key.to_ascii_lowercase()) {
-            params.push((key.to_owned(), value.clone()));
-        }
-    }
-
-    params
-        .into_iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join(";")
 }
 
 pub fn h265_codecs_are_compatible(existing_codec: &RTCRtpCodec, new_codec: &RTCRtpCodec) -> bool {
@@ -100,14 +59,16 @@ pub fn h265_codecs_are_compatible(existing_codec: &RTCRtpCodec, new_codec: &RTCR
         }
     }
 
-    // tx-mode has no defined default. If the new codec specifies it, the
-    // existing codec must specify the same value.
+    // tx-mode has no defined default.  Only reject when both sides
+    // declare tx-mode and the values differ.  RTSP publishers typically
+    // omit tx-mode entirely; treating an absent value as "compatible
+    // with any mode" avoids unnecessary replace_track timeouts.
     match (
         fmtp_param(&existing_codec.sdp_fmtp_line, "tx-mode"),
         fmtp_param(&new_codec.sdp_fmtp_line, "tx-mode"),
     ) {
         (Some(existing_value), Some(new_value)) if existing_value == new_value => {}
-        (_, Some(_)) => return false,
+        (Some(_), Some(_)) => return false,
         _ => {}
     }
 
@@ -217,9 +178,14 @@ pub fn sender_track_codec_compatible(
     selected_codec: &RTCRtpCodec,
 ) -> bool {
     rtp_codecs_match(sender_track_codec, selected_codec)
+        || (is_h264_codec(sender_track_codec) && is_h264_codec(selected_codec))
         || (h265_codecs_are_compatible(sender_track_codec, selected_codec)
             && h265_candidate_level_sufficient(sender_track_codec, selected_codec))
         || av1_codecs_are_compatible(sender_track_codec, selected_codec)
+}
+
+pub fn is_h264_codec(codec: &RTCRtpCodec) -> bool {
+    codec.mime_type.eq_ignore_ascii_case("video/H264")
 }
 
 pub fn select_compatible_codec(
@@ -252,6 +218,25 @@ pub fn select_compatible_codec(
             .cloned();
     }
 
+    if is_h264_codec(publisher_codec) {
+        // Chrome iterates the *answer's* m= line and picks the first H264
+        // codec whose fmtp matches its offer.  The answer lists codecs in
+        // MediaEngine registration order (PT 119 High Profile first).  We
+        // must use the same first-matched PT so Chrome's decoder PT matches
+        // the PT we write RTP with.  Compatibility of profile-level-id etc.
+        // is handled by inject_publisher_sprop in the SDP answer.
+        return codecs
+            .iter()
+            .find(|candidate| {
+                candidate
+                    .rtp_codec
+                    .mime_type
+                    .eq_ignore_ascii_case(&publisher_codec.mime_type)
+                    && candidate.rtp_codec.clock_rate == publisher_codec.clock_rate
+            })
+            .cloned();
+    }
+
     codecs
         .iter()
         .find(|candidate| {
@@ -262,4 +247,48 @@ pub fn select_compatible_codec(
                 && candidate.rtp_codec.clock_rate == publisher_codec.clock_rate
         })
         .cloned()
+}
+
+/// Replace the value of a semicolon-separated key in a fmtp string.
+/// If the key does not exist, it is appended.
+pub(crate) fn replace_fmtp_key(fmtp: &str, key: &str, new_value: &str) -> String {
+    let parts: Vec<&str> = fmtp.split(';').collect();
+    let mut result: Vec<String> = vec![];
+    let mut found = false;
+    for part in parts {
+        let trimmed = part.trim();
+        if let Some((k, _)) = trimmed.split_once('=') {
+            let k = k.trim();
+            if k.eq_ignore_ascii_case(key) {
+                result.push(format!("{}={}", k, new_value));
+                found = true;
+                continue;
+            }
+        }
+        if !trimmed.is_empty() {
+            result.push(trimmed.to_owned());
+        }
+    }
+    if !found {
+        result.push(format!("{}={}", key, new_value));
+    }
+    result.join(";")
+}
+
+/// Remove a semicolon-separated key from a fmtp string.
+pub(crate) fn remove_fmtp_key(fmtp: &str, key: &str) -> String {
+    let parts: Vec<&str> = fmtp.split(';').collect();
+    let result: Vec<String> = parts
+        .iter()
+        .filter(|p| {
+            let trimmed = p.trim();
+            if let Some((k, _)) = trimmed.split_once('=') {
+                !k.trim().eq_ignore_ascii_case(key)
+            } else {
+                !trimmed.is_empty()
+            }
+        })
+        .map(|p| p.trim().to_owned())
+        .collect();
+    result.join(";")
 }
