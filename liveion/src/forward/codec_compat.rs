@@ -249,32 +249,6 @@ pub fn select_compatible_codec(
         .cloned()
 }
 
-/// Replace the value of a semicolon-separated key in a fmtp string.
-/// If the key does not exist, it is appended.
-pub(crate) fn replace_fmtp_key(fmtp: &str, key: &str, new_value: &str) -> String {
-    let parts: Vec<&str> = fmtp.split(';').collect();
-    let mut result: Vec<String> = vec![];
-    let mut found = false;
-    for part in parts {
-        let trimmed = part.trim();
-        if let Some((k, _)) = trimmed.split_once('=') {
-            let k = k.trim();
-            if k.eq_ignore_ascii_case(key) {
-                result.push(format!("{}={}", k, new_value));
-                found = true;
-                continue;
-            }
-        }
-        if !trimmed.is_empty() {
-            result.push(trimmed.to_owned());
-        }
-    }
-    if !found {
-        result.push(format!("{}={}", key, new_value));
-    }
-    result.join(";")
-}
-
 /// Remove a semicolon-separated key from a fmtp string.
 pub(crate) fn remove_fmtp_key(fmtp: &str, key: &str) -> String {
     let parts: Vec<&str> = fmtp.split(';').collect();

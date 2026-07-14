@@ -2,6 +2,8 @@ pub mod ffmpeg;
 pub mod gstreamer_vp8;
 #[cfg(feature = "rsmpeg")]
 pub mod rsmpeg_vp8;
+#[cfg(feature = "rtsp")]
+pub mod rtsp_ffmpeg;
 #[cfg(feature = "rsmpeg")]
 pub mod whipsynth;
 
@@ -45,6 +47,24 @@ pub trait Source: Send + Sync {
     /// emitting RTP to a local address.
     fn publishes_directly(&self) -> bool {
         false
+    }
+
+    /// Whether this source publishes via RTSP (ANNOUNCE + RECORD) instead of
+    /// WHIP. RTSP sources receive the RTSP URL directly via
+    /// [`Self::start_rtsp`].
+    #[cfg(feature = "rtsp")]
+    fn is_rtsp(&self) -> bool {
+        false
+    }
+
+    /// Start pushing to the liveion RTSP server.
+    ///
+    /// Only called when [`Self::is_rtsp`] returns `true`.  `rtsp_url` is the
+    /// full RTSP URL, e.g. `rtsp://127.0.0.1:8554/-`.
+    #[cfg(feature = "rtsp")]
+    fn start_rtsp(&self, rtsp_url: &str) -> anyhow::Result<Box<dyn SourceHandle>> {
+        let _ = rtsp_url;
+        anyhow::bail!("RTSP publishing not supported by this source")
     }
 
     /// Start direct WHIP publishing. Only called when [`Self::publishes_directly`]

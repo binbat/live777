@@ -1553,14 +1553,15 @@ impl PeerForwardInternal {
                                 return None;
                             }
                             // Normalize H264 profile-level-id.
-                            if let Some(plk) = plid_key {
-                                if key.eq_ignore_ascii_case(plk) && trimmed.len() >= plk.len() + 7 {
-                                    let val = &trimmed[plk.len() + 1..];
-                                    if val.len() == 6 {
-                                        let normalized =
-                                            format!("{}00{}", &val[0..2], &val[4..6]).to_ascii_lowercase();
-                                        return Some(format!("{}={}", key, normalized));
-                                    }
+                            if let Some(plk) = plid_key
+                                && key.eq_ignore_ascii_case(plk)
+                                && trimmed.len() >= plk.len() + 7
+                            {
+                                let val = &trimmed[plk.len() + 1..];
+                                if val.len() == 6 {
+                                    let normalized = format!("{}00{}", &val[0..2], &val[4..6])
+                                        .to_ascii_lowercase();
+                                    return Some(format!("{}={}", key, normalized));
                                 }
                             }
                         }

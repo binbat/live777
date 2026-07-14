@@ -327,8 +327,11 @@ impl SubscribeRTCPeerConnection {
             } else {
                 &[]
             };
-            let plid_key: Option<&str> =
-                if is_h264_codec(&codec) { Some("profile-level-id") } else { None };
+            let plid_key: Option<&str> = if is_h264_codec(&codec) {
+                Some("profile-level-id")
+            } else {
+                None
+            };
             codec.sdp_fmtp_line = codec
                 .sdp_fmtp_line
                 .split(';')
@@ -342,11 +345,13 @@ impl SubscribeRTCPeerConnection {
                         if sprop_keys.iter().any(|sk| key.eq_ignore_ascii_case(sk)) {
                             return None;
                         }
-                        if let Some(plk) = plid_key {
-                            if key.eq_ignore_ascii_case(plk) && v.len() == 6 {
-                                let normalized = format!("{}00{}", &v[0..2], &v[4..6]).to_ascii_lowercase();
-                                return Some(format!("{}={}", key, normalized));
-                            }
+                        if let Some(plk) = plid_key
+                            && key.eq_ignore_ascii_case(plk)
+                            && v.len() == 6
+                        {
+                            let normalized =
+                                format!("{}00{}", &v[0..2], &v[4..6]).to_ascii_lowercase();
+                            return Some(format!("{}={}", key, normalized));
                         }
                     }
                     Some(trimmed.to_owned())
@@ -377,13 +382,7 @@ impl SubscribeRTCPeerConnection {
             .rtp_parameters
             .codecs
             .iter()
-            .map(|c| {
-                format!(
-                    "pt={}/{}",
-                    c.payload_type,
-                    c.rtp_codec.mime_type
-                )
-            })
+            .map(|c| format!("pt={}/{}", c.payload_type, c.rtp_codec.mime_type))
             .collect();
         info!(
             "[{}] [{}] {} sender codecs ({}): {:?}; publisher={}",
@@ -1226,23 +1225,6 @@ mod tests {
             &main_10_profile.rtp_codec,
             &source_codec
         ));
-    }
-
-    #[test]
-    fn h265_merge_sprop_overrides_bitstream_params_from_publisher() {
-        let publisher_fmtp =
-            "profile-id=1;tier-flag=0;level-id=90;sprop-vps=VPS;sprop-sps=SPS;sprop-pps=PPS";
-        let selected_fmtp = "tx-mode=SRST;profile-id=2;tier-flag=1;level-id=180;sprop-vps=OLD";
-        let merged = merge_h265_sprop(publisher_fmtp, selected_fmtp);
-        assert!(merged.contains("profile-id=1"));
-        assert!(merged.contains("tier-flag=0"));
-        assert!(merged.contains("level-id=90"));
-        assert!(merged.contains("tx-mode=SRST"));
-        assert!(merged.contains("sprop-vps=VPS"));
-        assert!(merged.contains("sprop-sps=SPS"));
-        assert!(merged.contains("sprop-pps=PPS"));
-        assert!(!merged.contains("profile-id=2"));
-        assert!(!merged.contains("sprop-vps=OLD"));
     }
 
     #[test]

@@ -30,14 +30,11 @@ use rtc::rtp::packet::Packet;
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
 use rtc::shared::marshal::Unmarshal;
 
+use self::codec_compat::{fmtp_param_case_preserving, is_h265_codec, remove_fmtp_key};
 use self::media::MediaInfo;
 #[cfg(feature = "cascade")]
 use self::message::CascadeInfo;
 use self::message::ForwardEvent;
-use self::codec_compat::{
-    fmtp_param, fmtp_param_case_preserving, is_h264_codec, is_h265_codec,
-    remove_fmtp_key, replace_fmtp_key,
-};
 
 #[cfg(any(
     feature = "source-rtsp",
@@ -480,53 +477,32 @@ impl PeerForward {
 
         let mut lines: Vec<String> = sdp.lines().map(|l| l.to_owned()).collect();
 
-        if is_h264_codec(codec) {
-            let pub_pkt_mode =
-                fmtp_param(&codec.sdp_fmtp_line, "packetization-mode");
-            let pub_profile_level_id = fmtp_param_case_preserving(
-                &codec.sdp_fmtp_line,
-                "profile-level-id",
-            );
-            let pub_sprop = fmtp_param_case_preserving(
-                &codec.sdp_fmtp_line,
-                "sprop-parameter-sets",
-            );
-
-            for line in lines.iter_mut() {
-                if !line.starts_with("a=fmtp:") {
-                    continue;
-                }
-                if !line.contains("profile-level-id") {
-                    continue;
-                }
-                if let Some(ref mode) = pub_pkt_mode {
-                    *line = replace_fmtp_key(line, "packetization-mode", mode);
-                }
-                if let Some(plid) = pub_profile_level_id {
-                    if plid.len() == 6 {
-                        let normalized =
-                            format!("{}00{}", &plid[0..2], &plid[4..6])
-                                .to_ascii_lowercase();
-                        *line = replace_fmtp_key(
-                            line,
-                            "profile-level-id",
-                            &normalized,
-                        );
-                    }
-                }
-                if let Some(ref sprop) = pub_sprop {
-                    *line = remove_fmtp_key(line, "sprop-parameter-sets");
-                    *line = format!("{};sprop-parameter-sets={}", line.trim_end_matches(';'), sprop);
-                }
-            }
-        }
+        // H264: the sender was already created with the normalized codec
+        // (packetization-mode, profile-level-id) in internal.rs.
+        //
+        // We previously patched these parameters into the answer SDP here,
+        // but replace_fmtp_key would reorder the fmtp params.  RTSP test
+        // failures revealed that livetwo and rsmpeg compare fmtp strings
+        // exactly, so the reordering broke codec matching for non-browser
+        // subscribers.  Chrome receives SPS/PPS in-band — the STAP-A NRI
+        // fix in subscribe.rs ensures correct handling — so removing this
+        // patch has no impact on browser clients.
+        //
+        // H265: the sender kept sprop-vps/sps/pps.  We replace them with the
+        // publisher's actual values so the answer correctly describes the
+        // stream being forwarded.
 
         if is_h265_codec(codec) {
             for key in ["sprop-vps", "sprop-sps", "sprop-pps"] {
                 if let Some(value) = fmtp_param_case_preserving(&codec.sdp_fmtp_line, key) {
                     for line in lines.iter_mut() {
                         // H265 fmtp lines are identified by level-id.
-                        if line.starts_with("a=fmtp:") && line.contains("level-id") {
+                        // Only replace sprop if the line already has it,
+                        // for the same reason as H264 above.
+                        if line.starts_with("a=fmtp:")
+                            && line.contains("level-id")
+                            && line.contains(key)
+                        {
                             *line = remove_fmtp_key(line, key);
                             *line = format!("{};{}={}", line.trim_end_matches(';'), key, value);
                         }
@@ -554,7 +530,9 @@ impl PeerForward {
 
         // Inject the publisher's H264/H265 codec parameters into the answer
         // so browsers can initialize their decoders without waiting for
-        // in-band parameter sets.
+        // in-band parameter sets.  Only *replaces* sprop keys that are
+        // already present in the answer — never adds new keys, which would
+        // cause codec mismatch for non-browser clients (livetwo, rsmpeg).
         let mut sdp = sdp;
         sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 

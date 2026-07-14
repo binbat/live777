@@ -14,14 +14,14 @@ use tokio::time::Duration;
 use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "source")]
+use base64::Engine;
+#[cfg(feature = "source")]
+use livetwo::payload::{RePayload, RePayloadCodec};
+#[cfg(feature = "source")]
 use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 #[cfg(feature = "source")]
 use tracing::error;
-#[cfg(feature = "source")]
-use livetwo::payload::{RePayload, RePayloadCodec};
-#[cfg(feature = "source")]
-use base64::Engine;
 use webrtc::media_stream::track_remote::TrackRemote;
 
 #[cfg(feature = "source")]
@@ -720,27 +720,25 @@ impl VirtualPublishTrack {
                 if mime.eq_ignore_ascii_case("video/H264") {
                     if let Some(sprop) = fmtp_param_case_preserving(fmtp, "sprop-parameter-sets") {
                         let parts: Vec<&str> = sprop.split(',').collect();
-                        if parts.len() >= 2 {
-                            if let (Ok(sps), Ok(pps)) = (
-                                b64.decode(parts[0].trim()),
-                                b64.decode(parts[1].trim()),
-                            ) {
-                                rp.set_h264_params(sps, pps);
-                            }
+                        if parts.len() >= 2
+                            && let (Ok(sps), Ok(pps)) =
+                                (b64.decode(parts[0].trim()), b64.decode(parts[1].trim()))
+                        {
+                            rp.set_h264_params(sps, pps);
                         }
                     }
                 } else if mime.eq_ignore_ascii_case("video/H265") {
                     let vps = fmtp_param_case_preserving(fmtp, "sprop-vps");
                     let sps = fmtp_param_case_preserving(fmtp, "sprop-sps");
                     let pps = fmtp_param_case_preserving(fmtp, "sprop-pps");
-                    if let (Some(vps), Some(sps), Some(pps)) = (vps, sps, pps) {
-                        if let (Ok(vps), Ok(sps), Ok(pps)) = (
+                    if let (Some(vps), Some(sps), Some(pps)) = (vps, sps, pps)
+                        && let (Ok(vps), Ok(sps), Ok(pps)) = (
                             b64.decode(vps.trim()),
                             b64.decode(sps.trim()),
                             b64.decode(pps.trim()),
-                        ) {
-                            rp.set_h265_params(vps, sps, pps);
-                        }
+                        )
+                    {
+                        rp.set_h265_params(vps, sps, pps);
                     }
                 }
                 rp
