@@ -215,20 +215,22 @@ impl Manager {
         }
 
         debug!("create stream: {}", stream.clone());
-        let forward = self.do_stream_create(stream.clone()).await;
+        let forward = self.build_forward(&stream);
 
         let mut stream_map = self.stream_map.write().await;
         if stream_map.contains_key(&stream) {
             let _ = forward.close().await;
             return Err(anyhow::anyhow!("resource already exists"));
         }
-        stream_map.insert(stream.clone(), forward);
+        stream_map.insert(stream.clone(), forward.clone());
         drop(stream_map);
+        self.register_stream_created(&stream);
+        self.init_stream_forward(&stream, &forward).await;
         Ok(())
     }
 
-    async fn do_stream_create(&self, stream: String) -> PeerForward {
-        let entry = self.config.stream.streams.get(&stream);
+    fn build_forward(&self, stream: &str) -> PeerForward {
+        let entry = self.config.stream.streams.get(stream);
         let strategy = api::strategy::Strategy::effective(
             &self.config.strategy,
             entry.and_then(|e| e.strategy.as_ref()),
@@ -236,7 +238,7 @@ impl Manager {
         #[cfg(feature = "source")]
         let channel = entry.and_then(|entry| entry.channel.clone());
         let forward = PeerForward::new(
-            stream.clone(),
+            stream.to_string(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
             #[cfg(feature = "source")]
@@ -248,20 +250,25 @@ impl Manager {
             subscribe_event,
             self.event_sender.clone(),
         ));
+        forward
+    }
 
+    fn register_stream_created(&self, stream: &str) {
         info!("add stream : {}", stream);
         metrics::STREAM.inc();
         let _ = self.event_sender.send(Event::Stream(StreamEvent {
             stream: Stream {
-                stream: stream.clone(),
+                stream: stream.to_string(),
             },
             r#type: StreamEventType::Up,
         }));
+    }
+
+    async fn init_stream_forward(&self, _stream: &str, _forward: &PeerForward) {
         #[cfg(feature = "source")]
-        if let Err(e) = forward.try_init_udp_channel().await {
-            tracing::warn!("Failed to init UDP channel for stream {}: {:?}", stream, e);
+        if let Err(e) = _forward.try_init_udp_channel().await {
+            tracing::warn!("Failed to init UDP channel for stream {}: {:?}", _stream, e);
         }
-        forward
     }
 
     pub async fn stream_delete(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
@@ -349,7 +356,7 @@ impl Manager {
             return None;
         }
 
-        let raw_forward = self.do_stream_create(stream.to_string()).await;
+        let raw_forward = self.build_forward(stream);
         let (forward, duplicate_to_close) = {
             let mut stream_map = self.stream_map.write().await;
             if let Some(existing) = stream_map.get(stream) {
@@ -361,6 +368,9 @@ impl Manager {
         };
         if let Some(duplicate) = duplicate_to_close {
             let _ = duplicate.close().await;
+        } else {
+            self.register_stream_created(stream);
+            self.init_stream_forward(stream, &forward).await;
         }
         Some(forward)
     }
@@ -787,5 +797,47 @@ impl Manager {
     pub(crate) async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
         let map = self.stream_map.read().await;
         map.get(stream).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::hook::StreamEventType;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn concurrent_auto_create_emits_one_stream_up_event() {
+        let cancel = CancellationToken::new();
+        let manager = Manager::new(Config::default(), cancel).await;
+        let mut events = manager.event_sender.subscribe();
+        let stream = "race-auto-create";
+
+        let (r1, r2, r3, r4, r5, r6, r7, r8) = tokio::join!(
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+        );
+        let results = [r1, r2, r3, r4, r5, r6, r7, r8];
+
+        assert!(results.iter().all(Option::is_some));
+
+        let mut up_events = 0;
+        while let Ok(Ok(event)) = timeout(Duration::from_millis(50), events.recv()).await {
+            if let Event::Stream(event) = event
+                && event.stream.stream == stream
+                && event.r#type == StreamEventType::Up
+            {
+                up_events += 1;
+            }
+        }
+
+        assert_eq!(up_events, 1);
     }
 }
