@@ -410,7 +410,7 @@ impl RtspSource {
 
     #[cfg(feature = "source")]
     fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
-        crate::rtsp_server::video_codec_to_rtc(codec)
+        crate::rtsp_codec::video_codec_to_rtc(codec)
     }
 
     #[cfg(feature = "source")]
