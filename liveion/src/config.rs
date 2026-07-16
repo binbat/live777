@@ -558,27 +558,9 @@ pub struct RtspListen {
 
 impl RtspListen {
     pub fn parse(listen: &str) -> Result<Self, String> {
-        // `rtsp://[user:pass@]host:port`
-        if let Some(rest) = listen.strip_prefix("rtsp://") {
-            let (authority, host_port) = rest
-                .split_once('@')
-                .map(|(a, h)| (Some(a), h))
-                .unwrap_or((None, rest));
-            let addr: std::net::SocketAddr = host_port
-                .parse()
-                .map_err(|e| format!("invalid RTSP listen address '{host_port}': {e}"))?;
-            let (username, password) = authority
-                .and_then(|a| a.split_once(':'))
-                .map(|(u, p)| (u.to_string(), Some(p.to_string())))
-                .or_else(|| authority.map(|u| (u.to_string(), None)))
-                .unzip();
-            Ok(Self {
-                addr,
-                username,
-                password: password.flatten(),
-            })
+        if listen.starts_with("rtsp://") {
+            Self::parse_url(listen)
         } else {
-            // Bare `host:port`
             let addr: std::net::SocketAddr = listen
                 .parse()
                 .map_err(|e| format!("invalid RTSP listen address '{listen}': {e}"))?;
@@ -590,8 +572,148 @@ impl RtspListen {
         }
     }
 
+    fn parse_url(listen: &str) -> Result<Self, String> {
+        let url = url::Url::parse(listen)
+            .map_err(|e| format!("invalid RTSP listen URL '{listen}': {e}"))?;
+        if url.scheme() != "rtsp" {
+            return Err(format!("RTSP listen URL must use rtsp scheme: '{listen}'"));
+        }
+
+        let port = url
+            .port()
+            .ok_or_else(|| format!("RTSP listen URL must include a port: '{listen}'"))?;
+        let host = url
+            .host()
+            .ok_or_else(|| format!("RTSP listen URL must include a host: '{listen}'"))?;
+        let addr = match host {
+            url::Host::Ipv4(ip) => std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port),
+            url::Host::Ipv6(ip) => std::net::SocketAddr::new(std::net::IpAddr::V6(ip), port),
+            url::Host::Domain(domain) => {
+                use std::net::ToSocketAddrs;
+
+                (domain, port)
+                    .to_socket_addrs()
+                    .map_err(|e| format!("failed to resolve RTSP listen host '{domain}': {e}"))?
+                    .next()
+                    .ok_or_else(|| format!("RTSP listen host '{domain}' resolved no addresses"))?
+            }
+        };
+
+        let username = (!url.username().is_empty())
+            .then(|| percent_decode_url_component(url.username()))
+            .transpose()?;
+        let password = url
+            .password()
+            .map(percent_decode_url_component)
+            .transpose()?;
+
+        Ok(Self {
+            addr,
+            username,
+            password,
+        })
+    }
+
     pub fn enable_auth(&self) -> bool {
         self.username.is_some()
+    }
+}
+
+#[cfg(feature = "rtsp")]
+fn percent_decode_url_component(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(format!(
+                    "invalid percent escape in RTSP listen URL: '{input}'"
+                ));
+            }
+            let high = hex_value(bytes[i + 1])
+                .ok_or_else(|| format!("invalid percent escape in RTSP listen URL: '{input}'"))?;
+            let low = hex_value(bytes[i + 2])
+                .ok_or_else(|| format!("invalid percent escape in RTSP listen URL: '{input}'"))?;
+            decoded.push((high << 4) | low);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    String::from_utf8(decoded)
+        .map_err(|e| format!("RTSP listen URL credentials are not valid UTF-8: {e}"))
+}
+
+#[cfg(feature = "rtsp")]
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[cfg(all(test, feature = "rtsp"))]
+mod rtsp_listen_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn parses_bare_socket_address_without_auth() {
+        let listen = RtspListen::parse("0.0.0.0:8554").unwrap();
+
+        assert_eq!(
+            listen.addr,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8554)
+        );
+        assert_eq!(listen.username, None);
+        assert_eq!(listen.password, None);
+        assert!(!listen.enable_auth());
+    }
+
+    #[test]
+    fn parses_rtsp_url_with_ipv4_and_credentials() {
+        let listen = RtspListen::parse("rtsp://admin:secret@0.0.0.0:8554").unwrap();
+
+        assert_eq!(
+            listen.addr,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8554)
+        );
+        assert_eq!(listen.username.as_deref(), Some("admin"));
+        assert_eq!(listen.password.as_deref(), Some("secret"));
+        assert!(listen.enable_auth());
+    }
+
+    #[test]
+    fn parses_rtsp_url_with_ipv6_and_path() {
+        let listen = RtspListen::parse("rtsp://user:pass@[::]:8554/live?ignored=1").unwrap();
+
+        assert_eq!(
+            listen.addr,
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 8554)
+        );
+        assert_eq!(listen.username.as_deref(), Some("user"));
+        assert_eq!(listen.password.as_deref(), Some("pass"));
+    }
+
+    #[test]
+    fn decodes_percent_encoded_credentials() {
+        let listen = RtspListen::parse("rtsp://user%40mail:p%3A%2Fss@127.0.0.1:8554").unwrap();
+
+        assert_eq!(listen.username.as_deref(), Some("user@mail"));
+        assert_eq!(listen.password.as_deref(), Some("p:/ss"));
+    }
+
+    #[test]
+    fn rejects_rtsp_url_without_port() {
+        let err = RtspListen::parse("rtsp://127.0.0.1").unwrap_err();
+
+        assert!(err.contains("must include a port"));
     }
 }
 
