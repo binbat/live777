@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 use webrtc::peer_connection::PeerConnection;
 
@@ -52,8 +52,8 @@ impl UdpHandler {
 
     pub async fn spawn_webrtc_to_output(
         &self,
-        video_recv: UnboundedReceiver<Vec<u8>>,
-        audio_recv: UnboundedReceiver<Vec<u8>>,
+        video_recv: Receiver<Vec<u8>>,
+        audio_recv: Receiver<Vec<u8>>,
         media_info: &rtsp::MediaInfo,
         target_host: &str,
     ) {
@@ -217,7 +217,7 @@ impl UdpHandler {
     }
 
     async fn rtp_sender_task(
-        mut receiver: UnboundedReceiver<Vec<u8>>,
+        mut receiver: Receiver<Vec<u8>>,
         listen_host: String,
         target_host: String,
         target_port: u16,

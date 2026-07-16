@@ -2,7 +2,7 @@ use rtc::rtp::packet::Packet;
 use rtc_shared::marshal::Unmarshal;
 use std::io::Cursor;
 use std::sync::Arc;
-use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 use webrtc::peer_connection::PeerConnection;
 
@@ -124,8 +124,8 @@ impl TcpHandler {
 
     pub fn spawn_webrtc_to_output(
         &self,
-        mut video_recv: UnboundedReceiver<Vec<u8>>,
-        mut audio_recv: UnboundedReceiver<Vec<u8>>,
+        mut video_recv: Receiver<Vec<u8>>,
+        mut audio_recv: Receiver<Vec<u8>>,
         tx: Sender<(u8, Vec<u8>)>,
     ) {
         if let Some(channel) = self.video_rtp_channel {

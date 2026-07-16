@@ -30,6 +30,7 @@ use rtc::rtp::packet::Packet;
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
 use rtc::shared::marshal::Unmarshal;
 
+use self::codec_compat::{fmtp_param_case_preserving, is_h265_codec, remove_fmtp_key};
 use self::media::MediaInfo;
 #[cfg(feature = "cascade")]
 use self::message::CascadeInfo;
@@ -50,7 +51,7 @@ pub(crate) mod av1_assembler;
 pub(crate) mod av1_repacketizer;
 #[cfg(feature = "source")]
 pub(crate) mod channel;
-mod codec_compat;
+pub(crate) mod codec_compat;
 mod internal;
 mod media;
 pub mod message;
@@ -462,6 +463,57 @@ impl PeerForward {
 
 // subscribe
 impl PeerForward {
+    /// Inject the publisher's H264/H265 codec parameters into the WHEP answer
+    /// SDP.  Chrome creates a decoder only for the *first* codec of each type
+    /// listed in the m=video line.  We update every H264 fmtp to match the
+    /// publisher's actual packetization-mode and add sprop so Chrome
+    /// initializes its decoder correctly regardless of which PT it picks.
+    async fn inject_publisher_sprop(&self, sdp: &str) -> String {
+        let video_codec = self.internal.publisher_codec(RtpCodecKind::Video).await;
+        let Some(ref codec) = video_codec else {
+            tracing::debug!("inject_publisher_sprop: no publisher codec, returning SDP unchanged");
+            return sdp.to_owned();
+        };
+
+        let mut lines: Vec<String> = sdp.lines().map(|l| l.to_owned()).collect();
+
+        // H264: the sender was already created with the normalized codec
+        // (packetization-mode, profile-level-id) in internal.rs.
+        //
+        // We previously patched these parameters into the answer SDP here,
+        // but replace_fmtp_key would reorder the fmtp params.  RTSP test
+        // failures revealed that livetwo and rsmpeg compare fmtp strings
+        // exactly, so the reordering broke codec matching for non-browser
+        // subscribers.  Chrome receives SPS/PPS in-band — the STAP-A NRI
+        // fix in subscribe.rs ensures correct handling — so removing this
+        // patch has no impact on browser clients.
+        //
+        // H265: the sender kept sprop-vps/sps/pps.  We replace them with the
+        // publisher's actual values so the answer correctly describes the
+        // stream being forwarded.
+
+        if is_h265_codec(codec) {
+            for key in ["sprop-vps", "sprop-sps", "sprop-pps"] {
+                if let Some(value) = fmtp_param_case_preserving(&codec.sdp_fmtp_line, key) {
+                    for line in lines.iter_mut() {
+                        // H265 fmtp lines are identified by level-id.
+                        // Only replace sprop if the line already has it,
+                        // for the same reason as H264 above.
+                        if line.starts_with("a=fmtp:")
+                            && line.contains("level-id")
+                            && line.contains(key)
+                        {
+                            *line = remove_fmtp_key(line, key);
+                            *line = format!("{};{}={}", line.trim_end_matches(';'), key, value);
+                        }
+                    }
+                }
+            }
+        }
+
+        lines.join("\r\n") + "\r\n"
+    }
+
     pub async fn add_subscribe(
         &self,
         mut offer: RTCSessionDescription,
@@ -475,6 +527,14 @@ impl PeerForward {
             peer_complete(offer, peer.clone(), gather_complete).await?,
             get_peer_id(&peer),
         );
+
+        // Inject the publisher's H264/H265 codec parameters into the answer
+        // so browsers can initialize their decoders without waiting for
+        // in-band parameter sets.  Only *replaces* sprop keys that are
+        // already present in the answer — never adds new keys, which would
+        // cause codec mismatch for non-browser clients (livetwo, rsmpeg).
+        let mut sdp = sdp;
+        sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
         let _ = self
             .internal

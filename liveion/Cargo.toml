@@ -78,7 +78,7 @@ recorder = [
     "dep:reqwest",
 ]
 
-rtsp = ["dep:rtsp", "rtsp/server", "source"]
+rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
 source = ["dep:rtsp", "dep:url"]
 source-sdp = ["source"]
 source-rtsp = ["source", "rtsp/client"]

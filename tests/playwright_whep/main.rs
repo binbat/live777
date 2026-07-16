@@ -1,3 +1,5 @@
+#[cfg(feature = "rtsp")]
+use std::net::TcpListener as StdTcpListener;
 use std::{
     io::Write,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
@@ -57,6 +59,19 @@ impl UdpPortGuard {
 fn reserve_udp_port(ip: IpAddr) -> UdpPortGuard {
     let socket = UdpSocket::bind(SocketAddr::new(ip, 0)).expect("Failed to reserve UDP port");
     UdpPortGuard { socket }
+}
+
+/// Reserve a TCP port on `ip` for the RTSP server, read the port number,
+/// and immediately release it.  Returns the port number.
+///
+/// The port must be released **before** starting liveion so the RTSP server
+/// can bind to it.  Unlike the WHIP UDP path (where the SDP captures the
+/// port before release), RTSP needs no pre-allocated address in a data file.
+#[cfg(feature = "rtsp")]
+fn reserve_and_release_tcp_port(ip: IpAddr) -> u16 {
+    let listener =
+        StdTcpListener::bind(SocketAddr::new(ip, 0)).expect("Failed to reserve TCP port");
+    listener.local_addr().unwrap().port()
 }
 
 /// Matrix test for FFmpeg RTP sources played back by the in-process livetwo WHEP player.
@@ -330,6 +345,66 @@ async fn whipsynth_h265_rsmpeg_receiver_test() {
     run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
 }
 
+// ============================================================
+// RTSP source matrix tests
+// ============================================================
+
+/// RTSP FFmpeg sources verified with the in-process livetwo WHEP player.
+/// Covers the core RTSP push (ANNOUNCE + RECORD) → WHEP subscribe path.
+#[cfg(feature = "rtsp")]
+#[test_matrix(
+    [
+        source::rtsp_ffmpeg::RtspFfmpegSource::new(VideoCodec::Vp8),
+        source::rtsp_ffmpeg::RtspFfmpegSource::new(VideoCodec::H264),
+        source::rtsp_ffmpeg::RtspFfmpegSource::new(VideoCodec::H265),
+    ],
+    [player::livetwo::LivetwoWhepPlayer]
+)]
+#[tokio::test]
+async fn whep_rtsp_livetwo_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// RTSP FFmpeg sources verified in a real browser via Playwright.
+#[cfg(all(feature = "rtsp", feature = "whepwright"))]
+#[test_matrix(
+    [
+        source::rtsp_ffmpeg::RtspFfmpegSource::new(VideoCodec::H264),
+        source::rtsp_ffmpeg::RtspFfmpegSource::new(VideoCodec::Vp8),
+    ],
+    [player::playwright::PlaywrightWhepPlayer::default()]
+)]
+#[tokio::test]
+async fn whep_rtsp_playwright_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// RTSP FFmpeg sources verified with the in-process rsmpeg receiver.
+#[cfg(all(feature = "rtsp", feature = "rsmpeg"))]
+#[test_matrix(
+    [
+        source::rtsp_ffmpeg::RtspFfmpegSource::new(VideoCodec::Vp8),
+        source::rtsp_ffmpeg::RtspFfmpegSource::new(VideoCodec::H264),
+    ],
+    [player::rsmpeg_receiver::RsmpegWhepReceiver::default()]
+)]
+#[tokio::test]
+async fn whep_rtsp_rsmpeg_baseline_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
 /// Start liveion, create a stream, publish a source via WHIP, and wait for the
 /// publish session to reach Connected.
 ///
@@ -352,6 +427,18 @@ where
     let mut cfg = liveion::config::Config::default();
     cfg.http.cors = true;
 
+    // RTSP sources need the RTSP listen port configured before liveion starts.
+    // Reserve-and-release: the port is freed before liveion binds so the
+    // RTSP server can claim it.  This is a TOCTOU race but acceptable here.
+    #[cfg(feature = "rtsp")]
+    let rtsp_port: Option<u16> = if source.is_rtsp() {
+        let port = reserve_and_release_tcp_port(bind_ip);
+        cfg.rtsp.listen = SocketAddr::new(bind_ip, port);
+        Some(port)
+    } else {
+        None
+    };
+
     let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
         .await
         .unwrap();
@@ -366,6 +453,38 @@ where
         .await
         .unwrap();
     assert_eq!(http::StatusCode::NO_CONTENT, res.status());
+
+    // --- RTSP path: ffmpeg pushes directly to liveion's RTSP server ---
+    #[cfg(feature = "rtsp")]
+    if let Some(rtsp_port) = rtsp_port {
+        let rtsp_url = format!("rtsp://{bind_ip}:{rtsp_port}/-");
+
+        // liveion's RTSP server binds inside a spawned task — wait until the
+        // port is accepting connections before starting ffmpeg.
+        let rtsp_addr = SocketAddr::new(bind_ip, rtsp_port);
+        for i in 0..50 {
+            match tokio::net::TcpStream::connect(rtsp_addr).await {
+                Ok(_) => break,
+                Err(_) if i == 49 => {
+                    panic!("RTSP server did not start on {rtsp_addr} after 5 s");
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+
+        let source_handle = source
+            .start_rtsp(&rtsp_url)
+            .expect("Failed to start RTSP FFmpeg source");
+
+        wait_for_publish_connected(&api_addr, None).await;
+
+        // No WHIP handle — return a no-op join handle so callers can
+        // keep the same shape.
+        let ct = CancellationToken::new();
+        let handle_whip = tokio::spawn(async move { Ok(()) });
+
+        return (api_addr, port, source_handle, ct, handle_whip);
+    }
 
     let whip_url = format!("http://{api_addr}{}", api::path::whip("-"));
 

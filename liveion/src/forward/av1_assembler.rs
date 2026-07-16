@@ -63,6 +63,7 @@ impl Av1Assembler {
     /// Override the maximum accumulated temporal-unit size before the assembler
     /// resets. The recorder path uses a tighter bound than the forward path to
     /// keep per-stream peak heap lower.
+    #[cfg(feature = "recorder")]
     pub fn with_max_size(mut self, max: usize) -> Self {
         self.max_temporal_unit_size = max;
         self

@@ -4,7 +4,7 @@ mod udp;
 
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::debug;
 use webrtc::peer_connection::PeerConnection;
@@ -73,8 +73,8 @@ pub async fn connect_input_to_webrtc(
 }
 
 pub async fn connect_webrtc_to_output(
-    video_recv: UnboundedReceiver<Vec<u8>>,
-    audio_recv: UnboundedReceiver<Vec<u8>>,
+    video_recv: Receiver<Vec<u8>>,
+    audio_recv: Receiver<Vec<u8>>,
     mut output_target: OutputTarget,
     peer: Arc<dyn PeerConnection>,
 ) {

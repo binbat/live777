@@ -10,9 +10,6 @@ use tracing::{debug, error, info, trace, warn};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "source")]
-use rtc::rtp_transceiver::rtp_sender::RTCPFeedback;
-
-#[cfg(feature = "source")]
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
 #[cfg(feature = "source")]

@@ -8,6 +8,9 @@ stream := "test-stream"
 isdp := "i.sdp"
 osdp := "o.sdp"
 
+rtsp_port := "8554"
+rtsps := "rtsp://" + host + ":" + rtsp_port
+
 irtp := "5002"
 ortp := "5006"
 
@@ -371,4 +374,97 @@ cycle-rtsp-4b:
 cycle-rtsp-5c:
     cargo run --bin=whepfrom -- -o rtsp-listen://{{host}}:8850 -w {{server}}/whep/cycle-rtsp-c --command \
         "ffplay rtsp://{{host}}:8850"
+
+
+# ============================================================
+# ffmpeg push to liveion RTSP server (ANNOUNCE + RECORD)
+# Usage: just ffmpeg-rtsp-push-h264
+# ============================================================
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-h264:
+    ffmpeg -re {{vsrc}} -vcodec {{h264}} -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-h265:
+    ffmpeg -re {{vsrc}} -vcodec {{h265}} -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-vp8:
+    ffmpeg -re {{vsrc}} -vcodec {{vp8}} -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-vp9:
+    ffmpeg -re {{vsrc}} -strict experimental -vcodec {{vp9}} -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-av1:
+    ffmpeg -re {{vsrc}} -vcodec {{av1}} -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-opus:
+    ffmpeg -re {{asrc}} -acodec {{opus}} -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-g722:
+    ffmpeg -re {{asrc}} -acodec g722 -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-h264-opus:
+    ffmpeg -re {{vsrc}} {{asrc}} -vcodec {{h264}} -acodec {{opus}} -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-vp8-opus:
+    ffmpeg -re {{vsrc}} {{asrc}} -vcodec {{vp8}} -acodec {{opus}} -f rtsp {{rtsps}}/{{stream}}
+
+# TCP transport (force RTP over TCP interleaved)
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-h264-tcp:
+    ffmpeg -re {{vsrc}} -vcodec {{h264}} -rtsp_transport tcp -f rtsp {{rtsps}}/{{stream}}
+
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-h265-tcp:
+    ffmpeg -re {{vsrc}} -vcodec {{h265}} -rtsp_transport tcp -f rtsp {{rtsps}}/{{stream}}
+
+# Push from a local file (re-wrap without re-encoding)
+[group('ffmpeg-rtsp')]
+ffmpeg-rtsp-push-file:
+    ffmpeg -re -stream_loop -1 -i input.mp4 -c copy -f rtsp {{rtsps}}/{{stream}}
+
+
+# ============================================================
+# ffplay pull from liveion RTSP server (DESCRIBE + PLAY)
+# Usage: just ffplay-rtsp-pull
+# ============================================================
+[group('ffplay-rtsp')]
+ffplay-rtsp-pull:
+    ffplay {{rtsps}}/{{stream}}
+
+[group('ffplay-rtsp')]
+ffplay-rtsp-pull-tcp:
+    ffplay -rtsp_transport tcp {{rtsps}}/{{stream}}
+
+[group('ffplay-rtsp')]
+ffplay-rtsp-pull-lowlatency:
+    ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay -framedrop {{rtsps}}/{{stream}}
+
+[group('ffplay-rtsp')]
+ffplay-rtsp-pull-novideo:
+    ffplay -vn {{rtsps}}/{{stream}}
+
+[group('ffplay-rtsp')]
+ffplay-rtsp-pull-noaudio:
+    ffplay -an {{rtsps}}/{{stream}}
+
+
+# ============================================================
+# ffprobe inspect RTSP stream from liveion
+# Usage: just ffprobe-rtsp
+# ============================================================
+[group('ffprobe-rtsp')]
+ffprobe-rtsp:
+    ffprobe -v error -hide_banner -i {{rtsps}}/{{stream}} -show_streams -of json
+
+[group('ffprobe-rtsp')]
+ffprobe-rtsp-tcp:
+    ffprobe -rtsp_transport tcp -v error -hide_banner -i {{rtsps}}/{{stream}} -show_streams -of json
 

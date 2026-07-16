@@ -158,17 +158,30 @@ async fn run() -> Result<()> {
     } else {
         let publisher = livetwo::whipsynth::Publisher::new(config);
 
-        tokio::select! {
-            result = publisher.run(ct.clone()) => {
-                let _stats = result?;
+        if let Some(duration) = args.duration {
+            let run_timeout = Duration::from_secs(duration).saturating_add(timeout);
+            tokio::select! {
+                result = publisher.run(ct.clone()) => {
+                    let _stats = result?;
+                }
+                _ = tokio::time::sleep(run_timeout) => {
+                    ct.cancel();
+                    return Err(anyhow!("publisher timed out after {:?}", run_timeout));
+                }
+                _ = utils::shutdown_signal() => {
+                    info!("Shutdown signal received, stopping publisher");
+                    ct.cancel();
+                }
             }
-            _ = tokio::time::sleep(timeout) => {
-                ct.cancel();
-                return Err(anyhow!("publisher timed out after {:?}", timeout));
-            }
-            _ = utils::shutdown_signal() => {
-                info!("Shutdown signal received, stopping publisher");
-                ct.cancel();
+        } else {
+            tokio::select! {
+                result = publisher.run(ct.clone()) => {
+                    let _stats = result?;
+                }
+                _ = utils::shutdown_signal() => {
+                    info!("Shutdown signal received, stopping publisher");
+                    ct.cancel();
+                }
             }
         }
     }

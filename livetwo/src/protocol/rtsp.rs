@@ -1,5 +1,131 @@
-use anyhow::Result;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use anyhow::{Result, anyhow};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
+
+pub struct RtspPullSession {
+    pub connection_id: u32,
+    pub media_info: rtsp::MediaInfo,
+    pub channels: rtsp::channels::InterleavedChannel,
+}
+
+pub async fn setup_server_for_pull(
+    ct: CancellationToken,
+    listen_host: &str,
+    port: u16,
+    filtered_sdp: String,
+) -> Result<(RtspPullSession, UnboundedReceiver<RtspPullSession>)> {
+    info!("Starting RTSP server mode for pull");
+
+    let listen_addr = crate::utils::host::format_bind_addr(listen_host, port);
+    let (session_tx, mut session_rx) = unbounded_channel();
+    let handler = WhepRtspPullHandler {
+        sdp: Arc::new(filtered_sdp.into_bytes()),
+        session_tx,
+        next_connection_id: Arc::new(AtomicU32::new(1)),
+    };
+    let server_config = rtsp::ServerConfig {
+        listen_addr: listen_addr.parse()?,
+        ..Default::default()
+    };
+
+    tokio::spawn(async move {
+        if let Err(e) = rtsp::setup_rtsp_server_with_handler(
+            &listen_addr,
+            rtsp::SessionMode::Pull,
+            handler,
+            server_config,
+            ct,
+        )
+        .await
+        {
+            tracing::error!("RTSP pull output server failed: {}", e);
+        }
+    });
+
+    let first = session_rx
+        .recv()
+        .await
+        .ok_or_else(|| anyhow!("RTSP pull output server stopped before first client connected"))?;
+    info!(
+        "RTSP pull output established: connection_id={}, media_info={:?}",
+        first.connection_id, first.media_info
+    );
+
+    Ok((first, session_rx))
+}
+
+#[derive(Clone)]
+struct WhepRtspPullHandler {
+    sdp: Arc<Vec<u8>>,
+    session_tx: UnboundedSender<RtspPullSession>,
+    next_connection_id: Arc<AtomicU32>,
+}
+
+#[async_trait::async_trait]
+impl rtsp::SessionHandler for WhepRtspPullHandler {
+    async fn on_announce(&self, _path: String, _sdp: Vec<u8>) -> Result<()> {
+        Err(anyhow!("ANNOUNCE is not supported for WHEP RTSP output"))
+    }
+
+    async fn on_describe(&self, _path: String) -> Result<Vec<u8>> {
+        Ok((*self.sdp).clone())
+    }
+
+    async fn on_session(
+        &self,
+        _path: String,
+        mode: rtsp::SessionMode,
+        mut media_info: rtsp::MediaInfo,
+        endpoint: rtsp::SessionEndpoint,
+        _cancel: CancellationToken,
+    ) -> Result<()> {
+        if mode != rtsp::SessionMode::Pull {
+            return Err(anyhow!("Expected RTSP pull session"));
+        }
+
+        let tx = match endpoint {
+            rtsp::SessionEndpoint::Pull(tx) => tx,
+            _ => return Err(anyhow!("Expected RTSP pull endpoint")),
+        };
+
+        // The WHEP transport layer sends RTP by abstract channel number. For
+        // UDP RTSP sessions the RTSP server maps these pseudo TCP channels to
+        // the negotiated UDP client ports.
+        media_info = media_info_with_output_channels(media_info);
+        let (_rtcp_tx, rtcp_rx) =
+            tokio::sync::mpsc::channel(rtsp::channels::DEFAULT_CHANNEL_CAPACITY);
+        let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
+        self.session_tx
+            .send(RtspPullSession {
+                connection_id,
+                media_info,
+                channels: (tx, rtcp_rx),
+            })
+            .map_err(|_| anyhow!("RTSP output session receiver dropped"))?;
+
+        Ok(())
+    }
+}
+
+fn media_info_with_output_channels(mut media_info: rtsp::MediaInfo) -> rtsp::MediaInfo {
+    if media_info.video_transport.is_some() {
+        media_info.video_transport = Some(rtsp::TransportInfo::Tcp {
+            rtp_channel: rtsp::udp_route::VIDEO_RTP,
+            rtcp_channel: rtsp::udp_route::VIDEO_RTCP,
+        });
+    }
+    if media_info.audio_transport.is_some() {
+        media_info.audio_transport = Some(rtsp::TransportInfo::Tcp {
+            rtp_channel: rtsp::udp_route::AUDIO_RTP,
+            rtcp_channel: rtsp::udp_route::AUDIO_RTCP,
+        });
+    }
+    media_info
+}
 
 pub async fn setup_client_for_pull(
     target_url: &str,

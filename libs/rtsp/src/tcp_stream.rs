@@ -63,7 +63,7 @@ where
 
     info!("Starting TCP interleaved stream handler (mode: {:?})", mode);
 
-    let read_task = tokio::spawn(handle_read_stream(
+    let mut read_task = tokio::spawn(handle_read_stream(
         read_half,
         writer.clone(),
         data_from_stream_tx,
@@ -71,24 +71,41 @@ where
         drop_incoming_even,
     ));
 
-    let write_task = tokio::spawn(handle_write_stream(writer, data_to_stream_rx));
+    let mut write_task = tokio::spawn(handle_write_stream(writer, data_to_stream_rx));
 
-    let (read_result, write_result) = tokio::join!(read_task, write_task);
-
-    match read_result {
-        Ok(Ok(())) => debug!("Read task completed successfully"),
-        Ok(Err(e)) => error!("Read task failed: {}", e),
-        Err(e) => error!("Read task panicked: {}", e),
-    }
-
-    match write_result {
-        Ok(Ok(())) => debug!("Write task completed successfully"),
-        Ok(Err(e)) => error!("Write task failed: {}", e),
-        Err(e) => error!("Write task panicked: {}", e),
+    tokio::select! {
+        read_result = &mut read_task => {
+            log_read_result(read_result);
+            cancel.cancel();
+            write_task.abort();
+            let _ = write_task.await;
+        }
+        write_result = &mut write_task => {
+            log_write_result(write_result);
+            cancel.cancel();
+            read_task.abort();
+            let _ = read_task.await;
+        }
     }
 
     info!("TCP interleaved stream handler stopped");
     Ok(())
+}
+
+fn log_read_result(result: std::result::Result<Result<()>, tokio::task::JoinError>) {
+    match result {
+        Ok(Ok(())) => debug!("Read task completed successfully"),
+        Ok(Err(e)) => error!("Read task failed: {}", e),
+        Err(e) => error!("Read task panicked: {}", e),
+    }
+}
+
+fn log_write_result(result: std::result::Result<Result<()>, tokio::task::JoinError>) {
+    match result {
+        Ok(Ok(())) => debug!("Write task completed successfully"),
+        Ok(Err(e)) => error!("Write task failed: {}", e),
+        Err(e) => error!("Write task panicked: {}", e),
+    }
 }
 
 async fn handle_read_stream<R, S>(
