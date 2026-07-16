@@ -91,6 +91,7 @@ pub struct RtspServerSession<H: SessionHandler> {
     app_handler: Arc<H>,
     stream: TcpStream,
     addr: SocketAddr,
+    local_addr: SocketAddr,
     mode: SessionMode,
     read_buffer: Vec<u8>,
     video_udp_sockets: Option<(UdpSocket, UdpSocket)>,
@@ -104,6 +105,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
     pub fn new(
         stream: TcpStream,
         addr: SocketAddr,
+        local_addr: SocketAddr,
         sessions: Arc<RwLock<HashMap<String, ServerSession>>>,
         config: ServerConfig,
         mode: SessionMode,
@@ -115,6 +117,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
             app_handler,
             stream,
             addr,
+            local_addr,
             mode,
             read_buffer: Vec::with_capacity(8192),
             video_udp_sockets: None,
@@ -574,6 +577,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
             .await?;
 
         let client_addr = self.addr;
+        let local_addr = self.local_addr;
         let video_sockets = self.video_udp_sockets.take();
         let audio_sockets = self.audio_udp_sockets.take();
         let run_cancel = cancel.clone();
@@ -581,6 +585,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
             if let Err(e) = run_udp_transfer(
                 session_mode,
                 client_addr,
+                local_addr,
                 media_info,
                 server_side,
                 data_to_stream_rx,
@@ -956,6 +961,7 @@ fn parse_track_index(uri: &str) -> Option<usize> {
 async fn run_udp_transfer<H: SessionHandler>(
     mode: SessionMode,
     client_addr: SocketAddr,
+    local_addr: SocketAddr,
     media_info: MediaInfo,
     server_side: ServerSide,
     mut data_to_stream_rx: Receiver<InterleavedData>,
@@ -995,12 +1001,13 @@ async fn run_udp_transfer<H: SessionHandler>(
             }
 
             // Forward outgoing RTP/RTCP back to the push client.
-            // Bind to the client-facing IP so the kernel selects the correct
-            // source address on multi-homed hosts. Each session binds one
-            // ephemeral send socket. For deployments with many concurrent
-            // sessions, consider sharing `Arc<UdpSocket>` across sessions
-            // (a single socket can `send_to` any destination).
-            let send_socket = UdpSocket::bind(net::bind_on_ip(client_addr.ip())).await?;
+            // Bind to the local IP selected for the RTSP control connection so
+            // UDP packets use the same server-facing interface on multi-homed
+            // hosts. Each session binds one ephemeral send socket. For
+            // deployments with many concurrent sessions, consider sharing
+            // `Arc<UdpSocket>` across sessions (a single socket can `send_to`
+            // any destination).
+            let send_socket = UdpSocket::bind(net::bind_on_ip(local_addr.ip())).await?;
 
             let video_rtp_send = media_info.video_transport.as_ref().and_then(|t| {
                 if let TransportInfo::Udp {
@@ -1083,9 +1090,9 @@ async fn run_udp_transfer<H: SessionHandler>(
                 return Err(anyhow!("Unexpected server side for pull"));
             };
 
-            // Bind to the client-facing IP for correct source address
-            // selection on multi-homed hosts.
-            let send_socket = UdpSocket::bind(net::bind_on_ip(client_addr.ip())).await?;
+            // Bind to the local IP selected for the RTSP control connection
+            // for correct source address selection on multi-homed hosts.
+            let send_socket = UdpSocket::bind(net::bind_on_ip(local_addr.ip())).await?;
 
             let mut channel_map: HashMap<u8, u16> = HashMap::new();
             if let Some(TransportInfo::Udp {
@@ -1338,6 +1345,14 @@ where
             res = listener.accept() => {
                 match res {
                     Ok((socket, addr)) => {
+                        let local_addr = match socket.local_addr() {
+                            Ok(addr) => addr,
+                            Err(e) => {
+                                warn!("Failed to read local address for RTSP client {}: {}", addr, e);
+                                drop(socket);
+                                continue;
+                            }
+                        };
                         let active = active_connections.load(Ordering::Acquire);
                         if active >= config.max_connections {
                             warn!(
@@ -1363,6 +1378,7 @@ where
                         let session = RtspServerSession::new(
                             socket,
                             addr,
+                            local_addr,
                             sessions.clone(),
                             (*config).clone(),
                             mode,
