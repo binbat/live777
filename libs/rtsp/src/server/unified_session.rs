@@ -153,6 +153,10 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         self.send_method_not_allowed(&request).await?;
                         return Err(anyhow!("DESCRIBE is not supported on a push session"));
                     }
+                    if let Err(response) = self.handler.check_auth(&request) {
+                        self.send_response(&response).await?;
+                        continue;
+                    }
                     if session_mode == SessionMode::Mixed {
                         session_mode = SessionMode::Pull;
                     }
@@ -168,6 +172,10 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     if session_mode == SessionMode::Pull {
                         self.send_method_not_allowed(&request).await?;
                         return Err(anyhow!("ANNOUNCE is not supported on a pull session"));
+                    }
+                    if let Err(response) = self.handler.check_auth(&request) {
+                        self.send_response(&response).await?;
+                        continue;
                     }
                     if session_mode == SessionMode::Mixed {
                         session_mode = SessionMode::Push;

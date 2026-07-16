@@ -350,13 +350,19 @@ impl Manager {
         }
 
         let raw_forward = self.do_stream_create(stream.to_string()).await;
-        let mut stream_map = self.stream_map.write().await;
-        if let Some(existing) = stream_map.get(stream) {
-            let _ = raw_forward.close().await;
-            return Some(existing.clone());
+        let (forward, duplicate_to_close) = {
+            let mut stream_map = self.stream_map.write().await;
+            if let Some(existing) = stream_map.get(stream) {
+                (existing.clone(), Some(raw_forward.clone()))
+            } else {
+                stream_map.insert(stream.to_string(), raw_forward.clone());
+                (raw_forward.clone(), None)
+            }
+        };
+        if let Some(duplicate) = duplicate_to_close {
+            let _ = duplicate.close().await;
         }
-        stream_map.insert(stream.to_string(), raw_forward.clone());
-        Some(raw_forward)
+        Some(forward)
     }
 
     pub async fn add_ice_candidate(
@@ -744,15 +750,20 @@ impl Manager {
         tokio::spawn(Self::forward_event_handler(subscribe_event, event_sender));
 
         // Re-check under write lock in case a concurrent caller won the race.
-        {
+        let existing = {
             let mut stream_map = self.stream_map.write().await;
             if let Some(existing) = stream_map.get(stream_id) {
                 // Another caller created the forward first; close ours and
                 // return the existing one.
-                let _ = forward.close().await;
-                return existing.clone();
+                Some(existing.clone())
+            } else {
+                stream_map.insert(stream_id.to_string(), forward.clone());
+                None
             }
-            stream_map.insert(stream_id.to_string(), forward.clone());
+        };
+        if let Some(existing) = existing {
+            let _ = forward.close().await;
+            return existing;
         }
 
         tracing::info!("Created PeerForward for source: {}", stream_id);

@@ -113,9 +113,6 @@ impl Handler {
         request: &Request<Vec<u8>>,
     ) -> Result<Response<Vec<u8>>> {
         debug!("Handling ANNOUNCE request from {}", self.addr);
-        if let Err(response) = self.check_auth(request) {
-            return Ok(response);
-        }
         let sdp_content = request.body().to_vec();
         if let Ok(sdp_str) = std::str::from_utf8(&sdp_content) {
             debug!("Received SDP:\n{}", sdp_str);
@@ -269,12 +266,9 @@ impl Handler {
 
     pub async fn handle_describe(
         &mut self,
-        request: &Request<Vec<u8>>,
+        _request: &Request<Vec<u8>>,
     ) -> Result<Response<Vec<u8>>> {
         debug!("Handling DESCRIBE request from {}", self.addr);
-        if let Err(response) = self.check_auth(request) {
-            return Ok(response);
-        }
 
         let sdp_content = self
             .sdp_content
