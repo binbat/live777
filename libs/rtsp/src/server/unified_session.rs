@@ -1054,6 +1054,16 @@ async fn run_udp_transfer<H: SessionHandler>(
                 }
             });
 
+            // Precompute destination SocketAddrs indexed by channel number so
+            // the per-packet hot loop avoids a 4-way match + SocketAddr::new on
+            // every outgoing RTP/RTCP frame.
+            let dest_addrs: [Option<SocketAddr>; 4] = [
+                video_rtp_send.map(|p| SocketAddr::new(client_addr.ip(), p)),
+                video_rtcp_send.map(|p| SocketAddr::new(client_addr.ip(), p)),
+                audio_rtp_send.map(|p| SocketAddr::new(client_addr.ip(), p)),
+                audio_rtcp_send.map(|p| SocketAddr::new(client_addr.ip(), p)),
+            ];
+
             let send_cancel = cancel.clone();
             tokio::spawn(async move {
                 loop {
@@ -1061,21 +1071,14 @@ async fn run_udp_transfer<H: SessionHandler>(
                         _ = send_cancel.cancelled() => break,
                         maybe_frame = data_to_stream_rx.recv() => {
                             match maybe_frame {
-                                Some((channel, data)) => {
-                                    let send_port = match channel {
-                                        udp_route::VIDEO_RTP => video_rtp_send,
-                                        udp_route::VIDEO_RTCP => video_rtcp_send,
-                                        udp_route::AUDIO_RTP => audio_rtp_send,
-                                        udp_route::AUDIO_RTCP => audio_rtcp_send,
-                                        _ => None,
-                                    };
-                                    if let Some(port) = send_port {
-                                        let dest = SocketAddr::new(client_addr.ip(), port);
+                                Some((channel, data)) if (channel as usize) < dest_addrs.len() => {
+                                    if let Some(dest) = dest_addrs[channel as usize] {
                                         if send_socket.send_to(&data, dest).await.is_err() {
                                             break;
                                         }
                                     }
                                 }
+                                Some((_channel, _data)) => {} // unknown channel
                                 None => break,
                             }
                         }
@@ -1094,25 +1097,35 @@ async fn run_udp_transfer<H: SessionHandler>(
             // for correct source address selection on multi-homed hosts.
             let send_socket = UdpSocket::bind(net::bind_on_ip(local_addr.ip())).await?;
 
-            let mut channel_map: HashMap<u8, u16> = HashMap::new();
-            if let Some(TransportInfo::Udp {
-                rtp_send_port: Some(port),
-                rtcp_send_port: Some(rtcp_port),
-                ..
-            }) = media_info.video_transport
-            {
-                channel_map.insert(udp_route::VIDEO_RTP, port);
-                channel_map.insert(udp_route::VIDEO_RTCP, rtcp_port);
-            }
-            if let Some(TransportInfo::Udp {
-                rtp_send_port: Some(port),
-                rtcp_send_port: Some(rtcp_port),
-                ..
-            }) = media_info.audio_transport
-            {
-                channel_map.insert(udp_route::AUDIO_RTP, port);
-                channel_map.insert(udp_route::AUDIO_RTCP, rtcp_port);
-            }
+            // Precompute destination SocketAddrs indexed by channel number so
+            // the per-packet hot loop avoids a HashMap lookup + SocketAddr::new
+            // on every outgoing RTP/RTCP frame.
+            let dest_addrs: [Option<SocketAddr>; 4] = {
+                let mut addrs = [const { None }; 4];
+                if let Some(TransportInfo::Udp {
+                    rtp_send_port: Some(port),
+                    rtcp_send_port: Some(rtcp_port),
+                    ..
+                }) = media_info.video_transport
+                {
+                    addrs[udp_route::VIDEO_RTP as usize] =
+                        Some(SocketAddr::new(client_addr.ip(), port));
+                    addrs[udp_route::VIDEO_RTCP as usize] =
+                        Some(SocketAddr::new(client_addr.ip(), rtcp_port));
+                }
+                if let Some(TransportInfo::Udp {
+                    rtp_send_port: Some(port),
+                    rtcp_send_port: Some(rtcp_port),
+                    ..
+                }) = media_info.audio_transport
+                {
+                    addrs[udp_route::AUDIO_RTP as usize] =
+                        Some(SocketAddr::new(client_addr.ip(), port));
+                    addrs[udp_route::AUDIO_RTCP as usize] =
+                        Some(SocketAddr::new(client_addr.ip(), rtcp_port));
+                }
+                addrs
+            };
 
             let send_cancel = cancel.clone();
             tokio::spawn(async move {
@@ -1121,14 +1134,14 @@ async fn run_udp_transfer<H: SessionHandler>(
                         _ = send_cancel.cancelled() => break,
                         maybe_frame = rx.recv() => {
                             match maybe_frame {
-                                Some((channel, data)) => {
-                                    if let Some(&port) = channel_map.get(&channel) {
-                                        let dest = SocketAddr::new(client_addr.ip(), port);
+                                Some((channel, data)) if (channel as usize) < dest_addrs.len() => {
+                                    if let Some(dest) = dest_addrs[channel as usize] {
                                         if send_socket.send_to(&data, dest).await.is_err() {
                                             break;
                                         }
                                     }
                                 }
+                                Some((_channel, _data)) => {} // unknown channel
                                 None => break,
                             }
                         }

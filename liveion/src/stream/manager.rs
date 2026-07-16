@@ -739,32 +739,15 @@ impl Manager {
             }
         }
 
-        // Create the forward outside the write lock so I/O in
-        // try_init_udp_channel does not block unrelated stream operations.
-        let entry = self.config.stream.streams.get(stream_id);
-        let channel = entry.and_then(|entry| entry.channel.clone());
-        let strategy = api::strategy::Strategy::effective(
-            &self.config.strategy,
-            entry.and_then(|e| e.strategy.as_ref()),
-        );
-        let forward = crate::forward::PeerForward::new(
-            stream_id.to_string(),
-            self.config.ice_servers.clone(),
-            self.config.ice_udp_addrs.clone(),
-            channel,
-            strategy,
-        );
-
-        let subscribe_event = forward.subscribe_event();
-        let event_sender = self.event_sender.clone();
-        tokio::spawn(Self::forward_event_handler(subscribe_event, event_sender));
+        // Create the forward outside the write lock (via the shared
+        // `build_forward` helper) so I/O in `try_init_udp_channel` does not
+        // block unrelated stream operations.
+        let forward = self.build_forward(stream_id);
 
         // Re-check under write lock in case a concurrent caller won the race.
         let existing = {
             let mut stream_map = self.stream_map.write().await;
             if let Some(existing) = stream_map.get(stream_id) {
-                // Another caller created the forward first; close ours and
-                // return the existing one.
                 Some(existing.clone())
             } else {
                 stream_map.insert(stream_id.to_string(), forward.clone());
@@ -776,8 +759,8 @@ impl Manager {
             return existing;
         }
 
+        self.register_stream_created(stream_id);
         tracing::info!("Created PeerForward for source: {}", stream_id);
-        #[cfg(feature = "source")]
         if let Err(e) = forward.try_init_udp_channel().await {
             tracing::warn!(
                 "Failed to init UDP channel for source {}: {:?}",
