@@ -593,10 +593,14 @@ impl<H: SessionHandler> RtspServerSession<H> {
             .await
             {
                 error!("UDP transfer error: {}", e);
+                run_cancel.cancel();
+                return;
             }
-            // Data plane is done; stop the control keep-alive so the connection
-            // counter and session state are released promptly.
-            run_cancel.cancel();
+
+            // run_udp_transfer starts the UDP data-plane tasks and then
+            // returns. Keep this task alive so the session token is not
+            // cancelled until TEARDOWN, control EOF, or server shutdown.
+            run_cancel.cancelled().await;
         });
 
         // Keep the RTSP control connection alive for UDP sessions so that
