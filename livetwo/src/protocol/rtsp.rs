@@ -87,8 +87,8 @@ impl rtsp::SessionHandler for WhepRtspPullHandler {
             return Err(anyhow!("Expected RTSP pull session"));
         }
 
-        let tx = match endpoint {
-            rtsp::SessionEndpoint::Pull(tx) => tx,
+        let (tx, rtcp_rx) = match endpoint {
+            rtsp::SessionEndpoint::Pull(tx, rtcp_rx) => (tx, rtcp_rx),
             _ => return Err(anyhow!("Expected RTSP pull endpoint")),
         };
 
@@ -96,8 +96,6 @@ impl rtsp::SessionHandler for WhepRtspPullHandler {
         // UDP RTSP sessions the RTSP server maps these pseudo TCP channels to
         // the negotiated UDP client ports.
         media_info = media_info_with_output_channels(media_info);
-        let (_rtcp_tx, rtcp_rx) =
-            tokio::sync::mpsc::channel(rtsp::channels::DEFAULT_CHANNEL_CAPACITY);
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
         self.session_tx
             .send(RtspPullSession {
@@ -208,6 +206,9 @@ pub async fn setup_client_for_push(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use rtsp::SessionHandler;
+
     #[test]
     fn rtsp_server_listen_addr_uses_brackets_for_ipv6() {
         assert_eq!(
@@ -222,5 +223,41 @@ mod tests {
             crate::utils::host::format_bind_addr("127.0.0.1", 8554),
             "127.0.0.1:8554"
         );
+    }
+
+    #[tokio::test]
+    async fn rtsp_pull_handler_keeps_session_rtcp_receiver() {
+        let (session_tx, mut session_rx) = unbounded_channel();
+        let handler = WhepRtspPullHandler {
+            sdp: Arc::new(Vec::new()),
+            session_tx,
+            next_connection_id: Arc::new(AtomicU32::new(1)),
+        };
+        let (rtp_tx, _rtp_rx) =
+            tokio::sync::mpsc::channel(rtsp::channels::DEFAULT_CHANNEL_CAPACITY);
+        let (rtcp_tx, rtcp_rx) =
+            tokio::sync::mpsc::channel(rtsp::channels::DEFAULT_CHANNEL_CAPACITY);
+        let cancel = CancellationToken::new();
+
+        handler
+            .on_session(
+                "stream".to_string(),
+                rtsp::SessionMode::Pull,
+                rtsp::MediaInfo::default(),
+                rtsp::SessionEndpoint::Pull(rtp_tx, rtcp_rx),
+                cancel,
+            )
+            .await
+            .unwrap();
+
+        let mut session = session_rx.recv().await.unwrap();
+        rtcp_tx
+            .send((rtsp::udp_route::VIDEO_RTCP, vec![1, 2, 3]))
+            .await
+            .unwrap();
+
+        let (channel, data) = session.channels.1.recv().await.unwrap();
+        assert_eq!(channel, rtsp::udp_route::VIDEO_RTCP);
+        assert_eq!(data, vec![1, 2, 3]);
     }
 }

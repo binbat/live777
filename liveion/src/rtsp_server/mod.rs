@@ -251,14 +251,31 @@ impl rtsp::server::SessionHandler for RtspHandler {
                 });
             }
             rtsp::SessionMode::Pull => {
-                let tx = match endpoint {
-                    rtsp::SessionEndpoint::Pull(tx) => tx,
+                let (tx, mut rtcp_rx) = match endpoint {
+                    rtsp::SessionEndpoint::Pull(tx, rtcp_rx) => (tx, rtcp_rx),
                     _ => return Err(anyhow!("Expected pull endpoint")),
                 };
 
                 let pull_cancel = cancel.child_token();
                 let manager = self.manager.clone();
                 let stream_ready = self.stream_ready.clone();
+                let rtcp_manager = self.manager.clone();
+                let rtcp_stream_id = stream_id.clone();
+                let rtcp_cancel = pull_cancel.child_token();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = rtcp_cancel.cancelled() => break,
+                            maybe_rtcp = rtcp_rx.recv() => {
+                                let Some((_, data)) = maybe_rtcp else {
+                                    break;
+                                };
+                                forward_rtcp_to_publish(&rtcp_manager, &rtcp_stream_id, &data).await;
+                            }
+                        }
+                    }
+                });
+
                 tokio::spawn(async move {
                     let forward = match wait_for_forward(&manager, &stream_ready, &stream_id).await
                     {

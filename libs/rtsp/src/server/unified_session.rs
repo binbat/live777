@@ -32,8 +32,9 @@ pub enum SessionEndpoint {
     /// the application can send RTP/RTCP data back to the client on `tx`.
     Push(Receiver<InterleavedData>, Sender<InterleavedData>),
     /// PULL mode: the server expects the application to send RTP/RTCP data on
-    /// this sender.
-    Pull(Sender<InterleavedData>),
+    /// the sender, and forwards RTCP received from the pull client on the
+    /// receiver.
+    Pull(Sender<InterleavedData>, Receiver<InterleavedData>),
 }
 
 /// Application-provided handler for per-path RTSP sessions.
@@ -74,7 +75,7 @@ pub trait SessionHandler: Send + Sync + 'static {
 
 enum ServerSide {
     Push(Sender<InterleavedData>),
-    Pull(Receiver<InterleavedData>),
+    Pull(Receiver<InterleavedData>, Sender<InterleavedData>),
 }
 
 /// Result of a fully handled RTSP session.
@@ -444,12 +445,15 @@ impl<H: SessionHandler> RtspServerSession<H> {
             }
             SessionMode::Pull => {
                 let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
-                (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
+                let (rtcp_tx, rtcp_rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
+                (
+                    SessionEndpoint::Pull(tx, rtcp_rx),
+                    ServerSide::Pull(rx, rtcp_tx),
+                )
             }
             SessionMode::Mixed => return Err(anyhow!("session mode must be resolved")),
         };
 
-        let app_handler = self.app_handler.clone();
         self.app_handler
             .on_session(
                 path.clone(),
@@ -490,7 +494,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 // `SessionEndpoint::Push` so it can send RTCP feedback to the
                 // push client when needed.
             }
-            ServerSide::Pull(mut rx) => {
+            ServerSide::Pull(mut rx, rtcp_tx) => {
                 tokio::spawn(async move {
                     while let Some(data) = rx.recv().await {
                         if data_to_stream_tx.send(data).await.is_err() {
@@ -504,9 +508,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                 // filling this bounded channel and stalling the session.
                 tokio::spawn(async move {
                     while let Some((channel, data)) = data_from_stream_rx.recv().await {
-                        if channel % 2 != 0
-                            && app_handler.on_rtcp(path.clone(), data).await.is_err()
-                        {
+                        if channel % 2 != 0 && rtcp_tx.send((channel, data)).await.is_err() {
                             break;
                         }
                     }
@@ -538,7 +540,11 @@ impl<H: SessionHandler> RtspServerSession<H> {
             }
             SessionMode::Pull => {
                 let (tx, rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
-                (SessionEndpoint::Pull(tx), ServerSide::Pull(rx))
+                let (rtcp_tx, rtcp_rx) = channel::<InterleavedData>(DATA_CHANNEL_CAPACITY);
+                (
+                    SessionEndpoint::Pull(tx, rtcp_rx),
+                    ServerSide::Pull(rx, rtcp_tx),
+                )
             }
             SessionMode::Mixed => return Err(anyhow!("session mode must be resolved")),
         };
@@ -1061,7 +1067,7 @@ async fn run_udp_transfer<H: SessionHandler>(
             spawn_rtcp_drain(video_rtcp, audio_rtcp, app_handler, path, cancel.clone());
         }
         SessionMode::Pull => {
-            let ServerSide::Pull(mut rx) = server_side else {
+            let ServerSide::Pull(mut rx, rtcp_tx) = server_side else {
                 return Err(anyhow!("Unexpected server side for pull"));
             };
 
@@ -1111,7 +1117,7 @@ async fn run_udp_transfer<H: SessionHandler>(
                 }
             });
 
-            spawn_rtcp_drain(video_rtcp, audio_rtcp, app_handler, path, cancel.clone());
+            spawn_rtcp_channel_drain(video_rtcp, audio_rtcp, rtcp_tx, cancel.clone());
         }
         SessionMode::Mixed => return Err(anyhow!("session mode must be resolved")),
     }
@@ -1143,6 +1149,44 @@ fn spawn_rtcp_drain<H: SessionHandler>(
                             Ok((n, _)) => {
                                 let data = buf[..n].to_vec();
                                 if app_handler.on_rtcp(path.clone(), data).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Spawn RTCP receiver tasks for pull-mode UDP sockets and forward incoming
+/// RTCP packets through the per-session endpoint channel.
+fn spawn_rtcp_channel_drain(
+    video_rtcp: Option<UdpSocket>,
+    audio_rtcp: Option<UdpSocket>,
+    tx: Sender<InterleavedData>,
+    cancel: CancellationToken,
+) {
+    for (channel, socket) in [
+        (udp_route::VIDEO_RTCP, video_rtcp),
+        (udp_route::AUDIO_RTCP, audio_rtcp),
+    ]
+    .into_iter()
+    .filter_map(|(channel, socket)| socket.map(|socket| (channel, socket)))
+    {
+        let tx = tx.clone();
+        let rtcp_cancel = cancel.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            loop {
+                tokio::select! {
+                    _ = rtcp_cancel.cancelled() => break,
+                    result = socket.recv_from(&mut buf) => {
+                        match result {
+                            Ok((n, _)) => {
+                                if tx.send((channel, buf[..n].to_vec())).await.is_err() {
                                     break;
                                 }
                             }
