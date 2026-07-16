@@ -243,18 +243,22 @@ impl FrameGenerator {
 
     /// Flush remaining encoder output and close the generator.
     pub fn flush(&mut self) -> Result<()> {
-        let mut result = Ok(());
+        let mut errors = Vec::new();
         if let Some(ref mut video) = self.video_ctx
             && let Err(e) = flush_encoder(video)
         {
-            result = Err(e);
+            errors.push(format!("video: {e}"));
         }
         if let Some(ref mut audio) = self.audio_ctx
             && let Err(e) = flush_encoder(audio)
         {
-            result = Err(e);
+            errors.push(format!("audio: {e}"));
         }
-        result
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("flush: {}", errors.join("; ")))
+        }
     }
 }
 
