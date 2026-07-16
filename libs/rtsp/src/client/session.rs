@@ -88,11 +88,17 @@ where
         }
     }
 
-    fn generate_authorization_header(&self, realm: &str, nonce: &str, method: &Method) -> String {
+    fn generate_authorization_header(
+        &self,
+        realm: &str,
+        nonce: &str,
+        method: &Method,
+        uri: &str,
+    ) -> String {
         let response = generate_digest_response(
             &self.auth_params.username,
             &self.auth_params.password,
-            &self.url,
+            uri,
             realm,
             nonce,
             method.into(),
@@ -100,27 +106,38 @@ where
 
         format!(
             "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\"",
-            self.auth_params.username, realm, nonce, self.url, response
+            self.auth_params.username, realm, nonce, uri, response
         )
+    }
+
+    fn build_authorized_request(
+        &self,
+        original: &Request<Vec<u8>>,
+        auth_header: &headers::HeaderValue,
+    ) -> Result<Request<Vec<u8>>> {
+        let (realm, nonce) = parse_auth_header(auth_header)?;
+        let uri = original
+            .request_uri()
+            .map(|uri| uri.to_string())
+            .unwrap_or_else(|| self.url.clone());
+        let auth_header_value =
+            self.generate_authorization_header(&realm, &nonce, original.method(), &uri);
+
+        let mut auth_request = original.clone();
+        auth_request.insert_header(headers::CSEQ, self.cseq.to_string());
+        auth_request.insert_header(headers::USER_AGENT, client::USER_AGENT);
+        auth_request.insert_header(headers::AUTHORIZATION, auth_header_value);
+        Ok(auth_request)
     }
 
     pub async fn handle_unauthorized(
         &mut self,
-        method: Method,
+        original: &Request<Vec<u8>>,
         auth_header: &headers::HeaderValue,
     ) -> Result<Response<Vec<u8>>> {
-        let (realm, nonce) = parse_auth_header(auth_header)?;
-        let auth_header_value = self.generate_authorization_header(&realm, &nonce, &method);
+        let auth_request = self.build_authorized_request(original, auth_header)?;
 
-        let auth_request = Request::builder(method, Version::V1_0)
-            .request_uri(self.url.parse::<Url>()?)
-            .header(headers::CSEQ, self.cseq.to_string())
-            .header(headers::USER_AGENT, client::USER_AGENT)
-            .header(headers::AUTHORIZATION, auth_header_value)
-            .empty();
-
-        self.send_request(&auth_request.map_body(|_| vec![]))
-            .await?;
+        self.send_request(&auth_request).await?;
         let response = self.read_response().await?;
         self.cseq += 1;
         Ok(response)
@@ -147,10 +164,10 @@ where
             .header(headers::CSEQ, self.cseq.to_string())
             .header(headers::ACCEPT, media_type::APPLICATION)
             .header(headers::USER_AGENT, client::USER_AGENT)
-            .empty();
+            .empty()
+            .map_body(|_| vec![]);
 
-        self.send_request(&describe_request.map_body(|_| vec![]))
-            .await?;
+        self.send_request(&describe_request).await?;
         let mut describe_response = self.read_response().await?;
         self.cseq += 1;
 
@@ -160,7 +177,7 @@ where
                 .cloned()
         {
             describe_response = self
-                .handle_unauthorized(Method::Describe, &auth_header)
+                .handle_unauthorized(&describe_request, &auth_header)
                 .await?;
         }
 
@@ -191,7 +208,7 @@ where
                 .cloned()
             {
                 let announce_response = self
-                    .handle_unauthorized(Method::Announce, &auth_header)
+                    .handle_unauthorized(&announce_request, &auth_header)
                     .await?;
                 if announce_response.status() != StatusCode::Ok {
                     return Err(anyhow!("ANNOUNCE request failed after authentication"));
@@ -748,5 +765,60 @@ fn build_control_url(base_url: &str, control: &str) -> String {
             base_url.trim_end_matches('/'),
             control.trim_start_matches('/')
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::DuplexStream;
+
+    fn test_session() -> RtspSession<DuplexStream> {
+        let (client, _server) = tokio::io::duplex(1024);
+        RtspSession::new(
+            client,
+            "rtsp://127.0.0.1:8554/live".to_string(),
+            AuthParams::new("user".to_string(), "pass".to_string()),
+        )
+    }
+
+    #[test]
+    fn authorized_retry_preserves_announce_body_and_headers() {
+        let mut session = test_session();
+        session.cseq = 7;
+        let sdp = b"v=0\r\ns=test\r\n".to_vec();
+        let original = Request::builder(Method::Announce, Version::V1_0)
+            .request_uri("rtsp://127.0.0.1:8554/live".parse::<Url>().unwrap())
+            .header(headers::CSEQ, "6")
+            .header(headers::CONTENT_TYPE, media_type::APPLICATION)
+            .header(headers::USER_AGENT, client::USER_AGENT)
+            .build(sdp.clone());
+        let challenge = headers::HeaderValue::from("Digest realm=\"live777\", nonce=\"nonce-1\"");
+
+        let retry = session
+            .build_authorized_request(&original, &challenge)
+            .unwrap();
+
+        assert_eq!(retry.method(), &Method::Announce);
+        assert_eq!(retry.body(), &sdp);
+        assert_eq!(
+            retry.header(&headers::CONTENT_TYPE).map(|h| h.as_str()),
+            Some(media_type::APPLICATION)
+        );
+        assert_eq!(
+            retry.header(&headers::CONTENT_LENGTH).map(|h| h.as_str()),
+            Some(sdp.len().to_string().as_str())
+        );
+        assert_eq!(retry.header(&headers::CSEQ).map(|h| h.as_str()), Some("7"));
+
+        let auth = retry
+            .header(&headers::AUTHORIZATION)
+            .map(|h| h.as_str())
+            .unwrap();
+        assert!(auth.starts_with("Digest "));
+        assert!(auth.contains("username=\"user\""));
+        assert!(auth.contains("realm=\"live777\""));
+        assert!(auth.contains("nonce=\"nonce-1\""));
+        assert!(auth.contains("uri=\"rtsp://127.0.0.1:8554/live\""));
     }
 }
