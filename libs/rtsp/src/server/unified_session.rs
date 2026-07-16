@@ -146,6 +146,16 @@ impl<H: SessionHandler> RtspServerSession<H> {
             self.handler.update_cseq(&request);
             self.handler.update_activity().await;
 
+            // Authenticate every request once at the dispatch level so new
+            // method handlers cannot accidentally bypass auth.  Only OPTIONS
+            // (a stateless discovery method per RFC 2326) is exempt.
+            if !matches!(request.method(), Method::Options) {
+                if let Err(response) = self.handler.check_auth(&request) {
+                    self.send_response(&response).await?;
+                    continue;
+                }
+            }
+
             match request.method() {
                 Method::Options => {
                     let response = self.handler.handle_options(&request).await?;
@@ -155,10 +165,6 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     if session_mode == SessionMode::Push {
                         self.send_method_not_allowed(&request).await?;
                         return Err(anyhow!("DESCRIBE is not supported on a push session"));
-                    }
-                    if let Err(response) = self.handler.check_auth(&request) {
-                        self.send_response(&response).await?;
-                        continue;
                     }
                     if session_mode == SessionMode::Mixed {
                         session_mode = SessionMode::Pull;
@@ -176,10 +182,6 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         self.send_method_not_allowed(&request).await?;
                         return Err(anyhow!("ANNOUNCE is not supported on a pull session"));
                     }
-                    if let Err(response) = self.handler.check_auth(&request) {
-                        self.send_response(&response).await?;
-                        continue;
-                    }
                     if session_mode == SessionMode::Mixed {
                         session_mode = SessionMode::Push;
                     }
@@ -193,11 +195,6 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     self.send_response(&response).await?;
                 }
                 Method::Setup => {
-                    if let Err(response) = self.handler.check_auth(&request) {
-                        self.send_response(&response).await?;
-                        return Err(anyhow!("RTSP SETUP authentication required"));
-                    }
-
                     let transport_header = match request.header(&rtsp_types::headers::TRANSPORT) {
                         Some(h) => h,
                         None => {

@@ -527,11 +527,16 @@ async fn wait_for_forward(
         }
         Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
             // The broadcast channel cycled past unread messages (e.g. a
-            // re-announce overwrote the notification). Clean up the stale
-            // coordination entry and report the lag error.
+            // re-announce overwrote the notification). The forward was
+            // already created before the notification was sent, so if it
+            // still exists we can return it directly.
             let mut map = stream_ready.write().await;
             if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
                 map.remove(stream_id);
+            }
+            drop(map);
+            if let Some(forward) = manager.get_forward(stream_id).await {
+                return Ok(forward);
             }
             return Err(anyhow!(
                 "Stream ready notification lagged for {}",
