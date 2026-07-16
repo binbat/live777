@@ -61,6 +61,11 @@ impl OutputTarget {
             port_update_rx: None,
         }
     }
+
+    fn with_port_update_rx(mut self, port_update_rx: UnboundedReceiver<OutputTarget>) -> Self {
+        self.port_update_rx = Some(port_update_rx);
+        self
+    }
 }
 
 pub async fn setup_output_target(
@@ -103,7 +108,7 @@ pub async fn setup_output_target(
         scheme => return Err(anyhow!("Unsupported output URL scheme: {scheme}")),
     };
 
-    let (media_info, channels, port_update_rx) = match scheme {
+    match scheme {
         OutputScheme::RtspServer => {
             let port = input.port().unwrap_or(0);
             let (first, mut update_rx) =
@@ -119,27 +124,32 @@ pub async fn setup_output_target(
                     }
                 }
             });
-            (first.media_info, Some(first.channels), Some(target_rx))
+            Ok(OutputTarget::from_rtsp_session(first).with_port_update_rx(target_rx))
         }
         OutputScheme::RtspClient => {
             let (media_info, channels) =
                 protocol::rtsp::setup_client_for_push(target_url, &target_host, filtered_sdp)
                     .await?;
-            (media_info, channels, None)
+            Ok(OutputTarget {
+                connection_id: 1,
+                scheme,
+                media_info,
+                target_host,
+                interleaved_channels: channels,
+                port_update_rx: None,
+            })
         }
         OutputScheme::Rtp => {
             let media_info =
                 protocol::rtp::setup_rtp_output(&input, filtered_sdp, sdp_file, notify).await?;
-            (media_info, None, None)
+            Ok(OutputTarget {
+                connection_id: 1,
+                scheme,
+                media_info,
+                target_host,
+                interleaved_channels: None,
+                port_update_rx: None,
+            })
         }
-    };
-
-    Ok(OutputTarget {
-        connection_id: 1,
-        scheme,
-        media_info,
-        target_host,
-        interleaved_channels: channels,
-        port_update_rx,
-    })
+    }
 }
