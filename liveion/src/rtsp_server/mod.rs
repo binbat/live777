@@ -497,20 +497,24 @@ async fn wait_for_forward(
         return Ok(forward);
     }
 
-    let tx = {
+    let (tx, mut rx) = {
         let mut map = stream_ready.write().await;
         if let Some(forward) = manager.get_forward(stream_id).await {
             return Ok(forward);
         }
-        map.entry(stream_id.to_string())
+        let tx = map
+            .entry(stream_id.to_string())
             .or_insert_with(|| broadcast::channel(1).0)
-            .clone()
+            .clone();
+        let rx = tx.subscribe();
+        (tx, rx)
     };
 
-    let wait_result = {
-        let mut rx = tx.subscribe();
-        tokio::time::timeout(Duration::from_secs(30), rx.recv()).await
-    };
+    if let Some(forward) = manager.get_forward(stream_id).await {
+        return Ok(forward);
+    }
+
+    let wait_result = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await;
 
     match wait_result {
         Err(_elapsed) => {
