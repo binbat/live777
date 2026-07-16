@@ -244,15 +244,15 @@ impl FrameGenerator {
     /// Flush remaining encoder output and close the generator.
     pub fn flush(&mut self) -> Result<()> {
         let mut result = Ok(());
-        if let Some(ref mut video) = self.video_ctx {
-            if let Err(e) = flush_encoder(video) {
-                result = Err(e.into());
-            }
+        if let Some(ref mut video) = self.video_ctx
+            && let Err(e) = flush_encoder(video)
+        {
+            result = Err(e);
         }
-        if let Some(ref mut audio) = self.audio_ctx {
-            if let Err(e) = flush_encoder(audio) {
-                result = Err(e.into());
-            }
+        if let Some(ref mut audio) = self.audio_ctx
+            && let Err(e) = flush_encoder(audio)
+        {
+            result = Err(e);
         }
         result
     }
