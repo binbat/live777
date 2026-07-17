@@ -480,7 +480,7 @@ impl From<AudioCodecParams> for rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
             mime_type: format!("audio/{}", params.codec),
             clock_rate: params.clock_rate,
             channels: params.channels,
-            sdp_fmtp_line: if params.codec == "opus" {
+            sdp_fmtp_line: if params.codec.eq_ignore_ascii_case("opus") {
                 "minptime=10;useinbandfec=1".to_string()
             } else {
                 "".to_string()

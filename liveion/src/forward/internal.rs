@@ -18,6 +18,7 @@ use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
 use crate::result::Result;
 use crate::{metrics, new_broadcast_channel};
+use rtc::ice::mdns::MulticastDnsMode;
 use rtc::peer_connection::configuration::interceptor_registry::{
     configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers,
     configure_twcc_receiver_only, configure_twcc_sender_only,
@@ -1221,7 +1222,8 @@ impl PeerForwardInternal {
         });
         *self.rtcp_egress_counters.lock().unwrap() = Some(egress_counters);
 
-        let s = SettingEngine::default();
+        let mut s = SettingEngine::default();
+        s.set_multicast_dns_mode(MulticastDnsMode::Disabled);
 
         let ice_servers = self.ice_server.clone();
         info!(
@@ -1418,7 +1420,8 @@ impl PeerForwardInternal {
         configure_simulcast_extension_headers(&mut m)?;
         let registry = configure_twcc_sender_only(registry, &mut m)?;
 
-        let s = SettingEngine::default();
+        let mut s = SettingEngine::default();
+        s.set_multicast_dns_mode(MulticastDnsMode::Disabled);
 
         let ice_servers = self.ice_server.clone();
         info!(
