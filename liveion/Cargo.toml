@@ -16,7 +16,7 @@ http-log = { path = "../libs/http-log" }
 iceserver = { path = "../libs/iceserver" }
 libwish = { path = "../libs/libwish", optional = true }
 storage = { path = "../libs/storage", optional = true }
-rtsp = { path = "../libs/rtsp", optional = true }
+rtsp = { path = "../libs/rtsp", default-features = false, features = ["server"], optional = true }
 net4mqtt = { path = "../libs/net4mqtt", optional = true }
 livehal = { path = "../livehal", optional = true }
 
@@ -45,6 +45,7 @@ sansio = "1.0"
 rtc-interceptor = { workspace = true }
 rtc-shared = { workspace = true }
 uuid = { workspace = true }
+base64 = { workspace = true }
 
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
@@ -77,9 +78,10 @@ recorder = [
     "dep:reqwest",
 ]
 
+rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
 source = ["dep:rtsp", "dep:url"]
 source-sdp = ["source"]
-source-rtsp = ["source"]
+source-rtsp = ["source", "rtsp/client"]
 source-all = ["source-sdp", "source-rtsp"]
 
 native-source = ["source", "dep:livehal"]

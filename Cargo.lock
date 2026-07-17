@@ -2768,6 +2768,7 @@ dependencies = [
  "auth",
  "axum 0.8.9",
  "axum-extra",
+ "base64 0.22.1",
  "byteorder",
  "bytes",
  "chrono",
@@ -4630,6 +4631,7 @@ name = "rtsp"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "cli",
  "md-5",
@@ -4640,6 +4642,7 @@ dependencies = [
  "sdp-types",
  "serde",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
  "uuid",

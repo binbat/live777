@@ -5,7 +5,6 @@ use ::webrtc::peer_connection::RTCPeerConnectionState;
 use anyhow::{Result, anyhow};
 use std::process::ExitStatus;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -13,13 +12,11 @@ mod input;
 mod track;
 mod webrtc;
 
-use cli::create_child;
-use libwish::Client;
-use rtsp::MediaProfile;
-
 use crate::transport;
 use crate::utils::shutdown::graceful_shutdown;
 use crate::utils::stats::start_stats_monitor;
+use cli::create_child;
+use libwish::Client;
 
 pub use input::InputSource;
 pub use webrtc::format_ice_stats;
@@ -41,14 +38,8 @@ pub async fn into(
 
     let child = Arc::new(create_child(command)?);
 
-    let mut input_source = input::setup_input_source(ct.clone(), &target_url).await?;
+    let input_source = input::setup_input_source(ct.clone(), &target_url).await?;
     info!("Input source configured: {:?}", input_source.scheme());
-
-    let (original_target, original_listen) = input_source.address_config();
-    let original_config = (original_target.to_string(), original_listen.to_string());
-
-    let port_update_rx = input_source.take_port_update_rx();
-    let initial_profile = MediaProfile::from_media_info(input_source.media_info());
 
     let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
         webrtc::setup_whip_peer(
@@ -91,98 +82,15 @@ pub async fn into(
         }
     });
 
-    let mut transport_handle: Option<JoinHandle<()>> = Some(
-        transport::connect_input_to_webrtc(
-            input_source,
-            video_sender.clone(),
-            audio_sender.clone(),
-            peer.clone(),
-        )
-        .await?,
-    );
+    transport::connect_input_to_webrtc(
+        input_source,
+        video_sender.clone(),
+        audio_sender.clone(),
+        peer.clone(),
+    )
+    .await?;
 
     info!("Input connected to WebRTC");
-
-    if let Some(mut rx) = port_update_rx {
-        let video_sender_clone = video_sender.clone();
-        let audio_sender_clone = audio_sender.clone();
-        let peer_clone = peer.clone();
-        let config_clone = original_config.clone();
-        let ct_clone = ct.clone();
-        let mut current_profile = initial_profile;
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    Some(port_update) = rx.recv() => {
-                        info!(
-                            "Port update received for connection #{}: {:?}",
-                            port_update.connection_id, port_update.media_info
-                        );
-
-                        if port_update.connection_id == 1 {
-                            continue;
-                        }
-
-                        if let Some(handle) = transport_handle.take() {
-                            info!("Aborting old transport task");
-                            handle.abort();
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        }
-
-                        let next_profile = MediaProfile::from_media_info(&port_update.media_info);
-                        if !current_profile.is_replace_compatible_with(&next_profile) {
-                            tracing::error!(
-                                "publisher restarted with incompatible codec, rebuilding media generation is required but current WHIP session cannot renegotiate; old profile: {:?}; new profile: {:?}",
-                                current_profile,
-                                next_profile,
-                            );
-                            if let Err(error) = peer_clone.close().await {
-                                tracing::error!("Failed to close incompatible WHIP peer: {}", error);
-                            }
-                            ct_clone.cancel();
-                            break;
-                        }
-
-                        info!(
-                            "publisher restarted with same codec, reusing media generation for WHIP transport restart; profile: {:?}",
-                            next_profile
-                        );
-                        current_profile = next_profile;
-
-                        let (target_host, listen_host) = &config_clone;
-                        let temp_input_source = InputSource::new_with_media_info(
-                            input::InputScheme::RtspServer,
-                            port_update.media_info.clone(),
-                            target_host.clone(),
-                            listen_host.clone(),
-                        );
-
-                        info!("Restarting transport layer with new ports");
-                        match transport::connect_input_to_webrtc(
-                            temp_input_source,
-                            video_sender_clone.clone(),
-                            audio_sender_clone.clone(),
-                            peer_clone.clone(),
-                        )
-                        .await
-                        {
-                            Ok(new_handle) => {
-                                transport_handle = Some(new_handle);
-                                info!("Transport layer restarted successfully");
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to restart transport layer: {}", e);
-                            }
-                        }
-                    }
-                    _ = ct_clone.cancelled() => {
-                        info!("Port update listener shutting down");
-                        break;
-                    }
-                }
-            }
-        });
-    }
 
     if child.as_ref().is_some() {
         tokio::select! {

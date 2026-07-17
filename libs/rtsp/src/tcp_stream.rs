@@ -1,25 +1,94 @@
-use anyhow::Result;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use anyhow::{Result, anyhow};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::Mutex;
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::constants::buffer;
 use crate::types::SessionMode;
 
-pub async fn handle_tcp_stream(
+pub type InterleavedFrame = (u8, Vec<u8>);
+
+#[async_trait::async_trait]
+pub(crate) trait InterleavedSender: Send + Sync {
+    async fn send_interleaved(
+        &self,
+        data: InterleavedFrame,
+    ) -> Result<(), SendError<InterleavedFrame>>;
+}
+
+#[async_trait::async_trait]
+impl InterleavedSender for Sender<InterleavedFrame> {
+    async fn send_interleaved(
+        &self,
+        data: InterleavedFrame,
+    ) -> Result<(), SendError<InterleavedFrame>> {
+        self.send(data).await
+    }
+}
+
+#[async_trait::async_trait]
+impl InterleavedSender for UnboundedSender<InterleavedFrame> {
+    async fn send_interleaved(
+        &self,
+        data: InterleavedFrame,
+    ) -> Result<(), SendError<InterleavedFrame>> {
+        self.send(data)
+    }
+}
+
+#[async_trait::async_trait]
+pub(crate) trait InterleavedReceiver: Send {
+    async fn recv_interleaved(&mut self) -> Option<InterleavedFrame>;
+}
+
+#[async_trait::async_trait]
+impl InterleavedReceiver for Receiver<InterleavedFrame> {
+    async fn recv_interleaved(&mut self) -> Option<InterleavedFrame> {
+        self.recv().await
+    }
+}
+
+#[async_trait::async_trait]
+impl InterleavedReceiver for UnboundedReceiver<InterleavedFrame> {
+    async fn recv_interleaved(&mut self) -> Option<InterleavedFrame> {
+        self.recv().await
+    }
+}
+
+pub(crate) async fn handle_tcp_stream<S, R>(
     stream: TcpStream,
     mode: SessionMode,
-    data_from_stream_tx: UnboundedSender<(u8, Vec<u8>)>,
-    data_to_stream_rx: UnboundedReceiver<(u8, Vec<u8>)>,
-) -> Result<()> {
+    data_from_stream_tx: S,
+    data_to_stream_rx: R,
+    cancel: CancellationToken,
+    // When true, drop incoming even-channel (RTP) frames. This is used on the
+    // server side in Pull mode where the client should only send RTCP on odd
+    // channels, so unexpected RTP echo must not fill the bounded RTCP channel.
+    drop_incoming_even: bool,
+) -> Result<()>
+where
+    S: InterleavedSender + 'static,
+    R: InterleavedReceiver + 'static,
+{
     let (read_half, write_half) = tokio::io::split(stream);
+    let writer = Arc::new(Mutex::new(write_half));
 
     info!("Starting TCP interleaved stream handler (mode: {:?})", mode);
 
-    let read_task = tokio::spawn(handle_read_stream(read_half, data_from_stream_tx));
+    let read_task = tokio::spawn(handle_read_stream(
+        read_half,
+        writer.clone(),
+        data_from_stream_tx,
+        cancel.clone(),
+        drop_incoming_even,
+    ));
 
-    let write_task = tokio::spawn(handle_write_stream(write_half, data_to_stream_rx));
+    let write_task = tokio::spawn(handle_write_stream(writer, data_to_stream_rx));
 
     let (read_result, write_result) = tokio::join!(read_task, write_task);
 
@@ -39,9 +108,16 @@ pub async fn handle_tcp_stream(
     Ok(())
 }
 
-async fn handle_read_stream<R>(mut reader: R, tx: UnboundedSender<(u8, Vec<u8>)>) -> Result<()>
+async fn handle_read_stream<R, S>(
+    mut reader: R,
+    writer: Arc<Mutex<WriteHalf<TcpStream>>>,
+    tx: S,
+    cancel: CancellationToken,
+    drop_incoming_even: bool,
+) -> Result<()>
 where
     R: AsyncReadExt + Unpin,
+    S: InterleavedSender,
 {
     let mut buffer = Vec::with_capacity(buffer::TCP_READ_BUFFER_SIZE);
     let mut temp_buffer = vec![0u8; buffer::TCP_READ_BUFFER_SIZE];
@@ -49,78 +125,110 @@ where
     let mut total_bytes = 0u64;
 
     loop {
-        match reader.read(&mut temp_buffer).await {
-            Ok(0) => {
-                info!(
-                    "TCP stream closed by peer (processed {} frames, {} bytes)",
-                    total_frames, total_bytes
-                );
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                info!("TCP stream handler cancelled");
                 break;
             }
-            Ok(n) => {
-                trace!("Read {} bytes from TCP stream", n);
-
-                if buffer.len() + n > buffer::MAX_BUFFER_SIZE {
-                    warn!(
-                        "Buffer size limit reached ({} + {} > {}), clearing buffer",
-                        buffer.len(),
-                        n,
-                        buffer::MAX_BUFFER_SIZE
-                    );
-                    buffer.clear();
-
-                    continue;
-                }
-
-                buffer.extend_from_slice(&temp_buffer[..n]);
-                total_bytes += n as u64;
-
-                while let Some((channel, data, consumed)) = parse_interleaved_frame(&buffer)? {
-                    trace!(
-                        "Parsed interleaved frame: channel={}, length={}, consumed={}",
-                        channel,
-                        data.len(),
-                        consumed
-                    );
-
-                    if let Err(e) = tx.send((channel, data)) {
-                        error!("Failed to forward data from stream: {}", e);
-                        return Err(e.into());
+            result = reader.read(&mut temp_buffer) => {
+                match result {
+                    Ok(0) => {
+                        info!(
+                            "TCP stream closed by peer (processed {} frames, {} bytes)",
+                            total_frames, total_bytes
+                        );
+                        break;
                     }
+                    Ok(n) => {
+                        trace!("Read {} bytes from TCP stream", n);
 
-                    total_frames += 1;
-
-                    buffer.drain(..consumed);
-                }
-
-                if !buffer.is_empty() && buffer[0] != b'$' {
-                    match try_parse_rtsp_message(&buffer)? {
-                        Some((consumed, true)) => {
-                            info!("Received TEARDOWN in data stream, closing session");
-                            buffer.drain(..consumed);
-                            break;
+                        if buffer.len() + n > buffer::MAX_BUFFER_SIZE {
+                            return Err(anyhow!(
+                                "TCP read buffer limit exceeded ({} + {} > {}); closing connection",
+                                buffer.len(),
+                                n,
+                                buffer::MAX_BUFFER_SIZE
+                            ));
                         }
-                        Some((consumed, false)) => {
-                            debug!(
-                                "Skipping non-TEARDOWN RTSP message in data stream ({} bytes)",
+
+                        buffer.extend_from_slice(&temp_buffer[..n]);
+                        total_bytes += n as u64;
+
+                        while let Some((channel, data, consumed)) = parse_interleaved_frame(&buffer)? {
+                            trace!(
+                                "Parsed interleaved frame: channel={}, length={}, consumed={}",
+                                channel,
+                                data.len(),
                                 consumed
                             );
+
+                            // When acting as a Pull server, the client should only send
+                            // RTCP on odd channels. Drop unexpected even-channel (RTP)
+                            // frames before they can fill the bounded RTCP channel and
+                            // stall the session.
+                            if drop_incoming_even && channel % 2 == 0 {
+                                trace!("Dropping unexpected incoming RTP frame on channel {}", channel);
+                                buffer.drain(..consumed);
+                                continue;
+                            }
+
+                            if let Err(e) = tx.send_interleaved((channel, data)).await {
+                                error!("Failed to forward data from stream: {}", e);
+                                return Err(e.into());
+                            }
+
+                            total_frames += 1;
+
                             buffer.drain(..consumed);
                         }
-                        None => {}
+
+                        if !buffer.is_empty() && buffer[0] != b'$' {
+                            match try_parse_rtsp_message(&buffer)? {
+                                Some((consumed, true, _)) => {
+                                    info!("Received TEARDOWN in data stream, closing session");
+                                    buffer.drain(..consumed);
+                                    break;
+                                }
+                                Some((consumed, false, Some(cseq))) => {
+                                    debug!(
+                                        "Responding to keep-alive RTSP message in data stream ({} bytes)",
+                                        consumed
+                                    );
+                                    buffer.drain(..consumed);
+                                    let response = build_keep_alive_response(cseq);
+                                    let mut writer = writer.lock().await;
+                                    if let Err(e) = writer.write_all(&response).await {
+                                        error!("TCP keep-alive write error: {}", e);
+                                        return Err(e.into());
+                                    }
+                                    if let Err(e) = writer.flush().await {
+                                        error!("TCP keep-alive flush error: {}", e);
+                                        return Err(e.into());
+                                    }
+                                }
+                                Some((consumed, false, None)) => {
+                                    debug!(
+                                        "Skipping non-keep-alive RTSP message in data stream ({} bytes)",
+                                        consumed
+                                    );
+                                    buffer.drain(..consumed);
+                                }
+                                None => {}
+                            }
+                        }
+
+                        if buffer.len() > buffer::MAX_BUFFER_SIZE / 2 {
+                            warn!(
+                                "Buffer size is large: {} bytes (may indicate slow consumer)",
+                                buffer.len()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!("TCP read error: {}", e);
+                        return Err(e.into());
                     }
                 }
-
-                if buffer.len() > buffer::MAX_BUFFER_SIZE / 2 {
-                    warn!(
-                        "Buffer size is large: {} bytes (may indicate slow consumer)",
-                        buffer.len()
-                    );
-                }
-            }
-            Err(e) => {
-                error!("TCP read error: {}", e);
-                return Err(e.into());
             }
         }
     }
@@ -142,17 +250,9 @@ fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>
     }
 
     let channel = buffer[1];
+    // The interleaved header length field is 16-bit, so `length` is naturally
+    // bounded by `u16::MAX` which equals `MAX_FRAME_SIZE`.
     let length = u16::from_be_bytes([buffer[2], buffer[3]]) as usize;
-
-    if length > buffer::MAX_FRAME_SIZE {
-        warn!(
-            "Interleaved frame too large: {} bytes (max: {}), skipping",
-            length,
-            buffer::MAX_FRAME_SIZE
-        );
-
-        return Ok(Some((channel, Vec::new(), buffer::INTERLEAVED_HEADER_SIZE)));
-    }
 
     let total_size = buffer::INTERLEAVED_HEADER_SIZE + length;
     if buffer.len() < total_size {
@@ -169,39 +269,68 @@ fn parse_interleaved_frame(buffer: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>
     Ok(Some((channel, data, total_size)))
 }
 
-/// Parse an RTSP message from the buffer. Returns `Ok(Some((consumed, is_teardown)))`
-/// where `is_teardown` is true only for TEARDOWN requests. Non-TEARDOWN messages are
-/// consumed (drained) but do NOT break the read loop.
-fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<(usize, bool)>> {
+/// Parse an RTSP message from the buffer. Returns `Ok(Some((consumed, is_teardown, cseq)))`
+/// where `is_teardown` is true only for TEARDOWN requests and `cseq` is the request CSeq
+/// when the message is an OPTIONS or GET_PARAMETER keep-alive request.
+fn try_parse_rtsp_message(buffer: &[u8]) -> Result<Option<(usize, bool, Option<u32>)>> {
     match rtsp_types::Message::<Vec<u8>>::parse(buffer) {
         Ok((msg, consumed)) => {
-            if let rtsp_types::Message::Request(req) = msg
-                && matches!(req.method(), rtsp_types::Method::Teardown)
-            {
-                return Ok(Some((consumed, true)));
+            if let rtsp_types::Message::Request(req) = msg {
+                if matches!(req.method(), rtsp_types::Method::Teardown) {
+                    return Ok(Some((consumed, true, None)));
+                }
+                let is_keep_alive = matches!(
+                    req.method(),
+                    rtsp_types::Method::Options | rtsp_types::Method::GetParameter
+                );
+                let cseq = if is_keep_alive {
+                    req.header(&rtsp_types::headers::CSEQ)
+                        .and_then(|h| h.as_str().parse().ok())
+                } else {
+                    None
+                };
+                return Ok(Some((consumed, false, cseq)));
             }
 
-            Ok(Some((consumed, false)))
+            Ok(Some((consumed, false, None)))
         }
         Err(rtsp_types::ParseError::Incomplete(_)) => Ok(None),
         Err(e) => {
-            warn!("Failed to parse RTSP message: {:?}, skipping byte", e);
-            Ok(Some((1, false)))
+            // Parse failed — the buffer starts with non-'$' bytes but is not a
+            // valid RTSP message. Scan forward to the next '$' (interleaved
+            // frame) or "RTSP/" (next RTSP message) so we don't desync the
+            // interleaved parser.
+            let skip = buffer
+                .iter()
+                .position(|&b| b == b'$')
+                .or_else(|| buffer.windows(5).position(|w| w == b"RTSP/"))
+                .unwrap_or(buffer.len());
+            let skip = if skip == 0 { 1 } else { skip };
+            warn!(
+                "Failed to parse RTSP message: {:?}, skipping {} bytes to next sync point",
+                e, skip
+            );
+            Ok(Some((skip, false, None)))
         }
     }
 }
 
-async fn handle_write_stream<W>(
-    mut writer: W,
-    mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
-) -> Result<()>
+fn build_keep_alive_response(cseq: u32) -> Vec<u8> {
+    format!(
+        "RTSP/1.0 200 OK\r\nCSeq: {}\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD, GET_PARAMETER\r\nContent-Length: 0\r\n\r\n",
+        cseq
+    )
+    .into_bytes()
+}
+
+async fn handle_write_stream<R>(writer: Arc<Mutex<WriteHalf<TcpStream>>>, mut rx: R) -> Result<()>
 where
-    W: AsyncWriteExt + Unpin,
+    R: InterleavedReceiver,
 {
     let mut total_frames = 0u64;
     let mut total_bytes = 0u64;
 
-    while let Some((channel, data)) = rx.recv().await {
+    while let Some((channel, data)) = rx.recv_interleaved().await {
         if data.len() > buffer::MAX_FRAME_SIZE {
             error!(
                 "Frame too large to send: {} bytes (max: {}), dropping",
@@ -219,6 +348,7 @@ where
             data.len()
         );
 
+        let mut writer = writer.lock().await;
         if let Err(e) = writer.write_all(&frame).await {
             error!("TCP write error: {}", e);
             return Err(e.into());
@@ -295,20 +425,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_oversized_frame() {
-        const TEST_MAX_FRAME_SIZE: usize = 50000;
-
-        let length = (TEST_MAX_FRAME_SIZE + 1) as u16;
+    fn test_parse_max_length_frame_header() {
+        // The interleaved length field is 16-bit; verify a frame header at the
+        // upper boundary is recognized as incomplete when payload is missing.
+        let length = buffer::MAX_FRAME_SIZE as u16;
         let data = vec![b'$', 0, (length >> 8) as u8, (length & 0xFF) as u8];
 
         let result = parse_interleaved_frame(&data).unwrap();
-        if length as usize > buffer::MAX_FRAME_SIZE {
-            assert!(result.is_some());
-            let (channel, frame_data, consumed) = result.unwrap();
-            assert_eq!(channel, 0);
-            assert_eq!(frame_data.len(), 0);
-            assert_eq!(consumed, 4);
-        }
+        assert!(result.is_none());
     }
 
     #[test]

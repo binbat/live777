@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -13,6 +13,10 @@ use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
 use tracing::{debug, info, trace, warn};
 
+#[cfg(feature = "source")]
+use base64::Engine;
+#[cfg(feature = "source")]
+use livetwo::payload::{RePayload, RePayloadCodec};
 #[cfg(feature = "source")]
 use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
@@ -267,6 +271,7 @@ pub(crate) enum PublishTrackRemote {
         rid: String,
         kind: RtpCodecKind,
         codec: Codec,
+        payload_type: Arc<AtomicU8>,
         track: Arc<dyn TrackRemote>,
         rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
     },
@@ -307,13 +312,18 @@ impl PublishTrackRemote {
             kind: media.first().cloned().unwrap_or_default(),
             codec: media.get(1).cloned().unwrap_or_default(),
             fmtp: raw_codec.sdp_fmtp_line,
+            payload_type: 0,
+            clock_rate: raw_codec.clock_rate,
+            channels: raw_codec.channels,
         };
+        let payload_type = Arc::new(AtomicU8::new(0));
 
         tokio::spawn(Self::track_forward(
             stream.clone(),
             id.clone(),
             track.clone(),
             rtp_sender.clone(),
+            payload_type.clone(),
             connected_gate,
             twcc_ext_id,
             native_twcc_bound,
@@ -325,6 +335,7 @@ impl PublishTrackRemote {
             rid,
             kind,
             codec,
+            payload_type,
             track,
             rtp_broadcast: Arc::new(rtp_sender),
         }
@@ -336,6 +347,7 @@ impl PublishTrackRemote {
         id: String,
         track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
+        payload_type: Arc<AtomicU8>,
         connected_gate: Option<watch::Receiver<webrtc::peer_connection::RTCPeerConnectionState>>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
@@ -400,6 +412,17 @@ impl PublishTrackRemote {
                         rtp_packet.header.sequence_number,
                         rtp_packet.header.timestamp
                     );
+
+                    // Capture the negotiated payload type from the first received RTP
+                    // packet. WebRTC TrackRemote only exposes codec capabilities, not the
+                    // negotiated payload type, so we learn it from the wire.
+                    if payload_type.load(Ordering::Relaxed) == 0 {
+                        payload_type.store(rtp_packet.header.payload_type, Ordering::Relaxed);
+                        info!(
+                            "[{}] [{}] [track] detected payload type: {}",
+                            stream, id, rtp_packet.header.payload_type
+                        );
+                    }
 
                     // --- TWCC inbound probe ---
                     let total = packets_total.fetch_add(1, Ordering::Relaxed) + 1;
@@ -537,9 +560,29 @@ impl PublishTrackRemote {
 
     pub(crate) fn codec(&self) -> Codec {
         match self {
-            Self::Real { codec, .. } => codec.clone(),
+            Self::Real {
+                codec,
+                payload_type,
+                ..
+            } => {
+                let mut codec = codec.clone();
+                let pt = payload_type.load(Ordering::Relaxed);
+                if pt != 0 {
+                    codec.payload_type = pt;
+                }
+                codec
+            }
             #[cfg(feature = "source")]
             Self::Virtual(v) => v.codec(),
+        }
+    }
+
+    #[cfg(feature = "rtsp")]
+    pub(crate) async fn source_ssrc(&self) -> u32 {
+        match self {
+            Self::Real { track, .. } => track.ssrcs().await.first().copied().unwrap_or(0),
+            #[cfg(feature = "source")]
+            Self::Virtual(v) => v.ssrc(),
         }
     }
 
@@ -584,6 +627,11 @@ pub struct VirtualPublishTrack {
     sequence_number: Arc<AtomicU32>,
     clock_rate: u32,
     start_time: SystemTime,
+    /// Repayloader for depacketising STAP-A and injecting SPS/PPS before
+    /// IDR frames.  The lock is held only briefly — never across `.await`
+    /// points — so `std::sync::Mutex` is safe here.
+    #[cfg(feature = "source")]
+    repayloader: std::sync::Mutex<Option<RePayloadCodec>>,
 }
 
 #[cfg(feature = "source")]
@@ -611,6 +659,8 @@ impl VirtualPublishTrack {
             sequence_number: Arc::new(AtomicU32::new(rand::random::<u16>() as u32)),
             clock_rate: codec_params.rtp_codec.clock_rate,
             start_time: SystemTime::now(),
+            #[cfg(feature = "source")]
+            repayloader: std::sync::Mutex::new(None),
         }
     }
 
@@ -633,6 +683,9 @@ impl VirtualPublishTrack {
             kind: media.first().cloned().unwrap_or_default(),
             codec: media.get(1).cloned().unwrap_or_default(),
             fmtp: self.codec_params.rtp_codec.sdp_fmtp_line.clone(),
+            payload_type: self.codec_params.payload_type,
+            clock_rate: self.codec_params.rtp_codec.clock_rate,
+            channels: self.codec_params.rtp_codec.channels,
         }
     }
 
@@ -646,51 +699,101 @@ impl VirtualPublishTrack {
             );
         }
 
-        let mut packet_mut = (*packet).clone();
+        let packet_mut = (*packet).clone();
 
-        let seq = self.sequence_number.fetch_add(1, Ordering::Relaxed) as u16;
-        packet_mut.header.sequence_number = seq;
-
-        let packet_count = self.packets_sent.fetch_add(1, Ordering::Relaxed) + 1;
-        self.bytes_sent
-            .fetch_add(packet_mut.payload.len() as u64, Ordering::Relaxed);
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        self.last_ntp_time_ms.store(now_ms, Ordering::Relaxed);
-
-        if packet_count % 100 == 1 {
-            debug!(
-                "[{}] Sent {:?} packet #{}, SSRC: {}, seq: {}, ts: {}",
-                self.stream_id,
-                self.kind,
-                packet_count,
-                packet_mut.header.ssrc,
-                seq,
-                packet_mut.header.timestamp
-            );
-        }
-
-        match self.rtp_broadcast.send(Arc::new(packet_mut)) {
-            Ok(sent_count) => {
-                if packet_count % 100 == 1 {
-                    trace!(
-                        "[{}] Sent {:?} packet to {} receivers",
-                        self.stream_id, self.kind, sent_count
-                    );
+        // Process through whipinto-style repayloader.
+        // This depacketises incoming RTP (including STAP-A),
+        // reassembles frames, injects SPS/PPS before IDRs,
+        // and repacketises into clean single-NAL packets.
+        #[cfg(feature = "source")]
+        let outgoing: Vec<Packet> = {
+            let mut guard = self.repayloader.lock().unwrap();
+            let rp = guard.get_or_insert_with(|| {
+                let mime = self.codec_params.rtp_codec.mime_type.clone();
+                let mut rp = RePayloadCodec::new(mime.clone());
+                // Pre-load SPS/PPS (H264) or VPS/SPS/PPS (H265)
+                // from codec params so the repayloader can
+                // inject them before IDR frames.
+                use crate::forward::codec_compat::fmtp_param_case_preserving;
+                let fmtp = &self.codec_params.rtp_codec.sdp_fmtp_line;
+                let b64 = base64::engine::general_purpose::STANDARD;
+                if mime.eq_ignore_ascii_case("video/H264") {
+                    if let Some(sprop) = fmtp_param_case_preserving(fmtp, "sprop-parameter-sets") {
+                        let parts: Vec<&str> = sprop.split(',').collect();
+                        if parts.len() >= 2
+                            && let (Ok(sps), Ok(pps)) =
+                                (b64.decode(parts[0].trim()), b64.decode(parts[1].trim()))
+                        {
+                            rp.set_h264_params(sps, pps);
+                        }
+                    }
+                } else if mime.eq_ignore_ascii_case("video/H265") {
+                    let vps = fmtp_param_case_preserving(fmtp, "sprop-vps");
+                    let sps = fmtp_param_case_preserving(fmtp, "sprop-sps");
+                    let pps = fmtp_param_case_preserving(fmtp, "sprop-pps");
+                    if let (Some(vps), Some(sps), Some(pps)) = (vps, sps, pps)
+                        && let (Ok(vps), Ok(sps), Ok(pps)) = (
+                            b64.decode(vps.trim()),
+                            b64.decode(sps.trim()),
+                            b64.decode(pps.trim()),
+                        )
+                    {
+                        rp.set_h265_params(vps, sps, pps);
+                    }
                 }
-                Ok(())
-            }
-            Err(e) => {
-                error!(
-                    "[{}] Failed to broadcast {:?} packet #{}: {}",
-                    self.stream_id, self.kind, packet_count, e
+                rp
+            });
+            rp.payload(&packet_mut)
+        };
+        #[cfg(not(feature = "source"))]
+        let outgoing: Vec<Packet> = vec![packet_mut];
+
+        for packet_mut in outgoing {
+            let seq = self.sequence_number.fetch_add(1, Ordering::Relaxed) as u16;
+            let mut pkt = packet_mut;
+            pkt.header.sequence_number = seq;
+
+            let packet_count = self.packets_sent.fetch_add(1, Ordering::Relaxed) + 1;
+            self.bytes_sent
+                .fetch_add(pkt.payload.len() as u64, Ordering::Relaxed);
+
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            self.last_ntp_time_ms.store(now_ms, Ordering::Relaxed);
+
+            if packet_count % 100 == 1 {
+                debug!(
+                    "[{}] Sent {:?} packet #{}, SSRC: {}, seq: {}, ts: {}",
+                    self.stream_id,
+                    self.kind,
+                    packet_count,
+                    pkt.header.ssrc,
+                    pkt.header.sequence_number,
+                    pkt.header.timestamp
                 );
-                Err(format!("Failed to send RTP: {}", e))
+            }
+
+            match self.rtp_broadcast.send(Arc::new(pkt)) {
+                Ok(sent_count) => {
+                    if packet_count % 100 == 1 {
+                        trace!(
+                            "[{}] Sent {:?} packet to {} receivers",
+                            self.stream_id, self.kind, sent_count
+                        );
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "[{}] Failed to broadcast {:?} packet #{}: {}",
+                        self.stream_id, self.kind, packet_count, e
+                    );
+                    return Err(format!("Failed to send RTP: {}", e));
+                }
             }
         }
+        Ok(())
     }
 
     pub fn ssrc(&self) -> u32 {

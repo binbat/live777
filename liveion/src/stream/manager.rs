@@ -207,13 +207,21 @@ impl Manager {
     }
 
     pub async fn stream_create(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
-        let mut stream_map = self.stream_map.write().await;
-        let forward = stream_map.get(&stream).cloned();
-        if forward.is_some() {
-            return Err(anyhow::anyhow!("resource already exists"));
+        {
+            let stream_map = self.stream_map.read().await;
+            if stream_map.contains_key(&stream) {
+                return Err(anyhow::anyhow!("resource already exists"));
+            }
         }
+
         debug!("create stream: {}", stream.clone());
         let forward = self.do_stream_create(stream.clone()).await;
+
+        let mut stream_map = self.stream_map.write().await;
+        if stream_map.contains_key(&stream) {
+            let _ = forward.close().await;
+            return Err(anyhow::anyhow!("resource already exists"));
+        }
         stream_map.insert(stream.clone(), forward);
         drop(stream_map);
         Ok(())
@@ -257,14 +265,14 @@ impl Manager {
     }
 
     pub async fn stream_delete(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
-        let mut stream_map = self.stream_map.write().await;
-        let forward = stream_map.get(&stream).cloned();
+        let forward = {
+            let mut stream_map = self.stream_map.write().await;
+            stream_map.remove(&stream)
+        };
         let _ = match forward {
             Some(forward) => forward.close().await,
             None => return Err(anyhow::anyhow!("resource not exists")),
         };
-        stream_map.remove(&stream);
-        drop(stream_map);
 
         self.do_stream_delete(stream.clone()).await;
         info!("remove stream : {}", stream);
@@ -679,7 +687,10 @@ impl Manager {
     }
 
     #[cfg(feature = "source")]
-    async fn get_or_create_forward(&self, stream_id: &str) -> crate::forward::PeerForward {
+    pub(crate) async fn get_or_create_forward(
+        &self,
+        stream_id: &str,
+    ) -> crate::forward::PeerForward {
         let mut stream_map = self.stream_map.write().await;
 
         if let Some(forward) = stream_map.get(stream_id) {
@@ -723,8 +734,8 @@ impl Manager {
         self.event_sender.subscribe()
     }
 
-    #[cfg(feature = "recorder")]
-    pub async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
+    #[cfg(any(feature = "rtsp", feature = "recorder"))]
+    pub(crate) async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
         let map = self.stream_map.read().await;
         map.get(stream).cloned()
     }

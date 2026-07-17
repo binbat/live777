@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{error, info, trace};
 
 use crate::constants::{net, transport};
@@ -68,7 +68,7 @@ impl UdpSocketPair {
         })
     }
 
-    pub fn spawn_rtp_receiver(self, tx: UnboundedSender<Vec<u8>>) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_rtp_receiver(self, tx: Sender<Vec<u8>>) -> tokio::task::JoinHandle<()> {
         let socket = Arc::clone(&self.rtp_socket);
 
         tokio::spawn(async move {
@@ -79,7 +79,7 @@ impl UdpSocketPair {
                 match socket.recv(&mut buf).await {
                     Ok(n) => {
                         trace!("Received RTP packet: {} bytes", n);
-                        if let Err(e) = tx.send(buf[..n].to_vec()) {
+                        if let Err(e) = tx.send(buf[..n].to_vec()).await {
                             error!("Failed to forward RTP: {}", e);
                             break;
                         }
@@ -97,8 +97,8 @@ impl UdpSocketPair {
 
     pub fn spawn_rtcp_handler(
         self,
-        rtcp_from_webrtc_rx: UnboundedReceiver<Vec<u8>>,
-        rtcp_to_webrtc_tx: UnboundedSender<Vec<u8>>,
+        rtcp_from_webrtc_rx: Receiver<Vec<u8>>,
+        rtcp_to_webrtc_tx: Sender<Vec<u8>>,
     ) -> tokio::task::JoinHandle<()> {
         let rtcp_socket_read = Arc::clone(&self.rtcp_socket);
         let rtcp_socket_write = Arc::clone(&self.rtcp_socket);
@@ -118,7 +118,7 @@ impl UdpSocketPair {
         })
     }
 
-    async fn rtcp_read_task(socket: Arc<UdpSocket>, tx: UnboundedSender<Vec<u8>>) -> Result<()> {
+    async fn rtcp_read_task(socket: Arc<UdpSocket>, tx: Sender<Vec<u8>>) -> Result<()> {
         let mut buf = vec![0u8; transport::RTCP_BUFFER_SIZE];
         info!("RTCP receiver started");
 
@@ -126,7 +126,7 @@ impl UdpSocketPair {
             match socket.recv(&mut buf).await {
                 Ok(n) => {
                     trace!("Received RTCP packet: {} bytes", n);
-                    if let Err(e) = tx.send(buf[..n].to_vec()) {
+                    if let Err(e) = tx.send(buf[..n].to_vec()).await {
                         error!("Failed to forward RTCP: {}", e);
                         break;
                     }
@@ -141,10 +141,7 @@ impl UdpSocketPair {
         Ok(())
     }
 
-    async fn rtcp_write_task(
-        socket: Arc<UdpSocket>,
-        mut rx: UnboundedReceiver<Vec<u8>>,
-    ) -> Result<()> {
+    async fn rtcp_write_task(socket: Arc<UdpSocket>, mut rx: Receiver<Vec<u8>>) -> Result<()> {
         info!("RTCP sender started");
 
         while let Some(data) = rx.recv().await {

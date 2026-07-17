@@ -12,8 +12,8 @@ struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
-    /// rtsp://[username]:[password]@[ip]:[port]/[stream] Or <stream.sdp>
-    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", livetwo::SCHEME_RTSP_SERVER))]
+    /// rtp://[ip]:[port] / rtsp://[username]:[password]@[ip]:[port]/[stream] / <stream.sdp>
+    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", livetwo::SCHEME_RTP_SDP))]
     output: String,
     /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
     #[arg(short, long)]

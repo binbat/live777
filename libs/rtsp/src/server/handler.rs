@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
@@ -17,7 +18,14 @@ pub struct Handler {
     sessions: Arc<RwLock<HashMap<String, ServerSession>>>,
     config: ServerConfig,
     sdp_content: Option<Vec<u8>>,
+    /// Cached parsed SDP, populated on `set_sdp` so that callers
+    /// (`resolve_setup_media_kind`, `parse_codecs`) don't re-parse.
+    parsed_sdp: Option<sdp_types::Session>,
     next_channel: u8,
+    /// UDP sockets allocated during the most recent SETUP. Kept open so the
+    /// advertised server ports cannot be stolen before the data transfer starts.
+    udp_rtp_socket: Option<UdpSocket>,
+    udp_rtcp_socket: Option<UdpSocket>,
 }
 
 impl Handler {
@@ -33,12 +41,25 @@ impl Handler {
             sessions,
             config,
             sdp_content: None,
+            parsed_sdp: None,
             next_channel: 0,
+            udp_rtp_socket: None,
+            udp_rtcp_socket: None,
         }
     }
 
     pub fn set_sdp(&mut self, sdp: Vec<u8>) {
-        self.sdp_content = Some(sdp);
+        match sdp_types::Session::parse(&sdp) {
+            Ok(parsed) => {
+                self.parsed_sdp = Some(parsed);
+                self.sdp_content = Some(sdp);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse SDP in set_sdp: {}", e);
+                self.sdp_content = Some(sdp);
+                self.parsed_sdp = None;
+            }
+        }
     }
 
     pub fn cseq(&self) -> u32 {
@@ -49,8 +70,20 @@ impl Handler {
         self.sdp_content.as_ref()
     }
 
+    pub fn parsed_sdp(&self) -> Option<&sdp_types::Session> {
+        self.parsed_sdp.as_ref()
+    }
+
     pub fn client_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    pub fn session_id(&self) -> Option<&String> {
+        self.session_id.as_ref()
+    }
+
+    pub fn sessions(&self) -> Arc<RwLock<HashMap<String, ServerSession>>> {
+        self.sessions.clone()
     }
 
     pub async fn handle_options(
@@ -62,7 +95,7 @@ impl Handler {
             .header(headers::CSEQ, self.cseq.to_string())
             .header(
                 headers::PUBLIC,
-                "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD",
+                "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, ANNOUNCE, RECORD, GET_PARAMETER",
             )
             .empty();
         Ok(response.map_body(|_| vec![]))
@@ -133,12 +166,12 @@ impl Handler {
 
         let bind_addr = net::bind_any_for(&self.addr);
 
-        let temp_rtp = tokio::net::UdpSocket::bind(&bind_addr).await?;
-        let temp_rtcp = tokio::net::UdpSocket::bind(&bind_addr).await?;
-        let server_rtp_port = temp_rtp.local_addr()?.port();
-        let server_rtcp_port = temp_rtcp.local_addr()?.port();
-        drop(temp_rtp);
-        drop(temp_rtcp);
+        let rtp_socket = UdpSocket::bind(&bind_addr).await?;
+        let rtcp_socket = UdpSocket::bind(&bind_addr).await?;
+        let server_rtp_port = rtp_socket.local_addr()?.port();
+        let server_rtcp_port = rtcp_socket.local_addr()?.port();
+        self.udp_rtp_socket = Some(rtp_socket);
+        self.udp_rtcp_socket = Some(rtcp_socket);
 
         debug!(
             "Allocated server ports: RTP={}, RTCP={}",
@@ -167,20 +200,49 @@ impl Handler {
         ))
     }
 
-    fn parse_client_ports(&self, transport_str: &str) -> Result<(u16, u16)> {
-        let client_ports: Vec<&str> = transport_str
-            .split("client_port=")
-            .nth(1)
-            .and_then(|s| s.split(';').next())
-            .ok_or_else(|| anyhow!("Missing client_port"))?
-            .split('-')
-            .collect();
+    /// Take the UDP sockets allocated by the last SETUP and return them to the
+    /// caller. Returns `None` if SETUP has not yet been called for this session.
+    pub fn take_udp_sockets(&mut self) -> Option<(UdpSocket, UdpSocket)> {
+        match (self.udp_rtp_socket.take(), self.udp_rtcp_socket.take()) {
+            (Some(rtp), Some(rtcp)) => Some((rtp, rtcp)),
+            _ => None,
+        }
+    }
 
-        if client_ports.len() != 2 {
-            return Err(anyhow!("Invalid port format"));
+    fn parse_client_ports(&self, transport_str: &str) -> Result<(u16, u16)> {
+        let value = transport_str
+            .split(';')
+            .map(str::trim)
+            .find(|param| {
+                param
+                    .split('=')
+                    .next()
+                    .map(str::trim)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("client_port"))
+            })
+            .and_then(|param| param.split('=').nth(1))
+            .ok_or_else(|| anyhow!("Missing client_port in Transport header"))?
+            .trim();
+
+        let mut ports = value.split('-').map(str::trim);
+        let rtp_port = ports
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("Missing RTP port in client_port"))?
+            .parse::<u16>()
+            .map_err(|e| anyhow!("Invalid RTP port in client_port: {}", e))?;
+        let rtcp_port = ports
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("Missing RTCP port in client_port"))?
+            .parse::<u16>()
+            .map_err(|e| anyhow!("Invalid RTCP port in client_port: {}", e))?;
+
+        if ports.next().is_some() {
+            return Err(anyhow!("Too many ports in client_port"));
         }
 
-        Ok((client_ports[0].parse()?, client_ports[1].parse()?))
+        Ok((rtp_port, rtcp_port))
     }
 
     async fn get_or_create_session(&mut self) -> String {
@@ -268,6 +330,15 @@ impl Handler {
             self.cseq = cseq_header.as_str().parse().unwrap_or(0);
         }
     }
+
+    pub async fn update_activity(&self) {
+        if let Some(session_id) = &self.session_id {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.update_activity();
+            }
+        }
+    }
 }
 
 fn summarize_sdp_media(sdp: &[u8]) -> String {
@@ -301,4 +372,56 @@ fn summarize_sdp_media(sdp: &[u8]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn dummy_handler() -> Handler {
+        Handler::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8554),
+            Arc::new(RwLock::new(HashMap::new())),
+            ServerConfig::default(),
+        )
+    }
+
+    #[test]
+    fn parse_client_ports_standard_format() {
+        let h = dummy_handler();
+        assert_eq!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port=5004-5005;server_port=6004-6005")
+                .unwrap(),
+            (5004, 5005)
+        );
+    }
+
+    #[test]
+    fn parse_client_ports_with_whitespace() {
+        let h = dummy_handler();
+        assert_eq!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port = 5004 - 5005")
+                .unwrap(),
+            (5004, 5005)
+        );
+    }
+
+    #[test]
+    fn parse_client_ports_missing_rtcp() {
+        let h = dummy_handler();
+        assert!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port=5004")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_client_ports_extra_ports() {
+        let h = dummy_handler();
+        assert!(
+            h.parse_client_ports("RTP/AVP;unicast;client_port=5004-5005-5006")
+                .is_err()
+        );
+    }
 }

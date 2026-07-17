@@ -37,7 +37,7 @@ pub mod buffer {
 
     pub const MAX_BUFFER_SIZE: usize = 2 * 1024 * 1024;
 
-    pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
+    pub const MAX_FRAME_SIZE: usize = u16::MAX as usize;
 
     pub const INTERLEAVED_HEADER_SIZE: usize = 4;
 }
@@ -48,6 +48,17 @@ pub mod transport {
     pub const RTP_BUFFER_SIZE: usize = ETHERNET_MTU;
 
     pub const RTCP_BUFFER_SIZE: usize = ETHERNET_MTU;
+}
+
+/// Internal routing keys used to identify media streams when multiplexing RTP/RTCP
+/// over UDP. These match the conventional interleaved channel numbering but are
+/// an independent namespace — TCP sessions use dynamically-assigned interleaved
+/// channels from the SETUP handshake instead.
+pub mod udp_route {
+    pub const VIDEO_RTP: u8 = 0;
+    pub const VIDEO_RTCP: u8 = 1;
+    pub const AUDIO_RTP: u8 = 2;
+    pub const AUDIO_RTCP: u8 = 3;
 }
 
 pub mod client {

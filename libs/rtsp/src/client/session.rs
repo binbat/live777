@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace};
 
 use super::RtspMode;
@@ -17,6 +18,7 @@ pub struct RtspSession<T> {
     auth_params: AuthParams,
     pub session_id: Option<String>,
     next_channel: u8,
+    read_buffer: Vec<u8>,
 }
 
 impl<T> RtspSession<T>
@@ -31,6 +33,7 @@ where
             auth_params,
             session_id: None,
             next_channel: 0,
+            read_buffer: Vec::with_capacity(buffer::RTSP_RESPONSE_BUFFER_SIZE),
         }
     }
 
@@ -47,18 +50,32 @@ where
     }
 
     pub async fn read_response(&mut self) -> Result<Response<Vec<u8>>> {
-        let mut buffer = vec![0; buffer::RTSP_RESPONSE_BUFFER_SIZE];
-        let n = self.stream.read(&mut buffer).await?;
-        if n == 0 {
-            return Err(anyhow!("Connection closed"));
-        }
-        let (message, _) = Message::parse(&buffer[..n])?;
-        match message {
-            Message::Response(response) => {
-                trace!("Received RTSP response: {}", response.status());
-                Ok(response)
+        let mut temp_buf = [0u8; buffer::RTSP_RESPONSE_BUFFER_SIZE];
+
+        loop {
+            let n = self.stream.read(&mut temp_buf).await?;
+            if n == 0 {
+                return Err(anyhow!("Connection closed"));
             }
-            _ => Err(anyhow!("Expected a response message")),
+
+            self.read_buffer.extend_from_slice(&temp_buf[..n]);
+
+            match Message::parse(&self.read_buffer) {
+                Ok((Message::Response(response), consumed)) => {
+                    trace!("Received RTSP response: {}", response.status());
+                    self.read_buffer.drain(..consumed);
+                    return Ok(response);
+                }
+                Ok(_) => {
+                    return Err(anyhow!("Expected a response message"));
+                }
+                Err(rtsp_types::ParseError::Incomplete(_)) => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow!("Failed to parse RTSP response: {:?}", e));
+                }
+            }
         }
     }
 
@@ -267,6 +284,7 @@ where
                 .split(';')
                 .next()
                 .unwrap_or_default()
+                .trim()
                 .to_string();
             if self.session_id.is_none() {
                 self.session_id = Some(session_id);
@@ -367,6 +385,7 @@ where
                 .split(';')
                 .next()
                 .unwrap_or_default()
+                .trim()
                 .to_string();
             if self.session_id.is_none() {
                 self.session_id = Some(session_id);
@@ -440,17 +459,18 @@ where
 fn parse_server_ports(transport: &str) -> Result<(u16, u16)> {
     for part in transport.split(';') {
         let part = part.trim();
-        if part.starts_with("server_port=") {
-            let ports = part.strip_prefix("server_port=").unwrap();
-            let mut parts = ports.split('-');
+        if let Some(value) = part.strip_prefix("server_port=") {
+            let mut parts = value.trim().split('-').map(str::trim);
             let rtp = parts
                 .next()
+                .filter(|s| !s.is_empty())
                 .and_then(|s| s.parse().ok())
-                .ok_or_else(|| anyhow!("Invalid RTP port"))?;
+                .ok_or_else(|| anyhow!("Invalid RTP port in server_port"))?;
             let rtcp = parts
                 .next()
+                .filter(|s| !s.is_empty())
                 .and_then(|s| s.parse().ok())
-                .ok_or_else(|| anyhow!("Invalid RTCP port"))?;
+                .ok_or_else(|| anyhow!("Invalid RTCP port in server_port"))?;
             return Ok((rtp, rtcp));
         }
     }
@@ -464,7 +484,9 @@ pub async fn setup_rtsp_session(
     mode: RtspMode,
     use_tcp: bool,
 ) -> Result<(MediaInfo, Option<InterleavedChannel>)> {
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc::channel;
+
+    const DATA_CHANNEL_CAPACITY: usize = 1024;
 
     let mut url = Url::parse(rtsp_url)?;
     info!("Connecting to RTSP server: {}", rtsp_url);
@@ -477,8 +499,10 @@ pub async fn setup_rtsp_session(
     let stream = tokio::net::TcpStream::connect(&addr).await?;
     let auth_params = AuthParams::from_url(&url);
 
-    url.set_username("").unwrap();
-    url.set_password(None).unwrap();
+    url.set_username("")
+        .map_err(|_| anyhow!("Failed to clear URL username"))?;
+    url.set_password(None)
+        .map_err(|_| anyhow!("Failed to clear URL password"))?;
 
     let auth = auth_params.unwrap_or_else(|| AuthParams::new(String::new(), String::new()));
     let mut session = RtspSession::new(stream, url.to_string(), auth);
@@ -571,18 +595,23 @@ pub async fn setup_rtsp_session(
             RtspMode::Push => session.send_record_request().await?,
         }
 
-        let (data_from_stream_tx, data_from_stream_rx) = unbounded_channel::<(u8, Vec<u8>)>();
-        let (data_to_stream_tx, data_to_stream_rx) = unbounded_channel::<(u8, Vec<u8>)>();
+        let (data_from_stream_tx, data_from_stream_rx) =
+            channel::<(u8, Vec<u8>)>(DATA_CHANNEL_CAPACITY);
+        let (data_to_stream_tx, data_to_stream_rx) =
+            channel::<(u8, Vec<u8>)>(DATA_CHANNEL_CAPACITY);
 
         let stream = session.into_stream();
         let session_mode = mode.to_session_mode();
 
+        let cancel = CancellationToken::new();
         tokio::spawn(async move {
             if let Err(e) = crate::tcp_stream::handle_tcp_stream(
                 stream,
                 session_mode,
                 data_from_stream_tx,
                 data_to_stream_rx,
+                cancel,
+                false,
             )
             .await
             {
@@ -653,6 +682,10 @@ pub async fn setup_rtsp_session(
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("Missing session ID"))?;
+        let session_url = session
+            .url
+            .parse::<Url>()
+            .map_err(|e| anyhow!("Invalid session URL: {}", e))?;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
@@ -663,7 +696,7 @@ pub async fn setup_rtsp_session(
                 interval.tick().await;
 
                 let options_request = Request::builder(Method::Options, Version::V1_0)
-                    .request_uri(session.url.parse::<Url>().unwrap())
+                    .request_uri(session_url.clone())
                     .header(headers::CSEQ, session.cseq.to_string())
                     .header(headers::USER_AGENT, client::USER_AGENT)
                     .header(headers::SESSION, session_id.as_str())

@@ -2,7 +2,7 @@ use rtc::rtp::packet::Packet;
 use rtc_shared::marshal::Unmarshal;
 use std::io::Cursor;
 use std::sync::Arc;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 use webrtc::peer_connection::PeerConnection;
 
@@ -51,7 +51,7 @@ impl TcpHandler {
 
     pub fn spawn_input_to_webrtc(
         &self,
-        mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
+        mut rx: Receiver<(u8, Vec<u8>)>,
         video_sender: Option<UnboundedSender<Vec<u8>>>,
         audio_sender: Option<UnboundedSender<Vec<u8>>>,
         peer: Arc<dyn PeerConnection>,
@@ -126,7 +126,7 @@ impl TcpHandler {
         &self,
         mut video_recv: UnboundedReceiver<Vec<u8>>,
         mut audio_recv: UnboundedReceiver<Vec<u8>>,
-        tx: UnboundedSender<(u8, Vec<u8>)>,
+        tx: Sender<(u8, Vec<u8>)>,
     ) {
         if let Some(channel) = self.video_rtp_channel {
             let tx_clone = tx.clone();
@@ -134,7 +134,7 @@ impl TcpHandler {
                 info!("Starting video RTP sender on channel {}", channel);
                 while let Some(data) = video_recv.recv().await {
                     trace!("Sending video RTP data ({} bytes)", data.len());
-                    if let Err(e) = tx_clone.send((channel, data)) {
+                    if let Err(e) = tx_clone.send((channel, data)).await {
                         error!("Failed to send video RTP data: {}", e);
                         break;
                     }
@@ -149,7 +149,7 @@ impl TcpHandler {
                 info!("Starting audio RTP sender on channel {}", channel);
                 while let Some(data) = audio_recv.recv().await {
                     trace!("Sending audio RTP data ({} bytes)", data.len());
-                    if let Err(e) = tx_clone.send((channel, data)) {
+                    if let Err(e) = tx_clone.send((channel, data)).await {
                         error!("Failed to send audio RTP data: {}", e);
                         break;
                     }
@@ -162,7 +162,7 @@ impl TcpHandler {
     pub fn spawn_webrtc_rtcp_to_output(
         &self,
         _peer: Arc<dyn PeerConnection>,
-        _tx: UnboundedSender<(u8, Vec<u8>)>,
+        _tx: Sender<(u8, Vec<u8>)>,
     ) {
         // In v0.20, RTCP feedback is handled internally by the peer connection.
         // sender.read_rtcp() is no longer available.
@@ -172,7 +172,7 @@ impl TcpHandler {
 
     pub fn spawn_output_rtcp_to_webrtc(
         &self,
-        mut rx: UnboundedReceiver<(u8, Vec<u8>)>,
+        mut rx: Receiver<(u8, Vec<u8>)>,
         peer: Arc<dyn PeerConnection>,
     ) {
         tokio::spawn(async move {

@@ -34,6 +34,8 @@ mod r#macro;
 mod metrics;
 mod result;
 mod route;
+#[cfg(feature = "rtsp")]
+mod rtsp_server;
 mod stream;
 
 #[cfg(feature = "recorder")]
@@ -233,6 +235,16 @@ where
                     });
             });
         }
+    }
+
+    #[cfg(feature = "rtsp")]
+    {
+        rtsp_server::start_rtsp_server(
+            app_state.stream_manager.clone(),
+            cfg.rtsp.clone(),
+            cancel.clone(),
+        )
+        .await;
     }
 
     #[cfg(feature = "source")]

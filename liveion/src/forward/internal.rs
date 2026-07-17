@@ -12,6 +12,7 @@ use tracing::{debug, info};
 use crate::AppError;
 #[cfg(feature = "source")]
 use crate::config::ChannelConfig;
+use crate::forward::codec_compat::{is_av1_codec, is_h264_codec, is_h265_codec};
 use crate::forward::get_peer_id;
 use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
@@ -23,7 +24,7 @@ use rtc::peer_connection::configuration::interceptor_registry::{
 };
 use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCPFeedback, RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
 use webrtc::data_channel::DataChannel;
 use webrtc::media_stream::track_remote::TrackRemote;
@@ -42,27 +43,27 @@ use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
 const CLOSED_SESSION_TTL_MS: i64 = 30_000;
 
-fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
+fn video_rtcp_feedback() -> Vec<rtc::rtp_transceiver::rtp_sender::RTCPFeedback> {
     vec![
-        RTCPFeedback {
-            typ: "goog-remb".to_owned(),
-            parameter: "".to_owned(),
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "goog-remb".to_string(),
+            parameter: "".to_string(),
         },
-        RTCPFeedback {
-            typ: "transport-cc".to_owned(),
-            parameter: "".to_owned(),
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "transport-cc".to_string(),
+            parameter: "".to_string(),
         },
-        RTCPFeedback {
-            typ: "ccm".to_owned(),
-            parameter: "fir".to_owned(),
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "ccm".to_string(),
+            parameter: "fir".to_string(),
         },
-        RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "".to_owned(),
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "".to_string(),
         },
-        RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "pli".to_owned(),
+        rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "pli".to_string(),
         },
     ]
 }
@@ -1365,7 +1366,7 @@ impl PeerForwardInternal {
         None
     }
 
-    #[cfg(feature = "recorder")]
+    #[cfg(any(feature = "recorder", feature = "rtsp"))]
     pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.publish_tracks_change.subscribe()
     }
@@ -1510,9 +1511,76 @@ impl PeerForwardInternal {
             // This ensures the subscriber's sender encoding codec matches the publisher's codec,
             // so the rtc-layer write_rtp uses the correct payload type.
             let mut codec = publisher_codec.unwrap_or(default_codec);
+
+            // Clean up the publisher codec to match WHIP behaviour:
+            // 1. Zero the H264 profile-level-id constraint byte so it
+            //    matches Chrome's offer (e.g. "42C01F" → "42001f").
+            // 2. Strip H264 sprop-parameter-sets because webrtc-rs will
+            //    include them in the SDP answer from the sender's track
+            //    codec, and when they differ from the MediaEngine defaults
+            //    Chrome may reject the codec.  sprop is re-injected into
+            //    the answer SDP by inject_publisher_sprop.
+            // 3. H265 sprop-vps/sps/pps are kept — webrtc-rs needs them
+            //    for sender codec matching.
+            //    Chrome receives SPS/PPS/VPS in-band from the repayloader.
+            if is_h264_codec(&codec) || is_h265_codec(&codec) || is_av1_codec(&codec) {
+                let sprop_keys: &[&str] = if is_h264_codec(&codec) {
+                    &["sprop-parameter-sets"]
+                } else {
+                    // H265: keep sprop-vps/sps/pps — they are required
+                    // for webrtc-rs sender codec matching.
+                    &[]
+                };
+
+                let plid_key: Option<&str> = if is_h264_codec(&codec) {
+                    Some("profile-level-id")
+                } else {
+                    None
+                };
+
+                codec.sdp_fmtp_line = codec
+                    .sdp_fmtp_line
+                    .split(';')
+                    .filter_map(|part| {
+                        let trimmed = part.trim();
+                        if trimmed.is_empty() {
+                            return None;
+                        }
+                        if let Some((k, _)) = trimmed.split_once('=') {
+                            let key = k.trim();
+                            // Strip sprop keys.
+                            if sprop_keys.iter().any(|sk| key.eq_ignore_ascii_case(sk)) {
+                                return None;
+                            }
+                            // Normalize H264 profile-level-id.
+                            if let Some(plk) = plid_key
+                                && key.eq_ignore_ascii_case(plk)
+                                && trimmed.len() >= plk.len() + 7
+                            {
+                                let val = &trimmed[plk.len() + 1..];
+                                if val.len() == 6 {
+                                    let normalized = format!("{}00{}", &val[0..2], &val[4..6])
+                                        .to_ascii_lowercase();
+                                    return Some(format!("{}={}", key, normalized));
+                                }
+                            }
+                        }
+                        Some(trimmed.to_owned())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(";");
+            }
+
             if kind == RtpCodecKind::Video {
                 ensure_video_rtcp_feedback(&mut codec);
             }
+
+            // Log the codec that will be used to create the transceiver.
+            info!(
+                "[{}] creating sender transceiver with codec: {}",
+                get_peer_id(peer),
+                format_codec_for_log(&codec)
+            );
 
             // Use a single SSRC for both the encoding and the track.
             // The rtc-layer write_rtp validates that packet.ssrc matches sender.track().ssrcs(),
