@@ -86,12 +86,17 @@ pub(crate) enum SessionResult {
     Teardown,
 }
 
-pub struct RtspServerSession<H: SessionHandler> {
-    handler: Handler,
-    app_handler: Arc<H>,
+/// Bundles the TCP connection details for a single RTSP client session.
+pub(crate) struct ConnectionInfo {
     stream: TcpStream,
     addr: SocketAddr,
     local_addr: SocketAddr,
+}
+
+pub struct RtspServerSession<H: SessionHandler> {
+    handler: Handler,
+    app_handler: Arc<H>,
+    conn: ConnectionInfo,
     mode: SessionMode,
     read_buffer: Vec<u8>,
     video_udp_sockets: Option<(UdpSocket, UdpSocket)>,
@@ -102,10 +107,8 @@ pub struct RtspServerSession<H: SessionHandler> {
 }
 
 impl<H: SessionHandler> RtspServerSession<H> {
-    pub fn new(
-        stream: TcpStream,
-        addr: SocketAddr,
-        local_addr: SocketAddr,
+    pub(crate) fn new(
+        conn: ConnectionInfo,
         sessions: Arc<RwLock<HashMap<String, ServerSession>>>,
         config: ServerConfig,
         mode: SessionMode,
@@ -113,11 +116,9 @@ impl<H: SessionHandler> RtspServerSession<H> {
         cancel: CancellationToken,
     ) -> Self {
         Self {
-            handler: Handler::new(addr, sessions, config),
+            handler: Handler::new(conn.addr, sessions, config),
             app_handler,
-            stream,
-            addr,
-            local_addr,
+            conn,
             mode,
             read_buffer: Vec::with_capacity(8192),
             video_udp_sockets: None,
@@ -129,7 +130,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
     pub(crate) async fn handle_session(mut self, guard: ConnectionGuard) -> Result<SessionResult> {
         debug!(
             "Starting RTSP session: mode={:?}, addr={}",
-            self.mode, self.addr
+            self.mode, self.conn.addr
         );
 
         let mut session_mode = self.mode;
@@ -149,11 +150,11 @@ impl<H: SessionHandler> RtspServerSession<H> {
             // Authenticate every request once at the dispatch level so new
             // method handlers cannot accidentally bypass auth.  Only OPTIONS
             // (a stateless discovery method per RFC 2326) is exempt.
-            if !matches!(request.method(), Method::Options) {
-                if let Err(response) = self.handler.check_auth(&request) {
-                    self.send_response(&response).await?;
-                    continue;
-                }
+            if !matches!(request.method(), Method::Options)
+                && let Err(response) = self.handler.check_auth(&request)
+            {
+                self.send_response(&response).await?;
+                continue;
             }
 
             match request.method() {
@@ -198,7 +199,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     let transport_header = match request.header(&rtsp_types::headers::TRANSPORT) {
                         Some(h) => h,
                         None => {
-                            warn!("SETUP missing Transport header from {}", self.addr);
+                            warn!("SETUP missing Transport header from {}", self.conn.addr);
                             let response = Response::builder(Version::V1_0, StatusCode::BadRequest)
                                 .header(headers::CSEQ, self.handler.cseq().to_string())
                                 .empty();
@@ -218,7 +219,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         if prev != client_wants_tcp {
                             warn!(
                                 "Rejecting SETUP for {}: mixed TCP/UDP transport is not supported",
-                                self.addr
+                                self.conn.addr
                             );
                             let response =
                                 Response::builder(Version::V1_0, StatusCode::UnsupportedTransport)
@@ -248,7 +249,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         ) {
                             Ok(v) => v,
                             Err(e) => {
-                                warn!("SETUP media resolution failed for {}: {}", self.addr, e);
+                                warn!("SETUP media resolution failed for {}: {}", self.conn.addr, e);
                                 let response =
                                     Response::builder(Version::V1_0, StatusCode::BadRequest)
                                         .header(headers::CSEQ, self.handler.cseq().to_string())
@@ -268,7 +269,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         warn!(
                             "Duplicate SETUP for {} media from {}",
                             if is_video { "video" } else { "audio" },
-                            self.addr
+                            self.conn.addr
                         );
                         let response =
                             Response::builder(Version::V1_0, StatusCode::MethodNotValidInThisState)
@@ -331,7 +332,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     if !has_transport {
                         warn!(
                             "PLAY/RECORD received from {} without prior SETUP",
-                            self.addr
+                            self.conn.addr
                         );
                         let response =
                             Response::builder(Version::V1_0, StatusCode::MethodNotValidInThisState)
@@ -472,7 +473,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
             )
             .await?;
 
-        let stream = self.stream;
+        let stream = self.conn.stream;
         tokio::spawn(async move {
             let _guard = guard;
             if let Err(e) = handle_tcp_stream(
@@ -573,8 +574,8 @@ impl<H: SessionHandler> RtspServerSession<H> {
             )
             .await?;
 
-        let client_addr = self.addr;
-        let local_addr = self.local_addr;
+        let client_addr = self.conn.addr;
+        let local_addr = self.conn.local_addr;
         let video_sockets = self.video_udp_sockets.take();
         let audio_sockets = self.audio_udp_sockets.take();
         let run_cancel = cancel.clone();
@@ -609,7 +610,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
         // clients (e.g. ffmpeg) do not see an unexpected EOF before TEARDOWN.
         // Minimal RTSP message handling: respond to OPTIONS/GET_PARAMETER and
         // honour TEARDOWN so clients can close cleanly.
-        let stream = self.stream;
+        let stream = self.conn.stream;
         let control_cancel = cancel.clone();
         tokio::spawn(async move {
             let _guard = guard;
@@ -712,7 +713,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     rtp_recv_port: Some(server_rtp),
                     rtcp_send_port: Some(client_rtcp),
                     rtcp_recv_port: Some(server_rtcp),
-                    server_addr: Some(self.addr),
+                    server_addr: Some(self.conn.addr),
                 }
             });
 
@@ -723,7 +724,7 @@ impl<H: SessionHandler> RtspServerSession<H> {
                     rtp_recv_port: Some(server_rtp),
                     rtcp_send_port: Some(client_rtcp),
                     rtcp_recv_port: Some(server_rtcp),
-                    server_addr: Some(self.addr),
+                    server_addr: Some(self.conn.addr),
                 }
             });
 
@@ -759,8 +760,8 @@ impl<H: SessionHandler> RtspServerSession<H> {
     async fn send_response(&mut self, response: &Response<Vec<u8>>) -> Result<()> {
         let mut buffer = Vec::new();
         response.write(&mut buffer)?;
-        self.stream.write_all(&buffer).await?;
-        trace!("Sent RTSP response to {}", self.addr);
+        self.conn.stream.write_all(&buffer).await?;
+        trace!("Sent RTSP response to {}", self.conn.addr);
         Ok(())
     }
 
@@ -776,13 +777,13 @@ impl<H: SessionHandler> RtspServerSession<H> {
     }
 
     async fn read_request(&mut self) -> Result<Request<Vec<u8>>> {
-        let message = read_rtsp_message(&mut self.stream, &mut self.read_buffer).await?;
+        let message = read_rtsp_message(&mut self.conn.stream, &mut self.read_buffer).await?;
         match message {
             Message::Request(request) => {
                 trace!(
                     "Received RTSP request: {:?} from {}, buffer {} bytes",
                     request.method(),
-                    self.addr,
+                    self.conn.addr,
                     self.read_buffer.len()
                 );
                 Ok(request)
@@ -1068,11 +1069,12 @@ async fn run_udp_transfer<H: SessionHandler>(
                         _ = send_cancel.cancelled() => break,
                         maybe_frame = data_to_stream_rx.recv() => {
                             match maybe_frame {
-                                Some((channel, data)) if (channel as usize) < dest_addrs.len() => {
-                                    if let Some(dest) = dest_addrs[channel as usize] {
-                                        if send_socket.send_to(&data, dest).await.is_err() {
-                                            break;
-                                        }
+                                Some((channel, data))
+                                    if (channel as usize) < dest_addrs.len()
+                                        && let Some(dest) = dest_addrs[channel as usize] =>
+                                {
+                                    if send_socket.send_to(&data, dest).await.is_err() {
+                                        break;
                                     }
                                 }
                                 Some((_channel, _data)) => {} // unknown channel
@@ -1131,11 +1133,12 @@ async fn run_udp_transfer<H: SessionHandler>(
                         _ = send_cancel.cancelled() => break,
                         maybe_frame = rx.recv() => {
                             match maybe_frame {
-                                Some((channel, data)) if (channel as usize) < dest_addrs.len() => {
-                                    if let Some(dest) = dest_addrs[channel as usize] {
-                                        if send_socket.send_to(&data, dest).await.is_err() {
-                                            break;
-                                        }
+                                Some((channel, data))
+                                    if (channel as usize) < dest_addrs.len()
+                                        && let Some(dest) = dest_addrs[channel as usize] =>
+                                {
+                                    if send_socket.send_to(&data, dest).await.is_err() {
+                                        break;
                                     }
                                 }
                                 Some((_channel, _data)) => {} // unknown channel
@@ -1413,9 +1416,11 @@ where
                         info!("RTSP client #{} connected from {}", conn_id, addr);
 
                         let session = RtspServerSession::new(
-                            socket,
-                            addr,
-                            client_local_addr,
+                            ConnectionInfo {
+                                stream: socket,
+                                addr,
+                                local_addr: client_local_addr,
+                            },
                             sessions.clone(),
                             (*config).clone(),
                             mode,
