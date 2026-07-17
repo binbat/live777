@@ -1289,6 +1289,11 @@ impl Drop for ConnectionGuard {
 
 /// Start a single-port RTSP server that multiplexes sessions by URL path.
 ///
+/// Convenience wrapper that binds to `listen_addr` and then delegates to
+/// [`run_rtsp_server`].  Callers that need to separate the bind step from the
+/// accept loop (e.g. to detect bind failures synchronously) should call
+/// [`TcpListener::bind`] directly and then use [`run_rtsp_server`].
+///
 /// The server runs until `cancel` is cancelled. The application logic for each
 /// stream is supplied by `handler`.
 pub async fn setup_rtsp_server_with_handler<H>(
@@ -1307,6 +1312,28 @@ where
     );
 
     let listener = TcpListener::bind(listen_addr).await?;
+    run_rtsp_server(listener, mode, handler, config, cancel).await
+}
+
+/// Run an RTSP server on an already-bound [`TcpListener`].
+///
+/// The server multiplexes sessions by URL path and runs until `cancel` is
+/// cancelled.  The application logic for each stream is supplied by `handler`.
+///
+/// Use this instead of [`setup_rtsp_server_with_handler`] when you need to
+/// control the bind step yourself — for example, to surface port-allocation
+/// failures synchronously to the caller, or to pass in a pre-configured
+/// listener from a test harness.
+pub async fn run_rtsp_server<H>(
+    listener: TcpListener,
+    mode: SessionMode,
+    handler: H,
+    config: ServerConfig,
+    cancel: CancellationToken,
+) -> Result<()>
+where
+    H: SessionHandler,
+{
     let local_addr = listener.local_addr()?;
     info!("RTSP server listening on {}", local_addr);
 
@@ -1355,7 +1382,7 @@ where
             res = listener.accept() => {
                 match res {
                     Ok((socket, addr)) => {
-                        let local_addr = match socket.local_addr() {
+                        let client_local_addr = match socket.local_addr() {
                             Ok(addr) => addr,
                             Err(e) => {
                                 warn!("Failed to read local address for RTSP client {}: {}", addr, e);
@@ -1388,7 +1415,7 @@ where
                         let session = RtspServerSession::new(
                             socket,
                             addr,
-                            local_addr,
+                            client_local_addr,
                             sessions.clone(),
                             (*config).clone(),
                             mode,

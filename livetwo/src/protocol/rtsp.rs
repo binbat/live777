@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -20,7 +21,8 @@ pub async fn setup_server_for_pull(
 ) -> Result<(RtspPullSession, UnboundedReceiver<RtspPullSession>)> {
     info!("Starting RTSP server mode for pull");
 
-    let listen_addr = crate::utils::host::format_bind_addr(listen_host, port);
+    let listen_addr_str = crate::utils::host::format_bind_addr(listen_host, port);
+    let listen_addr: SocketAddr = listen_addr_str.parse()?;
     let (session_tx, mut session_rx) = unbounded_channel();
     let handler = WhepRtspPullHandler {
         sdp: Arc::new(filtered_sdp.into_bytes()),
@@ -28,17 +30,24 @@ pub async fn setup_server_for_pull(
         next_connection_id: Arc::new(AtomicU32::new(1)),
     };
     let server_config = rtsp::ServerConfig {
-        listen_addr: listen_addr.parse()?,
+        listen_addr,
         ..Default::default()
     };
 
+    // Bind synchronously so port-allocation failures surface as an error
+    // to the caller immediately — no indefinite hang.
+    let listener = tokio::net::TcpListener::bind(&listen_addr_str)
+        .await
+        .map_err(|e| anyhow!("Failed to bind RTSP pull server on {}: {}", listen_addr_str, e))?;
+
+    let server_ct = ct.clone();
     tokio::spawn(async move {
-        if let Err(e) = rtsp::setup_rtsp_server_with_handler(
-            &listen_addr,
+        if let Err(e) = rtsp::run_rtsp_server(
+            listener,
             rtsp::SessionMode::Pull,
             handler,
             server_config,
-            ct,
+            server_ct,
         )
         .await
         {
@@ -46,10 +55,15 @@ pub async fn setup_server_for_pull(
         }
     });
 
-    let first = session_rx
-        .recv()
-        .await
-        .ok_or_else(|| anyhow!("RTSP pull output server stopped before first client connected"))?;
+    let first = tokio::select! {
+        _ = ct.cancelled() => {
+            return Err(anyhow!("RTSP pull server cancelled before first client connected"));
+        }
+        first = session_rx.recv() => {
+            first.ok_or_else(|| anyhow!("RTSP pull output server stopped before first client connected"))?
+        }
+    };
+
     info!(
         "RTSP pull output established: connection_id={}, media_info={:?}",
         first.connection_id, first.media_info
