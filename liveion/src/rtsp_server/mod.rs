@@ -517,8 +517,9 @@ async fn wait_for_forward(
 
     match wait_result {
         Err(_elapsed) => {
-            // Timed out waiting for a publisher. Clean up the coordination
-            // entry if no other pull clients are still waiting for this stream.
+            // Timed out waiting for a publisher. Drop our receiver first so
+            // receiver_count() accurately reflects the remaining waiters.
+            drop(rx);
             let mut map = stream_ready.write().await;
             if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
                 map.remove(stream_id);
@@ -530,6 +531,7 @@ async fn wait_for_forward(
             // re-announce overwrote the notification). The forward was
             // already created before the notification was sent, so if it
             // still exists we can return it directly.
+            drop(rx);
             let mut map = stream_ready.write().await;
             if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
                 map.remove(stream_id);
