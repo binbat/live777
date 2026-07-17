@@ -249,7 +249,10 @@ impl<H: SessionHandler> RtspServerSession<H> {
                         ) {
                             Ok(v) => v,
                             Err(e) => {
-                                warn!("SETUP media resolution failed for {}: {}", self.conn.addr, e);
+                                warn!(
+                                    "SETUP media resolution failed for {}: {}",
+                                    self.conn.addr, e
+                                );
                                 let response =
                                     Response::builder(Version::V1_0, StatusCode::BadRequest)
                                         .header(headers::CSEQ, self.handler.cseq().to_string())

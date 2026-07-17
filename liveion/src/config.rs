@@ -559,7 +559,14 @@ pub struct RtspListen {
 impl RtspListen {
     pub fn parse(listen: &str) -> Result<Self, String> {
         if listen.starts_with("rtsp://") {
-            Self::parse_url(listen)
+            #[cfg(feature = "rtsp")]
+            {
+                Self::parse_url(listen)
+            }
+            #[cfg(not(feature = "rtsp"))]
+            {
+                Err("RTSP URL syntax is not supported without the 'rtsp' feature".into())
+            }
         } else {
             let addr: std::net::SocketAddr = listen
                 .parse()
@@ -572,6 +579,7 @@ impl RtspListen {
         }
     }
 
+    #[cfg(feature = "rtsp")]
     fn parse_url(listen: &str) -> Result<Self, String> {
         let url = url::Url::parse(listen)
             .map_err(|e| format!("invalid RTSP listen URL '{listen}': {e}"))?;
