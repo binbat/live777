@@ -607,13 +607,24 @@ impl RtspListen {
             }
         };
 
-        let username = (!url.username().is_empty())
-            .then(|| percent_decode_url_component(url.username()))
+        let raw_username = url.username();
+        let raw_password = url.password();
+
+        if raw_username.is_empty() && raw_password.is_some() {
+            return Err(format!(
+                "RTSP listen URL password requires a username: '{listen}'"
+            ));
+        }
+        if !raw_username.is_empty() && raw_password.is_none() {
+            return Err(format!(
+                "RTSP listen URL username requires a password: '{listen}'"
+            ));
+        }
+
+        let username = (!raw_username.is_empty())
+            .then(|| percent_decode_url_component(raw_username))
             .transpose()?;
-        let password = url
-            .password()
-            .map(percent_decode_url_component)
-            .transpose()?;
+        let password = raw_password.map(percent_decode_url_component).transpose()?;
 
         Ok(Self {
             addr,
@@ -623,7 +634,7 @@ impl RtspListen {
     }
 
     pub fn enable_auth(&self) -> bool {
-        self.username.is_some()
+        self.username.is_some() && self.password.is_some()
     }
 }
 
@@ -722,6 +733,20 @@ mod rtsp_listen_tests {
         let err = RtspListen::parse("rtsp://127.0.0.1").unwrap_err();
 
         assert!(err.contains("must include a port"));
+    }
+
+    #[test]
+    fn rejects_rtsp_url_with_password_but_no_username() {
+        let err = RtspListen::parse("rtsp://:secret@127.0.0.1:8554").unwrap_err();
+
+        assert!(err.contains("password requires a username"));
+    }
+
+    #[test]
+    fn rejects_rtsp_url_with_username_but_no_password() {
+        let err = RtspListen::parse("rtsp://admin@127.0.0.1:8554").unwrap_err();
+
+        assert!(err.contains("username requires a password"));
     }
 }
 

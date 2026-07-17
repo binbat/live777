@@ -241,12 +241,15 @@ where
 
     #[cfg(feature = "rtsp")]
     {
-        rtsp_server::start_rtsp_server(
+        if let Err(e) = rtsp_server::start_rtsp_server(
             app_state.stream_manager.clone(),
             cfg.rtsp.clone(),
             cancel.clone(),
         )
-        .await;
+        .await
+        {
+            error!("RTSP server startup error: {e}");
+        }
     }
 
     #[cfg(feature = "source")]

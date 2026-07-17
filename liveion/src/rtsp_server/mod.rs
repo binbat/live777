@@ -27,9 +27,9 @@ pub async fn start_rtsp_server(
     manager: Arc<Manager>,
     config: RtspConfig,
     cancel: CancellationToken,
-) {
+) -> Result<()> {
     let listen = RtspListen::parse(&config.listen)
-        .unwrap_or_else(|e| panic!("invalid RTSP listen URL '{}': {e}", config.listen));
+        .map_err(|e| anyhow!("invalid RTSP listen URL '{}': {e}", config.listen))?;
     info!(
         "Starting RTSP server on {} (auth: {})",
         listen.addr,
@@ -50,9 +50,13 @@ pub async fn start_rtsp_server(
         realm: config.realm.clone(),
     };
 
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .map_err(|e| anyhow!("failed to bind RTSP server on {listen_addr}: {e}"))?;
+
     tokio::spawn(async move {
-        if let Err(e) = rtsp::setup_rtsp_server_with_handler(
-            &listen_addr,
+        if let Err(e) = rtsp::run_rtsp_server(
+            listener,
             rtsp::SessionMode::Mixed,
             handler,
             server_config,
@@ -63,6 +67,8 @@ pub async fn start_rtsp_server(
             error!("RTSP server error: {}", e);
         }
     });
+
+    Ok(())
 }
 
 #[derive(Clone)]
