@@ -119,7 +119,8 @@ pub fn spawn_rsmpeg_source(
                 }
             }
         }
-        let _ = generator.flush();
+        // Let Drop handle the final flush — avoids double-flushing encoders
+        // which can produce spurious errors on already-drained contexts.
         Ok(())
     });
 

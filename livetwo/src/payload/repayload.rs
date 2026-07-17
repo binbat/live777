@@ -419,12 +419,24 @@ impl RePayloadCodec {
                 if !processor.has_params() {
                     processor.extract_params(&combined_data);
                 }
-                Bytes::from(processor.inject_params(&combined_data))
+                let injected = processor.inject_params(&combined_data);
+                // Only pay the Bytes allocation when injection actually
+                // added parameter sets; otherwise reuse the original.
+                if injected.len() > combined_data.len() {
+                    Bytes::from(injected)
+                } else {
+                    combined_data.clone()
+                }
             } else if let Some(ref mut processor) = self.h265_processor {
                 if !processor.has_params() {
                     processor.extract_params(&combined_data);
                 }
-                Bytes::from(processor.inject_params(&combined_data))
+                let injected = processor.inject_params(&combined_data);
+                if injected.len() > combined_data.len() {
+                    Bytes::from(injected)
+                } else {
+                    combined_data.clone()
+                }
             } else {
                 combined_data.clone()
             };

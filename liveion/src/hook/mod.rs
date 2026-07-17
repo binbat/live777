@@ -14,7 +14,7 @@ pub struct StreamEvent {
     pub stream: Stream,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamEventType {
     Up,
     Down,

@@ -215,53 +215,70 @@ impl Manager {
         }
 
         debug!("create stream: {}", stream.clone());
-        let forward = self.do_stream_create(stream.clone()).await;
+        let forward = self.build_forward(&stream);
 
         let mut stream_map = self.stream_map.write().await;
         if stream_map.contains_key(&stream) {
             let _ = forward.close().await;
             return Err(anyhow::anyhow!("resource already exists"));
         }
-        stream_map.insert(stream.clone(), forward);
+        stream_map.insert(stream.clone(), forward.clone());
         drop(stream_map);
+        self.spawn_forward_events(&forward);
+        self.register_stream_created(&stream);
+        self.init_stream_forward(&stream, &forward).await;
         Ok(())
     }
 
-    async fn do_stream_create(&self, stream: String) -> PeerForward {
-        let entry = self.config.stream.streams.get(&stream);
+    fn build_forward(&self, stream: &str) -> PeerForward {
+        let entry = self.config.stream.streams.get(stream);
         let strategy = api::strategy::Strategy::effective(
             &self.config.strategy,
             entry.and_then(|e| e.strategy.as_ref()),
         );
         #[cfg(feature = "source")]
         let channel = entry.and_then(|entry| entry.channel.clone());
-        let forward = PeerForward::new(
-            stream.clone(),
+        PeerForward::new(
+            stream.to_string(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
             #[cfg(feature = "source")]
             channel,
             strategy,
-        );
+        )
+    }
+
+    /// Spawn the event-forwarding task for a newly inserted forward.
+    /// Must only be called once per forward — after the forward has won
+    /// the insertion race.
+    fn spawn_forward_events(&self, forward: &PeerForward) {
         let subscribe_event = forward.subscribe_event();
         tokio::spawn(Self::forward_event_handler(
             subscribe_event,
             self.event_sender.clone(),
         ));
+    }
 
+    fn register_stream_created(&self, stream: &str) {
         info!("add stream : {}", stream);
         metrics::STREAM.inc();
         let _ = self.event_sender.send(Event::Stream(StreamEvent {
             stream: Stream {
-                stream: stream.clone(),
+                stream: stream.to_string(),
             },
             r#type: StreamEventType::Up,
         }));
+    }
+
+    async fn init_stream_forward(&self, stream: &str, forward: &PeerForward) {
         #[cfg(feature = "source")]
         if let Err(e) = forward.try_init_udp_channel().await {
             tracing::warn!("Failed to init UDP channel for stream {}: {:?}", stream, e);
         }
-        forward
+        // When the `source` feature is disabled this async fn is empty.
+        // The compiler eliminates the future allocation in release builds
+        // via dead-code elimination.
+        let _ = (stream, forward);
     }
 
     pub async fn stream_delete(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
@@ -292,14 +309,12 @@ impl Manager {
             "Publishing to stream: {}, offer type: {:?}",
             stream, offer.sdp_type
         );
-        let mut stream_map = self.stream_map.write().await;
-        let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whip {
-            let raw_forward = self.do_stream_create(stream.clone()).await;
-            stream_map.insert(stream.clone(), raw_forward.clone());
-            forward = Some(raw_forward);
-        }
-        drop(stream_map);
+        let forward = self
+            .get_or_create_forward_for_operation(
+                &stream,
+                self.config.effective_strategy(&stream).auto_create_whip,
+            )
+            .await;
 
         match forward {
             Some(forward) => forward.set_publish(offer).await,
@@ -317,20 +332,58 @@ impl Manager {
             stream,
             offer.sdp.len()
         );
-        let mut stream_map = self.stream_map.write().await;
-        let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whep {
-            let raw_forward = self.do_stream_create(stream.clone()).await;
-            stream_map.insert(stream.clone(), raw_forward.clone());
-            forward = Some(raw_forward);
-        }
-        drop(stream_map);
+        let forward = self
+            .get_or_create_forward_for_operation(
+                &stream,
+                self.config.effective_strategy(&stream).auto_create_whep,
+            )
+            .await;
 
         if let Some(forward) = forward {
             Ok(forward.add_subscribe(offer).await?)
         } else {
             Err(AppError::stream_not_found("stream not exists"))
         }
+    }
+
+    /// Look up an existing forward under a read lock; if absent and
+    /// `auto_create` is true, create it outside of any lock and insert it
+    /// under a brief write lock. Closes a racily-created duplicate to avoid
+    /// leaking PeerForward resources.
+    async fn get_or_create_forward_for_operation(
+        &self,
+        stream: &str,
+        auto_create: bool,
+    ) -> Option<PeerForward> {
+        {
+            let stream_map = self.stream_map.read().await;
+            if let Some(forward) = stream_map.get(stream) {
+                return Some(forward.clone());
+            }
+        }
+
+        if !auto_create {
+            return None;
+        }
+
+        let raw_forward = self.build_forward(stream);
+        let (forward, duplicate_to_close) = {
+            let mut stream_map = self.stream_map.write().await;
+            if let Some(existing) = stream_map.get(stream) {
+                (existing.clone(), Some(raw_forward.clone()))
+            } else {
+                stream_map.insert(stream.to_string(), raw_forward.clone());
+                (raw_forward.clone(), None)
+            }
+        };
+        if let Some(duplicate) = duplicate_to_close {
+            let _ = duplicate.close().await;
+        } else {
+            self.spawn_forward_events(&forward);
+            self.register_stream_created(stream);
+            self.init_stream_forward(stream, &forward).await;
+        }
+        Some(forward)
     }
 
     pub async fn add_ice_candidate(
@@ -427,14 +480,12 @@ impl Manager {
         src: String,
         token: Option<String>,
     ) -> Result<()> {
-        let mut stream_map = self.stream_map.write().await;
-        let mut forward = stream_map.get(&stream).cloned();
-        if forward.is_none() && self.config.effective_strategy(&stream).auto_create_whip {
-            let raw_forward = self.do_stream_create(stream.clone()).await;
-            stream_map.insert(stream.clone(), raw_forward.clone());
-            forward = Some(raw_forward);
-        }
-        drop(stream_map);
+        let forward = self
+            .get_or_create_forward_for_operation(
+                &stream,
+                self.config.effective_strategy(&stream).auto_create_whip,
+            )
+            .await;
 
         match forward {
             Some(forward) => forward.publish_pull(src, token).await,
@@ -691,42 +742,45 @@ impl Manager {
         &self,
         stream_id: &str,
     ) -> crate::forward::PeerForward {
-        let mut stream_map = self.stream_map.write().await;
-
-        if let Some(forward) = stream_map.get(stream_id) {
-            forward.clone()
-        } else {
-            let entry = self.config.stream.streams.get(stream_id);
-            let channel = entry.and_then(|entry| entry.channel.clone());
-            let strategy = api::strategy::Strategy::effective(
-                &self.config.strategy,
-                entry.and_then(|e| e.strategy.as_ref()),
-            );
-            let forward = crate::forward::PeerForward::new(
-                stream_id.to_string(),
-                self.config.ice_servers.clone(),
-                self.config.ice_udp_addrs.clone(),
-                channel,
-                strategy,
-            );
-
-            let subscribe_event = forward.subscribe_event();
-            let event_sender = self.event_sender.clone();
-            tokio::spawn(Self::forward_event_handler(subscribe_event, event_sender));
-
-            stream_map.insert(stream_id.to_string(), forward.clone());
-
-            tracing::info!("Created PeerForward for source: {}", stream_id);
-            #[cfg(feature = "source")]
-            if let Err(e) = forward.try_init_udp_channel().await {
-                tracing::warn!(
-                    "Failed to init UDP channel for source {}: {:?}",
-                    stream_id,
-                    e
-                );
+        // Fast path: forward already exists.
+        {
+            let stream_map = self.stream_map.read().await;
+            if let Some(forward) = stream_map.get(stream_id) {
+                return forward.clone();
             }
-            forward
         }
+
+        // Create the forward outside the write lock (via the shared
+        // `build_forward` helper) so I/O in `try_init_udp_channel` does not
+        // block unrelated stream operations.
+        let forward = self.build_forward(stream_id);
+
+        // Re-check under write lock in case a concurrent caller won the race.
+        let existing = {
+            let mut stream_map = self.stream_map.write().await;
+            if let Some(existing) = stream_map.get(stream_id) {
+                Some(existing.clone())
+            } else {
+                stream_map.insert(stream_id.to_string(), forward.clone());
+                None
+            }
+        };
+        if let Some(existing) = existing {
+            let _ = forward.close().await;
+            return existing;
+        }
+
+        self.spawn_forward_events(&forward);
+        self.register_stream_created(stream_id);
+        tracing::info!("Created PeerForward for source: {}", stream_id);
+        if let Err(e) = forward.try_init_udp_channel().await {
+            tracing::warn!(
+                "Failed to init UDP channel for source {}: {:?}",
+                stream_id,
+                e
+            );
+        }
+        forward
     }
 
     #[cfg(any(feature = "net4mqtt", feature = "recorder"))]
@@ -738,5 +792,47 @@ impl Manager {
     pub(crate) async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
         let map = self.stream_map.read().await;
         map.get(stream).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::hook::StreamEventType;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn concurrent_auto_create_emits_one_stream_up_event() {
+        let cancel = CancellationToken::new();
+        let manager = Manager::new(Config::default(), cancel).await;
+        let mut events = manager.event_sender.subscribe();
+        let stream = "race-auto-create";
+
+        let (r1, r2, r3, r4, r5, r6, r7, r8) = tokio::join!(
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+            manager.get_or_create_forward_for_operation(stream, true),
+        );
+        let results = [r1, r2, r3, r4, r5, r6, r7, r8];
+
+        assert!(results.iter().all(Option::is_some));
+
+        let mut up_events = 0;
+        while let Ok(Ok(event)) = timeout(Duration::from_millis(50), events.recv()).await {
+            if let Event::Stream(event) = event
+                && event.stream.stream == stream
+                && event.r#type == StreamEventType::Up
+            {
+                up_events += 1;
+            }
+        }
+
+        assert_eq!(up_events, 1);
     }
 }

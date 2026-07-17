@@ -529,7 +529,7 @@ async fn helper_livetwo_rtsp(
     };
 
     let mut cfg = liveion::config::Config::default();
-    cfg.rtsp.listen = SocketAddr::new(ip, rtsp_port);
+    cfg.rtsp.listen = SocketAddr::new(ip, rtsp_port).to_string();
 
     let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
     let addr = listener.local_addr().unwrap();

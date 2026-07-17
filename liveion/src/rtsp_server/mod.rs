@@ -6,7 +6,6 @@ use std::time::Duration;
 use tokio::sync::{RwLock, broadcast};
 
 use anyhow::{Result, anyhow};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 use rtc::shared::marshal::{Marshal, MarshalSize};
@@ -14,7 +13,7 @@ use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::config::RtspConfig;
+use crate::config::{RtspConfig, RtspListen};
 use crate::forward::rtcp::RtcpMessage;
 use crate::forward::track::PublishTrackRemote;
 use crate::stream::manager::Manager;
@@ -28,23 +27,36 @@ pub async fn start_rtsp_server(
     manager: Arc<Manager>,
     config: RtspConfig,
     cancel: CancellationToken,
-) {
-    info!("Starting RTSP server on {}", config.listen);
-    let listen_addr = format_bind_addr(config.listen);
+) -> Result<()> {
+    let listen = RtspListen::parse(&config.listen)
+        .map_err(|e| anyhow!("invalid RTSP listen URL '{}': {e}", config.listen))?;
+    info!(
+        "Starting RTSP server on {} (auth: {})",
+        listen.addr,
+        listen.enable_auth()
+    );
+    let listen_addr = format_bind_addr(listen.addr);
     let handler = RtspHandler {
         manager,
         stream_ready: Arc::new(RwLock::new(HashMap::new())),
     };
     let server_config = ServerConfig {
-        listen_addr: config.listen,
+        listen_addr: listen.addr,
         max_connections: config.max_connections,
         session_timeout: config.session_timeout,
-        enable_auth: false,
+        enable_auth: listen.enable_auth(),
+        username: listen.username.clone().unwrap_or_default(),
+        password: listen.password.clone().unwrap_or_default(),
+        realm: config.realm.clone(),
     };
 
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .map_err(|e| anyhow!("failed to bind RTSP server on {listen_addr}: {e}"))?;
+
     tokio::spawn(async move {
-        if let Err(e) = rtsp::setup_rtsp_server_with_handler(
-            &listen_addr,
+        if let Err(e) = rtsp::run_rtsp_server(
+            listener,
             rtsp::SessionMode::Mixed,
             handler,
             server_config,
@@ -55,6 +67,8 @@ pub async fn start_rtsp_server(
             error!("RTSP server error: {}", e);
         }
     });
+
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -72,7 +86,13 @@ impl rtsp::server::SessionHandler for RtspHandler {
         // Recreate the stream so a new publisher always starts from a clean state.
         let _ = self.manager.stream_delete(stream_id.clone()).await;
         self.manager.stream_create(stream_id.clone()).await?;
-        let forward = self.manager.get_or_create_forward(&stream_id).await;
+        // stream_create already inserted the forward; get_forward is sufficient
+        // and avoids an unnecessary second insertion path.
+        let forward = self
+            .manager
+            .get_forward(&stream_id)
+            .await
+            .ok_or_else(|| anyhow!("Forward {} disappeared after create", stream_id))?;
 
         if let Some(video) = &media_info.video_codec {
             let codec = video_codec_to_rtc(video);
@@ -236,14 +256,31 @@ impl rtsp::server::SessionHandler for RtspHandler {
                 });
             }
             rtsp::SessionMode::Pull => {
-                let tx = match endpoint {
-                    rtsp::SessionEndpoint::Pull(tx) => tx,
+                let (tx, mut rtcp_rx) = match endpoint {
+                    rtsp::SessionEndpoint::Pull(tx, rtcp_rx) => (tx, rtcp_rx),
                     _ => return Err(anyhow!("Expected pull endpoint")),
                 };
 
                 let pull_cancel = cancel.child_token();
                 let manager = self.manager.clone();
                 let stream_ready = self.stream_ready.clone();
+                let rtcp_manager = self.manager.clone();
+                let rtcp_stream_id = stream_id.clone();
+                let rtcp_cancel = pull_cancel.child_token();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = rtcp_cancel.cancelled() => break,
+                            maybe_rtcp = rtcp_rx.recv() => {
+                                let Some((_, data)) = maybe_rtcp else {
+                                    break;
+                                };
+                                forward_rtcp_to_publish(&rtcp_manager, &rtcp_stream_id, &data).await;
+                            }
+                        }
+                    }
+                });
+
                 tokio::spawn(async move {
                     let forward = match wait_for_forward(&manager, &stream_ready, &stream_id).await
                     {
@@ -410,15 +447,24 @@ async fn forward_rtcp_to_publish(manager: &Manager, stream_id: &str, data: &[u8]
             continue;
         };
 
-        let tracks = forward.internal.publish_tracks.read().await;
+        // Collect video track references while holding the read lock, then
+        // release before awaiting source_ssrc() so writers on publish_tracks
+        // (e.g. codec renegotiation) are not starved.
+        let video_tracks: Vec<_> = {
+            let tracks = forward.internal.publish_tracks.read().await;
+            tracks
+                .iter()
+                .filter(|t| t.kind() == RtpCodecKind::Video)
+                .cloned()
+                .collect()
+        };
         let mut matches = false;
-        for t in tracks.iter() {
-            if t.kind() == RtpCodecKind::Video && t.source_ssrc().await == media_ssrc {
+        for t in &video_tracks {
+            if t.source_ssrc().await == media_ssrc {
                 matches = true;
                 break;
             }
         }
-        drop(tracks);
 
         if matches {
             let msg = if is_pli {
@@ -456,34 +502,71 @@ async fn wait_for_forward(
         return Ok(forward);
     }
 
-    let tx = {
+    let (tx, mut rx) = {
         let mut map = stream_ready.write().await;
         if let Some(forward) = manager.get_forward(stream_id).await {
             return Ok(forward);
         }
-        map.entry(stream_id.to_string())
+        let tx = map
+            .entry(stream_id.to_string())
             .or_insert_with(|| broadcast::channel(1).0)
-            .clone()
+            .clone();
+        let rx = tx.subscribe();
+        (tx, rx)
     };
 
-    let wait_result = {
-        let mut rx = tx.subscribe();
-        tokio::time::timeout(Duration::from_secs(30), rx.recv()).await
-    };
-
-    if wait_result.is_err() {
-        // Timed out waiting for a publisher. Clean up the coordination entry
-        // if no other pull clients are still waiting for this stream.
-        let mut map = stream_ready.write().await;
-        if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
-            map.remove(stream_id);
-        }
-        return Err(anyhow!("Timeout waiting for forward {}", stream_id));
+    if let Some(forward) = manager.get_forward(stream_id).await {
+        return Ok(forward);
     }
 
-    wait_result
-        .unwrap()
-        .map_err(|_| anyhow!("Stream ready channel closed for {}", stream_id))?;
+    let wait_result = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await;
+
+    match wait_result {
+        Err(_elapsed) => {
+            // Timed out waiting for a publisher. Drop our receiver first so
+            // receiver_count() accurately reflects the remaining waiters.
+            drop(rx);
+            let mut map = stream_ready.write().await;
+            if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
+                map.remove(stream_id);
+            }
+            return Err(anyhow!("Timeout waiting for forward {}", stream_id));
+        }
+        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+            // The broadcast channel cycled past unread messages (e.g. a
+            // re-announce overwrote the notification). The forward was
+            // already created before the notification was sent, so if it
+            // still exists we can return it directly.
+            drop(rx);
+            let mut map = stream_ready.write().await;
+            if tx.receiver_count() == 0 && manager.get_forward(stream_id).await.is_none() {
+                map.remove(stream_id);
+            }
+            drop(map);
+            if let Some(forward) = manager.get_forward(stream_id).await {
+                return Ok(forward);
+            }
+            return Err(anyhow!(
+                "Stream ready notification lagged for {}",
+                stream_id
+            ));
+        }
+        // RecvError::Closed is technically unreachable here because `tx`
+        // stays alive in scope.  Kept as a defensive branch in case a
+        // future refactor introduces an early drop of the broadcast sender.
+        Ok(Err(_)) => {
+            return Err(anyhow!("Stream ready channel closed for {}", stream_id));
+        }
+        Ok(Ok(())) => {}
+    }
+
+    // The forward is now available. Remove the coordination entry so it does
+    // not linger for the lifetime of the stream; new pull clients will find
+    // the forward directly via manager.get_forward().
+    {
+        let mut map = stream_ready.write().await;
+        map.remove(stream_id);
+    }
 
     manager
         .get_forward(stream_id)
@@ -521,16 +604,26 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
 
     for track in tracks {
         let codec = track.codec();
-        let (media, pt, clock_rate, channels) = match codec.codec.as_str() {
-            "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => {
-                ("video", codec.payload_type, codec.clock_rate, None)
+        // When a WHIP-published stream is described before the first RTP
+        // packet arrives, the negotiated payload type is still 0 (not yet
+        // detected).  Default to 96 (dynamic PT range) for video and use the
+        // static PT defined in RFC 3551 for well-known audio codecs so the
+        // SDP remains valid.
+        let pt = if codec.payload_type != 0 {
+            codec.payload_type
+        } else {
+            match codec.codec.as_str() {
+                "pcma" => 8,
+                "pcmu" => 0,
+                "g722" => 9,
+                _ => 96,
             }
-            "opus" | "g722" | "pcma" | "pcmu" => (
-                "audio",
-                codec.payload_type,
-                codec.clock_rate,
-                Some(codec.channels as u8),
-            ),
+        };
+        let (media, clock_rate, channels) = match codec.codec.as_str() {
+            "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => ("video", codec.clock_rate, None),
+            "opus" | "g722" | "pcma" | "pcmu" => {
+                ("audio", codec.clock_rate, Some(codec.channels as u8))
+            }
             _ => continue,
         };
 
@@ -572,93 +665,8 @@ fn format_bind_addr(addr: SocketAddr) -> String {
     }
 }
 
-fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
-    use rtsp::VideoCodecParams;
-
-    let (mime, pt, clock_rate, fmtp) = match codec {
-        VideoCodecParams::H264 {
-            payload_type,
-            clock_rate,
-            profile_level_id,
-            packetization_mode,
-            sps,
-            pps,
-        } => {
-            let profile = profile_level_id.as_deref().unwrap_or("42001f");
-            let mode = packetization_mode.unwrap_or(1);
-            let mut fmtp = format!(
-                "level-asymmetry-allowed=1;packetization-mode={};profile-level-id={}",
-                mode, profile
-            );
-            if !sps.is_empty() && !pps.is_empty() {
-                fmtp.push_str(&format!(
-                    ";sprop-parameter-sets={},{}",
-                    BASE64.encode(sps),
-                    BASE64.encode(pps)
-                ));
-            }
-            ("video/H264", *payload_type, *clock_rate, fmtp)
-        }
-        VideoCodecParams::H265 {
-            payload_type,
-            clock_rate,
-            vps,
-            sps,
-            pps,
-            ..
-        } => {
-            let mut parts = Vec::new();
-            if !vps.is_empty() {
-                parts.push(format!("sprop-vps={}", BASE64.encode(vps)));
-            }
-            if !sps.is_empty() {
-                parts.push(format!("sprop-sps={}", BASE64.encode(sps)));
-            }
-            if !pps.is_empty() {
-                parts.push(format!("sprop-pps={}", BASE64.encode(pps)));
-            }
-            let fmtp = if parts.is_empty() {
-                String::new()
-            } else {
-                parts.join(";")
-            };
-            ("video/H265", *payload_type, *clock_rate, fmtp)
-        }
-        VideoCodecParams::VP8 {
-            payload_type,
-            clock_rate,
-        } => ("video/VP8", *payload_type, *clock_rate, String::new()),
-        VideoCodecParams::VP9 {
-            payload_type,
-            clock_rate,
-        } => (
-            "video/VP9",
-            *payload_type,
-            *clock_rate,
-            "profile-id=0".to_string(),
-        ),
-        VideoCodecParams::AV1 {
-            payload_type,
-            clock_rate,
-            profile_id,
-        } => (
-            "video/AV1",
-            *payload_type,
-            *clock_rate,
-            format!("profile-id={}", profile_id.as_deref().unwrap_or("0")),
-        ),
-    };
-
-    RTCRtpCodecParameters {
-        rtp_codec: RTCRtpCodec {
-            mime_type: mime.to_string(),
-            clock_rate,
-            channels: 0,
-            sdp_fmtp_line: fmtp,
-            rtcp_feedback: rtsp::video_rtcp_feedback(),
-        },
-        payload_type: pt,
-    }
+pub(crate) fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
+    crate::rtsp_codec::video_codec_to_rtc(codec)
 }
 
 fn audio_codec_to_rtc(codec: &rtsp::AudioCodecParams) -> RTCRtpCodecParameters {

@@ -3,8 +3,9 @@ mod tcp;
 mod udp;
 
 use anyhow::Result;
+use rtsp;
 use std::sync::Arc;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::debug;
 use webrtc::peer_connection::PeerConnection;
@@ -73,14 +74,28 @@ pub async fn connect_input_to_webrtc(
 }
 
 pub async fn connect_webrtc_to_output(
-    video_recv: UnboundedReceiver<Vec<u8>>,
-    audio_recv: UnboundedReceiver<Vec<u8>>,
+    video_recv: Receiver<Vec<u8>>,
+    audio_recv: Receiver<Vec<u8>>,
     mut output_target: OutputTarget,
     peer: Arc<dyn PeerConnection>,
 ) {
     if let Some((tx, rx)) = output_target.take_channels() {
         debug!("Setting up TCP interleaved transport");
-        let handler = TcpHandler::new(output_target.media_info());
+        // RTSP server pull uses fixed output channel numbers (from
+        // udp_route) because data flows through the framework's mpsc
+        // channels, not the client-negotiated transport.  The actual
+        // transport info stays intact in output_target.media_info() for
+        // diagnostics.
+        let handler = if output_target.is_rtsp_server_pull() {
+            TcpHandler::with_channels(
+                rtsp::udp_route::VIDEO_RTP,
+                rtsp::udp_route::VIDEO_RTCP,
+                rtsp::udp_route::AUDIO_RTP,
+                rtsp::udp_route::AUDIO_RTCP,
+            )
+        } else {
+            TcpHandler::new(output_target.media_info())
+        };
         handler.spawn_webrtc_to_output(video_recv, audio_recv, tx);
         handler.spawn_output_rtcp_to_webrtc(rx, peer);
     } else {

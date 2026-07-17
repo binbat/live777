@@ -5,7 +5,7 @@ use crate::types::SessionMode;
 pub type InterleavedData = (u8, Vec<u8>);
 pub type InterleavedChannel = (Sender<InterleavedData>, Receiver<InterleavedData>);
 
-const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
+pub const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
 
 pub struct RtspChannels {
     recv_tx: Sender<InterleavedData>,

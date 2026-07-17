@@ -2,7 +2,7 @@ use rtc::rtp::packet::Packet;
 use rtc_shared::marshal::Unmarshal;
 use std::io::Cursor;
 use std::sync::Arc;
-use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 use webrtc::peer_connection::PeerConnection;
 
@@ -34,6 +34,19 @@ impl TcpHandler {
             video_rtcp_channel,
             audio_rtp_channel,
             audio_rtcp_channel,
+        }
+    }
+
+    /// Construct a TCP handler with explicit channel numbers, bypassing
+    /// `media_info` transport inspection.  Used when the actual transport
+    /// is managed outside the RTSP session (e.g. RTSP server pull mode
+    /// where data flows through the framework's mpsc channels).
+    pub fn with_channels(video_rtp: u8, video_rtcp: u8, audio_rtp: u8, audio_rtcp: u8) -> Self {
+        Self {
+            video_rtp_channel: Some(video_rtp),
+            video_rtcp_channel: Some(video_rtcp),
+            audio_rtp_channel: Some(audio_rtp),
+            audio_rtcp_channel: Some(audio_rtcp),
         }
     }
 
@@ -124,8 +137,8 @@ impl TcpHandler {
 
     pub fn spawn_webrtc_to_output(
         &self,
-        mut video_recv: UnboundedReceiver<Vec<u8>>,
-        mut audio_recv: UnboundedReceiver<Vec<u8>>,
+        mut video_recv: Receiver<Vec<u8>>,
+        mut audio_recv: Receiver<Vec<u8>>,
         tx: Sender<(u8, Vec<u8>)>,
     ) {
         if let Some(channel) = self.video_rtp_channel {
@@ -191,20 +204,55 @@ impl TcpHandler {
         });
     }
 
-    async fn forward_rtcp_to_webrtc(data: &[u8], _peer: &Arc<dyn PeerConnection>) {
+    async fn forward_rtcp_to_webrtc(data: &[u8], peer: &Arc<dyn PeerConnection>) {
         let mut cursor = Cursor::new(data);
         match rtc_rtcp::packet::unmarshal(&mut cursor) {
             Ok(packets) => {
                 for packet in packets {
                     crate::whip::log_rtcp_feedback_packet("TCP output RTCP", packet.as_ref());
+                    Self::forward_rtcp_packet_to_webrtc(packet, peer).await;
                 }
-                // In v0.20, write_rtcp is on TrackLocal/TrackRemote, not PeerConnection.
-                // RTCP from the output side would need to be sent via specific tracks.
-                debug!("Parsed RTCP packet (forwarding not yet implemented for v0.20)");
             }
             Err(e) => {
                 warn!("Failed to parse RTCP: {}", e);
             }
+        }
+    }
+
+    async fn forward_rtcp_packet_to_webrtc(
+        packet: Box<dyn rtc_rtcp::packet::Packet + Send + Sync>,
+        peer: &Arc<dyn PeerConnection>,
+    ) {
+        let destination_ssrcs = packet.destination_ssrc();
+        if destination_ssrcs.is_empty() {
+            debug!("Dropping RTCP packet without destination SSRC");
+            return;
+        }
+
+        let receivers = peer.get_receivers().await;
+        let mut target_track = None;
+        for receiver in receivers {
+            let track = receiver.track().clone();
+            let track_ssrcs = track.ssrcs().await;
+            if destination_ssrcs
+                .iter()
+                .any(|destination| track_ssrcs.contains(destination))
+            {
+                target_track = Some(track);
+                break;
+            }
+        }
+
+        let Some(track) = target_track else {
+            warn!(
+                "Dropping RTCP packet for unknown WHEP destination SSRC(s): {:?}",
+                destination_ssrcs
+            );
+            return;
+        };
+
+        if let Err(error) = track.write_rtcp(vec![packet]).await {
+            warn!("Failed to forward RTCP packet to WHEP track: {}", error);
         }
     }
 }

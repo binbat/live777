@@ -106,6 +106,16 @@ pub mod net {
         }
     }
 
+    /// Bind an ephemeral port (port 0) on the given IP address.
+    /// Use this instead of `bind_any_for` when the kernel must select
+    /// a specific source IP for outbound UDP, e.g. on multi-homed hosts.
+    pub fn bind_on_ip(ip: IpAddr) -> String {
+        match ip {
+            IpAddr::V4(v4) => format!("{}:0", v4),
+            IpAddr::V6(v6) => format!("[{}]:0", v6),
+        }
+    }
+
     pub fn extract_ip_from_url(url: &Url) -> Result<IpAddr> {
         match url.host() {
             Some(url::Host::Ipv4(ip)) => Ok(IpAddr::V4(ip)),

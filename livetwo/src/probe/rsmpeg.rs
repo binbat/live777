@@ -203,38 +203,49 @@ impl ProbeBackend for RsmpegProbe {
         });
 
         let decoder_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let decode_result = tokio::time::timeout(
-            decoder_timeout,
-            tokio::task::spawn_blocking(move || {
-                crate::probe::decoder::run_ffi_decoder(
-                    mime_type,
-                    sprop_params.as_deref(),
-                    packet_rx,
-                    cancelled_clone,
-                    decode_duration + Duration::from_secs(2),
-                )
-            }),
-        )
-        .await;
+        let decoder_handle = tokio::task::spawn_blocking(move || {
+            crate::probe::decoder::run_ffi_decoder(
+                mime_type,
+                sprop_params.as_deref(),
+                packet_rx,
+                cancelled_clone,
+                decode_duration + Duration::from_secs(2),
+            )
+        });
+
+        let abort_handle = decoder_handle.abort_handle();
+        let decode_result = {
+            let decoder = decoder_handle;
+            let abort = abort_handle;
+            tokio::select! {
+                res = decoder => Some(res),
+                _ = tokio::time::sleep(decoder_timeout) => {
+                    // Abort the blocking task so the decoder thread does
+                    // not keep consuming CPU after the probe has timed out.
+                    abort.abort();
+                    None
+                }
+            }
+        };
 
         cancelled.store(true, Ordering::Relaxed);
         let _ = forward_handle.await;
 
         match decode_result {
-            Ok(Ok(Ok((width, height, frame_count)))) => {
+            Some(Ok(Ok((width, height, frame_count)))) => {
                 result.width = width;
                 result.height = height;
                 result.frame_count = frame_count;
                 result.video_tracks = if frame_count > 0 { 1 } else { 0 };
                 result.success = frame_count > 0 && width > 0 && height > 0;
             }
-            Ok(Ok(Err(e))) => {
+            Some(Ok(Err(e))) => {
                 result.error = Some(format!("decoder error: {e:?}"));
             }
-            Ok(Err(e)) => {
+            Some(Err(e)) => {
                 result.error = Some(format!("decode task panicked: {e:?}"));
             }
-            Err(_) => {
+            None => {
                 result.error = Some("decoder timed out".to_string());
             }
         }

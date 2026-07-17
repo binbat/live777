@@ -1,7 +1,6 @@
-pub mod auth;
 pub mod session;
 
-pub use auth::AuthParams;
+pub use crate::auth::AuthParams;
 pub use session::{RtspSession, setup_rtsp_session};
 
 use crate::types::SessionMode;

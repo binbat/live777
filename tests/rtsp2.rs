@@ -716,7 +716,7 @@ async fn setup_liveion_server(
     rtsp_port: u16,
 ) -> (SocketAddr, JoinHandle<()>) {
     let mut cfg = liveion::config::Config::default();
-    cfg.rtsp.listen = SocketAddr::new(ip, rtsp_port);
+    cfg.rtsp.listen = SocketAddr::new(ip, rtsp_port).to_string();
 
     let listener = TcpListener::bind(SocketAddr::new(ip, port))
         .await

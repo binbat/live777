@@ -433,7 +433,7 @@ where
     #[cfg(feature = "rtsp")]
     let rtsp_port: Option<u16> = if source.is_rtsp() {
         let port = reserve_and_release_tcp_port(bind_ip);
-        cfg.rtsp.listen = SocketAddr::new(bind_ip, port);
+        cfg.rtsp.listen = SocketAddr::new(bind_ip, port).to_string();
         Some(port)
     } else {
         None

@@ -4,6 +4,7 @@ pub mod headers {
     pub use rtsp_types::headers::*;
 }
 
+pub mod auth;
 pub mod channels;
 #[cfg(feature = "client")]
 pub mod client;
@@ -29,7 +30,7 @@ pub use sdp::{
 #[cfg(feature = "server")]
 pub use server::{
     Handler, PortUpdate, ServerConfig, ServerSession, SessionEndpoint, SessionHandler,
-    setup_rtsp_server_with_handler,
+    run_rtsp_server, setup_rtsp_server_with_handler,
 };
 pub use transport_manager::{TransportConfig, TransportManager, UdpPortInfo, UdpSocketPair};
 pub use types::{
@@ -51,7 +52,7 @@ pub mod prelude {
     #[cfg(feature = "server")]
     pub use crate::{
         Handler, PortUpdate, ServerConfig, ServerSession, SessionEndpoint, SessionHandler,
-        setup_rtsp_server_with_handler,
+        run_rtsp_server, setup_rtsp_server_with_handler,
     };
 }
 

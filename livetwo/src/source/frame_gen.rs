@@ -221,8 +221,17 @@ impl FrameGenerator {
         }
 
         // Throttle to roughly the target frame rate. Sleep the full remaining
-        // amount so low frame-rate generators (e.g. 1 fps tests) do not wake up
-        // every 10 ms and busy-wait for the next frame.
+        // Sleep for the frame interval so low frame-rate generators (e.g. 1 fps
+        // tests) do not wake up every 10 ms and busy-wait for the next frame.
+        // `std::thread::sleep` is used because FrameGenerator is `!Send` (it
+        // holds raw FFmpeg pointers in OutputContext) and runs on a
+        // `spawn_blocking` thread — sleeping here does not block the async
+        // runtime, though it does occupy a blocking-pool thread.
+        //
+        // TODO: For many concurrent low-fps generators the blocking-pool
+        // threads could become a bottleneck.  Consider making FrameGenerator
+        // `Send` (by boxing the FFmpeg pointers or using a mutex) so
+        // `tokio::time::sleep` can be used instead.
         let expected_elapsed = Duration::from_secs_f64(self.frame_index as f64 / self.fps as f64);
         if let Some(sleep) = expected_elapsed.checked_sub(self.start.elapsed()) {
             std::thread::sleep(sleep);
@@ -239,13 +248,22 @@ impl FrameGenerator {
 
     /// Flush remaining encoder output and close the generator.
     pub fn flush(&mut self) -> Result<()> {
-        if let Some(ref mut video) = self.video_ctx {
-            let _ = flush_encoder(video)?;
+        let mut errors = Vec::new();
+        if let Some(ref mut video) = self.video_ctx
+            && let Err(e) = flush_encoder(video)
+        {
+            errors.push(format!("video: {e}"));
         }
-        if let Some(ref mut audio) = self.audio_ctx {
-            let _ = flush_encoder(audio)?;
+        if let Some(ref mut audio) = self.audio_ctx
+            && let Err(e) = flush_encoder(audio)
+        {
+            errors.push(format!("audio: {e}"));
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("flush: {}", errors.join("; ")))
+        }
     }
 }
 

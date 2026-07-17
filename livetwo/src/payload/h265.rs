@@ -416,10 +416,18 @@ const FU_END_BITMASK: u8 = 0x40;
 pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
     let mut payloads = Vec::new();
 
-    // The smallest FU payload we can emit is the 2-byte NAL header, one
-    // byte of FU header, and at least one byte of payload. Guard against
-    // callers passing an impossibly small MTU.
-    let max_payload_size = max_payload_size.max(4);
+    // The smallest FU payload we can emit is a 2-byte NAL header, one
+    // byte of FU header, and at least one byte of payload. If the caller
+    // supplies a smaller value (e.g. a miscomputed MTU), clamp and warn so
+    // the misconfiguration is visible in logs rather than silently masked.
+    let max_payload_size = if max_payload_size < 4 {
+        tracing::warn!(
+            "max_payload_size {max_payload_size} is too small for HEVC FU; clamping to 4"
+        );
+        4
+    } else {
+        max_payload_size
+    };
 
     for nal in NalIterator::new(data) {
         if nal.data.len() < 2 {

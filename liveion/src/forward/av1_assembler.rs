@@ -63,6 +63,7 @@ impl Av1Assembler {
     /// Override the maximum accumulated temporal-unit size before the assembler
     /// resets. The recorder path uses a tighter bound than the forward path to
     /// keep per-stream peak heap lower.
+    #[cfg(feature = "recorder")]
     pub fn with_max_size(mut self, max: usize) -> Self {
         self.max_temporal_unit_size = max;
         self
@@ -101,7 +102,6 @@ impl Av1Assembler {
             );
             self.reset();
         }
-        self.expected_seq = Some(packet.header.sequence_number.wrapping_add(1));
 
         // ── Timestamp discontinuity ─────────────────────────────────────
         // Use Option rather than sentinel 0 — RTP timestamp 0 is a
@@ -117,6 +117,10 @@ impl Av1Assembler {
             }
             self.reset();
         }
+
+        // Set expected_seq AFTER the timestamp discontinuity check so that a
+        // reset triggered by a timestamp jump does not clear it back to None.
+        self.expected_seq = Some(packet.header.sequence_number.wrapping_add(1));
         self.last_timestamp = Some(packet.header.timestamp);
 
         // ── Depacketize ─────────────────────────────────────────────────
