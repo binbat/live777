@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, options, patch, post},
 };
+use rtc::ice::mdns::MulticastDnsMode;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -115,6 +116,7 @@ async fn whep_handler(
     debug!(stream_id, "Media engine initialized with default codecs.");
 
     let mut setting_engine = SettingEngine::default();
+    setting_engine.set_multicast_dns_mode(MulticastDnsMode::Disabled);
     setting_engine.set_ice_timeouts(
         Some(Duration::from_secs(15)),
         Some(Duration::from_secs(30)),

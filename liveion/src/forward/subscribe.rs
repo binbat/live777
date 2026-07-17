@@ -436,6 +436,7 @@ impl SubscribeRTCPeerConnection {
         let message = err.to_string();
         message.contains("local_srtp_context is not set yet")
             || message.contains("track is not binding yet")
+            || message.contains("DTLS transport has not started yet")
     }
 
     fn current_connection_state(

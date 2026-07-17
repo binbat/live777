@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::utils;
 use rtsp::constants::media_type;
@@ -55,8 +55,6 @@ pub async fn setup_rtp_input(target_url: &str) -> Result<(rtsp::MediaInfo, Strin
             .map_err(|e| anyhow!("Invalid IP address in SDP: {}", e))?;
         host = addr.to_string();
     }
-    info!("SDP file parsed successfully");
-
     let video_track = sdp.medias.iter().find(|md| md.media == media_type::VIDEO);
     let audio_track = sdp.medias.iter().find(|md| md.media == media_type::AUDIO);
     let (codec_vid, codec_aud) = parse_codecs(&video_track, &audio_track);
@@ -93,6 +91,17 @@ pub async fn setup_rtp_input(target_url: &str) -> Result<(rtsp::MediaInfo, Strin
             None
         },
     };
+
+    warn!(
+        "SDP parsed: host={}, audio_port={:?}, video_port={:?}, audio_codec={}, video_codec={}, audio_transport={:?}, video_transport={:?}",
+        host,
+        audio_track.map(|t| t.port),
+        video_track.map(|t| t.port),
+        codec_aud,
+        codec_vid,
+        media_info.audio_transport,
+        media_info.video_transport,
+    );
 
     Ok((media_info, host))
 }

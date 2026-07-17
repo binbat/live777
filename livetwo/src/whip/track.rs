@@ -418,10 +418,11 @@ pub async fn setup_audio_track(
         let mut first_write = true;
         let mut payload_type = initial_audio_payload_type;
         let mut payload_type_refreshed_at = Instant::now() - SENDER_PT_REFRESH_INTERVAL;
-        let mut handler: Box<dyn RePayload + Send> = match audio_codec.mime_type.as_str() {
-            MIME_TYPE_OPUS => Box::new(RePayloadCodec::new(audio_codec.mime_type.clone())),
-            _ => Box::new(Forward::new()),
-        };
+        // All audio codecs use Forward (passthrough). Audio RTP packets are
+        // self-contained frames and don't need depacketization/repacketization.
+        // Using RePayloadCodec would break codecs like OPUS whose marker-bit
+        // semantics (talkspurt boundary per RFC 7587) differ from video.
+        let mut handler: Box<dyn RePayload + Send> = Box::new(Forward::new());
 
         while let Some(data) = audio_rx.recv().await {
             if let Ok(packet) = Packet::unmarshal(&mut data.as_slice()) {
