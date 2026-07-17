@@ -545,6 +545,9 @@ async fn wait_for_forward(
                 stream_id
             ));
         }
+        // RecvError::Closed is technically unreachable here because `tx`
+        // stays alive in scope.  Kept as a defensive branch in case a
+        // future refactor introduces an early drop of the broadcast sender.
         Ok(Err(_)) => {
             return Err(anyhow!("Stream ready channel closed for {}", stream_id));
         }

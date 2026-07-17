@@ -224,6 +224,7 @@ impl Manager {
         }
         stream_map.insert(stream.clone(), forward.clone());
         drop(stream_map);
+        self.spawn_forward_events(&forward);
         self.register_stream_created(&stream);
         self.init_stream_forward(&stream, &forward).await;
         Ok(())
@@ -237,20 +238,25 @@ impl Manager {
         );
         #[cfg(feature = "source")]
         let channel = entry.and_then(|entry| entry.channel.clone());
-        let forward = PeerForward::new(
+        PeerForward::new(
             stream.to_string(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
             #[cfg(feature = "source")]
             channel,
             strategy,
-        );
+        )
+    }
+
+    /// Spawn the event-forwarding task for a newly inserted forward.
+    /// Must only be called once per forward — after the forward has won
+    /// the insertion race.
+    fn spawn_forward_events(&self, forward: &PeerForward) {
         let subscribe_event = forward.subscribe_event();
         tokio::spawn(Self::forward_event_handler(
             subscribe_event,
             self.event_sender.clone(),
         ));
-        forward
     }
 
     fn register_stream_created(&self, stream: &str) {
@@ -264,11 +270,15 @@ impl Manager {
         }));
     }
 
-    async fn init_stream_forward(&self, _stream: &str, _forward: &PeerForward) {
+    async fn init_stream_forward(&self, stream: &str, forward: &PeerForward) {
         #[cfg(feature = "source")]
-        if let Err(e) = _forward.try_init_udp_channel().await {
-            tracing::warn!("Failed to init UDP channel for stream {}: {:?}", _stream, e);
+        if let Err(e) = forward.try_init_udp_channel().await {
+            tracing::warn!("Failed to init UDP channel for stream {}: {:?}", stream, e);
         }
+        // When the `source` feature is disabled this async fn is empty.
+        // The compiler eliminates the future allocation in release builds
+        // via dead-code elimination.
+        let _ = (stream, forward);
     }
 
     pub async fn stream_delete(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
@@ -369,6 +379,7 @@ impl Manager {
         if let Some(duplicate) = duplicate_to_close {
             let _ = duplicate.close().await;
         } else {
+            self.spawn_forward_events(&forward);
             self.register_stream_created(stream);
             self.init_stream_forward(stream, &forward).await;
         }
@@ -759,6 +770,7 @@ impl Manager {
             return existing;
         }
 
+        self.spawn_forward_events(&forward);
         self.register_stream_created(stream_id);
         tracing::info!("Created PeerForward for source: {}", stream_id);
         if let Err(e) = forward.try_init_udp_channel().await {

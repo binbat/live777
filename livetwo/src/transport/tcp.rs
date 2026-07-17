@@ -37,6 +37,19 @@ impl TcpHandler {
         }
     }
 
+    /// Construct a TCP handler with explicit channel numbers, bypassing
+    /// `media_info` transport inspection.  Used when the actual transport
+    /// is managed outside the RTSP session (e.g. RTSP server pull mode
+    /// where data flows through the framework's mpsc channels).
+    pub fn with_channels(video_rtp: u8, video_rtcp: u8, audio_rtp: u8, audio_rtcp: u8) -> Self {
+        Self {
+            video_rtp_channel: Some(video_rtp),
+            video_rtcp_channel: Some(video_rtcp),
+            audio_rtp_channel: Some(audio_rtp),
+            audio_rtcp_channel: Some(audio_rtcp),
+        }
+    }
+
     fn extract_tcp_channels(transport: &Option<rtsp::TransportInfo>) -> (Option<u8>, Option<u8>) {
         if let Some(rtsp::TransportInfo::Tcp {
             rtp_channel,

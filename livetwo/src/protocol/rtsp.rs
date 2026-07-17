@@ -99,7 +99,7 @@ impl rtsp::SessionHandler for WhepRtspPullHandler {
         &self,
         _path: String,
         mode: rtsp::SessionMode,
-        mut media_info: rtsp::MediaInfo,
+        media_info: rtsp::MediaInfo,
         endpoint: rtsp::SessionEndpoint,
         _cancel: CancellationToken,
     ) -> Result<()> {
@@ -112,10 +112,11 @@ impl rtsp::SessionHandler for WhepRtspPullHandler {
             _ => return Err(anyhow!("Expected RTSP pull endpoint")),
         };
 
-        // The WHEP transport layer sends RTP by abstract channel number. For
-        // UDP RTSP sessions the RTSP server maps these pseudo TCP channels to
-        // the negotiated UDP client ports.
-        media_info = media_info_with_output_channels(media_info);
+        // media_info is passed through unchanged so downstream consumers
+        // can inspect the client-negotiated transport parameters.  Output
+        // routing uses fixed channel numbers (udp_route::VIDEO_RTP etc.),
+        // which are applied directly by TcpHandler::with_channels in the
+        // transport layer.
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
         self.session_tx
             .send(RtspPullSession {
@@ -127,22 +128,6 @@ impl rtsp::SessionHandler for WhepRtspPullHandler {
 
         Ok(())
     }
-}
-
-fn media_info_with_output_channels(mut media_info: rtsp::MediaInfo) -> rtsp::MediaInfo {
-    if media_info.video_transport.is_some() {
-        media_info.video_transport = Some(rtsp::TransportInfo::Tcp {
-            rtp_channel: rtsp::udp_route::VIDEO_RTP,
-            rtcp_channel: rtsp::udp_route::VIDEO_RTCP,
-        });
-    }
-    if media_info.audio_transport.is_some() {
-        media_info.audio_transport = Some(rtsp::TransportInfo::Tcp {
-            rtp_channel: rtsp::udp_route::AUDIO_RTP,
-            rtcp_channel: rtsp::udp_route::AUDIO_RTCP,
-        });
-    }
-    media_info
 }
 
 pub async fn setup_client_for_pull(

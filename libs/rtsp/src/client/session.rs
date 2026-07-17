@@ -115,6 +115,9 @@ where
         original: &Request<Vec<u8>>,
         auth_header: &headers::HeaderValue,
     ) -> Result<Request<Vec<u8>>> {
+        // Clone is necessary because rtsp_types::Request<Vec<u8>> does not
+        // support body sharing.  ANNOUNCE SDP bodies are typically <10 KB
+        // so the allocation is negligible.
         let (realm, nonce) = parse_auth_header(auth_header)?;
         let uri = original
             .request_uri()

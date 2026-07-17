@@ -227,6 +227,11 @@ impl FrameGenerator {
         // holds raw FFmpeg pointers in OutputContext) and runs on a
         // `spawn_blocking` thread — sleeping here does not block the async
         // runtime, though it does occupy a blocking-pool thread.
+        //
+        // TODO: For many concurrent low-fps generators the blocking-pool
+        // threads could become a bottleneck.  Consider making FrameGenerator
+        // `Send` (by boxing the FFmpeg pointers or using a mutex) so
+        // `tokio::time::sleep` can be used instead.
         let expected_elapsed = Duration::from_secs_f64(self.frame_index as f64 / self.fps as f64);
         if let Some(sleep) = expected_elapsed.checked_sub(self.start.elapsed()) {
             std::thread::sleep(sleep);

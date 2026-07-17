@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
 pub fn rtp_codecs_match(left: &RTCRtpCodec, right: &RTCRtpCodec) -> bool {
@@ -37,65 +35,6 @@ pub fn is_h265_codec(codec: &RTCRtpCodec) -> bool {
 
 pub fn is_av1_codec(codec: &RTCRtpCodec) -> bool {
     codec.mime_type.eq_ignore_ascii_case("video/AV1")
-}
-
-/// Merge H265 parameters from the publisher fmtp into the selected
-/// subscriber fmtp. Existing selected parameters are preserved, except for
-/// bitstream-describing parameters (profile-space, profile-id, tier-flag,
-/// level-id and sprop-*) which are taken from the publisher so the answer
-/// accurately describes the stream being forwarded.
-#[allow(dead_code)]
-pub fn merge_h265_sprop(publisher_fmtp: &str, selected_fmtp: &str) -> String {
-    let publisher_keys = [
-        "profile-space",
-        "profile-id",
-        "tier-flag",
-        "level-id",
-        "sprop-vps",
-        "sprop-sps",
-        "sprop-pps",
-    ];
-
-    let mut params: Vec<(String, String)> = selected_fmtp
-        .split(';')
-        .filter(|part| !part.trim().is_empty())
-        .filter_map(|part| {
-            let part = part.trim();
-            let (key, value) = match part.split_once('=') {
-                Some(split) => split,
-                None => {
-                    tracing::trace!("Ignoring fmtp part without '=': {part:?}");
-                    return None;
-                }
-            };
-            let key = key.trim();
-            if publisher_keys.iter().any(|k| k.eq_ignore_ascii_case(key)) {
-                return None;
-            }
-            Some((key.to_owned(), value.trim().to_owned()))
-        })
-        .collect();
-
-    // Parse publisher fmtp once so we don't split it again per-key below.
-    let publisher_params: HashMap<String, String> = publisher_fmtp
-        .split(';')
-        .filter_map(|part| {
-            let (k, v) = part.trim().split_once('=')?;
-            Some((k.trim().to_ascii_lowercase(), v.trim().to_owned()))
-        })
-        .collect();
-
-    for key in publisher_keys {
-        if let Some(value) = publisher_params.get(&key.to_ascii_lowercase()) {
-            params.push((key.to_owned(), value.clone()));
-        }
-    }
-
-    params
-        .into_iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join(";")
 }
 
 pub fn h265_codecs_are_compatible(existing_codec: &RTCRtpCodec, new_codec: &RTCRtpCodec) -> bool {

@@ -415,7 +415,7 @@ fn start_initial_transport_task(
 
 struct InitialTransportHandle {
     task_handle: tokio::task::JoinHandle<()>,
-    port_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<OutputTarget>>,
+    port_update_rx: Option<tokio::sync::mpsc::Receiver<OutputTarget>>,
 }
 
 fn start_transport_task(

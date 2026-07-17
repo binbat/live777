@@ -385,6 +385,10 @@ impl Handler {
             method,
         );
 
+        // NOTE: This comparison is not constant-time.  For Digest auth the
+        // password is not transmitted, so a timing side-channel is less
+        // critical than it would be for Basic auth.  If stricter protection
+        // is desired, use `subtle::ConstantTimeEq` here.
         if expected != response {
             return Err(self.build_auth_challenge());
         }
