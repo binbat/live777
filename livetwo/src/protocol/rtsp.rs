@@ -38,7 +38,13 @@ pub async fn setup_server_for_pull(
     // to the caller immediately — no indefinite hang.
     let listener = tokio::net::TcpListener::bind(&listen_addr_str)
         .await
-        .map_err(|e| anyhow!("Failed to bind RTSP pull server on {}: {}", listen_addr_str, e))?;
+        .map_err(|e| {
+            anyhow!(
+                "Failed to bind RTSP pull server on {}: {}",
+                listen_addr_str,
+                e
+            )
+        })?;
 
     let server_ct = ct.clone();
     tokio::spawn(async move {
