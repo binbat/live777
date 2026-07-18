@@ -175,12 +175,20 @@ impl TcpHandler {
     pub fn spawn_webrtc_rtcp_to_output(
         &self,
         _peer: Arc<dyn PeerConnection>,
-        _tx: Sender<(u8, Vec<u8>)>,
+        tx: Sender<(u8, Vec<u8>)>,
     ) {
         // In v0.20, RTCP feedback is handled internally by the peer connection.
         // sender.read_rtcp() is no longer available.
         // RTCP forwarding to output is not needed in the new architecture.
+        //
+        // The endpoint must still be kept alive: the RTSP client handler
+        // tears down the whole interleaved connection when the channel
+        // closes, and dropping `tx` is exactly that signal.
         debug!("RTCP to output forwarding is handled internally in v0.20");
+        tokio::spawn(async move {
+            let _tx = tx;
+            std::future::pending::<()>().await;
+        });
     }
 
     pub fn spawn_output_rtcp_to_webrtc(
