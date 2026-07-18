@@ -67,11 +67,13 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 - `live777`      — main SFU server (uses `liveion`).
 - `liveman`      — cluster manager for multiple `live777` nodes.
 - `livecam`      — camera ingest server.
-- `livetwo`      — provided as a library; command tools below use it.
-- `whipinto`     — push RTP/RTSP into a WHIP endpoint; with the `rsmpeg`
-  feature it also accepts a `synth://<vcodec>?...` input that publishes
+- `livetwo`      — protocol-conversion library AND unified converter CLI
+  (`livetwo whip|whep|synth|probe`). With the `rsmpeg` feature the `whip`
+  subcommand also accepts a `synth://<vcodec>?...` input that publishes
   in-process generated test frames (no external encoder needed).
-- `whepfrom`     — pull a WHEP stream and output RTP/RTSP.
+- `whipinto`/`whepfrom`/`whipsynth`/`whepprobe` — thin legacy aliases of the
+  corresponding `livetwo` subcommands; all argument parsing and run logic
+  lives in `src/livetwo_cli.rs` and is shared by both spellings.
 - `whepwright`   — browser-based WHEP playback tester (feature gated).
 - `livevod`      — VOD/recording playback helper.
 - `net4mqtt`     — net-over-MQTT proxy binary.
