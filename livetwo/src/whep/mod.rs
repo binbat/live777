@@ -189,7 +189,7 @@ pub async fn from_with_state(
     let output_target = output_handle.await??;
     info!("Output target configured: {:?}", output_target.scheme());
 
-    let mut initial_transport_handle = start_initial_transport_task(
+    let _transport_handle = start_initial_transport_task(
         ct.clone(),
         1,
         video_broadcast_tx.subscribe(),
@@ -197,45 +197,6 @@ pub async fn from_with_state(
         output_target,
         peer.clone(),
     );
-
-    if let Some(mut port_update_rx) = initial_transport_handle.port_update_rx.take() {
-        let peer_clone = peer.clone();
-        let video_broadcast_tx_clone = video_broadcast_tx.clone();
-        let audio_broadcast_tx_clone = audio_broadcast_tx.clone();
-        let ct_clone = ct.clone();
-        tokio::spawn(async move {
-            let mut transport_handles: Vec<tokio::task::JoinHandle<()>> =
-                vec![initial_transport_handle.task_handle];
-
-            loop {
-                tokio::select! {
-                    Some(output_target) = port_update_rx.recv() => {
-                        let connection_id = output_target.connection_id();
-                        info!(
-                            "Starting RTSP output transport task for connection #{}",
-                            connection_id
-                        );
-                        let handle = start_transport_task(
-                            ct_clone.clone(),
-                            connection_id,
-                            video_broadcast_tx_clone.subscribe(),
-                            audio_broadcast_tx_clone.subscribe(),
-                            output_target,
-                            peer_clone.clone(),
-                        );
-
-                        transport_handles.push(handle);
-                        transport_handles.retain(|h| !h.is_finished());
-                        info!("Active transport tasks: {}", transport_handles.len());
-                    }
-                    _ = ct_clone.cancelled() => {
-                        info!("Port update listener shutting down");
-                        break;
-                    }
-                }
-            }
-        });
-    }
 
     if child.as_ref().is_some() {
         let child_clone = child.clone();
@@ -320,11 +281,10 @@ fn start_initial_transport_task(
     connection_id: u32,
     mut video_rx: broadcast::Receiver<Vec<u8>>,
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
-    mut output_target: OutputTarget,
+    output_target: OutputTarget,
     peer: Arc<dyn PeerConnection>,
-) -> InitialTransportHandle {
-    let port_update_rx = output_target.take_port_update_rx();
-    let task_handle = tokio::spawn(async move {
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         info!("Transport task #{} started", connection_id);
 
         let (video_tx, video_rx_bounded) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
@@ -405,27 +365,5 @@ fn start_initial_transport_task(
         let _ = tokio::join!(video_forwarder, audio_forwarder);
 
         info!("Transport task #{} stopped", connection_id);
-    });
-
-    InitialTransportHandle {
-        task_handle,
-        port_update_rx,
-    }
-}
-
-struct InitialTransportHandle {
-    task_handle: tokio::task::JoinHandle<()>,
-    port_update_rx: Option<tokio::sync::mpsc::Receiver<OutputTarget>>,
-}
-
-fn start_transport_task(
-    ct: CancellationToken,
-    connection_id: u32,
-    video_rx: broadcast::Receiver<Vec<u8>>,
-    audio_rx: broadcast::Receiver<Vec<u8>>,
-    output_target: OutputTarget,
-    peer: Arc<dyn PeerConnection>,
-) -> tokio::task::JoinHandle<()> {
-    start_initial_transport_task(ct, connection_id, video_rx, audio_rx, output_target, peer)
-        .task_handle
+    })
 }

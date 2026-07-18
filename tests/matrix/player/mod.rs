@@ -3,8 +3,6 @@ pub mod livetwo;
 pub mod playwright;
 #[cfg(feature = "rsmpeg")]
 pub mod rsmpeg_receiver;
-#[cfg(feature = "rtsp")]
-pub mod rtsp_out;
 
 use anyhow::{Context, Result, anyhow};
 

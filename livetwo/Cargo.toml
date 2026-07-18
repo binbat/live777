@@ -11,7 +11,7 @@ crate-type = ["lib"]
 
 [dependencies]
 cli = { path = "../libs/cli" }
-rtsp = { path = "../libs/rtsp", default-features = false, features = ["client", "server"] }
+rtsp = { path = "../libs/rtsp", default-features = false, features = ["client"] }
 libwish = { path = "../libs/libwish" }
 api = { path = "../libs/api" }
 

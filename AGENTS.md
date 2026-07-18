@@ -247,11 +247,11 @@ Integration test binaries live in `tests/`:
 - `tests/matrix/` — the end-to-end source × media-profile × player matrix
   harness (test binary `matrix`). Codec combinations are declared once in
   `tests/matrix/profile.rs`; sources live in `tests/matrix/source/`, players
-  (livetwo+ffprobe, rsmpeg, Playwright, whepfrom rtsp-listen) in
-  `tests/matrix/player/`, and the shared liveion/port/wait/ffprobe
-  infrastructure in `tests/matrix/runner.rs` and `tests/matrix/probe.rs`. The
-  liveion RTSP server push→pull round-trip cases (former `tests/rtsp.rs`)
-  also live here as `rtsp_roundtrip_*` matrices.
+  (livetwo+ffprobe, rsmpeg, Playwright) in `tests/matrix/player/`, and the
+  shared liveion/port/wait/ffprobe infrastructure in
+  `tests/matrix/runner.rs` and `tests/matrix/probe.rs`. The liveion RTSP
+  server push→pull round-trip cases (former `tests/rtsp.rs`) also live here
+  as `rtsp_roundtrip_*` matrices.
 - `tests/rtsp2.rs` — RTSP↔WHIP↔WHEP cycle tests (migration into the matrix
   is planned).
 - `tests/channel.rs`
