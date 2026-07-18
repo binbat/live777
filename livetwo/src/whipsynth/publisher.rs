@@ -3,33 +3,24 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use libwish::Client;
-use rtc::peer_connection::configuration::interceptor_registry::{
-    configure_nack, configure_rtcp_reports, configure_simulcast_extension_headers, configure_twcc,
-};
-use rtc::peer_connection::configuration::media_engine::{
-    MIME_TYPE_AV1, MIME_TYPE_HEVC, MediaEngine,
-};
-use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind};
+use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_AV1, MIME_TYPE_HEVC};
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 use rtc::statistics::StatsSelector;
-use tokio::sync::{Notify, watch};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use webrtc::media_stream::Track;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
-use webrtc::peer_connection::{
-    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
-    RTCIceConnectionState, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState,
-    RTCSignalingState, Registry,
-};
+use webrtc::peer_connection::PeerConnection;
 
 use crate::source::{AudioCodec, MediaFrame, VideoCodec, extract_h265_sprop};
 use crate::utils;
+use crate::utils::shutdown::graceful_shutdown;
+use crate::whip::core::{self, PublishPeerOptions};
 use crate::whipsynth::SessionStats;
 use crate::whipsynth::packetizer::{Packetizer, PacketizerConfig, VIDEO_RTCP_FEEDBACK};
 use crate::whipsynth::source::{frame_generator_config, spawn_rsmpeg_source};
-
-const WAIT_FOR_PEER_CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Configuration for a [`Publisher`].
 #[derive(Debug, Clone)]
@@ -58,6 +49,11 @@ impl Publisher {
         Self { config }
     }
 
+    #[cfg(test)]
+    pub(crate) fn config_for_test(&self) -> PublisherConfig {
+        self.config.clone()
+    }
+
     /// Run the publisher until cancelled or the configured duration expires.
     ///
     /// Returns the final session statistics on success.
@@ -69,9 +65,34 @@ impl Publisher {
             Client::get_auth_header_map(self.config.token.clone()),
         );
 
+        // Compute codec-specific SDP parameters up front so they can be used
+        // both for the offer (extra MediaEngine codec registrations) and for
+        // the packetizer's track metadata.
+        let extra_video_codecs = extra_video_codecs(&self.config);
+
         let gather_complete = Arc::new(Notify::new());
-        let (peer, mut packetizer, state_rx, diagnostics) =
-            create_peer(&self.config, gather_complete.clone(), ct.clone()).await?;
+        let publish = core::create_publish_peer(
+            ct.clone(),
+            gather_complete.clone(),
+            PublishPeerOptions {
+                stun_server: Some(self.config.stun_server.clone()),
+                extra_video_codecs,
+                cancel_on_failure: true,
+            },
+        )
+        .await?;
+        let peer = publish.peer;
+        let state_rx = publish.state_rx;
+        let diagnostics = publish.diagnostics;
+
+        let h265_sprop = h265_sprop(&self.config);
+        let mut packetizer_config =
+            PacketizerConfig::new(self.config.video_codec, self.config.audio_codec);
+        packetizer_config.width = self.config.width;
+        packetizer_config.height = self.config.height;
+        packetizer_config.fps = self.config.fps;
+        packetizer_config.h265_sprop = h265_sprop;
+        let mut packetizer = Packetizer::new(&packetizer_config)?;
 
         let video_track = packetizer
             .video_track(&input_id)
@@ -90,22 +111,21 @@ impl Publisher {
 
         info!("WHIP publisher peer created; starting signaling");
         utils::webrtc::setup_connection(peer.clone(), &mut client, gather_complete).await?;
-        info!(
-            "Local SDP offer summary:\n{}",
-            peer.local_description()
-                .await
-                .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
-                .unwrap_or_else(|| "<no local description>".to_string())
-        );
-        info!(
-            "Remote SDP answer summary:\n{}",
-            peer.remote_description()
-                .await
-                .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
-                .unwrap_or_else(|| "<no remote description>".to_string())
-        );
+        let local_summary = peer
+            .local_description()
+            .await
+            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+            .unwrap_or_else(|| "<no local description>".to_string());
+        let remote_summary = peer
+            .remote_description()
+            .await
+            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+            .unwrap_or_else(|| "<no remote description>".to_string());
+        info!("Local SDP offer summary:\n{}", local_summary);
+        info!("Remote SDP answer summary:\n{}", remote_summary);
+        diagnostics.set_sdp_summaries(local_summary, remote_summary);
 
-        wait_for_peer_connected(peer.clone(), state_rx.clone(), diagnostics.clone()).await?;
+        core::wait_for_peer_connected(peer.clone(), state_rx.clone(), diagnostics.clone()).await?;
         info!("WHIP publisher peer connected");
 
         // After SDP negotiation the answer may have remapped the dynamic payload
@@ -140,7 +160,7 @@ impl Publisher {
                 info!("Shutdown signal received, stopping WHIP publisher");
                 Ok(())
             }
-            result = wait_for_unexpected_peer_end(peer.clone(), state_rx, diagnostics.clone()) => {
+            result = core::wait_for_unexpected_peer_end(peer.clone(), state_rx, diagnostics.clone()) => {
                 ct.cancel();
                 result
             }
@@ -161,12 +181,7 @@ impl Publisher {
         if let Err(e) = &source_result {
             error!(error = ?e, "WHIP publisher source task failed");
         }
-        if let Err(e) = peer.close().await {
-            warn!("Failed to close WHIP publisher peer: {}", e);
-        }
-        if let Err(e) = client.remove_resource().await {
-            debug!("Failed to remove WHIP resource: {}", e);
-        }
+        graceful_shutdown("WHIP publisher", &mut client, peer).await;
 
         let mut final_stats = stats.lock().map(|s| s.clone()).unwrap_or_default();
         final_stats.nack_count = rtcp_feedback.nack_count;
@@ -184,6 +199,55 @@ impl Publisher {
         // Propagate peer/write-loop errors first, then source errors.
         result.and(source_result).map(|_| final_stats)
     }
+}
+
+/// H265 sprop parameters for the configured stream, when applicable.
+fn h265_sprop(config: &PublisherConfig) -> Option<String> {
+    (config.video_codec == VideoCodec::H265)
+        .then(|| extract_h265_sprop(config.width, config.height, config.fps))
+        .flatten()
+}
+
+/// Extra video codec registrations for the MediaEngine, applied before the
+/// default codecs so the generated SDP offer prefers them.
+///
+/// - H265: browsers such as Safari need the sprop-VPS/SPS/PPS in the offer to
+///   initialize an H265 WebRTC receiver.
+/// - AV1: without a resolution-derived level-idx the offer only advertises
+///   `profile-id=0` and the receiver infers level-idx=5 (720p30);
+///   higher-resolution streams may then be dropped once they exceed that level.
+fn extra_video_codecs(config: &PublisherConfig) -> Vec<RTCRtpCodecParameters> {
+    let mut codecs = Vec::new();
+
+    if let Some(sprop) = h265_sprop(config) {
+        codecs.push(RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_HEVC.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: sprop,
+                rtcp_feedback: VIDEO_RTCP_FEEDBACK.clone(),
+            },
+            payload_type: 126,
+        });
+    }
+
+    if config.video_codec == VideoCodec::Av1 {
+        let level_idx =
+            crate::whipsynth::packetizer::av1_level_idx(config.width, config.height, config.fps);
+        codecs.push(RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_AV1.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: format!("profile-id=0;level-idx={level_idx};tier=0"),
+                rtcp_feedback: VIDEO_RTCP_FEEDBACK.clone(),
+            },
+            payload_type: 41,
+        });
+    }
+
+    codecs
 }
 
 /// Pull the negotiated payload types from the peer's RTP senders and apply
@@ -304,118 +368,6 @@ async fn write_packets(
     }
 }
 
-async fn create_peer(
-    config: &PublisherConfig,
-    gather_complete: Arc<Notify>,
-    ct: CancellationToken,
-) -> Result<(
-    Arc<dyn PeerConnection>,
-    Packetizer,
-    watch::Receiver<RTCPeerConnectionState>,
-    Arc<PublisherDiagnostics>,
-)> {
-    let mut m = MediaEngine::default();
-
-    // Compute H265 sprop parameters up front so we can use them both for the
-    // SDP offer (via the MediaEngine) and for the track codec metadata.
-    let h265_sprop = (config.video_codec == VideoCodec::H265)
-        .then(|| extract_h265_sprop(config.width, config.height, config.fps))
-        .flatten();
-
-    // Register a custom H265 codec with sprop parameters before the defaults so
-    // the generated SDP offer includes them. Browsers such as Safari need the
-    // sprop-VPS/SPS/PPS in the offer to initialize an H265 WebRTC receiver.
-    if let Some(ref sprop) = h265_sprop {
-        m.register_codec(
-            RTCRtpCodecParameters {
-                rtp_codec: RTCRtpCodec {
-                    mime_type: MIME_TYPE_HEVC.to_owned(),
-                    clock_rate: 90_000,
-                    channels: 0,
-                    sdp_fmtp_line: sprop.clone(),
-                    rtcp_feedback: VIDEO_RTCP_FEEDBACK.clone(),
-                },
-                payload_type: 126,
-            },
-            RtpCodecKind::Video,
-        )?;
-    }
-
-    // Register a custom AV1 codec with a resolution-derived level-idx before the
-    // defaults so the generated SDP offer accurately describes the SVT-AV1
-    // stream. Without this the offer only advertises `profile-id=0` and the
-    // receiver infers level-idx=5 (720p30); higher-resolution streams may then
-    // be dropped once they exceed that level.
-    if config.video_codec == VideoCodec::Av1 {
-        let level_idx =
-            crate::whipsynth::packetizer::av1_level_idx(config.width, config.height, config.fps);
-        m.register_codec(
-            RTCRtpCodecParameters {
-                rtp_codec: RTCRtpCodec {
-                    mime_type: MIME_TYPE_AV1.to_owned(),
-                    clock_rate: 90_000,
-                    channels: 0,
-                    sdp_fmtp_line: format!("profile-id=0;level-idx={level_idx};tier=0"),
-                    rtcp_feedback: VIDEO_RTCP_FEEDBACK.clone(),
-                },
-                payload_type: 41,
-            },
-            RtpCodecKind::Video,
-        )?;
-    }
-
-    m.register_default_codecs()?;
-
-    let registry = Registry::new();
-    let registry = configure_nack(registry, &mut m);
-    let registry = configure_rtcp_reports(registry);
-    configure_simulcast_extension_headers(&mut m)?;
-    let registry = configure_twcc(registry, &mut m)?;
-    info!("WHIP publisher configured with NACK, RTCP reports, and TWCC");
-
-    let mut packetizer_config = PacketizerConfig::new(config.video_codec, config.audio_codec);
-    packetizer_config.width = config.width;
-    packetizer_config.height = config.height;
-    packetizer_config.fps = config.fps;
-    packetizer_config.h265_sprop = h265_sprop;
-    let packetizer = Packetizer::new(&packetizer_config)?;
-
-    let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
-    let diagnostics = Arc::new(PublisherDiagnostics::default());
-    let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(PublisherHandler {
-        ct,
-        gather_complete,
-        state_tx,
-        diagnostics: diagnostics.clone(),
-    });
-
-    let ice_config = if config.stun_server.trim().is_empty() {
-        RTCConfigurationBuilder::new().build()
-    } else {
-        RTCConfigurationBuilder::new()
-            .with_ice_servers(vec![RTCIceServer {
-                urls: vec![config.stun_server.clone()],
-                username: "".to_string(),
-                credential: "".to_string(),
-            }])
-            .build()
-    };
-
-    let peer: Arc<dyn PeerConnection> = Arc::new(
-        PeerConnectionBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(registry)
-            .with_handler(handler)
-            .with_udp_addrs(utils::webrtc::ice_udp_addrs())
-            .with_configuration(ice_config)
-            .build()
-            .await
-            .map_err(|error| anyhow!("{:?}: {}", error, error))?,
-    );
-
-    Ok((peer, packetizer, state_rx, diagnostics))
-}
-
 #[derive(Default, Clone, Copy)]
 struct RtcpFeedbackCounters {
     nack_count: u64,
@@ -432,168 +384,4 @@ async fn collect_rtcp_feedback(peer: &Arc<dyn PeerConnection>) -> RtcpFeedbackCo
         counters.pli_count += outbound.pli_count as u64;
     }
     counters
-}
-
-async fn wait_for_peer_connected(
-    peer: Arc<dyn PeerConnection>,
-    mut state_rx: watch::Receiver<RTCPeerConnectionState>,
-    diagnostics: Arc<PublisherDiagnostics>,
-) -> Result<()> {
-    let result = tokio::time::timeout(WAIT_FOR_PEER_CONNECTED_TIMEOUT, async {
-        loop {
-            let state = *state_rx.borrow_and_update();
-            match state {
-                RTCPeerConnectionState::Connected => return Ok(()),
-                RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed
-                | RTCPeerConnectionState::Disconnected => {
-                    return Err(anyhow!(
-                        "WHIP publisher peer connection ended before becoming connected: state={state}"
-                    ));
-                }
-                _ => {}
-            }
-
-            state_rx
-                .changed()
-                .await
-                .map_err(|_| anyhow!("WHIP publisher peer connection state channel closed"))?;
-        }
-    })
-    .await;
-
-    match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => {
-            let ice_stats = crate::whip::format_ice_stats(peer).await;
-            Err(anyhow!(
-                "{error}, {}, ice_stats=[{}]",
-                diagnostics.format(),
-                ice_stats
-            ))
-        }
-        Err(_) => {
-            let ice_stats = crate::whip::format_ice_stats(peer).await;
-            Err(anyhow!(
-                "WHIP publisher peer connection timed out waiting for connected after {:?}: {}, ice_stats=[{}]",
-                WAIT_FOR_PEER_CONNECTED_TIMEOUT,
-                diagnostics.format(),
-                ice_stats
-            ))
-        }
-    }
-}
-
-async fn wait_for_unexpected_peer_end(
-    peer: Arc<dyn PeerConnection>,
-    mut state_rx: watch::Receiver<RTCPeerConnectionState>,
-    diagnostics: Arc<PublisherDiagnostics>,
-) -> Result<()> {
-    let mut saw_connected = *state_rx.borrow() == RTCPeerConnectionState::Connected;
-
-    loop {
-        let state = *state_rx.borrow();
-        if state == RTCPeerConnectionState::Connected {
-            saw_connected = true;
-        }
-
-        if matches!(
-            state,
-            RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed
-                | RTCPeerConnectionState::Disconnected
-        ) {
-            let ice_stats = crate::whip::format_ice_stats(peer).await;
-            return Err(anyhow!(
-                "WHIP publisher peer connection ended before shutdown: state={state}, connected_before={saw_connected}, {}, ice_stats=[{}]",
-                diagnostics.format(),
-                ice_stats
-            ));
-        }
-
-        state_rx
-            .changed()
-            .await
-            .map_err(|_| anyhow!("WHIP publisher peer connection state channel closed"))?;
-    }
-}
-
-#[derive(Default)]
-pub struct PublisherDiagnostics {
-    connection_states: Mutex<Vec<String>>,
-    ice_connection_states: Mutex<Vec<String>>,
-    ice_gathering_states: Mutex<Vec<String>>,
-    signaling_states: Mutex<Vec<String>>,
-}
-
-impl PublisherDiagnostics {
-    pub fn format(&self) -> String {
-        format!(
-            "connection_states=[{}], ice_connection_states=[{}], ice_gathering_states=[{}], signaling_states=[{}]",
-            join_states(&self.connection_states),
-            join_states(&self.ice_connection_states),
-            join_states(&self.ice_gathering_states),
-            join_states(&self.signaling_states),
-        )
-    }
-}
-
-fn join_states(states: &Mutex<Vec<String>>) -> String {
-    states
-        .lock()
-        .map(|s| s.join(" -> "))
-        .unwrap_or_else(|poisoned| format!("{}(poisoned)", poisoned.into_inner().join(" -> ")))
-}
-
-fn push_state(states: &Mutex<Vec<String>>, state: impl std::fmt::Display) {
-    match states.lock() {
-        Ok(mut states) => states.push(state.to_string()),
-        Err(poisoned) => {
-            // Recover the inner data after a panic so diagnostics are still
-            // available for error reporting.
-            let mut states = poisoned.into_inner();
-            states.push(state.to_string());
-        }
-    }
-}
-
-struct PublisherHandler {
-    ct: CancellationToken,
-    gather_complete: Arc<Notify>,
-    state_tx: watch::Sender<RTCPeerConnectionState>,
-    diagnostics: Arc<PublisherDiagnostics>,
-}
-
-#[async_trait::async_trait]
-impl PeerConnectionEventHandler for PublisherHandler {
-    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        info!("WHIP publisher connection state changed: {}", state);
-        push_state(&self.diagnostics.connection_states, state);
-        let _ = self.state_tx.send(state);
-        if matches!(
-            state,
-            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
-        ) {
-            self.ct.cancel();
-        }
-    }
-
-    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
-        info!("WHIP publisher ICE connection state changed: {}", state);
-        push_state(&self.diagnostics.ice_connection_states, state);
-    }
-
-    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
-        info!("WHIP publisher ICE gathering state changed: {}", state);
-        push_state(&self.diagnostics.ice_gathering_states, state);
-        if state == RTCIceGatheringState::Complete {
-            info!("WHIP publisher ICE gathering complete");
-            self.gather_complete.notify_one();
-        }
-    }
-
-    async fn on_signaling_state_change(&self, state: RTCSignalingState) {
-        info!("WHIP publisher signaling state changed: {}", state);
-        push_state(&self.diagnostics.signaling_states, state);
-    }
 }

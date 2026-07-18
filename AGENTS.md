@@ -68,7 +68,9 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 - `liveman`      — cluster manager for multiple `live777` nodes.
 - `livecam`      — camera ingest server.
 - `livetwo`      — provided as a library; command tools below use it.
-- `whipinto`     — push RTP/RTSP into a WHIP endpoint.
+- `whipinto`     — push RTP/RTSP into a WHIP endpoint; with the `rsmpeg`
+  feature it also accepts a `synth://<vcodec>?...` input that publishes
+  in-process generated test frames (no external encoder needed).
 - `whepfrom`     — pull a WHEP stream and output RTP/RTSP.
 - `whepwright`   — browser-based WHEP playback tester (feature gated).
 - `livevod`      — VOD/recording playback helper.
@@ -172,7 +174,9 @@ and linker paths.
   manages cascade state, records via cluster policy, and stores recording
   indexes in a database.
 - `livetwo` is the protocol-conversion engine used by `whipinto`/`whepfrom`
-  and the `cascade` feature.
+  and the `cascade` feature. `livetwo/src/whip/core.rs` is the single WHIP
+  publish core (peer construction, connection waits, ICE diagnostics) shared
+  by the RTP/RTSP bridge and the synthetic `whipsynth` publisher.
 - `livecam` is a focused camera ingest server with its own config and WebUI.
 - `net4mqtt` exposes a local SOCKS proxy and tunnels traffic over MQTT for
   NAT/remote agents.
