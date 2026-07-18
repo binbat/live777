@@ -64,6 +64,34 @@ pub fn generate_digest_response(
     format!("{:x}", Md5::digest(response.as_bytes()))
 }
 
+/// A parsed `WWW-Authenticate` challenge from a 401 response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthChallenge {
+    /// HTTP Basic authentication (RFC 7617). The realm is not needed to
+    /// build the response, so it is not captured.
+    Basic,
+    /// HTTP Digest authentication (RFC 2069/2617).
+    Digest { realm: String, nonce: String },
+}
+
+/// Parse a `WWW-Authenticate` header, dispatching on the auth scheme.
+/// Basic-only devices (common on older IP cameras) send
+/// `Basic realm="..."`, which carries no nonce.
+pub fn parse_www_authenticate(header: &headers::HeaderValue) -> Result<AuthChallenge> {
+    let header_str = header.as_str();
+    let scheme_end = header_str
+        .find(char::is_whitespace)
+        .unwrap_or(header_str.len());
+    let scheme = &header_str[..scheme_end];
+
+    if scheme.eq_ignore_ascii_case("basic") {
+        return Ok(AuthChallenge::Basic);
+    }
+
+    let (realm, nonce) = parse_auth_header(header)?;
+    Ok(AuthChallenge::Digest { realm, nonce })
+}
+
 pub fn parse_auth_header(header: &headers::HeaderValue) -> Result<(String, String)> {
     let header_str = header.as_str();
 
@@ -211,5 +239,26 @@ mod tests {
         assert_eq!(nonce, "abc123");
         assert_eq!(uri, "/stream");
         assert_eq!(response, "deadbeef");
+    }
+
+    #[test]
+    fn test_parse_www_authenticate_basic() {
+        let header = headers::HeaderValue::from("Basic realm=\"WallyWorld\"");
+        assert_eq!(
+            parse_www_authenticate(&header).unwrap(),
+            AuthChallenge::Basic
+        );
+    }
+
+    #[test]
+    fn test_parse_www_authenticate_digest() {
+        let header = headers::HeaderValue::from("Digest realm=\"live777\", nonce=\"abc123\"");
+        assert_eq!(
+            parse_www_authenticate(&header).unwrap(),
+            AuthChallenge::Digest {
+                realm: "live777".to_string(),
+                nonce: "abc123".to_string()
+            }
+        );
     }
 }

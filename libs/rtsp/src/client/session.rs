@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace};
 
 use super::RtspMode;
-use crate::auth::{AuthParams, generate_digest_response, parse_auth_header};
+use crate::auth::{AuthChallenge, AuthParams, generate_digest_response, parse_www_authenticate};
 use crate::channels::InterleavedChannel;
 use crate::constants::{buffer, client, media_type, net};
 use crate::transport_manager::{TransportConfig, UdpPortInfo};
@@ -118,13 +118,16 @@ where
         // Clone is necessary because rtsp_types::Request<Vec<u8>> does not
         // support body sharing.  ANNOUNCE SDP bodies are typically <10 KB
         // so the allocation is negligible.
-        let (realm, nonce) = parse_auth_header(auth_header)?;
-        let uri = original
-            .request_uri()
-            .map(|uri| uri.to_string())
-            .unwrap_or_else(|| self.url.clone());
-        let auth_header_value =
-            self.generate_authorization_header(&realm, &nonce, original.method(), &uri);
+        let auth_header_value = match parse_www_authenticate(auth_header)? {
+            AuthChallenge::Basic => self.auth_params.generate_basic_auth(),
+            AuthChallenge::Digest { realm, nonce } => {
+                let uri = original
+                    .request_uri()
+                    .map(|uri| uri.to_string())
+                    .unwrap_or_else(|| self.url.clone());
+                self.generate_authorization_header(&realm, &nonce, original.method(), &uri)
+            }
+        };
 
         let mut auth_request = original.clone();
         auth_request.insert_header(headers::CSEQ, self.cseq.to_string());
@@ -520,9 +523,9 @@ pub async fn setup_rtsp_session(
     let mut url = Url::parse(rtsp_url)?;
     info!("Connecting to RTSP server: {}", rtsp_url);
 
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("No port specified"))?;
+    // `url::Url::port_or_known_default` only knows the "special" schemes
+    // (http/https/ws/wss/ftp); fall back to the RTSP default port 554.
+    let port = url.port_or_known_default().unwrap_or(554);
     let addr = format!("{}:{}", target_host, port);
 
     let stream = tokio::net::TcpStream::connect(&addr).await?;
@@ -823,5 +826,30 @@ mod tests {
         assert!(auth.contains("realm=\"live777\""));
         assert!(auth.contains("nonce=\"nonce-1\""));
         assert!(auth.contains("uri=\"rtsp://127.0.0.1:8554/live\""));
+    }
+
+    #[test]
+    fn authorized_retry_uses_basic_for_basic_challenge() {
+        let mut session = test_session();
+        session.cseq = 3;
+        let original = Request::builder(Method::Describe, Version::V1_0)
+            .request_uri("rtsp://127.0.0.1:8554/live".parse::<Url>().unwrap())
+            .header(headers::CSEQ, "2")
+            .header(headers::USER_AGENT, client::USER_AGENT)
+            .empty()
+            .map_body(|_| vec![]);
+        let challenge = headers::HeaderValue::from("Basic realm=\"WallyWorld\"");
+
+        let retry = session
+            .build_authorized_request(&original, &challenge)
+            .unwrap();
+
+        assert_eq!(retry.header(&headers::CSEQ).map(|h| h.as_str()), Some("3"));
+        let auth = retry
+            .header(&headers::AUTHORIZATION)
+            .map(|h| h.as_str())
+            .unwrap();
+        // base64("user:pass")
+        assert_eq!(auth, "Basic dXNlcjpwYXNz");
     }
 }
