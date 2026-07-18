@@ -115,12 +115,19 @@ pub async fn from_with_state(
         }
     });
 
+    let (expected_video, expected_audio) = expected_media_kinds(&answer.sdp);
     let codec_info = tokio::select! {
         _ = ct.cancelled() => {
             graceful_shutdown("WHEP", &mut client, peer).await;
             return Ok(());
         }
-        result = wait_for_codec_info(codec_info.clone(), &target_url, &whep_url) => result?,
+        result = wait_for_codec_info(
+            codec_info.clone(),
+            &target_url,
+            &whep_url,
+            expected_video,
+            expected_audio,
+        ) => result?,
     };
     debug!("Codec info: {:?}", codec_info);
 
@@ -231,10 +238,29 @@ pub async fn from_with_state(
     Ok(())
 }
 
+/// Derive the negotiated track kinds from the WHEP answer SDP, so the codec
+/// wait below can require every negotiated track instead of the first one
+/// that happens to arrive.
+fn expected_media_kinds(answer_sdp: &str) -> (bool, bool) {
+    let mut video = false;
+    let mut audio = false;
+    for line in answer_sdp.lines() {
+        let line = line.trim_start();
+        if line.starts_with("m=video") {
+            video = true;
+        } else if line.starts_with("m=audio") {
+            audio = true;
+        }
+    }
+    (video, audio)
+}
+
 async fn wait_for_codec_info(
     codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
     target_url: &str,
     whep_url: &str,
+    expected_video: bool,
+    expected_audio: bool,
 ) -> Result<rtsp::CodecInfo> {
     const CODEC_WAIT_ATTEMPTS: usize = 300;
 
@@ -244,20 +270,45 @@ async fn wait_for_codec_info(
     let has_any_media_param = has_video_param || has_audio_param;
 
     // If the caller explicitly requested only video or only audio, wait for
-    // that codec to be observed. Otherwise (no explicit params, or both
-    // requested) wait for at least one of the requested codecs.
+    // that codec to be observed. Otherwise the answer's track kinds apply.
     let wait_for_video = !has_any_media_param || has_video_param;
     let wait_for_audio = !has_any_media_param || has_audio_param;
+
+    // Grace period for the not-yet-observed track kinds: single-kind streams
+    // must not wait forever for a track that does not exist.
+    const PARTIAL_READY_GRACE: Duration = Duration::from_secs(2);
+    let mut first_codec_ready_at: Option<std::time::Instant> = None;
 
     for _ in 0..CODEC_WAIT_ATTEMPTS {
         let info = codec_info.lock().await.clone();
         let video_ready = info.video_codec.is_some();
         let audio_ready = info.audio_codec.is_some();
 
+        let all_expected_ready =
+            (!expected_video || video_ready) && (!expected_audio || audio_ready);
+
         let satisfied = if !has_any_media_param {
-            // No explicit media params means "include whatever is published";
-            // return as soon as any codec is observed.
-            video_ready || audio_ready
+            // No explicit media params means "include whatever the session
+            // negotiated". Prefer to wait for every track in the answer:
+            // returning as soon as the first codec arrives would drop the
+            // other track from the output permanently (e.g. an A/V stream
+            // whose video starts after its audio). Single-kind streams
+            // (audio-only/video-only) can never satisfy that, so after a
+            // short grace from the first observed codec, proceed with what
+            // is ready.
+            if all_expected_ready {
+                true
+            } else if video_ready || audio_ready {
+                match first_codec_ready_at {
+                    Some(at) => at.elapsed() >= PARTIAL_READY_GRACE,
+                    None => {
+                        first_codec_ready_at = Some(std::time::Instant::now());
+                        false
+                    }
+                }
+            } else {
+                false
+            }
         } else {
             // Wait for every codec that the caller explicitly requested.
             (!wait_for_video || video_ready) && (!wait_for_audio || audio_ready)
