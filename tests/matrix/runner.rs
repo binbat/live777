@@ -27,8 +27,9 @@ pub fn init_liveion_test_environment() {
             std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", "127.0.0.1:0");
         }
 
-        let filter = std::env::var("RUST_LOG")
-            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
+        let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| {
+            "matrix=info,live777=info,liveion=info,livetwo=info,libwish=info".to_string()
+        });
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_test_writer()
