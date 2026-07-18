@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::utils;
 use rtsp::constants::media_type;
@@ -55,53 +55,21 @@ pub async fn setup_rtp_input(target_url: &str) -> Result<(rtsp::MediaInfo, Strin
             .map_err(|e| anyhow!("Invalid IP address in SDP: {}", e))?;
         host = addr.to_string();
     }
-    let video_track = sdp.medias.iter().find(|md| md.media == media_type::VIDEO);
-    let audio_track = sdp.medias.iter().find(|md| md.media == media_type::AUDIO);
-    let (codec_vid, codec_aud) = parse_codecs(&video_track, &audio_track);
+
+    // Shared SDP parsing (libs/rtsp): keeps codec parameters such as H264
+    // sprop-parameter-sets and H265 sprop-vps/sps/pps so the WHIP track setup
+    // can inject them instead of silently dropping parameter sets.
+    let (video_codec, audio_codec) = rtsp::parse_codecs_from_sdp(&sdp)?;
+    let (video_transport, audio_transport) = rtsp::parse_transports_from_sdp(&sdp);
 
     let media_info = rtsp::MediaInfo {
-        video_transport: video_track.map(|track| {
-            let port = track.port;
-            rtsp::TransportInfo::Udp {
-                rtp_send_port: None,
-                rtp_recv_port: Some(port),
-                rtcp_send_port: None,
-                rtcp_recv_port: Some(port + 1),
-                server_addr: None,
-            }
-        }),
-        audio_transport: audio_track.map(|track| {
-            let port = track.port;
-            rtsp::TransportInfo::Udp {
-                rtp_send_port: None,
-                rtp_recv_port: Some(port),
-                rtcp_send_port: None,
-                rtcp_recv_port: Some(port + 1),
-                server_addr: None,
-            }
-        }),
-        video_codec: if !codec_vid.is_empty() && codec_vid != "unknown" {
-            Some(codec_from_str(&codec_vid)?.into())
-        } else {
-            None
-        },
-        audio_codec: if !codec_aud.is_empty() && codec_aud != "unknown" {
-            Some(codec_from_str(&codec_aud)?.into())
-        } else {
-            None
-        },
+        video_transport,
+        audio_transport,
+        video_codec,
+        audio_codec,
     };
 
-    warn!(
-        "SDP parsed: host={}, audio_port={:?}, video_port={:?}, audio_codec={}, video_codec={}, audio_transport={:?}, video_transport={:?}",
-        host,
-        audio_track.map(|t| t.port),
-        video_track.map(|t| t.port),
-        codec_aud,
-        codec_vid,
-        media_info.audio_transport,
-        media_info.video_transport,
-    );
+    info!("SDP parsed: host={}, media_info={:?}", host, media_info);
 
     Ok((media_info, host))
 }
@@ -240,37 +208,6 @@ pub async fn setup_rtp_output(
     debug!("Sent signal to start child process");
 
     Ok(media_info)
-}
-
-fn parse_codecs(
-    video_track: &Option<&sdp_types::Media>,
-    audio_track: &Option<&sdp_types::Media>,
-) -> (String, String) {
-    let codec_vid = video_track
-        .and_then(extract_codec_name)
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let codec_aud = audio_track
-        .and_then(extract_codec_name)
-        .unwrap_or_else(|| "unknown".to_string());
-
-    (codec_vid, codec_aud)
-}
-
-fn extract_codec_name(media: &sdp_types::Media) -> Option<String> {
-    media
-        .attributes
-        .iter()
-        .find(|attr| attr.attribute == "rtpmap")
-        .and_then(|attr| attr.value.as_ref())
-        .and_then(|value| {
-            value
-                .split_whitespace()
-                .nth(1)?
-                .split('/')
-                .next()
-                .map(|s| s.to_string())
-        })
 }
 
 fn extract_codec_from_media(
