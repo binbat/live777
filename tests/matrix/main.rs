@@ -26,7 +26,7 @@ use player::playwright::PlaywrightWhepPlayer;
 #[cfg(feature = "rsmpeg")]
 use player::rsmpeg_receiver::RsmpegWhepReceiver;
 #[cfg(feature = "rtsp")]
-use runner::{RtspTransport, run_rtsp_roundtrip};
+use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_roundtrip};
 #[cfg(feature = "rtsp")]
 use source::rtsp_ffmpeg::RtspFfmpegSource;
 #[cfg(feature = "rsmpeg")]
@@ -339,4 +339,48 @@ where
     S: Source,
 {
     run_rtsp_roundtrip(source, transport, IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
+}
+
+// ============================================================
+// RTSP conversion cycle (former tests/rtsp2.rs)
+// ffmpeg → liveion RTSP → whipinto → liveion WHIP → whepfrom → liveion RTSP → ffprobe
+// ============================================================
+
+/// Full conversion cycle: the source pushes into liveion's RTSP server,
+/// whipinto bridges it to WHIP, whepfrom bridges it back to RTSP, and
+/// ffprobe validates the final stream by pulling from liveion.
+/// The transport variant applies to both livetwo client hops and the pull.
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+#[test_matrix(
+    [
+        RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::H265)),
+        RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp9)),
+        RtspFfmpegSource::new(MediaProfile::audio_only(AudioCodec::Opus)),
+        RtspFfmpegSource::new(MediaProfile::audio_only(AudioCodec::G722)),
+        RtspFfmpegSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
+    ],
+    [RtspTransport::Udp, RtspTransport::Tcp]
+)]
+#[tokio::test]
+async fn rtsp_cycle_matrix_test<S>(source: S, transport: RtspTransport)
+where
+    S: Source,
+{
+    run_rtsp_cycle(source, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// Edge: IPv6 loopback for the RTSP conversion cycle.
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+#[test_matrix(
+    [RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8))],
+    [RtspTransport::Udp, RtspTransport::Tcp]
+)]
+#[tokio::test]
+async fn rtsp_cycle_ipv6_matrix_test<S>(source: S, transport: RtspTransport)
+where
+    S: Source,
+{
+    run_rtsp_cycle(source, transport, IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
 }

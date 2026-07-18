@@ -250,10 +250,9 @@ Integration test binaries live in `tests/`:
   (livetwo+ffprobe, rsmpeg, Playwright) in `tests/matrix/player/`, and the
   shared liveion/port/wait/ffprobe infrastructure in
   `tests/matrix/runner.rs` and `tests/matrix/probe.rs`. The liveion RTSP
-  server push→pull round-trip cases (former `tests/rtsp.rs`) also live here
-  as `rtsp_roundtrip_*` matrices.
-- `tests/rtsp2.rs` — RTSP↔WHIP↔WHEP cycle tests (migration into the matrix
-  is planned).
+  server push→pull round-trip (former `tests/rtsp.rs`) and the full
+  RTSP→WHIP→WHEP→RTSP conversion cycle (former `tests/rtsp2.rs`) live here
+  as the `rtsp_roundtrip_*` and `rtsp_cycle_*` matrices.
 - `tests/channel.rs`
 - `tests/tests.rs` — liveion API smoke tests
 - `tests/recorder.rs`

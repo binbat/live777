@@ -44,6 +44,14 @@ impl RtspTransport {
         self.ffprobe_args()
     }
 
+    /// `?transport=` query suffix for livetwo's RTSP client URLs.
+    pub fn query_param(&self) -> &'static str {
+        match self {
+            RtspTransport::Udp => "",
+            RtspTransport::Tcp => "?transport=tcp",
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             RtspTransport::Udp => "udp",
@@ -97,31 +105,7 @@ pub async fn run_rtsp_roundtrip<S: Source>(source: S, transport: RtspTransport, 
 
     let start = tokio::time::Instant::now();
 
-    // The publish side is ready when the session is Connected and liveion has
-    // learned the stream's codecs.
-    let mut publish_connected = false;
-    for _ in 0..300 {
-        let res = reqwest::get(format!("http://{api_addr}{}", api::path::streams("")))
-            .await
-            .unwrap();
-        assert_eq!(http::StatusCode::OK, res.status());
-
-        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
-        if let Some(r) = body.into_iter().find(|i| i.id == "-")
-            && !r.publish.sessions.is_empty()
-            && r.publish.sessions[0].state == api::response::RTCPeerConnectionState::Connected
-            && !r.codecs.is_empty()
-        {
-            publish_connected = true;
-            break;
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(
-        publish_connected,
-        "RTSP publish session did not reach Connected with codecs"
-    );
+    wait_stream_publish_ready(&rtsp_addr, &api_addr, "-", None).await;
 
     // Wait a moment for media to flow through to the pull side.
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -146,6 +130,165 @@ pub async fn run_rtsp_roundtrip<S: Source>(source: S, transport: RtspTransport, 
     assert_playback_ok("rtsp-roundtrip", &profile, &playback);
 
     source_handle.stop().await;
+}
+
+/// RTSP conversion cycle (former tests/rtsp2.rs topology):
+///
+/// ```text
+/// ffmpeg --RTSP--> liveion(cycle-a)
+///   --rtsp pull--> whipinto --WHIP--> liveion(cycle-b)
+///     --WHEP--> whepfrom --RTSP--> liveion(cycle-c) <-- ffprobe
+/// ```
+///
+/// The transport variant applies to both livetwo client hops and the final
+/// ffprobe pull.
+#[cfg(feature = "rtsp")]
+pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind_ip: IpAddr) {
+    init_liveion_test_environment();
+
+    let profile = source.profile();
+    let rtsp_port = reserve_and_release_tcp_port(bind_ip);
+
+    let mut cfg = liveion::config::Config::default();
+    cfg.rtsp.listen = SocketAddr::new(bind_ip, rtsp_port).to_string();
+
+    let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    // liveion's RTSP server binds inside a spawned task — wait until the
+    // port is accepting connections before starting ffmpeg.
+    let rtsp_addr = SocketAddr::new(bind_ip, rtsp_port);
+    for i in 0..50 {
+        match tokio::net::TcpStream::connect(rtsp_addr).await {
+            Ok(_) => break,
+            Err(_) if i == 49 => {
+                panic!("RTSP server did not start on {rtsp_addr} after 5 s");
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+
+    let rtsp_host = match bind_ip {
+        IpAddr::V6(_) => format!("[{bind_ip}]"),
+        _ => bind_ip.to_string(),
+    };
+    let rtsp_url_a = format!("rtsp://{rtsp_host}:{rtsp_port}/cycle-a");
+
+    let start = tokio::time::Instant::now();
+
+    // Stream A: ffmpeg → liveion RTSP push.
+    let source_handle = source
+        .start_rtsp_with_transport(&rtsp_url_a, transport)
+        .expect("Failed to start RTSP source");
+    wait_stream_publish_ready(&rtsp_addr, &api_addr, "cycle-a", None).await;
+
+    let ct = CancellationToken::new();
+    let transport_param = transport.query_param();
+
+    // Stream A → B: livetwo RTSP client pull + WHIP publish.
+    let mut handle_whip = tokio::spawn(livetwo::whip::into(
+        ct.clone(),
+        format!("{rtsp_url_a}{transport_param}"),
+        format!("http://{api_addr}{}", api::path::whip("cycle-b")),
+        None,
+        None,
+    ));
+    wait_stream_publish_ready(&rtsp_addr, &api_addr, "cycle-b", Some(&mut handle_whip)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Stream B → C: livetwo WHEP subscribe + RTSP client push.
+    let rtsp_url_c = format!("rtsp://{rtsp_host}:{rtsp_port}/cycle-c");
+    let mut handle_whep = tokio::spawn(livetwo::whep::from(
+        ct.clone(),
+        format!("{rtsp_url_c}{transport_param}"),
+        format!("http://{api_addr}{}", api::path::whep("cycle-b")),
+        None,
+        None,
+        None,
+        None,
+    ));
+    wait_stream_publish_ready(&rtsp_addr, &api_addr, "cycle-c", Some(&mut handle_whep)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Verify: ffprobe pulls stream C from liveion's RTSP pull side.
+    let mut probe_args: Vec<&str> = transport.ffprobe_args().to_vec();
+    probe_args.extend(["-i", rtsp_url_c.as_str()]);
+    let probe_result = probe::run(&probe_args)
+        .await
+        .expect("ffprobe pull from cycle-c failed");
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+
+    tracing::info!(
+        source = source.name(),
+        transport = transport.as_str(),
+        ?playback,
+        "RTSP cycle result"
+    );
+
+    assert_playback_ok("rtsp-cycle", &profile, &playback);
+
+    ct.cancel();
+    let result_whip = handle_whip.await.unwrap();
+    let result_whep = handle_whep.await.unwrap();
+    assert!(result_whip.is_ok(), "whip task failed: {result_whip:?}");
+    assert!(result_whep.is_ok(), "whep task failed: {result_whep:?}");
+
+    source_handle.stop().await;
+}
+
+/// Wait until a stream's publish session is Connected and liveion has
+/// learned its codecs.
+#[cfg(feature = "rtsp")]
+async fn wait_stream_publish_ready(
+    rtsp_addr: &SocketAddr,
+    api_addr: &SocketAddr,
+    stream_id: &str,
+    mut handle: Option<&mut tokio::task::JoinHandle<anyhow::Result<()>>>,
+) {
+    let mut last_state = None;
+    let mut last_codecs = Vec::new();
+    for attempt in 0..300 {
+        if let Some(h) = handle.as_mut()
+            && h.is_finished()
+        {
+            let result = h.await.unwrap();
+            panic!(
+                "task exited before publish connected on {stream_id}: result={result:?}, rtsp={rtsp_addr}, last_state={last_state:?}, last_codecs={last_codecs:?}"
+            );
+        }
+
+        let res = reqwest::get(format!("http://{api_addr}{}", api::path::streams("")))
+            .await
+            .unwrap();
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_id)
+            && !r.publish.sessions.is_empty()
+        {
+            last_state = Some(r.publish.sessions[0].state);
+            last_codecs = r.codecs.clone();
+            if r.publish.sessions[0].state == api::response::RTCPeerConnectionState::Connected
+                && !r.codecs.is_empty()
+            {
+                return;
+            }
+        }
+
+        if attempt == 299 {
+            panic!(
+                "Stream '{stream_id}' did not reach Connected with codecs; last_state={last_state:?}, last_codecs={last_codecs:?}"
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 static TRACING_INIT: Once = Once::new();
