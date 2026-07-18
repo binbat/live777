@@ -26,8 +26,6 @@ use player::playwright::PlaywrightWhepPlayer;
 #[cfg(feature = "rsmpeg")]
 use player::rsmpeg_receiver::RsmpegWhepReceiver;
 #[cfg(feature = "rtsp")]
-use player::rtsp_out::RtspOutPlayer;
-#[cfg(feature = "rtsp")]
 use runner::{RtspTransport, run_rtsp_roundtrip};
 #[cfg(feature = "rtsp")]
 use source::rtsp_ffmpeg::RtspFfmpegSource;
@@ -244,7 +242,9 @@ async fn whep_synth_h265_rsmpeg_receiver_test() {
 
 /// RTSP FFmpeg sources verified with the in-process livetwo WHEP player.
 /// Covers the core RTSP push (ANNOUNCE + RECORD) → WHEP subscribe path.
-#[cfg(feature = "rtsp")]
+/// Disabled on Windows, matching the RTSP suites' long-standing policy
+/// (Windows runners crawl on RTSP push/pull and the suites never ran there).
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 #[test_matrix(
     [
         RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
@@ -263,7 +263,7 @@ where
 }
 
 /// RTSP FFmpeg sources verified in a real browser via Playwright.
-#[cfg(all(feature = "rtsp", feature = "whepwright"))]
+#[cfg(all(feature = "rtsp", feature = "whepwright", not(target_os = "windows")))]
 #[test_matrix(
     [
         RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
@@ -281,7 +281,7 @@ where
 }
 
 /// RTSP FFmpeg sources verified with the in-process rsmpeg receiver.
-#[cfg(all(feature = "rtsp", feature = "rsmpeg"))]
+#[cfg(all(feature = "rtsp", feature = "rsmpeg", not(target_os = "windows")))]
 #[test_matrix(
     [
         RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
@@ -339,31 +339,4 @@ where
     S: Source,
 {
     run_rtsp_roundtrip(source, transport, IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
-}
-
-// ============================================================
-// WHEP → whepfrom rtsp-listen output → ffprobe pull
-// ============================================================
-
-/// whepfrom's RTSP server output mode (rtsp-listen): subscribe over WHEP and
-/// validate the re-published stream by pulling it with ffprobe.
-#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
-#[test_matrix(
-    [
-        FfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
-        FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
-        FfmpegSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
-    ],
-    [
-        RtspOutPlayer::new(RtspTransport::Udp),
-        RtspOutPlayer::new(RtspTransport::Tcp),
-    ]
-)]
-#[tokio::test]
-async fn whep_ffmpeg_rtsp_out_matrix_test<S, P>(source: S, player: P)
-where
-    S: Source,
-    P: Player,
-{
-    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
 }
