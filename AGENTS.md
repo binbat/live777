@@ -244,12 +244,16 @@ cargo nextest run --workspace
 
 Integration test binaries live in `tests/`:
 
-- `tests/rtp.rs`
+- `tests/matrix/` — the end-to-end source × media-profile × player matrix
+  harness (test binary `matrix`). Codec combinations are declared once in
+  `tests/matrix/profile.rs`; sources live in `tests/matrix/source/`, players
+  (livetwo+ffprobe, rsmpeg, Playwright) in `tests/matrix/player/`, and the
+  shared liveion/port/wait/validation infrastructure in
+  `tests/matrix/runner.rs`.
 - `tests/rtsp.rs`, `tests/rtsp2.rs`
 - `tests/channel.rs`
-- `tests/tests.rs`
+- `tests/tests.rs` — liveion API smoke tests
 - `tests/recorder.rs`
-- `tests/playwright_whep/`
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in

@@ -5,7 +5,8 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use super::{Source, SourceHandle, VideoCodec};
+use super::{Source, SourceHandle};
+use crate::profile::{MediaProfile, VideoCodec};
 
 /// RTSP source implemented by spawning an external FFmpeg process.
 ///
@@ -14,32 +15,24 @@ use super::{Source, SourceHandle, VideoCodec};
 /// pushes directly to liveion's RTSP server (ANNOUNCE + RECORD).
 #[derive(Debug, Clone, Copy)]
 pub struct RtspFfmpegSource {
-    pub codec: VideoCodec,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u32,
+    pub profile: MediaProfile,
 }
 
 impl RtspFfmpegSource {
     pub fn new(codec: VideoCodec) -> Self {
         Self {
-            codec,
-            width: 640,
-            height: 480,
-            fps: 30,
+            profile: MediaProfile::video_only(codec),
         }
     }
 }
 
 impl Source for RtspFfmpegSource {
-    fn name(&self) -> &'static str {
-        match self.codec {
-            VideoCodec::Vp8 => "rtsp-ffmpeg-vp8",
-            VideoCodec::H264 => "rtsp-ffmpeg-h264",
-            VideoCodec::H265 => "rtsp-ffmpeg-h265",
-            VideoCodec::Vp9 => "rtsp-ffmpeg-vp9",
-            VideoCodec::Av1 => "rtsp-ffmpeg-av1",
-        }
+    fn name(&self) -> String {
+        format!("rtsp-ffmpeg-{}", self.profile.name())
+    }
+
+    fn profile(&self) -> MediaProfile {
+        self.profile
     }
 
     fn is_rtsp(&self) -> bool {
@@ -47,24 +40,22 @@ impl Source for RtspFfmpegSource {
     }
 
     fn start_rtsp(&self, rtsp_url: &str) -> Result<Box<dyn SourceHandle>> {
-        let width = self.width;
-        let height = self.height;
-        let fps = self.fps;
-        let codec = self.codec;
+        let Some(video) = self.profile.video else {
+            anyhow::bail!("RtspFfmpegSource requires a video track in its media profile");
+        };
+        let codec = video.codec;
         let encoder = codec.ffmpeg_encoder();
 
         let mut cmd = Command::new("ffmpeg");
-        cmd.arg("-re")
-            .arg("-f")
-            .arg("lavfi")
-            .arg("-i")
-            .arg(format!("testsrc=size={width}x{height}:rate={fps}"))
-            .arg("-vcodec")
-            .arg(encoder);
+        cmd.arg("-re").arg("-f").arg("lavfi").arg("-i").arg(format!(
+            "testsrc=size={}x{}:rate={}",
+            video.width, video.height, video.fps
+        ));
+        cmd.arg("-vcodec").arg(encoder);
         for arg in codec.ffmpeg_extra_args() {
             cmd.arg(arg);
         }
-        let keyframe_interval = fps.min(5);
+        let keyframe_interval = video.fps.min(5);
         cmd.arg("-g")
             .arg(keyframe_interval.to_string())
             .arg("-keyint_min")
@@ -88,7 +79,7 @@ impl Source for RtspFfmpegSource {
             .spawn()
             .with_context(|| format!("Failed to spawn RTSP FFmpeg source: {cmd:?}"))?;
 
-        Ok(Box::new(RtspFfmpegHandle { child }))
+        Ok(Box::new(RtspFfmpegHandle { child: Some(child) }))
     }
 
     fn start(&self, _target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
@@ -108,14 +99,24 @@ impl Source for RtspFfmpegSource {
 }
 
 struct RtspFfmpegHandle {
-    child: Child,
+    child: Option<Child>,
+}
+
+// Tests that panic mid-case would otherwise leak the encoder process.
+impl Drop for RtspFfmpegHandle {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl SourceHandle for RtspFfmpegHandle {
     async fn stop(mut self: Box<Self>) {
-        let _ = self.child.kill();
-        let mut child = self.child;
-        let _ = tokio::task::spawn_blocking(move || child.wait()).await;
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = tokio::task::spawn_blocking(move || child.wait()).await;
+        }
     }
 }

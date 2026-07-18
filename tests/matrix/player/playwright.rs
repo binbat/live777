@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use playwright_whep::{Browser, HarnessResult, WhepBrowserPlayer};
 
 use super::{PlayResult, Player};
+use crate::profile::MediaProfile;
 
 /// WHEP player that uses Playwright to drive a real browser.
 #[derive(Debug, Clone, Copy)]
@@ -19,6 +20,14 @@ impl PlaywrightWhepPlayer {
     pub fn webkit() -> Self {
         Self {
             browser: Browser::Webkit,
+            ..Default::default()
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn firefox() -> Self {
+        Self {
+            browser: Browser::Firefox,
             ..Default::default()
         }
     }
@@ -44,7 +53,7 @@ impl Player for PlaywrightWhepPlayer {
         }
     }
 
-    async fn play(&self, whep_url: &str) -> Result<PlayResult> {
+    async fn play(&self, whep_url: &str, _profile: &MediaProfile) -> Result<PlayResult> {
         let result = WhepBrowserPlayer::new(whep_url)
             .browser(self.browser)
             .timeout(Duration::from_secs(self.timeout_seconds))
@@ -66,9 +75,18 @@ impl Player for PlaywrightWhepPlayer {
             video_width: subscribe.video_width,
             video_height: subscribe.video_height,
             video_tracks: subscribe.video_tracks as u32,
-            audio_tracks: subscribe.audio_tracks as u32,
+            // The browser offer always includes an audio m-line, so the
+            // negotiated transceiver count reports phantom audio on
+            // video-only streams. Count audio only when media bytes
+            // actually flowed.
+            audio_tracks: if subscribe.audio_bytes_received > 0 {
+                subscribe.audio_tracks as u32
+            } else {
+                0
+            },
             duration_ms: subscribe.duration_ms,
             error: subscribe.error,
+            ..Default::default()
         })
     }
 }

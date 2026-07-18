@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use anyhow::{Result, bail};
 
 use super::{Source, SourceHandle};
+use crate::profile::{MediaProfile, VideoCodec};
 
 /// Placeholder for a GStreamer VP8 RTP source.
 ///
@@ -17,8 +18,12 @@ use super::{Source, SourceHandle};
 pub struct GstreamerVp8Source;
 
 impl Source for GstreamerVp8Source {
-    fn name(&self) -> &'static str {
-        "gstreamer-vp8"
+    fn name(&self) -> String {
+        "gstreamer-vp8".to_string()
+    }
+
+    fn profile(&self) -> MediaProfile {
+        MediaProfile::video_only(VideoCodec::Vp8)
     }
 
     fn start(&self, _target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
