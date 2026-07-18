@@ -60,7 +60,10 @@ impl VideoCodec {
             VideoCodec::H264 => "libx264",
             VideoCodec::H265 => "libx265",
             VideoCodec::Vp9 => "libvpx-vp9",
-            VideoCodec::Av1 => "libsvtav1",
+            // Generic codec name so ffmpeg picks whatever AV1 encoder the
+            // build carries: libsvtav1 on Linux/macOS CI builds, libaom-av1
+            // in the Chocolatey Windows build (which has no libsvtav1).
+            VideoCodec::Av1 => "av1",
         }
     }
 
@@ -118,14 +121,14 @@ impl VideoCodec {
                 "4",
             ],
             VideoCodec::Av1 => &[
+                // AV1 RTP packetization is experimental in the muxer; without
+                // this ffmpeg refuses to write the header. No encoder-preset
+                // flags: they differ between libsvtav1 (-preset) and
+                // libaom-av1 (-cpu-used), and the defaults are fine here.
                 "-strict",
                 "experimental",
                 "-pix_fmt",
                 "yuv420p",
-                "-preset",
-                "8",
-                "-svtav1-params",
-                "tune=0",
             ],
         }
     }
