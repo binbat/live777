@@ -74,6 +74,17 @@ pub trait Source: Send + Sync {
         anyhow::bail!("RTSP publishing not supported by this source")
     }
 
+    /// Start pushing to the liveion RTSP server with an explicit transport.
+    /// Defaults to [`Self::start_rtsp`] (transport-agnostic sources).
+    #[cfg(feature = "rtsp")]
+    fn start_rtsp_with_transport(
+        &self,
+        rtsp_url: &str,
+        _transport: crate::runner::RtspTransport,
+    ) -> anyhow::Result<Box<dyn SourceHandle>> {
+        self.start_rtsp(rtsp_url)
+    }
+
     /// Start direct WHIP publishing. Only called when [`Self::publishes_directly`]
     /// returns `true`.
     fn start_direct(&self, _whip_url: &str) -> anyhow::Result<Box<dyn SourceHandle>> {

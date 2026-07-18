@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use super::{PlayResult, Player};
+use super::{PlayResult, Player, parse_whep_url, wait_subscribe_connected};
+use crate::probe;
 use crate::profile::MediaProfile;
 use crate::runner::alloc_udp_ports;
 
@@ -15,8 +15,6 @@ use crate::runner::alloc_udp_ports;
 /// match the source's media profile.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LivetwoWhepPlayer;
-
-const FFPROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[async_trait]
 impl Player for LivetwoWhepPlayer {
@@ -72,44 +70,8 @@ impl Player for LivetwoWhepPlayer {
         }));
 
         let start = tokio::time::Instant::now();
-        let mut connected = false;
-        let mut last_error = None;
-
-        for _ in 0..300 {
-            let res = reqwest::get(format!("{base_url}{}", api::path::streams("")))
-                .await
-                .context("Failed to query liveion streams")?;
-
-            if res.status() != http::StatusCode::OK {
-                last_error = Some(format!("liveion returned {}", res.status()));
-                break;
-            }
-
-            let body = res.json::<Vec<api::response::Stream>>().await?;
-            if let Some(stream) = body.into_iter().find(|s| s.id == stream_id)
-                && stream
-                    .subscribe
-                    .sessions
-                    .iter()
-                    .any(|s| s.state == api::response::RTCPeerConnectionState::Connected)
-            {
-                connected = true;
-                break;
-            }
-
-            if let Some(handle) = handle_whep.as_ref()
-                && handle.is_finished()
-            {
-                match handle_whep.take().unwrap().await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => last_error = Some(format!("{e:?}")),
-                    Err(e) => last_error = Some(format!("{e:?}")),
-                }
-                break;
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        let (connected, last_error) =
+            wait_subscribe_connected(&base_url, &stream_id, &mut handle_whep).await;
 
         if !connected {
             ct.cancel();
@@ -127,8 +89,8 @@ impl Player for LivetwoWhepPlayer {
 
         // ffprobe validates the media: it binds the output ports, receives the
         // forwarded RTP and reports the streams it can identify.
-        let probe = match probe_output_sdp(&output_sdp_path).await {
-            Ok(probe) => probe,
+        let probe_result = match probe_output_sdp(&output_sdp_path).await {
+            Ok(probe_result) => probe_result,
             Err(e) => {
                 ct.cancel();
                 if let Some(handle) = handle_whep.take() {
@@ -150,77 +112,17 @@ impl Player for LivetwoWhepPlayer {
         }
 
         let duration_ms = start.elapsed().as_millis() as u64;
-        let video = probe.streams.iter().find(|s| s.codec_type == "video");
-        let audio = probe.streams.iter().find(|s| s.codec_type == "audio");
-
-        let video_tracks = probe
-            .streams
-            .iter()
-            .filter(|s| s.codec_type == "video")
-            .count() as u32;
-        let audio_tracks = probe
-            .streams
-            .iter()
-            .filter(|s| s.codec_type == "audio")
-            .count() as u32;
-
-        let missing: Vec<&str> = [
-            profile.video.is_some().then_some("video"),
-            profile.audio.is_some().then_some("audio"),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|kind| {
-            let expected = *kind;
-            !probe.streams.iter().any(|s| s.codec_type == expected)
-        })
-        .collect();
-
-        let success = missing.is_empty();
-        let error = if success {
-            None
-        } else {
-            Some(format!(
-                "ffprobe found no {} stream(s) in the WHEP output",
-                missing.join("/")
-            ))
-        };
-
-        Ok(PlayResult {
-            success,
+        Ok(probe::into_play_result(
+            probe_result,
+            profile,
             connected,
-            error,
-            video_width: video.and_then(|s| s.width).unwrap_or(0) as u32,
-            video_height: video.and_then(|s| s.height).unwrap_or(0) as u32,
-            video_tracks,
-            audio_tracks,
             duration_ms,
-            codecs: probe
-                .streams
-                .iter()
-                .filter_map(|s| s.codec_name.clone())
-                .collect(),
-            audio_channels: audio.and_then(|s| s.channels).unwrap_or(0) as u32,
-        })
+        ))
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct FfprobeStream {
-    codec_type: String,
-    codec_name: Option<String>,
-    width: Option<u16>,
-    height: Option<u16>,
-    channels: Option<u8>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct Ffprobe {
-    streams: Vec<FfprobeStream>,
-}
-
 /// Wait for the output SDP to be populated, then probe it with ffprobe.
-async fn probe_output_sdp(sdp_path: &str) -> Result<Ffprobe> {
+async fn probe_output_sdp(sdp_path: &str) -> Result<probe::Ffprobe> {
     for _ in 0..300 {
         if let Ok(contents) = std::fs::read_to_string(sdp_path)
             && contents.contains("m=")
@@ -230,60 +132,5 @@ async fn probe_output_sdp(sdp_path: &str) -> Result<Ffprobe> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let mut ffprobe = Command::new("ffprobe");
-    ffprobe.args([
-        "-v",
-        "error",
-        "-hide_banner",
-        "-protocol_whitelist",
-        "file,rtp,udp",
-        "-i",
-        sdp_path,
-        "-show_streams",
-        "-of",
-        "json",
-    ]);
-    // Kill the child on timeout; otherwise a no-media probe would leak an
-    // ffprobe process per failed case.
-    ffprobe.kill_on_drop(true);
-
-    let output = tokio::time::timeout(FFPROBE_TIMEOUT, ffprobe.output())
-        .await
-        .map_err(|_| anyhow!("ffprobe timed out after {FFPROBE_TIMEOUT:?}"))?
-        .context("Failed to execute ffprobe")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "ffprobe failed: stdout: {}\nstderr: {}",
-            std::str::from_utf8(output.stdout.as_slice()).unwrap_or("<non-utf8>"),
-            std::str::from_utf8(output.stderr.as_slice()).unwrap_or("<non-utf8>")
-        );
-    }
-
-    let probe: Ffprobe = serde_json::from_slice(output.stdout.as_slice())
-        .context("Failed to parse ffprobe JSON output")?;
-    Ok(probe)
-}
-
-fn parse_whep_url(whep_url: &str) -> Result<(String, String)> {
-    // Expected form: http://host:port/whep/<stream>
-    let parsed = url::Url::parse(whep_url).context("Invalid WHEP URL")?;
-    // `url::Host` renders IPv6 addresses with the required brackets.
-    let host = parsed.host().ok_or_else(|| anyhow!("Missing host"))?;
-    let base = format!("{}://{}", parsed.scheme(), host);
-    let base = if let Some(port) = parsed.port() {
-        format!("{base}:{port}")
-    } else {
-        base
-    };
-
-    let path = parsed.path();
-    let stream_id = path
-        .rsplit('/')
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("Failed to parse stream id from WHEP URL"))?
-        .to_string();
-
-    Ok((base, stream_id))
+    probe::run(&["-protocol_whitelist", "file,rtp,udp", "-i", sdp_path]).await
 }

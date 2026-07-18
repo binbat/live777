@@ -17,6 +17,137 @@ use crate::source::{Source, SourceHandle};
 
 use crate::common::shutdown_signal;
 
+#[cfg(feature = "rtsp")]
+use crate::probe;
+
+/// RTSP transport variant used by the round-trip matrix cases: both the
+/// FFmpeg push and the ffprobe pull use it.
+#[cfg(feature = "rtsp")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtspTransport {
+    Udp,
+    Tcp,
+}
+
+#[cfg(feature = "rtsp")]
+impl RtspTransport {
+    /// Arguments for the ffprobe pull.
+    pub fn ffprobe_args(&self) -> &[&str] {
+        match self {
+            RtspTransport::Udp => &[],
+            RtspTransport::Tcp => &["-rtsp_transport", "tcp"],
+        }
+    }
+
+    /// Arguments for the FFmpeg RTSP push.
+    pub fn ffmpeg_args(&self) -> &[&str] {
+        self.ffprobe_args()
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RtspTransport::Udp => "udp",
+            RtspTransport::Tcp => "tcp",
+        }
+    }
+}
+
+/// Liveion RTSP server round-trip: push a source via RTSP ANNOUNCE/RECORD and
+/// validate it by pulling from liveion's own RTSP pull side with ffprobe —
+/// no WHIP/WHEP involved. Covers the former tests/rtsp.rs topology.
+#[cfg(feature = "rtsp")]
+pub async fn run_rtsp_roundtrip<S: Source>(source: S, transport: RtspTransport, bind_ip: IpAddr) {
+    init_liveion_test_environment();
+
+    let profile = source.profile();
+    let rtsp_port = reserve_and_release_tcp_port(bind_ip);
+
+    let mut cfg = liveion::config::Config::default();
+    cfg.rtsp.listen = SocketAddr::new(bind_ip, rtsp_port).to_string();
+
+    let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    // liveion's RTSP server binds inside a spawned task — wait until the
+    // port is accepting connections before starting ffmpeg.
+    let rtsp_addr = SocketAddr::new(bind_ip, rtsp_port);
+    for i in 0..50 {
+        match tokio::net::TcpStream::connect(rtsp_addr).await {
+            Ok(_) => break,
+            Err(_) if i == 49 => {
+                panic!("RTSP server did not start on {rtsp_addr} after 5 s");
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+
+    let rtsp_host = match bind_ip {
+        IpAddr::V6(_) => format!("[{bind_ip}]"),
+        _ => bind_ip.to_string(),
+    };
+    let rtsp_url = format!("rtsp://{rtsp_host}:{rtsp_port}/-");
+
+    let source_handle = source
+        .start_rtsp_with_transport(&rtsp_url, transport)
+        .expect("Failed to start RTSP source");
+
+    let start = tokio::time::Instant::now();
+
+    // The publish side is ready when the session is Connected and liveion has
+    // learned the stream's codecs.
+    let mut publish_connected = false;
+    for _ in 0..300 {
+        let res = reqwest::get(format!("http://{api_addr}{}", api::path::streams("")))
+            .await
+            .unwrap();
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
+        if let Some(r) = body.into_iter().find(|i| i.id == "-")
+            && !r.publish.sessions.is_empty()
+            && r.publish.sessions[0].state == api::response::RTCPeerConnectionState::Connected
+            && !r.codecs.is_empty()
+        {
+            publish_connected = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        publish_connected,
+        "RTSP publish session did not reach Connected with codecs"
+    );
+
+    // Wait a moment for media to flow through to the pull side.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // ffprobe pulls from liveion's RTSP server pull side.
+    let mut probe_args: Vec<&str> = transport.ffprobe_args().to_vec();
+    probe_args.extend(["-i", rtsp_url.as_str()]);
+    let probe_result = probe::run(&probe_args)
+        .await
+        .expect("ffprobe pull from liveion RTSP server failed");
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+
+    tracing::info!(
+        source = source.name(),
+        transport = transport.as_str(),
+        ?playback,
+        "RTSP round-trip result"
+    );
+
+    assert_playback_ok("rtsp-roundtrip", &profile, &playback);
+
+    source_handle.stop().await;
+}
+
 static TRACING_INIT: Once = Once::new();
 
 pub fn init_liveion_test_environment() {
@@ -75,7 +206,7 @@ pub fn alloc_udp_ports(ip: IpAddr, count: u16) -> u16 {
 /// liveion so the RTSP server can bind to it. Unlike the WHIP UDP path,
 /// RTSP needs no pre-allocated address in a data file.
 #[cfg(feature = "rtsp")]
-fn reserve_and_release_tcp_port(ip: IpAddr) -> u16 {
+pub fn reserve_and_release_tcp_port(ip: IpAddr) -> u16 {
     let listener =
         std::net::TcpListener::bind(SocketAddr::new(ip, 0)).expect("Failed to reserve TCP port");
     listener.local_addr().unwrap().port()

@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 
 use super::{Source, SourceHandle};
 use crate::profile::{MediaProfile, VideoCodec};
+use crate::runner::RtspTransport;
 
 /// RTSP source implemented by spawning an external FFmpeg process.
 ///
@@ -19,10 +20,92 @@ pub struct RtspFfmpegSource {
 }
 
 impl RtspFfmpegSource {
-    pub fn new(codec: VideoCodec) -> Self {
-        Self {
-            profile: MediaProfile::video_only(codec),
+    pub fn new(profile: MediaProfile) -> Self {
+        Self { profile }
+    }
+
+    /// Push to `rtsp_url` with an explicit RTSP transport. The default
+    /// [`Source::start_rtsp`] uses TCP.
+    pub fn start_rtsp_with_transport(
+        &self,
+        rtsp_url: &str,
+        transport: RtspTransport,
+    ) -> Result<Box<dyn SourceHandle>> {
+        let mut cmd = Command::new("ffmpeg");
+
+        // Input 0: synthetic video (when the profile has one).
+        if let Some(video) = self.profile.video {
+            cmd.arg("-re").arg("-f").arg("lavfi").arg("-i").arg(format!(
+                "testsrc=size={}x{}:rate={}",
+                video.width, video.height, video.fps
+            ));
         }
+
+        // Next input: synthetic audio (when the profile has one).
+        let audio_input_index = if self.profile.audio.is_some() {
+            let index = u8::from(self.profile.video.is_some());
+            cmd.arg("-re")
+                .arg("-f")
+                .arg("lavfi")
+                .arg("-i")
+                .arg("sine=frequency=1000");
+            Some(index)
+        } else {
+            None
+        };
+
+        if let Some(video) = self.profile.video {
+            let codec = video.codec;
+            cmd.arg("-map")
+                .arg("0:v")
+                .arg("-vcodec")
+                .arg(codec.ffmpeg_encoder());
+            for arg in codec.ffmpeg_extra_args() {
+                cmd.arg(arg);
+            }
+            // Use a short GOP so subscribers that connect after the first
+            // keyframe get another keyframe quickly, even under load.
+            let keyframe_interval = video.fps.min(5);
+            cmd.arg("-g")
+                .arg(keyframe_interval.to_string())
+                .arg("-keyint_min")
+                .arg(keyframe_interval.to_string());
+            // SVT-AV1 rejects -maxrate outside CRF mode.
+            match codec {
+                VideoCodec::Av1 => {
+                    cmd.arg("-crf").arg("35");
+                }
+                _ => {
+                    cmd.arg("-b:v")
+                        .arg("1000k")
+                        .arg("-maxrate")
+                        .arg("1200k")
+                        .arg("-bufsize")
+                        .arg("2400k");
+                }
+            }
+        }
+
+        if let (Some(audio), Some(input)) = (self.profile.audio, audio_input_index) {
+            cmd.arg("-map")
+                .arg(format!("{input}:a"))
+                .arg("-acodec")
+                .arg(audio.ffmpeg_encoder());
+            for arg in audio.ffmpeg_extra_args() {
+                cmd.arg(arg);
+            }
+        }
+
+        for arg in transport.ffmpeg_args() {
+            cmd.arg(arg);
+        }
+        cmd.arg("-f").arg("rtsp").arg(rtsp_url);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn RTSP FFmpeg source: {cmd:?}"))?;
+
+        Ok(Box::new(RtspFfmpegHandle { child: Some(child) }))
     }
 }
 
@@ -40,46 +123,10 @@ impl Source for RtspFfmpegSource {
     }
 
     fn start_rtsp(&self, rtsp_url: &str) -> Result<Box<dyn SourceHandle>> {
-        let Some(video) = self.profile.video else {
-            anyhow::bail!("RtspFfmpegSource requires a video track in its media profile");
-        };
-        let codec = video.codec;
-        let encoder = codec.ffmpeg_encoder();
-
-        let mut cmd = Command::new("ffmpeg");
-        cmd.arg("-re").arg("-f").arg("lavfi").arg("-i").arg(format!(
-            "testsrc=size={}x{}:rate={}",
-            video.width, video.height, video.fps
-        ));
-        cmd.arg("-vcodec").arg(encoder);
-        for arg in codec.ffmpeg_extra_args() {
-            cmd.arg(arg);
-        }
-        let keyframe_interval = video.fps.min(5);
-        cmd.arg("-g")
-            .arg(keyframe_interval.to_string())
-            .arg("-keyint_min")
-            .arg(keyframe_interval.to_string())
-            .arg("-b:v")
-            .arg("1000k")
-            .arg("-maxrate")
-            .arg("1200k")
-            .arg("-bufsize")
-            .arg("2400k")
-            // Use TCP transport — avoids UDP port conflicts in test
-            // environments and ensures the RTP stream is interleaved
-            // inside the RTSP connection.
-            .arg("-rtsp_transport")
-            .arg("tcp")
-            .arg("-f")
-            .arg("rtsp")
-            .arg(rtsp_url);
-
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn RTSP FFmpeg source: {cmd:?}"))?;
-
-        Ok(Box::new(RtspFfmpegHandle { child: Some(child) }))
+        // Use TCP transport for the push — avoids UDP port conflicts in test
+        // environments and ensures the RTP stream is interleaved inside the
+        // RTSP connection.
+        self.start_rtsp_with_transport(rtsp_url, RtspTransport::Tcp)
     }
 
     fn start(&self, _target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
