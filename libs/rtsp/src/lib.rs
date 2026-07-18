@@ -25,7 +25,7 @@ pub use constants::{
 };
 pub use sdp::{
     extract_h264_params, extract_h265_params, filter_sdp, parse_codecs_from_sdp,
-    parse_media_info_from_sdp,
+    parse_media_info_from_sdp, parse_transports_from_sdp,
 };
 #[cfg(feature = "server")]
 pub use server::{
