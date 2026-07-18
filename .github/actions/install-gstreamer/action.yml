@@ -1,0 +1,37 @@
+name: Install GStreamer
+description: Install GStreamer tools and plugins on Linux or macOS (skipped on Windows, where the gst matrix cases are cfg-gated out)
+runs:
+  using: composite
+  steps:
+    - name: Install GStreamer (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          gstreamer1.0-tools \
+          gstreamer1.0-plugins-base \
+          gstreamer1.0-plugins-good \
+          gstreamer1.0-plugins-bad \
+          gstreamer1.0-plugins-ugly \
+          gstreamer1.0-libav \
+          libgstrtspserver-1.0-dev
+
+    - name: Install GStreamer (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        # See the FFmpeg step: untrusted third-party taps break brew.
+        brew untap aws/tap 2>/dev/null || true
+        brew install gstreamer
+
+    - name: Show version information
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        gst-launch-1.0 --version
+        for el in vp8enc x264enc x265enc opusenc avenc_g722 whipsink whepsrc rtspsrc fakesink; do
+          gst-inspect-1.0 "$el" >/dev/null 2>&1 \
+            && echo "$el: OK" \
+            || echo "$el: MISSING (related matrix cases will skip)"
+        done

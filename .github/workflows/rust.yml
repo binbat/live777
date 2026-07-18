@@ -18,6 +18,8 @@ jobs:
         uses: actions/checkout@v6
       - name: Install FFmpeg for rsmpeg
         uses: ./.github/actions/install-ffmpeg
+      - name: Install GStreamer
+        uses: ./.github/actions/install-gstreamer
       - name: Install pnpm
         uses: pnpm/action-setup@v6
       - name: Setup Nodejs

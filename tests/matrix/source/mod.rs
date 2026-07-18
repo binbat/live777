@@ -1,11 +1,14 @@
 pub mod ffmpeg;
-pub mod gstreamer_vp8;
+pub mod gst_rtp;
+pub mod gst_rtsp_server;
+pub mod gst_whip;
 #[cfg(feature = "rtsp")]
 pub mod rtsp_ffmpeg;
 #[cfg(feature = "rsmpeg")]
 pub mod synth;
 
 use std::net::SocketAddr;
+use std::process::Child;
 use std::time::Duration;
 
 use crate::profile::MediaProfile;
@@ -13,6 +16,36 @@ use crate::profile::MediaProfile;
 #[async_trait::async_trait]
 pub trait SourceHandle: Send {
     async fn stop(self: Box<Self>);
+}
+
+/// A source backed by a spawned child process (ffmpeg, gst-launch, ...).
+/// Kills the process on drop so panicking tests cannot leak it.
+pub struct ProcessHandle {
+    child: Option<Child>,
+}
+
+impl ProcessHandle {
+    pub fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceHandle for ProcessHandle {
+    async fn stop(mut self: Box<Self>) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = tokio::task::spawn_blocking(move || child.wait()).await;
+        }
+    }
 }
 
 pub trait Source: Send + Sync {

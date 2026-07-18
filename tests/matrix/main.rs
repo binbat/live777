@@ -25,12 +25,20 @@ use source::{Source, ffmpeg::FfmpegSource};
 use player::playwright::PlaywrightWhepPlayer;
 #[cfg(feature = "rsmpeg")]
 use player::rsmpeg_receiver::RsmpegWhepReceiver;
+#[cfg(not(target_os = "windows"))]
+use player::{gst_rtp::GstRtpPlayer, gst_whep::GstWhepPlayer};
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+use runner::run_rtsp_roundtrip_gst;
 #[cfg(feature = "rtsp")]
 use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_roundtrip};
 #[cfg(feature = "rtsp")]
 use source::rtsp_ffmpeg::RtspFfmpegSource;
 #[cfg(feature = "rsmpeg")]
 use source::synth::SynthSource;
+#[cfg(not(target_os = "windows"))]
+use source::{
+    gst_rtp::GstRtpSource, gst_rtsp_server::GstRtspServerSource, gst_whip::GstWhipSource,
+};
 
 // ============================================================
 // FFmpeg RTP sources (ffmpeg CLI → RTP → whipinto → liveion)
@@ -383,4 +391,155 @@ where
     S: Source,
 {
     run_rtsp_cycle(source, transport, IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
+}
+
+// ============================================================
+// GStreamer sources and players
+// ============================================================
+
+/// GStreamer RTP sources (gst-launch → RTP → whipinto → liveion) played
+/// back by the livetwo WHEP player with ffprobe validation.
+#[cfg(not(target_os = "windows"))]
+#[test_matrix(
+    [
+        GstRtpSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        GstRtpSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        GstRtpSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
+    ],
+    [LivetwoWhepPlayer]
+)]
+#[tokio::test]
+async fn whep_gst_rtp_matrix_test<P>(source: GstRtpSource, player: P)
+where
+    P: Player,
+{
+    if !runner::require_gst(&source.required_elements()) {
+        tracing::warn!("skipping: GStreamer not available on this host");
+        return;
+    }
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// GStreamer whipsink sources (direct WHIP publish) played back by the
+/// livetwo WHEP player.
+///
+/// Ignored: whipsink's WHIP session against live777 never finishes ICE in
+/// the loopback-pinned test environment (stays "connecting", no codecs) —
+/// the same gst-client interop family as live777#340. Enable when fixed.
+#[cfg(not(target_os = "windows"))]
+#[ignore = "whipsink cannot complete ICE against loopback-pinned live777 (live777#340 family)"]
+#[test_matrix(
+    [
+        GstWhipSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        GstWhipSource::new(MediaProfile::video_only(VideoCodec::H264)),
+    ],
+    [LivetwoWhepPlayer]
+)]
+#[tokio::test]
+async fn whep_gst_whip_matrix_test<P>(source: GstWhipSource, player: P)
+where
+    P: Player,
+{
+    if !runner::require_gst(&source.required_elements()) {
+        tracing::warn!("skipping: GStreamer whipsink not available on this host");
+        return;
+    }
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// GStreamer rtsp-server hosted source pulled by livetwo's RTSP client and
+/// published via WHIP, played back by the livetwo WHEP player.
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+#[test_matrix(
+    [GstRtspServerSource::new(MediaProfile::video_only(VideoCodec::H264))],
+    [LivetwoWhepPlayer]
+)]
+#[tokio::test]
+async fn whep_gst_rtsp_matrix_test<P>(source: GstRtspServerSource, player: P)
+where
+    P: Player,
+{
+    if !GstRtspServerSource::available() || !runner::require_gst(&source.required_elements()) {
+        tracing::warn!("skipping: gst-rtsp-server not available on this host");
+        return;
+    }
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// FFmpeg sources played back by the GStreamer WHEP player
+/// (whepfrom → RTP → udpsrc → depay → dec → fakesink).
+#[cfg(not(target_os = "windows"))]
+#[test_matrix(
+    [
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
+    ],
+    [GstRtpPlayer]
+)]
+#[tokio::test]
+async fn whep_ffmpeg_gst_rtp_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    if !runner::require_gst(&GstRtpPlayer::required_elements(&source.profile())) {
+        tracing::warn!("skipping: GStreamer not available on this host");
+        return;
+    }
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// RTSP round-trip validated by a GStreamer rtspsrc pull from liveion
+/// (gst as the RTSP consumer instead of ffprobe).
+///
+/// UDP only: gst rtspsrc over TCP fails against live777's RTSP server even
+/// though ffprobe's TCP pull works — same interop family as the whepsrc
+/// issue (live777#340). The ffprobe round-trip covers TCP.
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+#[test_matrix(
+    [
+        RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        RtspFfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        RtspFfmpegSource::new(MediaProfile::audio_only(AudioCodec::Opus)),
+    ],
+    [RtspTransport::Udp]
+)]
+#[tokio::test]
+async fn rtsp_roundtrip_gst_matrix_test<S>(source: S, transport: RtspTransport)
+where
+    S: Source,
+{
+    if !runner::require_gst(&[
+        "rtspsrc",
+        "rtpjitterbuffer",
+        "fakesink",
+        "udpsink",
+        "videotestsrc",
+    ]) {
+        tracing::warn!("skipping: GStreamer not available on this host");
+        return;
+    }
+    run_rtsp_roundtrip_gst(source, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// Placeholder for the gst whepsrc player: whepsrc+live777 has known issues
+/// (live777#340); enable once fixed.
+#[cfg(not(target_os = "windows"))]
+#[ignore = "whepsrc + live777 known issues: live777#340"]
+#[tokio::test]
+async fn whep_ffmpeg_gst_whep_placeholder_test() {
+    if !runner::require_gst(&GstWhepPlayer::required_elements(
+        &MediaProfile::video_only(VideoCodec::Vp8),
+    )) {
+        tracing::warn!("skipping: GStreamer whepsrc not available on this host");
+        return;
+    }
+    run_whep_test_with_host(
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        GstWhepPlayer,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        "127.0.0.1",
+    )
+    .await;
 }

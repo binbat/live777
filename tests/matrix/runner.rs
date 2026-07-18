@@ -17,6 +17,27 @@ use crate::source::{Source, SourceHandle};
 
 use crate::common::shutdown_signal;
 
+/// Check that the GStreamer runtime and the given elements are available on
+/// this host. Gst-based matrix cases skip themselves when this returns false,
+/// so developers without GStreamer still run the rest of the suite.
+pub fn require_gst(elements: &[&str]) -> bool {
+    let gst_ok = std::process::Command::new("gst-launch-1.0")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !gst_ok {
+        return false;
+    }
+    elements.iter().all(|el| {
+        std::process::Command::new("gst-inspect-1.0")
+            .arg(el)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
 #[cfg(feature = "rtsp")]
 use crate::probe;
 
@@ -132,7 +153,168 @@ pub async fn run_rtsp_roundtrip<S: Source>(source: S, transport: RtspTransport, 
     source_handle.stop().await;
 }
 
-/// RTSP conversion cycle (former tests/rtsp2.rs topology):
+/// Liveion RTSP server round-trip validated by a GStreamer `rtspsrc` pull
+/// instead of ffprobe. Same topology as [`run_rtsp_roundtrip`], gst as the
+/// RTSP consumer.
+#[cfg(feature = "rtsp")]
+pub async fn run_rtsp_roundtrip_gst<S: Source>(
+    source: S,
+    transport: RtspTransport,
+    bind_ip: IpAddr,
+) {
+    init_liveion_test_environment();
+
+    let profile = source.profile();
+    let rtsp_port = reserve_and_release_tcp_port(bind_ip);
+
+    let mut cfg = liveion::config::Config::default();
+    cfg.rtsp.listen = SocketAddr::new(bind_ip, rtsp_port).to_string();
+
+    let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let rtsp_addr = SocketAddr::new(bind_ip, rtsp_port);
+    for i in 0..50 {
+        match tokio::net::TcpStream::connect(rtsp_addr).await {
+            Ok(_) => break,
+            Err(_) if i == 49 => {
+                panic!("RTSP server did not start on {rtsp_addr} after 5 s");
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+
+    let rtsp_host = match bind_ip {
+        IpAddr::V6(_) => format!("[{bind_ip}]"),
+        _ => bind_ip.to_string(),
+    };
+    let rtsp_url = format!("rtsp://{rtsp_host}:{rtsp_port}/-");
+
+    let source_handle = source
+        .start_rtsp_with_transport(&rtsp_url, transport)
+        .expect("Failed to start RTSP source");
+
+    let start = tokio::time::Instant::now();
+    wait_stream_publish_ready(&rtsp_addr, &api_addr, "-", None).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // gst rtspsrc pulls from liveion's RTSP server pull side.
+    let protocols = match transport {
+        RtspTransport::Udp => "udp",
+        RtspTransport::Tcp => "tcp",
+    };
+    let mut pipeline =
+        format!("rtspsrc location={rtsp_url} protocols={protocols} latency=100 name=src");
+    if let Some(video) = profile.video {
+        pipeline.push_str(&format!(
+            " src. ! rtpjitterbuffer ! {} ! {} ! videoconvert ! video/x-raw,width={},height={} ! fakesink num-buffers=60",
+            gst_video_depay(video.codec),
+            gst_video_dec(video.codec),
+            video.width,
+            video.height,
+        ));
+    }
+    if let Some(audio) = profile.audio {
+        pipeline.push_str(&format!(
+            " src. ! rtpjitterbuffer ! {} ! {} ! audioconvert ! audio/x-raw,channels={} ! fakesink num-buffers=100",
+            gst_audio_depay(audio),
+            gst_audio_dec(audio),
+            audio.channels(),
+        ));
+    }
+
+    let mut child = tokio::process::Command::new("gst-launch-1.0")
+        .arg("-q")
+        .args(pipeline.split_whitespace())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("failed to spawn gst-launch-1.0");
+
+    let gst_result = tokio::time::timeout(Duration::from_secs(30), child.wait()).await;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let playback = match gst_result {
+        Ok(Ok(status)) if status.success() => PlayResult {
+            success: true,
+            connected: true,
+            error: None,
+            video_width: profile.video.map(|v| v.width).unwrap_or(0),
+            video_height: profile.video.map(|v| v.height).unwrap_or(0),
+            video_tracks: u32::from(profile.video.is_some()),
+            audio_tracks: u32::from(profile.audio.is_some()),
+            duration_ms,
+            codecs: [
+                profile.video.map(|v| v.codec.ffprobe_name()),
+                profile.audio.map(|a| a.ffprobe_name()),
+            ]
+            .into_iter()
+            .flatten()
+            .map(str::to_string)
+            .collect(),
+            audio_channels: profile.audio.map(|a| a.channels() as u32).unwrap_or(0),
+        },
+        other => PlayResult {
+            success: false,
+            connected: true,
+            duration_ms,
+            error: Some(format!("gst rtspsrc pull failed: {other:?}")),
+            ..Default::default()
+        },
+    };
+
+    tracing::info!(
+        source = source.name(),
+        transport = transport.as_str(),
+        ?playback,
+        "RTSP round-trip (gst) result"
+    );
+
+    assert_playback_ok("rtsp-roundtrip-gst", &profile, &playback);
+
+    source_handle.stop().await;
+}
+
+#[cfg(feature = "rtsp")]
+fn gst_video_depay(codec: crate::profile::VideoCodec) -> &'static str {
+    match codec {
+        crate::profile::VideoCodec::Vp8 => "rtpvp8depay",
+        crate::profile::VideoCodec::H264 => "rtph264depay",
+        crate::profile::VideoCodec::H265 => "rtph265depay",
+        crate::profile::VideoCodec::Vp9 => "rtpvp9depay",
+        crate::profile::VideoCodec::Av1 => "rtpav1depay",
+    }
+}
+
+#[cfg(feature = "rtsp")]
+fn gst_video_dec(codec: crate::profile::VideoCodec) -> &'static str {
+    match codec {
+        crate::profile::VideoCodec::Vp8 => "vp8dec",
+        crate::profile::VideoCodec::H264 => "avdec_h264",
+        crate::profile::VideoCodec::H265 => "avdec_h265",
+        crate::profile::VideoCodec::Vp9 => "vp9dec",
+        crate::profile::VideoCodec::Av1 => "avdec_av1",
+    }
+}
+
+#[cfg(feature = "rtsp")]
+fn gst_audio_depay(codec: crate::profile::AudioCodec) -> &'static str {
+    match codec {
+        crate::profile::AudioCodec::Opus => "rtpopusdepay",
+        crate::profile::AudioCodec::G722 => "rtpg722depay",
+    }
+}
+
+#[cfg(feature = "rtsp")]
+fn gst_audio_dec(codec: crate::profile::AudioCodec) -> &'static str {
+    match codec {
+        crate::profile::AudioCodec::Opus => "opusdec",
+        crate::profile::AudioCodec::G722 => "avdec_g722",
+    }
+}
 ///
 /// ```text
 /// ffmpeg --RTSP--> liveion(cycle-a)

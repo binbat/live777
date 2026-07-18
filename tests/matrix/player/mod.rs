@@ -1,3 +1,5 @@
+pub mod gst_rtp;
+pub mod gst_whep;
 pub mod livetwo;
 #[cfg(feature = "whepwright")]
 pub mod playwright;

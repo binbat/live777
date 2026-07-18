@@ -1,11 +1,8 @@
-use std::{
-    net::SocketAddr,
-    process::{Child, Command},
-};
+use std::{net::SocketAddr, process::Command};
 
 use anyhow::{Context, Result};
 
-use super::{Source, SourceHandle};
+use super::{ProcessHandle, Source, SourceHandle};
 use crate::profile::MediaProfile;
 
 /// RTP source implemented by spawning an external FFmpeg process.
@@ -131,7 +128,7 @@ impl Source for FfmpegSource {
             .spawn()
             .with_context(|| format!("Failed to spawn FFmpeg source: {cmd:?}"))?;
 
-        Ok(Box::new(FfmpegHandle { child: Some(child) }))
+        Ok(Box::new(ProcessHandle::new(child)))
     }
 
     fn sdp(&self, listen_addr: SocketAddr) -> String {
@@ -172,28 +169,5 @@ impl Source for FfmpegSource {
         }
 
         sdp
-    }
-}
-
-struct FfmpegHandle {
-    child: Option<Child>,
-}
-
-// Tests that panic mid-case would otherwise leak the encoder process.
-impl Drop for FfmpegHandle {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl SourceHandle for FfmpegHandle {
-    async fn stop(mut self: Box<Self>) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = tokio::task::spawn_blocking(move || child.wait()).await;
-        }
     }
 }

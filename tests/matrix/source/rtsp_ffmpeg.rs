@@ -1,11 +1,8 @@
-use std::{
-    net::SocketAddr,
-    process::{Child, Command},
-};
+use std::{net::SocketAddr, process::Command};
 
 use anyhow::{Context, Result};
 
-use super::{Source, SourceHandle};
+use super::{ProcessHandle, Source, SourceHandle};
 use crate::profile::{MediaProfile, VideoCodec};
 use crate::runner::RtspTransport;
 
@@ -105,7 +102,7 @@ impl RtspFfmpegSource {
             .spawn()
             .with_context(|| format!("Failed to spawn RTSP FFmpeg source: {cmd:?}"))?;
 
-        Ok(Box::new(RtspFfmpegHandle { child: Some(child) }))
+        Ok(Box::new(ProcessHandle::new(child)))
     }
 }
 
@@ -142,28 +139,5 @@ impl Source for RtspFfmpegSource {
     /// RTSP sources can carry their own keyframes — shorter warm-up.
     async fn wait_for_ready(&self) {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
-}
-
-struct RtspFfmpegHandle {
-    child: Option<Child>,
-}
-
-// Tests that panic mid-case would otherwise leak the encoder process.
-impl Drop for RtspFfmpegHandle {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl SourceHandle for RtspFfmpegHandle {
-    async fn stop(mut self: Box<Self>) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = tokio::task::spawn_blocking(move || child.wait()).await;
-        }
     }
 }
