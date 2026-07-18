@@ -39,7 +39,8 @@ pub fn parse_transports_from_sdp(
                 rtp_send_port: None,
                 rtp_recv_port: Some(media.port),
                 rtcp_send_port: None,
-                rtcp_recv_port: Some(media.port + 1),
+                // A malformed SDP could carry port 65535; do not wrap to 0.
+                rtcp_recv_port: media.port.checked_add(1),
                 server_addr: None,
             })
     };
