@@ -16,7 +16,11 @@ use tracing::{debug, info, trace, warn};
 #[cfg(feature = "source")]
 use base64::Engine;
 #[cfg(feature = "source")]
-use livetwo::payload::{RePayload, RePayloadCodec};
+use livetwo::payload::{Forward, RePayload, RePayloadCodec};
+#[cfg(feature = "source")]
+use rtc::peer_connection::configuration::media_engine::{
+    MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP8, MIME_TYPE_VP9,
+};
 #[cfg(feature = "source")]
 use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
@@ -629,10 +633,13 @@ pub struct VirtualPublishTrack {
     clock_rate: u32,
     start_time: SystemTime,
     /// Repayloader for depacketising STAP-A and injecting SPS/PPS before
-    /// IDR frames.  The lock is held only briefly — never across `.await`
-    /// points — so `std::sync::Mutex` is safe here.
+    /// IDR frames.  Only video codecs go through [`RePayloadCodec`]; audio
+    /// and any unknown codec use [`Forward`] passthrough — the same rule
+    /// whipinto applies (RePayloadCodec would misparse audio payloads).
+    /// The lock is held only briefly — never across `.await` points — so
+    /// `std::sync::Mutex` is safe here.
     #[cfg(feature = "source")]
-    repayloader: std::sync::Mutex<Option<RePayloadCodec>>,
+    repayloader: std::sync::Mutex<Option<Box<dyn RePayload + Send>>>,
 }
 
 #[cfg(feature = "source")]
@@ -706,11 +713,21 @@ impl VirtualPublishTrack {
         // This depacketises incoming RTP (including STAP-A),
         // reassembles frames, injects SPS/PPS before IDRs,
         // and repacketises into clean single-NAL packets.
+        // Only video goes through RePayloadCodec; audio and unknown codecs
+        // use Forward passthrough (whipinto's rule).
         #[cfg(feature = "source")]
         let outgoing: Vec<Packet> = {
             let mut guard = self.repayloader.lock().unwrap();
             let rp = guard.get_or_insert_with(|| {
                 let mime = self.codec_params.rtp_codec.mime_type.clone();
+                let is_video = matches!(
+                    mime.as_str(),
+                    MIME_TYPE_VP8 | MIME_TYPE_VP9 | MIME_TYPE_H264 | MIME_TYPE_HEVC | MIME_TYPE_AV1
+                );
+                if !is_video {
+                    return Box::<Forward>::default() as Box<dyn RePayload + Send>;
+                }
+
                 let mut rp = RePayloadCodec::new(mime.clone());
                 // Pre-load SPS/PPS (H264) or VPS/SPS/PPS (H265)
                 // from codec params so the repayloader can
@@ -742,7 +759,7 @@ impl VirtualPublishTrack {
                         rp.set_h265_params(vps, sps, pps);
                     }
                 }
-                rp
+                Box::new(rp) as Box<dyn RePayload + Send>
             });
             rp.payload(&packet_mut)
         };
