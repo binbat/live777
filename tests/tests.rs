@@ -171,6 +171,83 @@ async fn test_liveion_stream_create() {
     assert_eq!(1, body.len());
 }
 
+#[cfg(feature = "rsmpeg")]
+#[tokio::test]
+async fn test_livetwo_whipinto_synth_input() {
+    init_liveion_test_environment();
+
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let res = reqwest::Client::new()
+        .post(format!("http://{addr}{}", api::path::streams("-")))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(http::StatusCode::NO_CONTENT, res.status());
+
+    // Publish an in-process synthetic stream through the unified `whip::into`
+    // entry point, the same path `whipinto --input synth://...` uses.
+    // `stun=` (empty) disables ICE servers so the test stays on loopback.
+    let ct = CancellationToken::new();
+    let handle_whip = tokio::spawn(livetwo::whip::into(
+        ct.clone(),
+        "synth://vp8?width=320&height=240&fps=15&duration=30&stun=".to_string(),
+        format!("http://{addr}{}", api::path::whip("-")),
+        None,
+        None,
+    ));
+
+    let mut result = None;
+    let mut last_publish_state = None;
+    for _ in 0..CONNECTION_WAIT_ATTEMPTS {
+        let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
+            .await
+            .unwrap();
+
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
+
+        if let Some(r) = body.into_iter().find(|i| i.id == "-")
+            && !r.publish.sessions.is_empty()
+        {
+            let s = r.publish.sessions[0].clone();
+            last_publish_state = Some(s.state);
+            if s.state == api::response::RTCPeerConnectionState::Connected {
+                result = Some(s);
+                break;
+            }
+        };
+
+        if handle_whip.is_finished() {
+            let result_whip = handle_whip.await.unwrap();
+            panic!(
+                "synth WHIP task exited before publish connected: result={result_whip:?}, last_state={last_publish_state:?}"
+            );
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        result.is_some(),
+        "Synth publish session did not reach Connected within {}ms: last_state={last_publish_state:?}",
+        CONNECTION_WAIT_ATTEMPTS * 100,
+    );
+
+    ct.cancel();
+
+    let result_whip = handle_whip.await.unwrap();
+    assert!(result_whip.is_ok());
+}
+
 #[tokio::test]
 async fn test_liveion_stream_connect() {
     init_liveion_test_environment();
