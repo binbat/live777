@@ -235,8 +235,10 @@ The project uses `cargo nextest` with configuration in `.config/nextest.toml`.
 Run tests:
 
 ```bash
-# full workspace with coverage and playwright harness
-cargo llvm-cov nextest --profile ci --workspace --features whepwright --lcov --output-path lcov.info
+# full workspace with coverage, matching the CI feature set
+cargo llvm-cov nextest --profile ci --workspace \
+  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp \
+  --lcov --output-path lcov.info
 
 # without coverage
 cargo nextest run --workspace
