@@ -10,7 +10,7 @@ use tracing::{debug, error, info, trace, warn};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "source")]
-use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 #[cfg(feature = "source")]
 type RtcpSender = Arc<RwLock<Option<mpsc::Sender<(u8, Vec<u8>)>>>>;
@@ -412,26 +412,6 @@ impl RtspSource {
     fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
         crate::rtsp_codec::video_codec_to_rtc(codec)
     }
-
-    #[cfg(feature = "source")]
-    fn audio_codec_to_rtc(codec: &rtsp::AudioCodecParams) -> RTCRtpCodecParameters {
-        let mime_type = format!("audio/{}", codec.codec.to_uppercase());
-
-        RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type,
-                clock_rate: codec.clock_rate,
-                channels: codec.channels,
-                sdp_fmtp_line: if codec.codec.to_lowercase() == "opus" {
-                    "minptime=10;useinbandfec=1".to_string()
-                } else {
-                    String::new()
-                },
-                rtcp_feedback: vec![],
-            },
-            payload_type: codec.payload_type,
-        }
-    }
 }
 
 #[async_trait]
@@ -525,7 +505,7 @@ impl StreamSource for RtspSource {
             && let Some(ref info) = *media_info
             && let Some(ref audio_codec) = info.audio_codec
         {
-            return Some(Self::audio_codec_to_rtc(audio_codec));
+            return Some(crate::rtsp_codec::audio_codec_to_rtc(audio_codec));
         }
 
         None

@@ -7,7 +7,7 @@ use std::io::Cursor;
 use tracing::{debug, warn};
 
 use crate::constants::media_type;
-use crate::types::{AudioCodecParams, MediaInfo, VideoCodecParams};
+use crate::types::{AudioCodecParams, MediaInfo, TransportInfo, VideoCodecParams};
 
 pub fn parse_media_info_from_sdp(sdp_bytes: &[u8]) -> Result<MediaInfo> {
     let sdp =
@@ -21,6 +21,33 @@ pub fn parse_media_info_from_sdp(sdp_bytes: &[u8]) -> Result<MediaInfo> {
         video_transport: None,
         audio_transport: None,
     })
+}
+
+/// Derive UDP transport info from an SDP's `m=` lines.
+///
+/// Each media port becomes the RTP receive port and `port + 1` the RTCP
+/// receive port, matching the FFmpeg `-sdp_file` convention used by
+/// RTP/SDP-file listeners. Returns `(video_transport, audio_transport)`.
+pub fn parse_transports_from_sdp(
+    sdp: &sdp_types::Session,
+) -> (Option<TransportInfo>, Option<TransportInfo>) {
+    let transport_for = |kind: &str| {
+        sdp.medias
+            .iter()
+            .find(|media| media.media == kind)
+            .map(|media| TransportInfo::Udp {
+                rtp_send_port: None,
+                rtp_recv_port: Some(media.port),
+                rtcp_send_port: None,
+                rtcp_recv_port: Some(media.port + 1),
+                server_addr: None,
+            })
+    };
+
+    (
+        transport_for(media_type::VIDEO),
+        transport_for(media_type::AUDIO),
+    )
 }
 
 pub fn parse_codecs_from_sdp(
