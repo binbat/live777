@@ -263,16 +263,32 @@ async fn wait_for_codec_info(
     expected_audio: bool,
 ) -> Result<rtsp::CodecInfo> {
     const CODEC_WAIT_ATTEMPTS: usize = 300;
+    const PARTIAL_READY_GRACE: Duration = Duration::from_secs(2);
 
     let input = utils::parse_input_url(target_url)?;
     let has_video_param = input.query_pairs().any(|(k, _)| k == media_type::VIDEO);
     let has_audio_param = input.query_pairs().any(|(k, _)| k == media_type::AUDIO);
     let has_any_media_param = has_video_param || has_audio_param;
 
+    let mut first_codec_ready_at: Option<std::time::Instant> = None;
+
     for _ in 0..CODEC_WAIT_ATTEMPTS {
         let info = codec_info.lock().await.clone();
         let video_ready = info.video_codec.is_some();
         let audio_ready = info.audio_codec.is_some();
+        let partial_ready = video_ready || audio_ready;
+
+        let partial_grace_elapsed = if partial_ready && !has_any_media_param {
+            match first_codec_ready_at {
+                Some(at) => at.elapsed() >= PARTIAL_READY_GRACE,
+                None => {
+                    first_codec_ready_at = Some(std::time::Instant::now());
+                    false
+                }
+            }
+        } else {
+            false
+        };
 
         if codec_wait_satisfied(
             video_ready,
@@ -282,6 +298,7 @@ async fn wait_for_codec_info(
             has_audio_param,
             expected_video,
             expected_audio,
+            partial_grace_elapsed,
         ) {
             return Ok(info);
         }
@@ -303,6 +320,7 @@ fn codec_wait_satisfied(
     has_audio_param: bool,
     expected_video: bool,
     expected_audio: bool,
+    partial_grace_elapsed: bool,
 ) -> bool {
     if has_any_media_param {
         // Explicit output filters are authoritative: wait for every requested
@@ -310,9 +328,11 @@ fn codec_wait_satisfied(
         (!has_video_param || video_ready) && (!has_audio_param || audio_ready)
     } else if expected_video || expected_audio {
         // With no explicit media params, the negotiated answer tells us which
-        // tracks should be forwarded. Returning partial codec info here would
-        // permanently drop the later track from the filtered output SDP.
-        (!expected_video || video_ready) && (!expected_audio || audio_ready)
+        // tracks should be forwarded. Prefer every expected codec, but allow a
+        // short partial-ready grace for single-kind streams whose answer still
+        // advertises both media kinds.
+        ((!expected_video || video_ready) && (!expected_audio || audio_ready))
+            || ((video_ready || audio_ready) && partial_grace_elapsed)
     } else {
         // Defensive fallback for an answer SDP we cannot classify.
         video_ready || audio_ready
@@ -418,52 +438,62 @@ mod tests {
     #[test]
     fn codec_wait_requires_every_negotiated_track_without_output_filters() {
         assert!(!codec_wait_satisfied(
-            true, false, false, false, false, true, true,
+            true, false, false, false, false, true, true, false,
         ));
         assert!(!codec_wait_satisfied(
-            false, true, false, false, false, true, true,
+            false, true, false, false, false, true, true, false,
         ));
         assert!(codec_wait_satisfied(
-            true, true, false, false, false, true, true,
+            true, true, false, false, false, true, true, false,
+        ));
+    }
+
+    #[test]
+    fn codec_wait_allows_partial_negotiated_tracks_after_grace() {
+        assert!(codec_wait_satisfied(
+            true, false, false, false, false, true, true, true,
+        ));
+        assert!(codec_wait_satisfied(
+            false, true, false, false, false, true, true, true,
         ));
     }
 
     #[test]
     fn codec_wait_uses_single_negotiated_track_without_waiting_for_missing_kind() {
         assert!(codec_wait_satisfied(
-            true, false, false, false, false, true, false,
+            true, false, false, false, false, true, false, false,
         ));
         assert!(codec_wait_satisfied(
-            false, true, false, false, false, false, true,
+            false, true, false, false, false, false, true, false,
         ));
     }
 
     #[test]
     fn codec_wait_honors_explicit_output_filters() {
         assert!(codec_wait_satisfied(
-            true, false, true, true, false, true, true,
+            true, false, true, true, false, true, true, false,
         ));
         assert!(!codec_wait_satisfied(
-            false, true, true, true, false, true, true,
+            false, true, true, true, false, true, true, true,
         ));
         assert!(codec_wait_satisfied(
-            false, true, true, false, true, true, true,
+            false, true, true, false, true, true, true, false,
         ));
         assert!(!codec_wait_satisfied(
-            true, false, true, false, true, true, true,
+            true, false, true, false, true, true, true, true,
         ));
     }
 
     #[test]
     fn codec_wait_falls_back_to_any_codec_when_answer_has_no_media_kinds() {
         assert!(codec_wait_satisfied(
-            true, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false,
         ));
         assert!(codec_wait_satisfied(
-            false, true, false, false, false, false, false,
+            false, true, false, false, false, false, false, false,
         ));
         assert!(!codec_wait_satisfied(
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, true,
         ));
     }
 }
