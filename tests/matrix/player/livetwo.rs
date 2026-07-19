@@ -118,7 +118,6 @@ impl Player for LivetwoWhepPlayer {
             profile,
             connected,
             duration_ms,
-            true,
         ))
     }
 }
@@ -148,5 +147,5 @@ async fn probe_output_sdp(sdp_path: &str, expected_tracks: usize) -> Result<prob
         "whepfrom did not write a complete SDP ({expected_tracks} m= lines) to {sdp_path} within 30s"
     );
 
-    probe::run_counting(&["-protocol_whitelist", "file,rtp,udp", "-i", sdp_path]).await
+    probe::run(&["-protocol_whitelist", "file,rtp,udp", "-i", sdp_path]).await
 }

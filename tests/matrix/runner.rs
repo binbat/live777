@@ -139,7 +139,7 @@ pub async fn run_rtsp_roundtrip<S: Source>(source: S, transport: RtspTransport, 
         .expect("ffprobe pull from liveion RTSP server failed");
 
     let duration_ms = start.elapsed().as_millis() as u64;
-    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms, false);
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
 
     tracing::info!(
         source = source.name(),
@@ -404,7 +404,7 @@ pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind
         .expect("ffprobe pull from cycle-c failed");
 
     let duration_ms = start.elapsed().as_millis() as u64;
-    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms, false);
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
 
     tracing::info!(
         source = source.name(),
