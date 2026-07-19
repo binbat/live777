@@ -62,11 +62,7 @@ impl GstRtpPlayer {
             ]);
         }
         if let Some(audio) = profile.audio {
-            elements.extend([
-                audio.gst_depay(),
-                audio.gst_dec(),
-                "audioconvert",
-            ]);
+            elements.extend([audio.gst_depay(), audio.gst_dec(), "audioconvert"]);
         }
         elements
     }

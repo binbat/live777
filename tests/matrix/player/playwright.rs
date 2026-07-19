@@ -61,10 +61,7 @@ impl Player for PlaywrightWhepPlayer {
         // streaming for seconds and audio is flowing from the first frame.
         let mut result = self.play_once(whep_url).await?;
 
-        if profile.audio.is_some()
-            && result.connected
-            && result.audio_tracks == 0
-        {
+        if profile.audio.is_some() && result.connected && result.audio_tracks == 0 {
             tracing::warn!(
                 "browser reported no audio bytes for an audio profile; retrying playback"
             );
