@@ -17,7 +17,6 @@ pub enum VideoCodec {
     Av1,
 }
 
-#[allow(dead_code)]
 impl VideoCodec {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -29,6 +28,7 @@ impl VideoCodec {
         }
     }
 
+    #[allow(dead_code)]
     pub fn mime_type(&self) -> &'static str {
         match self {
             VideoCodec::Vp8 => "video/VP8",
@@ -228,7 +228,6 @@ pub enum AudioCodec {
     G722,
 }
 
-#[allow(dead_code)]
 impl AudioCodec {
     pub fn as_str(&self) -> &'static str {
         match self {
