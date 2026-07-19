@@ -69,6 +69,12 @@ required-features = ["source"]
 test = false
 bench = false
 
+[[bin]]
+name = "loadtest"
+path = "src/bin/loadtest.rs"
+test = false
+bench = false
+
 [workspace]
 members = [
     ".",

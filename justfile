@@ -454,3 +454,24 @@ ffprobe-rtsp:
 ffprobe-rtsp-tcp:
     ffprobe -rtsp_transport tcp -v error -hide_banner -i {{rtsps}}/{{stream}} -show_streams -of json
 
+
+
+# ============================================================
+# loadtest: WHIP publish / WHEP subscribe / DataChannel benchmarks
+# Usage: just loadtest-whip 100 60
+#        just loadtest-whep 100 60 test-stream
+#        just loadtest-channel throughput
+# ============================================================
+[group('loadtest')]
+loadtest-whip sessions="100" duration="60":
+    cargo run --release --features rsmpeg --bin loadtest -- whip \
+        --whip {{server}}/whip/load --sessions {{sessions}} --duration {{duration}}
+
+[group('loadtest')]
+loadtest-whep sessions="100" duration="60" target_stream=stream:
+    cargo run --release --bin loadtest -- whep \
+        --whep {{server}}/whep/{{target_stream}} --sessions {{sessions}} --duration {{duration}}
+
+[group('loadtest')]
+loadtest-channel mode="all":
+    cargo run --release --features source --bin loadtest -- channel {{mode}}
