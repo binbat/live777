@@ -16,7 +16,6 @@ use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodecParameters, RtpCodecKind};
 use rtc::statistics::StatsSelector;
 use rtc::statistics::report::RTCStatsReportEntry;
 use tokio::sync::{Notify, watch};
-use tokio_util::sync::CancellationToken;
 use tracing::info;
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -41,10 +40,6 @@ pub struct PublishPeerOptions {
     /// the SDP offer prefers them (e.g. H265 with sprop parameters or AV1 with
     /// a resolution-derived level-idx).
     pub extra_video_codecs: Vec<RTCRtpCodecParameters>,
-    /// When true the event handler cancels the session token as soon as the
-    /// peer fails or closes. Used by the synthetic publisher; the RTP/RTSP
-    /// bridge reports failures via [`wait_for_unexpected_peer_end`] instead.
-    pub cancel_on_failure: bool,
 }
 
 impl Default for PublishPeerOptions {
@@ -52,7 +47,6 @@ impl Default for PublishPeerOptions {
         Self {
             stun_server: Some(DEFAULT_STUN_SERVER.to_string()),
             extra_video_codecs: Vec::new(),
-            cancel_on_failure: false,
         }
     }
 }
@@ -67,8 +61,13 @@ pub struct PublishPeer {
 /// Create a WHIP publish peer: media engine with the default codecs (plus any
 /// extra registrations), NACK/RTCP reports/TWCC interceptors, event handler
 /// and ICE configuration.
+///
+/// Failure reporting is the caller's job: select on
+/// [`wait_for_unexpected_peer_end`] next to your own cancellation token. The
+/// handler intentionally does not cancel anything on failure — a token
+/// cancelled by the handler races the error branch in `tokio::select!` and
+/// can turn a failed session into a "successful" cancellation.
 pub async fn create_publish_peer(
-    ct: CancellationToken,
     gather_complete: Arc<Notify>,
     options: PublishPeerOptions,
 ) -> Result<PublishPeer> {
@@ -88,11 +87,9 @@ pub async fn create_publish_peer(
     let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
     let diagnostics = Arc::new(PublishDiagnostics::default());
     let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(PublishPeerHandler {
-        ct,
         gather_complete,
         state_tx,
         diagnostics: diagnostics.clone(),
-        cancel_on_failure: options.cancel_on_failure,
     });
 
     let mut config_builder = RTCConfigurationBuilder::new();
@@ -297,11 +294,9 @@ fn optional_summary(summary: &Mutex<Option<String>>) -> String {
 }
 
 struct PublishPeerHandler {
-    ct: CancellationToken,
     gather_complete: Arc<Notify>,
     state_tx: watch::Sender<RTCPeerConnectionState>,
     diagnostics: Arc<PublishDiagnostics>,
-    cancel_on_failure: bool,
 }
 
 #[async_trait::async_trait]
@@ -310,14 +305,6 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
         info!("WHIP publish connection state changed: {}", state);
         push_state(&self.diagnostics.connection_states, state);
         let _ = self.state_tx.send(state);
-        if self.cancel_on_failure
-            && matches!(
-                state,
-                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
-            )
-        {
-            self.ct.cancel();
-        }
     }
 
     async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {

@@ -66,13 +66,7 @@ pub async fn into(
     info!("Input source configured: {:?}", input_source.scheme());
 
     let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
-        webrtc::setup_whip_peer(
-            ct.clone(),
-            &mut client,
-            input_source.media_info(),
-            target_url.clone(),
-        )
-        .await?;
+        webrtc::setup_whip_peer(&mut client, input_source.media_info(), target_url.clone()).await?;
     info!("WHIP peer setup completed; waiting for WebRTC connection");
 
     core::wait_for_peer_connected(
@@ -107,11 +101,11 @@ pub async fn into(
     });
 
     transport::connect_input_to_webrtc(
+        ct.clone(),
         input_source,
         video_sender.clone(),
         audio_sender.clone(),
         peer.clone(),
-        ct.clone(),
     )
     .await?;
 

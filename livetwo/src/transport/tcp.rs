@@ -166,22 +166,30 @@ impl TcpHandler {
     /// (`sender.read_rtcp()` is no longer available). The endpoint must still be
     /// kept alive: the RTSP client handler tears down the whole interleaved
     /// connection when the mpsc channel closes, and dropping `tx` is exactly that
-    /// signal. Once `cancel` fires, the sender is dropped and the RTSP connection
-    /// tears down cleanly.
+    /// signal. Once the token is cancelled, the sender is dropped and the RTSP
+    /// connection tears down cleanly.
     ///
     /// The task is spawned rather than storing `tx` in `TcpHandler` because
     /// `TcpHandler` is `Clone` (shared across video/audio forwarders), while the
     /// connection-wide sender must be dropped exactly once.
     pub fn spawn_webrtc_rtcp_to_output(
         &self,
+        ct: CancellationToken,
         _peer: Arc<dyn PeerConnection>,
         tx: Sender<(u8, Vec<u8>)>,
-        cancel: CancellationToken,
     ) {
+        // In v0.20, RTCP feedback is handled internally by the peer connection.
+        // sender.read_rtcp() is no longer available.
+        // RTCP forwarding to output is not needed in the new architecture.
+        //
+        // The endpoint must still be kept alive: the RTSP client handler
+        // tears down the whole interleaved connection when the channel
+        // closes, and dropping `tx` is exactly that signal. Hold it until the
+        // session is cancelled — a `pending()` task would hold it forever.
         debug!("RTCP to output forwarding is handled internally in v0.20");
         tokio::spawn(async move {
             let _tx = tx;
-            cancel.cancelled().await;
+            ct.cancelled().await;
         });
     }
 

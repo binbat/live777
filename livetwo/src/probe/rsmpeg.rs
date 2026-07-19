@@ -156,6 +156,16 @@ impl ProbeBackend for RsmpegProbe {
             }
         };
         info!("WHEP peer connected, video mime type: {mime_type}");
+        // Report the negotiated codec, not the configured expectation —
+        // otherwise the runner's codec assertion compares the config to itself.
+        // Strip the "video/" prefix so it matches ffprobe-style codec names.
+        result.codec = Some(
+            mime_type
+                .rsplit('/')
+                .next()
+                .unwrap_or(&mime_type)
+                .to_ascii_lowercase(),
+        );
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         // Keep a small margin for the decoder thread to shut down cleanly.
@@ -252,6 +262,9 @@ impl ProbeBackend for RsmpegProbe {
 
         result.video_bytes_received = video_bytes_received.load(Ordering::Relaxed);
         result.audio_bytes_received = audio_bytes_received.load(Ordering::Relaxed);
+        // The probe does not decode audio; treat received bytes as the track
+        // signal so AV profiles can assert on it.
+        result.audio_tracks = u32::from(result.audio_bytes_received > 0);
 
         ct.cancel();
         graceful_shutdown("WHEP", &mut client, peer).await;

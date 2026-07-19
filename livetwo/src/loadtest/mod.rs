@@ -112,19 +112,29 @@ where
         }
     }
 
-    if let Some(duration) = config.duration {
+    // Join sessions as they finish, racing against the overall duration.
+    // External cancellation propagates to the sessions through their child
+    // tokens, so the JoinSet drains on its own — no explicit branch for it.
+    // When every session ends early (e.g. all failed to connect), this
+    // returns immediately instead of waiting out the full duration.
+    let mut deadline = config.duration.map(|d| tokio::time::Instant::now() + d);
+    while !join_set.is_empty() {
         tokio::select! {
-            _ = ct.cancelled() => {}
-            _ = tokio::time::sleep(duration) => {
-                info!(?duration, "loadtest duration reached, cancelling sessions");
+            _ = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                info!(duration = ?config.duration, "loadtest duration reached, cancelling sessions");
                 ct.cancel();
+                deadline = None;
             }
-        }
-    }
-
-    while let Some(result) = join_set.join_next().await {
-        if let Err(e) = result {
-            warn!(error = ?e, "loadtest session task panicked or was cancelled");
+            result = join_set.join_next() => {
+                if let Some(Err(e)) = result {
+                    warn!(error = ?e, "loadtest session task panicked or was cancelled");
+                }
+            }
         }
     }
 

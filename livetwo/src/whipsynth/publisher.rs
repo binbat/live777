@@ -72,12 +72,10 @@ impl Publisher {
 
         let gather_complete = Arc::new(Notify::new());
         let publish = core::create_publish_peer(
-            ct.clone(),
             gather_complete.clone(),
             PublishPeerOptions {
                 stun_server: Some(self.config.stun_server.clone()),
                 extra_video_codecs,
-                cancel_on_failure: true,
             },
         )
         .await?;

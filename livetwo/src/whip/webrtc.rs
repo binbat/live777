@@ -9,7 +9,6 @@ use rtc_rtcp::receiver_report::ReceiverReport;
 use rtc_rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
 use rtc_rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
 use tokio::sync::{Notify, mpsc::UnboundedSender, watch};
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
 
@@ -19,7 +18,6 @@ use crate::whip::core::{self, PublishDiagnostics, PublishPeerOptions};
 use crate::whip::track;
 
 pub async fn setup_whip_peer(
-    ct: CancellationToken,
     client: &mut Client,
     media_info: &rtsp::MediaInfo,
     input_id: String,
@@ -33,12 +31,8 @@ pub async fn setup_whip_peer(
 )> {
     let gather_complete = Arc::new(Notify::new());
 
-    let publish = core::create_publish_peer(
-        ct.clone(),
-        gather_complete.clone(),
-        PublishPeerOptions::default(),
-    )
-    .await?;
+    let publish =
+        core::create_publish_peer(gather_complete.clone(), PublishPeerOptions::default()).await?;
     let peer = publish.peer;
 
     let video_tx = if let Some(ref video_codec_params) = media_info.video_codec {
