@@ -2,10 +2,9 @@
 
 `WHEP` to `RTP`/`RTSP` tool
 
-This tool has three working mode:
+This tool has two working mode:
 - `rtp`
 - `rtsp as client`
-- `rtsp as server`
 
 ## RTP
 
@@ -31,26 +30,19 @@ Use [`vlc`](/guide/vlc) play
 vlc output.sdp
 ```
 
-## RTSP Server
+## RTSP from live777
 
-It's default mode
-
-This example is `whepfrom` as RTSP Server, use `ffplay` as client use RTSP pull stream
-
-```bash
-whepfrom -w http://localhost:7777/whep/777 -o rtsp-listen://0.0.0.0:8551
-```
-
-### Player
+The `rtsp-listen` (whepfrom as RTSP server) mode was removed. live777 has a
+built-in RTSP server for every stream — pull directly instead:
 
 ```bash
-ffplay rtsp://localhost:8551
+ffplay rtsp://localhost:8554/777
 ```
 
 ### Use transport `tcp`
 
 ```bash
-ffplay rtsp://localhost:8551 -rtsp_transport tcp
+ffplay rtsp://localhost:8554/777 -rtsp_transport tcp
 ```
 
 ## RTSP Client

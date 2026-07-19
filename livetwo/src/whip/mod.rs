@@ -51,6 +51,13 @@ pub async fn into(
         return Ok(());
     }
 
+    // Without the rsmpeg feature a synth:// input would otherwise fall
+    // through to the RTP path and fail with a misleading SDP-file timeout.
+    #[cfg(not(feature = "rsmpeg"))]
+    if target_url.starts_with(&format!("{}://", crate::SCHEME_SYNTH)) {
+        anyhow::bail!("synthetic input requires the rsmpeg feature");
+    }
+
     let mut client = Client::new(whip_url.clone(), Client::get_auth_header_map(token.clone()));
 
     let child = Arc::new(create_child(command)?);
@@ -104,6 +111,7 @@ pub async fn into(
         video_sender.clone(),
         audio_sender.clone(),
         peer.clone(),
+        ct.clone(),
     )
     .await?;
 

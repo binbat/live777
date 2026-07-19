@@ -115,12 +115,19 @@ pub async fn from_with_state(
         }
     });
 
+    let (expected_video, expected_audio) = expected_media_kinds(&answer.sdp);
     let codec_info = tokio::select! {
         _ = ct.cancelled() => {
             graceful_shutdown("WHEP", &mut client, peer).await;
             return Ok(());
         }
-        result = wait_for_codec_info(codec_info.clone(), &target_url, &whep_url) => result?,
+        result = wait_for_codec_info(
+            codec_info.clone(),
+            &target_url,
+            &whep_url,
+            expected_video,
+            expected_audio,
+        ) => result?,
     };
     debug!("Codec info: {:?}", codec_info);
 
@@ -189,7 +196,7 @@ pub async fn from_with_state(
     let output_target = output_handle.await??;
     info!("Output target configured: {:?}", output_target.scheme());
 
-    let mut initial_transport_handle = start_initial_transport_task(
+    let _transport_handle = start_initial_transport_task(
         ct.clone(),
         1,
         video_broadcast_tx.subscribe(),
@@ -197,45 +204,6 @@ pub async fn from_with_state(
         output_target,
         peer.clone(),
     );
-
-    if let Some(mut port_update_rx) = initial_transport_handle.port_update_rx.take() {
-        let peer_clone = peer.clone();
-        let video_broadcast_tx_clone = video_broadcast_tx.clone();
-        let audio_broadcast_tx_clone = audio_broadcast_tx.clone();
-        let ct_clone = ct.clone();
-        tokio::spawn(async move {
-            let mut transport_handles: Vec<tokio::task::JoinHandle<()>> =
-                vec![initial_transport_handle.task_handle];
-
-            loop {
-                tokio::select! {
-                    Some(output_target) = port_update_rx.recv() => {
-                        let connection_id = output_target.connection_id();
-                        info!(
-                            "Starting RTSP output transport task for connection #{}",
-                            connection_id
-                        );
-                        let handle = start_transport_task(
-                            ct_clone.clone(),
-                            connection_id,
-                            video_broadcast_tx_clone.subscribe(),
-                            audio_broadcast_tx_clone.subscribe(),
-                            output_target,
-                            peer_clone.clone(),
-                        );
-
-                        transport_handles.push(handle);
-                        transport_handles.retain(|h| !h.is_finished());
-                        info!("Active transport tasks: {}", transport_handles.len());
-                    }
-                    _ = ct_clone.cancelled() => {
-                        info!("Port update listener shutting down");
-                        break;
-                    }
-                }
-            }
-        });
-    }
 
     if child.as_ref().is_some() {
         let child_clone = child.clone();
@@ -270,39 +238,68 @@ pub async fn from_with_state(
     Ok(())
 }
 
+/// Derive the negotiated track kinds from the WHEP answer SDP, so the codec
+/// wait below can require every negotiated track instead of the first one
+/// that happens to arrive.
+fn expected_media_kinds(answer_sdp: &str) -> (bool, bool) {
+    let mut video = false;
+    let mut audio = false;
+    for line in answer_sdp.lines() {
+        let line = line.trim_start();
+        if line.starts_with("m=video") {
+            video = true;
+        } else if line.starts_with("m=audio") {
+            audio = true;
+        }
+    }
+    (video, audio)
+}
+
 async fn wait_for_codec_info(
     codec_info: Arc<tokio::sync::Mutex<rtsp::CodecInfo>>,
     target_url: &str,
     whep_url: &str,
+    expected_video: bool,
+    expected_audio: bool,
 ) -> Result<rtsp::CodecInfo> {
     const CODEC_WAIT_ATTEMPTS: usize = 300;
+    const PARTIAL_READY_GRACE: Duration = Duration::from_secs(2);
 
     let input = utils::parse_input_url(target_url)?;
     let has_video_param = input.query_pairs().any(|(k, _)| k == media_type::VIDEO);
     let has_audio_param = input.query_pairs().any(|(k, _)| k == media_type::AUDIO);
     let has_any_media_param = has_video_param || has_audio_param;
 
-    // If the caller explicitly requested only video or only audio, wait for
-    // that codec to be observed. Otherwise (no explicit params, or both
-    // requested) wait for at least one of the requested codecs.
-    let wait_for_video = !has_any_media_param || has_video_param;
-    let wait_for_audio = !has_any_media_param || has_audio_param;
+    let mut first_codec_ready_at: Option<std::time::Instant> = None;
 
     for _ in 0..CODEC_WAIT_ATTEMPTS {
         let info = codec_info.lock().await.clone();
         let video_ready = info.video_codec.is_some();
         let audio_ready = info.audio_codec.is_some();
+        let partial_ready = video_ready || audio_ready;
 
-        let satisfied = if !has_any_media_param {
-            // No explicit media params means "include whatever is published";
-            // return as soon as any codec is observed.
-            video_ready || audio_ready
+        let partial_grace_elapsed = if partial_ready && !has_any_media_param {
+            match first_codec_ready_at {
+                Some(at) => at.elapsed() >= PARTIAL_READY_GRACE,
+                None => {
+                    first_codec_ready_at = Some(std::time::Instant::now());
+                    false
+                }
+            }
         } else {
-            // Wait for every codec that the caller explicitly requested.
-            (!wait_for_video || video_ready) && (!wait_for_audio || audio_ready)
+            false
         };
 
-        if satisfied {
+        if codec_wait_satisfied(CodecWaitInput {
+            video_ready,
+            audio_ready,
+            has_any_media_param,
+            has_video_param,
+            has_audio_param,
+            expected_video,
+            expected_audio,
+            partial_grace_elapsed,
+        }) {
             return Ok(info);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -315,16 +312,46 @@ async fn wait_for_codec_info(
     ))
 }
 
+struct CodecWaitInput {
+    video_ready: bool,
+    audio_ready: bool,
+    has_any_media_param: bool,
+    has_video_param: bool,
+    has_audio_param: bool,
+    expected_video: bool,
+    expected_audio: bool,
+    partial_grace_elapsed: bool,
+}
+
+fn codec_wait_satisfied(input: CodecWaitInput) -> bool {
+    if input.has_any_media_param {
+        // Explicit output filters are authoritative: wait for every requested
+        // codec so filter_sdp can keep the requested media section(s).
+        (!input.has_video_param || input.video_ready)
+            && (!input.has_audio_param || input.audio_ready)
+    } else if input.expected_video || input.expected_audio {
+        // With no explicit media params, the negotiated answer tells us which
+        // tracks should be forwarded. Prefer every expected codec, but allow a
+        // short partial-ready grace for single-kind streams whose answer still
+        // advertises both media kinds.
+        ((!input.expected_video || input.video_ready)
+            && (!input.expected_audio || input.audio_ready))
+            || ((input.video_ready || input.audio_ready) && input.partial_grace_elapsed)
+    } else {
+        // Defensive fallback for an answer SDP we cannot classify.
+        input.video_ready || input.audio_ready
+    }
+}
+
 fn start_initial_transport_task(
     ct: CancellationToken,
     connection_id: u32,
     mut video_rx: broadcast::Receiver<Vec<u8>>,
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
-    mut output_target: OutputTarget,
+    output_target: OutputTarget,
     peer: Arc<dyn PeerConnection>,
-) -> InitialTransportHandle {
-    let port_update_rx = output_target.take_port_update_rx();
-    let task_handle = tokio::spawn(async move {
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         info!("Transport task #{} started", connection_id);
 
         let (video_tx, video_rx_bounded) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
@@ -405,27 +432,151 @@ fn start_initial_transport_task(
         let _ = tokio::join!(video_forwarder, audio_forwarder);
 
         info!("Transport task #{} stopped", connection_id);
-    });
+    })
+}
 
-    InitialTransportHandle {
-        task_handle,
-        port_update_rx,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codec_wait_requires_every_negotiated_track_without_output_filters() {
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: true,
+            partial_grace_elapsed: false,
+        };
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            audio_ready: true,
+            ..base
+        }));
     }
-}
 
-struct InitialTransportHandle {
-    task_handle: tokio::task::JoinHandle<()>,
-    port_update_rx: Option<tokio::sync::mpsc::Receiver<OutputTarget>>,
-}
+    #[test]
+    fn codec_wait_allows_partial_negotiated_tracks_after_grace() {
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: true,
+            partial_grace_elapsed: true,
+        };
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
+    }
 
-fn start_transport_task(
-    ct: CancellationToken,
-    connection_id: u32,
-    video_rx: broadcast::Receiver<Vec<u8>>,
-    audio_rx: broadcast::Receiver<Vec<u8>>,
-    output_target: OutputTarget,
-    peer: Arc<dyn PeerConnection>,
-) -> tokio::task::JoinHandle<()> {
-    start_initial_transport_task(ct, connection_id, video_rx, audio_rx, output_target, peer)
-        .task_handle
+    #[test]
+    fn codec_wait_uses_single_negotiated_track_without_waiting_for_missing_kind() {
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: false,
+            partial_grace_elapsed: false,
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: false,
+            audio_ready: true,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: false,
+            expected_audio: true,
+            partial_grace_elapsed: false,
+        }));
+    }
+
+    #[test]
+    fn codec_wait_honors_explicit_output_filters() {
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: true,
+            has_video_param: true,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: true,
+            partial_grace_elapsed: false,
+        };
+        // ?video: satisfied when video is ready, ignores audio
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        // ?video: not satisfied when only audio is ready (even with grace)
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            partial_grace_elapsed: true,
+            ..base
+        }));
+
+        let base = CodecWaitInput {
+            has_audio_param: true,
+            has_video_param: false,
+            ..base
+        };
+        // ?audio: satisfied when audio is ready, ignores video
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
+        // ?audio: not satisfied when only video is ready (even with grace)
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            partial_grace_elapsed: true,
+            ..base
+        }));
+    }
+
+    #[test]
+    fn codec_wait_falls_back_to_any_codec_when_answer_has_no_media_kinds() {
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: false,
+            expected_audio: false,
+            partial_grace_elapsed: false,
+        };
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            partial_grace_elapsed: true,
+            ..base
+        }));
+    }
 }

@@ -308,63 +308,50 @@ ffplay-rtp:
         "ffplay -protocol_whitelist rtp,file,udp -i {{osdp}}"
 
 
-# Aa rtsp server receive stream
+# Push a stream into liveion's built-in RTSP server
 [group('simple-rtsp')]
 ffmpeg-rtsp:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/{{stream}} --command \
-        "ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -vcodec libvpx -f rtsp rtsp://{{host}}:8550"
+    ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -vcodec libvpx -f rtsp {{rtsps}}/{{stream}}
 
 [group('simple-rtsp')]
 ffmpeg-rtsp-tcp:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/{{stream}} --command \
-        "ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -vcodec libvpx -rtsp_transport tcp -f rtsp rtsp://{{host}}:8550"
+    ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -vcodec libvpx -rtsp_transport tcp -f rtsp {{rtsps}}/{{stream}}
 
 [group('simple-rtsp')]
 ffmpeg-rtsp-vp9:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/{{stream}} --command \
-        "ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -strict experimental -vcodec {{vp9}} -f rtsp rtsp://{{host}}:8550"
+    ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -strict experimental -vcodec {{vp9}} -f rtsp {{rtsps}}/{{stream}}
 
 [group('simple-rtsp')]
 ffmpeg-rtsp-h264:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/{{stream}} --command \
-        "ffmpeg -re {{vsrc}} -vcodec {{h264}} -f rtsp rtsp://{{host}}:8550"
+    ffmpeg -re {{vsrc}} -vcodec {{h264}} -f rtsp {{rtsps}}/{{stream}}
 
 ffmpeg-rtsp-h264-raw:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/{{stream}} --command \
-        "ffmpeg -re {{vsrc}} -vcodec libx264 -f rtsp rtsp://{{host}}:8550"
+    ffmpeg -re {{vsrc}} -vcodec libx264 -f rtsp {{rtsps}}/{{stream}}
 
 [group('simple-rtsp')]
 ffmpeg-rtsp-h265:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/{{stream}} --command \
-        "ffmpeg -re {{vsrc}} -vcodec {{h265}} -f rtsp rtsp://{{host}}:8550"
+    ffmpeg -re {{vsrc}} -vcodec {{h265}} -f rtsp {{rtsps}}/{{stream}}
 
 [group('simple-rtsp')]
 ffplay-rtsp:
-    cargo run --bin=whepfrom -- -o rtsp-listen://{{host}}:8650 -w {{server}}/whep/{{stream}} --command \
-        "ffplay rtsp://{{host}}:8650"
+    ffplay {{rtsps}}/{{stream}}
 
 [group('simple-rtsp')]
 ffplay-rtsp-tcp:
-    cargo run --bin=whepfrom -- -o rtsp-listen://{{host}}:8650 -w {{server}}/whep/{{stream}} --command \
-        "ffplay rtsp://{{host}}:8650 -rtsp_transport tcp"
+    ffplay {{rtsps}}/{{stream}} -rtsp_transport tcp
 
 
 [group('cycle-rtsp')]
 cycle-rtsp-0a:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8550 -w {{server}}/whip/cycle-rtsp-a --command \
-        "ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -vcodec libvpx -f rtsp rtsp://{{host}}:8550"
+    ffmpeg -re {{asrc}} {{vsrc}} -acodec libopus -vcodec libvpx -f rtsp {{rtsps}}/cycle-rtsp-a
 
 [group('cycle-rtsp')]
 cycle-rtsp-1a:
-    cargo run --bin=whepfrom -- -o rtsp-listen://{{host}}:8650 -w {{server}}/whep/cycle-rtsp-a
-
-[group('cycle-rtsp')]
-cycle-rtsp-2b:
-    cargo run --bin=whipinto -- -i rtsp://{{host}}:8650 -w {{server}}/whip/cycle-rtsp-b
+    cargo run --bin=whipinto -- -i {{rtsps}}/cycle-rtsp-a -w {{server}}/whip/cycle-rtsp-b
 
 [group('cycle-rtsp')]
 cycle-rtsp-3c:
-    cargo run --bin=whipinto -- -i rtsp-listen://{{host}}:8750 -w {{server}}/whip/cycle-rtsp-c
+    cargo run --bin=whipinto -- -i rtsp://{{host}}:8750 -w {{server}}/whip/cycle-rtsp-c
 
 [group('cycle-rtsp')]
 cycle-rtsp-4b:
@@ -372,8 +359,7 @@ cycle-rtsp-4b:
 
 [group('cycle-rtsp')]
 cycle-rtsp-5c:
-    cargo run --bin=whepfrom -- -o rtsp-listen://{{host}}:8850 -w {{server}}/whep/cycle-rtsp-c --command \
-        "ffplay rtsp://{{host}}:8850"
+    ffplay {{rtsps}}/cycle-rtsp-c
 
 
 # ============================================================

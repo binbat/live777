@@ -11,10 +11,7 @@ use tracing::{debug, error, info, trace};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "source")]
-use rtc::rtp_transceiver::rtp_sender::RTCPFeedback;
-
-#[cfg(feature = "source")]
-use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
+use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 #[cfg(feature = "source")]
 type RtcpSender = Arc<RwLock<Option<mpsc::UnboundedSender<(SocketAddr, Vec<u8>)>>>>;
@@ -49,28 +46,10 @@ pub struct SdpSource {
 #[cfg(feature = "source")]
 #[derive(Clone, Debug)]
 struct SdpMediaInfo {
-    video_codec: Option<VideoCodecInfo>,
-    audio_codec: Option<AudioCodecInfo>,
+    video_codec: Option<rtsp::VideoCodecParams>,
+    audio_codec: Option<rtsp::AudioCodecParams>,
     video_rtcp_addr: Option<SocketAddr>,
     audio_rtcp_addr: Option<SocketAddr>,
-}
-
-#[cfg(feature = "source")]
-#[derive(Clone, Debug)]
-struct VideoCodecInfo {
-    codec_name: String,
-    clock_rate: u32,
-    payload_type: u8,
-    fmtp_line: Option<String>,
-}
-
-#[cfg(feature = "source")]
-#[derive(Clone, Debug)]
-struct AudioCodecInfo {
-    codec_name: String,
-    clock_rate: u32,
-    channels: u16,
-    payload_type: u8,
 }
 
 impl SdpSource {
@@ -138,10 +117,6 @@ impl SdpSource {
     fn parse_sdp(&self) -> Result<ParsedSdp> {
         let mut ports = Vec::new();
         let mut channel = 0u8;
-        let mut video_codec: Option<VideoCodecInfo> = None;
-        let mut audio_codec: Option<AudioCodecInfo> = None;
-        let mut current_media_type: Option<String> = None;
-        let mut current_payload_type: Option<u8> = None;
 
         let connection_info = self.parse_connection_address();
         let mut video_rtcp_addr: Option<SocketAddr> = None;
@@ -152,19 +127,18 @@ impl SdpSource {
             .map(|(_, ipv6)| *ipv6)
             .unwrap_or(false);
 
+        // Scan `m=` lines for media ports and derive RTCP addresses
+        // (port + 1) from the session connection address. Codec parsing is
+        // delegated to the shared libs/rtsp SDP parser below.
         for line in self.sdp_content.lines() {
             let line = line.trim();
 
             if line.starts_with("m=video") || line.starts_with("m=audio") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
+                if parts.len() >= 2 {
                     let media_type = parts[0].trim_start_matches("m=");
-                    current_media_type = Some(media_type.to_string());
 
-                    if let Ok(port) = parts[1].parse::<u16>()
-                        && let Ok(pt) = parts[3].parse::<u8>()
-                    {
-                        current_payload_type = Some(pt);
+                    if let Ok(port) = parts[1].parse::<u16>() {
                         ports.push((channel, port));
 
                         if let Some((ref addr, _)) = connection_info {
@@ -199,79 +173,10 @@ impl SdpSource {
                         channel += 2;
 
                         info!(
-                            "[{}] Found media: {} on port {} (PT={})",
-                            self.config.stream_id, media_type, port, pt
+                            "[{}] Found media: {} on port {}",
+                            self.config.stream_id, media_type, port
                         );
                     }
-                }
-            }
-
-            if line.starts_with("a=rtpmap:") {
-                let rtpmap = line.trim_start_matches("a=rtpmap:");
-                let parts: Vec<&str> = rtpmap.split_whitespace().collect();
-
-                if parts.len() >= 2
-                    && let Ok(pt) = parts[0].parse::<u8>()
-                    && Some(pt) == current_payload_type
-                {
-                    let codec_parts: Vec<&str> = parts[1].split('/').collect();
-
-                    if codec_parts.len() >= 2 {
-                        let codec_name = codec_parts[0].to_string();
-                        let clock_rate = codec_parts[1].parse::<u32>().unwrap_or(90000);
-
-                        match current_media_type.as_deref() {
-                            Some("video") => {
-                                video_codec = Some(VideoCodecInfo {
-                                    codec_name: codec_name.clone(),
-                                    clock_rate,
-                                    payload_type: pt,
-                                    fmtp_line: None,
-                                });
-                                info!(
-                                    "[{}] Parsed video codec: {} ({}Hz, PT={})",
-                                    self.config.stream_id, codec_name, clock_rate, pt
-                                );
-                            }
-                            Some("audio") => {
-                                let channels = if codec_parts.len() >= 3 {
-                                    codec_parts[2].parse::<u16>().unwrap_or(1)
-                                } else {
-                                    1
-                                };
-
-                                audio_codec = Some(AudioCodecInfo {
-                                    codec_name: codec_name.clone(),
-                                    clock_rate,
-                                    channels,
-                                    payload_type: pt,
-                                });
-                                info!(
-                                    "[{}] Parsed audio codec: {} ({}Hz, {} channels, PT={})",
-                                    self.config.stream_id, codec_name, clock_rate, channels, pt
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            if line.starts_with("a=fmtp:") {
-                let fmtp = line.trim_start_matches("a=fmtp:");
-                if let Some((pt_str, params)) = fmtp.split_once(' ')
-                    && let Ok(pt) = pt_str.parse::<u8>()
-                    && Some(pt) == current_payload_type
-                    && let Some("video") = current_media_type.as_deref()
-                    && let Some(ref mut vc) = video_codec
-                {
-                    vc.fmtp_line = Some(params.trim().to_string());
-                    info!(
-                        "[{}] Parsed video fmtp for PT={}: {}",
-                        self.config.stream_id,
-                        pt,
-                        params.trim()
-                    );
                 }
             }
         }
@@ -280,9 +185,26 @@ impl SdpSource {
             anyhow::bail!("No valid media ports found in SDP");
         }
 
+        // Shared SDP codec parsing (libs/rtsp): keeps codec parameters such
+        // as H264 sprop-parameter-sets and H265 sprop-vps/sps/pps.
+        let parsed = rtsp::parse_media_info_from_sdp(self.sdp_content.as_bytes())?;
+
+        if let Some(ref codec) = parsed.video_codec {
+            info!(
+                "[{}] Parsed video codec: {:?}",
+                self.config.stream_id, codec
+            );
+        }
+        if let Some(ref codec) = parsed.audio_codec {
+            info!(
+                "[{}] Parsed audio codec: {:?}",
+                self.config.stream_id, codec
+            );
+        }
+
         let media_info = SdpMediaInfo {
-            video_codec,
-            audio_codec,
+            video_codec: parsed.video_codec,
+            audio_codec: parsed.audio_codec,
             video_rtcp_addr,
             audio_rtcp_addr,
         };
@@ -456,74 +378,17 @@ impl SdpSource {
     }
 
     #[cfg(feature = "source")]
-    fn video_codec_to_rtc(codec: &VideoCodecInfo) -> RTCRtpCodecParameters {
-        let mime_type = format!("video/{}", codec.codec_name.to_uppercase());
-        let codec_upper = codec.codec_name.to_uppercase();
-
-        let sdp_fmtp_line = if codec_upper == "H264" {
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_string()
-        } else if codec_upper == "H265" || codec_upper == "HEVC" {
-            // Preserve any fmtp line from the source SDP; if none is present, use a
-            // default H.265 fmtp so browsers can negotiate the codec.
-            codec
-                .fmtp_line
-                .clone()
-                .unwrap_or_else(|| "profile-id=0;tier-flag=0;tx-mode=SRST".to_string())
-        } else {
-            String::new()
-        };
-
-        RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type,
-                clock_rate: codec.clock_rate,
-                channels: 0,
-                sdp_fmtp_line,
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "goog-remb".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "transport-cc".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "ccm".to_owned(),
-                        parameter: "fir".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_owned(),
-                        parameter: "".to_owned(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_owned(),
-                        parameter: "pli".to_owned(),
-                    },
-                ],
-            },
-            payload_type: codec.payload_type,
+    fn video_codec_to_rtc(codec: &rtsp::VideoCodecParams) -> RTCRtpCodecParameters {
+        let mut params = crate::rtsp_codec::video_codec_to_rtc(codec);
+        // Keep the historical H265 browser fallback: when the source SDP
+        // carries no sprop parameters, offer a default H265 fmtp so browsers
+        // can negotiate the codec.
+        if matches!(codec, rtsp::VideoCodecParams::H265 { .. })
+            && params.rtp_codec.sdp_fmtp_line.is_empty()
+        {
+            params.rtp_codec.sdp_fmtp_line = "profile-id=0;tier-flag=0;tx-mode=SRST".to_string();
         }
-    }
-
-    #[cfg(feature = "source")]
-    fn audio_codec_to_rtc(codec: &AudioCodecInfo) -> RTCRtpCodecParameters {
-        let mime_type = format!("audio/{}", codec.codec_name.to_uppercase());
-
-        RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type,
-                clock_rate: codec.clock_rate,
-                channels: codec.channels,
-                sdp_fmtp_line: if codec.codec_name.to_lowercase() == "opus" {
-                    "minptime=10;useinbandfec=1".to_string()
-                } else {
-                    String::new()
-                },
-                rtcp_feedback: vec![],
-            },
-            payload_type: codec.payload_type,
-        }
+        params
     }
 
     #[cfg(feature = "source")]
@@ -715,7 +580,7 @@ impl StreamSource for SdpSource {
             && let Some(ref info) = *media_info
             && let Some(ref audio_codec) = info.audio_codec
         {
-            return Some(Self::audio_codec_to_rtc(audio_codec));
+            return Some(crate::rtsp_codec::audio_codec_to_rtc(audio_codec));
         }
 
         None
@@ -731,16 +596,30 @@ impl StreamSource for SdpSource {
 mod tests {
     use super::*;
 
-    #[test]
-    fn h265_without_fmtp_gets_default_profile() {
-        let codec = VideoCodecInfo {
-            codec_name: "H265".to_string(),
-            clock_rate: 90000,
-            payload_type: 97,
-            fmtp_line: None,
-        };
+    fn test_source(sdp: &str) -> SdpSource {
+        SdpSource::new(
+            InternalSourceConfig {
+                stream_id: "test".to_string(),
+                url: "test.sdp".to_string(),
+            },
+            sdp.to_string(),
+        )
+        .unwrap()
+    }
 
-        let params = SdpSource::video_codec_to_rtc(&codec);
+    fn h265(vps: Vec<u8>, sps: Vec<u8>, pps: Vec<u8>) -> rtsp::VideoCodecParams {
+        rtsp::VideoCodecParams::H265 {
+            payload_type: 97,
+            clock_rate: 90000,
+            vps,
+            sps,
+            pps,
+        }
+    }
+
+    #[test]
+    fn h265_without_sprop_gets_default_profile() {
+        let params = SdpSource::video_codec_to_rtc(&h265(vec![], vec![], vec![]));
 
         assert_eq!(params.rtp_codec.mime_type, "video/H265");
         assert!(
@@ -756,29 +635,37 @@ mod tests {
     }
 
     #[test]
-    fn h265_with_fmtp_preserves_source_params() {
-        let codec = VideoCodecInfo {
-            codec_name: "H265".to_string(),
-            clock_rate: 90000,
-            payload_type: 97,
-            fmtp_line: Some("profile-id=1;tier-flag=0;tx-mode=SRST".to_string()),
-        };
+    fn h265_with_sprop_uses_sprop_fmtp() {
+        let params = SdpSource::video_codec_to_rtc(&h265(vec![1], vec![2], vec![3]));
 
-        let params = SdpSource::video_codec_to_rtc(&codec);
-
-        assert_eq!(
-            params.rtp_codec.sdp_fmtp_line,
-            "profile-id=1;tier-flag=0;tx-mode=SRST"
+        let fmtp = &params.rtp_codec.sdp_fmtp_line;
+        assert!(
+            fmtp.contains("sprop-vps=AQ=="),
+            "expected sprop-vps in fmtp, got {fmtp}"
+        );
+        assert!(
+            fmtp.contains("sprop-sps=Ag=="),
+            "expected sprop-sps in fmtp, got {fmtp}"
+        );
+        assert!(
+            fmtp.contains("sprop-pps=Aw=="),
+            "expected sprop-pps in fmtp, got {fmtp}"
+        );
+        assert!(
+            !fmtp.contains("tx-mode=SRST"),
+            "sprop present, default fallback must not apply: {fmtp}"
         );
     }
 
     #[test]
     fn h264_keeps_default_fmtp() {
-        let codec = VideoCodecInfo {
-            codec_name: "H264".to_string(),
-            clock_rate: 90000,
+        let codec = rtsp::VideoCodecParams::H264 {
             payload_type: 96,
-            fmtp_line: None,
+            clock_rate: 90000,
+            profile_level_id: None,
+            packetization_mode: None,
+            sps: vec![],
+            pps: vec![],
         };
 
         let params = SdpSource::video_codec_to_rtc(&codec);
@@ -789,5 +676,46 @@ mod tests {
                 .sdp_fmtp_line
                 .contains("profile-level-id=42001f")
         );
+        assert!(
+            params
+                .rtp_codec
+                .sdp_fmtp_line
+                .contains("packetization-mode=1")
+        );
+    }
+
+    #[test]
+    fn parses_ports_codecs_and_rtcp_with_shared_parser() {
+        let sdp = "v=0\r\n\
+                   o=- 0 0 IN IP4 127.0.0.1\r\n\
+                   s=test\r\n\
+                   c=IN IP4 127.0.0.1\r\n\
+                   t=0 0\r\n\
+                   m=video 5004 RTP/AVP 96\r\n\
+                   a=rtpmap:96 H264/90000\r\n\
+                   a=fmtp:96 profile-level-id=42001f;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM4yyA==\r\n\
+                   m=audio 5006 RTP/AVP 111\r\n\
+                   a=rtpmap:111 opus/48000/2\r\n";
+
+        let source = test_source(sdp);
+        let (ports, media_info, is_ipv6) = source.parse_sdp().unwrap();
+
+        assert_eq!(ports, vec![(0u8, 5004u16), (2u8, 5006u16)]);
+        assert!(!is_ipv6);
+        assert_eq!(media_info.video_rtcp_addr.unwrap().port(), 5005);
+        assert_eq!(media_info.audio_rtcp_addr.unwrap().port(), 5007);
+
+        match media_info.video_codec.unwrap() {
+            rtsp::VideoCodecParams::H264 { sps, pps, .. } => {
+                assert!(!sps.is_empty(), "H264 sprop SPS must be retained");
+                assert!(!pps.is_empty(), "H264 sprop PPS must be retained");
+            }
+            other => panic!("expected H264, got {other:?}"),
+        }
+
+        let audio = media_info.audio_codec.unwrap();
+        assert_eq!(audio.codec.to_lowercase(), "opus");
+        assert_eq!(audio.clock_rate, 48000);
+        assert_eq!(audio.channels, 2);
     }
 }

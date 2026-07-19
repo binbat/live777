@@ -18,6 +18,8 @@ jobs:
         uses: actions/checkout@v6
       - name: Install FFmpeg for rsmpeg
         uses: ./.github/actions/install-ffmpeg
+      - name: Install GStreamer
+        uses: ./.github/actions/install-gstreamer
       - name: Install pnpm
         uses: pnpm/action-setup@v6
       - name: Setup Nodejs
@@ -43,7 +45,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
       - name: Generate code coverage
-        run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp --lcov --output-path lcov.info
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
       - name: Upload coverage to codecov.io
@@ -90,6 +92,6 @@ jobs:
             # Native V4L2/libcamera/RDK backends require Linux kernel headers.
             # On macOS/Windows test the full non-native feature set + rsmpeg + whepwright instead.
             cargo build --all-targets \
-              --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright \
+              --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp \
               --release --verbose
           fi

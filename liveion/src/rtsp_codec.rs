@@ -1,6 +1,30 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
 
+/// Convert an audio codec announcement into a WebRTC codec description.
+///
+/// Shared by [`crate::stream::source::sdp_source`] and
+/// [`crate::stream::source::rtsp_source`].
+#[cfg(any(feature = "source-sdp", feature = "source-rtsp"))]
+pub(crate) fn audio_codec_to_rtc(codec: &rtsp::AudioCodecParams) -> RTCRtpCodecParameters {
+    let mime_type = format!("audio/{}", codec.codec.to_uppercase());
+
+    RTCRtpCodecParameters {
+        rtp_codec: RTCRtpCodec {
+            mime_type,
+            clock_rate: codec.clock_rate,
+            channels: codec.channels,
+            sdp_fmtp_line: if codec.codec.to_lowercase() == "opus" {
+                "minptime=10;useinbandfec=1".to_string()
+            } else {
+                String::new()
+            },
+            rtcp_feedback: vec![],
+        },
+        payload_type: codec.payload_type,
+    }
+}
+
 /// Convert an RTSP video codec announcement into a WebRTC codec description.
 ///
 /// Shared between [`crate::rtsp_server`] (server-side SDP construction) and

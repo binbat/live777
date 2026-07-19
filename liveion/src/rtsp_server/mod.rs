@@ -317,7 +317,11 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     for track in tracks {
                         let (rtp_channel, rtcp_channel) = channel_for(track.kind());
 
-                        // RTP forward.
+                        // RTP forward. Outgoing packets are re-stamped with
+                        // the payload type the pull SDP advertises for this
+                        // track — the publisher's own PT (e.g. the static 9
+                        // of G722) does not necessarily match it.
+                        let payload_type = sdp_payload_type(&track.codec());
                         let tx_clone = tx.clone();
                         let mut packet_rx = track.subscribe();
                         let task_cancel = pull_cancel.child_token();
@@ -330,8 +334,10 @@ impl rtsp::server::SessionHandler for RtspHandler {
                                             Ok(p) => p,
                                             Err(_) => break,
                                         };
+                                        let mut packet = (*packet).clone();
+                                        packet.header.payload_type = payload_type;
                                         let mut buf = vec![0u8; packet.marshal_size()];
-                                        if Marshal::marshal_to(&*packet, &mut buf).is_err() {
+                                        if Marshal::marshal_to(&packet, &mut buf).is_err() {
                                             continue;
                                         }
                                         if tx_clone.send((rtp_channel, buf)).await.is_err() {
@@ -594,6 +600,26 @@ async fn wait_for_tracks(forward: &crate::forward::PeerForward) -> Result<Vec<Pu
     }
 }
 
+/// Payload type advertised in the pull SDP (and stamped into forwarded
+/// packets) for a track.
+///
+/// When a WHIP-published stream is described before the first RTP packet
+/// arrives, the negotiated payload type is still 0 (not yet detected).
+/// Default to 96 (dynamic PT range) for video and use the static PT defined
+/// in RFC 3551 for well-known audio codecs so the SDP remains valid.
+fn sdp_payload_type(codec: &crate::forward::message::Codec) -> u8 {
+    if codec.payload_type != 0 {
+        codec.payload_type
+    } else {
+        match codec.codec.as_str() {
+            "pcma" => 8,
+            "pcmu" => 0,
+            "g722" => 9,
+            _ => 96,
+        }
+    }
+}
+
 fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
     let mut lines = vec![
         "v=0".to_string(),
@@ -604,21 +630,7 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
 
     for track in tracks {
         let codec = track.codec();
-        // When a WHIP-published stream is described before the first RTP
-        // packet arrives, the negotiated payload type is still 0 (not yet
-        // detected).  Default to 96 (dynamic PT range) for video and use the
-        // static PT defined in RFC 3551 for well-known audio codecs so the
-        // SDP remains valid.
-        let pt = if codec.payload_type != 0 {
-            codec.payload_type
-        } else {
-            match codec.codec.as_str() {
-                "pcma" => 8,
-                "pcmu" => 0,
-                "g722" => 9,
-                _ => 96,
-            }
-        };
+        let pt = sdp_payload_type(&codec);
         let (media, clock_rate, channels) = match codec.codec.as_str() {
             "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => ("video", codec.clock_rate, None),
             "opus" | "g722" | "pcma" | "pcmu" => {

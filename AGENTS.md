@@ -235,8 +235,10 @@ The project uses `cargo nextest` with configuration in `.config/nextest.toml`.
 Run tests:
 
 ```bash
-# full workspace with coverage and playwright harness
-cargo llvm-cov nextest --profile ci --workspace --features whepwright --lcov --output-path lcov.info
+# full workspace with coverage, matching the CI feature set
+cargo llvm-cov nextest --profile ci --workspace \
+  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp \
+  --lcov --output-path lcov.info
 
 # without coverage
 cargo nextest run --workspace
@@ -244,12 +246,18 @@ cargo nextest run --workspace
 
 Integration test binaries live in `tests/`:
 
-- `tests/rtp.rs`
-- `tests/rtsp.rs`, `tests/rtsp2.rs`
+- `tests/matrix/` — the end-to-end source × media-profile × player matrix
+  harness (test binary `matrix`). Codec combinations are declared once in
+  `tests/matrix/profile.rs`; sources live in `tests/matrix/source/`, players
+  (livetwo+ffprobe, rsmpeg, Playwright) in `tests/matrix/player/`, and the
+  shared liveion/port/wait/ffprobe infrastructure in
+  `tests/matrix/runner.rs` and `tests/matrix/probe.rs`. The liveion RTSP
+  server push→pull round-trip (former `tests/rtsp.rs`) and the full
+  RTSP→WHIP→WHEP→RTSP conversion cycle (former `tests/rtsp2.rs`) live here
+  as the `rtsp_roundtrip_*` and `rtsp_cycle_*` matrices.
 - `tests/channel.rs`
-- `tests/tests.rs`
+- `tests/tests.rs` — liveion API smoke tests
 - `tests/recorder.rs`
-- `tests/playwright_whep/`
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
