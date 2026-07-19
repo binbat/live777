@@ -59,20 +59,19 @@ impl Player for PlaywrightWhepPlayer {
         // render the stats snapshot may still show zero audio bytes. Give
         // audio profiles one fresh retry: by then the publish side has been
         // streaming for seconds and audio is flowing from the first frame.
-        for attempt in 0..2 {
-            let result = self.play_once(whep_url).await?;
+        let mut result = self.play_once(whep_url).await?;
 
-            let audio_missing =
-                profile.audio.is_some() && result.connected && result.audio_tracks == 0;
-            if audio_missing && attempt == 0 {
-                tracing::warn!(
-                    "browser reported no audio bytes for an audio profile; retrying playback"
-                );
-                continue;
-            }
-            return Ok(result);
+        if profile.audio.is_some()
+            && result.connected
+            && result.audio_tracks == 0
+        {
+            tracing::warn!(
+                "browser reported no audio bytes for an audio profile; retrying playback"
+            );
+            result = self.play_once(whep_url).await?;
         }
-        unreachable!()
+
+        Ok(result)
     }
 }
 

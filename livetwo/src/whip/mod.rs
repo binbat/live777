@@ -111,6 +111,7 @@ pub async fn into(
         video_sender.clone(),
         audio_sender.clone(),
         peer.clone(),
+        ct.clone(),
     )
     .await?;
 
