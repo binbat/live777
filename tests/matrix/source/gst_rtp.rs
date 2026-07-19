@@ -3,7 +3,7 @@ use std::{net::SocketAddr, process::Command};
 use anyhow::{Context, Result};
 
 use super::{ProcessHandle, Source, SourceHandle};
-use crate::profile::{AudioCodec, MediaProfile, VideoCodec};
+use crate::profile::{AudioCodec, MediaProfile};
 
 /// RTP source implemented by spawning `gst-launch-1.0`.
 ///
@@ -26,78 +26,48 @@ impl GstRtpSource {
         let mut elements = vec!["udpsink"];
         if let Some(video) = self.profile.video {
             elements.push("videotestsrc");
-            elements.push(gst_video_encoder(video.codec).0);
-            elements.push(gst_payloader(video.codec));
+            elements.push(video.codec.gst_encoder().0);
+            elements.push(video.codec.gst_pay());
         }
         if let Some(audio) = self.profile.audio {
             elements.push("audiotestsrc");
-            elements.push(gst_audio_encoder(audio).0);
-            elements.push(gst_payloader_audio(audio));
+            elements.push(audio.gst_encoder().0);
+            elements.push(audio.gst_pay());
         }
         elements
     }
 }
 
-pub fn gst_video_encoder(codec: VideoCodec) -> (&'static str, &'static str) {
-    match codec {
-        VideoCodec::Vp8 => ("vp8enc", ""),
-        VideoCodec::H264 => (
-            "x264enc",
-            "tune=zerolatency speed-preset=ultrafast key-int-max=5 bitrate=1000",
-        ),
-        VideoCodec::H265 => (
-            "x265enc",
-            "tune=zerolatency speed-preset=ultrafast key-int-max=5 bitrate=1000",
-        ),
-        VideoCodec::Vp9 => ("vp9enc", ""),
-        VideoCodec::Av1 => ("av1enc", ""),
-    }
-}
-
-pub fn gst_payloader(codec: VideoCodec) -> &'static str {
-    match codec {
-        VideoCodec::Vp8 => "rtpvp8pay",
-        VideoCodec::H264 => "rtph264pay",
-        VideoCodec::H265 => "rtph265pay",
-        VideoCodec::Vp9 => "rtpvp9pay",
-        VideoCodec::Av1 => "rtpav1pay",
-    }
-}
-
 /// A video pipeline chain ending in an arbitrary sink description.
 pub fn video_chain_sink(
-    codec: VideoCodec,
+    codec: crate::profile::VideoCodec,
     width: u32,
     height: u32,
     fps: u32,
     sink: &str,
 ) -> String {
-    let (encoder, encoder_args) = gst_video_encoder(codec);
+    let (encoder, encoder_args) = codec.gst_encoder();
     // The payloader's default pt is 96 for every codec; pin it so the RTP
     // packets match the payload type declared in the generated SDP.
     format!(
         "videotestsrc is-live=true ! video/x-raw,width={width},height={height},framerate={fps}/1 ! {encoder} {encoder_args} ! {} pt={} ! {sink}",
-        gst_payloader(codec),
+        codec.gst_pay(),
         codec.payload_type()
     )
 }
 
-fn gst_audio_encoder(codec: AudioCodec) -> (&'static str, &'static str) {
-    match codec {
-        AudioCodec::Opus => ("opusenc", ""),
-        AudioCodec::G722 => ("avenc_g722", ""),
-    }
-}
-
-fn gst_payloader_audio(codec: AudioCodec) -> &'static str {
-    match codec {
-        AudioCodec::Opus => "rtpopuspay",
-        AudioCodec::G722 => "rtpg722pay",
-    }
+fn audio_chain(codec: AudioCodec, host: std::net::IpAddr, port: u16) -> String {
+    let (encoder, encoder_args) = codec.gst_encoder();
+    // Pin the payload type to match the generated SDP, same as the video chain.
+    format!(
+        "audiotestsrc is-live=true ! {encoder} {encoder_args} ! {} pt={} ! udpsink host={host} port={port}",
+        codec.gst_pay(),
+        codec.payload_type()
+    )
 }
 
 fn video_chain(
-    codec: VideoCodec,
+    codec: crate::profile::VideoCodec,
     width: u32,
     height: u32,
     fps: u32,
@@ -110,16 +80,6 @@ fn video_chain(
         height,
         fps,
         &format!("udpsink host={host} port={port}"),
-    )
-}
-
-fn audio_chain(codec: AudioCodec, host: std::net::IpAddr, port: u16) -> String {
-    let (encoder, encoder_args) = gst_audio_encoder(codec);
-    // Pin the payload type to match the generated SDP, same as the video chain.
-    format!(
-        "audiotestsrc is-live=true ! {encoder} {encoder_args} ! {} pt={} ! udpsink host={host} port={port}",
-        gst_payloader_audio(codec),
-        codec.payload_type()
     )
 }
 

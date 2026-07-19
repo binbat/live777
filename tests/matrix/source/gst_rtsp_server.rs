@@ -45,8 +45,8 @@ impl GstRtspServerSource {
     pub fn required_elements(&self) -> Vec<&'static str> {
         let mut elements = vec!["videotestsrc"];
         if let Some(video) = self.profile.video {
-            elements.push(super::gst_rtp::gst_video_encoder(video.codec).0);
-            elements.push(super::gst_rtp::gst_payloader(video.codec));
+            elements.push(video.codec.gst_encoder().0);
+            elements.push(video.codec.gst_pay());
         }
         elements
     }
@@ -108,7 +108,7 @@ impl Source for GstRtspServerSource {
         let binary = server_binary()?;
 
         let port = crate::runner::reserve_and_release_tcp_port(IpAddr::V4(Ipv4Addr::LOCALHOST));
-        let (encoder, encoder_args) = super::gst_rtp::gst_video_encoder(video.codec);
+        let (encoder, encoder_args) = video.codec.gst_encoder();
         let pipeline = format!(
             "( videotestsrc is-live=true ! video/x-raw,width={},height={},framerate={}/1 ! {} {} ! {} name=pay0 pt={} )",
             video.width,
@@ -116,7 +116,7 @@ impl Source for GstRtspServerSource {
             video.fps,
             encoder,
             encoder_args,
-            super::gst_rtp::gst_payloader(video.codec),
+            video.codec.gst_pay(),
             video.codec.payload_type(),
         );
 

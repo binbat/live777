@@ -24,8 +24,8 @@ impl GstWhipSource {
     pub fn required_elements(&self) -> Vec<&'static str> {
         let mut elements = vec!["videotestsrc", "whipsink", "udpsink"];
         if let Some(video) = self.profile.video {
-            elements.push(super::gst_rtp::gst_video_encoder(video.codec).0);
-            elements.push(super::gst_rtp::gst_payloader(video.codec));
+            elements.push(video.codec.gst_encoder().0);
+            elements.push(video.codec.gst_pay());
         }
         elements
     }

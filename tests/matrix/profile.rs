@@ -167,6 +167,58 @@ impl VideoCodec {
             VideoCodec::Av1 => "av1",
         }
     }
+
+    // --- GStreamer element names ---
+
+    /// GStreamer RTP depayloader element name.
+    pub fn gst_depay(&self) -> &'static str {
+        match self {
+            VideoCodec::Vp8 => "rtpvp8depay",
+            VideoCodec::H264 => "rtph264depay",
+            VideoCodec::H265 => "rtph265depay",
+            VideoCodec::Vp9 => "rtpvp9depay",
+            VideoCodec::Av1 => "rtpav1depay",
+        }
+    }
+
+    /// GStreamer decoder element name.
+    pub fn gst_dec(&self) -> &'static str {
+        match self {
+            VideoCodec::Vp8 => "vp8dec",
+            VideoCodec::H264 => "avdec_h264",
+            VideoCodec::H265 => "avdec_h265",
+            VideoCodec::Vp9 => "vp9dec",
+            VideoCodec::Av1 => "avdec_av1",
+        }
+    }
+
+    /// GStreamer RTP payloader element name.
+    pub fn gst_pay(&self) -> &'static str {
+        match self {
+            VideoCodec::Vp8 => "rtpvp8pay",
+            VideoCodec::H264 => "rtph264pay",
+            VideoCodec::H265 => "rtph265pay",
+            VideoCodec::Vp9 => "rtpvp9pay",
+            VideoCodec::Av1 => "rtpav1pay",
+        }
+    }
+
+    /// GStreamer encoder element name and extra properties string.
+    pub fn gst_encoder(&self) -> (&'static str, &'static str) {
+        match self {
+            VideoCodec::Vp8 => ("vp8enc", ""),
+            VideoCodec::H264 => (
+                "x264enc",
+                "tune=zerolatency speed-preset=ultrafast key-int-max=5 bitrate=1000",
+            ),
+            VideoCodec::H265 => (
+                "x265enc",
+                "tune=zerolatency speed-preset=ultrafast key-int-max=5 bitrate=1000",
+            ),
+            VideoCodec::Vp9 => ("vp9enc", ""),
+            VideoCodec::Av1 => ("av1enc", ""),
+        }
+    }
 }
 
 /// Supported audio codecs for the test sources.
@@ -245,6 +297,40 @@ impl AudioCodec {
         match self {
             AudioCodec::Opus => "opus",
             AudioCodec::G722 => "adpcm_g722",
+        }
+    }
+
+    // --- GStreamer element names ---
+
+    /// GStreamer RTP depayloader element name.
+    pub fn gst_depay(&self) -> &'static str {
+        match self {
+            AudioCodec::Opus => "rtpopusdepay",
+            AudioCodec::G722 => "rtpg722depay",
+        }
+    }
+
+    /// GStreamer decoder element name.
+    pub fn gst_dec(&self) -> &'static str {
+        match self {
+            AudioCodec::Opus => "opusdec",
+            AudioCodec::G722 => "avdec_g722",
+        }
+    }
+
+    /// GStreamer RTP payloader element name.
+    pub fn gst_pay(&self) -> &'static str {
+        match self {
+            AudioCodec::Opus => "rtpopuspay",
+            AudioCodec::G722 => "rtpg722pay",
+        }
+    }
+
+    /// GStreamer encoder element name and extra properties string.
+    pub fn gst_encoder(&self) -> (&'static str, &'static str) {
+        match self {
+            AudioCodec::Opus => ("opusenc", ""),
+            AudioCodec::G722 => ("avenc_g722", ""),
         }
     }
 }

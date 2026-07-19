@@ -6,7 +6,7 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use super::{PlayResult, Player, parse_whep_url, wait_subscribe_connected};
-use crate::profile::{AudioCodec, MediaProfile, VideoCodec, VideoSpec};
+use crate::profile::{AudioCodec, MediaProfile, VideoSpec};
 use crate::runner::alloc_udp_ports;
 
 /// WHEP player that forwards via `livetwo::whep::from` to RTP/UDP and
@@ -24,42 +24,27 @@ const GST_TIMEOUT: Duration = Duration::from_secs(30);
 const VIDEO_BUFFERS: u32 = 60;
 const AUDIO_BUFFERS: u32 = 100;
 
-fn video_depay_dec(codec: VideoCodec) -> (&'static str, &'static str) {
-    match codec {
-        VideoCodec::Vp8 => ("rtpvp8depay", "vp8dec"),
-        VideoCodec::H264 => ("rtph264depay", "avdec_h264"),
-        VideoCodec::H265 => ("rtph265depay", "avdec_h265"),
-        VideoCodec::Vp9 => ("rtpvp9depay", "vp9dec"),
-        VideoCodec::Av1 => ("rtpav1depay", "avdec_av1"),
-    }
-}
-
-fn audio_depay_dec(codec: AudioCodec) -> (&'static str, &'static str) {
-    match codec {
-        AudioCodec::Opus => ("rtpopusdepay", "opusdec"),
-        AudioCodec::G722 => ("rtpg722depay", "avdec_g722"),
-    }
-}
-
 fn video_receiver(spec: &VideoSpec, port: u16) -> String {
-    let (depay, dec) = video_depay_dec(spec.codec);
     format!(
-        "udpsrc port={port} caps=application/x-rtp,media=video,encoding-name={},payload={},clock-rate=90000 ! rtpjitterbuffer ! {depay} ! {dec} ! videoconvert ! video/x-raw,width={},height={} ! fakesink num-buffers={VIDEO_BUFFERS}",
+        "udpsrc port={port} caps=application/x-rtp,media=video,encoding-name={},payload={},clock-rate=90000 ! rtpjitterbuffer ! {} ! {} ! videoconvert ! video/x-raw,width={},height={} ! fakesink num-buffers={VIDEO_BUFFERS}",
         spec.codec.rtp_payload_name(),
         spec.codec.payload_type(),
+        spec.codec.gst_depay(),
+        spec.codec.gst_dec(),
         spec.width,
         spec.height,
     )
 }
 
 fn audio_receiver(codec: AudioCodec, port: u16) -> String {
-    let (depay, dec) = audio_depay_dec(codec);
     let (encoding, clock_rate) = match codec {
         AudioCodec::Opus => ("OPUS", 48000),
         AudioCodec::G722 => ("G722", 8000),
     };
     format!(
-        "udpsrc port={port} caps=application/x-rtp,media=audio,encoding-name={encoding},payload={pt},clock-rate={clock_rate} ! {depay} ! {dec} ! audioconvert ! audio/x-raw,channels={channels} ! fakesink num-buffers={AUDIO_BUFFERS}",
+        "udpsrc port={port} caps=application/x-rtp,media=audio,encoding-name={encoding},payload={pt},clock-rate={clock_rate} ! {} ! {} ! audioconvert ! audio/x-raw,channels={channels} ! fakesink num-buffers={AUDIO_BUFFERS}",
+        codec.gst_depay(),
+        codec.gst_dec(),
         pt = codec.payload_type(),
         channels = codec.channels(),
     )
@@ -70,12 +55,18 @@ impl GstRtpPlayer {
     pub fn required_elements(profile: &MediaProfile) -> Vec<&'static str> {
         let mut elements = vec!["udpsrc", "fakesink", "rtpjitterbuffer"];
         if let Some(video) = profile.video {
-            let (depay, dec) = video_depay_dec(video.codec);
-            elements.extend([depay, dec, "videoconvert"]);
+            elements.extend([
+                video.codec.gst_depay(),
+                video.codec.gst_dec(),
+                "videoconvert",
+            ]);
         }
         if let Some(audio) = profile.audio {
-            let (depay, dec) = audio_depay_dec(audio);
-            elements.extend([depay, dec, "audioconvert"]);
+            elements.extend([
+                audio.gst_depay(),
+                audio.gst_dec(),
+                "audioconvert",
+            ]);
         }
         elements
     }

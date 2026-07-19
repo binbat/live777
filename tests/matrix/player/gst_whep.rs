@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tokio::process::Command;
 
 use super::{PlayResult, Player};
-use crate::profile::{MediaProfile, VideoCodec, VideoSpec};
+use crate::profile::{MediaProfile, VideoSpec};
 
 /// WHEP player driven by GStreamer's `whepsrc` element (gst-plugins-rs
 /// webrtchttp) receiving directly from the WHIP/WHEP endpoint — no whepfrom
@@ -19,33 +19,27 @@ pub struct GstWhepPlayer;
 const GST_TIMEOUT: Duration = Duration::from_secs(30);
 const VIDEO_BUFFERS: u32 = 60;
 
-fn decode_chain(codec: VideoCodec) -> (&'static str, &'static str) {
-    match codec {
-        VideoCodec::Vp8 => ("rtpvp8depay", "vp8dec"),
-        VideoCodec::H264 => ("rtph264depay", "avdec_h264"),
-        VideoCodec::H265 => ("rtph265depay", "avdec_h265"),
-        VideoCodec::Vp9 => ("rtpvp9depay", "vp9dec"),
-        VideoCodec::Av1 => ("rtpav1depay", "avdec_av1"),
-    }
-}
-
 impl GstWhepPlayer {
     pub fn required_elements(profile: &MediaProfile) -> Vec<&'static str> {
         let mut elements = vec!["whepsrc", "fakesink", "rtpjitterbuffer"];
         if let Some(video) = profile.video {
-            let (depay, dec) = decode_chain(video.codec);
-            elements.extend([depay, dec, "videoconvert"]);
+            elements.extend([
+                video.codec.gst_depay(),
+                video.codec.gst_dec(),
+                "videoconvert",
+            ]);
         }
         elements
     }
 
     fn pipeline(whep_url: &str, spec: &VideoSpec) -> String {
-        let (depay, dec) = decode_chain(spec.codec);
         // whepsrc outputs RTP; explicit caps keep the decoder chain simple.
         format!(
-            "whepsrc whep-endpoint={whep_url} video-caps=application/x-rtp,payload={},encoding-name={},media=video,clock-rate=90000 ! rtpjitterbuffer ! {depay} ! {dec} ! videoconvert ! video/x-raw,width={},height={} ! fakesink num-buffers={VIDEO_BUFFERS}",
+            "whepsrc whep-endpoint={whep_url} video-caps=application/x-rtp,payload={},encoding-name={},media=video,clock-rate=90000 ! rtpjitterbuffer ! {} ! {} ! videoconvert ! video/x-raw,width={},height={} ! fakesink num-buffers={VIDEO_BUFFERS}",
             spec.codec.payload_type(),
             spec.codec.rtp_payload_name(),
+            spec.codec.gst_depay(),
+            spec.codec.gst_dec(),
             spec.width,
             spec.height,
         )

@@ -212,8 +212,8 @@ pub async fn run_rtsp_roundtrip_gst<S: Source>(
     if let Some(video) = profile.video {
         pipeline.push_str(&format!(
             " src. ! rtpjitterbuffer ! {} ! {} ! videoconvert ! video/x-raw,width={},height={} ! fakesink num-buffers=60",
-            gst_video_depay(video.codec),
-            gst_video_dec(video.codec),
+            video.codec.gst_depay(),
+            video.codec.gst_dec(),
             video.width,
             video.height,
         ));
@@ -221,8 +221,8 @@ pub async fn run_rtsp_roundtrip_gst<S: Source>(
     if let Some(audio) = profile.audio {
         pipeline.push_str(&format!(
             " src. ! rtpjitterbuffer ! {} ! {} ! audioconvert ! audio/x-raw,channels={} ! fakesink num-buffers=100",
-            gst_audio_depay(audio),
-            gst_audio_dec(audio),
+            audio.gst_depay(),
+            audio.gst_dec(),
             audio.channels(),
         ));
     }
@@ -278,43 +278,6 @@ pub async fn run_rtsp_roundtrip_gst<S: Source>(
     source_handle.stop().await;
 }
 
-#[cfg(feature = "rtsp")]
-fn gst_video_depay(codec: crate::profile::VideoCodec) -> &'static str {
-    match codec {
-        crate::profile::VideoCodec::Vp8 => "rtpvp8depay",
-        crate::profile::VideoCodec::H264 => "rtph264depay",
-        crate::profile::VideoCodec::H265 => "rtph265depay",
-        crate::profile::VideoCodec::Vp9 => "rtpvp9depay",
-        crate::profile::VideoCodec::Av1 => "rtpav1depay",
-    }
-}
-
-#[cfg(feature = "rtsp")]
-fn gst_video_dec(codec: crate::profile::VideoCodec) -> &'static str {
-    match codec {
-        crate::profile::VideoCodec::Vp8 => "vp8dec",
-        crate::profile::VideoCodec::H264 => "avdec_h264",
-        crate::profile::VideoCodec::H265 => "avdec_h265",
-        crate::profile::VideoCodec::Vp9 => "vp9dec",
-        crate::profile::VideoCodec::Av1 => "avdec_av1",
-    }
-}
-
-#[cfg(feature = "rtsp")]
-fn gst_audio_depay(codec: crate::profile::AudioCodec) -> &'static str {
-    match codec {
-        crate::profile::AudioCodec::Opus => "rtpopusdepay",
-        crate::profile::AudioCodec::G722 => "rtpg722depay",
-    }
-}
-
-#[cfg(feature = "rtsp")]
-fn gst_audio_dec(codec: crate::profile::AudioCodec) -> &'static str {
-    match codec {
-        crate::profile::AudioCodec::Opus => "opusdec",
-        crate::profile::AudioCodec::G722 => "avdec_g722",
-    }
-}
 ///
 /// ```text
 /// ffmpeg --RTSP--> liveion(cycle-a)
