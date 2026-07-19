@@ -73,9 +73,12 @@ pub fn video_chain_sink(
     sink: &str,
 ) -> String {
     let (encoder, encoder_args) = gst_video_encoder(codec);
+    // The payloader's default pt is 96 for every codec; pin it so the RTP
+    // packets match the payload type declared in the generated SDP.
     format!(
-        "videotestsrc is-live=true ! video/x-raw,width={width},height={height},framerate={fps}/1 ! {encoder} {encoder_args} ! {} ! {sink}",
-        gst_payloader(codec)
+        "videotestsrc is-live=true ! video/x-raw,width={width},height={height},framerate={fps}/1 ! {encoder} {encoder_args} ! {} pt={} ! {sink}",
+        gst_payloader(codec),
+        codec.payload_type()
     )
 }
 
@@ -112,9 +115,11 @@ fn video_chain(
 
 fn audio_chain(codec: AudioCodec, host: std::net::IpAddr, port: u16) -> String {
     let (encoder, encoder_args) = gst_audio_encoder(codec);
+    // Pin the payload type to match the generated SDP, same as the video chain.
     format!(
-        "audiotestsrc is-live=true ! {encoder} {encoder_args} ! {} ! udpsink host={host} port={port}",
-        gst_payloader_audio(codec)
+        "audiotestsrc is-live=true ! {encoder} {encoder_args} ! {} pt={} ! udpsink host={host} port={port}",
+        gst_payloader_audio(codec),
+        codec.payload_type()
     )
 }
 

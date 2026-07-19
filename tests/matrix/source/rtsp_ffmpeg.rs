@@ -21,13 +21,8 @@ impl RtspFfmpegSource {
         Self { profile }
     }
 
-    /// Push to `rtsp_url` with an explicit RTSP transport. The default
-    /// [`Source::start_rtsp`] uses TCP.
-    pub fn start_rtsp_with_transport(
-        &self,
-        rtsp_url: &str,
-        transport: RtspTransport,
-    ) -> Result<Box<dyn SourceHandle>> {
+    /// Spawn the ffmpeg push process with an explicit RTSP transport.
+    fn spawn(&self, rtsp_url: &str, transport: RtspTransport) -> Result<Box<dyn SourceHandle>> {
         let mut cmd = Command::new("ffmpeg");
 
         // Input 0: synthetic video (when the profile has one).
@@ -123,7 +118,18 @@ impl Source for RtspFfmpegSource {
         // Use TCP transport for the push — avoids UDP port conflicts in test
         // environments and ensures the RTP stream is interleaved inside the
         // RTSP connection.
-        self.start_rtsp_with_transport(rtsp_url, RtspTransport::Tcp)
+        self.spawn(rtsp_url, RtspTransport::Tcp)
+    }
+
+    // NOTE: this override is load-bearing. Without it, generic callers
+    // (`S: Source`) resolve to the trait's default, which delegates back to
+    // `start_rtsp` and silently turns every UDP transport case into TCP.
+    fn start_rtsp_with_transport(
+        &self,
+        rtsp_url: &str,
+        transport: RtspTransport,
+    ) -> Result<Box<dyn SourceHandle>> {
+        self.spawn(rtsp_url, transport)
     }
 
     fn start(&self, _target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
