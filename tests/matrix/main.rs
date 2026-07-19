@@ -31,14 +31,14 @@ use player::{gst_rtp::GstRtpPlayer, gst_whep::GstWhepPlayer};
 use runner::run_rtsp_roundtrip_gst;
 #[cfg(feature = "rtsp")]
 use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_roundtrip};
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+use source::gst_rtsp_server::GstRtspServerSource;
 #[cfg(feature = "rtsp")]
 use source::rtsp_ffmpeg::RtspFfmpegSource;
 #[cfg(feature = "rsmpeg")]
 use source::synth::SynthSource;
 #[cfg(not(target_os = "windows"))]
-use source::{
-    gst_rtp::GstRtpSource, gst_rtsp_server::GstRtspServerSource, gst_whip::GstWhipSource,
-};
+use source::{gst_rtp::GstRtpSource, gst_whip::GstWhipSource};
 
 // ============================================================
 // FFmpeg RTP sources (ffmpeg CLI → RTP → whipinto → liveion)

@@ -1,5 +1,6 @@
 pub mod ffmpeg;
 pub mod gst_rtp;
+#[cfg(feature = "rtsp")]
 pub mod gst_rtsp_server;
 pub mod gst_whip;
 #[cfg(feature = "rtsp")]
