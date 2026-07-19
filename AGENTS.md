@@ -76,10 +76,9 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 - `livevod`      — VOD/recording playback helper.
 - `net4mqtt`     — net-over-MQTT proxy binary.
 - `livenil`      — cluster nil/bare runner for local multi-node tests.
-- `datachannel_loadtest` — DataChannel load-test binary (feature gated; thin
-  wrapper kept for its env-var interface).
+- `datachannel_loadtest` — load-test binary (feature gated).
 - `loadtest`      — load-testing tool with `whip` (requires `rsmpeg`), `whep`
-  and `channel` (requires `source`) subcommands.
+  subcommands.
 
 ### WebUI Packages (`web/*`)
 

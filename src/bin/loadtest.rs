@@ -1,14 +1,10 @@
-//! Load testing tool for live777: WHIP publish, WHEP subscribe, and
-//! DataChannel <-> UDP forwarding benchmarks.
+//! Load testing tool for live777: WHIP publish and WHEP subscribe.
 //!
 //! Usage:
 //!   loadtest whip  --whip http://localhost:7777/whip/load --sessions 100 --duration 60
 //!   loadtest whep  --whep http://localhost:7777/whep/load --sessions 100 --duration 60
-//!   loadtest channel [all|throughput|latency|bidirectional]
 //!
-//! The `whip` subcommand requires the `rsmpeg` feature; the `channel`
-//! subcommand requires the `source` feature and runs a self-contained
-//! topology (in-process liveion, no external server needed).
+//! The `whip` subcommand requires the `rsmpeg` feature.
 
 use std::time::Duration;
 
@@ -17,8 +13,6 @@ use clap::{ArgAction, Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, info};
 
-#[cfg(feature = "source")]
-mod loadtest_channel;
 #[path = "../log.rs"]
 mod log;
 #[path = "../utils.rs"]
@@ -41,8 +35,6 @@ enum Command {
     Whip(WhipArgs),
     /// Subscribe N concurrent WHEP sessions to one already-published stream
     Whep(WhepArgs),
-    /// DataChannel <-> UDP forwarding benchmark, self-contained (requires the source feature)
-    Channel(ChannelArgs),
 }
 
 #[derive(clap::Args)]
@@ -118,41 +110,6 @@ struct WhepArgs {
     duration: u64,
 }
 
-#[derive(clap::Args)]
-struct ChannelArgs {
-    /// Which measurement to run
-    #[arg(default_value = "all")]
-    mode: String,
-
-    /// UDP payload size in bytes
-    #[arg(long, default_value_t = 1400)]
-    packet_size: usize,
-
-    /// Number of packets per throughput run
-    #[arg(long, default_value_t = 10000)]
-    packet_count: usize,
-
-    /// Warmup packets before measuring (also a readiness probe)
-    #[arg(long, default_value_t = 3)]
-    warmup_packets: usize,
-
-    /// Latency ping-pong rounds
-    #[arg(long, default_value_t = 200)]
-    latency_rounds: usize,
-
-    /// Max in-flight packets (sliding window); default derives from packet size
-    #[arg(long)]
-    window: Option<usize>,
-
-    /// Local address to bind the UDP receivers to
-    #[arg(long, default_value = "127.0.0.1")]
-    bind: String,
-
-    /// Address to send the UDP test traffic to
-    #[arg(long, default_value = "127.0.0.1")]
-    target: String,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     if let Err(e) = run().await {
@@ -180,7 +137,6 @@ async fn run() -> Result<()> {
     match args.command {
         Command::Whip(whip_args) => run_whip(whip_args).await?,
         Command::Whep(whep_args) => run_whep(whep_args).await?,
-        Command::Channel(channel_args) => run_channel(channel_args).await?,
     }
 
     info!("=== Graceful shutdown completed ===");
@@ -290,30 +246,4 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     let stats = livetwo::loadtest::whep::run(&config, params, ct).await?;
     print_stats("WHEP subscribe", &stats);
     Ok(())
-}
-
-#[cfg(feature = "source")]
-async fn run_channel(args: ChannelArgs) -> Result<()> {
-    let params = loadtest_channel::ChannelLoadtestParams {
-        mode: args.mode.parse().map_err(|e: String| anyhow::anyhow!(e))?,
-        packet_size: args.packet_size,
-        packet_count: args.packet_count,
-        warmup_packets: args.warmup_packets,
-        latency_rounds: args.latency_rounds,
-        window: args.window,
-        bind_host: args.bind,
-        target_host: args.target,
-    };
-
-    loadtest_channel::print_environment_hint(&params);
-    loadtest_channel::run(&params)
-        .await
-        .map_err(|e| anyhow::anyhow!(e.to_string()))
-}
-
-#[cfg(not(feature = "source"))]
-async fn run_channel(_args: ChannelArgs) -> Result<()> {
-    anyhow::bail!(
-        "the `channel` subcommand requires the `source` feature; rebuild with --features source"
-    )
 }

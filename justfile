@@ -474,4 +474,4 @@ loadtest-whep sessions="100" duration="60" target_stream=stream:
 
 [group('loadtest')]
 loadtest-channel mode="all":
-    cargo run --release --features source --bin loadtest -- channel {{mode}}
+    cargo run --release --features source --bin datachannel_loadtest -- {{mode}}
