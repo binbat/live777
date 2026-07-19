@@ -80,11 +80,19 @@ impl Source for GstRtspServerSource {
         self.profile
     }
 
-    fn start(&self, _target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
+    fn start_with_audio(
+        &self,
+        _video_addr: Option<SocketAddr>,
+        _audio_addr: Option<SocketAddr>,
+    ) -> Result<Box<dyn SourceHandle>> {
         anyhow::bail!("GstRtspServerSource publishes via livetwo RTSP pull; call start_direct")
     }
 
-    fn sdp(&self, _listen_addr: SocketAddr) -> String {
+    fn sdp_with_audio(
+        &self,
+        _video_addr: Option<SocketAddr>,
+        _audio_addr: Option<SocketAddr>,
+    ) -> String {
         String::new()
     }
 
@@ -121,8 +129,20 @@ impl Source for GstRtspServerSource {
             .spawn()
             .with_context(|| format!("Failed to spawn test-rtsp-server: {pipeline}"))?;
 
-        // Give the gst-rtsp-server a moment to bind before livetwo connects.
-        std::thread::sleep(Duration::from_millis(500));
+        // Wait until the server actually accepts connections. A fixed sleep
+        // here blocked the single-threaded test runtime and flaked on loaded
+        // CI hosts; connecting back is a real readiness check and fails fast.
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(100)) {
+                Ok(_) => break,
+                Err(e) if std::time::Instant::now() >= deadline => {
+                    anyhow::bail!("test-rtsp-server did not listen on {addr} within 5s: {e}")
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
 
         let ct = CancellationToken::new();
         let whip_ct = ct.clone();

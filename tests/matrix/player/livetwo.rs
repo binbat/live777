@@ -89,7 +89,8 @@ impl Player for LivetwoWhepPlayer {
 
         // ffprobe validates the media: it binds the output ports, receives the
         // forwarded RTP and reports the streams it can identify.
-        let probe_result = match probe_output_sdp(&output_sdp_path).await {
+        let expected_tracks = profile.video.is_some() as usize + profile.audio.is_some() as usize;
+        let probe_result = match probe_output_sdp(&output_sdp_path, expected_tracks).await {
             Ok(probe_result) => probe_result,
             Err(e) => {
                 ct.cancel();
@@ -117,20 +118,35 @@ impl Player for LivetwoWhepPlayer {
             profile,
             connected,
             duration_ms,
+            true,
         ))
     }
 }
 
-/// Wait for the output SDP to be populated, then probe it with ffprobe.
-async fn probe_output_sdp(sdp_path: &str) -> Result<probe::Ffprobe> {
+/// Wait for the output SDP to be fully populated, then probe it with ffprobe.
+///
+/// `expected_tracks` is the number of `m=` lines the SDP must contain; whepfrom
+/// may rewrite the file as tracks arrive, so stopping at the first `m=` could
+/// probe a half-written SDP for AV profiles.
+async fn probe_output_sdp(sdp_path: &str, expected_tracks: usize) -> Result<probe::Ffprobe> {
+    let mut populated = false;
     for _ in 0..300 {
-        if let Ok(contents) = std::fs::read_to_string(sdp_path)
-            && contents.contains("m=")
-        {
-            break;
+        if let Ok(contents) = std::fs::read_to_string(sdp_path) {
+            let m_lines = contents
+                .lines()
+                .filter(|line| line.starts_with("m="))
+                .count();
+            if m_lines >= expected_tracks {
+                populated = true;
+                break;
+            }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    anyhow::ensure!(
+        populated,
+        "whepfrom did not write a complete SDP ({expected_tracks} m= lines) to {sdp_path} within 30s"
+    );
 
-    probe::run(&["-protocol_whitelist", "file,rtp,udp", "-i", sdp_path]).await
+    probe::run_counting(&["-protocol_whitelist", "file,rtp,udp", "-i", sdp_path]).await
 }

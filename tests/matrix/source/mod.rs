@@ -56,33 +56,23 @@ pub trait Source: Send + Sync {
     /// ports, build the input SDP and validate playback.
     fn profile(&self) -> MediaProfile;
 
-    fn start(&self, target_addr: SocketAddr) -> anyhow::Result<Box<dyn SourceHandle>>;
-    fn sdp(&self, listen_addr: SocketAddr) -> String;
-
     /// Start the source with separate video and optional audio destinations.
     ///
-    /// Defaults to [`Self::start`] for video-only sources.
+    /// This is the only start entry point: sources that cannot emit an audio
+    /// track must fail here when `audio_addr` is `Some`, so a multi-track
+    /// profile can never silently degrade to video-only.
     fn start_with_audio(
         &self,
         video_addr: Option<SocketAddr>,
-        _audio_addr: Option<SocketAddr>,
-    ) -> anyhow::Result<Box<dyn SourceHandle>> {
-        match video_addr {
-            Some(addr) => self.start(addr),
-            None => anyhow::bail!("audio-only profiles must override start_with_audio"),
-        }
-    }
+        audio_addr: Option<SocketAddr>,
+    ) -> anyhow::Result<Box<dyn SourceHandle>>;
 
     /// Build an SDP with separate video and optional audio ports.
-    ///
-    /// Defaults to [`Self::sdp`] for video-only sources.
     fn sdp_with_audio(
         &self,
         video_addr: Option<SocketAddr>,
-        _audio_addr: Option<SocketAddr>,
-    ) -> String {
-        self.sdp(video_addr.expect("audio-only profiles must override sdp_with_audio"))
-    }
+        audio_addr: Option<SocketAddr>,
+    ) -> String;
 
     /// Whether this source publishes directly to a WHIP endpoint instead of
     /// emitting RTP to a local address.

@@ -132,11 +132,19 @@ impl Source for RtspFfmpegSource {
         self.spawn(rtsp_url, transport)
     }
 
-    fn start(&self, _target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
+    fn start_with_audio(
+        &self,
+        _video_addr: Option<SocketAddr>,
+        _audio_addr: Option<SocketAddr>,
+    ) -> Result<Box<dyn SourceHandle>> {
         anyhow::bail!("RtspFfmpegSource must be used via start_rtsp()")
     }
 
-    fn sdp(&self, _listen_addr: SocketAddr) -> String {
+    fn sdp_with_audio(
+        &self,
+        _video_addr: Option<SocketAddr>,
+        _audio_addr: Option<SocketAddr>,
+    ) -> String {
         // RTSP sources don't need an SDP file — the RTSP ANNOUNCE
         // carries the stream description.
         String::new()

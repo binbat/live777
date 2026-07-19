@@ -139,7 +139,7 @@ pub async fn run_rtsp_roundtrip<S: Source>(source: S, transport: RtspTransport, 
         .expect("ffprobe pull from liveion RTSP server failed");
 
     let duration_ms = start.elapsed().as_millis() as u64;
-    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms, false);
 
     tracing::info!(
         source = source.name(),
@@ -404,7 +404,7 @@ pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind
         .expect("ffprobe pull from cycle-c failed");
 
     let duration_ms = start.elapsed().as_millis() as u64;
-    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms, false);
 
     tracing::info!(
         source = source.name(),
@@ -454,9 +454,14 @@ async fn wait_stream_publish_ready(
         if let Some(r) = body.into_iter().find(|i| i.id == stream_id)
             && !r.publish.sessions.is_empty()
         {
+            // A reconnecting publisher leaves stale sessions behind; any
+            // Connected session is good enough.
             last_state = Some(r.publish.sessions[0].state);
             last_codecs = r.codecs.clone();
-            if r.publish.sessions[0].state == api::response::RTCPeerConnectionState::Connected
+            if r.publish
+                .sessions
+                .iter()
+                .any(|s| s.state == api::response::RTCPeerConnectionState::Connected)
                 && !r.codecs.is_empty()
             {
                 return;
@@ -836,8 +841,13 @@ async fn wait_for_publish_connected(
         if let Some(r) = body.into_iter().find(|i| i.id == "-")
             && !r.publish.sessions.is_empty()
         {
-            let s = r.publish.sessions[0].clone();
-            if s.state == api::response::RTCPeerConnectionState::Connected {
+            // A reconnecting publisher leaves stale sessions behind; index 0
+            // may be a stale Disconnected one.
+            if r.publish
+                .sessions
+                .iter()
+                .any(|s| s.state == api::response::RTCPeerConnectionState::Connected)
+            {
                 publish_connected = true;
                 break;
             }

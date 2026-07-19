@@ -39,11 +39,19 @@ impl Source for SynthSource {
         self.profile
     }
 
-    fn start(&self, _target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
+    fn start_with_audio(
+        &self,
+        _video_addr: Option<SocketAddr>,
+        _audio_addr: Option<SocketAddr>,
+    ) -> Result<Box<dyn SourceHandle>> {
         anyhow::bail!("SynthSource uses direct WHIP publishing; call start_direct")
     }
 
-    fn sdp(&self, _listen_addr: SocketAddr) -> String {
+    fn sdp_with_audio(
+        &self,
+        _video_addr: Option<SocketAddr>,
+        _audio_addr: Option<SocketAddr>,
+    ) -> String {
         String::new()
     }
 

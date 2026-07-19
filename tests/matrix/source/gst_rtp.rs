@@ -160,10 +160,6 @@ impl Source for GstRtpSource {
         self.profile
     }
 
-    fn start(&self, target_addr: SocketAddr) -> Result<Box<dyn SourceHandle>> {
-        self.start_with_audio(Some(target_addr), None)
-    }
-
     fn start_with_audio(
         &self,
         video_addr: Option<SocketAddr>,
@@ -176,10 +172,6 @@ impl Source for GstRtpSource {
             .spawn()
             .with_context(|| format!("Failed to spawn gst-launch-1.0: {pipeline}"))?;
         Ok(Box::new(ProcessHandle::new(child)))
-    }
-
-    fn sdp(&self, listen_addr: SocketAddr) -> String {
-        self.sdp_with_audio(Some(listen_addr), None)
     }
 
     fn sdp_with_audio(
