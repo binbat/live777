@@ -1,13 +1,19 @@
 //! WHEP subscribe loadtest: N concurrent subscribers on one stream, exercising
-//! the SFU's fan-out path. Media is forwarded to per-session UDP ports so the
-//! full forwarding path is exercised.
+//! the SFU's fan-out path. Each session drains the received WebRTC RTP tracks
+//! internally and counts packets/bytes; it does not decode or forward media to
+//! UDP, so the per-session overhead stays low.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{Result, anyhow};
+use libwish::Client;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 use super::{LoadtestConfig, LoadtestStats, SessionMetrics, run_sessions};
+use crate::utils::shutdown::graceful_shutdown;
 
 /// Parameters shared by all subscribe sessions.
 #[derive(Debug, Clone)]
@@ -28,31 +34,82 @@ pub async fn run(
     run_sessions(config, session_ct.clone(), move |_| {
         let params = params.clone();
         let run_ct = session_ct.child_token();
-        async move {
-            let port = portpicker::pick_unused_port()
-                .context("no free UDP port for the subscribe output")?;
-            let output = format!(
-                "rtp://{}",
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
-            );
-
-            let start = std::time::Instant::now();
-            crate::whep::from(
-                run_ct,
-                output,
-                params.whep_url.clone(),
-                None,
-                params.token.clone(),
-                None,
-                None,
-            )
-            .await?;
-
-            Ok(SessionMetrics {
-                connected_duration: start.elapsed(),
-                ..Default::default()
-            })
-        }
+        async move { run_one(params, run_ct).await }
     })
     .await
+}
+
+async fn run_one(params: WhepLoadParams, ct: CancellationToken) -> Result<SessionMetrics> {
+    const MEDIA_CHANNEL_CAPACITY: usize = 512;
+
+    let start = std::time::Instant::now();
+    let packets = Arc::new(AtomicU64::new(0));
+    let bytes = Arc::new(AtomicU64::new(0));
+
+    let (video_tx, video_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
+    let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
+    let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
+
+    let mut client = Client::new(
+        params.whep_url.clone(),
+        Client::get_auth_header_map(params.token.clone()),
+    );
+
+    let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = crate::whep::setup_whep_peer(
+        ct.clone(),
+        &mut client,
+        video_tx,
+        audio_tx,
+        codec_info,
+        None,
+        None,
+    )
+    .await?;
+
+    let video_handle = tokio::spawn(drain_media(
+        "video",
+        video_rx,
+        packets.clone(),
+        bytes.clone(),
+    ));
+    let audio_handle = tokio::spawn(drain_media(
+        "audio",
+        audio_rx,
+        packets.clone(),
+        bytes.clone(),
+    ));
+
+    ct.cancelled().await;
+    graceful_shutdown("WHEP loadtest", &mut client, peer).await;
+    let _ = tokio::join!(video_handle, audio_handle);
+
+    let packets = packets.load(Ordering::Relaxed);
+    let bytes = bytes.load(Ordering::Relaxed);
+    if packets == 0 {
+        return Err(anyhow!(
+            "WHEP subscriber received no media packets from {}",
+            params.whep_url
+        ));
+    }
+
+    Ok(SessionMetrics {
+        packets,
+        bytes,
+        connected_duration: start.elapsed(),
+        ..Default::default()
+    })
+}
+
+async fn drain_media(
+    kind: &'static str,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    packets: Arc<AtomicU64>,
+    bytes: Arc<AtomicU64>,
+) {
+    while let Some(packet) = rx.recv().await {
+        packets.fetch_add(1, Ordering::Relaxed);
+        bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+    }
+
+    info!(kind, "WHEP loadtest media drain stopped");
 }

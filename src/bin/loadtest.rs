@@ -289,9 +289,6 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
 
     let stats = livetwo::loadtest::whep::run(&config, params, ct).await?;
     print_stats("WHEP subscribe", &stats);
-    println!(
-        "  Note: per-subscriber packet counters are exposed on the server side\n  (live777 Prometheus metrics), not by this tool."
-    );
     Ok(())
 }
 
