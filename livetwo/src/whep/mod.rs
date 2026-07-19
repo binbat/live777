@@ -290,7 +290,7 @@ async fn wait_for_codec_info(
             false
         };
 
-        if codec_wait_satisfied(
+        if codec_wait_satisfied(CodecWaitInput {
             video_ready,
             audio_ready,
             has_any_media_param,
@@ -299,7 +299,7 @@ async fn wait_for_codec_info(
             expected_video,
             expected_audio,
             partial_grace_elapsed,
-        ) {
+        }) {
             return Ok(info);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -312,7 +312,7 @@ async fn wait_for_codec_info(
     ))
 }
 
-fn codec_wait_satisfied(
+struct CodecWaitInput {
     video_ready: bool,
     audio_ready: bool,
     has_any_media_param: bool,
@@ -321,21 +321,25 @@ fn codec_wait_satisfied(
     expected_video: bool,
     expected_audio: bool,
     partial_grace_elapsed: bool,
-) -> bool {
-    if has_any_media_param {
+}
+
+fn codec_wait_satisfied(input: CodecWaitInput) -> bool {
+    if input.has_any_media_param {
         // Explicit output filters are authoritative: wait for every requested
         // codec so filter_sdp can keep the requested media section(s).
-        (!has_video_param || video_ready) && (!has_audio_param || audio_ready)
-    } else if expected_video || expected_audio {
+        (!input.has_video_param || input.video_ready)
+            && (!input.has_audio_param || input.audio_ready)
+    } else if input.expected_video || input.expected_audio {
         // With no explicit media params, the negotiated answer tells us which
         // tracks should be forwarded. Prefer every expected codec, but allow a
         // short partial-ready grace for single-kind streams whose answer still
         // advertises both media kinds.
-        ((!expected_video || video_ready) && (!expected_audio || audio_ready))
-            || ((video_ready || audio_ready) && partial_grace_elapsed)
+        ((!input.expected_video || input.video_ready)
+            && (!input.expected_audio || input.audio_ready))
+            || ((input.video_ready || input.audio_ready) && input.partial_grace_elapsed)
     } else {
         // Defensive fallback for an answer SDP we cannot classify.
-        video_ready || audio_ready
+        input.video_ready || input.audio_ready
     }
 }
 
@@ -437,63 +441,142 @@ mod tests {
 
     #[test]
     fn codec_wait_requires_every_negotiated_track_without_output_filters() {
-        assert!(!codec_wait_satisfied(
-            true, false, false, false, false, true, true, false,
-        ));
-        assert!(!codec_wait_satisfied(
-            false, true, false, false, false, true, true, false,
-        ));
-        assert!(codec_wait_satisfied(
-            true, true, false, false, false, true, true, false,
-        ));
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: true,
+            partial_grace_elapsed: false,
+        };
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            audio_ready: true,
+            ..base
+        }));
     }
 
     #[test]
     fn codec_wait_allows_partial_negotiated_tracks_after_grace() {
-        assert!(codec_wait_satisfied(
-            true, false, false, false, false, true, true, true,
-        ));
-        assert!(codec_wait_satisfied(
-            false, true, false, false, false, true, true, true,
-        ));
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: true,
+            partial_grace_elapsed: true,
+        };
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
     }
 
     #[test]
     fn codec_wait_uses_single_negotiated_track_without_waiting_for_missing_kind() {
-        assert!(codec_wait_satisfied(
-            true, false, false, false, false, true, false, false,
-        ));
-        assert!(codec_wait_satisfied(
-            false, true, false, false, false, false, true, false,
-        ));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: false,
+            partial_grace_elapsed: false,
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: false,
+            audio_ready: true,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: false,
+            expected_audio: true,
+            partial_grace_elapsed: false,
+        }));
     }
 
     #[test]
     fn codec_wait_honors_explicit_output_filters() {
-        assert!(codec_wait_satisfied(
-            true, false, true, true, false, true, true, false,
-        ));
-        assert!(!codec_wait_satisfied(
-            false, true, true, true, false, true, true, true,
-        ));
-        assert!(codec_wait_satisfied(
-            false, true, true, false, true, true, true, false,
-        ));
-        assert!(!codec_wait_satisfied(
-            true, false, true, false, true, true, true, true,
-        ));
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: true,
+            has_video_param: true,
+            has_audio_param: false,
+            expected_video: true,
+            expected_audio: true,
+            partial_grace_elapsed: false,
+        };
+        // ?video: satisfied when video is ready, ignores audio
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        // ?video: not satisfied when only audio is ready (even with grace)
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            partial_grace_elapsed: true,
+            ..base
+        }));
+
+        let base = CodecWaitInput {
+            has_audio_param: true,
+            has_video_param: false,
+            ..base
+        };
+        // ?audio: satisfied when audio is ready, ignores video
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
+        // ?audio: not satisfied when only video is ready (even with grace)
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            partial_grace_elapsed: true,
+            ..base
+        }));
     }
 
     #[test]
     fn codec_wait_falls_back_to_any_codec_when_answer_has_no_media_kinds() {
-        assert!(codec_wait_satisfied(
-            true, false, false, false, false, false, false, false,
-        ));
-        assert!(codec_wait_satisfied(
-            false, true, false, false, false, false, false, false,
-        ));
-        assert!(!codec_wait_satisfied(
-            false, false, false, false, false, false, false, true,
-        ));
+        let base = CodecWaitInput {
+            video_ready: false,
+            audio_ready: false,
+            has_any_media_param: false,
+            has_video_param: false,
+            has_audio_param: false,
+            expected_video: false,
+            expected_audio: false,
+            partial_grace_elapsed: false,
+        };
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            video_ready: true,
+            ..base
+        }));
+        assert!(codec_wait_satisfied(CodecWaitInput {
+            audio_ready: true,
+            ..base
+        }));
+        assert!(!codec_wait_satisfied(CodecWaitInput {
+            partial_grace_elapsed: true,
+            ..base
+        }));
     }
 }
