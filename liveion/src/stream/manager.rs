@@ -17,10 +17,16 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, trace};
 use webrtc::peer_connection::RTCSessionDescription;
 
-use crate::forward::PeerForward;
 use crate::forward::message::Layer;
+use crate::forward::{PeerForward, RemovePeerOutcome};
 use crate::stream::config::ManagerConfig;
 use crate::{AppError, metrics, new_broadcast_channel};
+
+/// Grace period before an orphaned stream (no publisher, no subscribers) is
+/// reclaimed by `subscribe_check_tick`. Leaves room for an in-flight
+/// `add_subscribe` handshake to attach and never touches freshly created
+/// forwards (`subscribe_leave_at` starts at the creation time).
+const ORPHAN_GRACE: Duration = Duration::from_secs(5);
 
 #[cfg(feature = "source")]
 use crate::stream::source::*;
@@ -143,16 +149,33 @@ impl Manager {
             let stream_map_read = stream_map.read().await;
             let mut remove_streams = vec![];
             for (stream, forward) in stream_map_read.iter() {
+                let now = Utc::now().timestamp_millis();
+                let subscribe_leave_at = forward.subscribe_leave_at().await;
+                if subscribe_leave_at <= 0 {
+                    continue;
+                }
+                let strategy = forward.strategy();
+                // Orphaned streams are reclaimed without any timeout gate: a
+                // viewer that vanishes ungracefully never reaches remove_peer,
+                // so this tick is the only path that frees the stream. The
+                // exception: when neither auto-create is enabled, an empty
+                // stream was provisioned explicitly (e.g. via the admin API)
+                // and reaping it would make a later publish fail.
+                let recreate = strategy.auto_create_whip || strategy.auto_create_whep;
+                if recreate
+                    && now - subscribe_leave_at > ORPHAN_GRACE.as_millis() as i64
+                    && forward.confirm_orphan_teardown().await
+                {
+                    remove_streams.push(stream.clone());
+                    continue;
+                }
                 // Closed-session cleanup runs in publish_check_tick only, so we
                 // don't duplicate the work (and the resulting events) each tick.
-                let timeout = forward.strategy().auto_delete_whep.0;
+                let timeout = strategy.auto_delete_whep.0;
                 if timeout < 0 {
                     continue;
                 }
-                let forward_info = forward.info().await;
-                if forward_info.subscribe_leave_at > 0
-                    && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at > timeout
-                {
+                if now - subscribe_leave_at > timeout {
                     remove_streams.push(stream.clone());
                 }
             }
@@ -163,34 +186,48 @@ impl Manager {
             let mut stream_map = stream_map.write().await;
             for stream in remove_streams.iter() {
                 if let Some(forward) = stream_map.get(stream) {
-                    let timeout = forward.strategy().auto_delete_whep.0;
-                    if timeout < 0 {
+                    let now = Utc::now().timestamp_millis();
+                    let subscribe_leave_at = forward.subscribe_leave_at().await;
+                    if subscribe_leave_at <= 0 {
                         continue;
                     }
-                    let forward_info = forward.info().await;
-                    if forward_info.subscribe_leave_at > 0
-                        && Utc::now().timestamp_millis() - forward_info.subscribe_leave_at > timeout
-                    {
-                        let _ = forward.close().await;
-                        stream_map.remove(stream);
-                        metrics::STREAM.dec();
-                        let subscribe_leave_at =
-                            DateTime::from_timestamp_millis(forward_info.subscribe_leave_at)
-                                .unwrap()
-                                .format("%Y-%m-%d %H:%M:%S")
-                                .to_string();
+                    // Recheck under the write lock: a publisher or subscriber
+                    // may have attached since the read pass.
+                    let strategy = forward.strategy();
+                    let recreate = strategy.auto_create_whip || strategy.auto_create_whep;
+                    let orphaned = recreate
+                        && now - subscribe_leave_at > ORPHAN_GRACE.as_millis() as i64
+                        && forward.confirm_orphan_teardown().await;
+                    let timeout = strategy.auto_delete_whep.0;
+                    let leave_timeout = timeout >= 0 && now - subscribe_leave_at > timeout;
+                    if !orphaned && !leave_timeout {
+                        continue;
+                    }
+                    let _ = forward.close().await;
+                    stream_map.remove(stream);
+                    metrics::STREAM.dec();
+                    let subscribe_leave_at = DateTime::from_timestamp_millis(subscribe_leave_at)
+                        .unwrap()
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string();
+                    if orphaned {
                         info!(
-                            "stream : {}, subscribe leave timeout, publish leave time : {}",
+                            "stream : {}, orphaned, subscribe leave time : {}",
                             stream, subscribe_leave_at
                         );
-
-                        let _ = event_sender.send(Event::Stream(StreamEvent {
-                            r#type: StreamEventType::Down,
-                            stream: Stream {
-                                stream: stream.clone(),
-                            },
-                        }));
+                    } else {
+                        info!(
+                            "stream : {}, subscribe leave timeout, subscribe leave time : {}",
+                            stream, subscribe_leave_at
+                        );
                     }
+
+                    let _ = event_sender.send(Event::Stream(StreamEvent {
+                        r#type: StreamEventType::Down,
+                        stream: Stream {
+                            stream: stream.clone(),
+                        },
+                    }));
                 }
             }
         }
@@ -407,13 +444,53 @@ impl Manager {
         let forward = streams.get(&stream).cloned();
         drop(streams);
         if let Some(forward) = forward {
-            let is_publish = forward.remove_peer(session.clone()).await?;
-            if is_publish {
-                self.stream_delete(stream).await?;
+            match forward.remove_peer(session.clone()).await? {
+                RemovePeerOutcome::PublisherRemoved => {
+                    // A new publisher may already be mid-handshake on this
+                    // forward — deleting the stream now would kill it, so
+                    // skip the delete and let the new publisher take over.
+                    if !forward.publish_setup_in_progress() {
+                        self.stream_delete_allow_missing(stream).await?;
+                    }
+                }
+                RemovePeerOutcome::Orphaned => {
+                    // The orphan hint races with publishers/subscribers
+                    // attaching — confirm under the forward's locks first.
+                    // When neither auto-create is enabled the stream was
+                    // provisioned explicitly; leave its teardown to the
+                    // admin so a later publish can still find it.
+                    let strategy = forward.strategy();
+                    let recreate = strategy.auto_create_whip || strategy.auto_create_whep;
+                    if recreate && forward.confirm_orphan_teardown().await {
+                        self.stream_delete_allow_missing(stream).await?;
+                    }
+                }
+                RemovePeerOutcome::None => {}
             }
             Ok(())
         } else {
             Err(AppError::session_not_found("session not exists"))
+        }
+    }
+
+    /// Delete a stream whose teardown was decided by `remove_stream_session`.
+    /// The reaper or a concurrent DELETE may have already removed it — that
+    /// is the desired end state, so treat an already-missing stream as
+    /// success instead of propagating `stream_delete`'s "resource not
+    /// exists" error (which would surface as a 500 on the DELETE API).
+    async fn stream_delete_allow_missing(
+        &self,
+        stream: String,
+    ) -> std::result::Result<(), anyhow::Error> {
+        match self.stream_delete(stream.clone()).await {
+            Err(_e) if !self.stream_map.read().await.contains_key(&stream) => {
+                debug!(
+                    "stream : {} already removed by a concurrent teardown",
+                    stream
+                );
+                Ok(())
+            }
+            result => result,
         }
     }
 
@@ -508,6 +585,9 @@ impl Manager {
             if forward.strategy().cascade_push_close_sub {
                 for subscribe_session_info in forward.info().await.subscribe_session_infos {
                     if subscribe_session_info.cascade.is_none() {
+                        // Return value discarded: if this removal orphans the
+                        // stream, the subscribe_check_tick reaper tears it
+                        // down after the grace period.
                         let _ = forward.remove_peer(subscribe_session_info.id).await;
                     }
                 }

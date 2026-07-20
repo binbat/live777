@@ -36,6 +36,7 @@ use webrtc::peer_connection::{
 };
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, RtpSender};
 
+use super::RemovePeerOutcome;
 use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
 use super::message::{CascadeInfo, ForwardEvent};
 use super::publish::PublishRTCPeerConnection;
@@ -850,14 +851,42 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    /// Remove a peer by session id. Returns `Ok(true)` when the caller should
-    /// tear down the whole stream: either the removed session was the
-    /// publisher, or it was the last remaining session of a stream whose
-    /// publisher is already gone (orphaned stream, e.g. after an ungraceful
-    /// publisher disconnect) — without this the stream entry would linger
-    /// forever. Removing a subscriber from a stream with a live publisher
-    /// returns `Ok(false)`: the stream lives on.
-    pub(crate) async fn remove_peer(&self, id: String) -> Result<bool> {
+    /// Millisecond timestamp of the last time the subscriber group became
+    /// empty: the creation time for a fresh forward, 0 while at least one
+    /// subscriber is attached.
+    pub(crate) async fn subscribe_leave_at(&self) -> i64 {
+        *self.subscribe_leave_at.read().await
+    }
+
+    pub(crate) async fn has_subscribers(&self) -> bool {
+        !self.subscribe_group.read().await.is_empty()
+    }
+
+    /// A virtual (source) publisher keeps the stream alive even though
+    /// `publish` is `None`.
+    #[cfg(feature = "source")]
+    pub(crate) async fn has_virtual_publisher(&self) -> bool {
+        self.publish_tracks
+            .read()
+            .await
+            .iter()
+            .any(|track| matches!(track, PublishTrackRemote::Virtual(_)))
+    }
+
+    /// Remove a peer by session id. The returned [`RemovePeerOutcome`] tells
+    /// the caller whether the whole stream should be torn down:
+    /// - `PublisherRemoved`: the removed session was the publisher.
+    /// - `Orphaned`: the removed session was the last remaining session of a
+    ///   stream whose publisher is already gone (e.g. after an ungraceful
+    ///   publisher disconnect) — without teardown the stream entry would
+    ///   linger forever. This is only a hint: a virtual (source) publisher
+    ///   never counts as gone, and a new publish may be mid-handshake, so
+    ///   the caller must re-check with `PeerForward::confirm_orphan_teardown`
+    ///   before deleting the stream.
+    /// - `None`: a subscriber left a stream that still has a publisher or
+    ///   other subscribers (or the session was not found) — the stream lives
+    ///   on.
+    pub(crate) async fn remove_peer(&self, id: String) -> Result<RemovePeerOutcome> {
         // ── Publish: atomic check-and-take under write lock ──
         {
             let mut publish = self.publish.write().await;
@@ -871,7 +900,7 @@ impl PeerForwardInternal {
                 drop(publish);
                 let _ = old.peer.close().await;
                 self.do_remove_publish_cleanup(session_info).await;
-                return Ok(true);
+                return Ok(RemovePeerOutcome::PublisherRemoved);
             }
         }
 
@@ -892,15 +921,18 @@ impl PeerForwardInternal {
                 if reforward {
                     self.send_event().await;
                 }
-                // Orphan cleanup: with the publisher already gone and no
-                // sessions left, the stream entry would linger forever —
-                // report it for removal like a publisher removal does.
-                let orphaned = is_empty && self.publish.read().await.is_none();
-                return Ok(orphaned);
+                // Orphan hint: with the publisher already gone and no
+                // sessions left, the stream entry would linger forever.
+                // The caller re-confirms (virtual publisher, in-flight
+                // publish setup, new subscribers) before tearing down.
+                if is_empty && self.publish.read().await.is_none() {
+                    return Ok(RemovePeerOutcome::Orphaned);
+                }
+                return Ok(RemovePeerOutcome::None);
             }
         }
 
-        Ok(false)
+        Ok(RemovePeerOutcome::None)
     }
 
     pub(crate) async fn close(&self) -> Result<()> {
