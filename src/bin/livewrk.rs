@@ -51,15 +51,15 @@ struct WhipArgs {
     token: Option<String>,
 
     /// Number of concurrent WHIP publish sessions
-    #[arg(long, default_value_t = 100)]
-    sessions: usize,
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..))]
+    sessions: u64,
 
     /// Milliseconds to wait between spawning each session (ramp-up)
     #[arg(long, default_value_t = 10)]
     ramp_ms: u64,
 
     /// Overall run duration in seconds; sessions are stopped afterwards
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     duration: u64,
 
     /// Video codec: vp8, vp9, h264, h265, av1
@@ -100,22 +100,22 @@ struct WhepArgs {
     token: Option<String>,
 
     /// Number of concurrent WHEP subscribe sessions
-    #[arg(long, default_value_t = 100)]
-    sessions: usize,
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..))]
+    sessions: u64,
 
     /// Milliseconds to wait between spawning each session (ramp-up)
     #[arg(long, default_value_t = 10)]
     ramp_ms: u64,
 
     /// Overall run duration in seconds; sessions are stopped afterwards
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     duration: u64,
 
     /// Enable decode verification: a single rotating verifier decodes one
     /// session at a time for this many seconds, then switches to the next
     /// session, so decode cost stays constant regardless of the session
     /// count. Requires the rsmpeg feature.
-    #[arg(long, value_name = "SECONDS")]
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
     verify_window: Option<u64>,
 
     /// Only report verification failures instead of failing the whole run
@@ -169,8 +169,12 @@ fn print_stats(kind: &str, stats: &livetwo::loadtest::LoadtestStats) {
     println!("\n══════════════════════════════════════════════");
     println!("  {kind} loadtest results");
     println!(
-        "  Sessions: {} total, {} connected, {} failed",
-        stats.sessions_total, stats.sessions_connected, stats.sessions_failed
+        "  Sessions: {} total, {} connected, {} failed, {} cancelled, {} aborted",
+        stats.sessions_total,
+        stats.sessions_connected,
+        stats.sessions_failed,
+        stats.sessions_cancelled,
+        stats.sessions_aborted
     );
     println!(
         "  Packets: {}, bytes: {} ({:.2} MB)",
@@ -228,7 +232,7 @@ async fn run_whip(args: WhipArgs) -> Result<()> {
     };
 
     let config = livetwo::loadtest::LoadtestConfig {
-        session_count: args.sessions,
+        session_count: args.sessions as usize,
         spawn_interval: Duration::from_millis(args.ramp_ms),
         duration: Some(Duration::from_secs(args.duration)),
     };
@@ -256,7 +260,7 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     };
 
     let config = livetwo::loadtest::LoadtestConfig {
-        session_count: args.sessions,
+        session_count: args.sessions as usize,
         spawn_interval: Duration::from_millis(args.ramp_ms),
         duration: Some(Duration::from_secs(args.duration)),
     };
@@ -266,10 +270,33 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
 
     let (stats, verify) = livetwo::loadtest::whep::run(&config, params, ct).await?;
     print_stats("WHEP subscribe", &stats);
-    if let Some(verify) = &verify {
-        print_verify_stats(verify);
-        if verify.windows_failed > 0 && !args.verify_tolerant {
-            anyhow::bail!("{} verification window(s) failed", verify.windows_failed);
+    if args.verify_window.is_some() {
+        match &verify {
+            Some(verify) => {
+                print_verify_stats(verify);
+                if verify.windows_total == 0 {
+                    // Verification was requested but never completed a single
+                    // full window: a vacuous pass must not succeed silently.
+                    let msg = "verification enabled but no full decode window completed";
+                    if args.verify_tolerant {
+                        eprintln!("WARNING: {msg}");
+                    } else {
+                        anyhow::bail!(msg);
+                    }
+                }
+                if verify.windows_failed > 0 && !args.verify_tolerant {
+                    anyhow::bail!("{} verification window(s) failed", verify.windows_failed);
+                }
+            }
+            // The verifier task panicked and its results were lost.
+            None => {
+                let msg = "decode verification did not produce results";
+                if args.verify_tolerant {
+                    eprintln!("WARNING: {msg}");
+                } else {
+                    anyhow::bail!(msg);
+                }
+            }
         }
     }
     Ok(())

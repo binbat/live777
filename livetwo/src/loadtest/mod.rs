@@ -16,9 +16,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 /// Grace period for sessions to drain after cancellation. Anything still
-/// running afterwards is aborted so a stuck session cannot hang the run.
-/// Must exceed a session's graceful-shutdown budget (WHIP/WHEP teardown
-/// waits up to 5 s).
+/// running afterwards is aborted so a stuck session cannot hang the run; an
+/// aborted session's metrics and result are lost with the dropped future, so
+/// it is only visible via `LoadtestStats::sessions_aborted`. The connect
+/// phase honors the cancellation token, so the worst-case drain is the
+/// session graceful-shutdown budget (~5 s).
 const DRAIN_GRACE: Duration = Duration::from_secs(10);
 
 /// Orchestration parameters for a loadtest run.
@@ -31,6 +33,15 @@ pub struct LoadtestConfig {
     /// Overall run duration; sessions are cancelled after it elapses.
     /// `None` runs until every session completes or the token is cancelled.
     pub duration: Option<Duration>,
+}
+
+/// How a session ended. `Connected` = established its connection and ran
+/// until stopped; `Cancelled` = was cancelled before establishing a
+/// connection (never became healthy, but nothing failed either).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionOutcome {
+    Connected,
+    Cancelled,
 }
 
 /// Per-session metrics, kind-agnostic. `nack_count`/`pli_count` are only
@@ -51,6 +62,11 @@ pub struct LoadtestStats {
     pub sessions_total: usize,
     pub sessions_connected: u64,
     pub sessions_failed: u64,
+    /// Sessions cancelled before they established a connection.
+    pub sessions_cancelled: u64,
+    /// Sessions still running after the drain grace; their tasks were aborted
+    /// and their metrics are unrecoverable.
+    pub sessions_aborted: u64,
     pub total_packets: u64,
     pub total_bytes: u64,
     pub total_errors: u64,
@@ -65,9 +81,11 @@ pub struct LoadtestStats {
 /// their metrics); otherwise it runs until every session completes or the
 /// token is cancelled.
 ///
-/// The session future returns its metrics together with the final result.
-/// Metrics are aggregated even when the result is an error, so traffic from
-/// sessions that fail mid-run is not lost from the totals.
+/// The session future returns its metrics together with the final outcome
+/// (`Err` = failed). Metrics are aggregated even when the outcome is an
+/// error, so traffic from sessions that fail mid-run is not lost from the
+/// totals; only `SessionOutcome::Connected` sessions contribute
+/// `connected_duration`, so the per-connected-session average is not skewed.
 pub async fn run_sessions<F, Fut>(
     config: &LoadtestConfig,
     ct: CancellationToken,
@@ -75,14 +93,16 @@ pub async fn run_sessions<F, Fut>(
 ) -> Result<LoadtestStats>
 where
     F: Fn(usize) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = (SessionMetrics, Result<()>)> + Send + 'static,
+    Fut: std::future::Future<Output = (SessionMetrics, Result<SessionOutcome>)> + Send + 'static,
 {
     let connected = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicU64::new(0));
+    let cancelled = Arc::new(AtomicU64::new(0));
     let metrics = Arc::new(tokio::sync::Mutex::new(SessionMetrics::default()));
 
     let mut join_set = JoinSet::new();
     let mut spawned = 0usize;
+    let mut aborted = 0u64;
     let mut deadline = config.duration.map(|d| tokio::time::Instant::now() + d);
 
     for i in 0..config.session_count {
@@ -103,6 +123,7 @@ where
 
         let session_connected = connected.clone();
         let session_failed = failed.clone();
+        let session_cancelled = cancelled.clone();
         let session_metrics = metrics.clone();
         let future = make_session(i);
 
@@ -114,11 +135,19 @@ where
             stats.errors += m.errors;
             stats.nack_count += m.nack_count;
             stats.pli_count += m.pli_count;
-            stats.connected_duration += m.connected_duration;
+            // Connected duration only merges from sessions that actually
+            // connected; failed or cancelled sessions would skew the average
+            // computed over the connected count.
+            if matches!(result, Ok(SessionOutcome::Connected)) {
+                stats.connected_duration += m.connected_duration;
+            }
             drop(stats);
             match result {
-                Ok(()) => {
+                Ok(SessionOutcome::Connected) => {
                     session_connected.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(SessionOutcome::Cancelled) => {
+                    session_cancelled.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
                     warn!(session = i, error = ?e, "loadtest session failed");
@@ -172,14 +201,22 @@ where
             }
             result = join_set.join_next() => {
                 if let Some(Err(e)) = result {
-                    warn!(error = ?e, "loadtest session task panicked or was cancelled");
+                    if e.is_cancelled() {
+                        aborted += 1;
+                    } else {
+                        warn!(error = ?e, "loadtest session task panicked");
+                    }
                 }
             }
         }
     }
     while let Some(result) = join_set.join_next().await {
         if let Err(e) = result {
-            warn!(error = ?e, "loadtest session task panicked or was cancelled");
+            if e.is_cancelled() {
+                aborted += 1;
+            } else {
+                warn!(error = ?e, "loadtest session task panicked");
+            }
         }
     }
 
@@ -191,6 +228,8 @@ where
         sessions_total: spawned,
         sessions_connected: connected.load(Ordering::Relaxed),
         sessions_failed: failed.load(Ordering::Relaxed),
+        sessions_cancelled: cancelled.load(Ordering::Relaxed),
+        sessions_aborted: aborted,
         total_packets: m.packets,
         total_bytes: m.bytes,
         total_errors: m.errors,
@@ -204,12 +243,17 @@ where
         sessions_total = stats.sessions_total,
         sessions_connected = stats.sessions_connected,
         sessions_failed = stats.sessions_failed,
+        sessions_cancelled = stats.sessions_cancelled,
+        sessions_aborted = stats.sessions_aborted,
         total_packets = stats.total_packets,
         total_bytes = stats.total_bytes,
         "Loadtest completed"
     );
 
-    if stats.sessions_connected == 0 && spawned > 0 {
+    // The run is only genuinely broken when nothing connected AND not every
+    // session was a clean cancellation (e.g. the duration fired during
+    // ramp-up): failed or aborted sessions mean something went wrong.
+    if stats.sessions_connected == 0 && spawned > 0 && stats.sessions_cancelled < spawned as u64 {
         anyhow::bail!("all {} loadtest session(s) failed", spawned);
     }
 
@@ -248,7 +292,7 @@ mod tests {
                         bytes: 1,
                         ..Default::default()
                     },
-                    Ok(()),
+                    Ok(SessionOutcome::Connected),
                 )
             }
         })
@@ -275,10 +319,11 @@ mod tests {
             let metrics = SessionMetrics {
                 packets: 10,
                 bytes: 100,
+                connected_duration: Duration::from_secs(if i == 0 { 1 } else { 5 }),
                 ..Default::default()
             };
             if i == 0 {
-                (metrics, Ok(()))
+                (metrics, Ok(SessionOutcome::Connected))
             } else {
                 (metrics, Err(anyhow::anyhow!("boom")))
             }
@@ -290,6 +335,63 @@ mod tests {
         assert_eq!(stats.sessions_failed, 1);
         assert_eq!(stats.total_packets, 20);
         assert_eq!(stats.total_bytes, 200);
+        // Only connected sessions contribute connected_duration.
+        assert_eq!(stats.total_connected_duration, Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn cancelled_sessions_count_and_do_not_fail_the_run() {
+        let config = LoadtestConfig {
+            session_count: 2,
+            spawn_interval: Duration::ZERO,
+            duration: Some(Duration::from_millis(50)),
+        };
+        let ct = CancellationToken::new();
+        let session_ct = ct.clone();
+
+        let stats = run_sessions(&config, ct, move |_| {
+            let session_ct = session_ct.clone();
+            async move {
+                // Cancelled before connecting: no traffic, no failure.
+                session_ct.cancelled().await;
+                (SessionMetrics::default(), Ok(SessionOutcome::Cancelled))
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(stats.sessions_connected, 0);
+        assert_eq!(stats.sessions_cancelled, 2);
+        assert_eq!(stats.sessions_failed, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn aborted_sessions_are_counted() {
+        let config = LoadtestConfig {
+            session_count: 2,
+            spawn_interval: Duration::ZERO,
+            duration: Some(Duration::from_secs(1)),
+        };
+        let ct = CancellationToken::new();
+        let session_ct = ct.clone();
+
+        let stats = run_sessions(&config, ct, move |i| {
+            let session_ct = session_ct.clone();
+            async move {
+                if i == 0 {
+                    session_ct.cancelled().await;
+                } else {
+                    // Never finishes and ignores cancellation.
+                    std::future::pending::<()>().await;
+                }
+                (SessionMetrics::default(), Ok(SessionOutcome::Connected))
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(stats.sessions_connected, 1);
+        assert_eq!(stats.sessions_aborted, 1);
     }
 
     #[tokio::test(start_paused = true)]
@@ -304,7 +406,7 @@ mod tests {
         let error = run_sessions(&config, ct, |_| async move {
             // Never finishes and ignores cancellation.
             std::future::pending::<()>().await;
-            (SessionMetrics::default(), Ok(()))
+            (SessionMetrics::default(), Ok(SessionOutcome::Connected))
         })
         .await
         .unwrap_err();

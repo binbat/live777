@@ -24,13 +24,19 @@ use webrtc::peer_connection::RTCPeerConnectionState;
 #[cfg(feature = "rsmpeg")]
 use std::sync::atomic::AtomicBool;
 
-use super::{LoadtestConfig, LoadtestStats, SessionMetrics, run_sessions};
+use super::{LoadtestConfig, LoadtestStats, SessionMetrics, SessionOutcome, run_sessions};
 use crate::utils::shutdown::graceful_shutdown;
 
 /// Grace period for a transient `Disconnected` state: ICE connectivity loss
 /// may recover on its own, so only a disconnection that outlives the grace
 /// period (or a `Failed`/`Closed` state) ends the session.
 const DISCONNECTED_GRACE: Duration = Duration::from_secs(5);
+
+/// Grace period after setup completes during which a stop with zero received
+/// packets still counts as cancelled rather than failed: media should flow
+/// immediately once subscribed, so a short grace distinguishes "cancelled
+/// right after setup" from "SFU never forwarded media".
+const MEDIA_FLOW_GRACE: Duration = Duration::from_secs(2);
 
 /// Capacity of the channel carrying RTP packets from the currently verified
 /// session to the decoder task.
@@ -107,19 +113,19 @@ async fn run_one(
     params: WhepLoadParams,
     verify: Option<SessionVerify>,
     ct: CancellationToken,
-) -> (SessionMetrics, Result<()>) {
-    let start = std::time::Instant::now();
+) -> (SessionMetrics, Result<SessionOutcome>) {
     let packets = Arc::new(AtomicU64::new(0));
     let bytes = Arc::new(AtomicU64::new(0));
 
-    let result = run_session(index, &params, verify, ct, packets.clone(), bytes.clone()).await;
+    let (connected_duration, result) =
+        run_session(index, &params, verify, ct, packets.clone(), bytes.clone()).await;
 
     // Metrics are returned even on failure so traffic from sessions that die
     // mid-run still counts towards the aggregate.
     let metrics = SessionMetrics {
         packets: packets.load(Ordering::Relaxed),
         bytes: bytes.load(Ordering::Relaxed),
-        connected_duration: start.elapsed(),
+        connected_duration,
         ..Default::default()
     };
     (metrics, result)
@@ -132,7 +138,7 @@ async fn run_session(
     ct: CancellationToken,
     packets: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
-) -> Result<()> {
+) -> (Duration, Result<SessionOutcome>) {
     const MEDIA_CHANNEL_CAPACITY: usize = 512;
 
     let (video_tx, video_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
@@ -147,30 +153,77 @@ async fn run_session(
     );
     let peer_ct = CancellationToken::new();
 
-    let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = crate::whep::setup_whep_peer(
-        peer_ct.clone(),
-        &mut client,
-        video_tx,
-        audio_tx,
-        codec_info,
-        Some(state_tx),
-        verify.is_some().then_some(video_mime_tx),
-    )
-    .await?;
+    // Race the setup (WHEP POST/answer + ICE) against cancellation so a
+    // session stopped while connecting still reports back instead of being
+    // aborted at the drain grace.
+    let (peer, _answer, _stats, mut dc_recv_rx, _dc_send_tx) = tokio::select! {
+        result = crate::whep::setup_whep_peer(
+            peer_ct.clone(),
+            &mut client,
+            video_tx,
+            audio_tx,
+            codec_info,
+            Some(state_tx),
+            verify.is_some().then_some(video_mime_tx),
+        ) => match result {
+            Ok(parts) => parts,
+            Err(e) => return (Duration::ZERO, Err(e)),
+        },
+        _ = ct.cancelled() => {
+            // The half-built peer goes away with the setup future; remove the
+            // server-side resource when the WHEP POST already went through so
+            // the stream does not leak.
+            if client.session_url.is_some() {
+                let _ = client.remove_resource().await;
+            }
+            peer_ct.cancel();
+            return (Duration::ZERO, Ok(SessionOutcome::Cancelled));
+        }
+    };
+
+    // The media path is ready: connected time starts here.
+    let connected_at = std::time::Instant::now();
 
     if let Some(verify) = &verify {
         // Report the negotiated video codec to the verifier once the track
         // announces it; all sessions subscribe to the same stream, so one
         // shared value is enough.
         let mime_tx = verify.mime_tx.clone();
+        let mime_ct = peer_ct.clone();
         tokio::spawn(async move {
             loop {
                 if let Some(mime) = video_mime_rx.borrow().clone() {
                     let _ = mime_tx.send(Some(mime));
                     break;
                 }
-                if video_mime_rx.changed().await.is_err() {
-                    break;
+                tokio::select! {
+                    changed = video_mime_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                    }
+                    // Tied to the session so it cannot outlive it (audio-only
+                    // stream or early peer error).
+                    _ = mime_ct.cancelled() => break,
+                }
+            }
+        });
+    }
+
+    // The data-channel receive side has no consumer in the loadtest; drain it
+    // until the channel closes so a publisher with data-channel traffic
+    // cannot grow the unbounded channel. Exits with the session.
+    {
+        let drain_ct = peer_ct.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    msg = dc_recv_rx.recv() => {
+                        if msg.is_none() {
+                            break;
+                        }
+                    }
+                    _ = drain_ct.cancelled() => break,
                 }
             }
         });
@@ -199,6 +252,9 @@ async fn run_session(
     ));
 
     let stop_reason = wait_for_stop(ct.clone(), peer_ct.clone(), state_rx).await;
+    // Connected time stops when the session is asked to stop, before the
+    // teardown budget, so it measures actual connected time.
+    let connected_duration = connected_at.elapsed();
     peer_ct.cancel();
     graceful_shutdown("WHEP loadtest", &mut client, peer).await;
     let _ = tokio::join!(video_handle, audio_handle);
@@ -206,19 +262,30 @@ async fn run_session(
     let packets = packets.load(Ordering::Relaxed);
     let bytes = bytes.load(Ordering::Relaxed);
     if let StopReason::PeerEnded(state) = stop_reason {
-        return Err(anyhow!(
-            "WHEP subscriber peer ended unexpectedly: state={state}, packets={packets}, bytes={bytes}, url={}",
-            params.whep_url
-        ));
+        return (
+            connected_duration,
+            Err(anyhow!(
+                "WHEP subscriber peer ended unexpectedly: state={state}, packets={packets}, bytes={bytes}, url={}",
+                params.whep_url
+            )),
+        );
     }
     if packets == 0 {
-        return Err(anyhow!(
-            "WHEP subscriber received no media packets from {}",
-            params.whep_url
-        ));
+        // Within the media-flow grace this is a cancellation right after
+        // setup, not a broken pipeline.
+        if connected_duration < MEDIA_FLOW_GRACE {
+            return (connected_duration, Ok(SessionOutcome::Cancelled));
+        }
+        return (
+            connected_duration,
+            Err(anyhow!(
+                "WHEP subscriber received no media packets from {}",
+                params.whep_url
+            )),
+        );
     }
 
-    Ok(())
+    (connected_duration, Ok(SessionOutcome::Connected))
 }
 
 /// Drain the video track, counting packets/bytes. While this session holds
@@ -252,7 +319,9 @@ async fn drain_video(
                 if *target_rx.borrow() == Some(index) {
                     // The decoder is the only consumer and runs at its own
                     // pace; when it backs up, drop rather than stall the drain.
-                    let _ = verify_tx.try_send(packet);
+                    // The tag lets the verifier drop stale packets from a
+                    // previously targeted session after a rotation.
+                    let _ = verify_tx.try_send((index, packet));
                 }
             }
             changed = target_rx.changed() => {
@@ -293,11 +362,13 @@ async fn drain_media(
 
 /// Per-session handle to the rotating verifier. Sessions consult `target_rx`
 /// per packet and forward to `verify_tx` only while targeted, so at most one
-/// session feeds the decoder at any time.
+/// session feeds the decoder at any time. Packets carry the sender's session
+/// index so the verifier can drop stragglers from the previous target after
+/// a rotation instead of feeding a foreign sequence space to the decoder.
 #[derive(Clone)]
 struct SessionVerify {
     target_rx: watch::Receiver<Option<usize>>,
-    verify_tx: mpsc::Sender<Vec<u8>>,
+    verify_tx: mpsc::Sender<(usize, Vec<u8>)>,
     active: Arc<std::sync::Mutex<BTreeSet<usize>>>,
     mime_tx: Arc<watch::Sender<Option<String>>>,
 }
@@ -310,9 +381,11 @@ struct ActiveGuard {
 
 impl ActiveGuard {
     fn register(active: &Arc<std::sync::Mutex<BTreeSet<usize>>>, index: usize) -> Self {
+        // Tolerate poisoning (like Drop does): a panicking session task must
+        // not cascade-abort the whole run.
         active
             .lock()
-            .expect("active sessions mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(index);
         Self {
             active: Arc::clone(active),
@@ -396,7 +469,9 @@ impl VerifierHandle {
         if let Some(inner) = self.inner {
             match inner.task.await {
                 Ok(stats) => return Some(stats),
-                Err(e) => tracing::warn!(error = ?e, "WHEP verifier task failed"),
+                Err(e) => {
+                    tracing::warn!(error = ?e, "WHEP verifier task failed; all decode verification results were lost")
+                }
             }
         }
         None
@@ -407,7 +482,7 @@ impl VerifierHandle {
 /// session per window in round-robin order until shutdown.
 #[cfg(feature = "rsmpeg")]
 async fn run_verifier(
-    mut verify_rx: mpsc::Receiver<Vec<u8>>,
+    mut verify_rx: mpsc::Receiver<(usize, Vec<u8>)>,
     target_tx: watch::Sender<Option<usize>>,
     active: Arc<std::sync::Mutex<BTreeSet<usize>>>,
     mut mime_rx: watch::Receiver<Option<String>>,
@@ -448,12 +523,15 @@ async fn run_verifier(
             break;
         };
 
-        // Drop stragglers from the previously verified session before the
-        // decoder switches to the new one.
-        while verify_rx.try_recv().is_ok() {}
+        // Switch the target first, then drop stragglers from the previously
+        // verified session: its drain task may not have observed the switch
+        // yet, and anything still queued belongs to the old session's
+        // sequence space. Packets that race in afterwards are dropped by tag
+        // inside the decode window.
         let _ = target_tx.send(Some(index));
+        while verify_rx.try_recv().is_ok() {}
 
-        match decode_window(&mime, &mut verify_rx, window, &ct).await {
+        match decode_window(&mime, &mut verify_rx, index, window, &ct).await {
             WindowOutcome::Cancelled => break,
             WindowOutcome::Done(result) => {
                 stats.windows_total += 1;
@@ -496,7 +574,9 @@ async fn pick_next_active(
 ) -> Option<usize> {
     loop {
         {
-            let active = active.lock().expect("active sessions mutex poisoned");
+            // Tolerate poisoning: a panicking session task must not
+            // cascade-abort the whole run.
+            let active = active.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(&index) = active
                 .range(*cursor..)
                 .next()
@@ -536,11 +616,13 @@ enum ForwardEnd {
 }
 
 /// Decode the currently targeted session's packets for `window`, then report
-/// what the decoder saw.
+/// what the decoder saw. Packets tagged with a different session index are
+/// stragglers from a previous target and are dropped, never decoded.
 #[cfg(feature = "rsmpeg")]
 async fn decode_window(
     mime: &str,
-    verify_rx: &mut mpsc::Receiver<Vec<u8>>,
+    verify_rx: &mut mpsc::Receiver<(usize, Vec<u8>)>,
+    target: usize,
     window: Duration,
     ct: &CancellationToken,
 ) -> WindowOutcome {
@@ -578,7 +660,16 @@ async fn decode_window(
                 tokio::select! {
                     packet = verify_rx.recv() => {
                         match packet {
-                            Some(packet) => if packet_tx.send(packet).is_err() { break ForwardEnd::DecoderGone; }
+                            Some((session, packet)) => {
+                                // Stale packet from a previously targeted
+                                // session whose forwarder had not observed the
+                                // target switch yet: drop it instead of feeding
+                                // a foreign sequence space to the decoder.
+                                if session != target {
+                                    continue;
+                                }
+                                if packet_tx.send(packet).is_err() { break ForwardEnd::DecoderGone; }
+                            }
                             None => break ForwardEnd::Shutdown,
                         }
                     }
@@ -687,8 +778,8 @@ mod tests {
 
         assert_eq!(packets.load(Ordering::Relaxed), 2);
         assert_eq!(bytes.load(Ordering::Relaxed), 5);
-        assert_eq!(verify_rx.recv().await.unwrap(), vec![1, 2, 3]);
-        assert_eq!(verify_rx.recv().await.unwrap(), vec![4, 5]);
+        assert_eq!(verify_rx.recv().await.unwrap(), (0, vec![1, 2, 3]));
+        assert_eq!(verify_rx.recv().await.unwrap(), (0, vec![4, 5]));
     }
 
     #[tokio::test]

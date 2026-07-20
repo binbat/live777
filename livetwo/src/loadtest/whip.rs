@@ -1,11 +1,11 @@
 //! WHIP publish loadtest: N concurrent synthetic publishers, each on its own
 //! stream (derived from the base URL with a `-N` suffix).
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tokio_util::sync::CancellationToken;
 
-use super::{LoadtestConfig, LoadtestStats, SessionMetrics, run_sessions};
-use crate::whipsynth::{Publisher, PublisherConfig};
+use super::{LoadtestConfig, LoadtestStats, SessionMetrics, SessionOutcome, run_sessions};
+use crate::whipsynth::{PublishOutcome, Publisher, PublisherConfig};
 
 /// Append a session index to the last path segment of a WHIP URL.
 ///
@@ -53,18 +53,36 @@ pub async fn run(
         session_config.whip_url = urls[i].clone();
         let run_ct = session_ct.child_token();
         async move {
+            let whip_url = session_config.whip_url.clone();
             match Publisher::new(session_config).run(run_ct).await {
-                Ok(stats) => (
-                    SessionMetrics {
+                Ok(PublishOutcome::Completed(stats)) => {
+                    let metrics = SessionMetrics {
                         packets: stats.packets_sent,
                         bytes: stats.bytes_sent,
                         errors: stats.failed_writes,
                         nack_count: stats.nack_count,
                         pli_count: stats.pli_count,
                         connected_duration: stats.connected_duration,
-                    },
-                    Ok(()),
-                ),
+                    };
+                    // A connected synthetic publisher that sent nothing means
+                    // the pipeline is broken (mirrors the WHEP-side zero-packet
+                    // check).
+                    if stats.packets_sent == 0 {
+                        (
+                            metrics,
+                            Err(anyhow!(
+                                "WHIP publisher connected but sent no packets to {whip_url}"
+                            )),
+                        )
+                    } else {
+                        (metrics, Ok(SessionOutcome::Connected))
+                    }
+                }
+                // Cancelled before connecting: nothing was published, so there
+                // is nothing to aggregate.
+                Ok(PublishOutcome::Cancelled) => {
+                    (SessionMetrics::default(), Ok(SessionOutcome::Cancelled))
+                }
                 // The publisher does not expose partial stats on failure, so
                 // there is nothing to aggregate for a failed publish session.
                 Err(e) => (SessionMetrics::default(), Err(e)),

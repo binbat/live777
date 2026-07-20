@@ -454,8 +454,6 @@ ffprobe-rtsp:
 ffprobe-rtsp-tcp:
     ffprobe -rtsp_transport tcp -v error -hide_banner -i {{rtsps}}/{{stream}} -show_streams -of json
 
-
-
 # ============================================================
 # loadtest: WHIP publish / WHEP subscribe / DataChannel benchmarks
 # Usage: just livewrk-whip 100 60           # publishes to streams load-0 .. load-99
@@ -464,9 +462,10 @@ ffprobe-rtsp-tcp:
 # ============================================================
 [group('loadtest')]
 livewrk-whip sessions="100" duration="60":
-    cargo run --release --features rsmpeg --bin livewrk -- whip \
+    cargo run --release --features=rsmpeg --bin livewrk -- whip \
         --whip {{server}}/whip/load --sessions {{sessions}} --duration {{duration}}
 
+# Decode verification (--verify-window) requires building with --features=rsmpeg.
 [group('loadtest')]
 livewrk-whep sessions="100" duration="60" target_stream=stream:
     cargo run --release --bin livewrk -- whep \
@@ -474,4 +473,4 @@ livewrk-whep sessions="100" duration="60" target_stream=stream:
 
 [group('loadtest')]
 loadtest-channel mode="all":
-    cargo run --release --features source --bin datachannel_loadtest -- {{mode}}
+    cargo run --release --features=source --bin datachannel_loadtest -- {{mode}}

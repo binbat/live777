@@ -40,14 +40,21 @@ pub async fn into(
         if command.is_some() {
             anyhow::bail!("--command is not supported with a synthetic input");
         }
-        let stats = publisher.run(ct).await?;
-        info!(
-            packets_sent = stats.packets_sent,
-            bytes_sent = stats.bytes_sent,
-            nack_count = stats.nack_count,
-            pli_count = stats.pli_count,
-            "Synthetic WHIP session ended"
-        );
+        match publisher.run(ct).await? {
+            crate::whipsynth::PublishOutcome::Completed(stats) => {
+                info!(
+                    packets_sent = stats.packets_sent,
+                    bytes_sent = stats.bytes_sent,
+                    nack_count = stats.nack_count,
+                    pli_count = stats.pli_count,
+                    "Synthetic WHIP session ended"
+                );
+            }
+            // Cancelled before connecting is a clean stop, not an error.
+            crate::whipsynth::PublishOutcome::Cancelled => {
+                info!("Synthetic WHIP session cancelled before connecting");
+            }
+        }
         return Ok(());
     }
 

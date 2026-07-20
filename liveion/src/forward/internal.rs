@@ -850,9 +850,13 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    /// Remove a peer by session id. Returns `Ok(true)` only when the removed
-    /// session was the publisher — callers then tear down the whole stream.
-    /// Removing a subscriber returns `Ok(false)`: the stream lives on.
+    /// Remove a peer by session id. Returns `Ok(true)` when the caller should
+    /// tear down the whole stream: either the removed session was the
+    /// publisher, or it was the last remaining session of a stream whose
+    /// publisher is already gone (orphaned stream, e.g. after an ungraceful
+    /// publisher disconnect) — without this the stream entry would linger
+    /// forever. Removing a subscriber from a stream with a live publisher
+    /// returns `Ok(false)`: the stream lives on.
     pub(crate) async fn remove_peer(&self, id: String) -> Result<bool> {
         // ── Publish: atomic check-and-take under write lock ──
         {
@@ -888,7 +892,11 @@ impl PeerForwardInternal {
                 if reforward {
                     self.send_event().await;
                 }
-                return Ok(false);
+                // Orphan cleanup: with the publisher already gone and no
+                // sessions left, the stream entry would linger forever —
+                // report it for removal like a publisher removal does.
+                let orphaned = is_empty && self.publish.read().await.is_none();
+                return Ok(orphaned);
             }
         }
 

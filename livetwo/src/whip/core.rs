@@ -193,10 +193,87 @@ where
     }
 }
 
-/// Grace period for a transient `Disconnected` state: ICE connectivity loss
+/// Grace budget for a transient `Disconnected` state: ICE connectivity loss
 /// may recover on its own, so only a disconnection that outlives the grace
-/// period (or a `Failed`/`Closed` state) ends the publish session.
+/// period (or a `Failed`/`Closed` state) ends the publish session. The budget
+/// is cumulative across flaps — see [`DisconnectTracker`].
 const DISCONNECTED_GRACE: Duration = Duration::from_secs(5);
+
+/// Cumulative `Disconnected`-time budget for [`wait_for_unexpected_peer_end`].
+///
+/// ICE treats brief connectivity loss as transient, but media is dead while
+/// the peer is disconnected. The tracker therefore exhausts its budget once
+/// the *cumulative* disconnected time reaches [`DISCONNECTED_GRACE`], even
+/// when no single span outlived it, so a link flapping faster than the grace
+/// period still fails. The budget is only restored after the peer stays
+/// continuously `Connected` for a full grace period — a genuine recovery;
+/// brief `Connected` blips between disconnected spans do not reset it.
+///
+/// All timestamps are [`tokio::time::Instant`] so tests can use paused time.
+struct DisconnectTracker {
+    /// Remaining cumulative disconnected time before the peer is declared dead.
+    budget: Duration,
+    /// Start of the current continuous `Disconnected` span, if any.
+    disconnected_since: Option<tokio::time::Instant>,
+    /// Start of the current continuous `Connected` span, if any.
+    connected_since: Option<tokio::time::Instant>,
+}
+
+impl DisconnectTracker {
+    fn new() -> Self {
+        Self {
+            budget: DISCONNECTED_GRACE,
+            disconnected_since: None,
+            connected_since: None,
+        }
+    }
+
+    /// Record a connection-state change at `now`. `Failed`/`Closed` end the
+    /// session immediately, so the caller handles them and they need no
+    /// bookkeeping here.
+    fn on_state(&mut self, state: RTCPeerConnectionState, now: tokio::time::Instant) {
+        match state {
+            RTCPeerConnectionState::Disconnected => {
+                if self.disconnected_since.is_none() {
+                    // A stable Connected span before this flap is a genuine
+                    // recovery: restore the full budget.
+                    if self
+                        .connected_since
+                        .is_some_and(|since| now.duration_since(since) >= DISCONNECTED_GRACE)
+                    {
+                        self.budget = DISCONNECTED_GRACE;
+                    }
+                    self.connected_since = None;
+                    self.disconnected_since = Some(now);
+                }
+            }
+            RTCPeerConnectionState::Connected => {
+                if let Some(since) = self.disconnected_since.take() {
+                    self.budget = self.budget.saturating_sub(now.duration_since(since));
+                }
+                if self.connected_since.is_none() {
+                    self.connected_since = Some(now);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the cumulative disconnected budget is fully spent at `now`.
+    fn exhausted(&self, now: tokio::time::Instant) -> bool {
+        match self.disconnected_since {
+            Some(since) => now.duration_since(since) >= self.budget,
+            None => self.budget.is_zero(),
+        }
+    }
+
+    /// Time until the budget runs out, or `None` when the peer is not
+    /// disconnected and no error is pending.
+    fn remaining(&self, now: tokio::time::Instant) -> Option<Duration> {
+        self.disconnected_since
+            .map(|since| self.budget.saturating_sub(now.duration_since(since)))
+    }
+}
 
 /// Watch a connected peer and return an error if it ends before shutdown.
 pub async fn wait_for_unexpected_peer_end(
@@ -205,12 +282,15 @@ pub async fn wait_for_unexpected_peer_end(
     diagnostics: Arc<PublishDiagnostics>,
 ) -> Result<()> {
     let mut saw_connected = *state_rx.borrow() == RTCPeerConnectionState::Connected;
+    let mut disconnects = DisconnectTracker::new();
 
     loop {
+        let now = tokio::time::Instant::now();
         let state = *state_rx.borrow_and_update();
         if state == RTCPeerConnectionState::Connected {
             saw_connected = true;
         }
+        disconnects.on_state(state, now);
 
         if matches!(
             state,
@@ -219,24 +299,32 @@ pub async fn wait_for_unexpected_peer_end(
             return Err(unexpected_peer_end_error(peer, state, saw_connected, diagnostics).await);
         }
 
-        if state == RTCPeerConnectionState::Disconnected {
-            // Disconnected is potentially transient (ICE may recover); only
-            // treat it as fatal when it outlives the grace period.
-            tokio::select! {
-                _ = tokio::time::sleep(DISCONNECTED_GRACE) => {
-                    return Err(unexpected_peer_end_error(peer, state, saw_connected, diagnostics).await);
-                }
-                changed = state_rx.changed() => {
-                    changed.map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
-                    continue;
-                }
-            }
+        if disconnects.exhausted(now) {
+            return Err(unexpected_peer_end_error(peer, state, saw_connected, diagnostics).await);
         }
 
-        state_rx
-            .changed()
-            .await
-            .map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
+        match disconnects.remaining(now) {
+            // Disconnected is potentially transient (ICE may recover); only
+            // treat it as fatal once the cumulative disconnected budget runs
+            // out. The budget keeps draining across flaps, so a link that
+            // oscillates faster than the grace period still fails.
+            Some(remaining) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(remaining) => {
+                        return Err(unexpected_peer_end_error(peer, state, saw_connected, diagnostics).await);
+                    }
+                    changed = state_rx.changed() => {
+                        changed.map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
+                    }
+                }
+            }
+            None => {
+                state_rx
+                    .changed()
+                    .await
+                    .map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
+            }
+        }
     }
 }
 
@@ -478,6 +566,127 @@ mod tests {
         state_tx.send(RTCPeerConnectionState::Failed).unwrap();
         let error = task.await.unwrap().unwrap_err().to_string();
         assert!(error.contains("state=failed"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unexpected_peer_end_errors_on_cumulative_disconnect_across_flaps() {
+        let publish = loopback_publish_peer().await;
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::Connected);
+
+        let task = tokio::spawn(wait_for_unexpected_peer_end(
+            publish.peer,
+            state_rx,
+            publish.diagnostics,
+        ));
+
+        // Let the watcher observe the initial Connected state first, then flap
+        // faster than the grace period: 4 s disconnected, 1 s connected, then
+        // disconnected again. No single span outlives the grace period, but
+        // the cumulative disconnected time reaches it.
+        tokio::task::yield_now().await;
+        state_tx.send(RTCPeerConnectionState::Disconnected).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        state_tx.send(RTCPeerConnectionState::Connected).unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        state_tx.send(RTCPeerConnectionState::Disconnected).unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let error = task.await.unwrap().unwrap_err().to_string();
+        assert!(error.contains("ended before shutdown"));
+        assert!(error.contains("state=disconnected"));
+        assert!(error.contains("connected_before=true"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unexpected_peer_end_resets_budget_after_stable_connected() {
+        let publish = loopback_publish_peer().await;
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::Connected);
+
+        let task = tokio::spawn(wait_for_unexpected_peer_end(
+            publish.peer,
+            state_rx,
+            publish.diagnostics,
+        ));
+
+        // Spend 4 s of the budget, then stay connected for a full grace
+        // period: a genuine recovery that restores the budget.
+        tokio::task::yield_now().await;
+        state_tx.send(RTCPeerConnectionState::Disconnected).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        state_tx.send(RTCPeerConnectionState::Connected).unwrap();
+        tokio::time::sleep(DISCONNECTED_GRACE).await;
+
+        // A fresh disconnected span shorter than the grace period must not
+        // error, because the budget was restored by the stable Connected span.
+        state_tx.send(RTCPeerConnectionState::Disconnected).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(!task.is_finished());
+
+        // It still errors once the restored budget runs out.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let error = task.await.unwrap().unwrap_err().to_string();
+        assert!(error.contains("state=disconnected"));
+    }
+
+    #[test]
+    fn disconnect_tracker_errors_after_single_grace_span() {
+        let start = tokio::time::Instant::now();
+        let mut tracker = DisconnectTracker::new();
+
+        tracker.on_state(RTCPeerConnectionState::Connected, start);
+        tracker.on_state(RTCPeerConnectionState::Disconnected, start);
+
+        assert_eq!(tracker.remaining(start), Some(DISCONNECTED_GRACE));
+        assert!(!tracker.exhausted(start + DISCONNECTED_GRACE / 2));
+        assert!(tracker.exhausted(start + DISCONNECTED_GRACE));
+    }
+
+    #[test]
+    fn disconnect_tracker_accumulates_across_flaps() {
+        let start = tokio::time::Instant::now();
+        let mut tracker = DisconnectTracker::new();
+
+        // Flap: 4 s disconnected, 1 s connected, then disconnected again.
+        tracker.on_state(RTCPeerConnectionState::Disconnected, start);
+        tracker.on_state(
+            RTCPeerConnectionState::Connected,
+            start + Duration::from_secs(4),
+        );
+        assert!(!tracker.exhausted(start + Duration::from_secs(4)));
+        tracker.on_state(
+            RTCPeerConnectionState::Disconnected,
+            start + Duration::from_secs(5),
+        );
+
+        // 4 s of the budget are already spent; only 1 s remains, and the brief
+        // Connected blip did not restore it.
+        assert_eq!(
+            tracker.remaining(start + Duration::from_secs(5)),
+            Some(Duration::from_secs(1))
+        );
+        assert!(!tracker.exhausted(start + Duration::from_secs(5)));
+        assert!(tracker.exhausted(start + Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn disconnect_tracker_resets_after_stable_connected() {
+        let start = tokio::time::Instant::now();
+        let mut tracker = DisconnectTracker::new();
+
+        // Spend 4 s of the budget, then stay connected for a full grace period.
+        tracker.on_state(RTCPeerConnectionState::Disconnected, start);
+        tracker.on_state(
+            RTCPeerConnectionState::Connected,
+            start + Duration::from_secs(4),
+        );
+        let recovered = start + Duration::from_secs(4) + DISCONNECTED_GRACE;
+        tracker.on_state(RTCPeerConnectionState::Disconnected, recovered);
+
+        // The recovery restored the full budget: a fresh < 5 s span must not
+        // exhaust it.
+        assert_eq!(tracker.remaining(recovered), Some(DISCONNECTED_GRACE));
+        assert!(!tracker.exhausted(recovered + Duration::from_secs(4)));
+        assert!(tracker.exhausted(recovered + DISCONNECTED_GRACE));
     }
 
     #[tokio::test]

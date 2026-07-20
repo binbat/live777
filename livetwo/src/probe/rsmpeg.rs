@@ -104,7 +104,9 @@ impl ProbeBackend for RsmpegProbe {
             success: false,
             connected: false,
             backend: self.name(),
-            codec: config.codec.map(|c| c.as_str().to_string()),
+            // Filled in with the negotiated codec once the track reports it;
+            // the configured expectation must not leak into failure results.
+            codec: None,
             width: 0,
             height: 0,
             frame_count: 0,
