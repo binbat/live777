@@ -77,8 +77,8 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 - `net4mqtt`     — net-over-MQTT proxy binary.
 - `livenil`      — cluster nil/bare runner for local multi-node tests.
 - `datachannel_loadtest` — load-test binary (feature gated).
-- `loadtest`      — load-testing tool with `whip` (requires `rsmpeg`), `whep`
-  subcommands.
+- `livewrk`       — load-testing tool (named after `wrk`) with `whip`
+  (requires `rsmpeg`), `whep` subcommands.
 
 ### WebUI Packages (`web/*`)
 

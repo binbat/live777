@@ -1,6 +1,6 @@
 //! Generic load-test orchestration: spawn N protocol-conversion sessions with
 //! a ramp-up interval, optionally bounded by a duration, and aggregate their
-//! metrics. Used by the `loadtest` binary; not part of the test suite.
+//! metrics. Used by the `livewrk` binary; not part of the test suite.
 
 pub mod whep;
 #[cfg(feature = "rsmpeg")]

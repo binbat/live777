@@ -458,18 +458,18 @@ ffprobe-rtsp-tcp:
 
 # ============================================================
 # loadtest: WHIP publish / WHEP subscribe / DataChannel benchmarks
-# Usage: just loadtest-whip 100 60           # publishes to streams load-0 .. load-99
-#        just loadtest-whep 100 60 load-0    # subscribes to one already-published stream
+# Usage: just livewrk-whip 100 60           # publishes to streams load-0 .. load-99
+#        just livewrk-whep 100 60 load-0    # subscribes to one already-published stream
 #        just loadtest-channel throughput
 # ============================================================
 [group('loadtest')]
-loadtest-whip sessions="100" duration="60":
-    cargo run --release --features rsmpeg --bin loadtest -- whip \
+livewrk-whip sessions="100" duration="60":
+    cargo run --release --features rsmpeg --bin livewrk -- whip \
         --whip {{server}}/whip/load --sessions {{sessions}} --duration {{duration}}
 
 [group('loadtest')]
-loadtest-whep sessions="100" duration="60" target_stream=stream:
-    cargo run --release --bin loadtest -- whep \
+livewrk-whep sessions="100" duration="60" target_stream=stream:
+    cargo run --release --bin livewrk -- whep \
         --whep {{server}}/whep/{{target_stream}} --sessions {{sessions}} --duration {{duration}}
 
 [group('loadtest')]

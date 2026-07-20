@@ -70,8 +70,8 @@ test = false
 bench = false
 
 [[bin]]
-name = "loadtest"
-path = "src/bin/loadtest.rs"
+name = "livewrk"
+path = "src/bin/livewrk.rs"
 test = false
 bench = false
 

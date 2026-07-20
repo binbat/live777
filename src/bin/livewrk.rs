@@ -1,8 +1,9 @@
-//! Load testing tool for live777: WHIP publish and WHEP subscribe.
+//! livewrk — load testing tool for live777: WHIP publish and WHEP subscribe.
+//! Named after `wrk`, the HTTP benchmarking tool.
 //!
 //! Usage:
-//!   loadtest whip  --whip http://localhost:7777/whip/load --sessions 100 --duration 60
-//!   loadtest whep  --whep http://localhost:7777/whep/load --sessions 100 --duration 60
+//!   livewrk whip  --whip http://localhost:7777/whip/load --sessions 100 --duration 60
+//!   livewrk whep  --whep http://localhost:7777/whep/load --sessions 100 --duration 60
 //!
 //! The `whip` subcommand requires the `rsmpeg` feature.
 
@@ -19,7 +20,7 @@ mod log;
 mod utils;
 
 #[derive(Parser)]
-#[command(name = "loadtest", version = version::version_with_features!())]
+#[command(name = "livewrk", version = version::version_with_features!())]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0, global = true)]
@@ -88,7 +89,7 @@ struct WhipArgs {
 #[derive(clap::Args)]
 struct WhepArgs {
     /// The WHEP endpoint of an already-published stream, e.g.
-    /// http://localhost:7777/whep/load. Publish one first (e.g. `loadtest whip`
+    /// http://localhost:7777/whep/load. Publish one first (e.g. `livewrk whip`
     /// or `whipsynth`).
     #[arg(short, long)]
     whep: String,
@@ -130,7 +131,7 @@ async fn run() -> Result<()> {
     };
 
     log::set(format!(
-        "loadtest={},livetwo={},webrtc={}",
+        "livewrk={},livetwo={},webrtc={}",
         log_level, log_level, webrtc_level,
     ));
 
