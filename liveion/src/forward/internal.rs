@@ -850,6 +850,9 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    /// Remove a peer by session id. Returns `Ok(true)` only when the removed
+    /// session was the publisher — callers then tear down the whole stream.
+    /// Removing a subscriber returns `Ok(false)`: the stream lives on.
     pub(crate) async fn remove_peer(&self, id: String) -> Result<bool> {
         // ── Publish: atomic check-and-take under write lock ──
         {
@@ -885,7 +888,7 @@ impl PeerForwardInternal {
                 if reforward {
                     self.send_event().await;
                 }
-                return Ok(true);
+                return Ok(false);
             }
         }
 
