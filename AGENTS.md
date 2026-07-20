@@ -260,6 +260,9 @@ Integration test binaries live in `tests/`:
 - `tests/channel.rs`
 - `tests/tests.rs` — liveion API smoke tests
 - `tests/recorder.rs`
+- `tests/livewrk_e2e.rs` — livewrk CLI end-to-end: real `livewrk` whip/whep
+  subprocesses against in-process liveion, including the rotating decode
+  verification (needs the `rsmpeg` feature)
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in

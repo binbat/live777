@@ -12,21 +12,21 @@ fail-fast = false
 
 # Unit tests and lib tests run with limited parallelism.
 [[profile.default.overrides]]
-filter = 'not (binary(channel) | binary(tests) | binary(matrix))'
+filter = 'not (binary(channel) | binary(tests) | binary(matrix) | binary(livewrk_e2e))'
 test-group = 'resource-limited'
 
 # Integration test binaries exercise ffmpeg, local sockets, and/or real browsers;
 # keep them serial to avoid fixed-port and media-resource contention under nextest.
 [[profile.default.overrides]]
-filter = 'binary(channel) | binary(tests) | binary(matrix)'
+filter = 'binary(channel) | binary(tests) | binary(matrix) | binary(livewrk_e2e)'
 test-group = 'serial-integration'
 
 [[profile.ci.overrides]]
-filter = 'not (binary(channel) | binary(tests) | binary(matrix) | (package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))))'
+filter = 'not (binary(channel) | binary(tests) | binary(matrix) | binary(livewrk_e2e) | (package(net4mqtt) & (test(tests::test_udp_simple) | test(tests::test_udp_add) | test(tests::test_udp_ipv6) | test(tests::test_udp_two_connect))))'
 test-group = 'resource-limited'
 
 [[profile.ci.overrides]]
-filter = 'binary(channel) | binary(tests) | binary(matrix)'
+filter = 'binary(channel) | binary(tests) | binary(matrix) | binary(livewrk_e2e)'
 test-group = 'serial-integration'
 
 [[profile.ci.overrides]]
