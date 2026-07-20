@@ -89,7 +89,7 @@ impl ProbeBackend for RsmpegProbe {
 
         // Create the peer connection in the current task so that the returned
         // `Arc<dyn PeerConnection>` stays alive for the whole probe duration.
-        let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = crate::whep::setup_whep_peer(
+        let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = match crate::whep::setup_whep_peer(
             ct.clone(),
             &mut client,
             video_tx,
@@ -98,7 +98,17 @@ impl ProbeBackend for RsmpegProbe {
             Some(state_tx),
             Some(video_mime_tx),
         )
-        .await?;
+        .await
+        {
+            Ok(parts) => parts,
+            Err(e) => {
+                // The audio drain task above waits on the cancellation token,
+                // and dropping a token does not cancel it; cancel explicitly
+                // so the task cannot leak when peer setup fails.
+                ct.cancel();
+                return Err(e);
+            }
+        };
 
         let mut result = ProbeResult {
             success: false,
@@ -107,6 +117,7 @@ impl ProbeBackend for RsmpegProbe {
             // Filled in with the negotiated codec once the track reports it;
             // the configured expectation must not leak into failure results.
             codec: None,
+            audio_codec: None,
             width: 0,
             height: 0,
             frame_count: 0,
@@ -135,6 +146,9 @@ impl ProbeBackend for RsmpegProbe {
         if !connected {
             ct.cancel();
             result.error = Some("WHEP peer connection did not reach Connected".to_string());
+            result.audio_bytes_received = audio_bytes_received.load(Ordering::Relaxed);
+            result.audio_tracks = u32::from(result.audio_bytes_received > 0);
+            result.audio_codec = negotiated_audio_codec(&codec_info).await;
             graceful_shutdown("WHEP", &mut client, peer).await;
             return Ok(result);
         }
@@ -152,6 +166,9 @@ impl ProbeBackend for RsmpegProbe {
             Err(e) => {
                 ct.cancel();
                 result.error = Some(format!("timed out waiting for video codec: {e}"));
+                result.audio_bytes_received = audio_bytes_received.load(Ordering::Relaxed);
+                result.audio_tracks = u32::from(result.audio_bytes_received > 0);
+                result.audio_codec = negotiated_audio_codec(&codec_info).await;
                 graceful_shutdown("WHEP", &mut client, peer).await;
                 result.duration_ms = start.elapsed().as_millis() as u64;
                 return Ok(result);
@@ -178,6 +195,9 @@ impl ProbeBackend for RsmpegProbe {
         if decode_duration.is_zero() {
             ct.cancel();
             result.error = Some("probe timeout expired before decoding could start".to_string());
+            result.audio_bytes_received = audio_bytes_received.load(Ordering::Relaxed);
+            result.audio_tracks = u32::from(result.audio_bytes_received > 0);
+            result.audio_codec = negotiated_audio_codec(&codec_info).await;
             graceful_shutdown("WHEP", &mut client, peer).await;
             result.duration_ms = start.elapsed().as_millis() as u64;
             return Ok(result);
@@ -267,6 +287,9 @@ impl ProbeBackend for RsmpegProbe {
         // The probe does not decode audio; treat received bytes as the track
         // signal so AV profiles can assert on it.
         result.audio_tracks = u32::from(result.audio_bytes_received > 0);
+        // The negotiated audio codec is reported as well (no decoding needed)
+        // so AV profiles can assert on it.
+        result.audio_codec = negotiated_audio_codec(&codec_info).await;
 
         ct.cancel();
         graceful_shutdown("WHEP", &mut client, peer).await;
@@ -328,4 +351,19 @@ async fn wait_for_video_mime(
             .map_err(|_| anyhow!("Timed out waiting for video codec info"))?
             .map_err(|_| anyhow!("Video codec watch channel closed"))?;
     }
+}
+
+/// Read the audio codec negotiated for the WHEP session from the shared codec
+/// info, which the track reader populates once the first audio RTP packet
+/// arrives. Returns the bare codec name, e.g. `opus`.
+async fn negotiated_audio_codec(codec_info: &Arc<Mutex<rtsp::CodecInfo>>) -> Option<String> {
+    codec_info.lock().await.audio_codec.as_ref().map(|codec| {
+        codec
+            .rtp_codec
+            .mime_type
+            .rsplit('/')
+            .next()
+            .unwrap_or(&codec.rtp_codec.mime_type)
+            .to_ascii_lowercase()
+    })
 }

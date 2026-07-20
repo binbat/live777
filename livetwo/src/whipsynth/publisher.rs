@@ -145,7 +145,16 @@ impl Publisher {
         };
 
         tokio::select! {
-            result = connect => result?,
+            result = connect => {
+                if let Err(e) = result {
+                    // Connect failed (e.g. ICE connect timeout) after the WHIP
+                    // POST may already have created a server-side session:
+                    // clean up like the cancel path (best-effort WHIP resource
+                    // DELETE, then peer close) so the session does not leak.
+                    graceful_shutdown("WHIP publisher", &mut client, peer).await;
+                    return Err(e);
+                }
+            }
             _ = ct.cancelled() => {
                 // Cancelled before connecting: clean up like the normal
                 // shutdown path (best-effort WHIP resource DELETE when the

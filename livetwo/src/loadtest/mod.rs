@@ -81,6 +81,10 @@ pub struct LoadtestStats {
 /// their metrics); otherwise it runs until every session completes or the
 /// token is cancelled.
 ///
+/// Side effect: the passed-in token is cancelled by this function when
+/// `config.duration` elapses; pass a child token if the caller's token must
+/// stay usable afterwards.
+///
 /// The session future returns its metrics together with the final outcome
 /// (`Err` = failed). Metrics are aggregated even when the outcome is an
 /// error, so traffic from sessions that fail mid-run is not lost from the
@@ -103,7 +107,17 @@ where
     let mut join_set = JoinSet::new();
     let mut spawned = 0usize;
     let mut aborted = 0u64;
-    let mut deadline = config.duration.map(|d| tokio::time::Instant::now() + d);
+    // A pathologically large duration would overflow `Instant + Duration`
+    // and panic; fall back to no deadline (run until externally cancelled).
+    let mut deadline = config.duration.and_then(|d| {
+        tokio::time::Instant::now().checked_add(d).or_else(|| {
+            warn!(
+                duration = ?d,
+                "loadtest duration overflows the instant clock, running without a deadline"
+            );
+            None
+        })
+    });
 
     for i in 0..config.session_count {
         if ct.is_cancelled() {
@@ -205,6 +219,7 @@ where
                         aborted += 1;
                     } else {
                         warn!(error = ?e, "loadtest session task panicked");
+                        failed.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -216,6 +231,7 @@ where
                 aborted += 1;
             } else {
                 warn!(error = ?e, "loadtest session task panicked");
+                failed.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -255,6 +271,13 @@ where
     // ramp-up): failed or aborted sessions mean something went wrong.
     if stats.sessions_connected == 0 && spawned > 0 && stats.sessions_cancelled < spawned as u64 {
         anyhow::bail!("all {} loadtest session(s) failed", spawned);
+    }
+
+    // The all-cancelled case is a valid run (e.g. the duration fired during
+    // ramp-up), but it means zero traffic ever flowed; say so loudly instead
+    // of letting a no-op loadtest pass silently.
+    if stats.sessions_connected == 0 && spawned > 0 && stats.sessions_cancelled == spawned as u64 {
+        warn!("all sessions were cancelled before connecting; no traffic flowed");
     }
 
     Ok(stats)

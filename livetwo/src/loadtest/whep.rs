@@ -47,7 +47,9 @@ const VERIFY_CHANNEL_CAPACITY: usize = 1024;
 #[derive(Debug, Clone)]
 pub struct WhepLoadParams {
     /// WHEP endpoint of the published stream, e.g. `http://localhost:7777/whep/live`.
-    /// A publisher must be running on that stream (e.g. `loadtest whip`).
+    /// A publisher must be running on that stream (e.g. `livewrk whip`; note
+    /// that the whip subcommand appends a `-N` suffix to the last path
+    /// segment).
     pub whep_url: String,
     pub token: Option<String>,
     /// When set, a single rotating verifier decodes one session at a time and
@@ -167,7 +169,17 @@ async fn run_session(
             verify.is_some().then_some(video_mime_tx),
         ) => match result {
             Ok(parts) => parts,
-            Err(e) => return (Duration::ZERO, Err(e)),
+            Err(e) => {
+                // Same cleanup as the cancel branch below: the WHEP POST may
+                // already have gone through (e.g. set_configuration or
+                // set_remote_description failed), so remove the server-side
+                // resource instead of leaking the session.
+                peer_ct.cancel();
+                if client.session_url.is_some() {
+                    let _ = client.remove_resource().await;
+                }
+                return (Duration::ZERO, Err(e));
+            }
         },
         _ = ct.cancelled() => {
             // The half-built peer goes away with the setup future; remove the
@@ -231,7 +243,7 @@ async fn run_session(
 
     // Only fully set-up sessions may be picked by the verifier; the guard
     // unregisters on every exit path.
-    let _active_guard = verify
+    let active_guard = verify
         .as_ref()
         .map(|v| ActiveGuard::register(&v.active, index));
 
@@ -252,12 +264,21 @@ async fn run_session(
     ));
 
     let stop_reason = wait_for_stop(ct.clone(), peer_ct.clone(), state_rx).await;
+    // Unregister before teardown so the verifier cannot pick a session that
+    // is already shutting down.
+    drop(active_guard);
     // Connected time stops when the session is asked to stop, before the
     // teardown budget, so it measures actual connected time.
     let connected_duration = connected_at.elapsed();
     peer_ct.cancel();
     graceful_shutdown("WHEP loadtest", &mut client, peer).await;
-    let _ = tokio::join!(video_handle, audio_handle);
+    let drains = tokio::join!(video_handle, audio_handle);
+    // A panicking drain task must not fail the session, but keep the signal.
+    for (kind, result) in [("video", drains.0), ("audio", drains.1)] {
+        if let Err(e) = result {
+            tracing::warn!(kind, error = ?e, "WHEP loadtest media drain task failed");
+        }
+    }
 
     let packets = packets.load(Ordering::Relaxed);
     let bytes = bytes.load(Ordering::Relaxed);
@@ -498,9 +519,16 @@ async fn run_verifier(
             break mime;
         }
         tokio::select! {
-            _ = ct.cancelled() => return stats,
+            _ = ct.cancelled() => {
+                stats.note = Some("no video track announced a codec".to_string());
+                return stats;
+            }
             changed = mime_rx.changed() => {
                 if changed.is_err() {
+                    // Every session went away without announcing a video codec
+                    // (e.g. an audio-only stream, or the mime reporting task
+                    // died early).
+                    stats.note = Some("no video track announced a codec".to_string());
                     return stats;
                 }
             }
@@ -630,7 +658,7 @@ async fn decode_window(
     /// timeout below adds a margin on top of its own deadline.
     const DECODER_GRACE: Duration = Duration::from_secs(2);
 
-    let (packet_tx, packet_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(VERIFY_CHANNEL_CAPACITY);
     let cancelled = Arc::new(AtomicBool::new(false));
     let decoder = tokio::task::spawn_blocking({
         let mime = mime.to_string();
@@ -668,7 +696,17 @@ async fn decode_window(
                                 if session != target {
                                     continue;
                                 }
-                                if packet_tx.send(packet).is_err() { break ForwardEnd::DecoderGone; }
+                                match packet_tx.try_send(packet) {
+                                    Ok(()) => {}
+                                    // The decoder is backed up: drop the
+                                    // packet (RTP decoding tolerates loss)
+                                    // rather than stall the forward loop,
+                                    // mirroring the upstream try_send.
+                                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                                        break ForwardEnd::DecoderGone;
+                                    }
+                                }
                             }
                             None => break ForwardEnd::Shutdown,
                         }
@@ -686,7 +724,12 @@ async fn decode_window(
     }
     match result {
         Ok(Ok(result)) => WindowOutcome::Done(result),
-        Ok(Err(e)) => WindowOutcome::Done(Err(anyhow!("decoder task panicked: {e}"))),
+        // A JoinError also covers cancellation from runtime shutdown, so only
+        // call it a panic when it actually is one.
+        Ok(Err(e)) if e.is_panic() => {
+            WindowOutcome::Done(Err(anyhow!("decoder task panicked: {e}")))
+        }
+        Ok(Err(e)) => WindowOutcome::Done(Err(anyhow!("decoder task was cancelled: {e}"))),
         // Aborting a blocking task does not stop the thread; it still exits
         // on its own deadline. Detach and count the window failed.
         Err(_) => WindowOutcome::Done(Err(anyhow!("decoder thread did not stop after the window"))),

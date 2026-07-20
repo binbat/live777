@@ -3,9 +3,11 @@
 //!
 //! Usage:
 //!   livewrk whip  --whip http://localhost:7777/whip/load --sessions 100 --duration 60
-//!   livewrk whep  --whep http://localhost:7777/whep/load --sessions 100 --duration 60
+//!   livewrk whep  --whep http://localhost:7777/whep/load-0 --sessions 100 --duration 60
 //!   livewrk whep  --whep ... --verify-window 5   # also decode-verify one session at a time
 //!
+//! The whip subcommand appends `-N` to the last path segment, so the whip
+//! example above publishes the streams `load-0` .. `load-99`.
 //! The `whip` subcommand and `whep --verify-window` require the `rsmpeg` feature.
 
 use std::time::Duration;
@@ -59,7 +61,9 @@ struct WhipArgs {
     ramp_ms: u64,
 
     /// Overall run duration in seconds; sessions are stopped afterwards
-    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+    // The 1-year cap keeps the downstream `Instant::now() + duration`
+    // deadline computation from overflowing.
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=31536000))]
     duration: u64,
 
     /// Video codec: vp8, vp9, h264, h265, av1
@@ -90,8 +94,8 @@ struct WhipArgs {
 #[derive(clap::Args)]
 struct WhepArgs {
     /// The WHEP endpoint of an already-published stream, e.g.
-    /// http://localhost:7777/whep/load. Publish one first (e.g. `livewrk whip`
-    /// or `whipsynth`).
+    /// http://localhost:7777/whep/load-0. Publish one first (e.g. `livewrk
+    /// whip`, which appends `-N` to the last path segment, or `whipsynth`).
     #[arg(short, long)]
     whep: String,
 
@@ -108,7 +112,9 @@ struct WhepArgs {
     ramp_ms: u64,
 
     /// Overall run duration in seconds; sessions are stopped afterwards
-    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+    // The 1-year cap keeps the downstream `Instant::now() + duration`
+    // deadline computation from overflowing.
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=31536000))]
     duration: u64,
 
     /// Enable decode verification: a single rotating verifier decodes one
@@ -156,13 +162,30 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-/// Cancel `ct` on SIGINT/SIGTERM so a running loadtest stops and reports.
+/// Cancel `ct` on the first SIGINT/SIGTERM so a running loadtest drains and
+/// reports; exit immediately on a second signal.
 fn spawn_signal_handler(ct: CancellationToken) {
     tokio::spawn(async move {
         utils::shutdown_signal().await;
-        info!("Shutdown signal received, stopping loadtest");
+        info!(
+            "Shutdown signal received, starting graceful shutdown; press Ctrl-C again to force quit"
+        );
         ct.cancel();
+        utils::shutdown_signal().await;
+        info!("Second shutdown signal received, force quitting");
+        std::process::exit(130);
     });
+}
+
+/// Convert the CLI `--sessions` count to `usize`, failing with a clear
+/// message instead of silently truncating on 32-bit platforms.
+fn session_count(sessions: u64) -> Result<usize> {
+    usize::try_from(sessions).map_err(|_| {
+        anyhow::anyhow!(
+            "--sessions {sessions} exceeds this platform's maximum of {}",
+            usize::MAX
+        )
+    })
 }
 
 fn print_stats(kind: &str, stats: &livetwo::loadtest::LoadtestStats) {
@@ -232,7 +255,7 @@ async fn run_whip(args: WhipArgs) -> Result<()> {
     };
 
     let config = livetwo::loadtest::LoadtestConfig {
-        session_count: args.sessions as usize,
+        session_count: session_count(args.sessions)?,
         spawn_interval: Duration::from_millis(args.ramp_ms),
         duration: Some(Duration::from_secs(args.duration)),
     };
@@ -260,7 +283,7 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     };
 
     let config = livetwo::loadtest::LoadtestConfig {
-        session_count: args.sessions as usize,
+        session_count: session_count(args.sessions)?,
         spawn_interval: Duration::from_millis(args.ramp_ms),
         duration: Some(Duration::from_secs(args.duration)),
     };

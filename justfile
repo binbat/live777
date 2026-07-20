@@ -468,7 +468,7 @@ livewrk-whip sessions="100" duration="60":
 # Decode verification (--verify-window) requires building with --features=rsmpeg.
 [group('loadtest')]
 livewrk-whep sessions="100" duration="60" target_stream=stream:
-    cargo run --release --bin livewrk -- whep \
+    cargo run --release --features=rsmpeg --bin livewrk -- whep \
         --whep {{server}}/whep/{{target_stream}} --sessions {{sessions}} --duration {{duration}}
 
 [group('loadtest')]

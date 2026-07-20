@@ -51,6 +51,9 @@ pub struct ProbeResult {
     pub backend: &'static str,
     /// Observed video codec, if any.
     pub codec: Option<String>,
+    /// Negotiated audio codec, if any. Backends that do not decode audio
+    /// can still report the codec negotiated for the audio track.
+    pub audio_codec: Option<String>,
     /// Observed video width in pixels.
     pub width: u32,
     /// Observed video height in pixels.
@@ -81,6 +84,7 @@ impl ProbeResult {
             connected: false,
             backend,
             codec: None,
+            audio_codec: None,
             width: 0,
             height: 0,
             frame_count: 0,

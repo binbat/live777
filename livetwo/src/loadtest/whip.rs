@@ -1,6 +1,8 @@
 //! WHIP publish loadtest: N concurrent synthetic publishers, each on its own
 //! stream (derived from the base URL with a `-N` suffix).
 
+use std::time::Duration;
+
 use anyhow::{Context, Result, anyhow};
 use tokio_util::sync::CancellationToken;
 
@@ -54,6 +56,7 @@ pub async fn run(
         let run_ct = session_ct.child_token();
         async move {
             let whip_url = session_config.whip_url.clone();
+            let fps = session_config.fps;
             match Publisher::new(session_config).run(run_ct).await {
                 Ok(PublishOutcome::Completed(stats)) => {
                     let metrics = SessionMetrics {
@@ -64,10 +67,13 @@ pub async fn run(
                         pli_count: stats.pli_count,
                         connected_duration: stats.connected_duration,
                     };
-                    // A connected synthetic publisher that sent nothing means
-                    // the pipeline is broken (mirrors the WHEP-side zero-packet
-                    // check).
-                    if stats.packets_sent == 0 {
+                    // Zero packets only mean a broken pipeline when the
+                    // session stayed connected long enough to have produced
+                    // several frames; a run cancelled right after connect
+                    // (before the first frame, ~1/fps) is normal loadtest
+                    // timing, not a failure.
+                    let frame_interval = Duration::from_secs(1) / fps.max(1);
+                    if stats.packets_sent == 0 && stats.connected_duration >= frame_interval * 3 {
                         (
                             metrics,
                             Err(anyhow!(
