@@ -79,7 +79,6 @@ gst-whip-rtp-h264:
     rm {{isdp}}
 
 
-# TODO: whipinto has some WARN
 [group('gst-whip-rtp')]
 gst-whip-rtp-h265:
     #!/usr/bin/env bash
