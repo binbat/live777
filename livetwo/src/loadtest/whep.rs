@@ -2,7 +2,14 @@
 //! the SFU's fan-out path. Each session drains the received WebRTC RTP tracks
 //! internally and counts packets/bytes; it does not decode or forward media to
 //! UDP, so the per-session overhead stays low.
+//!
+//! Optionally, a single rotating verifier decodes one session at a time with
+//! rsmpeg/FFmpeg (requires the `rsmpeg` feature): every `verify_window` the
+//! decoder switches to the next live session, so decode cost stays constant
+//! regardless of the session count while coverage approaches all sessions over
+//! a long run.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -14,6 +21,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use webrtc::peer_connection::RTCPeerConnectionState;
 
+#[cfg(feature = "rsmpeg")]
+use std::sync::atomic::AtomicBool;
+
 use super::{LoadtestConfig, LoadtestStats, SessionMetrics, run_sessions};
 use crate::utils::shutdown::graceful_shutdown;
 
@@ -22,6 +32,11 @@ use crate::utils::shutdown::graceful_shutdown;
 /// period (or a `Failed`/`Closed` state) ends the session.
 const DISCONNECTED_GRACE: Duration = Duration::from_secs(5);
 
+/// Capacity of the channel carrying RTP packets from the currently verified
+/// session to the decoder task.
+#[cfg(feature = "rsmpeg")]
+const VERIFY_CHANNEL_CAPACITY: usize = 1024;
+
 /// Parameters shared by all subscribe sessions.
 #[derive(Debug, Clone)]
 pub struct WhepLoadParams {
@@ -29,29 +44,75 @@ pub struct WhepLoadParams {
     /// A publisher must be running on that stream (e.g. `loadtest whip`).
     pub whep_url: String,
     pub token: Option<String>,
+    /// When set, a single rotating verifier decodes one session at a time and
+    /// switches to the next live session every interval. Requires the
+    /// `rsmpeg` feature.
+    pub verify_window: Option<Duration>,
+}
+
+/// Aggregate stats of the rotating decode verifier.
+#[derive(Debug, Default)]
+pub struct VerifyStats {
+    /// Windows that ran to completion; windows cut short by shutdown are not
+    /// counted.
+    pub windows_total: u64,
+    /// Windows that decoded at least one valid frame.
+    pub windows_ok: u64,
+    /// Windows that decoded nothing or hit a decoder error.
+    pub windows_failed: u64,
+    /// Total frames decoded across all windows.
+    pub frames_decoded: u64,
+    /// Sessions that completed at least one window.
+    pub sessions_covered: BTreeSet<usize>,
+    /// Sessions with at least one failed window.
+    pub sessions_failed: BTreeSet<usize>,
+    /// Why verification produced no windows (e.g. an unsupported codec).
+    pub note: Option<String>,
+    /// Error of the most recent failed window.
+    pub last_error: Option<String>,
 }
 
 /// Run `config.session_count` WHEP subscribers against `params.whep_url`.
+///
+/// Returns the aggregate loadtest stats and, when `params.verify_window` is
+/// set, the stats of the rotating decode verifier.
 pub async fn run(
     config: &LoadtestConfig,
     params: WhepLoadParams,
     ct: CancellationToken,
-) -> Result<LoadtestStats> {
+) -> Result<(LoadtestStats, Option<VerifyStats>)> {
     let session_ct = ct.child_token();
-    run_sessions(config, session_ct.clone(), move |_| {
+    let verifier = VerifierHandle::start(params.verify_window, &session_ct)?;
+    let session_verify = verifier.session_verify();
+
+    let run_ct = session_ct.clone();
+    let result = run_sessions(config, session_ct.clone(), move |i| {
         let params = params.clone();
-        let run_ct = session_ct.child_token();
-        async move { run_one(params, run_ct).await }
+        let verify = session_verify.clone();
+        let run_ct = run_ct.child_token();
+        async move { run_one(i, params, verify, run_ct).await }
     })
-    .await
+    .await;
+
+    // Stop the verifier however the sessions ended, and collect its stats
+    // before propagating any session error.
+    session_ct.cancel();
+    let verify_stats = verifier.finish().await;
+    let stats = result?;
+    Ok((stats, verify_stats))
 }
 
-async fn run_one(params: WhepLoadParams, ct: CancellationToken) -> (SessionMetrics, Result<()>) {
+async fn run_one(
+    index: usize,
+    params: WhepLoadParams,
+    verify: Option<SessionVerify>,
+    ct: CancellationToken,
+) -> (SessionMetrics, Result<()>) {
     let start = std::time::Instant::now();
     let packets = Arc::new(AtomicU64::new(0));
     let bytes = Arc::new(AtomicU64::new(0));
 
-    let result = run_session(&params, ct, packets.clone(), bytes.clone()).await;
+    let result = run_session(index, &params, verify, ct, packets.clone(), bytes.clone()).await;
 
     // Metrics are returned even on failure so traffic from sessions that die
     // mid-run still counts towards the aggregate.
@@ -65,7 +126,9 @@ async fn run_one(params: WhepLoadParams, ct: CancellationToken) -> (SessionMetri
 }
 
 async fn run_session(
+    index: usize,
     params: &WhepLoadParams,
+    verify: Option<SessionVerify>,
     ct: CancellationToken,
     packets: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
@@ -76,6 +139,7 @@ async fn run_session(
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
     let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
     let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+    let (video_mime_tx, mut video_mime_rx) = watch::channel(None::<String>);
 
     let mut client = Client::new(
         params.whep_url.clone(),
@@ -90,21 +154,48 @@ async fn run_session(
         audio_tx,
         codec_info,
         Some(state_tx),
-        None,
+        verify.is_some().then_some(video_mime_tx),
     )
     .await?;
 
-    let video_handle = tokio::spawn(drain_media(
-        "video",
+    if let Some(verify) = &verify {
+        // Report the negotiated video codec to the verifier once the track
+        // announces it; all sessions subscribe to the same stream, so one
+        // shared value is enough.
+        let mime_tx = verify.mime_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Some(mime) = video_mime_rx.borrow().clone() {
+                    let _ = mime_tx.send(Some(mime));
+                    break;
+                }
+                if video_mime_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    // Only fully set-up sessions may be picked by the verifier; the guard
+    // unregisters on every exit path.
+    let _active_guard = verify
+        .as_ref()
+        .map(|v| ActiveGuard::register(&v.active, index));
+
+    let video_handle = tokio::spawn(drain_video(
+        index,
         video_rx,
         packets.clone(),
         bytes.clone(),
+        verify,
+        peer_ct.clone(),
     ));
     let audio_handle = tokio::spawn(drain_media(
         "audio",
         audio_rx,
         packets.clone(),
         bytes.clone(),
+        peer_ct.clone(),
     ));
 
     let stop_reason = wait_for_stop(ct.clone(), peer_ct.clone(), state_rx).await;
@@ -130,18 +221,385 @@ async fn run_session(
     Ok(())
 }
 
+/// Drain the video track, counting packets/bytes. While this session holds
+/// the verification token, packets are additionally forwarded to the rotating
+/// verifier's decoder.
+///
+/// `ct` fires at session teardown: the channel senders live in the peer
+/// connection's event handler, whose lifetime is not tied to teardown, so the
+/// drains exit on the token instead of waiting for every sender to drop.
+async fn drain_video(
+    index: usize,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    packets: Arc<AtomicU64>,
+    bytes: Arc<AtomicU64>,
+    verify: Option<SessionVerify>,
+    ct: CancellationToken,
+) {
+    let Some(verify) = verify else {
+        drain_media("video", rx, packets, bytes, ct).await;
+        return;
+    };
+    let mut target_rx = verify.target_rx;
+    let verify_tx = verify.verify_tx;
+
+    loop {
+        tokio::select! {
+            packet = rx.recv() => {
+                let Some(packet) = packet else { break };
+                packets.fetch_add(1, Ordering::Relaxed);
+                bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                if *target_rx.borrow() == Some(index) {
+                    // The decoder is the only consumer and runs at its own
+                    // pace; when it backs up, drop rather than stall the drain.
+                    let _ = verify_tx.try_send(packet);
+                }
+            }
+            changed = target_rx.changed() => {
+                if changed.is_err() {
+                    // The verifier is gone (the run is ending); keep draining
+                    // so the traffic counters stay accurate.
+                    drain_media("video", rx, packets, bytes, ct).await;
+                    return;
+                }
+            }
+            _ = ct.cancelled() => break,
+        }
+    }
+
+    info!(kind = "video", "WHEP loadtest media drain stopped");
+}
+
 async fn drain_media(
     kind: &'static str,
     mut rx: mpsc::Receiver<Vec<u8>>,
     packets: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
+    ct: CancellationToken,
 ) {
-    while let Some(packet) = rx.recv().await {
-        packets.fetch_add(1, Ordering::Relaxed);
-        bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+    loop {
+        tokio::select! {
+            packet = rx.recv() => {
+                let Some(packet) = packet else { break };
+                packets.fetch_add(1, Ordering::Relaxed);
+                bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+            }
+            _ = ct.cancelled() => break,
+        }
     }
 
     info!(kind, "WHEP loadtest media drain stopped");
+}
+
+/// Per-session handle to the rotating verifier. Sessions consult `target_rx`
+/// per packet and forward to `verify_tx` only while targeted, so at most one
+/// session feeds the decoder at any time.
+#[derive(Clone)]
+struct SessionVerify {
+    target_rx: watch::Receiver<Option<usize>>,
+    verify_tx: mpsc::Sender<Vec<u8>>,
+    active: Arc<std::sync::Mutex<BTreeSet<usize>>>,
+    mime_tx: Arc<watch::Sender<Option<String>>>,
+}
+
+/// Registers a session as verifiable on creation and unregisters on drop.
+struct ActiveGuard {
+    active: Arc<std::sync::Mutex<BTreeSet<usize>>>,
+    index: usize,
+}
+
+impl ActiveGuard {
+    fn register(active: &Arc<std::sync::Mutex<BTreeSet<usize>>>, index: usize) -> Self {
+        active
+            .lock()
+            .expect("active sessions mutex poisoned")
+            .insert(index);
+        Self {
+            active: Arc::clone(active),
+            index,
+        }
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.index);
+        }
+    }
+}
+
+/// Owns the verifier task; created by [`run`] when verification is enabled.
+struct VerifierHandle {
+    #[cfg(feature = "rsmpeg")]
+    inner: Option<VerifierInner>,
+}
+
+#[cfg(feature = "rsmpeg")]
+struct VerifierInner {
+    session: SessionVerify,
+    task: tokio::task::JoinHandle<VerifyStats>,
+}
+
+impl VerifierHandle {
+    #[cfg(feature = "rsmpeg")]
+    fn start(window: Option<Duration>, parent_ct: &CancellationToken) -> Result<Self> {
+        let Some(window) = window else {
+            return Ok(Self { inner: None });
+        };
+        let (target_tx, target_rx) = watch::channel(None);
+        let (verify_tx, verify_rx) = mpsc::channel(VERIFY_CHANNEL_CAPACITY);
+        let active = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+        let (mime_tx, mime_rx) = watch::channel(None::<String>);
+        let ct = parent_ct.child_token();
+        let task = tokio::spawn(run_verifier(
+            verify_rx,
+            target_tx,
+            Arc::clone(&active),
+            mime_rx,
+            window,
+            ct,
+        ));
+        Ok(Self {
+            inner: Some(VerifierInner {
+                session: SessionVerify {
+                    target_rx,
+                    verify_tx,
+                    active,
+                    mime_tx: Arc::new(mime_tx),
+                },
+                task,
+            }),
+        })
+    }
+
+    #[cfg(not(feature = "rsmpeg"))]
+    fn start(window: Option<Duration>, _parent_ct: &CancellationToken) -> Result<Self> {
+        if window.is_some() {
+            anyhow::bail!(
+                "WHEP decode verification requires the `rsmpeg` feature; rebuild with --features rsmpeg"
+            );
+        }
+        Ok(Self {})
+    }
+
+    fn session_verify(&self) -> Option<SessionVerify> {
+        #[cfg(feature = "rsmpeg")]
+        if let Some(inner) = &self.inner {
+            return Some(inner.session.clone());
+        }
+        None
+    }
+
+    async fn finish(self) -> Option<VerifyStats> {
+        #[cfg(feature = "rsmpeg")]
+        if let Some(inner) = self.inner {
+            match inner.task.await {
+                Ok(stats) => return Some(stats),
+                Err(e) => tracing::warn!(error = ?e, "WHEP verifier task failed"),
+            }
+        }
+        None
+    }
+}
+
+/// The verifier loop: wait for the negotiated codec, then decode one live
+/// session per window in round-robin order until shutdown.
+#[cfg(feature = "rsmpeg")]
+async fn run_verifier(
+    mut verify_rx: mpsc::Receiver<Vec<u8>>,
+    target_tx: watch::Sender<Option<usize>>,
+    active: Arc<std::sync::Mutex<BTreeSet<usize>>>,
+    mut mime_rx: watch::Receiver<Option<String>>,
+    window: Duration,
+    ct: CancellationToken,
+) -> VerifyStats {
+    let mut stats = VerifyStats::default();
+
+    // All sessions subscribe to the same stream, so the first negotiated
+    // codec applies to every window.
+    let mime = loop {
+        if let Some(mime) = mime_rx.borrow().clone() {
+            break mime;
+        }
+        tokio::select! {
+            _ = ct.cancelled() => return stats,
+            changed = mime_rx.changed() => {
+                if changed.is_err() {
+                    return stats;
+                }
+            }
+        }
+    };
+
+    if !crate::probe::decoder::supports_mime(&mime) {
+        tracing::warn!(%mime, "decode verifier does not support this codec, verification disabled");
+        stats.note = Some(format!(
+            "codec {mime} is not supported by the decode verifier"
+        ));
+        return stats;
+    }
+
+    info!(%mime, ?window, "WHEP decode verifier started");
+
+    let mut cursor = 0usize;
+    loop {
+        let Some(index) = pick_next_active(&active, &mut cursor, &ct).await else {
+            break;
+        };
+
+        // Drop stragglers from the previously verified session before the
+        // decoder switches to the new one.
+        while verify_rx.try_recv().is_ok() {}
+        let _ = target_tx.send(Some(index));
+
+        match decode_window(&mime, &mut verify_rx, window, &ct).await {
+            WindowOutcome::Cancelled => break,
+            WindowOutcome::Done(result) => {
+                stats.windows_total += 1;
+                stats.sessions_covered.insert(index);
+                match result {
+                    Ok((width, height, frames)) if frames > 0 && width > 0 && height > 0 => {
+                        stats.windows_ok += 1;
+                        stats.frames_decoded += u64::from(frames);
+                        tracing::debug!(session = index, frames, width, height, "verify window ok");
+                    }
+                    Ok((_, _, frames)) => {
+                        stats.windows_failed += 1;
+                        stats.sessions_failed.insert(index);
+                        stats.last_error = Some(format!(
+                            "session {index}: decoded {frames} frames in {window:?}"
+                        ));
+                        tracing::warn!(session = index, frames, "verify window failed");
+                    }
+                    Err(e) => {
+                        stats.windows_failed += 1;
+                        stats.sessions_failed.insert(index);
+                        stats.last_error = Some(format!("session {index}: {e:#}"));
+                        tracing::warn!(session = index, error = ?e, "verify window failed");
+                    }
+                }
+            }
+        }
+    }
+
+    stats
+}
+
+/// Pick the next live session in round-robin order, waiting for one to appear
+/// when the set is empty. Returns `None` on shutdown.
+#[cfg(feature = "rsmpeg")]
+async fn pick_next_active(
+    active: &Arc<std::sync::Mutex<BTreeSet<usize>>>,
+    cursor: &mut usize,
+    ct: &CancellationToken,
+) -> Option<usize> {
+    loop {
+        {
+            let active = active.lock().expect("active sessions mutex poisoned");
+            if let Some(&index) = active
+                .range(*cursor..)
+                .next()
+                .or_else(|| active.iter().next())
+            {
+                *cursor = index + 1;
+                return Some(index);
+            }
+        }
+        tokio::select! {
+            _ = ct.cancelled() => return None,
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+}
+
+/// Outcome of one verification window.
+#[cfg(feature = "rsmpeg")]
+enum WindowOutcome {
+    /// Shutdown or the end of all sessions cut the window short; it is not
+    /// recorded in the stats.
+    Cancelled,
+    /// The window ran its course (or the decoder died on its own); carries
+    /// the decoder result `(width, height, frames)`.
+    Done(Result<(u32, u32, u32)>),
+}
+
+/// Why the packet forwarding loop of a window ended.
+#[cfg(feature = "rsmpeg")]
+enum ForwardEnd {
+    /// The window duration elapsed.
+    Expired,
+    /// The decoder thread is gone; its result carries the reason.
+    DecoderGone,
+    /// Shutdown started or every session went away.
+    Shutdown,
+}
+
+/// Decode the currently targeted session's packets for `window`, then report
+/// what the decoder saw.
+#[cfg(feature = "rsmpeg")]
+async fn decode_window(
+    mime: &str,
+    verify_rx: &mut mpsc::Receiver<Vec<u8>>,
+    window: Duration,
+    ct: &CancellationToken,
+) -> WindowOutcome {
+    /// Extra time the decoder thread gets past the window to flush; the join
+    /// timeout below adds a margin on top of its own deadline.
+    const DECODER_GRACE: Duration = Duration::from_secs(2);
+
+    let (packet_tx, packet_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let decoder = tokio::task::spawn_blocking({
+        let mime = mime.to_string();
+        let cancelled = Arc::clone(&cancelled);
+        move || {
+            crate::probe::decoder::run_ffi_decoder(
+                mime,
+                None,
+                packet_rx,
+                cancelled,
+                window + DECODER_GRACE,
+            )
+        }
+    });
+
+    // Forward packets until the window expires, shutdown starts, every
+    // session is gone, or the decoder thread dies. Only shutdown skips
+    // recording; a dead decoder is exactly the failure the window measures.
+    // The deadline is created once and pinned: a per-iteration `sleep(window)`
+    // would restart on every packet and never fire under continuous traffic.
+    let deadline = tokio::time::sleep(window);
+    tokio::pin!(deadline);
+    let end = tokio::select! {
+        _ = ct.cancelled() => ForwardEnd::Shutdown,
+        end = async {
+            loop {
+                tokio::select! {
+                    packet = verify_rx.recv() => {
+                        match packet {
+                            Some(packet) => if packet_tx.send(packet).is_err() { break ForwardEnd::DecoderGone; }
+                            None => break ForwardEnd::Shutdown,
+                        }
+                    }
+                    _ = &mut deadline => break ForwardEnd::Expired,
+                }
+            }
+        } => end,
+    };
+
+    cancelled.store(true, Ordering::Relaxed);
+    let result = tokio::time::timeout(DECODER_GRACE * 2, decoder).await;
+    if matches!(end, ForwardEnd::Shutdown) {
+        return WindowOutcome::Cancelled;
+    }
+    match result {
+        Ok(Ok(result)) => WindowOutcome::Done(result),
+        Ok(Err(e)) => WindowOutcome::Done(Err(anyhow!("decoder task panicked: {e}"))),
+        // Aborting a blocking task does not stop the thread; it still exits
+        // on its own deadline. Detach and count the window failed.
+        Err(_) => WindowOutcome::Done(Err(anyhow!("decoder thread did not stop after the window"))),
+    }
 }
 
 enum StopReason {
@@ -198,6 +656,101 @@ async fn wait_for_stop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn drain_video_forwards_packets_while_targeted() {
+        let (tx, rx) = mpsc::channel(8);
+        let (_target_tx, target_rx) = watch::channel(Some(0usize));
+        let (verify_tx, mut verify_rx) = mpsc::channel(8);
+        let verify = SessionVerify {
+            target_rx,
+            verify_tx,
+            active: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            mime_tx: Arc::new(watch::channel(None::<String>).0),
+        };
+        let packets = Arc::new(AtomicU64::new(0));
+        let bytes = Arc::new(AtomicU64::new(0));
+
+        let handle = tokio::spawn(drain_video(
+            0,
+            rx,
+            packets.clone(),
+            bytes.clone(),
+            Some(verify),
+            CancellationToken::new(),
+        ));
+
+        tx.send(vec![1, 2, 3]).await.unwrap();
+        tx.send(vec![4, 5]).await.unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        assert_eq!(packets.load(Ordering::Relaxed), 2);
+        assert_eq!(bytes.load(Ordering::Relaxed), 5);
+        assert_eq!(verify_rx.recv().await.unwrap(), vec![1, 2, 3]);
+        assert_eq!(verify_rx.recv().await.unwrap(), vec![4, 5]);
+    }
+
+    #[tokio::test]
+    async fn drain_video_only_counts_when_not_targeted() {
+        let (tx, rx) = mpsc::channel(8);
+        let (_target_tx, target_rx) = watch::channel(Some(1usize));
+        let (verify_tx, mut verify_rx) = mpsc::channel(8);
+        let verify = SessionVerify {
+            target_rx,
+            verify_tx,
+            active: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            mime_tx: Arc::new(watch::channel(None::<String>).0),
+        };
+        let packets = Arc::new(AtomicU64::new(0));
+        let bytes = Arc::new(AtomicU64::new(0));
+
+        let handle = tokio::spawn(drain_video(
+            0,
+            rx,
+            packets.clone(),
+            bytes.clone(),
+            Some(verify),
+            CancellationToken::new(),
+        ));
+
+        tx.send(vec![1, 2, 3]).await.unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        assert_eq!(packets.load(Ordering::Relaxed), 1);
+        assert_eq!(bytes.load(Ordering::Relaxed), 3);
+        // The session was never targeted: nothing reaches the verifier and the
+        // channel is closed once the drain task exits.
+        assert!(verify_rx.recv().await.is_none());
+    }
+
+    #[cfg(feature = "rsmpeg")]
+    #[tokio::test]
+    async fn pick_next_active_round_robins() {
+        let active = Arc::new(std::sync::Mutex::new(BTreeSet::from([0, 2, 5])));
+        let mut cursor = 0;
+        let ct = CancellationToken::new();
+
+        assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, Some(0));
+        assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, Some(2));
+        assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, Some(5));
+        // Wraps around to the beginning.
+        assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, Some(0));
+        // Removed sessions are skipped.
+        active.lock().unwrap().remove(&2);
+        assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, Some(5));
+    }
+
+    #[cfg(feature = "rsmpeg")]
+    #[tokio::test]
+    async fn pick_next_active_returns_none_when_cancelled() {
+        let active = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+        let mut cursor = 0;
+        let ct = CancellationToken::new();
+        ct.cancel();
+        assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, None);
+    }
 
     #[tokio::test]
     async fn wait_for_stop_reports_requested_cancel() {

@@ -4,8 +4,9 @@
 //! Usage:
 //!   livewrk whip  --whip http://localhost:7777/whip/load --sessions 100 --duration 60
 //!   livewrk whep  --whep http://localhost:7777/whep/load --sessions 100 --duration 60
+//!   livewrk whep  --whep ... --verify-window 5   # also decode-verify one session at a time
 //!
-//! The `whip` subcommand requires the `rsmpeg` feature.
+//! The `whip` subcommand and `whep --verify-window` require the `rsmpeg` feature.
 
 use std::time::Duration;
 
@@ -109,6 +110,17 @@ struct WhepArgs {
     /// Overall run duration in seconds; sessions are stopped afterwards
     #[arg(long, default_value_t = 60)]
     duration: u64,
+
+    /// Enable decode verification: a single rotating verifier decodes one
+    /// session at a time for this many seconds, then switches to the next
+    /// session, so decode cost stays constant regardless of the session
+    /// count. Requires the rsmpeg feature.
+    #[arg(long, value_name = "SECONDS")]
+    verify_window: Option<u64>,
+
+    /// Only report verification failures instead of failing the whole run
+    #[arg(long)]
+    verify_tolerant: bool,
 }
 
 #[tokio::main]
@@ -240,6 +252,7 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     let params = livetwo::loadtest::whep::WhepLoadParams {
         whep_url: args.whep,
         token: args.token,
+        verify_window: args.verify_window.map(Duration::from_secs),
     };
 
     let config = livetwo::loadtest::LoadtestConfig {
@@ -251,7 +264,33 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     let ct = CancellationToken::new();
     spawn_signal_handler(ct.clone());
 
-    let stats = livetwo::loadtest::whep::run(&config, params, ct).await?;
+    let (stats, verify) = livetwo::loadtest::whep::run(&config, params, ct).await?;
     print_stats("WHEP subscribe", &stats);
+    if let Some(verify) = &verify {
+        print_verify_stats(verify);
+        if verify.windows_failed > 0 && !args.verify_tolerant {
+            anyhow::bail!("{} verification window(s) failed", verify.windows_failed);
+        }
+    }
     Ok(())
+}
+
+fn print_verify_stats(verify: &livetwo::loadtest::whep::VerifyStats) {
+    println!("  Decode verification:");
+    if let Some(note) = &verify.note {
+        println!("    {note}");
+    }
+    println!(
+        "    Windows: {} total, {} ok, {} failed",
+        verify.windows_total, verify.windows_ok, verify.windows_failed
+    );
+    println!(
+        "    Sessions verified: {}, failed: {}",
+        verify.sessions_covered.len(),
+        verify.sessions_failed.len()
+    );
+    println!("    Frames decoded: {}", verify.frames_decoded);
+    if let Some(error) = &verify.last_error {
+        println!("    Last error: {error}");
+    }
 }
