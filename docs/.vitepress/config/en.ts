@@ -39,6 +39,7 @@ export const en: LocaleConfig = {
                             { text: 'WhipSynth', link: 'whipsynth' },
                             { text: 'WhepProbe', link: 'whepprobe' },
                             { text: 'WhepWright', link: 'whepwright' },
+                            { text: 'LiveWrk', link: 'livewrk' },
                             { text: 'NET4MQTT', link: 'net4mqtt' },
                         ]
                     },
