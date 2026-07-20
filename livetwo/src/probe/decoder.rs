@@ -38,18 +38,29 @@ pub struct RtpFrameDecoder {
     early_failure_count: u32,
 }
 
+/// Map a lowercased track mime type to the matching FFmpeg decoder id.
+fn codec_id_for_mime(mime_lc: &str) -> Option<ffi::AVCodecID> {
+    match mime_lc {
+        "video/vp8" => Some(ffi::AV_CODEC_ID_VP8),
+        "video/vp9" => Some(ffi::AV_CODEC_ID_VP9),
+        "video/h264" => Some(ffi::AV_CODEC_ID_H264),
+        "video/hevc" | "video/h265" => Some(ffi::AV_CODEC_ID_HEVC),
+        _ => None,
+    }
+}
+
+/// Whether the FFI decoder can handle the given track mime type.
+pub fn supports_mime(mime_type: &str) -> bool {
+    codec_id_for_mime(&mime_type.to_ascii_lowercase()).is_some()
+}
+
 impl RtpFrameDecoder {
     pub fn new(mime_type: impl Into<String>, sprop_params: Option<&str>) -> Result<Self> {
         let mime_type = mime_type.into();
         let mime_lc = mime_type.to_ascii_lowercase();
 
-        let codec_id = match mime_lc.as_str() {
-            "video/vp8" => ffi::AV_CODEC_ID_VP8,
-            "video/vp9" => ffi::AV_CODEC_ID_VP9,
-            "video/h264" => ffi::AV_CODEC_ID_H264,
-            "video/hevc" | "video/h265" => ffi::AV_CODEC_ID_HEVC,
-            _ => return Err(anyhow!("Unsupported codec for FFI decoding: {mime_type}")),
-        };
+        let codec_id = codec_id_for_mime(&mime_lc)
+            .ok_or_else(|| anyhow!("Unsupported codec for FFI decoding: {mime_type}"))?;
 
         let decoder = rsmpeg::avcodec::AVCodec::find_decoder(codec_id)
             .ok_or_else(|| anyhow!("Failed to find FFmpeg decoder for {mime_type}"))?;

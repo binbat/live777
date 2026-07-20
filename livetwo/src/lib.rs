@@ -1,3 +1,4 @@
+pub mod loadtest;
 pub mod payload;
 pub mod probe;
 pub mod protocol;

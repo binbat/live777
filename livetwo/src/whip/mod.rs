@@ -40,14 +40,21 @@ pub async fn into(
         if command.is_some() {
             anyhow::bail!("--command is not supported with a synthetic input");
         }
-        let stats = publisher.run(ct).await?;
-        info!(
-            packets_sent = stats.packets_sent,
-            bytes_sent = stats.bytes_sent,
-            nack_count = stats.nack_count,
-            pli_count = stats.pli_count,
-            "Synthetic WHIP session ended"
-        );
+        match publisher.run(ct).await? {
+            crate::whipsynth::PublishOutcome::Completed(stats) => {
+                info!(
+                    packets_sent = stats.packets_sent,
+                    bytes_sent = stats.bytes_sent,
+                    nack_count = stats.nack_count,
+                    pli_count = stats.pli_count,
+                    "Synthetic WHIP session ended"
+                );
+            }
+            // Cancelled before connecting is a clean stop, not an error.
+            crate::whipsynth::PublishOutcome::Cancelled => {
+                info!("Synthetic WHIP session cancelled before connecting");
+            }
+        }
         return Ok(());
     }
 
@@ -66,13 +73,7 @@ pub async fn into(
     info!("Input source configured: {:?}", input_source.scheme());
 
     let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
-        webrtc::setup_whip_peer(
-            ct.clone(),
-            &mut client,
-            input_source.media_info(),
-            target_url.clone(),
-        )
-        .await?;
+        webrtc::setup_whip_peer(&mut client, input_source.media_info(), target_url.clone()).await?;
     info!("WHIP peer setup completed; waiting for WebRTC connection");
 
     core::wait_for_peer_connected(
@@ -107,11 +108,11 @@ pub async fn into(
     });
 
     transport::connect_input_to_webrtc(
+        ct.clone(),
         input_source,
         video_sender.clone(),
         audio_sender.clone(),
         peer.clone(),
-        ct.clone(),
     )
     .await?;
 

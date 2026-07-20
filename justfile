@@ -79,7 +79,6 @@ gst-whip-rtp-h264:
     rm {{isdp}}
 
 
-# TODO: whipinto has some WARN
 [group('gst-whip-rtp')]
 gst-whip-rtp-h265:
     #!/usr/bin/env bash
@@ -366,6 +365,8 @@ cycle-rtsp-5c:
 # ffmpeg push to liveion RTSP server (ANNOUNCE + RECORD)
 # Usage: just ffmpeg-rtsp-push-h264
 # ============================================================
+
+# Push H264 test video into liveion's built-in RTSP server (ANNOUNCE + RECORD)
 [group('ffmpeg-rtsp')]
 ffmpeg-rtsp-push-h264:
     ffmpeg -re {{vsrc}} -vcodec {{h264}} -f rtsp {{rtsps}}/{{stream}}
@@ -421,6 +422,8 @@ ffmpeg-rtsp-push-file:
 # ffplay pull from liveion RTSP server (DESCRIBE + PLAY)
 # Usage: just ffplay-rtsp-pull
 # ============================================================
+
+# Pull and play an RTSP stream from liveion with ffplay (DESCRIBE + PLAY)
 [group('ffplay-rtsp')]
 ffplay-rtsp-pull:
     ffplay {{rtsps}}/{{stream}}
@@ -446,6 +449,8 @@ ffplay-rtsp-pull-noaudio:
 # ffprobe inspect RTSP stream from liveion
 # Usage: just ffprobe-rtsp
 # ============================================================
+
+# Inspect an RTSP stream from liveion with ffprobe (JSON stream info)
 [group('ffprobe-rtsp')]
 ffprobe-rtsp:
     ffprobe -v error -hide_banner -i {{rtsps}}/{{stream}} -show_streams -of json
@@ -454,3 +459,25 @@ ffprobe-rtsp:
 ffprobe-rtsp-tcp:
     ffprobe -rtsp_transport tcp -v error -hide_banner -i {{rtsps}}/{{stream}} -show_streams -of json
 
+# ============================================================
+# loadtest: WHIP publish / WHEP subscribe / DataChannel benchmarks
+# Usage: just livewrk-whip 100 60           # publishes to streams load-0 .. load-99
+#        just livewrk-whep 100 60 load-0    # subscribes to one already-published stream
+#        just loadtest-channel throughput
+# ============================================================
+
+# WHIP publish load test; publishes streams load-0 .. load-(N-1)
+[group('loadtest')]
+livewrk-whip sessions="100" duration="60":
+    cargo run --release --features=rsmpeg --bin livewrk -- whip \
+        --whip {{server}}/whip/load --sessions {{sessions}} --duration {{duration}}
+
+# Decode verification (--verify-window) requires building with --features=rsmpeg.
+[group('loadtest')]
+livewrk-whep sessions="100" duration="60" target_stream=stream:
+    cargo run --release --features=rsmpeg --bin livewrk -- whep \
+        --whep {{server}}/whep/{{target_stream}} --sessions {{sessions}} --duration {{duration}}
+
+[group('loadtest')]
+loadtest-channel mode="all":
+    cargo run --release --features=source --bin datachannel_loadtest -- {{mode}}

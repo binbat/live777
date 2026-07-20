@@ -431,10 +431,16 @@ pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
 
     for nal in NalIterator::new(data) {
         if nal.data.len() < 2 {
-            warn!(
-                len = nal.data.len(),
-                "Skipping H.265 NAL unit shorter than 2 bytes"
-            );
+            // Zero-valued bytes between start codes are legal Annex-B
+            // padding (leading_zero_8bits / trailing_zero_8bits) — skip
+            // them silently. Only a non-zero short NAL is genuinely
+            // malformed and worth a warning.
+            if !nal.data.iter().all(|b| *b == 0) {
+                warn!(
+                    len = nal.data.len(),
+                    "Skipping H.265 NAL unit shorter than 2 bytes"
+                );
+            }
             continue;
         }
 
@@ -476,4 +482,31 @@ pub fn payload_annex_b(data: &[u8], max_payload_size: usize) -> Vec<Bytes> {
     }
 
     payloads
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Annex-B allows zero-valued padding bytes between start codes
+    /// (leading_zero_8bits / trailing_zero_8bits); they must be skipped
+    /// without affecting the real NAL units.
+    #[test]
+    fn payload_annex_b_skips_zero_padding_nals() {
+        // start code, 0x00 padding, start code, 3-byte NAL (VPS header + data)
+        let data = [0, 0, 1, 0x00, 0, 0, 1, 0x40, 0x01, 0xAA];
+        let payloads = payload_annex_b(&data, 1200);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(&payloads[0][..], &[0x40, 0x01, 0xAA]);
+    }
+
+    /// A non-zero short NAL is malformed and is dropped, while the
+    /// surrounding valid NAL units are still payloaded.
+    #[test]
+    fn payload_annex_b_drops_malformed_short_nals() {
+        let data = [0, 0, 1, 0xFF, 0, 0, 1, 0x40, 0x01, 0xAA];
+        let payloads = payload_annex_b(&data, 1200);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(&payloads[0][..], &[0x40, 0x01, 0xAA]);
+    }
 }

@@ -88,6 +88,34 @@ pub struct PeerForward {
     pub(crate) internal: Arc<PeerForwardInternal>,
 }
 
+/// Outcome of [`PeerForward::remove_peer`], telling the caller how the
+/// removal affects stream-level teardown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemovePeerOutcome {
+    /// The removed session was the publisher.
+    PublisherRemoved,
+    /// The removed session was the last subscriber and no publisher is
+    /// attached. Preliminary hint only — re-check with
+    /// [`PeerForward::confirm_orphan_teardown`] before tearing down: a new
+    /// publish setup may be in flight, and a virtual (source) publisher
+    /// keeps the stream alive even though `publish` is `None`.
+    Orphaned,
+    /// The stream lives on (a publisher or other subscribers remain, or the
+    /// session was not found).
+    None,
+}
+
+/// Pure decision behind [`PeerForward::confirm_orphan_teardown`], extracted
+/// so every branch can be unit-tested without real RTC peers.
+fn orphan_teardown_safe(
+    setup_in_progress: bool,
+    has_publisher: bool,
+    has_subscribers: bool,
+    has_virtual_publisher: bool,
+) -> bool {
+    !setup_in_progress && !has_publisher && !has_subscribers && !has_virtual_publisher
+}
+
 #[cfg(feature = "recorder")]
 #[derive(Clone, Debug)]
 pub struct AudioTrackInfo {
@@ -146,8 +174,43 @@ impl PeerForward {
             .await
     }
 
-    pub async fn remove_peer(&self, session: String) -> Result<bool> {
+    pub(crate) async fn remove_peer(&self, session: String) -> Result<RemovePeerOutcome> {
         self.internal.remove_peer(session).await
+    }
+
+    /// `true` while a new publisher is mid-handshake in `set_publish`, which
+    /// holds `publish_lock` for the whole SDP/ICE setup (potentially
+    /// seconds).
+    pub(crate) fn publish_setup_in_progress(&self) -> bool {
+        self.publish_lock.try_lock().is_err()
+    }
+
+    /// Millisecond timestamp of the last time the subscriber group became
+    /// empty (0 while at least one subscriber is attached).
+    pub(crate) async fn subscribe_leave_at(&self) -> i64 {
+        self.internal.subscribe_leave_at().await
+    }
+
+    /// Re-check under the forward's locks whether this forward is a true
+    /// orphan that is safe to tear down. Confirms the
+    /// [`RemovePeerOutcome::Orphaned`] hint, closing the race between the
+    /// hint and the actual stream removal: an in-flight publish handshake,
+    /// a freshly attached publisher or subscriber, or a virtual (source)
+    /// publisher all keep the stream alive.
+    pub(crate) async fn confirm_orphan_teardown(&self) -> bool {
+        let setup_in_progress = self.publish_setup_in_progress();
+        let has_publisher = self.internal.publish_is_some().await;
+        let has_subscribers = self.internal.has_subscribers().await;
+        #[cfg(feature = "source")]
+        let has_virtual_publisher = self.internal.has_virtual_publisher().await;
+        #[cfg(not(feature = "source"))]
+        let has_virtual_publisher = false;
+        orphan_teardown_safe(
+            setup_in_progress,
+            has_publisher,
+            has_subscribers,
+            has_virtual_publisher,
+        )
     }
 
     pub async fn close(&self) -> Result<()> {
@@ -1177,5 +1240,63 @@ a=end-of-candidates";
         answer_peer.close().await?;
         offer_peer.close().await?;
         Ok(())
+    }
+
+    #[test]
+    fn orphan_teardown_safe_decision_matrix() {
+        // All clear — safe to tear down.
+        assert!(super::orphan_teardown_safe(false, false, false, false));
+        // Each single blocker vetoes the teardown on its own.
+        assert!(!super::orphan_teardown_safe(true, false, false, false));
+        assert!(!super::orphan_teardown_safe(false, true, false, false));
+        assert!(!super::orphan_teardown_safe(false, false, true, false));
+        assert!(!super::orphan_teardown_safe(false, false, false, true));
+    }
+
+    #[tokio::test]
+    async fn confirm_orphan_teardown_empty_forward_is_orphan() {
+        let forward = PeerForward::new(
+            "orphan-empty",
+            vec![],
+            vec![],
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
+        );
+
+        assert!(!forward.publish_setup_in_progress());
+        assert!(forward.confirm_orphan_teardown().await);
+    }
+
+    /// A source stream's publisher is a virtual track, so `publish` stays
+    /// `None` — the orphan check must not mistake it for a dead stream.
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn confirm_orphan_teardown_virtual_publisher_keeps_stream() {
+        let forward = PeerForward::new(
+            "orphan-virtual",
+            vec![],
+            vec![],
+            None,
+            api::strategy::Strategy::default(),
+        );
+        forward
+            .add_virtual_track(
+                RtpCodecKind::Video,
+                rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+                    rtp_codec: RTCRtpCodec {
+                        mime_type: "video/H264".to_string(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line: String::new(),
+                        rtcp_feedback: vec![],
+                    },
+                    payload_type: 102,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!forward.confirm_orphan_teardown().await);
     }
 }

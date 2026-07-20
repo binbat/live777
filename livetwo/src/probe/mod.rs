@@ -20,7 +20,7 @@ pub struct ProbeConfig {
     /// Expected video codec. Used to build the receiver SDP for UDP-based backends.
     /// The rsmpeg and playwright backends ignore this and use the codec negotiated
     /// in the WHEP session.
-    pub codec: Option<Codec>,
+    pub video_codec: Option<Codec>,
     /// H265 sprop parameters (`sprop-vps=...;sprop-sps=...;sprop-pps=...`).
     /// Used by the rsmpeg backend to seed parameter-set injection for H265 streams.
     pub sprop_params: Option<String>,
@@ -33,7 +33,7 @@ impl Default for ProbeConfig {
         Self {
             whep_url: String::new(),
             timeout: Duration::from_secs(30),
-            codec: None,
+            video_codec: None,
             sprop_params: None,
             token: None,
         }
@@ -50,7 +50,10 @@ pub struct ProbeResult {
     /// Backend that produced this result.
     pub backend: &'static str,
     /// Observed video codec, if any.
-    pub codec: Option<String>,
+    pub video_codec: Option<String>,
+    /// Negotiated audio codec, if any. Backends that do not decode audio
+    /// can still report the codec negotiated for the audio track.
+    pub audio_codec: Option<String>,
     /// Observed video width in pixels.
     pub width: u32,
     /// Observed video height in pixels.
@@ -80,7 +83,8 @@ impl ProbeResult {
             success: false,
             connected: false,
             backend,
-            codec: None,
+            video_codec: None,
+            audio_codec: None,
             width: 0,
             height: 0,
             frame_count: 0,

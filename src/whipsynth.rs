@@ -162,7 +162,7 @@ async fn run() -> Result<()> {
             let run_timeout = Duration::from_secs(duration).saturating_add(timeout);
             tokio::select! {
                 result = publisher.run(ct.clone()) => {
-                    let _stats = result?;
+                    let _outcome = result?;
                 }
                 _ = tokio::time::sleep(run_timeout) => {
                     ct.cancel();
@@ -176,7 +176,7 @@ async fn run() -> Result<()> {
         } else {
             tokio::select! {
                 result = publisher.run(ct.clone()) => {
-                    let _stats = result?;
+                    let _outcome = result?;
                 }
                 _ = utils::shutdown_signal() => {
                     info!("Shutdown signal received, stopping publisher");

@@ -7,9 +7,9 @@ pub mod packetizer;
 pub mod publisher;
 pub mod source;
 
-pub use loadtest::{LoadtestConfig, LoadtestStats, LoadtestStatsSnapshot, run_loadtest};
+pub use loadtest::{LoadtestConfig, LoadtestStatsSnapshot, run_loadtest};
 pub use packetizer::{Packetizer, PacketizerConfig};
-pub use publisher::{Publisher, PublisherConfig};
+pub use publisher::{PublishOutcome, Publisher, PublisherConfig};
 pub use source::SourceHandle;
 
 use crate::source::{AudioCodec, VideoCodec};

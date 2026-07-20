@@ -39,5 +39,8 @@ rtc-shared = { workspace = true }
 
 rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"], optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [features]
 rsmpeg = ["dep:rsmpeg"]

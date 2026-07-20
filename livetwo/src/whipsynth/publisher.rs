@@ -37,6 +37,17 @@ pub struct PublisherConfig {
     pub stun_server: String,
 }
 
+/// Outcome of a [`Publisher::run`] call.
+#[derive(Debug)]
+pub enum PublishOutcome {
+    /// The peer connected and published until stopped; carries the final
+    /// session statistics.
+    Completed(SessionStats),
+    /// Cancelled before the peer reached `Connected`; the WHIP resource was
+    /// cleaned up and nothing was published.
+    Cancelled,
+}
+
 /// Direct WHIP publisher that feeds encoded frames from a local source into a
 /// `webrtc` PeerConnection without an intermediate RTP/UDP bridge.
 pub struct Publisher {
@@ -56,8 +67,10 @@ impl Publisher {
 
     /// Run the publisher until cancelled or the configured duration expires.
     ///
-    /// Returns the final session statistics on success.
-    pub async fn run(self, ct: CancellationToken) -> Result<SessionStats> {
+    /// Returns [`PublishOutcome::Completed`] with the final session statistics
+    /// when the peer connected, or [`PublishOutcome::Cancelled`] when the
+    /// token fired before the peer reached `Connected`.
+    pub async fn run(self, ct: CancellationToken) -> Result<PublishOutcome> {
         let input_id = format!("whipsynth-{}", rand::random::<u64>());
 
         let mut client = Client::new(
@@ -72,12 +85,10 @@ impl Publisher {
 
         let gather_complete = Arc::new(Notify::new());
         let publish = core::create_publish_peer(
-            ct.clone(),
             gather_complete.clone(),
             PublishPeerOptions {
                 stun_server: Some(self.config.stun_server.clone()),
                 extra_video_codecs,
-                cancel_on_failure: true,
             },
         )
         .await?;
@@ -110,22 +121,50 @@ impl Publisher {
         }
 
         info!("WHIP publisher peer created; starting signaling");
-        utils::webrtc::setup_connection(peer.clone(), &mut client, gather_complete).await?;
-        let local_summary = peer
-            .local_description()
-            .await
-            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
-            .unwrap_or_else(|| "<no local description>".to_string());
-        let remote_summary = peer
-            .remote_description()
-            .await
-            .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
-            .unwrap_or_else(|| "<no remote description>".to_string());
-        info!("Local SDP offer summary:\n{}", local_summary);
-        info!("Remote SDP answer summary:\n{}", remote_summary);
-        diagnostics.set_sdp_summaries(local_summary, remote_summary);
+        // Race the connect phase (WHIP POST/answer + ICE gather + waiting for
+        // `Connected`) against cancellation so a session stopped while
+        // connecting can still clean up and report back instead of hanging
+        // until the wait times out.
+        let connect = async {
+            utils::webrtc::setup_connection(peer.clone(), &mut client, gather_complete).await?;
+            let local_summary = peer
+                .local_description()
+                .await
+                .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+                .unwrap_or_else(|| "<no local description>".to_string());
+            let remote_summary = peer
+                .remote_description()
+                .await
+                .map(|description| utils::webrtc::summarize_sdp(&description.sdp))
+                .unwrap_or_else(|| "<no remote description>".to_string());
+            info!("Local SDP offer summary:\n{}", local_summary);
+            info!("Remote SDP answer summary:\n{}", remote_summary);
+            diagnostics.set_sdp_summaries(local_summary, remote_summary);
 
-        core::wait_for_peer_connected(peer.clone(), state_rx.clone(), diagnostics.clone()).await?;
+            core::wait_for_peer_connected(peer.clone(), state_rx.clone(), diagnostics.clone()).await
+        };
+
+        tokio::select! {
+            result = connect => {
+                if let Err(e) = result {
+                    // Connect failed (e.g. ICE connect timeout) after the WHIP
+                    // POST may already have created a server-side session:
+                    // clean up like the cancel path (best-effort WHIP resource
+                    // DELETE, then peer close) so the session does not leak.
+                    graceful_shutdown("WHIP publisher", &mut client, peer).await;
+                    return Err(e);
+                }
+            }
+            _ = ct.cancelled() => {
+                // Cancelled before connecting: clean up like the normal
+                // shutdown path (best-effort WHIP resource DELETE when the
+                // resource URL is already known, then peer close) so the
+                // server-side session does not leak until ICE timeout.
+                info!("WHIP publisher cancelled before connecting, cleaning up");
+                graceful_shutdown("WHIP publisher", &mut client, peer).await;
+                return Ok(PublishOutcome::Cancelled);
+            }
+        }
         info!("WHIP publisher peer connected");
 
         // After SDP negotiation the answer may have remapped the dynamic payload
@@ -197,7 +236,9 @@ impl Publisher {
         );
 
         // Propagate peer/write-loop errors first, then source errors.
-        result.and(source_result).map(|_| final_stats)
+        result
+            .and(source_result)
+            .map(|_| PublishOutcome::Completed(final_stats))
     }
 }
 

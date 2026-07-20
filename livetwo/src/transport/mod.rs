@@ -5,7 +5,6 @@ mod udp;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use webrtc::peer_connection::PeerConnection;
@@ -18,22 +17,17 @@ pub use tcp::TcpHandler;
 pub use udp::UdpHandler;
 
 pub async fn connect_input_to_webrtc(
+    ct: CancellationToken,
     mut input_source: InputSource,
     video_sender: Option<UnboundedSender<Vec<u8>>>,
     audio_sender: Option<UnboundedSender<Vec<u8>>>,
     peer: Arc<dyn PeerConnection>,
-    cancel: CancellationToken,
-) -> Result<JoinHandle<()>> {
-    let handle = if let Some((tx, rx)) = input_source.take_channels() {
+) -> Result<()> {
+    if let Some((tx, rx)) = input_source.take_channels() {
         debug!("Setting up TCP interleaved transport");
         let handler = TcpHandler::new(input_source.media_info());
         handler.spawn_input_to_webrtc(rx, video_sender, audio_sender, peer.clone());
-        handler.spawn_webrtc_rtcp_to_output(peer.clone(), tx, cancel.clone());
-
-        let ct = cancel.clone();
-        tokio::spawn(async move {
-            ct.cancelled().await;
-        })
+        handler.spawn_webrtc_rtcp_to_output(ct.clone(), peer.clone(), tx);
     } else {
         debug!("Setting up UDP transport");
         let handler = UdpHandler::new();
@@ -62,15 +56,9 @@ pub async fn connect_input_to_webrtc(
                 peer.clone(),
             )
             .await;
+    }
 
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
-            }
-        })
-    };
-
-    Ok(handle)
+    Ok(())
 }
 
 pub async fn connect_webrtc_to_output(
