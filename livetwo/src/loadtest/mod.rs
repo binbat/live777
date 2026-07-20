@@ -73,9 +73,21 @@ where
 
     let mut join_set = JoinSet::new();
     let mut spawned = 0usize;
+    let mut deadline = config.duration.map(|d| tokio::time::Instant::now() + d);
 
     for i in 0..config.session_count {
         if ct.is_cancelled() {
+            break;
+        }
+        if let Some(d) = deadline
+            && tokio::time::Instant::now() >= d
+        {
+            info!(
+                duration = ?config.duration,
+                "loadtest duration reached during ramp-up, cancelling sessions"
+            );
+            ct.cancel();
+            deadline = None;
             break;
         }
 
@@ -108,6 +120,20 @@ where
             tokio::select! {
                 _ = ct.cancelled() => break,
                 _ = tokio::time::sleep(config.spawn_interval) => {}
+                _ = async {
+                    match deadline {
+                        Some(d) => tokio::time::sleep_until(d).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    info!(
+                        duration = ?config.duration,
+                        "loadtest duration reached during ramp-up, cancelling sessions"
+                    );
+                    ct.cancel();
+                    deadline = None;
+                    break;
+                }
             }
         }
     }
@@ -117,7 +143,6 @@ where
     // tokens, so the JoinSet drains on its own — no explicit branch for it.
     // When every session ends early (e.g. all failed to connect), this
     // returns immediately instead of waiting out the full duration.
-    let mut deadline = config.duration.map(|d| tokio::time::Instant::now() + d);
     while !join_set.is_empty() {
         tokio::select! {
             _ = async {
@@ -169,4 +194,40 @@ where
     }
 
     Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn duration_limits_ramp_up() {
+        let config = LoadtestConfig {
+            session_count: 5,
+            spawn_interval: Duration::from_millis(50),
+            duration: Some(Duration::from_millis(70)),
+        };
+        let ct = CancellationToken::new();
+        let session_ct = ct.clone();
+
+        let stats = run_sessions(&config, ct, move |_| {
+            let session_ct = session_ct.clone();
+            async move {
+                session_ct.cancelled().await;
+                Ok(SessionMetrics {
+                    packets: 1,
+                    bytes: 1,
+                    ..Default::default()
+                })
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(stats.sessions_total > 0);
+        assert!(
+            stats.sessions_total < config.session_count,
+            "duration should stop ramp-up before all sessions spawn: {stats:?}"
+        );
+    }
 }
