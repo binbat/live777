@@ -49,7 +49,7 @@ impl ProbeBackend for RsmpegProbe {
 
         info!(
             whep_url = %config.whep_url,
-            codec = ?config.codec,
+            codec = ?config.video_codec,
             "Starting rsmpeg WHEP probe (FFI encoded-frame path)"
         );
 
@@ -116,7 +116,7 @@ impl ProbeBackend for RsmpegProbe {
             backend: self.name(),
             // Filled in with the negotiated codec once the track reports it;
             // the configured expectation must not leak into failure results.
-            codec: None,
+            video_codec: None,
             audio_codec: None,
             width: 0,
             height: 0,
@@ -178,7 +178,7 @@ impl ProbeBackend for RsmpegProbe {
         // Report the negotiated codec, not the configured expectation —
         // otherwise the runner's codec assertion compares the config to itself.
         // Strip the "video/" prefix so it matches ffprobe-style codec names.
-        result.codec = Some(
+        result.video_codec = Some(
             mime_type
                 .rsplit('/')
                 .next()

@@ -70,7 +70,7 @@ impl Player for RsmpegWhepReceiver {
         let config = ProbeConfig {
             whep_url: whep_url.to_string(),
             timeout: Duration::from_secs(self.timeout_seconds),
-            codec,
+            video_codec: codec,
             sprop_params: self.sprop_params.clone(),
             token: None,
         };
@@ -101,7 +101,7 @@ impl From<ProbeResult> for PlayResult {
             duration_ms: result.duration_ms,
             // Both the decoded video codec and the negotiated audio codec are
             // reported so AV profiles can assert on each.
-            codecs: [result.codec, result.audio_codec]
+            codecs: [result.video_codec, result.audio_codec]
                 .into_iter()
                 .flatten()
                 .collect(),

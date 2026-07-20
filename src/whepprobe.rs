@@ -84,7 +84,7 @@ async fn run() -> Result<bool> {
 
     info!(
         whep_url = %config.whep_url,
-        codec = ?config.codec,
+        codec = ?config.video_codec,
         timeout = ?config.timeout,
         "Starting WHEP probe (rsmpeg)"
     );
@@ -129,7 +129,7 @@ fn build_config(args: &Args) -> Result<ProbeConfig> {
     Ok(ProbeConfig {
         whep_url: args.whep.clone(),
         timeout: Duration::from_secs(args.timeout),
-        codec,
+        video_codec: codec,
         sprop_params: args.sprop_params.clone(),
         token: args.token.clone(),
     })
@@ -147,8 +147,11 @@ fn print_result(result: &ProbeResult, format: OutputFormat) {
             println!("Backend:        {}", result.backend);
             println!("Connected:      {}", result.connected);
             println!("Success:        {}", result.success);
-            if let Some(codec) = &result.codec {
-                println!("Codec:          {}", codec);
+            if let Some(video_codec) = &result.video_codec {
+                println!("Video codec:    {}", video_codec);
+            }
+            if let Some(audio_codec) = &result.audio_codec {
+                println!("Audio codec:    {}", audio_codec);
             }
             if result.width > 0 && result.height > 0 {
                 println!("Resolution:     {}x{}", result.width, result.height);
