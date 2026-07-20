@@ -458,8 +458,8 @@ ffprobe-rtsp-tcp:
 
 # ============================================================
 # loadtest: WHIP publish / WHEP subscribe / DataChannel benchmarks
-# Usage: just loadtest-whip 100 60
-#        just loadtest-whep 100 60 test-stream
+# Usage: just loadtest-whip 100 60           # publishes to streams load-0 .. load-99
+#        just loadtest-whep 100 60 load-0    # subscribes to one already-published stream
 #        just loadtest-channel throughput
 # ============================================================
 [group('loadtest')]

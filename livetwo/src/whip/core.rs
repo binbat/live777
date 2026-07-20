@@ -193,6 +193,11 @@ where
     }
 }
 
+/// Grace period for a transient `Disconnected` state: ICE connectivity loss
+/// may recover on its own, so only a disconnection that outlives the grace
+/// period (or a `Failed`/`Closed` state) ends the publish session.
+const DISCONNECTED_GRACE: Duration = Duration::from_secs(5);
+
 /// Watch a connected peer and return an error if it ends before shutdown.
 pub async fn wait_for_unexpected_peer_end(
     peer: Arc<dyn PeerConnection>,
@@ -202,23 +207,30 @@ pub async fn wait_for_unexpected_peer_end(
     let mut saw_connected = *state_rx.borrow() == RTCPeerConnectionState::Connected;
 
     loop {
-        let state = *state_rx.borrow();
+        let state = *state_rx.borrow_and_update();
         if state == RTCPeerConnectionState::Connected {
             saw_connected = true;
         }
 
         if matches!(
             state,
-            RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed
-                | RTCPeerConnectionState::Disconnected
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
         ) {
-            let ice_stats = format_ice_stats(peer.clone()).await;
-            return Err(anyhow!(
-                "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}, {}, ice_stats=[{}]",
-                diagnostics.format(),
-                ice_stats
-            ));
+            return Err(unexpected_peer_end_error(peer, state, saw_connected, diagnostics).await);
+        }
+
+        if state == RTCPeerConnectionState::Disconnected {
+            // Disconnected is potentially transient (ICE may recover); only
+            // treat it as fatal when it outlives the grace period.
+            tokio::select! {
+                _ = tokio::time::sleep(DISCONNECTED_GRACE) => {
+                    return Err(unexpected_peer_end_error(peer, state, saw_connected, diagnostics).await);
+                }
+                changed = state_rx.changed() => {
+                    changed.map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
+                    continue;
+                }
+            }
         }
 
         state_rx
@@ -226,6 +238,20 @@ pub async fn wait_for_unexpected_peer_end(
             .await
             .map_err(|_| anyhow!("WHIP peer connection state channel closed"))?;
     }
+}
+
+async fn unexpected_peer_end_error(
+    peer: Arc<dyn PeerConnection>,
+    state: RTCPeerConnectionState,
+    saw_connected: bool,
+    diagnostics: Arc<PublishDiagnostics>,
+) -> anyhow::Error {
+    let ice_stats = format_ice_stats(peer).await;
+    anyhow!(
+        "WHIP peer connection ended before shutdown: state={state}, connected_before={saw_connected}, {}, ice_stats=[{}]",
+        diagnostics.format(),
+        ice_stats
+    )
 }
 
 /// Connection diagnostics captured during a publish session for error reports.
@@ -394,6 +420,65 @@ pub async fn format_ice_stats(peer: Arc<dyn PeerConnection>) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Build a real publish peer with no ICE servers, usable for stats
+    /// collection on the error path without any network access.
+    async fn loopback_publish_peer() -> PublishPeer {
+        create_publish_peer(
+            Arc::new(Notify::new()),
+            PublishPeerOptions {
+                stun_server: None,
+                extra_video_codecs: Vec::new(),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unexpected_peer_end_errors_after_disconnect_grace() {
+        let publish = loopback_publish_peer().await;
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::Connected);
+
+        let task = tokio::spawn(wait_for_unexpected_peer_end(
+            publish.peer,
+            state_rx,
+            publish.diagnostics,
+        ));
+
+        // Let the watcher observe the initial Connected state before the
+        // disconnect, otherwise its first poll already sees Disconnected.
+        tokio::task::yield_now().await;
+        state_tx.send(RTCPeerConnectionState::Disconnected).unwrap();
+        tokio::time::sleep(DISCONNECTED_GRACE * 2).await;
+
+        let error = task.await.unwrap().unwrap_err().to_string();
+        assert!(error.contains("ended before shutdown"));
+        assert!(error.contains("state=disconnected"));
+        assert!(error.contains("connected_before=true"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unexpected_peer_end_tolerates_transient_disconnect() {
+        let publish = loopback_publish_peer().await;
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::Connected);
+
+        let task = tokio::spawn(wait_for_unexpected_peer_end(
+            publish.peer,
+            state_rx,
+            publish.diagnostics,
+        ));
+
+        state_tx.send(RTCPeerConnectionState::Disconnected).unwrap();
+        tokio::time::sleep(DISCONNECTED_GRACE / 2).await;
+        state_tx.send(RTCPeerConnectionState::Connected).unwrap();
+        tokio::time::sleep(DISCONNECTED_GRACE * 2).await;
+        assert!(!task.is_finished());
+
+        state_tx.send(RTCPeerConnectionState::Failed).unwrap();
+        let error = task.await.unwrap().unwrap_err().to_string();
+        assert!(error.contains("state=failed"));
+    }
 
     #[tokio::test]
     async fn waits_for_connected_before_starting_media_transport() {

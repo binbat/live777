@@ -15,6 +15,12 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+/// Grace period for sessions to drain after cancellation. Anything still
+/// running afterwards is aborted so a stuck session cannot hang the run.
+/// Must exceed a session's graceful-shutdown budget (WHIP/WHEP teardown
+/// waits up to 5 s).
+const DRAIN_GRACE: Duration = Duration::from_secs(10);
+
 /// Orchestration parameters for a loadtest run.
 #[derive(Debug, Clone)]
 pub struct LoadtestConfig {
@@ -58,6 +64,10 @@ pub struct LoadtestStats {
 /// elapses (sessions are expected to honor the cancellation token and return
 /// their metrics); otherwise it runs until every session completes or the
 /// token is cancelled.
+///
+/// The session future returns its metrics together with the final result.
+/// Metrics are aggregated even when the result is an error, so traffic from
+/// sessions that fail mid-run is not lost from the totals.
 pub async fn run_sessions<F, Fut>(
     config: &LoadtestConfig,
     ct: CancellationToken,
@@ -65,7 +75,7 @@ pub async fn run_sessions<F, Fut>(
 ) -> Result<LoadtestStats>
 where
     F: Fn(usize) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<SessionMetrics>> + Send + 'static,
+    Fut: std::future::Future<Output = (SessionMetrics, Result<()>)> + Send + 'static,
 {
     let connected = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicU64::new(0));
@@ -97,16 +107,18 @@ where
         let future = make_session(i);
 
         join_set.spawn(async move {
-            match future.await {
-                Ok(m) => {
+            let (m, result) = future.await;
+            let mut stats = session_metrics.lock().await;
+            stats.packets += m.packets;
+            stats.bytes += m.bytes;
+            stats.errors += m.errors;
+            stats.nack_count += m.nack_count;
+            stats.pli_count += m.pli_count;
+            stats.connected_duration += m.connected_duration;
+            drop(stats);
+            match result {
+                Ok(()) => {
                     session_connected.fetch_add(1, Ordering::Relaxed);
-                    let mut stats = session_metrics.lock().await;
-                    stats.packets += m.packets;
-                    stats.bytes += m.bytes;
-                    stats.errors += m.errors;
-                    stats.nack_count += m.nack_count;
-                    stats.pli_count += m.pli_count;
-                    stats.connected_duration += m.connected_duration;
                 }
                 Err(e) => {
                     warn!(session = i, error = ?e, "loadtest session failed");
@@ -120,12 +132,7 @@ where
             tokio::select! {
                 _ = ct.cancelled() => break,
                 _ = tokio::time::sleep(config.spawn_interval) => {}
-                _ = async {
-                    match deadline {
-                        Some(d) => tokio::time::sleep_until(d).await,
-                        None => std::future::pending().await,
-                    }
-                } => {
+                _ = sleep_until_opt(deadline) => {
                     info!(
                         duration = ?config.duration,
                         "loadtest duration reached during ramp-up, cancelling sessions"
@@ -139,27 +146,40 @@ where
     }
 
     // Join sessions as they finish, racing against the overall duration.
-    // External cancellation propagates to the sessions through their child
-    // tokens, so the JoinSet drains on its own — no explicit branch for it.
-    // When every session ends early (e.g. all failed to connect), this
-    // returns immediately instead of waiting out the full duration.
+    // Cancellation — external or duration — propagates to the sessions
+    // through their child tokens; anything still running after DRAIN_GRACE is
+    // aborted so a stuck session cannot hang the run. When every session ends
+    // early (e.g. all failed to connect), this returns immediately instead of
+    // waiting out the full duration.
+    let mut drain_deadline = None;
     while !join_set.is_empty() {
         tokio::select! {
-            _ = async {
-                match deadline {
-                    Some(d) => tokio::time::sleep_until(d).await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            _ = sleep_until_opt(deadline) => {
                 info!(duration = ?config.duration, "loadtest duration reached, cancelling sessions");
                 ct.cancel();
                 deadline = None;
+            }
+            _ = ct.cancelled(), if drain_deadline.is_none() => {
+                drain_deadline = Some(tokio::time::Instant::now() + DRAIN_GRACE);
+            }
+            _ = sleep_until_opt(drain_deadline) => {
+                warn!(
+                    grace = ?DRAIN_GRACE,
+                    "loadtest sessions did not stop after cancellation, aborting remaining tasks"
+                );
+                join_set.abort_all();
+                break;
             }
             result = join_set.join_next() => {
                 if let Some(Err(e)) = result {
                     warn!(error = ?e, "loadtest session task panicked or was cancelled");
                 }
             }
+        }
+    }
+    while let Some(result) = join_set.join_next().await {
+        if let Err(e) = result {
+            warn!(error = ?e, "loadtest session task panicked or was cancelled");
         }
     }
 
@@ -196,6 +216,14 @@ where
     Ok(stats)
 }
 
+/// Sleep until `deadline` when set; pend forever otherwise (for `select!`).
+async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,11 +242,14 @@ mod tests {
             let session_ct = session_ct.clone();
             async move {
                 session_ct.cancelled().await;
-                Ok(SessionMetrics {
-                    packets: 1,
-                    bytes: 1,
-                    ..Default::default()
-                })
+                (
+                    SessionMetrics {
+                        packets: 1,
+                        bytes: 1,
+                        ..Default::default()
+                    },
+                    Ok(()),
+                )
             }
         })
         .await
@@ -228,6 +259,60 @@ mod tests {
         assert!(
             stats.sessions_total < config.session_count,
             "duration should stop ramp-up before all sessions spawn: {stats:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_sessions_still_contribute_metrics() {
+        let config = LoadtestConfig {
+            session_count: 2,
+            spawn_interval: Duration::ZERO,
+            duration: None,
+        };
+        let ct = CancellationToken::new();
+
+        let stats = run_sessions(&config, ct, |i| async move {
+            let metrics = SessionMetrics {
+                packets: 10,
+                bytes: 100,
+                ..Default::default()
+            };
+            if i == 0 {
+                (metrics, Ok(()))
+            } else {
+                (metrics, Err(anyhow::anyhow!("boom")))
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(stats.sessions_connected, 1);
+        assert_eq!(stats.sessions_failed, 1);
+        assert_eq!(stats.total_packets, 20);
+        assert_eq!(stats.total_bytes, 200);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stuck_sessions_are_aborted_after_drain_grace() {
+        let config = LoadtestConfig {
+            session_count: 1,
+            spawn_interval: Duration::ZERO,
+            duration: Some(Duration::from_secs(1)),
+        };
+        let ct = CancellationToken::new();
+
+        let error = run_sessions(&config, ct, |_| async move {
+            // Never finishes and ignores cancellation.
+            std::future::pending::<()>().await;
+            (SessionMetrics::default(), Ok(()))
+        })
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("all 1 loadtest session(s) failed")
         );
     }
 }

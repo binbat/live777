@@ -165,11 +165,18 @@ fn print_stats(kind: &str, stats: &livetwo::loadtest::LoadtestStats) {
         stats.total_bytes,
         stats.total_bytes as f64 / 1_000_000.0
     );
+    if stats.total_errors > 0 {
+        println!("  Media write errors: {}", stats.total_errors);
+    }
     if stats.total_nack_count > 0 || stats.total_pli_count > 0 {
         println!(
             "  RTCP feedback: {} NACK, {} PLI",
             stats.total_nack_count, stats.total_pli_count
         );
+    }
+    if stats.sessions_connected > 0 {
+        let avg = stats.total_connected_duration / stats.sessions_connected as u32;
+        println!("  Avg connected duration: {avg:.1?}");
     }
     println!("══════════════════════════════════════════════\n");
 }

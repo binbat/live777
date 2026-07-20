@@ -15,9 +15,15 @@ pub fn session_whip_url(base_url: &str, index: usize) -> Result<String> {
     let mut url =
         url::Url::parse(base_url).with_context(|| format!("Invalid WHIP URL: {base_url}"))?;
 
+    // Empty segments (e.g. from a trailing slash) must not become the "last
+    // segment", or the index would be appended to an empty name.
     let mut segments: Vec<String> = url
         .path_segments()
-        .map(|it| it.map(|s| s.to_string()).collect())
+        .map(|it| {
+            it.filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect()
+        })
         .unwrap_or_default();
 
     if let Some(last) = segments.last_mut() {
@@ -47,16 +53,52 @@ pub async fn run(
         session_config.whip_url = urls[i].clone();
         let run_ct = session_ct.child_token();
         async move {
-            let stats = Publisher::new(session_config).run(run_ct).await?;
-            Ok(SessionMetrics {
-                packets: stats.packets_sent,
-                bytes: stats.bytes_sent,
-                errors: stats.failed_writes,
-                nack_count: stats.nack_count,
-                pli_count: stats.pli_count,
-                connected_duration: stats.connected_duration,
-            })
+            match Publisher::new(session_config).run(run_ct).await {
+                Ok(stats) => (
+                    SessionMetrics {
+                        packets: stats.packets_sent,
+                        bytes: stats.bytes_sent,
+                        errors: stats.failed_writes,
+                        nack_count: stats.nack_count,
+                        pli_count: stats.pli_count,
+                        connected_duration: stats.connected_duration,
+                    },
+                    Ok(()),
+                ),
+                // The publisher does not expose partial stats on failure, so
+                // there is nothing to aggregate for a failed publish session.
+                Err(e) => (SessionMetrics::default(), Err(e)),
+            }
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_whip_url_appends_index_to_last_segment() {
+        let url = session_whip_url("http://localhost:7777/whip/load", 3).unwrap();
+        assert_eq!(url, "http://localhost:7777/whip/load-3");
+    }
+
+    #[test]
+    fn session_whip_url_ignores_trailing_slash() {
+        let url = session_whip_url("http://localhost:7777/whip/live/", 0).unwrap();
+        assert_eq!(url, "http://localhost:7777/whip/live-0");
+    }
+
+    #[test]
+    fn session_whip_url_preserves_query() {
+        let url = session_whip_url("http://localhost:7777/whip/load?token=abc", 2).unwrap();
+        assert_eq!(url, "http://localhost:7777/whip/load-2?token=abc");
+    }
+
+    #[test]
+    fn session_whip_url_root_path_uses_fallback() {
+        let url = session_whip_url("http://localhost:7777/", 1).unwrap();
+        assert_eq!(url, "http://localhost:7777/session-1");
+    }
 }

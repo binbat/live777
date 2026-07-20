@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -18,20 +17,6 @@ pub struct LoadtestConfig {
 }
 
 /// Aggregate statistics across all loadtest sessions.
-///
-/// Each field is an [`AtomicU64`] so concurrent sessions can update counters
-/// without taking a lock.
-#[derive(Debug, Default)]
-pub struct LoadtestStats {
-    pub sessions_connected: AtomicU64,
-    pub sessions_failed: AtomicU64,
-    pub total_packets_sent: AtomicU64,
-    pub total_bytes_sent: AtomicU64,
-    pub total_nack_count: AtomicU64,
-    pub total_pli_count: AtomicU64,
-}
-
-/// Snapshot of [`LoadtestStats`] for reporting.
 #[derive(Debug, Clone, Default)]
 pub struct LoadtestStatsSnapshot {
     pub sessions_total: usize,
@@ -41,20 +26,6 @@ pub struct LoadtestStatsSnapshot {
     pub total_bytes_sent: u64,
     pub total_nack_count: u64,
     pub total_pli_count: u64,
-}
-
-impl LoadtestStats {
-    fn snapshot(&self) -> LoadtestStatsSnapshot {
-        LoadtestStatsSnapshot {
-            sessions_total: 0, // filled in by caller
-            sessions_connected: self.sessions_connected.load(Ordering::Relaxed) as usize,
-            sessions_failed: self.sessions_failed.load(Ordering::Relaxed) as usize,
-            total_packets_sent: self.total_packets_sent.load(Ordering::Relaxed),
-            total_bytes_sent: self.total_bytes_sent.load(Ordering::Relaxed),
-            total_nack_count: self.total_nack_count.load(Ordering::Relaxed),
-            total_pli_count: self.total_pli_count.load(Ordering::Relaxed),
-        }
-    }
 }
 
 /// Run multiple WHIP publishers concurrently.
@@ -77,16 +48,13 @@ pub async fn run_loadtest(
     )
     .await?;
 
-    let atomic_stats = LoadtestStats {
-        sessions_connected: AtomicU64::new(stats.sessions_connected),
-        sessions_failed: AtomicU64::new(stats.sessions_failed),
-        total_packets_sent: AtomicU64::new(stats.total_packets),
-        total_bytes_sent: AtomicU64::new(stats.total_bytes),
-        total_nack_count: AtomicU64::new(stats.total_nack_count),
-        total_pli_count: AtomicU64::new(stats.total_pli_count),
-    };
-
-    let mut snapshot = atomic_stats.snapshot();
-    snapshot.sessions_total = stats.sessions_total;
-    Ok(snapshot)
+    Ok(LoadtestStatsSnapshot {
+        sessions_total: stats.sessions_total,
+        sessions_connected: stats.sessions_connected as usize,
+        sessions_failed: stats.sessions_failed as usize,
+        total_packets_sent: stats.total_packets,
+        total_bytes_sent: stats.total_bytes,
+        total_nack_count: stats.total_nack_count,
+        total_pli_count: stats.total_pli_count,
+    })
 }
