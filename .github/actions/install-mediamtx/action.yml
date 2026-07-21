@@ -2,18 +2,27 @@ name: Install mediamtx
 description: Install the mediamtx RTSP server for the interop matrix tests. The download is cached across jobs.
 inputs:
   version:
-    description: mediamtx release tag to install
+    description: mediamtx release tag to install (default: the tag pinned in mediamtx.version)
     required: false
-    default: v1.19.2
 runs:
   using: composite
   steps:
+    - name: Resolve version
+      id: resolve
+      shell: bash
+      # The pinned version is single-sourced in mediamtx.version so the
+      # `just mediamtx` recipe and this action cannot drift apart.
+      run: |
+        version="${{ inputs.version }}"
+        if [ -z "$version" ]; then version=$(tr -d '[:space:]' < mediamtx.version); fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
     - name: Cache mediamtx
       id: cache
       uses: actions/cache@v5
       with:
         path: .ci-tools
-        key: mediamtx-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
+        key: mediamtx-${{ steps.resolve.outputs.version }}-${{ runner.os }}-${{ runner.arch }}
 
     - name: Download mediamtx (cache miss)
       if: steps.cache.outputs.cache-hit != 'true'
@@ -27,9 +36,9 @@ runs:
         if [ "$RUNNER_OS" = "Windows" ]; then os=windows; ext=zip; bin=mediamtx.exe; fi
         arch=amd64
         if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then arch=arm64; fi
-        fname="mediamtx_${{ inputs.version }}_${os}_${arch}.${ext}"
-        curl -fsSL -o "$fname" "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/${fname}"
-        curl -fsSL -o checksums.sha256 "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/checksums.sha256"
+        fname="mediamtx_${{ steps.resolve.outputs.version }}_${os}_${arch}.${ext}"
+        curl -fsSL -o "$fname" "https://github.com/bluenviron/mediamtx/releases/download/${{ steps.resolve.outputs.version }}/${fname}"
+        curl -fsSL -o checksums.sha256 "https://github.com/bluenviron/mediamtx/releases/download/${{ steps.resolve.outputs.version }}/checksums.sha256"
         if command -v sha256sum >/dev/null; then
           grep "$fname" checksums.sha256 | sha256sum --check -
         else

@@ -53,10 +53,11 @@ mtx_os := if os() == "macos" { "darwin" } else if os() == "linux" { "linux" } el
 mtx_arch := if arch() == "x86_64" { "amd64" } else if arch() == "aarch64" { "arm64" } else { "unsupported" }
 
 # Download the mediamtx binary used by the interop matrix tests into target/
+# The pinned version lives in mediamtx.version (shared with the CI action).
 mediamtx:
     #!/usr/bin/env bash
     set -euo pipefail
-    version=v1.19.2
+    version=$(tr -d '[:space:]' < mediamtx.version)
     target={{mtx_os}}_{{mtx_arch}}
     if [[ "$target" == *unsupported* ]]; then
         echo "unsupported platform: {{os()}}-{{arch()}}"
