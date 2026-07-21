@@ -153,9 +153,10 @@ impl MediamtxServer {
     pub async fn wait_path_ready(
         &self,
         path: &str,
+        ct: &CancellationToken,
         handle: Option<&mut tokio::task::JoinHandle<Result<()>>>,
     ) {
-        wait_path_ready(self.api_addr, path, handle).await
+        wait_path_ready(self.api_addr, path, ct, handle).await
     }
 
     pub async fn stop(mut self) {
@@ -245,7 +246,7 @@ impl Source for MediamtxPullSource {
         let api_addr = server.api_addr;
         let whip_url = whip_url.to_string();
         let whip_handle = tokio::spawn(async move {
-            wait_path_ready(api_addr, "mt", None).await;
+            wait_path_ready(api_addr, "mt", &whip_ct, None).await;
             livetwo::whip::into(whip_ct, rtsp_url, whip_url, None, None).await
         });
 
@@ -262,15 +263,22 @@ impl Source for MediamtxPullSource {
 /// that connects before the publisher gets a 404 from mediamtx, so pulls
 /// must wait for this first. `handle` is an optional task to watch for an
 /// early exit (same diagnostics style as `wait_stream_publish_ready`).
+/// Returns early when `ct` is cancelled (teardown during teardown must not
+/// block on this poll).
 async fn wait_path_ready(
     api_addr: SocketAddr,
     path: &str,
+    ct: &CancellationToken,
     mut handle: Option<&mut tokio::task::JoinHandle<Result<()>>>,
 ) {
     // 300 × 100 ms = 30 s, matching wait_for_publish_connected: 10 s was
     // not enough for ffmpeg to finish ANNOUNCE/RECORD when the host is
     // loaded (e.g. the whole matrix running in parallel).
     for attempt in 0..300 {
+        if ct.is_cancelled() {
+            return;
+        }
+
         if let Some(h) = handle.as_mut()
             && h.is_finished()
         {
@@ -292,7 +300,10 @@ async fn wait_path_ready(
         if attempt == 299 {
             panic!("mediamtx path '{path}' did not become ready");
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::select! {
+            () = ct.cancelled() => return,
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
     }
 }
 

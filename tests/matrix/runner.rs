@@ -420,7 +420,9 @@ pub async fn run_rtsp_push_mediamtx(
         None,
     ));
 
-    server.wait_path_ready("mt", Some(&mut handle_whep)).await;
+    server
+        .wait_path_ready("mt", &ct, Some(&mut handle_whep))
+        .await;
 
     // Give the publisher a moment so the pull sees media, not just SDP.
     tokio::time::sleep(Duration::from_secs(1)).await;
