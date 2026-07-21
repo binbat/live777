@@ -140,14 +140,19 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
 
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
         if let Some(internal) = self.internal.upgrade() {
-            let pc = internal
+            // Only accept tracks while a publish peer is still alive; a late
+            // `on_track` from a torn-down publisher is dropped here. (A track
+            // arriving mid-replace is attributed to the new session — see
+            // `publish_session_id`.)
+            let publish_peer_alive = internal
                 .publish_peer_ref
                 .lock()
                 .await
-                .clone()
-                .and_then(|w| w.upgrade());
-            if let Some(pc) = pc {
-                let _ = internal.publish_track_up(pc, track).await;
+                .as_ref()
+                .and_then(|w| w.upgrade())
+                .is_some();
+            if publish_peer_alive {
+                let _ = internal.publish_track_up(track).await;
             }
         }
     }
@@ -908,7 +913,7 @@ impl PeerForwardInternal {
                 let old = publish.take().unwrap();
                 drop(publish);
                 let _ = old.peer.close().await;
-                self.do_remove_publish_cleanup(session_info, SessionDownReason::ApiKicked)
+                self.do_remove_publish_cleanup(session_info, SessionDownReason::ApiDeleted)
                     .await;
                 return Ok(RemovePeerOutcome::PublisherRemoved);
             }
@@ -922,17 +927,13 @@ impl PeerForwardInternal {
                 let old = subscribe_group.remove(i);
                 let is_empty = subscribe_group.is_empty();
                 drop(subscribe_group);
-                let reforward = self
-                    .do_remove_subscribe_cleanup(&old, SessionDownReason::ApiKicked)
+                self.do_remove_subscribe_cleanup(&old, SessionDownReason::ApiDeleted)
                     .await;
                 let _ = old.peer.close().await;
                 if is_empty {
                     *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
                 }
                 self.send_event();
-                if reforward {
-                    self.send_event();
-                }
                 // Orphan hint: with the publisher already gone and no
                 // sessions left, the stream entry would linger forever.
                 // The caller re-confirms (virtual publisher, in-flight
@@ -1041,8 +1042,10 @@ impl PeerForwardInternal {
         publish.is_some()
     }
 
-    /// Session ID of the current publisher, empty when none is attached (e.g.
-    /// a late `on_track` from a publisher that was just removed).
+    /// Session ID of the current publisher, empty when none is attached. A
+    /// late `on_track` from a publisher that was just replaced is attributed
+    /// to the *new* session (or to none) — cosmetic only, the ID is used for
+    /// logging.
     async fn publish_session_id(&self) -> String {
         self.publish
             .read()
@@ -1375,11 +1378,7 @@ impl PeerForwardInternal {
         self.negotiated_twcc_ext_id.store(ext_id, Ordering::Relaxed);
     }
 
-    pub(crate) async fn publish_track_up(
-        &self,
-        _peer: Arc<dyn PeerConnection>,
-        track: Arc<dyn TrackRemote>,
-    ) -> Result<()> {
+    pub(crate) async fn publish_track_up(&self, track: Arc<dyn TrackRemote>) -> Result<()> {
         let generation_id = *self.media_generation_id.read().await;
         let twcc_ext_id = self.negotiated_twcc_ext_id.load(Ordering::Relaxed);
         let manual_twcc_feedback = if twcc_ext_id != 0 {
@@ -1787,14 +1786,13 @@ impl PeerForwardInternal {
 
         if cascade.is_some() {
             metrics::REFORWARD.inc();
-            self.send_event();
         }
 
         Ok(session_id)
     }
 
     pub async fn remove_subscribe(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
-        let (found, reforward_flat, is_empty) = {
+        let (found, is_empty) = {
             let mut subscribe_peers = self.subscribe_group.write().await;
             let pos = subscribe_peers
                 .iter()
@@ -1803,12 +1801,11 @@ impl PeerForwardInternal {
                 let old = subscribe_peers.remove(i);
                 let is_empty = subscribe_peers.is_empty();
                 drop(subscribe_peers);
-                let reforward = self
-                    .do_remove_subscribe_cleanup(&old, SessionDownReason::PeerClosed)
+                self.do_remove_subscribe_cleanup(&old, SessionDownReason::PeerClosed)
                     .await;
-                (true, reforward, is_empty)
+                (true, is_empty)
             } else {
-                (false, false, false)
+                (false, false)
             }
         };
 
@@ -1817,9 +1814,6 @@ impl PeerForwardInternal {
                 *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
             }
             self.send_event();
-            if reforward_flat {
-                self.send_event();
-            }
             Ok(())
         } else {
             // Already removed — idempotent no-op (see remove_publish).
@@ -1830,20 +1824,13 @@ impl PeerForwardInternal {
     /// Shared cleanup after a subscribe session has been removed from
     /// `self.subscribe_group`.  The caller must have already removed the entry
     /// from the vec (so the write lock is released before this runs).
-    ///
-    /// Returns `true` when a cascade reforward was torn down (the caller should
-    /// emit an extra `send_event` for it).
     async fn do_remove_subscribe_cleanup(
         &self,
         subscribe: &SubscribeRTCPeerConnection,
         reason: SessionDownReason,
-    ) -> bool {
-        #[allow(unused_mut)]
-        let mut reforward_flat = false;
-
+    ) {
         #[cfg(feature = "cascade")]
         if let Some(cascade) = subscribe.cascade.clone() {
-            reforward_flat = true;
             metrics::REFORWARD.dec();
 
             let client = Client::build(
@@ -1873,7 +1860,6 @@ impl PeerForwardInternal {
             session: session_id,
             reason,
         });
-        reforward_flat
     }
 
     pub(crate) async fn cleanup_closed_sessions(&self) {

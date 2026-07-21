@@ -140,22 +140,15 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
                     }
                 }
                 Ok(Event::StreamDown { stream, .. }) => {
-                    let task_opt = {
-                        let mut map = TASKS.write().await;
-                        map.remove(&stream)
-                    };
-
-                    if let Some(task) = task_opt {
-                        let info = task.info.clone();
-                        let outcome = task.stop().await;
-                        update_index_on_stop(&stream, &info, outcome).await;
-                        tracing::info!("[recorder] stop recording task for {}", stream);
-                    }
+                    stop_task(&stream).await;
                 }
                 Ok(_) => {}
-                // Keep consuming after dropped events: recording must not
-                // silently stop reacting to stream up/down under burst load.
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                // Dropped events must not silently lose auto start/stop:
+                // reconcile the task set against the manager's actual streams.
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("[recorder] dropped {} stream events, reconciling", n);
+                    reconcile(&manager_clone, &cfg_for_events).await;
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }
@@ -169,6 +162,51 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
         });
     } else {
         tracing::info!("[recorder] max_recording_seconds is 0, automatic rotation disabled");
+    }
+}
+
+/// Stop and finalize the recording task for `stream`, if one is running.
+#[cfg(feature = "recorder")]
+async fn stop_task(stream: &str) {
+    let task_opt = {
+        let mut map = TASKS.write().await;
+        map.remove(stream)
+    };
+
+    if let Some(task) = task_opt {
+        let info = task.info.clone();
+        let outcome = task.stop().await;
+        update_index_on_stop(stream, &info, outcome).await;
+        tracing::info!("[recorder] stop recording task for {}", stream);
+    }
+}
+
+/// Re-sync the recording task set with the manager's actual streams after
+/// events were dropped (broadcast lag): stop tasks whose stream is gone and
+/// start tasks for auto-record streams that appeared while we were behind.
+/// `start` is idempotent, so already-recording streams are skipped.
+#[cfg(feature = "recorder")]
+async fn reconcile(manager: &Arc<Manager>, cfg: &RecorderConfig) {
+    let streams = manager.snapshot(&[]).await;
+    let live: std::collections::HashSet<&str> = streams.iter().map(|s| s.id.as_str()).collect();
+
+    let stale: Vec<String> = {
+        let map = TASKS.read().await;
+        map.keys()
+            .filter(|stream| !live.contains(stream.as_str()))
+            .cloned()
+            .collect()
+    };
+    for stream in stale {
+        stop_task(&stream).await;
+    }
+
+    for stream in streams {
+        if should_record(&cfg.auto_streams, &stream.id)
+            && let Err(e) = start(manager.clone(), stream.id.clone(), None).await
+        {
+            tracing::error!("[recorder] start failed: {}", e);
+        }
     }
 }
 

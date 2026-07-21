@@ -102,7 +102,12 @@ impl Manager {
                 _ = cancel.cancelled() => return,
                 event = event_recv.recv() => match event {
                     Ok(event) => event,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    // Surface the loss instead of skipping it silently: the
+                    // dropped lines are exactly the ones this log exists for.
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("lifecycle: dropped {} events due to lag", n);
+                        continue;
+                    }
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
             };

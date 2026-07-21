@@ -665,7 +665,7 @@ impl SubscribeRTCPeerConnection {
                                             *forward_channel.connection_state_rx.borrow();
                                         if Self::is_terminal_connection_state(state) {
                                             warn!(
-                                                "[{}] [{}] {} track write stopped after transient error because peer is {}: {}",
+                                                "[{}] [{}] {} track write stopped because peer is {}: {}",
                                                 stream, id, kind, state, err
                                             );
                                             break;
@@ -674,8 +674,13 @@ impl SubscribeRTCPeerConnection {
                                         let started = transient_write_error_since.get_or_insert(now);
                                         let elapsed = started.elapsed();
                                         if elapsed >= TRACK_BIND_RETRY_TIMEOUT {
+                                            // Giving up. This fires both for a
+                                            // peer that never came up and for
+                                            // a genuinely broken track — the
+                                            // untyped error cannot tell them
+                                            // apart.
                                             warn!(
-                                                "[{}] [{}] {} track write still not ready after {}ms, state={}, source_codec={}, selected_codec={}, payload_type={:?}, input_payload_type={}, outgoing_payload_type={}, ssrc={}: {}",
+                                                "[{}] [{}] {} track write giving up after {}ms of retries, state={}, source_codec={}, selected_codec={}, payload_type={:?}, input_payload_type={}, outgoing_payload_type={}, ssrc={}: {}",
                                                 stream,
                                                 id,
                                                 kind,

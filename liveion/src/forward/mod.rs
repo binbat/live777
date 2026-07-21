@@ -1161,6 +1161,102 @@ a=end-of-candidates";
         Ok(())
     }
 
+    /// The lifecycle bus must carry PublishUp and PublishDown with the session
+    /// ID returned by the API, and a session-API delete must surface as
+    /// `SessionDownReason::ApiDeleted`.
+    #[tokio::test]
+    async fn publish_lifecycle_emits_typed_events() -> crate::result::Result<()> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+
+        let offer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(media_engine)
+                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        let media_track = MediaStreamTrack::new(
+            "lifecycle-test".to_owned(),
+            "video".to_owned(),
+            "video".to_owned(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(1),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                ..Default::default()
+            }],
+        );
+        offer_peer
+            .add_track(std::sync::Arc::new(TrackLocalStaticRTP::new(media_track)))
+            .await?;
+
+        let offer = offer_peer.create_offer(None).await?;
+        let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(16);
+        let forward = PeerForward::new(
+            "lifecycle-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
+            event_tx,
+        );
+        let (_answer, session) = forward.set_publish(offer).await?;
+
+        // Connection-state pings may interleave; skip until the typed
+        // PublishUp for this session shows up.
+        let up = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(crate::event::Event::PublishUp { stream, session }) => {
+                        break (stream, session);
+                    }
+                    Ok(_) => continue,
+                    Err(err) => panic!("event bus error before PublishUp: {err}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for PublishUp");
+        assert_eq!(up, ("lifecycle-test".to_owned(), session.clone()));
+
+        forward.remove_peer(session.clone()).await?;
+
+        let down = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(crate::event::Event::PublishDown {
+                        stream,
+                        session,
+                        reason,
+                    }) => break (stream, session, reason),
+                    Ok(_) => continue,
+                    Err(err) => panic!("event bus error before PublishDown: {err}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for PublishDown");
+        assert_eq!(down.0, "lifecycle-test");
+        assert_eq!(down.1, session);
+        assert_eq!(down.2, crate::event::SessionDownReason::ApiDeleted);
+
+        offer_peer.close().await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn peer_complete_returns_after_answer_has_ice_candidate() -> crate::result::Result<()> {
         let mut media_engine = MediaEngine::default();
