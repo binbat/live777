@@ -59,6 +59,7 @@ impl UdpHandler {
     ) {
         if let Some(rtsp::TransportInfo::Udp {
             rtp_send_port: Some(target_port),
+            rtp_recv_port: local_port,
             server_addr,
             ..
         }) = &media_info.video_transport
@@ -74,6 +75,7 @@ impl UdpHandler {
             tokio::spawn(Self::rtp_sender_task(
                 video_recv,
                 listen_host,
+                *local_port,
                 target_addr,
                 *target_port,
                 "video",
@@ -84,6 +86,7 @@ impl UdpHandler {
 
         if let Some(rtsp::TransportInfo::Udp {
             rtp_send_port: Some(target_port),
+            rtp_recv_port: local_port,
             server_addr,
             ..
         }) = &media_info.audio_transport
@@ -99,6 +102,7 @@ impl UdpHandler {
             tokio::spawn(Self::rtp_sender_task(
                 audio_recv,
                 listen_host,
+                *local_port,
                 target_addr,
                 *target_port,
                 "audio",
@@ -219,11 +223,15 @@ impl UdpHandler {
     async fn rtp_sender_task(
         mut receiver: Receiver<Vec<u8>>,
         listen_host: String,
+        local_port: Option<u16>,
         target_host: String,
         target_port: u16,
         media_type: &'static str,
     ) {
-        let bind_addr = utils::format_bind_addr(&listen_host, 0);
+        // Bind the port announced to the server via SETUP client_port (fall
+        // back to ephemeral): strict servers like mediamtx drop RTP packets
+        // whose source port differs from the announced one.
+        let bind_addr = utils::format_bind_addr(&listen_host, local_port.unwrap_or(0));
 
         let socket = match UdpSocket::bind(&bind_addr).await {
             Ok(s) => {
