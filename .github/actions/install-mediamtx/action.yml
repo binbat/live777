@@ -2,7 +2,7 @@ name: Install mediamtx
 description: Install the mediamtx RTSP server for the interop matrix tests. The download is cached across jobs.
 inputs:
   version:
-    description: mediamtx release tag to install (default: the tag pinned in mediamtx.version)
+    description: 'mediamtx release tag to install (default: the tag pinned in mediamtx.version)'
     required: false
 runs:
   using: composite
