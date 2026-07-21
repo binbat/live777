@@ -30,7 +30,6 @@ tempfile = { workspace = true }
 
 bytes = "1.6.0"
 scopeguard = "1.2.0"
-md-5 = "0.10"
 portpicker = "0.1.1"
 sdp-types = "0.1"
 rand = "0.10"

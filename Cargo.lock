@@ -2863,7 +2863,6 @@ dependencies = [
  "bytes",
  "cli",
  "libwish",
- "md-5",
  "portpicker",
  "rand 0.10.2",
  "rsmpeg",
