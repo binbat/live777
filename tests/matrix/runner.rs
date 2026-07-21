@@ -407,8 +407,7 @@ pub async fn run_rtsp_push_mediamtx(
     source.wait_for_ready().await;
 
     let server =
-        crate::source::mediamtx::MediamtxServer::spawn(matches!(transport, RtspTransport::Udp))
-            .expect("Failed to spawn mediamtx");
+        crate::source::mediamtx::MediamtxServer::spawn().expect("Failed to spawn mediamtx");
 
     let ct = CancellationToken::new();
     let mut handle_whep = tokio::spawn(livetwo::whep::from(

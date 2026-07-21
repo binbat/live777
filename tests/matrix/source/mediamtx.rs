@@ -56,9 +56,13 @@ pub struct MediamtxServer {
 }
 
 impl MediamtxServer {
-    /// Spawn mediamtx. `udp` reserves the shared RTP/RTCP port pair mediamtx
-    /// needs to serve UDP readers/publishers; TCP-only instances skip it.
-    pub fn spawn(udp: bool) -> Result<Self> {
+    /// Spawn mediamtx.
+    ///
+    /// Every instance gets a unique even-aligned RTP/RTCP UDP port pair:
+    /// mediamtx binds these shared listeners at startup even for TCP-only
+    /// operation, so leaving them at the compiled-in defaults (:8000/:8001)
+    /// would make concurrent instances fail with "address already in use".
+    pub fn spawn() -> Result<Self> {
         let binary = mediamtx_binary().context(
             "mediamtx binary not found (run `just mediamtx`, install it into PATH, or set MEDIAMTX_BIN)",
         )?;
@@ -85,20 +89,20 @@ impl MediamtxServer {
              metrics: no\n\
              paths:\n  all:\n"
         );
-        if udp {
-            // mediamtx serves all UDP RTP/RTCP through one shared port pair
-            // and requires the RTP port to be even (RTCP = RTP+1).
-            let base = crate::runner::alloc_udp_ports(IpAddr::V4(Ipv4Addr::LOCALHOST), 3);
-            let base = if base.is_multiple_of(2) {
-                base
-            } else {
-                base + 1
-            };
-            config.push_str(&format!(
-                "rtpAddress: 127.0.0.1:{base}\nrtcpAddress: 127.0.0.1:{}\n",
-                base + 1
-            ));
-        }
+        // mediamtx serves all UDP RTP/RTCP through one shared port pair and
+        // binds it at startup regardless of whether any stream uses UDP, so
+        // every instance needs its own pair; the RTP port must be even
+        // (RTCP = RTP+1).
+        let base = crate::runner::alloc_udp_ports(IpAddr::V4(Ipv4Addr::LOCALHOST), 3);
+        let base = if base.is_multiple_of(2) {
+            base
+        } else {
+            base + 1
+        };
+        config.push_str(&format!(
+            "rtpAddress: 127.0.0.1:{base}\nrtcpAddress: 127.0.0.1:{}\n",
+            base + 1
+        ));
 
         let mut file = tempfile::NamedTempFile::new()?;
         file.write_all(config.as_bytes())?;
@@ -224,7 +228,7 @@ impl Source for MediamtxPullSource {
 
     fn start_direct(&self, whip_url: &str) -> Result<Box<dyn SourceHandle>> {
         let transport = self.transport.unwrap_or(RtspTransport::Tcp);
-        let server = MediamtxServer::spawn(matches!(transport, RtspTransport::Udp))?;
+        let server = MediamtxServer::spawn()?;
 
         // ffmpeg pushes into mediamtx (always TCP: the publisher transport is
         // not the interop surface under test, the livetwo pull is).
