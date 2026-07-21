@@ -44,6 +44,16 @@ pub fn available() -> bool {
     mediamtx_binary().is_some()
 }
 
+/// Whether this is a GitHub Actions Windows runner. Those runners encode
+/// video at ~0.03x realtime (ffmpeg's own `speed=` reading), so the
+/// media-heavy interop cases time out downstream — the same flake class
+/// that got the pre-matrix rtsp suites gated in a390dc7. Windows hosts run
+/// the suites fine locally, so the cases are compiled in and skipped only
+/// here.
+pub fn windows_ci() -> bool {
+    cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
+}
+
 /// A spawned mediamtx instance with a minimal generated config: RTSP and the
 /// control API only, every other protocol disabled. Kills the process on
 /// drop so panicking tests cannot leak it.
