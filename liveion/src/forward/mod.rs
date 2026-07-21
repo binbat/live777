@@ -2,7 +2,7 @@ use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify, broadcast};
+use tokio::sync::{Mutex, Notify, broadcast, watch};
 #[cfg(any(feature = "source", feature = "cascade"))]
 use tracing::error;
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
@@ -34,7 +34,7 @@ use self::codec_compat::{fmtp_param_case_preserving, is_h265_codec, remove_fmtp_
 use self::media::MediaInfo;
 #[cfg(feature = "cascade")]
 use self::message::CascadeInfo;
-use self::message::ForwardEvent;
+use crate::event::Event;
 
 #[cfg(any(
     feature = "source-rtsp",
@@ -62,8 +62,6 @@ mod subscribe;
 #[cfg(not(feature = "source"))]
 mod track;
 
-use md5::{Digest, Md5};
-
 const ANSWER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const ANSWER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(25);
@@ -73,13 +71,6 @@ pub mod bridge;
 
 #[cfg(feature = "source")]
 pub mod track;
-
-pub(crate) fn get_peer_id(peer: &Arc<dyn PeerConnection>) -> String {
-    let mut hasher = Md5::new();
-    hasher.update(format!("{:?}", Arc::as_ptr(peer)));
-    let digest = hasher.finalize();
-    format!("{digest:x}")
-}
 
 #[derive(Clone)]
 pub struct PeerForward {
@@ -141,6 +132,7 @@ impl PeerForward {
         ice_udp_addrs: Vec<SocketAddr>,
         #[cfg(feature = "source")] channel: Option<ChannelConfig>,
         strategy: api::strategy::Strategy,
+        lifecycle_sender: broadcast::Sender<Event>,
     ) -> Self {
         PeerForward {
             stream: stream.to_string(),
@@ -152,16 +144,13 @@ impl PeerForward {
                 #[cfg(feature = "source")]
                 channel,
                 strategy,
+                lifecycle_sender,
             )),
         }
     }
     #[cfg(feature = "source")]
     pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
         self.internal.try_init_udp_channel().await
-    }
-
-    pub fn subscribe_event(&self) -> broadcast::Receiver<ForwardEvent> {
-        self.internal.subscribe_event()
     }
 
     pub async fn add_ice_candidate(&self, session: String, ice_candidates: String) -> Result<()> {
@@ -297,7 +286,7 @@ impl PeerForward {
         let twcc_ext_id = parse_twcc_ext_id_from_sdp(&offer.sdp);
         self.internal.set_twcc_ext_id(twcc_ext_id);
 
-        let (peer, gather_complete, connection_state, connection_state_rx) =
+        let (peer, gather_complete, connection_state_rx) =
             self.new_publish_peer(media_info).await?;
 
         let description = peer_complete(offer, peer.clone(), gather_complete).await?;
@@ -306,11 +295,10 @@ impl PeerForward {
             .apply_publish_generation(&generation_decision, media_profile)
             .await?;
 
-        self.internal
-            .set_publish(peer.clone(), None, connection_state, connection_state_rx)
+        let session = self
+            .internal
+            .set_publish(peer.clone(), None, connection_state_rx)
             .await?;
-
-        let session = get_peer_id(&peer);
 
         Ok((description, session))
     }
@@ -343,7 +331,7 @@ impl PeerForward {
             .decide_publish_generation(&media_profile)
             .await;
 
-        let (peer, gather_complete, connection_state, connection_state_rx) =
+        let (peer, gather_complete, connection_state_rx) =
             self.new_publish_peer(media_info).await?;
 
         let offer = peer.create_offer(None).await?;
@@ -375,7 +363,6 @@ impl PeerForward {
                             token,
                             session_url: client.session_url,
                         }),
-                        connection_state,
                         connection_state_rx,
                     )
                     .await?;
@@ -394,8 +381,7 @@ impl PeerForward {
     ) -> Result<(
         Arc<dyn PeerConnection>,
         Arc<Notify>,
-        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
-        tokio::sync::watch::Receiver<RTCPeerConnectionState>,
+        watch::Receiver<RTCPeerConnectionState>,
     )> {
         self.internal
             .new_publish_peer(media_info, Arc::downgrade(&self.internal))
@@ -583,13 +569,10 @@ impl PeerForward {
     ) -> Result<(RTCSessionDescription, String)> {
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
-        let (peer, gather_complete, connection_state) =
+        let (peer, gather_complete, connection_state_rx) =
             self.new_subscription_peer(media_info.clone()).await?;
 
-        let (sdp, session) = (
-            peer_complete(offer, peer.clone(), gather_complete).await?,
-            get_peer_id(&peer),
-        );
+        let sdp = peer_complete(offer, peer.clone(), gather_complete).await?;
 
         // Inject the publisher's H264/H265 codec parameters into the answer
         // so browsers can initialize their decoders without waiting for
@@ -599,10 +582,10 @@ impl PeerForward {
         let mut sdp = sdp;
         sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
-        let _ = self
+        let session = self
             .internal
-            .add_subscribe(peer.clone(), None, media_info, connection_state)
-            .await;
+            .add_subscribe(peer.clone(), None, media_info, connection_state_rx)
+            .await?;
 
         Ok((sdp, session))
     }
@@ -616,7 +599,7 @@ impl PeerForward {
             has_data_channel: false,
         };
 
-        let (peer, gather_complete, connection_state) =
+        let (peer, gather_complete, connection_state_rx) =
             self.new_subscription_peer(media_info.clone()).await?;
 
         let offer: RTCSessionDescription = peer.create_offer(None).await?;
@@ -645,7 +628,7 @@ impl PeerForward {
                             session_url: client.session_url,
                         }),
                         media_info,
-                        connection_state,
+                        connection_state_rx,
                     )
                     .await?;
                 let _ = peer.set_remote_description(target_sdp).await;
@@ -665,7 +648,7 @@ impl PeerForward {
     ) -> Result<(
         Arc<dyn PeerConnection>,
         Arc<Notify>,
-        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        watch::Receiver<RTCPeerConnectionState>,
     )> {
         self.internal
             .new_subscription_peer(media_info, Arc::downgrade(&self.internal))
@@ -1134,6 +1117,7 @@ a=end-of-candidates";
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
         );
         let (answer, session) = forward.set_publish(offer).await?;
 
@@ -1262,6 +1246,7 @@ a=end-of-candidates";
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
         );
 
         assert!(!forward.publish_setup_in_progress());
@@ -1279,6 +1264,7 @@ a=end-of-candidates";
             vec![],
             None,
             api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
         );
         forward
             .add_virtual_track(

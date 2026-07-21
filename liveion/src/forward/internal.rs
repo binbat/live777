@@ -7,13 +7,13 @@ use chrono::Utc;
 use libwish::Client;
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
 use tracing::trace;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::AppError;
 #[cfg(feature = "source")]
 use crate::config::ChannelConfig;
+use crate::event::{Event, SessionDownReason};
 use crate::forward::codec_compat::{is_av1_codec, is_h264_codec, is_h265_codec};
-use crate::forward::get_peer_id;
 use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
 use crate::result::Result;
@@ -38,7 +38,7 @@ use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
 
 use super::RemovePeerOutcome;
 use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
-use super::message::{CascadeInfo, ForwardEvent};
+use super::message::CascadeInfo;
 use super::publish::PublishRTCPeerConnection;
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
@@ -96,7 +96,6 @@ struct DataChannelForward {
 struct PublishPeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
     gather_complete: Arc<Notify>,
-    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
     connection_state_tx: watch::Sender<RTCPeerConnectionState>,
 }
 
@@ -110,11 +109,8 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 .await
                 .clone()
                 .and_then(|w| w.upgrade());
-            if let Ok(mut s) = self.connection_state.write() {
-                *s = state;
-            }
             let _ = self.connection_state_tx.send(state);
-            internal.send_event().await;
+            internal.send_event();
 
             if let Some(pc) = pc {
                 info!(
@@ -124,6 +120,14 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                    }
+                    RTCPeerConnectionState::Disconnected => {
+                        // ICE may recover on its own; only surface the blind
+                        // spot — Failed/Closed still drive teardown.
+                        warn!(
+                            "[{}] [publish] connection disconnected; waiting for recovery or failure",
+                            internal.stream
+                        );
                     }
                     RTCPeerConnectionState::Closed => {
                         let _ = internal.remove_publish(pc).await;
@@ -214,20 +218,20 @@ struct SubscribePeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
     peer: Arc<Mutex<Option<std::sync::Weak<dyn PeerConnection>>>>,
     gather_complete: Arc<Notify>,
-    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    connection_state_tx: watch::Sender<RTCPeerConnectionState>,
 }
 
 impl SubscribePeerHandler {
     fn new(
         internal: std::sync::Weak<PeerForwardInternal>,
         gather_complete: Arc<Notify>,
-        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        connection_state_tx: watch::Sender<RTCPeerConnectionState>,
     ) -> Self {
         Self {
             internal,
             peer: Arc::new(Mutex::new(None)),
             gather_complete,
-            connection_state,
+            connection_state_tx,
         }
     }
 
@@ -239,12 +243,10 @@ impl SubscribePeerHandler {
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for SubscribePeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        if let Ok(mut s) = self.connection_state.write() {
-            *s = state;
-        }
+        let _ = self.connection_state_tx.send(state);
         let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
         if let Some(internal) = self.internal.upgrade() {
-            internal.send_event().await;
+            internal.send_event();
             if let Some(pc) = pc {
                 info!(
                     "[{}] [subscribe] connection state changed: {}",
@@ -253,6 +255,14 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                    }
+                    RTCPeerConnectionState::Disconnected => {
+                        // ICE may recover on its own; only surface the blind
+                        // spot — Failed/Closed still drive teardown.
+                        warn!(
+                            "[{}] [subscribe] connection disconnected; waiting for recovery or failure",
+                            internal.stream
+                        );
                     }
                     RTCPeerConnectionState::Closed => {
                         let _ = internal.remove_subscribe(pc).await;
@@ -668,7 +678,9 @@ pub(crate) struct PeerForwardInternal {
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
     ice_udp_addrs: Vec<SocketAddr>,
-    event_sender: broadcast::Sender<ForwardEvent>,
+    /// Manager-wide lifecycle event bus; owned by `stream::manager::Manager`
+    /// and shared with every forward.
+    lifecycle_sender: broadcast::Sender<Event>,
     /// Weak reference to the publish peer, set before signaling via `set_publish_peer_ref`
     publish_peer_ref: Mutex<Option<std::sync::Weak<dyn PeerConnection>>>,
     publish_peer_state_rx: Mutex<Option<watch::Receiver<RTCPeerConnectionState>>>,
@@ -700,6 +712,7 @@ impl PeerForwardInternal {
         ice_udp_addrs: Vec<SocketAddr>,
         #[cfg(feature = "source")] channel: Option<ChannelConfig>,
         strategy: api::strategy::Strategy,
+        lifecycle_sender: broadcast::Sender<Event>,
     ) -> Self {
         PeerForwardInternal {
             stream: stream.to_string(),
@@ -719,7 +732,7 @@ impl PeerForwardInternal {
             },
             ice_server,
             ice_udp_addrs,
-            event_sender: new_broadcast_channel!(16),
+            lifecycle_sender,
             publish_peer_ref: Mutex::new(None),
             publish_peer_state_rx: Mutex::new(None),
             negotiated_twcc_ext_id: AtomicU8::new(0),
@@ -732,10 +745,6 @@ impl PeerForwardInternal {
             channel,
             strategy,
         }
-    }
-
-    pub(crate) fn subscribe_event(&self) -> broadcast::Receiver<ForwardEvent> {
-        self.event_sender.subscribe()
     }
 
     pub(crate) async fn info(&self) -> ForwardInfo {
@@ -899,7 +908,8 @@ impl PeerForwardInternal {
                 let old = publish.take().unwrap();
                 drop(publish);
                 let _ = old.peer.close().await;
-                self.do_remove_publish_cleanup(session_info).await;
+                self.do_remove_publish_cleanup(session_info, SessionDownReason::ApiKicked)
+                    .await;
                 return Ok(RemovePeerOutcome::PublisherRemoved);
             }
         }
@@ -912,14 +922,16 @@ impl PeerForwardInternal {
                 let old = subscribe_group.remove(i);
                 let is_empty = subscribe_group.is_empty();
                 drop(subscribe_group);
-                let reforward = self.do_remove_subscribe_cleanup(&old).await;
+                let reforward = self
+                    .do_remove_subscribe_cleanup(&old, SessionDownReason::ApiKicked)
+                    .await;
                 let _ = old.peer.close().await;
                 if is_empty {
                     *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
                 }
-                self.send_event().await;
+                self.send_event();
                 if reforward {
-                    self.send_event().await;
+                    self.send_event();
                 }
                 // Orphan hint: with the publisher already gone and no
                 // sessions left, the stream entry would linger forever.
@@ -1029,6 +1041,17 @@ impl PeerForwardInternal {
         publish.is_some()
     }
 
+    /// Session ID of the current publisher, empty when none is attached (e.g.
+    /// a late `on_track` from a publisher that was just removed).
+    async fn publish_session_id(&self) -> String {
+        self.publish
+            .read()
+            .await
+            .as_ref()
+            .map(|p| p.id.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) async fn decide_publish_generation(
         &self,
         next_profile: &MediaProfile,
@@ -1088,14 +1111,14 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    /// Register a publish session. Returns the new session ID on success.
     pub(crate) async fn set_publish(
         &self,
         peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
-        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
         connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
-    ) -> Result<()> {
-        {
+    ) -> Result<String> {
+        let session_id = {
             let mut publish = self.publish.write().await;
             if publish.is_some() {
                 return Err(AppError::stream_already_exists(
@@ -1108,14 +1131,15 @@ impl PeerForwardInternal {
                 peer.clone(),
                 self.publish_rtcp_channel.subscribe(),
                 cascade,
-                connection_state,
                 connection_state_rx,
             )
             .await?;
 
             info!("[{}] [publish] set {}", self.stream, publish_peer.id);
+            let session_id = publish_peer.id.clone();
             *publish = Some(publish_peer);
-        }
+            session_id
+        };
 
         {
             let mut publish_leave_at = self.publish_leave_at.write().await;
@@ -1123,9 +1147,13 @@ impl PeerForwardInternal {
         }
 
         metrics::PUBLISH.inc();
-        self.send_event().await;
+        self.emit(Event::PublishUp {
+            stream: self.stream.clone(),
+            session: session_id.clone(),
+        });
+        self.send_event();
 
-        Ok(())
+        Ok(session_id)
     }
 
     pub(crate) async fn remove_publish(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
@@ -1138,7 +1166,7 @@ impl PeerForwardInternal {
                 return Ok(());
             }
 
-            if publish.as_ref().unwrap().id != get_peer_id(&peer) {
+            if !Arc::ptr_eq(&publish.as_ref().unwrap().peer, &peer) {
                 return Err(AppError::throw("publish not myself"));
             }
 
@@ -1149,14 +1177,19 @@ impl PeerForwardInternal {
             session_info
         };
 
-        self.do_remove_publish_cleanup(closed_session).await;
+        self.do_remove_publish_cleanup(closed_session, SessionDownReason::PeerClosed)
+            .await;
         Ok(())
     }
 
     /// Shared cleanup after a publish session has been taken out of `self.publish`.
     /// Callers must have already set `self.publish` to `None` and prepared the
     /// `SessionInfo` with the final state and `leave_at` timestamp.
-    async fn do_remove_publish_cleanup(&self, closed_session: SessionInfo) {
+    async fn do_remove_publish_cleanup(
+        &self,
+        closed_session: SessionInfo,
+        reason: SessionDownReason,
+    ) {
         *self.publish_peer_state_rx.lock().await = None;
 
         {
@@ -1170,6 +1203,7 @@ impl PeerForwardInternal {
             *publish_leave_at = Utc::now().timestamp_millis();
         }
 
+        let session_id = closed_session.id.clone();
         {
             let mut closed_publish_sessions = self.closed_publish_sessions.write().await;
             closed_publish_sessions.push(closed_session);
@@ -1177,8 +1211,13 @@ impl PeerForwardInternal {
 
         info!("[{}] [publish] set none", self.stream);
         metrics::PUBLISH.dec();
+        self.emit(Event::PublishDown {
+            stream: self.stream.clone(),
+            session: session_id,
+            reason,
+        });
 
-        self.send_event().await;
+        self.send_event();
     }
 
     pub async fn publish_is_svc(&self) -> bool {
@@ -1230,7 +1269,6 @@ impl PeerForwardInternal {
     ) -> Result<(
         Arc<dyn PeerConnection>,
         Arc<Notify>,
-        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
         watch::Receiver<RTCPeerConnectionState>,
     )> {
         if media_info.video_transceiver.0 > 1 && media_info.audio_transceiver.0 > 1 {
@@ -1287,14 +1325,12 @@ impl PeerForwardInternal {
             .build();
 
         let gather_complete = Arc::new(Notify::new());
-        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
         let (connection_state_tx, connection_state_rx) =
             watch::channel(RTCPeerConnectionState::New);
         *self.publish_peer_state_rx.lock().await = Some(connection_state_rx.clone());
         let handler = PublishPeerHandler {
             internal: internal_weak,
             gather_complete: gather_complete.clone(),
-            connection_state: connection_state.clone(),
             connection_state_tx,
         };
         let peer: Arc<dyn PeerConnection> = Arc::new(
@@ -1332,7 +1368,7 @@ impl PeerForwardInternal {
                 .await?;
         }
 
-        Ok((peer, gather_complete, connection_state, connection_state_rx))
+        Ok((peer, gather_complete, connection_state_rx))
     }
 
     pub(crate) fn set_twcc_ext_id(&self, ext_id: u8) {
@@ -1341,7 +1377,7 @@ impl PeerForwardInternal {
 
     pub(crate) async fn publish_track_up(
         &self,
-        peer: Arc<dyn PeerConnection>,
+        _peer: Arc<dyn PeerConnection>,
         track: Arc<dyn TrackRemote>,
     ) -> Result<()> {
         let generation_id = *self.media_generation_id.read().await;
@@ -1363,7 +1399,7 @@ impl PeerForwardInternal {
         };
         let publish_track_remote = PublishTrackRemote::new(
             self.stream.clone(),
-            get_peer_id(&peer),
+            self.publish_session_id().await,
             track,
             self.publish_peer_state_rx.lock().await.clone(),
             twcc_ext_id,
@@ -1448,7 +1484,7 @@ impl PeerForwardInternal {
     ) -> Result<(
         Arc<dyn PeerConnection>,
         Arc<Notify>,
-        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        watch::Receiver<RTCPeerConnectionState>,
     )> {
         if media_info.video_transceiver.1 > 1 && media_info.audio_transceiver.1 > 1 {
             return Err(AppError::throw("recvonly is more than 1"));
@@ -1485,12 +1521,10 @@ impl PeerForwardInternal {
             .build();
 
         let gather_complete = Arc::new(Notify::new());
-        let connection_state = Arc::new(std::sync::RwLock::new(RTCPeerConnectionState::New));
-        let handler = SubscribePeerHandler::new(
-            internal_weak,
-            gather_complete.clone(),
-            connection_state.clone(),
-        );
+        let (connection_state_tx, connection_state_rx) =
+            watch::channel(RTCPeerConnectionState::New);
+        let handler =
+            SubscribePeerHandler::new(internal_weak, gather_complete.clone(), connection_state_tx);
         let peer: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
                 .with_media_engine(m)
@@ -1511,6 +1545,7 @@ impl PeerForwardInternal {
         let audio_codec = self.publisher_codec(RtpCodecKind::Audio).await;
 
         Self::new_sender(
+            &self.stream,
             &peer,
             RtpCodecKind::Video,
             media_info.video_transceiver.1,
@@ -1518,6 +1553,7 @@ impl PeerForwardInternal {
         )
         .await?;
         Self::new_sender(
+            &self.stream,
             &peer,
             RtpCodecKind::Audio,
             media_info.audio_transceiver.1,
@@ -1525,10 +1561,11 @@ impl PeerForwardInternal {
         )
         .await?;
 
-        Ok((peer, gather_complete, connection_state))
+        Ok((peer, gather_complete, connection_state_rx))
     }
 
     async fn new_sender(
+        stream: &str,
         peer: &Arc<dyn PeerConnection>,
         kind: RtpCodecKind,
         recv_sender: u8,
@@ -1623,7 +1660,7 @@ impl PeerForwardInternal {
             // Log the codec that will be used to create the transceiver.
             info!(
                 "[{}] creating sender transceiver with codec: {}",
-                get_peer_id(peer),
+                stream,
                 format_codec_for_log(&codec)
             );
 
@@ -1664,7 +1701,7 @@ impl PeerForwardInternal {
             let track_codec = sender_track.codec(ssrc).await;
             info!(
                 "[{}] new sender, kind={}, ssrc={}, requested_codec={}, track_codec={}",
-                get_peer_id(peer),
+                stream,
                 kind,
                 params
                     .encodings
@@ -1684,13 +1721,14 @@ impl PeerForwardInternal {
         })
     }
 
+    /// Register a subscribe session. Returns the new session ID on success.
     pub async fn add_subscribe(
         &self,
         peer: Arc<dyn PeerConnection>,
         cascade: Option<CascadeInfo>,
         media_info: MediaInfo,
-        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
-    ) -> Result<()> {
+        connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
+    ) -> Result<String> {
         let transceivers = peer.get_transceivers().await;
 
         let mut video_sender = None;
@@ -1716,7 +1754,7 @@ impl PeerForwardInternal {
             }
         }
 
-        {
+        let session_id = {
             let s = SubscribeRTCPeerConnection::new(
                 cascade.clone(),
                 self.stream.clone(),
@@ -1728,37 +1766,46 @@ impl PeerForwardInternal {
                 ),
                 (video_sender, audio_sender),
                 super::subscribe::SubscribeRuntime {
-                    connection_state,
+                    connection_state_rx,
                     generation_id: *self.media_generation_id.read().await,
                 },
             )
             .await;
 
+            let session_id = s.id.clone();
             self.subscribe_group.write().await.push(s);
             *self.subscribe_leave_at.write().await = 0;
-        }
+            session_id
+        };
 
         metrics::SUBSCRIBE.inc();
-        self.send_event().await;
+        self.emit(Event::SubscribeUp {
+            stream: self.stream.clone(),
+            session: session_id.clone(),
+        });
+        self.send_event();
 
         if cascade.is_some() {
             metrics::REFORWARD.inc();
-            self.send_event().await;
+            self.send_event();
         }
 
-        Ok(())
+        Ok(session_id)
     }
 
     pub async fn remove_subscribe(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
-        let session = get_peer_id(&peer);
         let (found, reforward_flat, is_empty) = {
             let mut subscribe_peers = self.subscribe_group.write().await;
-            let pos = subscribe_peers.iter().position(|s| s.id == session);
+            let pos = subscribe_peers
+                .iter()
+                .position(|s| Arc::ptr_eq(&s.peer, &peer));
             if let Some(i) = pos {
                 let old = subscribe_peers.remove(i);
                 let is_empty = subscribe_peers.is_empty();
                 drop(subscribe_peers);
-                let reforward = self.do_remove_subscribe_cleanup(&old).await;
+                let reforward = self
+                    .do_remove_subscribe_cleanup(&old, SessionDownReason::PeerClosed)
+                    .await;
                 (true, reforward, is_empty)
             } else {
                 (false, false, false)
@@ -1769,9 +1816,9 @@ impl PeerForwardInternal {
             if is_empty {
                 *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
             }
-            self.send_event().await;
+            self.send_event();
             if reforward_flat {
-                self.send_event().await;
+                self.send_event();
             }
             Ok(())
         } else {
@@ -1786,7 +1833,11 @@ impl PeerForwardInternal {
     ///
     /// Returns `true` when a cascade reforward was torn down (the caller should
     /// emit an extra `send_event` for it).
-    async fn do_remove_subscribe_cleanup(&self, subscribe: &SubscribeRTCPeerConnection) -> bool {
+    async fn do_remove_subscribe_cleanup(
+        &self,
+        subscribe: &SubscribeRTCPeerConnection,
+        reason: SessionDownReason,
+    ) -> bool {
         #[allow(unused_mut)]
         let mut reforward_flat = false;
 
@@ -1809,6 +1860,7 @@ impl PeerForwardInternal {
         let mut session_info = subscribe.info().await;
         session_info.state = RTCPeerConnectionState::Closed;
         session_info.leave_at = Utc::now().timestamp_millis();
+        let session_id = session_info.id.clone();
 
         {
             let mut closed_subscribe_sessions = self.closed_subscribe_sessions.write().await;
@@ -1816,6 +1868,11 @@ impl PeerForwardInternal {
         }
 
         metrics::SUBSCRIBE.dec();
+        self.emit(Event::SubscribeDown {
+            stream: self.stream.clone(),
+            session: session_id,
+            reason,
+        });
         reforward_flat
     }
 
@@ -1841,7 +1898,7 @@ impl PeerForwardInternal {
         // Purging an expired closed session changes the snapshot, so push an
         // event so SSE clients drop it instead of showing a stale ghost row.
         if removed {
-            self.send_event().await;
+            self.send_event();
         }
     }
 
@@ -1867,11 +1924,18 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    async fn send_event(&self) {
+    /// Emit the content-free change ping consumed by snapshot-based
+    /// subscribers (SSE, net4mqtt).
+    fn send_event(&self) {
         trace!("[{}] send forward event", self.stream);
-        let _ = self.event_sender.send(ForwardEvent {
-            stream_id: self.stream.clone(),
+        self.emit(Event::ForwardChanged {
+            stream: self.stream.clone(),
         });
+    }
+
+    /// Emit a typed lifecycle event onto the manager-wide bus.
+    fn emit(&self, event: Event) {
+        let _ = self.lifecycle_sender.send(event);
     }
 }
 

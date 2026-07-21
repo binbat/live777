@@ -686,6 +686,7 @@ mod integration_tests {
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
         );
 
         let codec = RTCRtpCodecParameters {

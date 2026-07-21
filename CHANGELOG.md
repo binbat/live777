@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - **Removed webhook support from `liveion`.** The `[webhook]` configuration section and the `webhooks` list are no longer recognized. Existing configurations that still contain a `[webhook]` section will have that section silently ignored. Remove it before upgrading to keep configs tidy.
+- **WHIP/WHEP session IDs are now UUIDs** (previously an opaque hash of an internal pointer). Session IDs remain opaque strings for API clients, but anything pattern-matching the old 32-hex format must be updated.
   - Webhook-style push notifications are replaced by Server-Sent Events (`GET /api/sse/streams`) and the `net4mqtt` xdata channel, both of which push full stream-state snapshots when the state changes.
   - The `/api/sse/events` endpoint has been removed. Use `/api/sse/streams` instead.
 
 ### Changed
 
+- `liveion` stream lifecycle events are now typed (`liveion::event::Event`) and travel on a single manager-wide broadcast bus: `StreamDown` emission is centralized into one funnel so it always pairs with its metrics update, and every consumer (SSE, net4mqtt, recorder) tolerates broadcast lag by re-syncing instead of silently stopping.
+- `liveion` subscribe-side RTP write errors are now retried with a 3s bound while the peer may still be coming up, instead of being classified by matching `webrtc` crate error strings.
 - `liveion` now exposes a single SSE endpoint `/api/sse/streams` that pushes a full snapshot of all streams whenever stream state changes.
 - `net4mqtt` xdata messages now carry the sender identity as part of the channel tuple `(sender_id, key, payload)`. The receiver no longer needs to trust a user-supplied `alias` field inside the payload.
 - `liveman` consumes `net4mqtt` xdata `streams` messages and uses the message metadata as the node alias.
@@ -27,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `liveion` event consumers (recorder, net4mqtt notifier, SSE handler) silently exiting their receive loops on broadcast-channel lag bursts, which could permanently stop recorder auto start/stop and state notifications.
+- Fixed WHEP subscribe session-registration errors being swallowed, which could return a successful answer to the client without a working session.
+- `liveion` now logs a warning when a peer connection enters the `Disconnected` state (previously a lifecycle blind spot until it escalated to `Failed`).
 - Fixed a channel-sender leak in `net4mqtt` when `XDataConfig.receiver` was not provided.
 - Changed MQTT subscribe/publish calls in `net4mqtt` to propagate errors instead of panicking on connection failures.
 - Fixed `liveman` storage update logic so that stale stream/session mappings for a node are cleared before applying a new snapshot.

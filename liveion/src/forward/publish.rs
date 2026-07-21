@@ -13,7 +13,6 @@ use crate::forward::internal::{PUBLISH_CONNECTED_TIMEOUT, wait_for_peer_connecte
 use crate::forward::message::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
 
-use super::get_peer_id;
 use super::media::MediaInfo;
 use super::message::CascadeInfo;
 
@@ -23,7 +22,7 @@ pub(crate) struct PublishRTCPeerConnection {
     pub(crate) media_info: MediaInfo,
     pub(crate) create_at: i64,
     pub(crate) cascade: Option<CascadeInfo>,
-    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
 }
 
 impl PublishRTCPeerConnection {
@@ -32,10 +31,9 @@ impl PublishRTCPeerConnection {
         peer: Arc<dyn PeerConnection>,
         rtcp_recv: broadcast::Receiver<(RtcpMessage, u32)>,
         cascade: Option<CascadeInfo>,
-        connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
         connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     ) -> Result<Self> {
-        let id = get_peer_id(&peer);
+        let id = uuid::Uuid::new_v4().to_string();
         let peer_weak = Arc::downgrade(&peer);
         let remote_desc = peer
             .remote_description()
@@ -49,7 +47,7 @@ impl PublishRTCPeerConnection {
             id.clone(),
             peer_weak,
             rtcp_recv,
-            connection_state_rx,
+            connection_state_rx.clone(),
         ));
         Ok(Self {
             id,
@@ -57,21 +55,16 @@ impl PublishRTCPeerConnection {
             media_info,
             create_at: Utc::now().timestamp_millis(),
             cascade,
-            connection_state,
+            connection_state_rx,
         })
     }
 
     pub(crate) async fn info(&self) -> SessionInfo {
-        let state = self
-            .connection_state
-            .read()
-            .map(|s| *s)
-            .unwrap_or(RTCPeerConnectionState::New);
         SessionInfo {
             id: self.id.clone(),
             create_at: self.create_at,
             leave_at: 0,
-            state,
+            state: *self.connection_state_rx.borrow(),
             cascade: self.cascade.clone(),
             has_data_channel: self.media_info.has_data_channel,
         }

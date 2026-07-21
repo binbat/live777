@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tokio::time::{self, MissedTickBehavior};
 
 use opendal::Operator;
 #[cfg(feature = "recorder")]
 use storage::init_operator;
 
-use crate::hook::{Event, StreamEventType};
+use crate::event::Event;
 use crate::stream::manager::Manager;
 use api::recorder::{
     AckRecordingsRequest, AckRecordingsResponse, DeleteRecordingsRequest, DeleteRecordingsResponse,
@@ -130,33 +130,33 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
     let cfg_for_events = cfg.clone();
     let mut recv = manager.subscribe_event();
     tokio::spawn(async move {
-        while let Ok(event) = recv.recv().await {
-            if let Event::Stream(stream_event) = event {
-                match stream_event.r#type {
-                    StreamEventType::Up => {
-                        let stream_name = stream_event.stream.stream;
-                        if should_record(&cfg_for_events.auto_streams, &stream_name)
-                            && let Err(e) =
-                                start(manager_clone.clone(), stream_name.clone(), None).await
-                        {
-                            tracing::error!("[recorder] start failed: {}", e);
-                        }
-                    }
-                    StreamEventType::Down => {
-                        let stream_name = stream_event.stream.stream;
-                        let task_opt = {
-                            let mut map = TASKS.write().await;
-                            map.remove(&stream_name)
-                        };
-
-                        if let Some(task) = task_opt {
-                            let info = task.info.clone();
-                            let outcome = task.stop().await;
-                            update_index_on_stop(&stream_name, &info, outcome).await;
-                            tracing::info!("[recorder] stop recording task for {}", stream_name);
-                        }
+        loop {
+            match recv.recv().await {
+                Ok(Event::StreamUp { stream }) => {
+                    if should_record(&cfg_for_events.auto_streams, &stream)
+                        && let Err(e) = start(manager_clone.clone(), stream.clone(), None).await
+                    {
+                        tracing::error!("[recorder] start failed: {}", e);
                     }
                 }
+                Ok(Event::StreamDown { stream, .. }) => {
+                    let task_opt = {
+                        let mut map = TASKS.write().await;
+                        map.remove(&stream)
+                    };
+
+                    if let Some(task) = task_opt {
+                        let info = task.info.clone();
+                        let outcome = task.stop().await;
+                        update_index_on_stop(&stream, &info, outcome).await;
+                        tracing::info!("[recorder] stop recording task for {}", stream);
+                    }
+                }
+                Ok(_) => {}
+                // Keep consuming after dropped events: recording must not
+                // silently stop reacting to stream up/down under burst load.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });

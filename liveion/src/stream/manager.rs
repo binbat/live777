@@ -1,7 +1,6 @@
 use crate::config::Config;
+use crate::event::{Event, StreamDownReason};
 use crate::forward::message::ForwardInfo;
-
-use crate::hook::{Event, Stream, StreamEvent, StreamEventType};
 
 use crate::result::Result;
 
@@ -28,6 +27,27 @@ use crate::{AppError, metrics, new_broadcast_channel};
 /// forwards (`subscribe_leave_at` starts at the creation time).
 const ORPHAN_GRACE: Duration = Duration::from_secs(5);
 
+/// Orphan teardown only applies to auto-created streams: when neither
+/// auto-create is enabled, an empty stream was provisioned explicitly (e.g.
+/// via the admin API) and reaping it would break a later publish.
+fn orphan_reap_allowed(strategy: &api::strategy::Strategy) -> bool {
+    strategy.auto_create_whip || strategy.auto_create_whep
+}
+
+/// Single funnel for stream-teardown bookkeeping: the metrics decrement and
+/// the `StreamDown` lifecycle event always fire as a pair.
+fn emit_stream_down(
+    event_sender: &broadcast::Sender<Event>,
+    stream: &str,
+    reason: StreamDownReason,
+) {
+    metrics::STREAM.dec();
+    let _ = event_sender.send(Event::StreamDown {
+        stream: stream.to_string(),
+        reason,
+    });
+}
+
 #[cfg(feature = "source")]
 use crate::stream::source::*;
 
@@ -47,7 +67,7 @@ impl Manager {
     pub async fn new(config: Config, cancel: CancellationToken) -> Self {
         let cfg = ManagerConfig::from_config(config.clone());
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
-        let send = new_broadcast_channel!(4);
+        let send = new_broadcast_channel!(64);
 
         tokio::spawn(Self::publish_check_tick(
             stream_map.clone(),
@@ -113,7 +133,6 @@ impl Manager {
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
-                        metrics::STREAM.dec();
                         let publish_leave_at =
                             DateTime::from_timestamp_millis(forward_info.publish_leave_at)
                                 .unwrap()
@@ -124,12 +143,11 @@ impl Manager {
                             stream, publish_leave_at
                         );
 
-                        let _ = event_sender.send(Event::Stream(StreamEvent {
-                            r#type: StreamEventType::Down,
-                            stream: Stream {
-                                stream: stream.clone(),
-                            },
-                        }));
+                        emit_stream_down(
+                            &event_sender,
+                            stream,
+                            StreamDownReason::PublishLeaveTimeout,
+                        );
                     }
                 }
             }
@@ -161,7 +179,7 @@ impl Manager {
                 // exception: when neither auto-create is enabled, an empty
                 // stream was provisioned explicitly (e.g. via the admin API)
                 // and reaping it would make a later publish fail.
-                let recreate = strategy.auto_create_whip || strategy.auto_create_whep;
+                let recreate = orphan_reap_allowed(strategy);
                 if recreate
                     && now - subscribe_leave_at > ORPHAN_GRACE.as_millis() as i64
                     && forward.confirm_orphan_teardown().await
@@ -194,7 +212,7 @@ impl Manager {
                     // Recheck under the write lock: a publisher or subscriber
                     // may have attached since the read pass.
                     let strategy = forward.strategy();
-                    let recreate = strategy.auto_create_whip || strategy.auto_create_whep;
+                    let recreate = orphan_reap_allowed(strategy);
                     let orphaned = recreate
                         && now - subscribe_leave_at > ORPHAN_GRACE.as_millis() as i64
                         && forward.confirm_orphan_teardown().await;
@@ -205,7 +223,11 @@ impl Manager {
                     }
                     let _ = forward.close().await;
                     stream_map.remove(stream);
-                    metrics::STREAM.dec();
+                    let reason = if orphaned {
+                        StreamDownReason::Orphaned
+                    } else {
+                        StreamDownReason::SubscribeLeaveTimeout
+                    };
                     let subscribe_leave_at = DateTime::from_timestamp_millis(subscribe_leave_at)
                         .unwrap()
                         .format("%Y-%m-%d %H:%M:%S")
@@ -222,24 +244,9 @@ impl Manager {
                         );
                     }
 
-                    let _ = event_sender.send(Event::Stream(StreamEvent {
-                        r#type: StreamEventType::Down,
-                        stream: Stream {
-                            stream: stream.clone(),
-                        },
-                    }));
+                    emit_stream_down(&event_sender, stream, reason);
                 }
             }
-        }
-    }
-
-    pub async fn forward_event_handler(
-        mut stream_event: broadcast::Receiver<crate::forward::message::ForwardEvent>,
-        hook_event: broadcast::Sender<Event>,
-    ) {
-        while let Ok(event) = stream_event.recv().await {
-            trace!("forward event for stream {}", event.stream_id);
-            let _ = hook_event.send(Event::Forward(event));
         }
     }
 
@@ -261,7 +268,6 @@ impl Manager {
         }
         stream_map.insert(stream.clone(), forward.clone());
         drop(stream_map);
-        self.spawn_forward_events(&forward);
         self.register_stream_created(&stream);
         self.init_stream_forward(&stream, &forward).await;
         Ok(())
@@ -282,29 +288,16 @@ impl Manager {
             #[cfg(feature = "source")]
             channel,
             strategy,
-        )
-    }
-
-    /// Spawn the event-forwarding task for a newly inserted forward.
-    /// Must only be called once per forward — after the forward has won
-    /// the insertion race.
-    fn spawn_forward_events(&self, forward: &PeerForward) {
-        let subscribe_event = forward.subscribe_event();
-        tokio::spawn(Self::forward_event_handler(
-            subscribe_event,
             self.event_sender.clone(),
-        ));
+        )
     }
 
     fn register_stream_created(&self, stream: &str) {
         info!("add stream : {}", stream);
         metrics::STREAM.inc();
-        let _ = self.event_sender.send(Event::Stream(StreamEvent {
-            stream: Stream {
-                stream: stream.to_string(),
-            },
-            r#type: StreamEventType::Up,
-        }));
+        let _ = self.event_sender.send(Event::StreamUp {
+            stream: stream.to_string(),
+        });
     }
 
     async fn init_stream_forward(&self, stream: &str, forward: &PeerForward) {
@@ -334,11 +327,7 @@ impl Manager {
     }
 
     async fn do_stream_delete(&self, stream: String) {
-        metrics::STREAM.dec();
-        let _ = self.event_sender.send(Event::Stream(StreamEvent {
-            stream: Stream { stream },
-            r#type: StreamEventType::Down,
-        }));
+        emit_stream_down(&self.event_sender, &stream, StreamDownReason::ApiDeleted);
     }
 
     pub async fn publish(&self, stream: String, offer: RTCSessionDescription) -> Result<Response> {
@@ -416,7 +405,6 @@ impl Manager {
         if let Some(duplicate) = duplicate_to_close {
             let _ = duplicate.close().await;
         } else {
-            self.spawn_forward_events(&forward);
             self.register_stream_created(stream);
             self.init_stream_forward(stream, &forward).await;
         }
@@ -459,9 +447,9 @@ impl Manager {
                     // When neither auto-create is enabled the stream was
                     // provisioned explicitly; leave its teardown to the
                     // admin so a later publish can still find it.
-                    let strategy = forward.strategy();
-                    let recreate = strategy.auto_create_whip || strategy.auto_create_whep;
-                    if recreate && forward.confirm_orphan_teardown().await {
+                    if orphan_reap_allowed(forward.strategy())
+                        && forward.confirm_orphan_teardown().await
+                    {
                         self.stream_delete_allow_missing(stream).await?;
                     }
                 }
@@ -657,14 +645,18 @@ impl Manager {
 
             loop {
                 tokio::select! {
-                    Ok(event) = event_recv.recv() => {
-                        let stream = match event {
-                            Event::Stream(val) => val.stream.stream,
-                            Event::Forward(val) => val.stream_id,
-                        };
-                        if (streams.is_empty() || streams.contains(&stream))
-                            && !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await
-                        {
+                    event = event_recv.recv() => {
+                        match event {
+                            Ok(event) => {
+                                if !(streams.is_empty() || streams.iter().any(|s| s == event.stream())) {
+                                    continue;
+                                }
+                            }
+                            // Re-sync unconditionally after dropping events.
+                            Err(broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                        if !send_snapshot(&stream_map, &streams, &mut last_sent, &send).await {
                             break;
                         }
                     }
@@ -850,7 +842,6 @@ impl Manager {
             return existing;
         }
 
-        self.spawn_forward_events(&forward);
         self.register_stream_created(stream_id);
         tracing::info!("Created PeerForward for source: {}", stream_id);
         if let Err(e) = forward.try_init_udp_channel().await {
@@ -879,7 +870,6 @@ impl Manager {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::hook::StreamEventType;
     use tokio::time::{Duration, timeout};
 
     #[tokio::test]
@@ -905,9 +895,8 @@ mod tests {
 
         let mut up_events = 0;
         while let Ok(Ok(event)) = timeout(Duration::from_millis(50), events.recv()).await {
-            if let Event::Stream(event) = event
-                && event.stream.stream == stream
-                && event.r#type == StreamEventType::Up
+            if let Event::StreamUp { stream: s } = event
+                && s == stream
             {
                 up_events += 1;
             }

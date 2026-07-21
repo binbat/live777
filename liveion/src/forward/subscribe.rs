@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -8,7 +7,7 @@ use rtc::rtp_transceiver::PayloadType;
 use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, watch};
 use tokio::time::{Duration, Instant, sleep};
 use tracing::{debug, info, warn};
 use webrtc::media_stream::track_local::TrackLocal;
@@ -22,7 +21,6 @@ use crate::forward::rtcp::RtcpMessage;
 use crate::new_broadcast_channel;
 use crate::{constant, result::Result};
 
-use super::get_peer_id;
 use super::media::MediaInfo;
 use super::message::CascadeInfo;
 use super::track::ForwardData;
@@ -48,12 +46,12 @@ struct SubscribeForwardChannel {
     publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
     select_layer_recv: broadcast::Receiver<SelectLayerBody>,
     publish_track_change: broadcast::Receiver<()>,
-    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     generation_id: u64,
 }
 
 pub(crate) struct SubscribeRuntime {
-    pub(crate) connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    pub(crate) connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     pub(crate) generation_id: u64,
 }
 
@@ -64,7 +62,7 @@ pub(crate) struct SubscribeRTCPeerConnection {
     pub(crate) create_at: i64,
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
     pub(crate) media_info: MediaInfo,
-    connection_state: Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+    connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
 }
 
 impl SubscribeRTCPeerConnection {
@@ -81,8 +79,8 @@ impl SubscribeRTCPeerConnection {
         runtime: SubscribeRuntime,
     ) -> Self {
         let select_layer_sender = new_broadcast_channel!(1);
-        let id = get_peer_id(&peer);
-        let connection_state = runtime.connection_state;
+        let id = uuid::Uuid::new_v4().to_string();
+        let connection_state_rx = runtime.connection_state_rx;
         let track_binding_publish_rid = Arc::new(RwLock::new(HashMap::new()));
         for (sender, kind) in [
             (video_sender, RtpCodecKind::Video),
@@ -103,7 +101,7 @@ impl SubscribeRTCPeerConnection {
                     publish_rtcp_sender: publish_rtcp_sender.clone(),
                     select_layer_recv: select_layer_sender.subscribe(),
                     publish_track_change: publish_track_change.subscribe(),
-                    connection_state: connection_state.clone(),
+                    connection_state_rx: connection_state_rx.clone(),
                     generation_id: runtime.generation_id,
                 },
             ));
@@ -116,21 +114,16 @@ impl SubscribeRTCPeerConnection {
             create_at: Utc::now().timestamp_millis(),
             select_layer_sender,
             media_info,
-            connection_state,
+            connection_state_rx,
         }
     }
 
     pub(crate) async fn info(&self) -> SessionInfo {
-        let state = self
-            .connection_state
-            .read()
-            .map(|s| *s)
-            .unwrap_or(RTCPeerConnectionState::New);
         SessionInfo {
             id: self.id.clone(),
             create_at: self.create_at,
             leave_at: 0,
-            state,
+            state: *self.connection_state_rx.borrow(),
             cascade: self.cascade.clone(),
             has_data_channel: self.media_info.has_data_channel,
         }
@@ -432,22 +425,6 @@ impl SubscribeRTCPeerConnection {
         (selected_rtp_codec, Some(selected.payload_type))
     }
 
-    fn is_transient_track_write_error(err: &impl Display) -> bool {
-        let message = err.to_string();
-        message.contains("local_srtp_context is not set yet")
-            || message.contains("track is not binding yet")
-            || message.contains("DTLS transport has not started yet")
-    }
-
-    fn current_connection_state(
-        connection_state: &Arc<std::sync::RwLock<RTCPeerConnectionState>>,
-    ) -> RTCPeerConnectionState {
-        connection_state
-            .read()
-            .map(|state| *state)
-            .unwrap_or(RTCPeerConnectionState::New)
-    }
-
     fn is_terminal_connection_state(state: RTCPeerConnectionState) -> bool {
         matches!(
             state,
@@ -673,58 +650,64 @@ impl SubscribeRTCPeerConnection {
                                     // H264 STAP-A NRI fix applied above when needed.
 
                                     if let Err(err) = track.write_rtp(packet).await {
-                                        if Self::is_transient_track_write_error(&err) {
-                                            let now = Instant::now();
-                                            let started = transient_write_error_since.get_or_insert(now);
-                                            let elapsed = started.elapsed();
-                                            let state = Self::current_connection_state(
-                                                &forward_channel.connection_state,
+                                        // The webrtc crate surfaces pre-ready
+                                        // write failures as untyped
+                                        // `Error::Other` strings ("track is
+                                        // not binding yet", "DTLS transport
+                                        // has not started yet", ...), so they
+                                        // cannot be matched precisely. Treat
+                                        // every write error as transient
+                                        // while the peer may still be coming
+                                        // up: bounded by
+                                        // TRACK_BIND_RETRY_TIMEOUT and cut
+                                        // short on terminal states.
+                                        let state =
+                                            *forward_channel.connection_state_rx.borrow();
+                                        if Self::is_terminal_connection_state(state) {
+                                            warn!(
+                                                "[{}] [{}] {} track write stopped after transient error because peer is {}: {}",
+                                                stream, id, kind, state, err
                                             );
-                                            if Self::is_terminal_connection_state(state) {
-                                                warn!(
-                                                    "[{}] [{}] {} track write stopped after transient error because peer is {}: {}",
-                                                    stream, id, kind, state, err
-                                                );
-                                                break;
-                                            }
-                                            if elapsed >= TRACK_BIND_RETRY_TIMEOUT {
-                                                warn!(
-                                                    "[{}] [{}] {} track write still not ready after {}ms, state={}, source_codec={}, selected_codec={}, payload_type={:?}, input_payload_type={}, outgoing_payload_type={}, ssrc={}: {}",
-                                                    stream,
-                                                    id,
-                                                    kind,
-                                                    elapsed.as_millis(),
-                                                    state,
-                                                    source_codec
-                                                        .as_ref()
-                                                        .map(Self::format_codec)
-                                                        .unwrap_or_else(|| "<none>".to_string()),
-                                                    selected_codec
-                                                        .as_ref()
-                                                        .map(Self::format_codec)
-                                                        .unwrap_or_else(|| "<none>".to_string()),
-                                                    payload_type,
-                                                    input_payload_type,
-                                                    outgoing_payload_type,
-                                                    sender_ssrc,
-                                                    err
-                                                );
-                                                break;
-                                            }
-                                            debug!(
-                                                "[{}] [{}] {} track write deferred for {}ms, state={}: {}",
+                                            break;
+                                        }
+                                        let now = Instant::now();
+                                        let started = transient_write_error_since.get_or_insert(now);
+                                        let elapsed = started.elapsed();
+                                        if elapsed >= TRACK_BIND_RETRY_TIMEOUT {
+                                            warn!(
+                                                "[{}] [{}] {} track write still not ready after {}ms, state={}, source_codec={}, selected_codec={}, payload_type={:?}, input_payload_type={}, outgoing_payload_type={}, ssrc={}: {}",
                                                 stream,
                                                 id,
                                                 kind,
                                                 elapsed.as_millis(),
                                                 state,
+                                                source_codec
+                                                    .as_ref()
+                                                    .map(Self::format_codec)
+                                                    .unwrap_or_else(|| "<none>".to_string()),
+                                                selected_codec
+                                                    .as_ref()
+                                                    .map(Self::format_codec)
+                                                    .unwrap_or_else(|| "<none>".to_string()),
+                                                payload_type,
+                                                input_payload_type,
+                                                outgoing_payload_type,
+                                                sender_ssrc,
                                                 err
                                             );
-                                            sleep(TRACK_BIND_RETRY_DELAY).await;
-                                            continue;
+                                            break;
                                         }
-                                        warn!("[{}] [{}] {} track write err: {}", stream, id, kind, err);
-                                        break;
+                                        debug!(
+                                            "[{}] [{}] {} track write deferred for {}ms, state={}: {}",
+                                            stream,
+                                            id,
+                                            kind,
+                                            elapsed.as_millis(),
+                                            state,
+                                            err
+                                        );
+                                        sleep(TRACK_BIND_RETRY_DELAY).await;
+                                        continue;
                                     }
                                     transient_write_error_since = None;
                                     if first_packet {
@@ -972,9 +955,21 @@ mod tests {
     use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
     #[test]
-    fn track_not_binding_yet_is_a_transient_track_write_error() {
-        assert!(SubscribeRTCPeerConnection::is_transient_track_write_error(
-            &"track is not binding yet"
+    fn terminal_connection_states_stop_track_write_retries() {
+        assert!(SubscribeRTCPeerConnection::is_terminal_connection_state(
+            RTCPeerConnectionState::Failed
+        ));
+        assert!(SubscribeRTCPeerConnection::is_terminal_connection_state(
+            RTCPeerConnectionState::Closed
+        ));
+        assert!(SubscribeRTCPeerConnection::is_terminal_connection_state(
+            RTCPeerConnectionState::Disconnected
+        ));
+        assert!(!SubscribeRTCPeerConnection::is_terminal_connection_state(
+            RTCPeerConnectionState::Connected
+        ));
+        assert!(!SubscribeRTCPeerConnection::is_terminal_connection_state(
+            RTCPeerConnectionState::New
         ));
     }
 

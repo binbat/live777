@@ -28,8 +28,8 @@ pub mod config;
 mod constant;
 mod convert;
 mod error;
+mod event;
 mod forward;
-mod hook;
 mod r#macro;
 mod metrics;
 mod result;
@@ -157,7 +157,19 @@ where
                             let notify_handle = tokio::spawn(async move {
                                 let mut event_recv = stream_manager_notify.subscribe_event();
                                 let mut last_sent: Option<Vec<api::response::Stream>> = None;
-                                while let Ok(_event) = event_recv.recv().await {
+                                loop {
+                                    match event_recv.recv().await {
+                                        Ok(_) => {}
+                                        // Re-sync after dropped events; a
+                                        // silently dead notifier is worse than
+                                        // an extra snapshot.
+                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(
+                                            _,
+                                        )) => {}
+                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                            break;
+                                        }
+                                    }
                                     // Debounce: wait a short interval and drain
                                     // additional events so rapid state changes
                                     // produce only one snapshot.
@@ -165,7 +177,11 @@ where
                                         tokio::time::Instant::now() + Duration::from_millis(100);
                                     loop {
                                         tokio::select! {
-                                            Ok(_) = event_recv.recv() => {}
+                                            event = event_recv.recv() => {
+                                                if matches!(event, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                                                    break;
+                                                }
+                                            }
                                             _ = tokio::time::sleep_until(deadline) => break,
                                         }
                                     }

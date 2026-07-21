@@ -2781,7 +2781,6 @@ dependencies = [
  "libwish",
  "livehal",
  "livetwo",
- "md-5",
  "mime_guess",
  "net4mqtt",
  "once_cell",
