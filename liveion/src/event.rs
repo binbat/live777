@@ -6,6 +6,8 @@
 //! - SSE `/api/sse/streams` and net4mqtt — snapshot consumers that treat every
 //!   event as a "something changed" ping and re-send a full snapshot.
 //! - recorder — reacts to `StreamUp`/`StreamDown` for auto start/stop.
+//! - the manager's event logger — emits one canonical debug line per event
+//!   with its full payload.
 //!
 //! Consumers MUST tolerate `broadcast::error::RecvError::Lagged` by continuing
 //! the loop (and re-snapshotting where applicable); a `while let Ok(..)` loop
@@ -36,16 +38,7 @@ pub enum SessionDownReason {
 
 /// A stream-lifecycle event. `stream` is the stream name; `session` is the
 /// session ID for publish/subscribe events.
-///
-/// The `session`/`reason` payload fields are the typed contract of this bus:
-/// current in-tree consumers (SSE, net4mqtt, recorder) only need the stream
-/// name, but the fields are read through `Debug` output and are the contract
-/// future consumers (statistics, external lifecycle integrations) rely on.
 #[derive(Clone, Debug)]
-// Fields are read via pattern binding by feature-gated consumers and through
-// Debug; with no features enabled some are unread, so allow dead_code here
-// rather than fragment the enum per feature.
-#[allow(dead_code)]
 pub enum Event {
     /// The stream now exists in the manager (created via API, auto-create, or
     /// source startup).

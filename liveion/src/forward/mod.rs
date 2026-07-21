@@ -582,10 +582,19 @@ impl PeerForward {
         let mut sdp = sdp;
         sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
-        let session = self
+        let session = match self
             .internal
             .add_subscribe(peer.clone(), None, media_info, connection_state_rx)
-            .await?;
+            .await
+        {
+            Ok(session) => session,
+            Err(err) => {
+                // Now that registration errors are propagated (previously
+                // swallowed), don't leak the peer on the failure path.
+                let _ = peer.close().await;
+                return Err(err);
+            }
+        };
 
         Ok((sdp, session))
     }

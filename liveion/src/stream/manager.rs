@@ -69,6 +69,8 @@ impl Manager {
         let stream_map: Arc<RwLock<HashMap<String, PeerForward>>> = Default::default();
         let send = new_broadcast_channel!(64);
 
+        tokio::spawn(Self::event_logger(send.subscribe(), cancel.clone()));
+
         tokio::spawn(Self::publish_check_tick(
             stream_map.clone(),
             send.clone(),
@@ -87,6 +89,67 @@ impl Manager {
             cancel,
             #[cfg(feature = "source")]
             source_manager: SourceManager::new(),
+        }
+    }
+
+    /// Canonical lifecycle event log. Emits one debug line per bus event with
+    /// its full payload (session, reason) — the single place that answers
+    /// "why did this stream/session die". `ForwardChanged` is skipped: it is
+    /// a high-frequency ping, not a lifecycle transition.
+    async fn event_logger(mut event_recv: broadcast::Receiver<Event>, cancel: CancellationToken) {
+        loop {
+            let event = tokio::select! {
+                _ = cancel.cancelled() => return,
+                event = event_recv.recv() => match event {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
+            };
+            match &event {
+                Event::StreamUp { stream } => {
+                    debug!("lifecycle: stream up, stream : {}", stream);
+                }
+                Event::StreamDown { stream, reason } => {
+                    debug!(
+                        "lifecycle: stream down, stream : {}, reason : {:?}",
+                        stream, reason
+                    );
+                }
+                Event::PublishUp { stream, session } => {
+                    debug!(
+                        "lifecycle: publish up, stream : {}, session : {}",
+                        stream, session
+                    );
+                }
+                Event::PublishDown {
+                    stream,
+                    session,
+                    reason,
+                } => {
+                    debug!(
+                        "lifecycle: publish down, stream : {}, session : {}, reason : {:?}",
+                        stream, session, reason
+                    );
+                }
+                Event::SubscribeUp { stream, session } => {
+                    debug!(
+                        "lifecycle: subscribe up, stream : {}, session : {}",
+                        stream, session
+                    );
+                }
+                Event::SubscribeDown {
+                    stream,
+                    session,
+                    reason,
+                } => {
+                    debug!(
+                        "lifecycle: subscribe down, stream : {}, session : {}, reason : {:?}",
+                        stream, session, reason
+                    );
+                }
+                Event::ForwardChanged { .. } => {}
+            }
         }
     }
 
