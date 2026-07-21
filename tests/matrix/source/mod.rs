@@ -4,6 +4,8 @@ pub mod gst_rtp;
 pub mod gst_rtsp_server;
 pub mod gst_whip;
 #[cfg(feature = "rtsp")]
+pub mod mediamtx;
+#[cfg(feature = "rtsp")]
 pub mod rtsp_ffmpeg;
 #[cfg(feature = "rsmpeg")]
 pub mod synth;

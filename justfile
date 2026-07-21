@@ -49,6 +49,31 @@ build:
 build-tools:
     gcc -o test-rtsp-server tools/test-rtsp-server.c $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0)
 
+mtx_os := if os() == "macos" { "darwin" } else if os() == "linux" { "linux" } else { "unsupported" }
+mtx_arch := if arch() == "x86_64" { "amd64" } else if arch() == "aarch64" { "arm64" } else { "unsupported" }
+
+# Download the mediamtx binary used by the interop matrix tests into target/
+mediamtx:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=v1.19.2
+    target={{mtx_os}}_{{mtx_arch}}
+    if [[ "$target" == *unsupported* ]]; then
+        echo "unsupported platform: {{os()}}-{{arch()}}"
+        exit 1
+    fi
+    fname="mediamtx_${version}_${target}.tar.gz"
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    curl -fsSL -o "$tmp/$fname" "https://github.com/bluenviron/mediamtx/releases/download/${version}/${fname}"
+    curl -fsSL -o "$tmp/checksums.sha256" "https://github.com/bluenviron/mediamtx/releases/download/${version}/checksums.sha256"
+    grep "$fname" "$tmp/checksums.sha256" > "$tmp/check.txt"
+    (cd "$tmp" && if command -v sha256sum >/dev/null; then sha256sum --check check.txt; else shasum -a 256 --check check.txt; fi)
+    tar -xzf "$tmp/$fname" -C "$tmp" mediamtx
+    mkdir -p target
+    install -m 0755 "$tmp/mediamtx" target/mediamtx
+    target/mediamtx --version
+
 docs:
     pnpm run docs:dev
 

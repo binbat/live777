@@ -1,0 +1,42 @@
+name: Install mediamtx
+description: Install the mediamtx RTSP server for the interop matrix tests (skipped on Windows, where the RTSP suites are cfg-gated out)
+inputs:
+  version:
+    description: mediamtx release tag to install
+    required: false
+    default: v1.19.2
+runs:
+  using: composite
+  steps:
+    - name: Install mediamtx (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        arch=amd64
+        if [ "$(uname -m)" = "aarch64" ]; then arch=arm64; fi
+        fname="mediamtx_${{ inputs.version }}_linux_${arch}.tar.gz"
+        curl -fsSL -o "$fname" "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/${fname}"
+        curl -fsSL -o checksums.sha256 "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/checksums.sha256"
+        grep "$fname" checksums.sha256 | sha256sum --check -
+        tar -xzf "$fname" mediamtx
+        sudo install -m 0755 mediamtx /usr/local/bin/mediamtx
+
+    - name: Install mediamtx (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        arch=amd64
+        if [ "$(uname -m)" = "arm64" ]; then arch=arm64; fi
+        fname="mediamtx_${{ inputs.version }}_darwin_${arch}.tar.gz"
+        curl -fsSL -o "$fname" "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/${fname}"
+        curl -fsSL -o checksums.sha256 "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/checksums.sha256"
+        grep "$fname" checksums.sha256 | shasum -a 256 --check -
+        tar -xzf "$fname" mediamtx
+        sudo install -m 0755 mediamtx /usr/local/bin/mediamtx
+
+    - name: Show version information
+      if: runner.os != 'Windows'
+      shell: bash
+      run: mediamtx --version

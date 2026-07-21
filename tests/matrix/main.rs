@@ -30,9 +30,11 @@ use player::{gst_rtp::GstRtpPlayer, gst_whep::GstWhepPlayer};
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 use runner::run_rtsp_roundtrip_gst;
 #[cfg(feature = "rtsp")]
-use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_roundtrip};
+use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_push_mediamtx, run_rtsp_roundtrip};
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 use source::gst_rtsp_server::GstRtspServerSource;
+#[cfg(feature = "rtsp")]
+use source::mediamtx::MediamtxPullSource;
 #[cfg(feature = "rtsp")]
 use source::rtsp_ffmpeg::RtspFfmpegSource;
 #[cfg(feature = "rsmpeg")]
@@ -391,6 +393,75 @@ where
     S: Source,
 {
     run_rtsp_cycle(source, transport, IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
+}
+
+// ============================================================
+// mediamtx interop (live777#212): second third-party RTSP server
+// after gst-rtsp-server
+// ============================================================
+
+/// mediamtx pull interop: ffmpeg pushes into mediamtx, livetwo's RTSP
+/// client pulls from mediamtx and publishes via WHIP, played back by the
+/// livetwo WHEP player. Covers whipinto's RTSP client against mediamtx's
+/// SDP dialect.
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+#[test_matrix(
+    [
+        MediamtxPullSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        MediamtxPullSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        MediamtxPullSource::new(MediaProfile::video_only(VideoCodec::H265)),
+        MediamtxPullSource::new(MediaProfile::video_only(VideoCodec::Vp9)),
+        MediamtxPullSource::new(MediaProfile::audio_only(AudioCodec::Opus)),
+        MediamtxPullSource::new(MediaProfile::audio_only(AudioCodec::G722)),
+        MediamtxPullSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
+    ],
+    [RtspTransport::Udp, RtspTransport::Tcp],
+    [LivetwoWhepPlayer]
+)]
+#[tokio::test]
+async fn whep_mediamtx_pull_matrix_test<P>(
+    source: MediamtxPullSource,
+    transport: RtspTransport,
+    player: P,
+) where
+    P: Player,
+{
+    if !source::mediamtx::available() {
+        tracing::warn!("skipping: mediamtx not available on this host");
+        return;
+    }
+    run_whep_test_with_host(
+        source.with_transport(transport),
+        player,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        "127.0.0.1",
+    )
+    .await;
+}
+
+/// mediamtx push interop: whepfrom bridges WHEP back to RTSP by pushing
+/// into mediamtx; ffprobe validates by pulling from mediamtx. Covers
+/// whepfrom's RTSP ANNOUNCE/RECORD against a third-party server.
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+#[test_matrix(
+    [
+        MediaProfile::video_only(VideoCodec::Vp8),
+        MediaProfile::video_only(VideoCodec::H264),
+        MediaProfile::video_only(VideoCodec::H265),
+        MediaProfile::video_only(VideoCodec::Vp9),
+        MediaProfile::audio_only(AudioCodec::Opus),
+        MediaProfile::audio_only(AudioCodec::G722),
+        MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus),
+    ],
+    [RtspTransport::Udp, RtspTransport::Tcp]
+)]
+#[tokio::test]
+async fn rtsp_push_mediamtx_matrix_test(profile: MediaProfile, transport: RtspTransport) {
+    if !source::mediamtx::available() {
+        tracing::warn!("skipping: mediamtx not available on this host");
+        return;
+    }
+    run_rtsp_push_mediamtx(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
 }
 
 // ============================================================

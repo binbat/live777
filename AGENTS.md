@@ -279,6 +279,11 @@ pnpm exec playwright install --with-deps chromium
 export PLAYWRIGHT_BROWSERS_PATH=$PWD/.playwright
 ```
 
+mediamtx interop tests (`whep_mediamtx_pull_*` and `rtsp_push_mediamtx_*` in
+the matrix binary, live777#212) need a mediamtx binary: `just mediamtx`
+downloads the pinned release into `target/`, or install mediamtx into `PATH`;
+`MEDIAMTX_BIN` overrides the lookup. The tests skip when no binary is found.
+
 ## Security Considerations
 
 - WHIP/WHEP endpoints require a `Bearer` token unless `auth.tokens` is empty.

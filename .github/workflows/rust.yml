@@ -20,6 +20,8 @@ jobs:
         uses: ./.github/actions/install-ffmpeg
       - name: Install GStreamer
         uses: ./.github/actions/install-gstreamer
+      - name: Install mediamtx
+        uses: ./.github/actions/install-mediamtx
       - name: Install pnpm
         uses: pnpm/action-setup@v6
       - name: Setup Nodejs
