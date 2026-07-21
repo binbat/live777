@@ -404,7 +404,12 @@ where
 /// client pulls from mediamtx and publishes via WHIP, played back by the
 /// livetwo WHEP player. Covers whipinto's RTSP client against mediamtx's
 /// SDP dialect.
-#[cfg(feature = "rtsp")]
+///
+/// Gated off Windows CI, same as the other RTSP matrices: the cases pass
+/// on Windows locally, but on GitHub-hosted runners ffmpeg encodes at
+/// ~0.03x realtime there, so video cases time out downstream (see
+/// mediamtx-windows-ci).
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 #[test_matrix(
     [
         MediamtxPullSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
@@ -442,7 +447,9 @@ async fn whep_mediamtx_pull_matrix_test<P>(
 /// mediamtx push interop: whepfrom bridges WHEP back to RTSP by pushing
 /// into mediamtx; ffprobe validates by pulling from mediamtx. Covers
 /// whepfrom's RTSP ANNOUNCE/RECORD against a third-party server.
-#[cfg(feature = "rtsp")]
+///
+/// Windows CI gate: see whep_mediamtx_pull_matrix_test.
+#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 #[test_matrix(
     [
         MediaProfile::video_only(VideoCodec::Vp8),
