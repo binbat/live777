@@ -107,7 +107,7 @@ impl MediamtxServer {
         let mut file = tempfile::NamedTempFile::new()?;
         file.write_all(config.as_bytes())?;
 
-        let child = Command::new(binary)
+        let mut child = Command::new(binary)
             .arg(file.path())
             .spawn()
             .context("Failed to spawn mediamtx")?;
@@ -119,6 +119,10 @@ impl MediamtxServer {
             match std::net::TcpStream::connect_timeout(&rtsp_addr, Duration::from_millis(100)) {
                 Ok(_) => break,
                 Err(e) if std::time::Instant::now() >= deadline => {
+                    // Kill and reap the child: dropping it here would leak a
+                    // running mediamtx (std Child does not kill on drop).
+                    let _ = child.kill();
+                    let _ = child.wait();
                     anyhow::bail!("mediamtx did not listen on {rtsp_addr} within 5s: {e}")
                 }
                 Err(_) => std::thread::sleep(Duration::from_millis(20)),
