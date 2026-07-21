@@ -449,9 +449,23 @@ where
 
 /// GStreamer rtsp-server hosted source pulled by livetwo's RTSP client and
 /// published via WHIP, played back by the livetwo WHEP player.
+///
+/// Covers video-only, audio-only and A/V profiles so the livetwo RTSP client
+/// is exercised against gst-rtsp-server's SDP dialect for every codec the
+/// ffmpeg RTSP suites use (except AV1: `av1enc` is not packaged widely
+/// enough to run anywhere but a skip).
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 #[test_matrix(
-    [GstRtspServerSource::new(MediaProfile::video_only(VideoCodec::H264))],
+    [
+        GstRtspServerSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        GstRtspServerSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        GstRtspServerSource::new(MediaProfile::video_only(VideoCodec::H265)),
+        GstRtspServerSource::new(MediaProfile::video_only(VideoCodec::Vp9)),
+        GstRtspServerSource::new(MediaProfile::audio_only(AudioCodec::Opus)),
+        GstRtspServerSource::new(MediaProfile::audio_only(AudioCodec::G722)),
+        GstRtspServerSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
+        GstRtspServerSource::new(MediaProfile::av(VideoCodec::H264, AudioCodec::Opus)),
+    ],
     [LivetwoWhepPlayer]
 )]
 #[tokio::test]

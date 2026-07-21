@@ -15,7 +15,9 @@ use crate::profile::MediaProfile;
 /// livetwo's RTSP client (`whipinto`) and published into liveion via WHIP.
 ///
 /// This covers the gst-as-RTSP-server ingest path; `rtspclientsink` is not
-/// packaged on many distros, so the pull topology is used instead.
+/// packaged on many distros, so the pull topology is used instead. Each
+/// track of the profile is hosted as a separate `pay%d` stream, so
+/// video-only, audio-only and A/V profiles are all supported.
 #[derive(Debug, Clone, Copy)]
 pub struct GstRtspServerSource {
     pub profile: MediaProfile,
@@ -43,10 +45,16 @@ impl GstRtspServerSource {
 
     /// GStreamer elements required by the hosted pipeline.
     pub fn required_elements(&self) -> Vec<&'static str> {
-        let mut elements = vec!["videotestsrc"];
+        let mut elements = Vec::new();
         if let Some(video) = self.profile.video {
+            elements.push("videotestsrc");
             elements.push(video.codec.gst_encoder().0);
             elements.push(video.codec.gst_pay());
+        }
+        if let Some(audio) = self.profile.audio {
+            elements.push("audiotestsrc");
+            elements.push(audio.gst_encoder().0);
+            elements.push(audio.gst_pay());
         }
         elements
     }
@@ -101,24 +109,42 @@ impl Source for GstRtspServerSource {
     }
 
     fn start_direct(&self, whip_url: &str) -> Result<Box<dyn SourceHandle>> {
-        let video = self
-            .profile
-            .video
-            .context("GstRtspServerSource requires a video track")?;
         let binary = server_binary()?;
 
         let port = crate::runner::reserve_and_release_tcp_port(IpAddr::V4(Ipv4Addr::LOCALHOST));
-        let (encoder, encoder_args) = video.codec.gst_encoder();
-        let pipeline = format!(
-            "( videotestsrc is-live=true ! video/x-raw,width={},height={},framerate={}/1 ! {} {} ! {} name=pay0 pt={} )",
-            video.width,
-            video.height,
-            video.fps,
-            encoder,
-            encoder_args,
-            video.codec.gst_pay(),
-            video.codec.payload_type(),
-        );
+
+        // test-launch syntax: every element named pay%d becomes one RTSP
+        // stream, so the profile's tracks map to consecutive pay indices.
+        let mut chains = Vec::new();
+        if let Some(video) = self.profile.video {
+            let (encoder, encoder_args) = video.codec.gst_encoder();
+            chains.push(format!(
+                "videotestsrc is-live=true ! video/x-raw,width={},height={},framerate={}/1 ! {} {} ! {} name=pay{} pt={}",
+                video.width,
+                video.height,
+                video.fps,
+                encoder,
+                encoder_args,
+                video.codec.gst_pay(),
+                chains.len(),
+                video.codec.payload_type(),
+            ));
+        }
+        if let Some(audio) = self.profile.audio {
+            let (encoder, encoder_args) = audio.gst_encoder();
+            chains.push(format!(
+                "audiotestsrc is-live=true ! {} {} ! {} name=pay{} pt={}",
+                encoder,
+                encoder_args,
+                audio.gst_pay(),
+                chains.len(),
+                audio.payload_type(),
+            ));
+        }
+        if chains.is_empty() {
+            anyhow::bail!("media profile has no tracks");
+        }
+        let pipeline = format!("( {} )", chains.join(" "));
 
         let child = Command::new(binary)
             .arg("-p")
