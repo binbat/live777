@@ -1,5 +1,5 @@
 name: Install mediamtx
-description: Install the mediamtx RTSP server for the interop matrix tests (skipped on Windows, where the RTSP suites are cfg-gated out)
+description: Install the mediamtx RTSP server for the interop matrix tests (skipped on Windows, where the RTSP suites are cfg-gated out). The download is cached across jobs.
 inputs:
   version:
     description: mediamtx release tag to install
@@ -8,33 +8,39 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install mediamtx (Linux)
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        set -euo pipefail
-        arch=amd64
-        if [ "$(uname -m)" = "aarch64" ]; then arch=arm64; fi
-        fname="mediamtx_${{ inputs.version }}_linux_${arch}.tar.gz"
-        curl -fsSL -o "$fname" "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/${fname}"
-        curl -fsSL -o checksums.sha256 "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/checksums.sha256"
-        grep "$fname" checksums.sha256 | sha256sum --check -
-        tar -xzf "$fname" mediamtx
-        sudo install -m 0755 mediamtx /usr/local/bin/mediamtx
+    - name: Cache mediamtx
+      id: cache
+      if: runner.os != 'Windows'
+      uses: actions/cache@v5
+      with:
+        path: .ci-tools/mediamtx
+        key: mediamtx-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
 
-    - name: Install mediamtx (macOS)
-      if: runner.os == 'macOS'
+    - name: Download mediamtx (cache miss)
+      if: runner.os != 'Windows' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
+        os=linux
+        if [ "$RUNNER_OS" = "macOS" ]; then os=darwin; fi
         arch=amd64
-        if [ "$(uname -m)" = "arm64" ]; then arch=arm64; fi
-        fname="mediamtx_${{ inputs.version }}_darwin_${arch}.tar.gz"
+        if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then arch=arm64; fi
+        fname="mediamtx_${{ inputs.version }}_${os}_${arch}.tar.gz"
         curl -fsSL -o "$fname" "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/${fname}"
         curl -fsSL -o checksums.sha256 "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/checksums.sha256"
-        grep "$fname" checksums.sha256 | shasum -a 256 --check -
+        if command -v sha256sum >/dev/null; then
+          grep "$fname" checksums.sha256 | sha256sum --check -
+        else
+          grep "$fname" checksums.sha256 | shasum -a 256 --check -
+        fi
         tar -xzf "$fname" mediamtx
-        sudo install -m 0755 mediamtx /usr/local/bin/mediamtx
+        mkdir -p .ci-tools
+        install -m 0755 mediamtx .ci-tools/mediamtx
+
+    - name: Install mediamtx to PATH
+      if: runner.os != 'Windows'
+      shell: bash
+      run: sudo install -m 0755 .ci-tools/mediamtx /usr/local/bin/mediamtx
 
     - name: Show version information
       if: runner.os != 'Windows'
