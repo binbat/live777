@@ -1,5 +1,5 @@
 name: Install mediamtx
-description: Install the mediamtx RTSP server for the interop matrix tests (skipped on Windows, where the RTSP suites are cfg-gated out). The download is cached across jobs.
+description: Install the mediamtx RTSP server for the interop matrix tests. The download is cached across jobs.
 inputs:
   version:
     description: mediamtx release tag to install
@@ -10,22 +10,24 @@ runs:
   steps:
     - name: Cache mediamtx
       id: cache
-      if: runner.os != 'Windows'
       uses: actions/cache@v5
       with:
-        path: .ci-tools/mediamtx
+        path: .ci-tools
         key: mediamtx-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
 
     - name: Download mediamtx (cache miss)
-      if: runner.os != 'Windows' && steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
         os=linux
+        ext=tar.gz
+        bin=mediamtx
         if [ "$RUNNER_OS" = "macOS" ]; then os=darwin; fi
+        if [ "$RUNNER_OS" = "Windows" ]; then os=windows; ext=zip; bin=mediamtx.exe; fi
         arch=amd64
         if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then arch=arm64; fi
-        fname="mediamtx_${{ inputs.version }}_${os}_${arch}.tar.gz"
+        fname="mediamtx_${{ inputs.version }}_${os}_${arch}.${ext}"
         curl -fsSL -o "$fname" "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/${fname}"
         curl -fsSL -o checksums.sha256 "https://github.com/bluenviron/mediamtx/releases/download/${{ inputs.version }}/checksums.sha256"
         if command -v sha256sum >/dev/null; then
@@ -33,16 +35,35 @@ runs:
         else
           grep "$fname" checksums.sha256 | shasum -a 256 --check -
         fi
-        tar -xzf "$fname" mediamtx
         mkdir -p .ci-tools
-        install -m 0755 mediamtx .ci-tools/mediamtx
+        if [ "$ext" = zip ]; then
+          # Git Bash tar is GNU tar and cannot unpack zip; PowerShell can.
+          powershell -NoProfile -Command "Expand-Archive -Force '$fname' '.ci-tools'"
+          chmod 0755 ".ci-tools/$bin"
+        else
+          tar -xzf "$fname" "$bin"
+          install -m 0755 "$bin" ".ci-tools/$bin"
+          rm "$bin"
+        fi
+        rm "$fname" checksums.sha256
 
-    - name: Install mediamtx to PATH
+    - name: Install mediamtx to PATH (Linux/macOS)
       if: runner.os != 'Windows'
       shell: bash
       run: sudo install -m 0755 .ci-tools/mediamtx /usr/local/bin/mediamtx
 
-    - name: Show version information
-      if: runner.os != 'Windows'
+    - name: Point the test suite at the binary (Windows)
+      if: runner.os == 'Windows'
       shell: bash
-      run: mediamtx --version
+      # No sudo on Windows runners: the test suite resolves the binary via
+      # MEDIAMTX_BIN before falling back to PATH.
+      run: echo "MEDIAMTX_BIN=$(cygpath -w "$PWD/.ci-tools/mediamtx.exe")" >> "$GITHUB_ENV"
+
+    - name: Show version information
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          "$(cygpath "$MEDIAMTX_BIN")" --version
+        else
+          mediamtx --version
+        fi

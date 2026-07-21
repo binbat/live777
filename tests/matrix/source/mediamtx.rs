@@ -25,7 +25,8 @@ fn mediamtx_binary() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MEDIAMTX_BIN") {
         return Some(PathBuf::from(path));
     }
-    let local = PathBuf::from("target/mediamtx");
+    // EXE_SUFFIX is ".exe" on Windows and "" elsewhere.
+    let local = PathBuf::from(format!("target/mediamtx{}", std::env::consts::EXE_SUFFIX));
     if local.exists() {
         return Some(local);
     }
