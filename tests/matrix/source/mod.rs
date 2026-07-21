@@ -19,6 +19,14 @@ use crate::profile::MediaProfile;
 #[async_trait::async_trait]
 pub trait SourceHandle: Send {
     async fn stop(self: Box<Self>);
+
+    /// Sources that publish through an internal async task (e.g. a livetwo
+    /// WHIP bridge) expose its join handle so the runner can fail fast with
+    /// the real error when the task dies before the publish session
+    /// connects, instead of timing out the readiness poll.
+    fn publish_task_mut(&mut self) -> Option<&mut tokio::task::JoinHandle<anyhow::Result<()>>> {
+        None
+    }
 }
 
 /// A source backed by a spawned child process (ffmpeg, gst-launch, ...).

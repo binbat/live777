@@ -845,11 +845,14 @@ async fn start_direct_published_stream<S>(
 where
     S: Source,
 {
-    let source_handle = source
+    let mut source_handle = source
         .start_direct(&whip_url)
         .expect("Failed to start direct WHIP source");
 
-    wait_for_publish_connected(&api_addr, None).await;
+    // Sources that bridge through an internal publish task (livetwo WHIP)
+    // expose it so a task that dies early fails fast with the real error
+    // instead of timing out this poll.
+    wait_for_publish_connected(&api_addr, source_handle.publish_task_mut()).await;
 
     // The publisher is already running inside the source handle; return a
     // no-op WHIP handle so callers can keep the same shape.

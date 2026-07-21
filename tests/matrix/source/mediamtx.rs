@@ -328,4 +328,8 @@ impl SourceHandle for MediamtxPullHandle {
             let _ = handle.await;
         }
     }
+
+    fn publish_task_mut(&mut self) -> Option<&mut tokio::task::JoinHandle<Result<()>>> {
+        self.whip_handle.as_mut()
+    }
 }

@@ -211,4 +211,8 @@ impl SourceHandle for GstRtspServerHandle {
             let _ = handle.await;
         }
     }
+
+    fn publish_task_mut(&mut self) -> Option<&mut tokio::task::JoinHandle<anyhow::Result<()>>> {
+        self.whip_handle.as_mut()
+    }
 }
