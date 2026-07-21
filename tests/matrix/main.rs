@@ -34,7 +34,7 @@ use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_push_mediamtx, run_rtsp_rou
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 use source::gst_rtsp_server::GstRtspServerSource;
 #[cfg(feature = "rtsp")]
-use source::mediamtx::MediamtxPullSource;
+use source::mediamtx::{self, MediamtxPullSource};
 #[cfg(feature = "rtsp")]
 use source::rtsp_ffmpeg::RtspFfmpegSource;
 #[cfg(feature = "rsmpeg")]
@@ -426,7 +426,7 @@ async fn whep_mediamtx_pull_matrix_test<P>(
 ) where
     P: Player,
 {
-    if !source::mediamtx::available() {
+    if !mediamtx::available() {
         tracing::warn!("skipping: mediamtx not available on this host");
         return;
     }
@@ -457,7 +457,7 @@ async fn whep_mediamtx_pull_matrix_test<P>(
 )]
 #[tokio::test]
 async fn rtsp_push_mediamtx_matrix_test(profile: MediaProfile, transport: RtspTransport) {
-    if !source::mediamtx::available() {
+    if !mediamtx::available() {
         tracing::warn!("skipping: mediamtx not available on this host");
         return;
     }
