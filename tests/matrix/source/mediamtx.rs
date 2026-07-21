@@ -267,7 +267,10 @@ async fn wait_path_ready(
     path: &str,
     mut handle: Option<&mut tokio::task::JoinHandle<Result<()>>>,
 ) {
-    for attempt in 0..100 {
+    // 300 × 100 ms = 30 s, matching wait_for_publish_connected: 10 s was
+    // not enough for ffmpeg to finish ANNOUNCE/RECORD when the host is
+    // loaded (e.g. the whole matrix running in parallel).
+    for attempt in 0..300 {
         if let Some(h) = handle.as_mut()
             && h.is_finished()
         {
@@ -286,7 +289,7 @@ async fn wait_path_ready(
             return;
         }
 
-        if attempt == 99 {
+        if attempt == 299 {
             panic!("mediamtx path '{path}' did not become ready");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
