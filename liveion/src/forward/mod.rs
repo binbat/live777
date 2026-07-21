@@ -2,7 +2,7 @@ use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify, broadcast};
+use tokio::sync::{Mutex, Notify, broadcast, watch};
 #[cfg(any(feature = "source", feature = "cascade"))]
 use tracing::error;
 #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
@@ -34,7 +34,7 @@ use self::codec_compat::{fmtp_param_case_preserving, is_h265_codec, remove_fmtp_
 use self::media::MediaInfo;
 #[cfg(feature = "cascade")]
 use self::message::CascadeInfo;
-use self::message::ForwardEvent;
+use crate::event::Event;
 
 #[cfg(any(
     feature = "source-rtsp",
@@ -62,8 +62,6 @@ mod subscribe;
 #[cfg(not(feature = "source"))]
 mod track;
 
-use md5::{Digest, Md5};
-
 const ANSWER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const ANSWER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(25);
@@ -73,13 +71,6 @@ pub mod bridge;
 
 #[cfg(feature = "source")]
 pub mod track;
-
-pub(crate) fn get_peer_id(peer: &Arc<dyn PeerConnection>) -> String {
-    let mut hasher = Md5::new();
-    hasher.update(format!("{:?}", Arc::as_ptr(peer)));
-    let digest = hasher.finalize();
-    format!("{digest:x}")
-}
 
 #[derive(Clone)]
 pub struct PeerForward {
@@ -141,6 +132,7 @@ impl PeerForward {
         ice_udp_addrs: Vec<SocketAddr>,
         #[cfg(feature = "source")] channel: Option<ChannelConfig>,
         strategy: api::strategy::Strategy,
+        lifecycle_sender: broadcast::Sender<Event>,
     ) -> Self {
         PeerForward {
             stream: stream.to_string(),
@@ -152,16 +144,13 @@ impl PeerForward {
                 #[cfg(feature = "source")]
                 channel,
                 strategy,
+                lifecycle_sender,
             )),
         }
     }
     #[cfg(feature = "source")]
     pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
         self.internal.try_init_udp_channel().await
-    }
-
-    pub fn subscribe_event(&self) -> broadcast::Receiver<ForwardEvent> {
-        self.internal.subscribe_event()
     }
 
     pub async fn add_ice_candidate(&self, session: String, ice_candidates: String) -> Result<()> {
@@ -297,22 +286,30 @@ impl PeerForward {
         let twcc_ext_id = parse_twcc_ext_id_from_sdp(&offer.sdp);
         self.internal.set_twcc_ext_id(twcc_ext_id);
 
-        let (peer, gather_complete, connection_state, connection_state_rx) =
+        let (peer, gather_complete, connection_state_rx) =
             self.new_publish_peer(media_info).await?;
 
-        let description = peer_complete(offer, peer.clone(), gather_complete).await?;
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let description = peer_complete(offer, peer.clone(), gather_complete).await?;
 
-        self.internal
-            .apply_publish_generation(&generation_decision, media_profile)
-            .await?;
+            self.internal
+                .apply_publish_generation(&generation_decision, media_profile)
+                .await?;
 
-        self.internal
-            .set_publish(peer.clone(), None, connection_state, connection_state_rx)
-            .await?;
+            let session = self
+                .internal
+                .set_publish(peer.clone(), None, connection_state_rx)
+                .await?;
 
-        let session = get_peer_id(&peer);
-
-        Ok((description, session))
+            Ok((description, session))
+        }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     #[cfg(feature = "cascade")]
@@ -343,49 +340,53 @@ impl PeerForward {
             .decide_publish_generation(&media_profile)
             .await;
 
-        let (peer, gather_complete, connection_state, connection_state_rx) =
+        let (peer, gather_complete, connection_state_rx) =
             self.new_publish_peer(media_info).await?;
 
-        let offer = peer.create_offer(None).await?;
-        peer.set_local_description(offer).await?;
-        gather_complete.notified().await;
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let offer = peer.create_offer(None).await?;
+            peer.set_local_description(offer).await?;
+            gather_complete.notified().await;
 
-        let description = peer
-            .pending_local_description()
-            .await
-            .ok_or(AppError::throw("pending_local_description error"))?;
+            let description = peer
+                .pending_local_description()
+                .await
+                .ok_or(AppError::throw("pending_local_description error"))?;
 
-        let mut client = Client::new(
-            src.clone(),
-            Client::get_authorization_header_map(token.clone()),
-        );
+            let mut client = Client::new(
+                src.clone(),
+                Client::get_authorization_header_map(token.clone()),
+            );
 
-        match client.wish(description.sdp.clone()).await {
-            Ok((target_sdp, _)) => {
-                let _ = peer.set_remote_description(target_sdp).await;
-                self.internal
-                    .apply_publish_generation(&generation_decision, media_profile)
-                    .await?;
-                self.internal
-                    .set_publish(
-                        peer.clone(),
-                        Some(CascadeInfo {
-                            source_url: Some(src),
-                            target_url: None,
-                            token,
-                            session_url: client.session_url,
-                        }),
-                        connection_state,
-                        connection_state_rx,
-                    )
-                    .await?;
-                Ok(())
-            }
-            Err(err) => {
-                peer.close().await?;
-                Err(AppError::InternalServerError(err))
-            }
+            let (target_sdp, _) = client
+                .wish(description.sdp.clone())
+                .await
+                .map_err(AppError::InternalServerError)?;
+            let _ = peer.set_remote_description(target_sdp).await;
+            self.internal
+                .apply_publish_generation(&generation_decision, media_profile)
+                .await?;
+            self.internal
+                .set_publish(
+                    peer.clone(),
+                    Some(CascadeInfo {
+                        source_url: Some(src),
+                        target_url: None,
+                        token,
+                        session_url: client.session_url,
+                    }),
+                    connection_state_rx,
+                )
+                .await?;
+            Ok(())
         }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     async fn new_publish_peer(
@@ -394,8 +395,7 @@ impl PeerForward {
     ) -> Result<(
         Arc<dyn PeerConnection>,
         Arc<Notify>,
-        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
-        tokio::sync::watch::Receiver<RTCPeerConnectionState>,
+        watch::Receiver<RTCPeerConnectionState>,
     )> {
         self.internal
             .new_publish_peer(media_info, Arc::downgrade(&self.internal))
@@ -583,28 +583,39 @@ impl PeerForward {
     ) -> Result<(RTCSessionDescription, String)> {
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
-        let (peer, gather_complete, connection_state) =
+        let (peer, gather_complete, connection_state_rx, session_id) =
             self.new_subscription_peer(media_info.clone()).await?;
 
-        let (sdp, session) = (
-            peer_complete(offer, peer.clone(), gather_complete).await?,
-            get_peer_id(&peer),
-        );
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let sdp = peer_complete(offer, peer.clone(), gather_complete).await?;
 
-        // Inject the publisher's H264/H265 codec parameters into the answer
-        // so browsers can initialize their decoders without waiting for
-        // in-band parameter sets.  Only *replaces* sprop keys that are
-        // already present in the answer — never adds new keys, which would
-        // cause codec mismatch for non-browser clients (livetwo, rsmpeg).
-        let mut sdp = sdp;
-        sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
+            // Inject the publisher's H264/H265 codec parameters into the answer
+            // so browsers can initialize their decoders without waiting for
+            // in-band parameter sets.  Only *replaces* sprop keys that are
+            // already present in the answer — never adds new keys, which would
+            // cause codec mismatch for non-browser clients (livetwo, rsmpeg).
+            let mut sdp = sdp;
+            sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
-        let _ = self
-            .internal
-            .add_subscribe(peer.clone(), None, media_info, connection_state)
-            .await;
-
-        Ok((sdp, session))
+            let session = self
+                .internal
+                .add_subscribe(
+                    peer.clone(),
+                    None,
+                    media_info,
+                    connection_state_rx,
+                    session_id,
+                )
+                .await?;
+            Ok((sdp, session))
+        }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     #[cfg(feature = "cascade")]
@@ -616,47 +627,52 @@ impl PeerForward {
             has_data_channel: false,
         };
 
-        let (peer, gather_complete, connection_state) =
+        let (peer, gather_complete, connection_state_rx, session_id) =
             self.new_subscription_peer(media_info.clone()).await?;
 
-        let offer: RTCSessionDescription = peer.create_offer(None).await?;
-        peer.set_local_description(offer).await?;
-        gather_complete.notified().await;
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let offer: RTCSessionDescription = peer.create_offer(None).await?;
+            peer.set_local_description(offer).await?;
+            gather_complete.notified().await;
 
-        let description = peer
-            .pending_local_description()
-            .await
-            .ok_or(AppError::throw("pending_local_description error"))?;
+            let description = peer
+                .pending_local_description()
+                .await
+                .ok_or(AppError::throw("pending_local_description error"))?;
 
-        let mut client = Client::new(
-            dst.clone(),
-            Client::get_authorization_header_map(token.clone()),
-        );
+            let mut client = Client::new(
+                dst.clone(),
+                Client::get_authorization_header_map(token.clone()),
+            );
 
-        match client.wish(description.sdp.clone()).await {
-            Ok((target_sdp, _)) => {
-                self.internal
-                    .add_subscribe(
-                        peer.clone(),
-                        Some(CascadeInfo {
-                            source_url: None,
-                            target_url: Some(dst.clone()),
-                            token: token.clone(),
-                            session_url: client.session_url,
-                        }),
-                        media_info,
-                        connection_state,
-                    )
-                    .await?;
-                let _ = peer.set_remote_description(target_sdp).await;
-                Ok(())
-            }
-            Err(err) => {
-                peer.close().await?;
+            let (target_sdp, _) = client.wish(description.sdp.clone()).await.map_err(|err| {
                 error!("cascade push dst: {}, err: {}", dst, err);
-                Err(AppError::InternalServerError(err))
-            }
+                AppError::InternalServerError(err)
+            })?;
+            self.internal
+                .add_subscribe(
+                    peer.clone(),
+                    Some(CascadeInfo {
+                        source_url: None,
+                        target_url: Some(dst.clone()),
+                        token: token.clone(),
+                        session_url: client.session_url,
+                    }),
+                    media_info,
+                    connection_state_rx,
+                    session_id,
+                )
+                .await?;
+            let _ = peer.set_remote_description(target_sdp).await;
+            Ok(())
         }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     async fn new_subscription_peer(
@@ -665,7 +681,8 @@ impl PeerForward {
     ) -> Result<(
         Arc<dyn PeerConnection>,
         Arc<Notify>,
-        Arc<std::sync::RwLock<RTCPeerConnectionState>>,
+        watch::Receiver<RTCPeerConnectionState>,
+        String,
     )> {
         self.internal
             .new_subscription_peer(media_info, Arc::downgrade(&self.internal))
@@ -1134,6 +1151,7 @@ a=end-of-candidates";
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
         );
         let (answer, session) = forward.set_publish(offer).await?;
 
@@ -1164,6 +1182,102 @@ a=end-of-candidates";
         );
 
         forward.remove_peer(session).await?;
+        offer_peer.close().await?;
+        Ok(())
+    }
+
+    /// The lifecycle bus must carry PublishUp and PublishDown with the session
+    /// ID returned by the API, and a session-API delete must surface as
+    /// `SessionDownReason::ApiDeleted`.
+    #[tokio::test]
+    async fn publish_lifecycle_emits_typed_events() -> crate::result::Result<()> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+
+        let offer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(media_engine)
+                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        let media_track = MediaStreamTrack::new(
+            "lifecycle-test".to_owned(),
+            "video".to_owned(),
+            "video".to_owned(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(1),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                ..Default::default()
+            }],
+        );
+        offer_peer
+            .add_track(std::sync::Arc::new(TrackLocalStaticRTP::new(media_track)))
+            .await?;
+
+        let offer = offer_peer.create_offer(None).await?;
+        let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(16);
+        let forward = PeerForward::new(
+            "lifecycle-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
+            event_tx,
+        );
+        let (_answer, session) = forward.set_publish(offer).await?;
+
+        // Connection-state pings may interleave; skip until the typed
+        // PublishUp for this session shows up.
+        let up = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(crate::event::Event::PublishUp { stream, session }) => {
+                        break (stream, session);
+                    }
+                    Ok(_) => continue,
+                    Err(err) => panic!("event bus error before PublishUp: {err}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for PublishUp");
+        assert_eq!(up, ("lifecycle-test".to_owned(), session.clone()));
+
+        forward.remove_peer(session.clone()).await?;
+
+        let down = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(crate::event::Event::PublishDown {
+                        stream,
+                        session,
+                        reason,
+                    }) => break (stream, session, reason),
+                    Ok(_) => continue,
+                    Err(err) => panic!("event bus error before PublishDown: {err}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for PublishDown");
+        assert_eq!(down.0, "lifecycle-test");
+        assert_eq!(down.1, session);
+        assert_eq!(down.2, crate::event::SessionDownReason::ApiDeleted);
+
         offer_peer.close().await?;
         Ok(())
     }
@@ -1262,6 +1376,7 @@ a=end-of-candidates";
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
         );
 
         assert!(!forward.publish_setup_in_progress());
@@ -1279,6 +1394,7 @@ a=end-of-candidates";
             vec![],
             None,
             api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
         );
         forward
             .add_virtual_track(

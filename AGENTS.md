@@ -202,13 +202,17 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
   track, bridge, media, RTCP).
 - `liveion/src/stream/` — stream manager + source adapters.
+- `liveion/src/event.rs` — typed stream-lifecycle events (`stream_up` …
+  `subscribe_down` with reasons) on a single manager-wide broadcast bus.
+  Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
+  loop (and re-snapshotting where applicable).
 - `liveion/src/recorder/` — recording pipeline (fmp4, segmenter, uploader,
   codec-specific writers).
 - `liveman/src/route/` — proxy/cascade/admin routes.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.
 - `libs/api/src/` — shared REST/WebRTC API types (`request`, `response`,
-  `webrtc`, `recorder`, `event`, `path`, `strategy`).
+  `webrtc`, `recorder`, `path`, `strategy`).
 
 ## Development Conventions
 

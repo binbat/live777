@@ -43,8 +43,3 @@ pub struct CascadeInfo {
     pub token: Option<String>,
     pub session_url: Option<String>,
 }
-
-#[derive(Clone, Debug)]
-pub struct ForwardEvent {
-    pub stream_id: String,
-}
