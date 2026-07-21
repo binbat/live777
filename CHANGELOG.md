@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed `liveion` event consumers (recorder, net4mqtt notifier, SSE handler) silently exiting their receive loops on broadcast-channel lag bursts, which could permanently stop recorder auto start/stop and state notifications.
 - Fixed WHEP subscribe session-registration errors being swallowed, which could return a successful answer to the client without a working session.
-- `liveion` now logs a warning when a peer connection enters the `Disconnected` state (previously a lifecycle blind spot until it escalated to `Failed`).
+- `liveion` now logs a warning when a peer connection enters the `Disconnected` state (previously a lifecycle blind spot until it escalated to `Failed`), and closes the peer if it is still disconnected after 5s so sessions are torn down instead of lingering as zombies. Subscribe-side RTP forwarding now waits out a transient `Disconnected` state instead of permanently stopping on the first write error during it.
+- Fixed `liveion` leaking the peer connection when WHIP/cascade publish or subscribe setup failed mid-handshake; the peer is now closed on every pre-registration failure path.
 - Fixed a channel-sender leak in `net4mqtt` when `XDataConfig.receiver` was not provided.
 - Changed MQTT subscribe/publish calls in `net4mqtt` to propagate errors instead of panicking on connection failures.
 - Fixed `liveman` storage update logic so that stale stream/session mappings for a node are cleared before applying a new snapshot.

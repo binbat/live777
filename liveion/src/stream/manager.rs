@@ -48,6 +48,15 @@ fn emit_stream_down(
     });
 }
 
+/// Mirror of [`emit_stream_down`]: the metrics increment and the `StreamUp`
+/// lifecycle event always fire as a pair.
+fn emit_stream_up(event_sender: &broadcast::Sender<Event>, stream: &str) {
+    metrics::STREAM.inc();
+    let _ = event_sender.send(Event::StreamUp {
+        stream: stream.to_string(),
+    });
+}
+
 #[cfg(feature = "source")]
 use crate::stream::source::*;
 
@@ -362,10 +371,7 @@ impl Manager {
 
     fn register_stream_created(&self, stream: &str) {
         info!("add stream : {}", stream);
-        metrics::STREAM.inc();
-        let _ = self.event_sender.send(Event::StreamUp {
-            stream: stream.to_string(),
-        });
+        emit_stream_up(&self.event_sender, stream);
     }
 
     async fn init_stream_forward(&self, stream: &str, forward: &PeerForward) {

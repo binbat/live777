@@ -289,18 +289,27 @@ impl PeerForward {
         let (peer, gather_complete, connection_state_rx) =
             self.new_publish_peer(media_info).await?;
 
-        let description = peer_complete(offer, peer.clone(), gather_complete).await?;
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let description = peer_complete(offer, peer.clone(), gather_complete).await?;
 
-        self.internal
-            .apply_publish_generation(&generation_decision, media_profile)
-            .await?;
+            self.internal
+                .apply_publish_generation(&generation_decision, media_profile)
+                .await?;
 
-        let session = self
-            .internal
-            .set_publish(peer.clone(), None, connection_state_rx)
-            .await?;
+            let session = self
+                .internal
+                .set_publish(peer.clone(), None, connection_state_rx)
+                .await?;
 
-        Ok((description, session))
+            Ok((description, session))
+        }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     #[cfg(feature = "cascade")]
@@ -334,45 +343,50 @@ impl PeerForward {
         let (peer, gather_complete, connection_state_rx) =
             self.new_publish_peer(media_info).await?;
 
-        let offer = peer.create_offer(None).await?;
-        peer.set_local_description(offer).await?;
-        gather_complete.notified().await;
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let offer = peer.create_offer(None).await?;
+            peer.set_local_description(offer).await?;
+            gather_complete.notified().await;
 
-        let description = peer
-            .pending_local_description()
-            .await
-            .ok_or(AppError::throw("pending_local_description error"))?;
+            let description = peer
+                .pending_local_description()
+                .await
+                .ok_or(AppError::throw("pending_local_description error"))?;
 
-        let mut client = Client::new(
-            src.clone(),
-            Client::get_authorization_header_map(token.clone()),
-        );
+            let mut client = Client::new(
+                src.clone(),
+                Client::get_authorization_header_map(token.clone()),
+            );
 
-        match client.wish(description.sdp.clone()).await {
-            Ok((target_sdp, _)) => {
-                let _ = peer.set_remote_description(target_sdp).await;
-                self.internal
-                    .apply_publish_generation(&generation_decision, media_profile)
-                    .await?;
-                self.internal
-                    .set_publish(
-                        peer.clone(),
-                        Some(CascadeInfo {
-                            source_url: Some(src),
-                            target_url: None,
-                            token,
-                            session_url: client.session_url,
-                        }),
-                        connection_state_rx,
-                    )
-                    .await?;
-                Ok(())
-            }
-            Err(err) => {
-                peer.close().await?;
-                Err(AppError::InternalServerError(err))
-            }
+            let (target_sdp, _) = client
+                .wish(description.sdp.clone())
+                .await
+                .map_err(AppError::InternalServerError)?;
+            let _ = peer.set_remote_description(target_sdp).await;
+            self.internal
+                .apply_publish_generation(&generation_decision, media_profile)
+                .await?;
+            self.internal
+                .set_publish(
+                    peer.clone(),
+                    Some(CascadeInfo {
+                        source_url: Some(src),
+                        target_url: None,
+                        token,
+                        session_url: client.session_url,
+                    }),
+                    connection_state_rx,
+                )
+                .await?;
+            Ok(())
         }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     async fn new_publish_peer(
@@ -569,34 +583,39 @@ impl PeerForward {
     ) -> Result<(RTCSessionDescription, String)> {
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
-        let (peer, gather_complete, connection_state_rx) =
+        let (peer, gather_complete, connection_state_rx, session_id) =
             self.new_subscription_peer(media_info.clone()).await?;
 
-        let sdp = peer_complete(offer, peer.clone(), gather_complete).await?;
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let sdp = peer_complete(offer, peer.clone(), gather_complete).await?;
 
-        // Inject the publisher's H264/H265 codec parameters into the answer
-        // so browsers can initialize their decoders without waiting for
-        // in-band parameter sets.  Only *replaces* sprop keys that are
-        // already present in the answer — never adds new keys, which would
-        // cause codec mismatch for non-browser clients (livetwo, rsmpeg).
-        let mut sdp = sdp;
-        sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
+            // Inject the publisher's H264/H265 codec parameters into the answer
+            // so browsers can initialize their decoders without waiting for
+            // in-band parameter sets.  Only *replaces* sprop keys that are
+            // already present in the answer — never adds new keys, which would
+            // cause codec mismatch for non-browser clients (livetwo, rsmpeg).
+            let mut sdp = sdp;
+            sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
-        let session = match self
-            .internal
-            .add_subscribe(peer.clone(), None, media_info, connection_state_rx)
-            .await
-        {
-            Ok(session) => session,
-            Err(err) => {
-                // Now that registration errors are propagated (previously
-                // swallowed), don't leak the peer on the failure path.
-                let _ = peer.close().await;
-                return Err(err);
-            }
-        };
-
-        Ok((sdp, session))
+            let session = self
+                .internal
+                .add_subscribe(
+                    peer.clone(),
+                    None,
+                    media_info,
+                    connection_state_rx,
+                    session_id,
+                )
+                .await?;
+            Ok((sdp, session))
+        }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     #[cfg(feature = "cascade")]
@@ -608,47 +627,52 @@ impl PeerForward {
             has_data_channel: false,
         };
 
-        let (peer, gather_complete, connection_state_rx) =
+        let (peer, gather_complete, connection_state_rx, session_id) =
             self.new_subscription_peer(media_info.clone()).await?;
 
-        let offer: RTCSessionDescription = peer.create_offer(None).await?;
-        peer.set_local_description(offer).await?;
-        gather_complete.notified().await;
+        // From here on the peer is not yet registered as a session, so any
+        // failure must close it explicitly — nothing else will clean it up.
+        let result = async {
+            let offer: RTCSessionDescription = peer.create_offer(None).await?;
+            peer.set_local_description(offer).await?;
+            gather_complete.notified().await;
 
-        let description = peer
-            .pending_local_description()
-            .await
-            .ok_or(AppError::throw("pending_local_description error"))?;
+            let description = peer
+                .pending_local_description()
+                .await
+                .ok_or(AppError::throw("pending_local_description error"))?;
 
-        let mut client = Client::new(
-            dst.clone(),
-            Client::get_authorization_header_map(token.clone()),
-        );
+            let mut client = Client::new(
+                dst.clone(),
+                Client::get_authorization_header_map(token.clone()),
+            );
 
-        match client.wish(description.sdp.clone()).await {
-            Ok((target_sdp, _)) => {
-                self.internal
-                    .add_subscribe(
-                        peer.clone(),
-                        Some(CascadeInfo {
-                            source_url: None,
-                            target_url: Some(dst.clone()),
-                            token: token.clone(),
-                            session_url: client.session_url,
-                        }),
-                        media_info,
-                        connection_state_rx,
-                    )
-                    .await?;
-                let _ = peer.set_remote_description(target_sdp).await;
-                Ok(())
-            }
-            Err(err) => {
-                peer.close().await?;
+            let (target_sdp, _) = client.wish(description.sdp.clone()).await.map_err(|err| {
                 error!("cascade push dst: {}, err: {}", dst, err);
-                Err(AppError::InternalServerError(err))
-            }
+                AppError::InternalServerError(err)
+            })?;
+            self.internal
+                .add_subscribe(
+                    peer.clone(),
+                    Some(CascadeInfo {
+                        source_url: None,
+                        target_url: Some(dst.clone()),
+                        token: token.clone(),
+                        session_url: client.session_url,
+                    }),
+                    media_info,
+                    connection_state_rx,
+                    session_id,
+                )
+                .await?;
+            let _ = peer.set_remote_description(target_sdp).await;
+            Ok(())
         }
+        .await;
+        if result.is_err() {
+            let _ = peer.close().await;
+        }
+        result
     }
 
     async fn new_subscription_peer(
@@ -658,6 +682,7 @@ impl PeerForward {
         Arc<dyn PeerConnection>,
         Arc<Notify>,
         watch::Receiver<RTCPeerConnectionState>,
+        String,
     )> {
         self.internal
             .new_subscription_peer(media_info, Arc::downgrade(&self.internal))

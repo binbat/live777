@@ -68,7 +68,7 @@ pub(crate) struct SubscribeRTCPeerConnection {
 impl SubscribeRTCPeerConnection {
     pub(crate) async fn new(
         cascade: Option<CascadeInfo>,
-        stream: String,
+        (stream, id): (String, String),
         (peer, media_info): (Arc<dyn PeerConnection>, MediaInfo),
         publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
         (publish_tracks, publish_track_change): (
@@ -79,7 +79,6 @@ impl SubscribeRTCPeerConnection {
         runtime: SubscribeRuntime,
     ) -> Self {
         let select_layer_sender = new_broadcast_channel!(1);
-        let id = uuid::Uuid::new_v4().to_string();
         let connection_state_rx = runtime.connection_state_rx;
         let track_binding_publish_rid = Arc::new(RwLock::new(HashMap::new()));
         for (sender, kind) in [
@@ -425,12 +424,14 @@ impl SubscribeRTCPeerConnection {
         (selected_rtp_codec, Some(selected.payload_type))
     }
 
+    /// States in which forwarding can never resume. `Disconnected` is
+    /// deliberately excluded: ICE may recover from it, so the write loop
+    /// waits it out instead (see `spawn_disconnected_watchdog` for the
+    /// bounded-escalation path).
     fn is_terminal_connection_state(state: RTCPeerConnectionState) -> bool {
         matches!(
             state,
-            RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed
-                | RTCPeerConnectionState::Disconnected
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
         )
     }
 
@@ -669,6 +670,25 @@ impl SubscribeRTCPeerConnection {
                                                 stream, id, kind, state, err
                                             );
                                             break;
+                                        }
+                                        if state == RTCPeerConnectionState::Disconnected {
+                                            // ICE may recover on its own, so
+                                            // wait the state out without
+                                            // consuming the bind-retry
+                                            // budget — killing the loop here
+                                            // would leave a zombie session if
+                                            // the peer later reconnects. A
+                                            // peer that never recovers is
+                                            // closed by the connection-state
+                                            // watchdog, which ends this loop
+                                            // via the terminal branch above.
+                                            transient_write_error_since = None;
+                                            debug!(
+                                                "[{}] [{}] {} track write paused while peer is disconnected: {}",
+                                                stream, id, kind, err
+                                            );
+                                            sleep(TRACK_BIND_RETRY_DELAY).await;
+                                            continue;
                                         }
                                         let now = Instant::now();
                                         let started = transient_write_error_since.get_or_insert(now);
@@ -967,7 +987,8 @@ mod tests {
         assert!(SubscribeRTCPeerConnection::is_terminal_connection_state(
             RTCPeerConnectionState::Closed
         ));
-        assert!(SubscribeRTCPeerConnection::is_terminal_connection_state(
+        // Disconnected is recoverable — the write loop waits it out.
+        assert!(!SubscribeRTCPeerConnection::is_terminal_connection_state(
             RTCPeerConnectionState::Disconnected
         ));
         assert!(!SubscribeRTCPeerConnection::is_terminal_connection_state(

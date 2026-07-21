@@ -78,7 +78,23 @@ impl PublishRTCPeerConnection {
         connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     ) {
         let mut connected = false;
-        while let (Ok((rtcp_message, media_ssrc)), Some(pc)) = (recv.recv().await, peer.upgrade()) {
+        loop {
+            let (rtcp_message, media_ssrc) = match recv.recv().await {
+                Ok(msg) => msg,
+                // RTCP feedback is periodic — a dropped burst is recoverable,
+                // a silently dead sender is not.
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    debug!(
+                        "[{}] [{}] RTCP receiver lagged, dropped {} messages",
+                        path, id, n
+                    );
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
+            let Some(pc) = peer.upgrade() else {
+                break;
+            };
             if !connected {
                 if let Err(err) = wait_for_peer_connected(
                     connection_state_rx.clone(),
