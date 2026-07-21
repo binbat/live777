@@ -66,7 +66,7 @@ pub async fn connect_webrtc_to_output(
     audio_recv: Receiver<Vec<u8>>,
     mut output_target: OutputTarget,
     peer: Arc<dyn PeerConnection>,
-) {
+) -> Result<()> {
     if let Some((tx, rx)) = output_target.take_channels() {
         debug!("Setting up TCP interleaved transport");
         let handler = TcpHandler::new(output_target.media_info());
@@ -83,7 +83,7 @@ pub async fn connect_webrtc_to_output(
                 output_target.media_info(),
                 output_target.target_host(),
             )
-            .await;
+            .await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         handler
@@ -105,4 +105,6 @@ pub async fn connect_webrtc_to_output(
             )
             .await;
     }
+
+    Ok(())
 }

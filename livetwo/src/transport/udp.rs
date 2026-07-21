@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
@@ -56,7 +56,7 @@ impl UdpHandler {
         audio_recv: Receiver<Vec<u8>>,
         media_info: &rtsp::MediaInfo,
         target_host: &str,
-    ) {
+    ) -> Result<()> {
         if let Some(rtsp::TransportInfo::Udp {
             rtp_send_port: Some(target_port),
             rtp_recv_port: local_port,
@@ -67,6 +67,11 @@ impl UdpHandler {
             let target_addr = resolve_target_address(server_addr, target_host);
             let listen_host = utils::host::derive_listen_host(&target_addr);
 
+            // Bind upfront so a bind failure (e.g. the SETUP-announced
+            // client port was grabbed by someone else) is propagated instead
+            // of silently leaving the session with zero media.
+            let socket = Self::bind_sender_socket(&listen_host, *local_port, "video").await?;
+
             info!(
                 "Starting video RTP sender to {}:{}",
                 target_addr, target_port
@@ -74,8 +79,7 @@ impl UdpHandler {
 
             tokio::spawn(Self::rtp_sender_task(
                 video_recv,
-                listen_host,
-                *local_port,
+                socket,
                 target_addr,
                 *target_port,
                 "video",
@@ -94,6 +98,8 @@ impl UdpHandler {
             let target_addr = resolve_target_address(server_addr, target_host);
             let listen_host = utils::host::derive_listen_host(&target_addr);
 
+            let socket = Self::bind_sender_socket(&listen_host, *local_port, "audio").await?;
+
             info!(
                 "Starting audio RTP sender to {}:{}",
                 target_addr, target_port
@@ -101,8 +107,7 @@ impl UdpHandler {
 
             tokio::spawn(Self::rtp_sender_task(
                 audio_recv,
-                listen_host,
-                *local_port,
+                socket,
                 target_addr,
                 *target_port,
                 "audio",
@@ -110,6 +115,28 @@ impl UdpHandler {
         } else {
             warn!("No audio RTP send port configured");
         }
+
+        Ok(())
+    }
+
+    /// Bind the sender socket to the port announced to the server via SETUP
+    /// client_port (fall back to ephemeral): strict servers like mediamtx
+    /// drop RTP packets whose source port differs from the announced one.
+    async fn bind_sender_socket(
+        listen_host: &str,
+        local_port: Option<u16>,
+        media_type: &'static str,
+    ) -> Result<UdpSocket> {
+        let bind_addr = utils::format_bind_addr(listen_host, local_port.unwrap_or(0));
+        let socket = UdpSocket::bind(&bind_addr)
+            .await
+            .with_context(|| format!("Failed to bind {media_type} RTP socket to {bind_addr}"))?;
+        info!(
+            "{} RTP sender bound to {} (local)",
+            media_type,
+            socket.local_addr()?
+        );
+        Ok(socket)
     }
 
     pub async fn spawn_webrtc_rtcp_to_output(
@@ -222,32 +249,11 @@ impl UdpHandler {
 
     async fn rtp_sender_task(
         mut receiver: Receiver<Vec<u8>>,
-        listen_host: String,
-        local_port: Option<u16>,
+        socket: UdpSocket,
         target_host: String,
         target_port: u16,
         media_type: &'static str,
     ) {
-        // Bind the port announced to the server via SETUP client_port (fall
-        // back to ephemeral): strict servers like mediamtx drop RTP packets
-        // whose source port differs from the announced one.
-        let bind_addr = utils::format_bind_addr(&listen_host, local_port.unwrap_or(0));
-
-        let socket = match UdpSocket::bind(&bind_addr).await {
-            Ok(s) => {
-                info!(
-                    "{} RTP sender bound to {} (local)",
-                    media_type,
-                    s.local_addr().unwrap()
-                );
-                s
-            }
-            Err(e) => {
-                error!("Failed to bind {} RTP socket: {}", media_type, e);
-                return;
-            }
-        };
-
         let target_addr = utils::format_bind_addr(&target_host, target_port);
         info!(
             "{} RTP sender ready to send to {} (remote)",
