@@ -404,7 +404,12 @@ where
 /// client pulls from mediamtx and publishes via WHIP, played back by the
 /// livetwo WHEP player. Covers whipinto's RTSP client against mediamtx's
 /// SDP dialect.
-#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+///
+/// Compiled everywhere so Windows hosts can run it locally, but skipped at
+/// runtime on Windows CI: GitHub-hosted Windows runners encode video at
+/// ~0.03x realtime, so video cases time out downstream (the same flake
+/// class as a390dc7).
+#[cfg(feature = "rtsp")]
 #[test_matrix(
     [
         MediamtxPullSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
@@ -426,6 +431,10 @@ async fn whep_mediamtx_pull_matrix_test<P>(
 ) where
     P: Player,
 {
+    if mediamtx::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
     if !mediamtx::available() {
         tracing::warn!("skipping: mediamtx not available on this host");
         return;
@@ -442,7 +451,9 @@ async fn whep_mediamtx_pull_matrix_test<P>(
 /// mediamtx push interop: whepfrom bridges WHEP back to RTSP by pushing
 /// into mediamtx; ffprobe validates by pulling from mediamtx. Covers
 /// whepfrom's RTSP ANNOUNCE/RECORD against a third-party server.
-#[cfg(all(feature = "rtsp", not(target_os = "windows")))]
+///
+/// Runtime-skipped on Windows CI: see whep_mediamtx_pull_matrix_test.
+#[cfg(feature = "rtsp")]
 #[test_matrix(
     [
         MediaProfile::video_only(VideoCodec::Vp8),
@@ -457,6 +468,10 @@ async fn whep_mediamtx_pull_matrix_test<P>(
 )]
 #[tokio::test]
 async fn rtsp_push_mediamtx_matrix_test(profile: MediaProfile, transport: RtspTransport) {
+    if mediamtx::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
     if !mediamtx::available() {
         tracing::warn!("skipping: mediamtx not available on this host");
         return;

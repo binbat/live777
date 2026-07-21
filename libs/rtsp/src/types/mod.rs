@@ -261,9 +261,17 @@ fn hash_parts<const N: usize>(parts: [&[u8]; N]) -> Option<u64> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransportInfo {
     Udp {
+        /// Port the other side receives RTP on (server port for a client,
+        /// client port for a server).
         rtp_send_port: Option<u16>,
+        /// Local RTP port. For a puller or a server this is the port RTP is
+        /// received on. For a pushing client it instead carries the local
+        /// port announced via SETUP client_port, which the sender must bind:
+        /// strict servers (e.g. mediamtx) drop RTP from unannounced ports.
         rtp_recv_port: Option<u16>,
+        /// Port the other side receives RTCP on.
         rtcp_send_port: Option<u16>,
+        /// Local port RTCP is received on.
         rtcp_recv_port: Option<u16>,
         server_addr: Option<SocketAddr>,
     },

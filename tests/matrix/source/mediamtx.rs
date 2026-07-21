@@ -25,7 +25,8 @@ fn mediamtx_binary() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MEDIAMTX_BIN") {
         return Some(PathBuf::from(path));
     }
-    let local = PathBuf::from("target/mediamtx");
+    // EXE_SUFFIX is ".exe" on Windows and "" elsewhere.
+    let local = PathBuf::from(format!("target/mediamtx{}", std::env::consts::EXE_SUFFIX));
     if local.exists() {
         return Some(local);
     }
@@ -41,6 +42,16 @@ fn mediamtx_binary() -> Option<PathBuf> {
 /// cases skip themselves when this returns false.
 pub fn available() -> bool {
     mediamtx_binary().is_some()
+}
+
+/// Whether this is a GitHub Actions Windows runner. Those runners encode
+/// video at ~0.03x realtime (ffmpeg's own `speed=` reading), so the
+/// media-heavy interop cases time out downstream — the same flake class
+/// that got the pre-matrix rtsp suites gated in a390dc7. Windows hosts run
+/// the suites fine locally, so the cases are compiled in and skipped only
+/// here.
+pub fn windows_ci() -> bool {
+    cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
 }
 
 /// A spawned mediamtx instance with a minimal generated config: RTSP and the
