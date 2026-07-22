@@ -387,6 +387,76 @@ pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind
     source_handle.stop().await;
 }
 
+/// whepfrom RTSP push interop against mediamtx (live777#212): a source is
+/// published into liveion via WHIP, bridged back out with livetwo's
+/// WHEP→RTSP client pushing into mediamtx, and validated by pulling from
+/// mediamtx with ffprobe. Complements [`run_rtsp_cycle`], which pushes into
+/// liveion's own RTSP server instead.
+#[cfg(feature = "rtsp")]
+pub async fn run_rtsp_push_mediamtx(
+    profile: MediaProfile,
+    transport: RtspTransport,
+    bind_ip: IpAddr,
+) {
+    init_liveion_test_environment();
+
+    let source = crate::source::ffmpeg::FfmpegSource::new(profile);
+    let start = tokio::time::Instant::now();
+    let (api_addr, _port, source_handle, whip_ct, whip_handle) =
+        start_published_stream(&source, bind_ip).await;
+    source.wait_for_ready().await;
+
+    let server =
+        crate::source::mediamtx::MediamtxServer::spawn().expect("Failed to spawn mediamtx");
+
+    let ct = CancellationToken::new();
+    let mut handle_whep = tokio::spawn(livetwo::whep::from(
+        ct.clone(),
+        server.rtsp_url("/mt", transport),
+        format!("http://{api_addr}{}", api::path::whep("-")),
+        None,
+        None,
+        None,
+        None,
+    ));
+
+    server
+        .wait_path_ready("mt", &ct, Some(&mut handle_whep))
+        .await;
+
+    // Give the publisher a moment so the pull sees media, not just SDP.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let pull_url = format!("rtsp://{}/mt", server.rtsp_addr);
+    let mut probe_args: Vec<&str> = transport.ffprobe_args().to_vec();
+    probe_args.extend(["-i", pull_url.as_str()]);
+    let probe_result = probe::run(&probe_args)
+        .await
+        .expect("ffprobe pull from mediamtx failed");
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+
+    tracing::info!(
+        transport = transport.as_str(),
+        ?playback,
+        "RTSP push mediamtx result"
+    );
+
+    assert_playback_ok("rtsp-push-mediamtx", &profile, &playback);
+
+    ct.cancel();
+    let result_whep = handle_whep.await.unwrap();
+    assert!(result_whep.is_ok(), "whep task failed: {result_whep:?}");
+
+    source_handle.stop().await;
+    whip_ct.cancel();
+    let result_whip = whip_handle.await.unwrap();
+    assert!(result_whip.is_ok());
+
+    server.stop().await;
+}
+
 /// Wait until a stream's publish session is Connected and liveion has
 /// learned its codecs.
 #[cfg(feature = "rtsp")]
@@ -775,11 +845,14 @@ async fn start_direct_published_stream<S>(
 where
     S: Source,
 {
-    let source_handle = source
+    let mut source_handle = source
         .start_direct(&whip_url)
         .expect("Failed to start direct WHIP source");
 
-    wait_for_publish_connected(&api_addr, None).await;
+    // Sources that bridge through an internal publish task (livetwo WHIP)
+    // expose it so a task that dies early fails fast with the real error
+    // instead of timing out this poll.
+    wait_for_publish_connected(&api_addr, source_handle.publish_task_mut()).await;
 
     // The publisher is already running inside the source handle; return a
     // no-op WHIP handle so callers can keep the same shape.

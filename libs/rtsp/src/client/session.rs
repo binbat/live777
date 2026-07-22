@@ -673,7 +673,11 @@ pub async fn setup_rtsp_session(
                     },
                     RtspMode::Push => TransportInfo::Udp {
                         rtp_send_port: Some(port_info.server_rtp_port),
-                        rtp_recv_port: None,
+                        // For push this carries the LOCAL client RTP port
+                        // announced via SETUP client_port. The sender must
+                        // bind it: strict servers (e.g. mediamtx) drop RTP
+                        // whose source port differs from the announced one.
+                        rtp_recv_port: Some(port_info.client_rtp_port),
                         rtcp_send_port: Some(port_info.server_rtcp_port),
                         rtcp_recv_port: Some(port_info.client_rtcp_port),
                         server_addr: Some(port_info.client_addr),
@@ -697,7 +701,11 @@ pub async fn setup_rtsp_session(
                     },
                     RtspMode::Push => TransportInfo::Udp {
                         rtp_send_port: Some(port_info.server_rtp_port),
-                        rtp_recv_port: None,
+                        // For push this carries the LOCAL client RTP port
+                        // announced via SETUP client_port. The sender must
+                        // bind it: strict servers (e.g. mediamtx) drop RTP
+                        // whose source port differs from the announced one.
+                        rtp_recv_port: Some(port_info.client_rtp_port),
                         rtcp_send_port: Some(port_info.server_rtcp_port),
                         rtcp_recv_port: Some(port_info.client_rtcp_port),
                         server_addr: Some(port_info.client_addr),

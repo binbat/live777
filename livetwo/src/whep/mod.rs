@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use ::webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
 use cli::create_child;
@@ -196,7 +196,7 @@ pub async fn from_with_state(
     let output_target = output_handle.await??;
     info!("Output target configured: {:?}", output_target.scheme());
 
-    let _transport_handle = start_initial_transport_task(
+    let transport_handle = start_initial_transport_task(
         ct.clone(),
         1,
         video_broadcast_tx.subscribe(),
@@ -232,10 +232,23 @@ pub async fn from_with_state(
         });
     }
 
-    ct.cancelled().await;
-    graceful_shutdown("WHEP", &mut client, peer).await;
+    // Also wake up if the transport task ends on its own: an error there
+    // (e.g. a failed UDP bind for the SETUP-announced port) must propagate
+    // instead of leaving the session running with zero media.
+    let transport_result = tokio::select! {
+        () = ct.cancelled() => Ok(()),
+        result = transport_handle => match result {
+            Ok(Ok(())) => {
+                info!("Transport task finished, shutting down");
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e.into()),
+        },
+    };
 
-    Ok(())
+    graceful_shutdown("WHEP", &mut client, peer).await;
+    transport_result
 }
 
 /// Derive the negotiated track kinds from the WHEP answer SDP, so the codec
@@ -350,7 +363,7 @@ fn start_initial_transport_task(
     mut audio_rx: broadcast::Receiver<Vec<u8>>,
     output_target: OutputTarget,
     peer: Arc<dyn PeerConnection>,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move {
         info!("Transport task #{} started", connection_id);
 
@@ -421,17 +434,27 @@ fn start_initial_transport_task(
             }
         });
 
-        transport::connect_webrtc_to_output(
+        if let Err(e) = transport::connect_webrtc_to_output(
             video_rx_bounded,
             audio_rx_bounded,
             output_target,
             peer,
         )
-        .await;
+        .await
+        {
+            // A transport that cannot start (e.g. the SETUP-announced UDP
+            // port could not be bound) would otherwise run the session with
+            // zero media; stop the forwarders and propagate the error.
+            error!("Transport task #{} setup failed: {:#}", connection_id, e);
+            ct.cancel();
+            let _ = tokio::join!(video_forwarder, audio_forwarder);
+            return Err(e);
+        }
 
         let _ = tokio::join!(video_forwarder, audio_forwarder);
 
         info!("Transport task #{} stopped", connection_id);
+        Ok(())
     })
 }
 
