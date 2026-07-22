@@ -55,10 +55,6 @@ test = false
 bench = false
 
 [[bin]]
-name = "livevod"
-path = "src/livevod.rs"
-
-[[bin]]
 name = "net4mqtt"
 path = "src/net4mqtt.rs"
 

@@ -73,7 +73,6 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
   in-process generated test frames (no external encoder needed).
 - `whepfrom`     — pull a WHEP stream and output RTP/RTSP.
 - `whepwright`   — browser-based WHEP playback tester (feature gated).
-- `livevod`      — VOD/recording playback helper.
 - `net4mqtt`     — net-over-MQTT proxy binary.
 - `livenil`      — cluster nil/bare runner for local multi-node tests.
 - `datachannel_loadtest` — load-test binary (feature gated).
@@ -188,7 +187,6 @@ Configuration files:
 - `conf/live777.toml` / `live777.toml` — main SFU config.
 - `conf/liveman.toml` — cluster manager config.
 - `conf/livecam.toml` — livecam config.
-- `conf/livevod.toml` — livevod config.
 - `conf/livenil/` — cluster nil config samples.
 
 Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
