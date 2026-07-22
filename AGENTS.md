@@ -56,7 +56,6 @@ libs/version         # build-time version info (shadow-rs)
 liveion              # core SFU library
 liveman              # cluster manager / controller
 livetwo              # WHIP/WHEP <-> RTP/RTSP conversion library
-livecam              # dedicated camera ingest server
 livehal              # native capture/encoder backend (C++ pipeline)
 ```
 
@@ -66,7 +65,6 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 
 - `live777`      — main SFU server (uses `liveion`).
 - `liveman`      — cluster manager for multiple `live777` nodes.
-- `livecam`      — camera ingest server.
 - `livetwo`      — provided as a library; command tools below use it.
 - `whipinto`     — push RTP/RTSP into a WHIP endpoint; with the `rsmpeg`
   feature it also accepts a `synth://<vcodec>?...` input that publishes
@@ -86,7 +84,6 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 - `debugger`     — debugging UI widget.
 - `liveion`      — WebUI embedded by the `live777` binary.
 - `liveman`      — WebUI embedded by the `liveman` binary.
-- `livecam`      — WebUI embedded by the `livecam` binary.
 
 Built assets are placed under `assets/<crate>/` and embedded at compile time via
 `rust_embed::RustEmbed` when the `webui` feature is enabled.
@@ -178,7 +175,6 @@ and linker paths.
   and the `cascade` feature. `livetwo/src/whip/core.rs` is the single WHIP
   publish core (peer construction, connection waits, ICE diagnostics) shared
   by the RTP/RTSP bridge and the synthetic `whipsynth` publisher.
-- `livecam` is a focused camera ingest server with its own config and WebUI.
 - `net4mqtt` exposes a local SOCKS proxy and tunnels traffic over MQTT for
   NAT/remote agents.
 
@@ -186,7 +182,6 @@ Configuration files:
 
 - `conf/live777.toml` / `live777.toml` — main SFU config.
 - `conf/liveman.toml` — cluster manager config.
-- `conf/livecam.toml` — livecam config.
 - `conf/livenil/` — cluster nil config samples.
 
 Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
@@ -294,8 +289,8 @@ out downstream (the same flake class as a390dc7).
 
 - WHIP/WHEP endpoints require a `Bearer` token unless `auth.tokens` is empty.
 - `libs/auth` supports static tokens and HMAC-signed JWTs.
-- `liveman` admin dashboard uses account-based auth (Argon2 password hashing
-  utility available via `livecam gen-hash` and similar patterns).
+- `liveman` admin dashboard uses account-based auth (accounts configured in
+  `liveman.toml`).
 - ICE/TURN credentials can be configured statically or generated for Coturn
   (`--use-auth-secret`) and Cloudflare TURN via `libs/iceserver`.
 - Recording storage supports local filesystem and S3/S3-compatible backends via

@@ -114,8 +114,6 @@ importers:
         specifier: ^1.1.1
         version: 1.1.1
 
-  web/livecam: {}
-
   web/liveion:
     dependencies:
       alone-player:

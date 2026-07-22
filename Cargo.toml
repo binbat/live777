@@ -22,10 +22,6 @@ name = "livenil"
 path = "src/livenil.rs"
 
 [[bin]]
-name = "livecam"
-path = "src/livecam.rs"
-
-[[bin]]
 name = "whipinto"
 path = "src/whipinto.rs"
 
@@ -88,7 +84,6 @@ members = [
     "liveion",
     "liveman",
     "livetwo",
-    "livecam",
     "livehal",
 ]
 
@@ -152,7 +147,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "tim
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
 livetwo = { path = "livetwo" }
-livecam = { path = "livecam" }
 net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
 
@@ -181,7 +175,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 source = ["liveion/source"]
 cascade = ["liveion/cascade"]
-webui = ["liveion/webui", "liveman/webui", "livecam/webui"]
+webui = ["liveion/webui", "liveman/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]
 source-sdp = ["liveion/source-sdp"]

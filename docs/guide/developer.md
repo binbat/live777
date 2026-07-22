@@ -18,7 +18,6 @@ Binary     | Package    | Comment
 ---------- | ---------- | -----------
 `live777`  | `liveion`  | Core, SFU Server
 `liveman`  | `liveman`  | Live777 Cluster Manager
-`livecam`  | `livecam`  | Live777 Camera Suit <Badge type="warning" text="experimental" />
 `whipinto` | `livetwo`  | rtp, rtsp to whip
 `whepfrom` | `livetwo`  | whep ro rtp, rtsp
 `livenil`  | `livenil`  | Only at developer, test, demo

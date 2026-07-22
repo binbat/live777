@@ -29,7 +29,6 @@
   "include": [
     "web/liveion",
     "web/liveman",
-    "web/livecam",
     "web/shared",
     "web/vite-env.d.ts"
   ],

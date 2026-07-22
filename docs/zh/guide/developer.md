@@ -18,7 +18,6 @@ Binary     | Package    | Comment
 ---------- | ---------- | -----------
 `live777`  | `liveion`  | 核心服务 SFU Server
 `liveman`  | `liveman`  | Live777 集群控制器
-`livecam`  | `livecam`  | Live777 摄像头套件 <Badge type="warning" text="experimental" />
 `whipinto` | `livetwo`  | rtp, rtsp to whip
 `whepfrom` | `livetwo`  | whep ro rtp, rtsp
 `livenil`  | `livenil`  | 集群启动器，主要用在开发和测试环境

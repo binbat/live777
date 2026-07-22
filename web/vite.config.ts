@@ -15,8 +15,7 @@ const workspaceContentRoots = [
 
 const defaultAppContentRoots = [
     'web/liveion',
-    'web/liveman',
-    'web/livecam'
+    'web/liveman'
 ];
 
 const packageName = process.env.npm_package_name;
