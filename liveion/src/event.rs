@@ -6,6 +6,10 @@
 //! - SSE `/api/sse/streams` and net4mqtt — snapshot consumers that treat every
 //!   event as a "something changed" ping and re-send a full snapshot.
 //! - recorder — reacts to `StreamUp`/`StreamDown` for auto start/stop.
+//! - hook — runs user scripts on `StreamUp`/`StreamDown`. It cannot
+//!   reconcile after lag (a missed script cannot be rerun), so its
+//!   dispatcher only forwards events into an internal queue and never
+//!   awaits a script while holding the bus receiver.
 //! - the manager's event logger — emits one canonical debug line per event
 //!   with its full payload.
 //!

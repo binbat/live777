@@ -928,7 +928,6 @@ impl Manager {
         forward
     }
 
-    #[cfg(any(feature = "net4mqtt", feature = "recorder"))]
     pub fn subscribe_event(&self) -> broadcast::Receiver<Event> {
         self.event_sender.subscribe()
     }

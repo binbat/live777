@@ -124,3 +124,53 @@ listen = "0.0.0.0:8554"
 - 拉流地址：`rtsp://host:8554/{stream_id}`（`DESCRIBE` + `PLAY`）
 
 同时支持 UDP 和 TCP（`RTP/AVP/TCP`）传输。URL 的第一段路径作为 liveion 的流标识符。
+
+## 流钩子（Stream Hooks）
+
+Live777 可以在流创建或销毁时执行外部脚本。典型用途是按需激活源：当 WHEP
+观众触发 `auto_create_whep` 建流时，hook 启动采集设备 / 硬件编码器；流销
+毁时，hook 再把它关掉以节省资源。
+
+```toml
+# 全局 hook，对所有流生效
+[hooks]
+timeout_ms = 5000    # 单个脚本超时（毫秒），0 表示不限制
+on_error = "stop"    # "stop"：脚本失败后跳过本事件剩余 hook；
+                     # "continue"：失败后仍继续执行
+on_stream_up   = ["/etc/live777/hooks/notify.sh"]
+on_stream_down = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup.sh"]
+
+# 每流 hook，在全局 hook 之后执行
+[stream.cam1.hooks]
+on_stream_up   = ["/etc/live777/hooks/cam1-up.sh"]
+on_stream_down = ["/etc/live777/hooks/cam1-down.sh"]
+```
+
+执行保证：
+
+- 同一事件的 hook 按顺序串行执行：先全局、后每流，各自按配置顺序。
+- 所有事件共用一个 FIFO 队列处理——前一事件的全部 hook 执行完毕后，后
+  一事件的第一个 hook 才开始，因此同一条流的 `stream-up` hook 一定先于
+  它的 `stream-down` hook 执行完。
+- 脚本失败（非零退出、启动失败、超时被杀）只会被记录并按 `on_error` 处
+  理，不会影响后续事件，也不会影响服务器本身。
+
+脚本以直接执行方式启动（不经过 shell），事件元数据同时通过 argv 和环境
+变量传入：
+
+| argv          | 环境变量          | 取值                                                                               |
+| ------------- | ----------------- | ---------------------------------------------------------------------------------- |
+| `$1`          | `LIVE777_EVENT`   | `stream-up` / `stream-down`                                                        |
+| `$2`          | `LIVE777_STREAM`  | 流名                                                                               |
+| `$3`（仅 down）| `LIVE777_REASON`  | `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned`   |
+
+注意事项：
+
+- 脚本应在发起工作后尽快返回（例如把编码器放到后台启动）。脚本阻塞多久，
+  整个 hook 队列就阻塞多久。
+- 脚本要幂等：推流端自身死亡（`publish-leave-timeout`）也会触发
+  `stream-down` hook，停止脚本必须能容忍设备已经停止的状态。
+- 做按需源时，配合 `[strategy] auto_create_whep = true` 和较大的
+  `auto_delete_whep`（如 `30000`），避免观众短暂掉线导致硬件反复启停。
+  每流覆盖配置在 `[stream.<name>.strategy]` 下。
+- 服务器关闭时不会触发 hook（此时不产生 `stream-down` 事件）。

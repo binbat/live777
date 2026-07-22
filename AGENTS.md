@@ -208,6 +208,11 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   loop (and re-snapshotting where applicable).
 - `liveion/src/recorder/` — recording pipeline (fmp4, segmenter, uploader,
   codec-specific writers).
+- `liveion/src/hook.rs` — stream-lifecycle hook scripts (`[hooks]` global +
+  `[stream.<name>.hooks]` per stream) run by a single FIFO executor:
+  dispatcher forwards `StreamUp`/`StreamDown` into an internal queue, then
+  scripts run sequentially (global first, per-stream after, configured
+  order) with per-script timeout and `on_error` policy.
 - `liveman/src/route/` — proxy/cascade/admin routes.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.

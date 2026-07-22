@@ -30,6 +30,7 @@ mod convert;
 mod error;
 mod event;
 mod forward;
+mod hook;
 mod r#macro;
 mod metrics;
 mod result;
@@ -57,6 +58,14 @@ where
     {
         crate::recorder::init(app_state.stream_manager.clone(), cfg.recorder.clone()).await;
     }
+
+    // Hook init must precede source auto-start so streams created at
+    // startup emit their StreamUp hooks (the bus does not replay).
+    crate::hook::init(
+        &app_state.stream_manager,
+        cfg.hooks.clone(),
+        cfg.stream.clone(),
+    );
 
     #[cfg(feature = "source")]
     {

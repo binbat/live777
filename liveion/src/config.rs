@@ -17,6 +17,9 @@ pub struct Config {
     pub strategy: api::strategy::Strategy,
 
     #[serde(default)]
+    pub hooks: HooksConfig,
+
+    #[serde(default)]
     pub sdp: Sdp,
 
     #[serde(default)]
@@ -247,6 +250,54 @@ mod webrtc_tests {
     }
 }
 
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_global_and_per_stream_hooks() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [hooks]
+            timeout_ms = 3000
+            on_error = "continue"
+            on_stream_up = ["/global/up.sh"]
+            on_stream_down = ["/global/down.sh", "/global/down2.sh"]
+
+            [stream.cam1.hooks]
+            on_stream_up = ["/per-stream/up.sh"]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.hooks.timeout_ms, 3000);
+        assert_eq!(cfg.hooks.on_error, OnError::Continue);
+        assert_eq!(cfg.hooks.hooks.on_stream_up, ["/global/up.sh"]);
+        assert_eq!(
+            cfg.hooks.hooks.on_stream_down,
+            ["/global/down.sh", "/global/down2.sh"]
+        );
+        let entry = cfg.stream.streams.get("cam1").unwrap();
+        assert_eq!(entry.hooks.on_stream_up, ["/per-stream/up.sh"]);
+        assert!(entry.hooks.on_stream_down.is_empty());
+    }
+
+    #[test]
+    fn hooks_default_to_disabled_with_sane_policy() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.hooks.timeout_ms, 5000);
+        assert_eq!(cfg.hooks.on_error, OnError::Stop);
+        assert!(cfg.hooks.hooks.on_stream_up.is_empty());
+        assert!(cfg.hooks.hooks.on_stream_down.is_empty());
+    }
+
+    #[test]
+    fn zero_timeout_disables_the_timeout() {
+        let cfg: Config = toml::from_str("[hooks]\ntimeout_ms = 0\n").unwrap();
+        assert_eq!(cfg.hooks.timeout_ms, 0);
+    }
+}
+
 fn default_log_level() -> String {
     env::var("LOG_LEVEL").unwrap_or_else(|_| {
         if cfg!(debug_assertions) {
@@ -401,6 +452,62 @@ fn default_upload_interval_ms() -> u64 {
 fn default_upload_concurrency() -> usize {
     2
 }
+/// What to do when a hook script fails (non-zero exit, spawn error, or
+/// timeout kill).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OnError {
+    /// Skip the remaining hooks of the same event.
+    #[default]
+    Stop,
+    /// Run every hook of the event even if an earlier one failed.
+    Continue,
+}
+
+/// Hook scripts for stream-lifecycle events. Used both globally (`[hooks]`)
+/// and per stream (`[stream.<name>.hooks]`); per-stream scripts run after
+/// the global ones.
+///
+/// Scripts are executed directly (no shell). Each receives the event
+/// metadata as argv (`<event> <stream> [reason]`) and as the environment
+/// variables `LIVE777_EVENT` / `LIVE777_STREAM` / `LIVE777_REASON`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HookConfig {
+    /// Scripts run, in order, when a stream is created.
+    #[serde(default)]
+    pub on_stream_up: Vec<String>,
+    /// Scripts run, in order, when a stream is destroyed.
+    #[serde(default)]
+    pub on_stream_down: Vec<String>,
+}
+
+/// Global `[hooks]` section: hook scripts plus execution policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HooksConfig {
+    #[serde(flatten)]
+    pub hooks: HookConfig,
+    /// Per-script timeout in milliseconds; 0 disables the timeout.
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Whether a failed script skips the remaining hooks of the same event.
+    #[serde(default)]
+    pub on_error: OnError,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            hooks: HookConfig::default(),
+            timeout_ms: default_hook_timeout_ms(),
+            on_error: OnError::default(),
+        }
+    }
+}
+
+fn default_hook_timeout_ms() -> u64 {
+    5_000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamConfig {
     /// Per-stream configuration, keyed by stream name.
@@ -430,6 +537,9 @@ pub struct StreamEntry {
     /// Optional per-stream strategy override.
     #[serde(default)]
     pub strategy: Option<api::strategy::Strategy>,
+    /// Optional per-stream hooks, run after the global `[hooks]`.
+    #[serde(default)]
+    pub hooks: HookConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
