@@ -132,14 +132,14 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
     tokio::spawn(async move {
         loop {
             match recv.recv().await {
-                Ok(Event::StreamUp { stream }) => {
+                Ok(Event::StreamCreated { stream }) => {
                     if should_record(&cfg_for_events.auto_streams, &stream)
                         && let Err(e) = start(manager_clone.clone(), stream.clone(), None).await
                     {
                         tracing::error!("[recorder] start failed: {}", e);
                     }
                 }
-                Ok(Event::StreamDown { stream, .. }) => {
+                Ok(Event::StreamDeleted { stream, .. }) => {
                     stop_task(&stream).await;
                 }
                 Ok(_) => {}

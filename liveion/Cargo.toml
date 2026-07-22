@@ -31,7 +31,7 @@ reqwest = { workspace = true, features = ["json"], optional = true }
 rand = "0.10"
 serde = { workspace = true, features = ["serde_derive"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "process", "time"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { workspace = true }
 async-stream = "0.3.5"

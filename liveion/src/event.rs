@@ -5,7 +5,11 @@
 //!
 //! - SSE `/api/sse/streams` and net4mqtt — snapshot consumers that treat every
 //!   event as a "something changed" ping and re-send a full snapshot.
-//! - recorder — reacts to `StreamUp`/`StreamDown` for auto start/stop.
+//! - recorder — reacts to `StreamCreated`/`StreamDeleted` for auto start/stop.
+//! - hook — runs user scripts on `StreamCreated`/`StreamDeleted`. It cannot
+//!   reconcile after lag (a missed script cannot be rerun), so its
+//!   dispatcher only forwards events into an internal queue and never
+//!   awaits a script while holding the bus receiver.
 //! - the manager's event logger — emits one canonical debug line per event
 //!   with its full payload.
 //!
@@ -16,7 +20,7 @@
 
 /// Why a stream was torn down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StreamDownReason {
+pub enum StreamDeleteReason {
     /// Admin API (`DELETE /api/streams/{stream}`) or a session-kick cascade.
     ApiDeleted,
     /// `strategy.auto_delete_whip` fired after the publisher left.
@@ -29,7 +33,7 @@ pub enum StreamDownReason {
 
 /// Why a publish/subscribe session ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionDownReason {
+pub enum SessionStopReason {
     /// The PeerConnection reached `Closed` (including the `Failed` -> close ->
     /// `Closed` cascade and stream teardown closing live sessions).
     PeerClosed,
@@ -45,32 +49,32 @@ pub enum SessionDownReason {
 pub enum Event {
     /// The stream now exists in the manager (created via API, auto-create, or
     /// source startup).
-    StreamUp { stream: String },
+    StreamCreated { stream: String },
     /// The stream was removed from the manager.
-    StreamDown {
+    StreamDeleted {
         stream: String,
-        reason: StreamDownReason,
+        reason: StreamDeleteReason,
     },
     /// A WHIP/cascade publisher session was established.
-    PublishUp { stream: String, session: String },
+    PublishStarted { stream: String, session: String },
     /// A publisher session ended.
-    PublishDown {
+    PublishStopped {
         stream: String,
         session: String,
-        reason: SessionDownReason,
+        reason: SessionStopReason,
     },
     /// A WHIP/cascade subscriber session was established.
-    SubscribeUp { stream: String, session: String },
+    SubscribeStarted { stream: String, session: String },
     /// A subscriber session ended.
-    SubscribeDown {
+    SubscribeStopped {
         stream: String,
         session: String,
-        reason: SessionDownReason,
+        reason: SessionStopReason,
     },
     /// Content-free "stream state changed" ping for snapshot consumers (SSE,
     /// net4mqtt). Fired alongside every publish/subscribe transition above,
-    /// plus track, connection-state, and closed-session changes. `StreamUp`/
-    /// `StreamDown` are emitted by the manager and carry no paired ping —
+    /// plus track, connection-state, and closed-session changes. `StreamCreated`/
+    /// `StreamDeleted` are emitted by the manager and carry no paired ping —
     /// snapshot consumers must treat every event as a change hint anyway.
     ForwardChanged { stream: String },
 }
@@ -78,12 +82,12 @@ pub enum Event {
 impl Event {
     pub fn stream(&self) -> &str {
         match self {
-            Event::StreamUp { stream }
-            | Event::StreamDown { stream, .. }
-            | Event::PublishUp { stream, .. }
-            | Event::PublishDown { stream, .. }
-            | Event::SubscribeUp { stream, .. }
-            | Event::SubscribeDown { stream, .. }
+            Event::StreamCreated { stream }
+            | Event::StreamDeleted { stream, .. }
+            | Event::PublishStarted { stream, .. }
+            | Event::PublishStopped { stream, .. }
+            | Event::SubscribeStarted { stream, .. }
+            | Event::SubscribeStopped { stream, .. }
             | Event::ForwardChanged { stream } => stream,
         }
     }

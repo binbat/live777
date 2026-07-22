@@ -167,6 +167,7 @@ async fn setup_topology(
         liveion::config::StreamEntry {
             sources: vec![],
             strategy: None,
+            hooks: Default::default(),
             channel: Some(liveion::config::ChannelConfig {
                 listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
                 target: format!("{}:{liveion_ch_target}", args.target_host)
