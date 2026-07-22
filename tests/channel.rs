@@ -74,6 +74,7 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
         liveion::config::StreamEntry {
             sources: vec![],
             strategy: None,
+            hooks: Default::default(),
             channel: Some(liveion::config::ChannelConfig {
                 listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
                 target: format!("127.0.0.1:{liveion_ch_target}").parse().unwrap(),
