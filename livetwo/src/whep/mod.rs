@@ -235,20 +235,20 @@ pub async fn from_with_state(
     // Also wake up if the transport task ends on its own: an error there
     // (e.g. a failed UDP bind for the SETUP-announced port) must propagate
     // instead of leaving the session running with zero media.
-    tokio::select! {
-        () = ct.cancelled() => {}
-        result = transport_handle => {
-            match result {
-                Ok(Ok(())) => info!("Transport task finished, shutting down"),
-                Ok(Err(e)) => return Err(e),
-                Err(e) => return Err(e.into()),
+    let transport_result = tokio::select! {
+        () = ct.cancelled() => Ok(()),
+        result = transport_handle => match result {
+            Ok(Ok(())) => {
+                info!("Transport task finished, shutting down");
+                Ok(())
             }
-        }
-    }
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e.into()),
+        },
+    };
 
     graceful_shutdown("WHEP", &mut client, peer).await;
-
-    Ok(())
+    transport_result
 }
 
 /// Derive the negotiated track kinds from the WHEP answer SDP, so the codec
