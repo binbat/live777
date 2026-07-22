@@ -145,8 +145,8 @@ on_stream_deleted = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup
 
 # Per-stream hooks, run after the global ones.
 [stream.cam1.hooks]
-on_stream_created   = ["/etc/live777/hooks/cam1-up.sh"]
-on_stream_deleted = ["/etc/live777/hooks/cam1-down.sh"]
+on_stream_created   = ["/etc/live777/hooks/cam1-created.sh"]
+on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
 ```
 
 Execution guarantees:

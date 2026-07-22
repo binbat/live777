@@ -220,13 +220,13 @@ root = "./storage"
 # timeout_ms = 5000
 # "stop": skip the remaining hooks of the same event on failure
 # on_error = "stop"
-# on_stream_created = ["/etc/live777/hooks/up.sh"]
-# on_stream_deleted = ["/etc/live777/hooks/down.sh"]
+# on_stream_created = ["/etc/live777/hooks/created.sh"]
+# on_stream_deleted = ["/etc/live777/hooks/deleted.sh"]
 
 # Per-stream hooks run after the global [hooks] ones.
 # [stream.cam1.hooks]
-# on_stream_created = ["/etc/live777/hooks/cam1-up.sh"]
-# on_stream_deleted = ["/etc/live777/hooks/cam1-down.sh"]
+# on_stream_created = ["/etc/live777/hooks/cam1-created.sh"]
+# on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
 
 # Default enabled `--features=net4mqtt`
 # [net4mqtt]
