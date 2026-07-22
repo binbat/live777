@@ -140,12 +140,12 @@ the stream is torn down, the hook stops it again to save resources.
 timeout_ms = 5000    # per-script timeout, 0 disables
 on_error = "stop"    # "stop" skips the remaining hooks of the same event;
                      # "continue" runs them anyway
-on_stream_created   = ["/etc/live777/hooks/notify.sh"]
+on_stream_created = ["/etc/live777/hooks/notify.sh"]
 on_stream_deleted = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup.sh"]
 
 # Per-stream hooks, run after the global ones.
 [stream.cam1.hooks]
-on_stream_created   = ["/etc/live777/hooks/cam1-created.sh"]
+on_stream_created = ["/etc/live777/hooks/cam1-created.sh"]
 on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
 ```
 

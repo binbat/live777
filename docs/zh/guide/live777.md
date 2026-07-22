@@ -137,12 +137,12 @@ Live777 可以在流创建或删除时执行外部脚本。典型用途是按需
 timeout_ms = 5000    # 单个脚本超时（毫秒），0 表示不限制
 on_error = "stop"    # "stop"：脚本失败后跳过本事件剩余 hook；
                      # "continue"：失败后仍继续执行
-on_stream_created   = ["/etc/live777/hooks/notify.sh"]
+on_stream_created = ["/etc/live777/hooks/notify.sh"]
 on_stream_deleted = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup.sh"]
 
 # 每流 hook，在全局 hook 之后执行
 [stream.cam1.hooks]
-on_stream_created   = ["/etc/live777/hooks/cam1-created.sh"]
+on_stream_created = ["/etc/live777/hooks/cam1-created.sh"]
 on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
 ```
 
