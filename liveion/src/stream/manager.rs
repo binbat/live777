@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::event::{Event, StreamDownReason};
+use crate::event::{Event, StreamDeleteReason};
 use crate::forward::message::ForwardInfo;
 
 use crate::result::Result;
@@ -35,24 +35,24 @@ fn orphan_reap_allowed(strategy: &api::strategy::Strategy) -> bool {
 }
 
 /// Single funnel for stream-teardown bookkeeping: the metrics decrement and
-/// the `StreamDown` lifecycle event always fire as a pair.
-fn emit_stream_down(
+/// the `StreamDeleted` lifecycle event always fire as a pair.
+fn emit_stream_deleted(
     event_sender: &broadcast::Sender<Event>,
     stream: &str,
-    reason: StreamDownReason,
+    reason: StreamDeleteReason,
 ) {
     metrics::STREAM.dec();
-    let _ = event_sender.send(Event::StreamDown {
+    let _ = event_sender.send(Event::StreamDeleted {
         stream: stream.to_string(),
         reason,
     });
 }
 
-/// Mirror of [`emit_stream_down`]: the metrics increment and the `StreamUp`
+/// Mirror of [`emit_stream_deleted`]: the metrics increment and the `StreamCreated`
 /// lifecycle event always fire as a pair.
-fn emit_stream_up(event_sender: &broadcast::Sender<Event>, stream: &str) {
+fn emit_stream_created(event_sender: &broadcast::Sender<Event>, stream: &str) {
     metrics::STREAM.inc();
-    let _ = event_sender.send(Event::StreamUp {
+    let _ = event_sender.send(Event::StreamCreated {
         stream: stream.to_string(),
     });
 }
@@ -121,44 +121,44 @@ impl Manager {
                 },
             };
             match &event {
-                Event::StreamUp { stream } => {
-                    debug!("lifecycle: stream up, stream : {}", stream);
+                Event::StreamCreated { stream } => {
+                    debug!("lifecycle: stream created, stream : {}", stream);
                 }
-                Event::StreamDown { stream, reason } => {
+                Event::StreamDeleted { stream, reason } => {
                     debug!(
-                        "lifecycle: stream down, stream : {}, reason : {:?}",
+                        "lifecycle: stream deleted, stream : {}, reason : {:?}",
                         stream, reason
                     );
                 }
-                Event::PublishUp { stream, session } => {
+                Event::PublishStarted { stream, session } => {
                     debug!(
-                        "lifecycle: publish up, stream : {}, session : {}",
+                        "lifecycle: publish started, stream : {}, session : {}",
                         stream, session
                     );
                 }
-                Event::PublishDown {
+                Event::PublishStopped {
                     stream,
                     session,
                     reason,
                 } => {
                     debug!(
-                        "lifecycle: publish down, stream : {}, session : {}, reason : {:?}",
+                        "lifecycle: publish stopped, stream : {}, session : {}, reason : {:?}",
                         stream, session, reason
                     );
                 }
-                Event::SubscribeUp { stream, session } => {
+                Event::SubscribeStarted { stream, session } => {
                     debug!(
-                        "lifecycle: subscribe up, stream : {}, session : {}",
+                        "lifecycle: subscribe started, stream : {}, session : {}",
                         stream, session
                     );
                 }
-                Event::SubscribeDown {
+                Event::SubscribeStopped {
                     stream,
                     session,
                     reason,
                 } => {
                     debug!(
-                        "lifecycle: subscribe down, stream : {}, session : {}, reason : {:?}",
+                        "lifecycle: subscribe stopped, stream : {}, session : {}, reason : {:?}",
                         stream, session, reason
                     );
                 }
@@ -220,10 +220,10 @@ impl Manager {
                             stream, publish_leave_at
                         );
 
-                        emit_stream_down(
+                        emit_stream_deleted(
                             &event_sender,
                             stream,
-                            StreamDownReason::PublishLeaveTimeout,
+                            StreamDeleteReason::PublishLeaveTimeout,
                         );
                     }
                 }
@@ -301,9 +301,9 @@ impl Manager {
                     let _ = forward.close().await;
                     stream_map.remove(stream);
                     let reason = if orphaned {
-                        StreamDownReason::Orphaned
+                        StreamDeleteReason::Orphaned
                     } else {
-                        StreamDownReason::SubscribeLeaveTimeout
+                        StreamDeleteReason::SubscribeLeaveTimeout
                     };
                     let subscribe_leave_at = DateTime::from_timestamp_millis(subscribe_leave_at)
                         .unwrap()
@@ -321,7 +321,7 @@ impl Manager {
                         );
                     }
 
-                    emit_stream_down(&event_sender, stream, reason);
+                    emit_stream_deleted(&event_sender, stream, reason);
                 }
             }
         }
@@ -371,7 +371,7 @@ impl Manager {
 
     fn register_stream_created(&self, stream: &str) {
         info!("add stream : {}", stream);
-        emit_stream_up(&self.event_sender, stream);
+        emit_stream_created(&self.event_sender, stream);
     }
 
     async fn init_stream_forward(&self, stream: &str, forward: &PeerForward) {
@@ -401,7 +401,7 @@ impl Manager {
     }
 
     async fn do_stream_delete(&self, stream: String) {
-        emit_stream_down(&self.event_sender, &stream, StreamDownReason::ApiDeleted);
+        emit_stream_deleted(&self.event_sender, &stream, StreamDeleteReason::ApiDeleted);
     }
 
     pub async fn publish(&self, stream: String, offer: RTCSessionDescription) -> Result<Response> {
@@ -946,7 +946,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     #[tokio::test]
-    async fn concurrent_auto_create_emits_one_stream_up_event() {
+    async fn concurrent_auto_create_emits_one_stream_created_event() {
         let cancel = CancellationToken::new();
         let manager = Manager::new(Config::default(), cancel).await;
         let mut events = manager.event_sender.subscribe();
@@ -966,15 +966,15 @@ mod tests {
 
         assert!(results.iter().all(Option::is_some));
 
-        let mut up_events = 0;
+        let mut created_events = 0;
         while let Ok(Ok(event)) = timeout(Duration::from_millis(50), events.recv()).await {
-            if let Event::StreamUp { stream: s } = event
+            if let Event::StreamCreated { stream: s } = event
                 && s == stream
             {
-                up_events += 1;
+                created_events += 1;
             }
         }
 
-        assert_eq!(up_events, 1);
+        assert_eq!(created_events, 1);
     }
 }

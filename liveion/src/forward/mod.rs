@@ -1186,9 +1186,9 @@ a=end-of-candidates";
         Ok(())
     }
 
-    /// The lifecycle bus must carry PublishUp and PublishDown with the session
+    /// The lifecycle bus must carry PublishStarted and PublishStopped with the session
     /// ID returned by the API, and a session-API delete must surface as
-    /// `SessionDownReason::ApiDeleted`.
+    /// `SessionStopReason::ApiDeleted`.
     #[tokio::test]
     async fn publish_lifecycle_emits_typed_events() -> crate::result::Result<()> {
         let mut media_engine = MediaEngine::default();
@@ -1241,20 +1241,20 @@ a=end-of-candidates";
         let (_answer, session) = forward.set_publish(offer).await?;
 
         // Connection-state pings may interleave; skip until the typed
-        // PublishUp for this session shows up.
+        // PublishStarted for this session shows up.
         let up = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
                 match event_rx.recv().await {
-                    Ok(crate::event::Event::PublishUp { stream, session }) => {
+                    Ok(crate::event::Event::PublishStarted { stream, session }) => {
                         break (stream, session);
                     }
                     Ok(_) => continue,
-                    Err(err) => panic!("event bus error before PublishUp: {err}"),
+                    Err(err) => panic!("event bus error before PublishStarted: {err}"),
                 }
             }
         })
         .await
-        .expect("timed out waiting for PublishUp");
+        .expect("timed out waiting for PublishStarted");
         assert_eq!(up, ("lifecycle-test".to_owned(), session.clone()));
 
         forward.remove_peer(session.clone()).await?;
@@ -1262,21 +1262,21 @@ a=end-of-candidates";
         let down = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
                 match event_rx.recv().await {
-                    Ok(crate::event::Event::PublishDown {
+                    Ok(crate::event::Event::PublishStopped {
                         stream,
                         session,
                         reason,
                     }) => break (stream, session, reason),
                     Ok(_) => continue,
-                    Err(err) => panic!("event bus error before PublishDown: {err}"),
+                    Err(err) => panic!("event bus error before PublishStopped: {err}"),
                 }
             }
         })
         .await
-        .expect("timed out waiting for PublishDown");
+        .expect("timed out waiting for PublishStopped");
         assert_eq!(down.0, "lifecycle-test");
         assert_eq!(down.1, session);
-        assert_eq!(down.2, crate::event::SessionDownReason::ApiDeleted);
+        assert_eq!(down.2, crate::event::SessionStopReason::ApiDeleted);
 
         offer_peer.close().await?;
         Ok(())

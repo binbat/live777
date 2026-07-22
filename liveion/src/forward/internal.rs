@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use crate::AppError;
 #[cfg(feature = "source")]
 use crate::config::ChannelConfig;
-use crate::event::{Event, SessionDownReason};
+use crate::event::{Event, SessionStopReason};
 use crate::forward::codec_compat::{is_av1_codec, is_h264_codec, is_h265_codec};
 use crate::forward::message::{ForwardInfo, SessionInfo};
 use crate::forward::rtcp::RtcpMessage;
@@ -969,7 +969,7 @@ impl PeerForwardInternal {
                 let old = publish.take().unwrap();
                 drop(publish);
                 let _ = old.peer.close().await;
-                self.do_remove_publish_cleanup(session_info, SessionDownReason::ApiDeleted)
+                self.do_remove_publish_cleanup(session_info, SessionStopReason::ApiDeleted)
                     .await;
                 return Ok(RemovePeerOutcome::PublisherRemoved);
             }
@@ -986,7 +986,7 @@ impl PeerForwardInternal {
                 if is_empty {
                     *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
                 }
-                self.do_remove_subscribe_cleanup(&old, SessionDownReason::ApiDeleted)
+                self.do_remove_subscribe_cleanup(&old, SessionStopReason::ApiDeleted)
                     .await;
                 let _ = old.peer.close().await;
                 // Orphan hint: with the publisher already gone and no
@@ -1215,7 +1215,7 @@ impl PeerForwardInternal {
         }
 
         metrics::PUBLISH.inc();
-        self.emit(Event::PublishUp {
+        self.emit(Event::PublishStarted {
             stream: self.stream.clone(),
             session: session_id.clone(),
         });
@@ -1245,7 +1245,7 @@ impl PeerForwardInternal {
             session_info
         };
 
-        self.do_remove_publish_cleanup(closed_session, SessionDownReason::PeerClosed)
+        self.do_remove_publish_cleanup(closed_session, SessionStopReason::PeerClosed)
             .await;
         Ok(())
     }
@@ -1256,7 +1256,7 @@ impl PeerForwardInternal {
     async fn do_remove_publish_cleanup(
         &self,
         closed_session: SessionInfo,
-        reason: SessionDownReason,
+        reason: SessionStopReason,
     ) {
         *self.publish_peer_state_rx.lock().await = None;
         // Drop the weak peer ref as well: while it is set, a late `on_track`
@@ -1283,7 +1283,7 @@ impl PeerForwardInternal {
 
         info!("[{}] [publish] set none", self.stream);
         metrics::PUBLISH.dec();
-        self.emit(Event::PublishDown {
+        self.emit(Event::PublishStopped {
             stream: self.stream.clone(),
             session: session_id,
             reason,
@@ -1857,7 +1857,7 @@ impl PeerForwardInternal {
         }
 
         metrics::SUBSCRIBE.inc();
-        self.emit(Event::SubscribeUp {
+        self.emit(Event::SubscribeStarted {
             stream: self.stream.clone(),
             session: session_id.clone(),
         });
@@ -1889,7 +1889,7 @@ impl PeerForwardInternal {
             old
         };
 
-        self.do_remove_subscribe_cleanup(&old, SessionDownReason::PeerClosed)
+        self.do_remove_subscribe_cleanup(&old, SessionStopReason::PeerClosed)
             .await;
         Ok(())
     }
@@ -1897,12 +1897,12 @@ impl PeerForwardInternal {
     /// Shared cleanup after a subscribe session has been removed from
     /// `self.subscribe_group`.  The caller must have already removed the entry
     /// from the vec (so the write lock is released before this runs) and
-    /// finalized `subscribe_leave_at`, since this emits the `SubscribeDown`
+    /// finalized `subscribe_leave_at`, since this emits the `SubscribeStopped`
     /// event and the paired `ForwardChanged` ping itself.
     async fn do_remove_subscribe_cleanup(
         &self,
         subscribe: &SubscribeRTCPeerConnection,
-        reason: SessionDownReason,
+        reason: SessionStopReason,
     ) {
         #[cfg(feature = "cascade")]
         if let Some(cascade) = subscribe.cascade.clone() {
@@ -1930,7 +1930,7 @@ impl PeerForwardInternal {
         }
 
         metrics::SUBSCRIBE.dec();
-        self.emit(Event::SubscribeDown {
+        self.emit(Event::SubscribeStopped {
             stream: self.stream.clone(),
             session: session_id,
             reason,

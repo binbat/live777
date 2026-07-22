@@ -1,14 +1,14 @@
 //! Stream-lifecycle hook scripts.
 //!
 //! A consumer of the manager's event bus (see [`crate::event`]) that runs
-//! user-configured scripts when streams are created or destroyed. Typical
+//! user-configured scripts when streams are created or deleted. Typical
 //! use: start a capture device / hardware encoder when an on-demand
 //! (`auto_create_whep`) stream appears, stop it when the stream is torn
 //! down to save resources.
 //!
 //! Execution model:
 //!
-//! - A dispatcher task forwards `StreamUp`/`StreamDown` events into an
+//! - A dispatcher task forwards `StreamCreated`/`StreamDeleted` events into an
 //!   internal unbounded queue. It never awaits a script, so slow hooks can
 //!   never overrun the broadcast buffer and lose events.
 //! - A single executor task drains the queue FIFO and runs each event's
@@ -25,26 +25,26 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 
 use crate::config::{HooksConfig, OnError, StreamConfig};
-use crate::event::{Event, StreamDownReason};
+use crate::event::{Event, StreamDeleteReason};
 use crate::stream::manager::Manager;
 
 /// One lifecycle event's worth of hook work.
 struct HookJob {
-    /// `"stream-up"` or `"stream-down"` — passed to scripts as argv[1] and
+    /// `"stream-created"` or `"stream-deleted"` — passed to scripts as argv[1] and
     /// `LIVE777_EVENT`.
     event: &'static str,
     stream: String,
-    reason: Option<StreamDownReason>,
+    reason: Option<StreamDeleteReason>,
     /// Global scripts followed by per-stream scripts, in configured order.
     scripts: Vec<String>,
 }
 
-fn reason_str(reason: StreamDownReason) -> &'static str {
+fn reason_str(reason: StreamDeleteReason) -> &'static str {
     match reason {
-        StreamDownReason::ApiDeleted => "api-deleted",
-        StreamDownReason::PublishLeaveTimeout => "publish-leave-timeout",
-        StreamDownReason::SubscribeLeaveTimeout => "subscribe-leave-timeout",
-        StreamDownReason::Orphaned => "orphaned",
+        StreamDeleteReason::ApiDeleted => "api-deleted",
+        StreamDeleteReason::PublishLeaveTimeout => "publish-leave-timeout",
+        StreamDeleteReason::SubscribeLeaveTimeout => "subscribe-leave-timeout",
+        StreamDeleteReason::Orphaned => "orphaned",
     }
 }
 
@@ -65,11 +65,12 @@ fn effective_scripts(global: &[String], per_stream: Option<&[String]>) -> Vec<St
 /// startup are not missed: the broadcast bus does not replay events sent
 /// before the subscription.
 pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
-    let global_empty = hooks.hooks.on_stream_up.is_empty() && hooks.hooks.on_stream_down.is_empty();
+    let global_empty =
+        hooks.hooks.on_stream_created.is_empty() && hooks.hooks.on_stream_deleted.is_empty();
     let per_stream_empty = stream_cfg
         .streams
         .values()
-        .all(|e| e.hooks.on_stream_up.is_empty() && e.hooks.on_stream_down.is_empty());
+        .all(|e| e.hooks.on_stream_created.is_empty() && e.hooks.on_stream_deleted.is_empty());
     if global_empty && per_stream_empty {
         debug!("no stream hooks configured, hook executor disabled");
         return;
@@ -79,15 +80,15 @@ pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
     // are reported (and counted by on_error) at run time like any failure.
     let all_scripts = hooks
         .hooks
-        .on_stream_up
+        .on_stream_created
         .iter()
-        .chain(&hooks.hooks.on_stream_down)
-        .chain(
-            stream_cfg
-                .streams
-                .values()
-                .flat_map(|e| e.hooks.on_stream_up.iter().chain(&e.hooks.on_stream_down)),
-        );
+        .chain(&hooks.hooks.on_stream_deleted)
+        .chain(stream_cfg.streams.values().flat_map(|e| {
+            e.hooks
+                .on_stream_created
+                .iter()
+                .chain(&e.hooks.on_stream_deleted)
+        }));
     for script in all_scripts {
         if !std::path::Path::new(script).exists() {
             warn!("hook script does not exist : {}", script);
@@ -104,33 +105,33 @@ pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
     tokio::spawn(async move {
         loop {
             let job = match events.recv().await {
-                Ok(Event::StreamUp { stream }) => HookJob {
-                    event: "stream-up",
+                Ok(Event::StreamCreated { stream }) => HookJob {
+                    event: "stream-created",
                     scripts: effective_scripts(
-                        &global.on_stream_up,
+                        &global.on_stream_created,
                         stream_cfg
                             .streams
                             .get(&stream)
-                            .map(|e| e.hooks.on_stream_up.as_slice()),
+                            .map(|e| e.hooks.on_stream_created.as_slice()),
                     ),
                     stream,
                     reason: None,
                 },
-                Ok(Event::StreamDown { stream, reason }) => HookJob {
-                    event: "stream-down",
+                Ok(Event::StreamDeleted { stream, reason }) => HookJob {
+                    event: "stream-deleted",
                     scripts: effective_scripts(
-                        &global.on_stream_down,
+                        &global.on_stream_deleted,
                         stream_cfg
                             .streams
                             .get(&stream)
-                            .map(|e| e.hooks.on_stream_down.as_slice()),
+                            .map(|e| e.hooks.on_stream_deleted.as_slice()),
                     ),
                     stream,
                     reason: Some(reason),
                 },
                 Ok(_) => continue,
                 // Unlike snapshot consumers, hooks cannot reconcile after the
-                // fact — a missed "stream-up" script cannot be rerun — so the
+                // fact — a missed "stream-created" script cannot be rerun — so the
                 // loss is surfaced loudly instead of being smoothed over.
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!("hook dispatcher dropped {} stream events due to lag", n);
@@ -316,7 +317,7 @@ mod tests {
 
             let (tx, rx) = mpsc::unbounded_channel();
             let handle = tokio::spawn(executor(rx, None, OnError::Stop));
-            tx.send(job("stream-up", vec![fail, marker])).unwrap();
+            tx.send(job("stream-created", vec![fail, marker])).unwrap();
             drop(tx);
             handle.await.unwrap();
 
@@ -332,7 +333,7 @@ mod tests {
 
             let (tx, rx) = mpsc::unbounded_channel();
             let handle = tokio::spawn(executor(rx, None, OnError::Continue));
-            tx.send(job("stream-up", vec![fail, marker])).unwrap();
+            tx.send(job("stream-created", vec![fail, marker])).unwrap();
             drop(tx);
             handle.await.unwrap();
 
@@ -353,8 +354,8 @@ mod tests {
                 OnError::Stop,
             ));
             // The timed-out job stops; the *next* event must still run.
-            tx.send(job("stream-up", vec![slow])).unwrap();
-            tx.send(job("stream-down", vec![marker])).unwrap();
+            tx.send(job("stream-created", vec![slow])).unwrap();
+            tx.send(job("stream-deleted", vec![marker])).unwrap();
             drop(tx);
 
             let start = std::time::Instant::now();
@@ -371,14 +372,15 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let log = dir.path().join("order.log");
             // argv contract: $1 = event, $3 = reason; env: LIVE777_STREAM.
-            let up_global = log_line_script(dir.path(), "up1.sh", &log, "up-1 $LIVE777_STREAM");
-            let up_stream = log_line_script(dir.path(), "up2.sh", &log, "up-2 $1");
-            let down_global = log_line_script(dir.path(), "down.sh", &log, "down-1 $3");
+            let created_global =
+                log_line_script(dir.path(), "created1.sh", &log, "created-1 $LIVE777_STREAM");
+            let created_stream = log_line_script(dir.path(), "created2.sh", &log, "created-2 $1");
+            let deleted_global = log_line_script(dir.path(), "deleted1.sh", &log, "deleted-1 $3");
 
             let hooks = HooksConfig {
                 hooks: HookConfig {
-                    on_stream_up: vec![up_global],
-                    on_stream_down: vec![down_global],
+                    on_stream_created: vec![created_global],
+                    on_stream_deleted: vec![deleted_global],
                 },
                 timeout_ms: 5_000,
                 on_error: OnError::Stop,
@@ -388,7 +390,7 @@ mod tests {
                 "cam1".to_string(),
                 StreamEntry {
                     hooks: HookConfig {
-                        on_stream_up: vec![up_stream],
+                        on_stream_created: vec![created_stream],
                         ..Default::default()
                     },
                     ..Default::default()
@@ -405,7 +407,11 @@ mod tests {
             let content = wait_for_lines(&log, 3).await;
             assert_eq!(
                 content.lines().collect::<Vec<_>>(),
-                ["up-1 cam1", "up-2 stream-up", "down-1 api-deleted"]
+                [
+                    "created-1 cam1",
+                    "created-2 stream-created",
+                    "deleted-1 api-deleted"
+                ]
             );
             cancel.cancel();
         }

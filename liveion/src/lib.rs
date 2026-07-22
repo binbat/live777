@@ -60,7 +60,7 @@ where
     }
 
     // Hook init must precede source auto-start so streams created at
-    // startup emit their StreamUp hooks (the bus does not replay).
+    // startup emit their StreamCreated hooks (the bus does not replay).
     crate::hook::init(
         &app_state.stream_manager,
         cfg.hooks.clone(),

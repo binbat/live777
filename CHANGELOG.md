@@ -14,9 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Webhook-style push notifications are replaced by Server-Sent Events (`GET /api/sse/streams`) and the `net4mqtt` xdata channel, both of which push full stream-state snapshots when the state changes.
   - The `/api/sse/events` endpoint has been removed. Use `/api/sse/streams` instead.
 
+### Added
+
+- `liveion` stream-lifecycle hooks: the new `[hooks]` section (global) and `[stream.<name>.hooks]` (per stream) run external scripts when a stream is created (`StreamCreated`) or deleted (`StreamDeleted`) — e.g. to start a capture device / hardware encoder when an on-demand (`auto_create_whep`) stream appears and stop it on teardown. Scripts receive `<event> <stream> [reason]` as argv and the same values as `LIVE777_EVENT`/`LIVE777_STREAM`/`LIVE777_REASON`; execution is a single FIFO queue (global hooks first, then per-stream, in configured order) with per-script `timeout_ms` and an `on_error = "stop"|"continue"` policy.
+
 ### Changed
 
-- `liveion` stream lifecycle events are now typed (`liveion::event::Event`) and travel on a single manager-wide broadcast bus: `StreamDown` emission is centralized into one funnel so it always pairs with its metrics update, and every consumer (SSE, net4mqtt, recorder) tolerates broadcast lag by re-syncing instead of silently stopping.
+- `liveion` stream lifecycle events are now typed (`liveion::event::Event`) and travel on a single manager-wide broadcast bus: `StreamDeleted` emission is centralized into one funnel so it always pairs with its metrics update, and every consumer (SSE, net4mqtt, recorder) tolerates broadcast lag by re-syncing instead of silently stopping.
 - `liveion` subscribe-side RTP write errors are now retried with a 3s bound while the peer may still be coming up, instead of being classified by matching `webrtc` crate error strings.
 - `liveion` now exposes a single SSE endpoint `/api/sse/streams` that pushes a full snapshot of all streams whenever stream state changes.
 - `net4mqtt` xdata messages now carry the sender identity as part of the channel tuple `(sender_id, key, payload)`. The receiver no longer needs to trust a user-supplied `alias` field inside the payload.

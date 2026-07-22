@@ -211,7 +211,7 @@ root = "./storage"
 # auto_create_whip = false
 # auto_create_whep = false
 
-# Stream-lifecycle hooks: run scripts when streams are created/destroyed.
+# Stream-lifecycle hooks: run scripts when streams are created/deleted.
 # Scripts receive `<event> <stream> [reason]` as argv and the same values as
 # LIVE777_EVENT / LIVE777_STREAM / LIVE777_REASON. Hooks of one event run in
 # order (global first, then per-stream); events are processed strictly FIFO.
@@ -220,13 +220,13 @@ root = "./storage"
 # timeout_ms = 5000
 # "stop": skip the remaining hooks of the same event on failure
 # on_error = "stop"
-# on_stream_up = ["/etc/live777/hooks/up.sh"]
-# on_stream_down = ["/etc/live777/hooks/down.sh"]
+# on_stream_created = ["/etc/live777/hooks/up.sh"]
+# on_stream_deleted = ["/etc/live777/hooks/down.sh"]
 
 # Per-stream hooks run after the global [hooks] ones.
 # [stream.cam1.hooks]
-# on_stream_up = ["/etc/live777/hooks/cam1-up.sh"]
-# on_stream_down = ["/etc/live777/hooks/cam1-down.sh"]
+# on_stream_created = ["/etc/live777/hooks/cam1-up.sh"]
+# on_stream_deleted = ["/etc/live777/hooks/cam1-down.sh"]
 
 # Default enabled `--features=net4mqtt`
 # [net4mqtt]

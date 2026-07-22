@@ -129,7 +129,7 @@ segment is used as the liveion stream identifier.
 
 ## Stream Hooks
 
-Live777 can run external scripts when streams are created or destroyed. A
+Live777 can run external scripts when streams are created or deleted. A
 typical use is on-demand source activation: when a WHEP subscriber triggers
 `auto_create_whep`, a hook starts a capture device / hardware encoder; when
 the stream is torn down, the hook stops it again to save resources.
@@ -140,13 +140,13 @@ the stream is torn down, the hook stops it again to save resources.
 timeout_ms = 5000    # per-script timeout, 0 disables
 on_error = "stop"    # "stop" skips the remaining hooks of the same event;
                      # "continue" runs them anyway
-on_stream_up   = ["/etc/live777/hooks/notify.sh"]
-on_stream_down = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup.sh"]
+on_stream_created   = ["/etc/live777/hooks/notify.sh"]
+on_stream_deleted = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup.sh"]
 
 # Per-stream hooks, run after the global ones.
 [stream.cam1.hooks]
-on_stream_up   = ["/etc/live777/hooks/cam1-up.sh"]
-on_stream_down = ["/etc/live777/hooks/cam1-down.sh"]
+on_stream_created   = ["/etc/live777/hooks/cam1-up.sh"]
+on_stream_deleted = ["/etc/live777/hooks/cam1-down.sh"]
 ```
 
 Execution guarantees:
@@ -155,7 +155,7 @@ Execution guarantees:
   configured order.
 - Events are processed in a single FIFO queue — all hooks of an earlier
   event finish before any hook of a later event starts, so a stream's
-  `stream-up` hooks always complete before its `stream-down` hooks begin.
+  `stream-created` hooks always complete before its `stream-deleted` hooks begin.
 - A failed script (non-zero exit, spawn error, timeout kill) is logged and
   handled per `on_error`; it never affects later events or the server.
 
@@ -164,21 +164,21 @@ as argv and as environment variables:
 
 | argv          | env               | value                                                                            |
 | ------------- | ----------------- | -------------------------------------------------------------------------------- |
-| `$1`          | `LIVE777_EVENT`   | `stream-up` / `stream-down`                                                      |
+| `$1`          | `LIVE777_EVENT`   | `stream-created` / `stream-deleted`                                                      |
 | `$2`          | `LIVE777_STREAM`  | stream name                                                                      |
-| `$3` (down only) | `LIVE777_REASON` | `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` |
+| `$3` (deleted only) | `LIVE777_REASON` | `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` |
 
 Notes:
 
 - Scripts should return quickly after initiating their work (e.g. launch an
   encoder in the background). A blocked script blocks the whole hook queue.
-- Make scripts idempotent: a `stream-down` hook also runs when the publisher
+- Make scripts idempotent: a `stream-deleted` hook also runs when the publisher
   itself died (`publish-leave-timeout`), so stop scripts must tolerate an
   already-stopped device.
 - For on-demand sources, combine with `[strategy] auto_create_whep = true`
   and a generous `auto_delete_whep` (e.g. `30000`) so brief subscriber
   flapping does not cycle the hardware. Per-stream overrides live under
   `[stream.<name>.strategy]`.
-- No hooks fire on server shutdown (no `stream-down` events are emitted
+- No hooks fire on server shutdown (no `stream-deleted` events are emitted
   then).
 

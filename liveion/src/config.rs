@@ -261,25 +261,25 @@ mod hook_tests {
             [hooks]
             timeout_ms = 3000
             on_error = "continue"
-            on_stream_up = ["/global/up.sh"]
-            on_stream_down = ["/global/down.sh", "/global/down2.sh"]
+            on_stream_created = ["/global/up.sh"]
+            on_stream_deleted = ["/global/down.sh", "/global/down2.sh"]
 
             [stream.cam1.hooks]
-            on_stream_up = ["/per-stream/up.sh"]
+            on_stream_created = ["/per-stream/up.sh"]
             "#,
         )
         .unwrap();
 
         assert_eq!(cfg.hooks.timeout_ms, 3000);
         assert_eq!(cfg.hooks.on_error, OnError::Continue);
-        assert_eq!(cfg.hooks.hooks.on_stream_up, ["/global/up.sh"]);
+        assert_eq!(cfg.hooks.hooks.on_stream_created, ["/global/up.sh"]);
         assert_eq!(
-            cfg.hooks.hooks.on_stream_down,
+            cfg.hooks.hooks.on_stream_deleted,
             ["/global/down.sh", "/global/down2.sh"]
         );
         let entry = cfg.stream.streams.get("cam1").unwrap();
-        assert_eq!(entry.hooks.on_stream_up, ["/per-stream/up.sh"]);
-        assert!(entry.hooks.on_stream_down.is_empty());
+        assert_eq!(entry.hooks.on_stream_created, ["/per-stream/up.sh"]);
+        assert!(entry.hooks.on_stream_deleted.is_empty());
     }
 
     #[test]
@@ -287,8 +287,8 @@ mod hook_tests {
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg.hooks.timeout_ms, 5000);
         assert_eq!(cfg.hooks.on_error, OnError::Stop);
-        assert!(cfg.hooks.hooks.on_stream_up.is_empty());
-        assert!(cfg.hooks.hooks.on_stream_down.is_empty());
+        assert!(cfg.hooks.hooks.on_stream_created.is_empty());
+        assert!(cfg.hooks.hooks.on_stream_deleted.is_empty());
     }
 
     #[test]
@@ -475,10 +475,10 @@ pub enum OnError {
 pub struct HookConfig {
     /// Scripts run, in order, when a stream is created.
     #[serde(default)]
-    pub on_stream_up: Vec<String>,
-    /// Scripts run, in order, when a stream is destroyed.
+    pub on_stream_created: Vec<String>,
+    /// Scripts run, in order, when a stream is deleted.
     #[serde(default)]
-    pub on_stream_down: Vec<String>,
+    pub on_stream_deleted: Vec<String>,
 }
 
 /// Global `[hooks]` section: hook scripts plus execution policy.
