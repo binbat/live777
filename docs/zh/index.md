@@ -24,6 +24,12 @@ features:
     details: 同时具有 P2P 和 SFU 的优点，可以在只有一个人是使用 P2P 模式，多人使用 SFU 模式
   - title: 🌐 多平台的支持
     details: Linux, MacOS, Windows, Android 多种操作系统和多种架构的支持
+  - title: 🕸️ 集群与级联
+    details: 配套的 liveman 管理器可以将多个 Live777 节点组成集群，代理客户端请求、管理节点间的级联状态，并协调整个集群的录制
+  - title: 🎥 流录制
+    details: 将发布的流录制为分片 MP4 片段，保存到本地文件系统或兼容 S3 的对象存储，通过 REST API 控制
+  - title: 📊 WebUI 与可观测性
+    details: 内置嵌入式 WebUI、管理与会话 REST API 以及 Prometheus 指标，便于在生产环境中运维和观测
 ---
 
 <style>

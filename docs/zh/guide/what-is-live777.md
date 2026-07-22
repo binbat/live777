@@ -2,6 +2,12 @@
 
 简单，高性能的 `WHIP`/`WHEP` 协议优先的流媒体服务器
 
+对于更大规模的部署，配套的 `liveman` 管理器可以将多个 Live777 节点组成集群：它将客户端请求代理到各个节点，管理节点之间的级联状态，并协调整个集群的录制。
+
+Live777 可以将发布的流录制为分片 MP4（fMP4）片段，保存到本地文件系统或兼容 S3 的对象存储，并通过 REST API 进行控制。
+
+Live777 内置嵌入式 WebUI、管理与会话 REST API 以及 Prometheus 指标，便于在生产环境中运维和观测。
+
 ## 什么是 SFU Server ?
 
 ![webrtc-mesh-mcu-sfu](/webrtc-mesh-mcu-sfu.excalidraw.svg)

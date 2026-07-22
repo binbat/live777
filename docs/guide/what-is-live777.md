@@ -4,6 +4,12 @@ A very simple, high performance, edge WebRTC SFU(**Selective Forwarding Unit**) 
 
 Live777 is an SFU server for real-time video streaming for the `WHIP`/`WHEP` as first protocol.
 
+For larger deployments, the companion `liveman` manager turns multiple Live777 nodes into a cluster: it proxies client requests to the nodes, manages cascade state between them, and coordinates recording across the cluster.
+
+Live777 can record published streams as fragmented MP4 segments to the local filesystem or S3-compatible object storage, controlled through its REST API.
+
+An embedded WebUI, admin and session REST APIs, and Prometheus metrics are built in, making the server easy to operate and observe in production.
+
 ## What is SFU Server ?
 
 ![webrtc-mesh-mcu-sfu](/webrtc-mesh-mcu-sfu.excalidraw.svg)

@@ -24,6 +24,12 @@ features:
     details: Only responsible for forwarding, do not do confluence, transcoding and other resource overhead of the media processing work, the encoding and decoding work are respectively placed on the sender and the receiver.
   - title: 🌐 Multiple platform support
     details: Linux, MacOS, Windows, Android and arm, x86 with multi-platform native support.
+  - title: 🕸️ Cluster & cascade
+    details: The companion liveman manager turns multiple Live777 nodes into a cluster — proxying client requests, managing cascade state between nodes, and coordinating recording across the cluster.
+  - title: 🎥 Stream recording
+    details: Record published streams as fragmented MP4 segments to the local filesystem or S3-compatible object storage, controlled through the REST API.
+  - title: 📊 WebUI & observability
+    details: An embedded WebUI, admin and session REST APIs, and Prometheus metrics are built in for easy operation and observability in production.
 ---
 
 <style>
