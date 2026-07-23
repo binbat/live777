@@ -1146,9 +1146,13 @@ impl Manager {
                     .await;
                 continue;
             }
-            // URL-based sources (RTSP / SDP)
+            // URL-based sources (RTSP / SDP / WHEP)
             if let Some(ref url) = source_cfg.url {
-                tracing::info!("Starting URL-based source: {} from {}", stream_id, url);
+                tracing::info!(
+                    "Starting URL-based source: {} from {}",
+                    stream_id,
+                    crate::stream::source::redact_url(url)
+                );
                 let source = match create_source_from_url(stream_id, url, source_cfg).await {
                     Ok(s) => s,
                     Err(e) => {

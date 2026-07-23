@@ -77,6 +77,98 @@ pub enum MediaPacket {
     _Unused,
 }
 
+/// RTP/RTCP channel assignment for `MediaPacket::Rtp` producers and the
+/// source bridge consuming them. URL-based sources (RTSP interleaved
+/// channels, WHEP synthesized channels) and the bridge must agree on one
+/// mapping, so it lives here next to `MediaPacket` instead of being
+/// mirrored on both sides.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub(crate) struct ChannelMapping {
+    pub(crate) video_rtp: Option<u8>,
+    pub(crate) video_rtcp: Option<u8>,
+    pub(crate) audio_rtp: Option<u8>,
+    pub(crate) audio_rtcp: Option<u8>,
+}
+
+#[allow(dead_code)]
+impl ChannelMapping {
+    pub(crate) fn new(has_video: bool, has_audio: bool) -> Self {
+        match (has_video, has_audio) {
+            (true, false) => Self {
+                video_rtp: Some(0),
+                video_rtcp: Some(1),
+                audio_rtp: None,
+                audio_rtcp: None,
+            },
+            (false, true) => Self {
+                video_rtp: None,
+                video_rtcp: None,
+                audio_rtp: Some(0),
+                audio_rtcp: Some(1),
+            },
+            (true, true) => Self {
+                video_rtp: Some(0),
+                video_rtcp: Some(1),
+                audio_rtp: Some(2),
+                audio_rtcp: Some(3),
+            },
+            (false, false) => Self {
+                video_rtp: None,
+                video_rtcp: None,
+                audio_rtp: None,
+                audio_rtcp: None,
+            },
+        }
+    }
+
+    pub(crate) fn is_video_rtp(&self, channel: u8) -> bool {
+        self.video_rtp == Some(channel)
+    }
+
+    pub(crate) fn is_video_rtcp(&self, channel: u8) -> bool {
+        self.video_rtcp == Some(channel)
+    }
+
+    pub(crate) fn is_audio_rtp(&self, channel: u8) -> bool {
+        self.audio_rtp == Some(channel)
+    }
+
+    pub(crate) fn is_audio_rtcp(&self, channel: u8) -> bool {
+        self.audio_rtcp == Some(channel)
+    }
+}
+
+/// `url` with any userinfo credentials stripped, safe for log lines.
+/// Falls back to a scheme-only placeholder when the URL cannot be parsed
+/// (an unparseable URL may still embed credentials).
+#[cfg(feature = "source")]
+pub(crate) fn redact_url(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(mut url) => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        Err(_) => match raw.split_once("://") {
+            Some((scheme, _)) => format!("{scheme}://<redacted>"),
+            None => "<redacted>".to_string(),
+        },
+    }
+}
+
+/// Source-kind label for a URL, mirroring `create_url_source`'s dispatch.
+#[cfg(feature = "source")]
+pub(crate) fn url_source_kind(url: &str) -> &'static str {
+    if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
+        "rtsp"
+    } else if url.starts_with("whep://") || url.starts_with("wheps://") {
+        "whep"
+    } else {
+        "sdp"
+    }
+}
+
 #[derive(Debug, Clone)]
 #[cfg(any(
     feature = "source-rtsp",
@@ -85,6 +177,9 @@ pub enum MediaPacket {
 ))]
 pub struct InternalSourceConfig {
     pub stream_id: String,
+    /// Only reconnect-capable sources (RTSP/WHEP) consult the URL; the SDP
+    /// file source never reconnects.
+    #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
     pub url: String,
 }
 
@@ -95,12 +190,20 @@ pub struct InternalSourceConfig {
 ))]
 impl InternalSourceConfig {
     pub fn from_config(stream_id: &str, config: &crate::config::SourceConfig) -> Self {
+        #[cfg(not(any(feature = "source-rtsp", feature = "source-whep")))]
+        let _ = config;
+
         Self {
             stream_id: stream_id.to_string(),
+            #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
             url: config.url.clone().unwrap_or_default(),
         }
     }
+}
 
+/// Reconnect policy shared by the reconnect-capable (RTSP/WHEP) sources.
+#[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
+impl InternalSourceConfig {
     pub fn reconnect_enabled(&self) -> bool {
         self.url.starts_with("rtsp://")
             || self.url.starts_with("rtsps://")
@@ -108,8 +211,15 @@ impl InternalSourceConfig {
             || self.url.starts_with("wheps://")
     }
 
-    pub fn reconnect_interval_ms(&self) -> u64 {
-        5000
+    /// Delay before reconnect `attempt` (1-based): exponential backoff from a
+    /// 5 s base, capped at 60 s (5 s, 10 s, 20 s, 40 s, 60 s, …).
+    pub fn reconnect_delay_ms(&self, attempt: u32) -> u64 {
+        const RECONNECT_BASE_MS: u64 = 5_000;
+        const RECONNECT_MAX_MS: u64 = 60_000;
+        let shift = attempt.saturating_sub(1).min(4);
+        RECONNECT_BASE_MS
+            .saturating_mul(1u64 << shift)
+            .min(RECONNECT_MAX_MS)
     }
 
     pub fn max_reconnect_attempts(&self) -> u32 {

@@ -21,7 +21,7 @@ struct RtspClientContext {
     rtsp_url: String,
     config: InternalSourceConfig,
     rtp_tx: broadcast::Sender<MediaPacket>,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     media_info_store: Arc<RwLock<Option<rtsp::MediaInfo>>>,
     rtcp_tx_store: RtcpSender,
@@ -30,7 +30,7 @@ struct RtspClientContext {
 pub struct RtspSource {
     config: InternalSourceConfig,
     rtsp_url: String,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -49,7 +49,7 @@ impl RtspSource {
         Ok(Self {
             config,
             rtsp_url,
-            state: Arc::new(RwLock::new(StreamSourceState::Initializing)),
+            state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
             task_handle: None,
@@ -112,19 +112,24 @@ impl RtspSource {
     }
 
     async fn set_state(&self, new_state: StreamSourceState, error: Option<String>) {
-        let mut state = self.state.write().await;
-        let old_state = *state;
+        let changed = {
+            let mut state = self.state.write().unwrap();
+            let old_state = *state;
 
-        if old_state != new_state {
-            *state = new_state;
+            if old_state != new_state {
+                *state = new_state;
+                Some(old_state)
+            } else {
+                None
+            }
+        };
 
-            let event = StateChangeEvent {
+        if let Some(old_state) = changed {
+            let _ = self.state_tx.send(StateChangeEvent {
                 old_state,
                 new_state,
                 error,
-            };
-
-            let _ = self.state_tx.send(event);
+            });
 
             info!(
                 "[{}] State changed: {:?} -> {:?}",
@@ -141,10 +146,14 @@ impl RtspSource {
         let mut reconnect_count = 0u32;
 
         loop {
-            info!("[{}] Connecting to {}", ctx.stream_id, ctx.rtsp_url);
+            info!(
+                "[{}] Connecting to {}",
+                ctx.stream_id,
+                super::redact_url(&ctx.rtsp_url)
+            );
 
             {
-                let mut s = ctx.state.write().await;
+                let mut s = ctx.state.write().unwrap();
                 *s = if reconnect_count > 0 {
                     StreamSourceState::Reconnecting
                 } else {
@@ -299,7 +308,7 @@ impl RtspSource {
             info!(
                 "[{}] Reconnecting in {}ms (attempt {}/{})",
                 ctx.stream_id,
-                ctx.config.reconnect_interval_ms(),
+                ctx.config.reconnect_delay_ms(reconnect_count),
                 reconnect_count,
                 if ctx.config.max_reconnect_attempts() == 0 {
                     "∞".to_string()
@@ -308,21 +317,18 @@ impl RtspSource {
                 }
             );
 
-            match shutdown_rx.try_recv() {
-                Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
                     info!(
                         "[{}] Shutdown signal received during reconnect wait",
                         ctx.stream_id
                     );
                     break;
                 }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(
+                    ctx.config.reconnect_delay_ms(reconnect_count),
+                )) => {}
             }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(
-                ctx.config.reconnect_interval_ms(),
-            ))
-            .await;
         }
 
         Self::emit_state_change(
@@ -390,19 +396,21 @@ impl RtspSource {
     }
 
     async fn emit_state_change(
-        state: &Arc<RwLock<StreamSourceState>>,
+        state: &Arc<std::sync::RwLock<StreamSourceState>>,
         state_tx: &broadcast::Sender<StateChangeEvent>,
         new_state: StreamSourceState,
         error: Option<String>,
     ) {
-        let mut s = state.write().await;
-        let old_state = *s;
-        *s = new_state;
+        let event = {
+            let mut s = state.write().unwrap();
+            let old_state = *s;
+            *s = new_state;
 
-        let event = StateChangeEvent {
-            old_state,
-            new_state,
-            error,
+            StateChangeEvent {
+                old_state,
+                new_state,
+                error,
+            }
         };
 
         let _ = state_tx.send(event);
@@ -421,7 +429,7 @@ impl StreamSource for RtspSource {
     }
 
     fn state(&self) -> StreamSourceState {
-        *self.state.blocking_read()
+        *self.state.read().unwrap()
     }
 
     async fn start(&mut self) -> Result<()> {

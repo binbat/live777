@@ -2614,6 +2614,7 @@ dependencies = [
  "net4mqtt",
  "once_cell",
  "opendal",
+ "percent-encoding",
  "prometheus",
  "rand 0.10.2",
  "reqwest",

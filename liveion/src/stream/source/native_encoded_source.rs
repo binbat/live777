@@ -30,7 +30,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 pub struct NativeEncodedSource {
     stream_id: String,
     params: livehal::NativeSourceParams,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     shutdown_tx: Option<broadcast::Sender<()>>,
@@ -55,7 +55,7 @@ impl NativeEncodedSource {
         Self {
             stream_id,
             params,
-            state: Arc::new(RwLock::new(StreamSourceState::Initializing)),
+            state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
             shutdown_tx: None,
@@ -70,10 +70,18 @@ impl NativeEncodedSource {
     }
 
     async fn set_state(&self, new_state: StreamSourceState, error: Option<String>) {
-        let mut state = self.state.write().await;
-        let old_state = *state;
-        if old_state != new_state {
-            *state = new_state;
+        let changed = {
+            let mut state = self.state.write().unwrap();
+            let old_state = *state;
+            if old_state != new_state {
+                *state = new_state;
+                Some(old_state)
+            } else {
+                None
+            }
+        };
+
+        if let Some(old_state) = changed {
             let _ = self.state_tx.send(StateChangeEvent {
                 old_state,
                 new_state,
@@ -94,7 +102,7 @@ impl NativeEncodedSource {
     }
 
     pub fn state(&self) -> StreamSourceState {
-        *self.state.blocking_read()
+        *self.state.read().unwrap()
     }
 
     pub fn subscribe_rtp(&self) -> broadcast::Receiver<MediaPacket> {

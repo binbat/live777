@@ -609,6 +609,10 @@ where
         },
     );
 
+    // The TOML-facing config validator must accept every scheme the matrix
+    // provisions, or the same config would be rejected at `live777` startup.
+    cfg.validate().expect("WHEP source config must validate");
+
     let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
         .await
         .unwrap();

@@ -59,7 +59,11 @@ async fn create_source(
     Path(stream): Path<String>,
     Json(req): Json<CreateSourceRequest>,
 ) -> Result<Json<SourceResponse>> {
-    info!("Creating source for stream: {} from {}", stream, req.url);
+    info!(
+        "Creating source for stream: {} from {}",
+        stream,
+        redact_url(&req.url)
+    );
 
     let config = crate::config::SourceConfig {
         url: Some(req.url.clone()),
@@ -73,13 +77,7 @@ async fn create_source(
 
     let source = create_source_from_url(&stream, &req.url, &config).await?;
 
-    let source_type = if req.url.starts_with("rtsp://") || req.url.starts_with("rtsps://") {
-        "rtsp"
-    } else if req.url.starts_with("whep://") || req.url.starts_with("wheps://") {
-        "whep"
-    } else {
-        "sdp"
-    };
+    let source_type = url_source_kind(&req.url);
 
     let source_manager = &state.stream_manager.source_manager;
     let id = source_manager.add_source(source).await?;

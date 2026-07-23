@@ -35,7 +35,7 @@ mod r#macro;
 mod metrics;
 mod result;
 mod route;
-#[cfg(any(feature = "rtsp", feature = "source-rtsp"))]
+#[cfg(any(feature = "rtsp", feature = "source-rtsp", feature = "source-sdp"))]
 mod rtsp_codec;
 #[cfg(feature = "rtsp")]
 mod rtsp_server;

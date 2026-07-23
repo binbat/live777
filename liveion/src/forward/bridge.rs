@@ -2,12 +2,11 @@ use super::PeerForward;
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "source-whep",
-    feature = "native-source"
+    feature = "source-whep"
 ))]
 use crate::forward::av1_repacketizer::Av1Repacketizer;
 use crate::forward::rtcp::RtcpMessage;
-use crate::stream::source::{MediaPacket, StateChangeEvent};
+use crate::stream::source::{ChannelMapping, MediaPacket, StateChangeEvent};
 use anyhow::Result;
 #[cfg(any(
     feature = "source-rtsp",
@@ -41,62 +40,6 @@ use tracing::{debug, error, info, trace, warn};
 ))]
 const LOG_PACKET_INTERVAL: u64 = 100;
 
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-struct ChannelMapping {
-    video_rtp: Option<u8>,
-    video_rtcp: Option<u8>,
-    audio_rtp: Option<u8>,
-    audio_rtcp: Option<u8>,
-}
-
-#[allow(dead_code)]
-impl ChannelMapping {
-    fn new(has_video: bool, has_audio: bool) -> Self {
-        match (has_video, has_audio) {
-            (true, false) => Self {
-                video_rtp: Some(0),
-                video_rtcp: Some(1),
-                audio_rtp: None,
-                audio_rtcp: None,
-            },
-            (false, true) => Self {
-                video_rtp: None,
-                video_rtcp: None,
-                audio_rtp: Some(0),
-                audio_rtcp: Some(1),
-            },
-            (true, true) => Self {
-                video_rtp: Some(0),
-                video_rtcp: Some(1),
-                audio_rtp: Some(2),
-                audio_rtcp: Some(3),
-            },
-            (false, false) => Self {
-                video_rtp: None,
-                video_rtcp: None,
-                audio_rtp: None,
-                audio_rtcp: None,
-            },
-        }
-    }
-
-    fn is_video_rtp(&self, channel: u8) -> bool {
-        self.video_rtp == Some(channel)
-    }
-
-    fn is_video_rtcp(&self, channel: u8) -> bool {
-        self.video_rtcp == Some(channel)
-    }
-
-    fn is_audio_rtp(&self, channel: u8) -> bool {
-        self.audio_rtp == Some(channel)
-    }
-
-    fn is_audio_rtcp(&self, channel: u8) -> bool {
-        self.audio_rtcp == Some(channel)
-    }
-}
 pub struct SourceBridge {
     source_id: String,
     forward: PeerForward,
@@ -107,8 +50,7 @@ pub struct SourceBridge {
     #[cfg(any(
         feature = "source-rtsp",
         feature = "source-sdp",
-        feature = "source-whep",
-        feature = "native-source"
+        feature = "source-whep"
     ))]
     av1_repacketizer: Option<Av1Repacketizer>,
 
@@ -127,8 +69,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
-            feature = "source-whep",
-            feature = "native-source"
+            feature = "source-whep"
         ))]
         video_codec_name: Option<String>,
     ) -> Self {
@@ -136,8 +77,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
-            feature = "source-whep",
-            feature = "native-source"
+            feature = "source-whep"
         ))]
         let av1_repacketizer = video_codec_name
             .as_deref()
@@ -154,8 +94,7 @@ impl SourceBridge {
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
-                feature = "source-whep",
-                feature = "native-source"
+                feature = "source-whep"
             ))]
             av1_repacketizer,
             #[cfg(feature = "source")]
@@ -208,8 +147,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
-            feature = "source-whep",
-            feature = "native-source"
+            feature = "source-whep"
         ))]
         let mut av1_repacketizer = self.av1_repacketizer.take();
 

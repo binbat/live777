@@ -653,11 +653,13 @@ impl SourceConfig {
         let url_lower = url.to_lowercase();
         if !url_lower.starts_with("rtsp://")
             && !url_lower.starts_with("rtsps://")
+            && !url_lower.starts_with("whep://")
+            && !url_lower.starts_with("wheps://")
             && !url_lower.starts_with("file://")
             && !url_lower.ends_with(".sdp")
         {
             anyhow::bail!(
-                "Unsupported URL: {}. Valid: rtsp://, rtsps://, file://, .sdp",
+                "Unsupported URL: {}. Valid: rtsp://, rtsps://, whep://, wheps://, file://, .sdp",
                 url
             );
         }

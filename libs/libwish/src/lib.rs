@@ -142,7 +142,12 @@ async fn request<T: Into<Body>>(
     headers: HeaderMap,
     body: T,
 ) -> Result<Response> {
-    let client = reqwest::Client::new();
+    // Bounded so a peer that accepts the connection but never answers cannot
+    // wedge callers (e.g. a WHEP source's reconnect loop or `stop()`).
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
     client
         .request(Method::from_str(method)?, url)
         .headers(headers)

@@ -24,7 +24,7 @@ struct UdpReceiverContext {
     channel: u8,
     port: u16,
     rtp_tx: broadcast::Sender<MediaPacket>,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     is_ipv6: bool,
 }
@@ -32,7 +32,7 @@ struct UdpReceiverContext {
 pub struct SdpSource {
     config: InternalSourceConfig,
     sdp_content: String,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     task_handles: Vec<tokio::task::JoinHandle<()>>,
@@ -60,7 +60,7 @@ impl SdpSource {
         Ok(Self {
             config,
             sdp_content,
-            state: Arc::new(RwLock::new(StreamSourceState::Initializing)),
+            state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
             task_handles: Vec::new(),
@@ -73,19 +73,24 @@ impl SdpSource {
     }
 
     async fn set_state(&self, new_state: StreamSourceState, error: Option<String>) {
-        let mut state = self.state.write().await;
-        let old_state = *state;
+        let changed = {
+            let mut state = self.state.write().unwrap();
+            let old_state = *state;
 
-        if old_state != new_state {
-            *state = new_state;
+            if old_state != new_state {
+                *state = new_state;
+                Some(old_state)
+            } else {
+                None
+            }
+        };
 
-            let event = StateChangeEvent {
+        if let Some(old_state) = changed {
+            let _ = self.state_tx.send(StateChangeEvent {
                 old_state,
                 new_state,
                 error,
-            };
-
-            let _ = self.state_tx.send(event);
+            });
 
             info!(
                 "[{}] State changed: {:?} -> {:?}",
@@ -315,7 +320,7 @@ impl SdpSource {
             Err(e) => {
                 error!("[{}] Failed to bind UDP socket: {}", ctx.stream_id, e);
 
-                let mut s = ctx.state.write().await;
+                let mut s = ctx.state.write().unwrap();
                 *s = StreamSourceState::Error;
 
                 let _ = ctx.state_tx.send(StateChangeEvent {
@@ -462,7 +467,7 @@ impl StreamSource for SdpSource {
     }
 
     fn state(&self) -> StreamSourceState {
-        *self.state.blocking_read()
+        *self.state.read().unwrap()
     }
 
     async fn start(&mut self) -> Result<()> {
@@ -600,6 +605,7 @@ mod tests {
         SdpSource::new(
             InternalSourceConfig {
                 stream_id: "test".to_string(),
+                #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
                 url: "test.sdp".to_string(),
             },
             sdp.to_string(),

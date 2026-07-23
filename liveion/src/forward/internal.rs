@@ -1498,22 +1498,6 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    #[cfg(feature = "recorder")]
-    pub(crate) async fn first_publish_video_codec(&self) -> Option<String> {
-        let publish_tracks = self.publish_tracks.read().await;
-        for t in publish_tracks.iter() {
-            if t.kind() == RtpCodecKind::Video {
-                let c = t.codec();
-                return Some(format!(
-                    "{}/{}",
-                    c.kind.to_lowercase(),
-                    c.codec.to_lowercase()
-                ));
-            }
-        }
-        None
-    }
-
     #[cfg(any(feature = "recorder", feature = "rtsp"))]
     pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.publish_tracks_change.subscribe()

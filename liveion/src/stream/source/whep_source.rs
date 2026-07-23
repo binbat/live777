@@ -6,7 +6,10 @@
 //! in the whole source lifecycle (on-demand start/stop, reconnect, codec
 //! readiness, RTCP feedback) like any other source.
 
-use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
+use super::{
+    ChannelMapping, InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource,
+    StreamSourceState,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use libwish::Client;
@@ -45,10 +48,21 @@ struct CodecSnapshot {
 
 impl CodecSnapshot {
     /// RTP channel carrying audio on the source bridge: after video when both
-    /// kinds are present, first otherwise. Mirrors the bridge's
-    /// `ChannelMapping`.
+    /// kinds are present, first otherwise. Uses the same `ChannelMapping` the
+    /// bridge applies, so the two sides cannot drift apart.
     fn audio_channel(&self) -> u8 {
-        if self.video.is_some() { 2 } else { 0 }
+        ChannelMapping::new(self.video.is_some(), self.audio.is_some())
+            .audio_rtp
+            .unwrap_or(0)
+    }
+
+    /// Whether the snapshot lacks a media kind that `current` (the freshly
+    /// connected session) delivers. A kind added upstream cannot be routed by
+    /// the bridge's fixed channel mapping, so the attempt must fail instead
+    /// of silently misrouting it.
+    fn lacks_kind_of(&self, current: &CodecSnapshot) -> bool {
+        (current.video.is_some() && self.video.is_none())
+            || (current.audio.is_some() && self.audio.is_none())
     }
 }
 
@@ -58,7 +72,7 @@ struct WhepClientContext {
     token: Option<String>,
     config: InternalSourceConfig,
     rtp_tx: broadcast::Sender<MediaPacket>,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     snapshot: Arc<RwLock<Option<CodecSnapshot>>>,
     peer_store: Arc<RwLock<Option<Arc<dyn PeerConnection>>>>,
@@ -79,7 +93,7 @@ pub struct WhepSource {
     config: InternalSourceConfig,
     whep_url: String,
     token: Option<String>,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -98,7 +112,7 @@ impl WhepSource {
             config,
             whep_url: http_url,
             token,
-            state: Arc::new(RwLock::new(StreamSourceState::Initializing)),
+            state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
             task_handle: None,
@@ -166,7 +180,7 @@ impl WhepSource {
             info!(
                 "[{}] Reconnecting in {}ms (attempt {})",
                 ctx.stream_id,
-                ctx.config.reconnect_interval_ms(),
+                ctx.config.reconnect_delay_ms(reconnect_count),
                 reconnect_count,
             );
 
@@ -179,7 +193,7 @@ impl WhepSource {
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(
-                    ctx.config.reconnect_interval_ms(),
+                    ctx.config.reconnect_delay_ms(reconnect_count),
                 )) => {}
             }
         }
@@ -231,12 +245,38 @@ impl WhepSource {
         *ctx.peer_store.write().await = Some(peer.clone());
 
         // The codec snapshot is taken once and reused across reconnects so
-        // the bridge's channel mapping stays stable.
+        // the bridge's channel mapping stays stable. A reconnect still waits
+        // for the known kinds and fails the attempt when the upstream started
+        // delivering a kind the snapshot does not have — the fixed mapping
+        // could not route it.
         let snapshot = ctx.snapshot.read().await.clone();
         let snapshot = match snapshot {
-            Some(snapshot) => Some(snapshot),
+            Some(snapshot) => {
+                let expected = (snapshot.video.is_some(), snapshot.audio.is_some());
+                match Self::wait_for_codecs(ctx, &ct, &codec_info, expected, shutdown_rx).await {
+                    WaitOutcome::Ready(current) => {
+                        if snapshot.lacks_kind_of(&current) {
+                            error!(
+                                "[{}] Upstream added a media kind across reconnect (was video={}, audio={})",
+                                ctx.stream_id,
+                                snapshot.video.is_some(),
+                                snapshot.audio.is_some()
+                            );
+                            Self::cleanup(ctx, &mut client, peer).await;
+                            return AttemptEnd::Failed("Upstream media kinds changed".to_string());
+                        }
+                        Some(snapshot)
+                    }
+                    WaitOutcome::Shutdown => {
+                        Self::cleanup(ctx, &mut client, peer).await;
+                        return AttemptEnd::Shutdown;
+                    }
+                    WaitOutcome::Failed => None,
+                }
+            }
             None => {
-                match Self::wait_for_codecs(ctx, &ct, &codec_info, &answer.sdp, shutdown_rx).await {
+                let expected = expected_media_kinds(&answer.sdp);
+                match Self::wait_for_codecs(ctx, &ct, &codec_info, expected, shutdown_rx).await {
                     WaitOutcome::Ready(snapshot) => {
                         info!(
                             "[{}] Codec ready: video={}, audio={}",
@@ -287,17 +327,16 @@ impl WhepSource {
         graceful_shutdown("WHEP source", client, peer).await;
     }
 
-    /// Wait until every media kind negotiated in the WHEP answer delivered
-    /// its first RTP packet (making its payload type known), accepting a
-    /// partially ready set after a grace period.
+    /// Wait until every expected media kind delivered its first RTP packet
+    /// (making its payload type known), accepting a partially ready set after
+    /// a grace period.
     async fn wait_for_codecs(
         ctx: &WhepClientContext,
         ct: &CancellationToken,
         codec_info: &Arc<Mutex<rtsp::CodecInfo>>,
-        answer_sdp: &str,
+        expected: (bool, bool),
         shutdown_rx: &mut oneshot::Receiver<()>,
     ) -> WaitOutcome {
-        let expected = expected_media_kinds(answer_sdp);
         let start = Instant::now();
         let mut first_ready_at: Option<Instant> = None;
 
@@ -386,19 +425,21 @@ impl WhepSource {
     }
 
     async fn emit_state_change(
-        state: &Arc<RwLock<StreamSourceState>>,
+        state: &Arc<std::sync::RwLock<StreamSourceState>>,
         state_tx: &broadcast::Sender<StateChangeEvent>,
         new_state: StreamSourceState,
         error: Option<String>,
     ) {
-        let mut s = state.write().await;
-        let old_state = *s;
-        *s = new_state;
+        let event = {
+            let mut s = state.write().unwrap();
+            let old_state = *s;
+            *s = new_state;
 
-        let event = StateChangeEvent {
-            old_state,
-            new_state,
-            error,
+            StateChangeEvent {
+                old_state,
+                new_state,
+                error,
+            }
         };
 
         let _ = state_tx.send(event);
@@ -424,7 +465,13 @@ fn parse_whep_url(raw: &str) -> Result<(String, Option<String>)> {
         anyhow::bail!("Invalid WHEP source URL (no host): {}", raw);
     }
 
-    let token = (!url.username().is_empty()).then(|| url.username().to_string());
+    // `Url::username` is still percent-encoded; decode so tokens containing
+    // reserved characters reach the Bearer header in their original form.
+    let token = (!url.username().is_empty()).then(|| {
+        percent_encoding::percent_decode_str(url.username())
+            .decode_utf8_lossy()
+            .into_owned()
+    });
     if token.is_some() {
         url.set_username("")
             .map_err(|_| anyhow::anyhow!("Invalid WHEP source URL: {}", raw))?;
@@ -482,7 +529,7 @@ impl StreamSource for WhepSource {
     }
 
     fn state(&self) -> StreamSourceState {
-        *self.state.blocking_read()
+        *self.state.read().unwrap()
     }
 
     async fn start(&mut self) -> Result<()> {
@@ -553,17 +600,15 @@ impl StreamSource for WhepSource {
     }
 
     async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
-        if self.peer_store.read().await.is_none() {
-            return None;
-        }
-
+        // Always hand out the wrapper, even while the peer is down: the
+        // forwarding task resolves the current peer per message, so feedback
+        // keeps flowing across reconnects and a bridge created during a
+        // reconnect window does not permanently lose keyframe requests.
         let (wrapper_tx, mut wrapper_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let peer_store = self.peer_store.clone();
         let stream_id = self.config.stream_id.clone();
 
         tokio::spawn(async move {
-            // The peer is looked up per message so RTCP feedback keeps
-            // flowing across WHEP reconnects.
             while let Some(data) = wrapper_rx.recv().await {
                 let peer = peer_store.read().await.clone();
                 match peer {
@@ -602,6 +647,13 @@ mod tests {
         let (url, token) = parse_whep_url("whep://secret@example.com/whep/cam1").unwrap();
         assert_eq!(url, "http://example.com/whep/cam1");
         assert_eq!(token, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn parse_whep_url_decodes_percent_encoded_token() {
+        let (url, token) = parse_whep_url("whep://tok%2Fen%3D@example.com/whep/cam1").unwrap();
+        assert_eq!(url, "http://example.com/whep/cam1");
+        assert_eq!(token, Some("tok/en=".to_string()));
     }
 
     #[test]
