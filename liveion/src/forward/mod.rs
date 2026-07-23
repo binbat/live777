@@ -407,7 +407,7 @@ impl PeerForward {
 
             let mut client = Client::new(
                 src.clone(),
-                Client::get_authorization_header_map(token.clone()),
+                Client::get_authorization_header_map(token.clone())?,
             );
 
             let (target_sdp, _) = client
@@ -689,7 +689,7 @@ impl PeerForward {
 
             let mut client = Client::new(
                 dst.clone(),
-                Client::get_authorization_header_map(token.clone()),
+                Client::get_authorization_header_map(token.clone())?,
             );
 
             let (target_sdp, _) = client.wish(description.sdp.clone()).await.map_err(|err| {

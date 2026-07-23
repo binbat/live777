@@ -75,7 +75,7 @@ impl Publisher {
 
         let mut client = Client::new(
             self.config.whip_url.clone(),
-            Client::get_auth_header_map(self.config.token.clone()),
+            Client::get_auth_header_map(self.config.token.clone())?,
         );
 
         // Compute codec-specific SDP parameters up front so they can be used

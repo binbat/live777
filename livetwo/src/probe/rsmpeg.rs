@@ -84,7 +84,7 @@ impl ProbeBackend for RsmpegProbe {
 
         let mut client = Client::new(
             config.whep_url.clone(),
-            Client::get_auth_header_map(config.token.clone()),
+            Client::get_auth_header_map(config.token.clone())?,
         );
 
         // Create the peer connection in the current task so that the returned

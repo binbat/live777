@@ -64,6 +64,29 @@ impl CodecSnapshot {
         (current.video.is_some() && self.video.is_none())
             || (current.audio.is_some() && self.audio.is_none())
     }
+
+    /// Whether a codec that exists in both snapshots changed across the
+    /// reconnect (mime type, clock rate, or channel count). The bridge's
+    /// virtual tracks and repayloader were built from the snapshot, so a
+    /// changed codec would be forwarded as undecodable garbage; the attempt
+    /// must fail instead. fmtp is deliberately not compared: a same-codec
+    /// parameter change (e.g. new SPS/PPS) still passes through, matching
+    /// the RTSP source's behavior.
+    fn codec_mismatch_of(&self, current: &CodecSnapshot) -> bool {
+        fn differs(a: &Option<RTCRtpCodecParameters>, b: &Option<RTCRtpCodecParameters>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    !a.rtp_codec
+                        .mime_type
+                        .eq_ignore_ascii_case(&b.rtp_codec.mime_type)
+                        || a.rtp_codec.clock_rate != b.rtp_codec.clock_rate
+                        || a.rtp_codec.channels != b.rtp_codec.channels
+                }
+                _ => false,
+            }
+        }
+        differs(&self.video, &current.video) || differs(&self.audio, &current.audio)
+    }
 }
 
 struct WhepClientContext {
@@ -121,6 +144,10 @@ impl WhepSource {
         ice_servers: Vec<RTCIceServer>,
     ) -> Result<Self> {
         let (http_url, token) = parse_whep_url(whep_url)?;
+        // The token reaches the Authorization header verbatim on every
+        // attempt; reject invalid header values now, at construction,
+        // instead of failing inside the source task.
+        Client::get_auth_header_map(token.clone())?;
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
 
@@ -235,10 +262,19 @@ impl WhepSource {
         info!("[{}] Connecting to {}", ctx.stream_id, ctx.whep_url);
 
         let ct = CancellationToken::new();
-        let mut client = Client::new(
-            ctx.whep_url.clone(),
-            Client::get_auth_header_map(ctx.token.clone()),
-        );
+        // Validated at construction (WhepSource::new); an error here is
+        // defensive and fails the attempt instead of panicking the task.
+        let auth = match Client::get_auth_header_map(ctx.token.clone()) {
+            Ok(auth) => auth,
+            Err(e) => {
+                error!("[{}] Invalid auth token: {}", ctx.stream_id, e);
+                return AttemptEnd::Failed {
+                    reason: format!("Invalid auth token: {}", e),
+                    connected: false,
+                };
+            }
+        };
+        let mut client = Client::new(ctx.whep_url.clone(), auth);
         let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
         let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
         let codec_info = Arc::new(Mutex::new(rtsp::CodecInfo::new()));
@@ -287,6 +323,21 @@ impl WhepSource {
                             Self::cleanup(ctx, &mut client, peer).await;
                             return AttemptEnd::Failed {
                                 reason: "Upstream media kinds changed".to_string(),
+                                connected: false,
+                            };
+                        }
+                        if snapshot.codec_mismatch_of(&current) {
+                            error!(
+                                "[{}] Upstream codec changed across reconnect (video {} -> {}, audio {} -> {})",
+                                ctx.stream_id,
+                                mime_of(&snapshot.video),
+                                mime_of(&current.video),
+                                mime_of(&snapshot.audio),
+                                mime_of(&current.audio),
+                            );
+                            Self::cleanup(ctx, &mut client, peer).await;
+                            return AttemptEnd::Failed {
+                                reason: "Upstream codec changed".to_string(),
                                 connected: false,
                             };
                         }
@@ -412,6 +463,15 @@ impl WhepSource {
         shutdown_rx: &mut oneshot::Receiver<()>,
     ) -> AttemptEnd {
         let audio_channel = snapshot.audio_channel();
+        // A kind missing from the snapshot (accepted via the partial-ready
+        // grace) must be dropped here, not forwarded: the bridge's fixed
+        // channel mapping would route it onto the *other* kind's virtual
+        // track (e.g. late video would land on the audio channel of an
+        // audio-only mapping).
+        let has_video = snapshot.video.is_some();
+        let has_audio = snapshot.audio.is_some();
+        let mut video_dropped = 0u64;
+        let mut audio_dropped = 0u64;
 
         loop {
             tokio::select! {
@@ -428,10 +488,20 @@ impl WhepSource {
                 result = video_rx.recv() => {
                     match result {
                         Some(data) => {
-                            let _ = ctx.rtp_tx.send(MediaPacket::Rtp {
-                                channel: 0,
-                                data: data.into(),
-                            });
+                            if has_video {
+                                let _ = ctx.rtp_tx.send(MediaPacket::Rtp {
+                                    channel: 0,
+                                    data: data.into(),
+                                });
+                            } else {
+                                video_dropped += 1;
+                                if video_dropped == 1 || video_dropped.is_multiple_of(1000) {
+                                    warn!(
+                                        "[{}] Dropping video packets (not in codec snapshot): {}",
+                                        ctx.stream_id, video_dropped
+                                    );
+                                }
+                            }
                         }
                         None => {
                             return AttemptEnd::Failed {
@@ -444,10 +514,20 @@ impl WhepSource {
                 result = audio_rx.recv() => {
                     match result {
                         Some(data) => {
-                            let _ = ctx.rtp_tx.send(MediaPacket::Rtp {
-                                channel: audio_channel,
-                                data: data.into(),
-                            });
+                            if has_audio {
+                                let _ = ctx.rtp_tx.send(MediaPacket::Rtp {
+                                    channel: audio_channel,
+                                    data: data.into(),
+                                });
+                            } else {
+                                audio_dropped += 1;
+                                if audio_dropped == 1 || audio_dropped.is_multiple_of(1000) {
+                                    warn!(
+                                        "[{}] Dropping audio packets (not in codec snapshot): {}",
+                                        ctx.stream_id, audio_dropped
+                                    );
+                                }
+                            }
                         }
                         None => {
                             return AttemptEnd::Failed {
@@ -494,12 +574,25 @@ fn parse_whep_url(raw: &str) -> Result<(String, Option<String>)> {
     } else if let Some(rest) = raw.strip_prefix("wheps://") {
         format!("https://{}", rest)
     } else {
-        anyhow::bail!("Unsupported WHEP source URL: {}", raw);
+        anyhow::bail!("Unsupported WHEP source URL: {}", super::redact_url(raw));
     };
 
     let mut url = url::Url::parse(&http_url)?;
     if url.host_str().is_none() {
-        anyhow::bail!("Invalid WHEP source URL (no host): {}", raw);
+        anyhow::bail!(
+            "Invalid WHEP source URL (no host): {}",
+            super::redact_url(raw)
+        );
+    }
+
+    // Only token-in-username is supported. A password means the user:pass
+    // form, which has no mapping onto Bearer auth — fail fast instead of
+    // silently dropping it (the error must not echo the URL: it contains
+    // the credential).
+    if url.password().is_some() {
+        anyhow::bail!(
+            "WHEP source URL must not carry a password; use whep://token@host… for Bearer auth"
+        );
     }
 
     // `Url::username` is still percent-encoded; decode so tokens containing
@@ -509,14 +602,23 @@ fn parse_whep_url(raw: &str) -> Result<(String, Option<String>)> {
             .decode_utf8_lossy()
             .into_owned()
     });
-    if token.is_some() {
-        url.set_username("")
-            .map_err(|_| anyhow::anyhow!("Invalid WHEP source URL: {}", raw))?;
-        url.set_password(None)
-            .map_err(|_| anyhow::anyhow!("Invalid WHEP source URL: {}", raw))?;
-    }
+
+    // Strip userinfo unconditionally: the URL is used for requests and log
+    // lines, neither of which may see the credential.
+    url.set_username("")
+        .map_err(|_| anyhow::anyhow!("Invalid WHEP source URL"))?;
+    url.set_password(None)
+        .map_err(|_| anyhow::anyhow!("Invalid WHEP source URL"))?;
 
     Ok((url.to_string(), token))
+}
+
+/// Short codec label for logs: the mime type, or `-` when absent.
+fn mime_of(codec: &Option<RTCRtpCodecParameters>) -> &str {
+    codec
+        .as_ref()
+        .map(|c| c.rtp_codec.mime_type.as_str())
+        .unwrap_or("-")
 }
 
 /// Derive the media kinds negotiated in the WHEP answer SDP. A rejected
@@ -700,6 +802,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_whep_url_rejects_password_without_leaking_it() {
+        for raw in [
+            "whep://user:s3cret@example.com/whep/cam1",
+            "whep://:s3cret@example.com/whep/cam1",
+        ] {
+            let err = parse_whep_url(raw).unwrap_err();
+            assert!(
+                !err.to_string().contains("s3cret"),
+                "error leaks the credential: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_whep_url_error_redacts_credentials() {
+        let err = parse_whep_url("whelp://secret@example.com/whep/cam1").unwrap_err();
+        assert!(!err.to_string().contains("secret"));
+    }
+
+    #[test]
     fn expected_kinds_ignore_rejected_m_lines() {
         let sdp = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\nm=audio 0 UDP/TLS/RTP/SAVPF 111\r\n";
         assert_eq!(expected_media_kinds(sdp), (true, false));
@@ -771,5 +893,153 @@ mod tests {
         assert_eq!(next_reconnect_count(0, false), 1);
         assert_eq!(next_reconnect_count(1, false), 2);
         assert_eq!(next_reconnect_count(5, true), 1);
+    }
+
+    fn codec_with(mime: &str, clock_rate: u32, channels: u16) -> RTCRtpCodecParameters {
+        let mut codec = RTCRtpCodecParameters::default();
+        codec.rtp_codec.mime_type = mime.to_string();
+        codec.rtp_codec.clock_rate = clock_rate;
+        codec.rtp_codec.channels = channels;
+        codec
+    }
+
+    #[test]
+    fn codec_mismatch_detects_changed_codec() {
+        let h264 = CodecSnapshot {
+            video: Some(codec_with("video/H264", 90000, 0)),
+            audio: Some(codec_with("audio/opus", 48000, 2)),
+        };
+
+        // Same codecs (case-insensitive mime) are not a mismatch.
+        let same = CodecSnapshot {
+            video: Some(codec_with("video/h264", 90000, 0)),
+            audio: Some(codec_with("audio/opus", 48000, 2)),
+        };
+        assert!(!h264.codec_mismatch_of(&same));
+
+        // A kind present only on one side is not a mismatch (that is
+        // lacks_kind_of's job).
+        assert!(!h264.codec_mismatch_of(&CodecSnapshot::default()));
+
+        for current in [
+            CodecSnapshot {
+                video: Some(codec_with("video/VP9", 90000, 0)),
+                ..h264.clone()
+            },
+            CodecSnapshot {
+                video: Some(codec_with("video/H264", 8000, 0)),
+                ..h264.clone()
+            },
+            CodecSnapshot {
+                audio: Some(codec_with("audio/opus", 48000, 1)),
+                ..h264.clone()
+            },
+        ] {
+            assert!(h264.codec_mismatch_of(&current));
+        }
+    }
+
+    /// Spawn a pump with the given snapshot, feed it one video and one audio
+    /// packet, and collect what reaches the bridge broadcast channel.
+    async fn pump_collect(snapshot: CodecSnapshot) -> Vec<(u8, Vec<u8>)> {
+        let (rtp_tx, _) = broadcast::channel(16);
+        let mut rtp_rx = rtp_tx.subscribe();
+        let (state_tx, _) = broadcast::channel(1);
+        let ctx = WhepClientContext {
+            stream_id: "test".to_string(),
+            whep_url: String::new(),
+            token: None,
+            config: InternalSourceConfig {
+                stream_id: "test".to_string(),
+                url: String::new(),
+            },
+            ice_servers: vec![],
+            rtp_tx,
+            state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
+            state_tx,
+            snapshot: Arc::new(RwLock::new(None)),
+            peer_store: Arc::new(RwLock::new(None)),
+        };
+        let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(16);
+        let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(16);
+        let ct = CancellationToken::new();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+
+        let pump = tokio::spawn({
+            let ct = ct.clone();
+            async move {
+                WhepSource::pump(
+                    &ctx,
+                    snapshot,
+                    &mut video_rx,
+                    &mut audio_rx,
+                    &ct,
+                    &mut shutdown_rx,
+                )
+                .await
+            }
+        });
+
+        video_tx.send(vec![1, 1, 1]).await.unwrap();
+        audio_tx.send(vec![2, 2, 2]).await.unwrap();
+
+        // Collect until the pump goes idle: kinds missing from the snapshot
+        // must never produce a packet here.
+        let mut received = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(200), rtp_rx.recv()).await {
+                Ok(Ok(packet)) => match packet {
+                    MediaPacket::Rtp { channel, data } => received.push((channel, data.to_vec())),
+                    #[allow(unreachable_patterns)]
+                    other => panic!("unexpected non-RTP packet: {other:?}"),
+                },
+                Ok(Err(_)) => panic!("broadcast channel closed or lagged"),
+                Err(_) => break,
+            }
+        }
+
+        shutdown_tx.send(()).unwrap();
+        assert!(matches!(pump.await.unwrap(), AttemptEnd::Shutdown));
+        received
+    }
+
+    #[tokio::test]
+    async fn pump_forwards_snapshot_kinds_on_mapped_channels() {
+        let received = pump_collect(CodecSnapshot {
+            video: Some(RTCRtpCodecParameters::default()),
+            audio: Some(RTCRtpCodecParameters::default()),
+        })
+        .await;
+
+        assert_eq!(received.len(), 2);
+        assert!(received.contains(&(0, vec![1, 1, 1])));
+        assert!(received.contains(&(2, vec![2, 2, 2])));
+    }
+
+    #[tokio::test]
+    async fn pump_drops_video_missing_from_snapshot() {
+        // Audio-only snapshot (accepted via the partial-ready grace): late
+        // video packets must be dropped, not misrouted onto channel 0, which
+        // the audio-only bridge mapping assigns to *audio*.
+        let received = pump_collect(CodecSnapshot {
+            video: None,
+            audio: Some(RTCRtpCodecParameters::default()),
+        })
+        .await;
+
+        assert_eq!(received, vec![(0, vec![2, 2, 2])]);
+    }
+
+    #[tokio::test]
+    async fn pump_drops_audio_missing_from_snapshot() {
+        // Video-only snapshot: late audio must be dropped; audio_channel()
+        // degenerates to 0 here, which is the *video* channel.
+        let received = pump_collect(CodecSnapshot {
+            video: Some(RTCRtpCodecParameters::default()),
+            audio: None,
+        })
+        .await;
+
+        assert_eq!(received, vec![(0, vec![1, 1, 1])]);
     }
 }

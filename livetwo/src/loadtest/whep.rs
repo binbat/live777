@@ -153,10 +153,11 @@ async fn run_session(
     let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
     let (video_mime_tx, mut video_mime_rx) = watch::channel(None::<String>);
 
-    let mut client = Client::new(
-        params.whep_url.clone(),
-        Client::get_auth_header_map(params.token.clone()),
-    );
+    let auth = match Client::get_auth_header_map(params.token.clone()) {
+        Ok(auth) => auth,
+        Err(e) => return (Duration::ZERO, Err(e)),
+    };
+    let mut client = Client::new(params.whep_url.clone(), auth);
     let peer_ct = CancellationToken::new();
 
     // Race the setup (WHEP POST/answer + ICE) against cancellation so a

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rtsp::RtspMode;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace};
 
 #[cfg(feature = "source")]
 use tokio::sync::mpsc;
@@ -63,52 +63,38 @@ impl RtspSource {
 
     #[cfg(feature = "source")]
     pub async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
-        let rtcp_tx = self.rtcp_tx.read().await;
-        debug!(
-            "[{}] get_rtcp_sender called, available: {}",
-            self.config.stream_id,
-            rtcp_tx.is_some()
-        );
+        // Always hand out the wrapper, even while the RTSP client is down:
+        // the forwarding task resolves the current RTCP channel per message,
+        // so subscriber feedback (e.g. PLI keyframe requests) keeps flowing
+        // across reconnects instead of dying with the connection that was
+        // active when the bridge was created — same pattern as the WHEP
+        // source's peer_store.
+        let (wrapper_tx, mut wrapper_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let rtcp_tx = self.rtcp_tx.clone();
+        let stream_id = self.config.stream_id.clone();
 
-        if let Some(tx) = rtcp_tx.as_ref() {
-            let (wrapper_tx, mut wrapper_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-            let tx_clone = tx.clone();
-            let stream_id = self.config.stream_id.clone();
-
-            tokio::spawn(async move {
-                info!("[{}] RTCP wrapper task started", stream_id);
-
-                while let Some(data) = wrapper_rx.recv().await {
-                    debug!(
-                        "[{}] Forwarding RTCP to source, size: {} bytes",
-                        stream_id,
-                        data.len()
-                    );
-
-                    if let Err(e) = tx_clone.send((1, data)).await {
-                        error!("[{}] Failed to forward RTCP: {}", stream_id, e);
-                        break;
+        tokio::spawn(async move {
+            while let Some(data) = wrapper_rx.recv().await {
+                let tx = rtcp_tx.read().await.clone();
+                match tx {
+                    Some(tx) => {
+                        if let Err(e) = tx.send((1, data)).await {
+                            // The connection is gone; the reconnect installs
+                            // a fresh channel.
+                            debug!(
+                                "[{}] Dropping RTCP: connection channel closed ({})",
+                                stream_id, e
+                            );
+                        }
                     }
-
-                    info!("[{}] RTCP forwarded successfully", stream_id);
+                    None => {
+                        debug!("[{}] Dropping RTCP: RTSP client not connected", stream_id);
+                    }
                 }
+            }
+        });
 
-                info!("[{}] RTCP wrapper task stopped", stream_id);
-            });
-
-            info!(
-                "[{}] RTCP sender wrapper created successfully",
-                self.config.stream_id
-            );
-
-            Some(wrapper_tx)
-        } else {
-            warn!(
-                "[{}] RTCP sender not available in get_rtcp_sender",
-                self.config.stream_id
-            );
-            None
-        }
+        Some(wrapper_tx)
     }
 
     async fn set_state(&self, new_state: StreamSourceState, error: Option<String>) {
@@ -245,6 +231,11 @@ impl RtspSource {
                         &mut shutdown_rx,
                     )
                     .await;
+
+                    // The connection's RTCP channel dies with it; drop the
+                    // store so RTCP forwarding falls quiet until the
+                    // reconnect installs a fresh one.
+                    *ctx.rtcp_tx_store.write().await = None;
 
                     match result {
                         Ok(()) => {

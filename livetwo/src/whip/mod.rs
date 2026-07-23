@@ -65,7 +65,10 @@ pub async fn into(
         anyhow::bail!("synthetic input requires the rsmpeg feature");
     }
 
-    let mut client = Client::new(whip_url.clone(), Client::get_auth_header_map(token.clone()));
+    let mut client = Client::new(
+        whip_url.clone(),
+        Client::get_auth_header_map(token.clone())?,
+    );
 
     let child = Arc::new(create_child(command)?);
 

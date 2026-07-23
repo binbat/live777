@@ -15,25 +15,36 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn get_auth_header_map(token: Option<String>) -> Option<HeaderMap> {
+    /// Build the `Authorization: Bearer <token>` header map for a token.
+    ///
+    /// Returns an error instead of panicking when the token contains
+    /// characters that are invalid in a header value (e.g. control
+    /// characters) — a malformed token is a configuration error, and a
+    /// panic here would kill the caller's task silently.
+    pub fn get_auth_header_map(token: Option<String>) -> Result<Option<HeaderMap>> {
         let mut header_map = HeaderMap::new();
         if let Some(auth_token) = token {
             header_map.insert(
                 header::AUTHORIZATION,
-                format!("Bearer {auth_token}").parse().unwrap(),
+                format!("Bearer {auth_token}").parse()?,
             );
-            Some(header_map)
+            Ok(Some(header_map))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    pub fn get_authorization_header_map(authorization: Option<String>) -> Option<HeaderMap> {
-        authorization.map(|authorization| {
-            let mut header_map = HeaderMap::new();
-            header_map.insert(header::AUTHORIZATION, authorization.parse().unwrap());
-            header_map
-        })
+    /// Build an `Authorization` header map from a verbatim header value.
+    /// Same error contract as [`Self::get_auth_header_map`].
+    pub fn get_authorization_header_map(
+        authorization: Option<String>,
+    ) -> Result<Option<HeaderMap>> {
+        let Some(authorization) = authorization else {
+            return Ok(None);
+        };
+        let mut header_map = HeaderMap::new();
+        header_map.insert(header::AUTHORIZATION, authorization.parse()?);
+        Ok(Some(header_map))
     }
 
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
