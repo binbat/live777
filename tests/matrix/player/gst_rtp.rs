@@ -94,7 +94,9 @@ impl Player for GstRtpPlayer {
         let ct = CancellationToken::new();
         let mut handle_whep = Some(tokio::spawn({
             let ct = ct.clone();
-            async move { livetwo::whep::from(ct, output_url, whep_url, None, None, None, None).await }
+            async move {
+                livetwo::whep::from(ct, output_url, whep_url, None, None, None, None, None).await
+            }
         }));
 
         let start = tokio::time::Instant::now();

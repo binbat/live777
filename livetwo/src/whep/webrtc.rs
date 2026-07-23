@@ -24,12 +24,34 @@ use crate::utils::stats::RtcpStats;
 /// DataChannel label used to join liveion's WHEP group for bidirectional control messaging.
 const DATA_CHANNEL_LABEL: &str = "control";
 
+/// Build an ICE server list from an optional STUN server URL. A `None` or
+/// blank URL yields an empty list (host candidates only), matching the WHIP
+/// publish side's `--stun-server ""` opt-out (`whip::core`).
+pub fn stun_ice_servers(stun_server: Option<&str>) -> Vec<RTCIceServer> {
+    stun_server
+        .filter(|url| !url.trim().is_empty())
+        .map(|url| RTCIceServer {
+            urls: vec![url.to_string()],
+            username: String::new(),
+            credential: String::new(),
+        })
+        .into_iter()
+        .collect()
+}
+
+/// Set up a WHEP client peer: create the peer with `ice_servers` used for
+/// ICE gathering of the offer (an empty list means host candidates only),
+/// then POST the offer and apply the answer. Note the upstream's own
+/// ice-servers from the WHEP response Link headers replace this list via
+/// `set_configuration` once the answer arrives.
+#[allow(clippy::too_many_arguments)]
 pub async fn setup_whep_peer(
     ct: CancellationToken,
     client: &mut Client,
     video_send: mpsc::Sender<Vec<u8>>,
     audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    ice_servers: Vec<RTCIceServer>,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     video_mime_tx: Option<watch::Sender<Option<String>>>,
 ) -> Result<(
@@ -48,6 +70,7 @@ pub async fn setup_whep_peer(
         video_send,
         audio_send,
         codec_info.clone(),
+        ice_servers,
         gather_complete.clone(),
         dc_recv_tx,
         dc_send_rx,
@@ -379,6 +402,7 @@ async fn create_peer(
     video_send: mpsc::Sender<Vec<u8>>,
     audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    ice_servers: Vec<RTCIceServer>,
     gather_complete: Arc<Notify>,
     dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
     dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -401,11 +425,7 @@ async fn create_peer(
     });
 
     let config = RTCConfigurationBuilder::new()
-        .with_ice_servers(vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_string()],
-            username: "".to_string(),
-            credential: "".to_string(),
-        }])
+        .with_ice_servers(ice_servers)
         .build();
 
     let peer: Arc<dyn PeerConnection> = Arc::new(

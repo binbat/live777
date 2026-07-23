@@ -110,6 +110,9 @@ url = "whep://edge-0:7777/whep/cam1"
 更低，live777 也会至少等待 `35000ms` 让上游 WHEP 源就绪。这样冷启动的
 上游 WHEP/on-demand 源可以完成 HTTP setup 超时预算并送出第一包媒体。
 
+外出的 WHEP peer 使用服务器自己的 `[[ice_servers]]` 配置收集 ICE
+候选（不再有硬编码的 STUN 服务器）。
+
 ## DataChannel 转发
 
 > NOTE: 关于 `createDataChannel()`

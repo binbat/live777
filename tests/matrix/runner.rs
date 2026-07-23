@@ -374,6 +374,7 @@ pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind
         None,
         None,
         None,
+        None,
     ));
     wait_stream_publish_ready(&rtsp_addr, &api_addr, "cycle-c", Some(&mut handle_whep)).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -433,6 +434,7 @@ pub async fn run_rtsp_push_mediamtx(
         ct.clone(),
         server.rtsp_url("/mt", transport),
         format!("http://{api_addr}{}", api::path::whep("-")),
+        None,
         None,
         None,
         None,
@@ -611,7 +613,13 @@ where
 
     // liveion B: provisioned stream whose input is the WHEP pull from A.
     let stream_id = "relay";
-    let mut cfg = liveion::config::Config::default();
+    // Loopback relay: host candidates suffice; keep the test hermetic (no
+    // STUN traffic from B's WHEP-source peer, whose ICE servers come from
+    // this list now).
+    let mut cfg = liveion::config::Config {
+        ice_servers: vec![],
+        ..Default::default()
+    };
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {

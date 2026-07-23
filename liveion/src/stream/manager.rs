@@ -1187,7 +1187,14 @@ impl Manager {
                     stream_id,
                     crate::stream::source::redact_url(url)
                 );
-                let source = match create_source_from_url(stream_id, url, source_cfg).await {
+                let source = match create_source_from_url(
+                    stream_id,
+                    url,
+                    source_cfg,
+                    self.config.ice_servers.clone(),
+                )
+                .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!("Failed to create source {}: {}", stream_id, e);

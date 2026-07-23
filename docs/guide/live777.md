@@ -111,6 +111,9 @@ When this source is used with `on_demand = true`, live777 waits at least
 `on_demand_start_timeout_ms` is lower. This covers cold upstream on-demand
 pulls that may spend the WHEP HTTP request timeout before delivering media.
 
+The outgoing WHEP peer gathers ICE candidates using the server's own
+`[[ice_servers]]` configuration (no hardcoded STUN server).
+
 ## DataChannel Forward
 
 > NOTE: About `createDataChannel()`

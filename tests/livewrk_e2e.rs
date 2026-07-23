@@ -261,12 +261,9 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
 
     // Publisher A: one stream (`single-0`); publisher B: three streams
     // (`multi-0/1/2`). The whip session index is appended to the URL's last
-    // path segment. `--stun-server ""` disables STUN only on the whip side;
-    // the WHEP subscribers hardcode stun:stun.l.google.com:19302
-    // (livetwo/src/whep/webrtc.rs) and may still send STUN traffic to Google.
-    // The test passes on CI runners without UDP egress because it never
-    // depends on the STUN result: every peer connects over loopback host
-    // candidates.
+    // path segment. `--stun-server ""` disables STUN on both sides, so the
+    // test sends no STUN traffic anywhere and passes on CI runners without
+    // UDP egress: every peer connects over loopback host candidates.
     //
     // The 45s duration outlasts the 30s connect budget of
     // wait_stream_connected plus the 12s subscriber run, so the publishers
@@ -314,6 +311,8 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "12",
         "--verify-window",
         "2",
+        "--stun-server",
+        "",
     ]);
     let mut whep_multi = livewrk(&[
         "whep",
@@ -325,6 +324,8 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "12",
         "--verify-window",
         "2",
+        "--stun-server",
+        "",
     ]);
     let (whep_single, whep_multi) = tokio::join!(whep_single.output(), whep_multi.output());
     let whep_single = whep_single.unwrap();

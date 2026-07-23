@@ -11,6 +11,7 @@ use rtc::rtp::packet::Packet;
 #[cfg(feature = "native-source")]
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use webrtc::peer_connection::RTCIceServer;
 
 #[cfg(feature = "source-rtsp")]
 mod rtsp_source;
@@ -265,8 +266,9 @@ pub async fn create_source_from_url(
     stream_id: &str,
     url: &str,
     config: &crate::config::SourceConfig,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<Box<dyn StreamSource>> {
-    source_router::create_source_extended(stream_id, url, config).await
+    source_router::create_source_extended(stream_id, url, config, ice_servers).await
 }
 
 #[cfg(feature = "native-source")]
@@ -285,8 +287,14 @@ pub(crate) async fn create_url_source(
     stream_id: &str,
     url: &str,
     config: &crate::config::SourceConfig,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<Box<dyn StreamSource>> {
     let internal_config = InternalSourceConfig::from_config(stream_id, config);
+
+    // Only the WHEP source consumes the server-wide ICE servers; keep other
+    // feature combinations warning-free.
+    #[cfg(not(feature = "source-whep"))]
+    let _ = ice_servers;
 
     if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
         #[cfg(feature = "source-rtsp")]
@@ -302,7 +310,7 @@ pub(crate) async fn create_url_source(
     } else if url.starts_with("whep://") || url.starts_with("wheps://") {
         #[cfg(feature = "source-whep")]
         {
-            let source = WhepSource::new(internal_config, url)?;
+            let source = WhepSource::new(internal_config, url, ice_servers)?;
             Ok(Box::new(source))
         }
 

@@ -75,7 +75,19 @@ async fn create_source(
         output: Default::default(),
     };
 
-    let source = create_source_from_url(&stream, &req.url, &config).await?;
+    let source = create_source_from_url(
+        &stream,
+        &req.url,
+        &config,
+        state
+            .config
+            .ice_servers
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    )
+    .await?;
 
     let source_type = url_source_kind(&req.url);
 

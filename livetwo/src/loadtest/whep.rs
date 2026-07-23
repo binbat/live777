@@ -52,6 +52,10 @@ pub struct WhepLoadParams {
     /// segment).
     pub whep_url: String,
     pub token: Option<String>,
+    /// STUN server URL used for ICE gathering. `None` or a blank string
+    /// disables STUN (host candidates only), same as the WHIP side's
+    /// `--stun-server ""`.
+    pub stun_server: Option<String>,
     /// When set, a single rotating verifier decodes one session at a time and
     /// switches to the next live session every interval. Requires the
     /// `rsmpeg` feature.
@@ -165,6 +169,7 @@ async fn run_session(
             video_tx,
             audio_tx,
             codec_info,
+            crate::whep::stun_ice_servers(params.stun_server.as_deref()),
             Some(state_tx),
             verify.is_some().then_some(video_mime_tx),
         ) => match result {

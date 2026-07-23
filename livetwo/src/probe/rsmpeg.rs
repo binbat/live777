@@ -95,6 +95,7 @@ impl ProbeBackend for RsmpegProbe {
             video_tx,
             audio_tx,
             codec_info.clone(),
+            crate::whep::stun_ice_servers(config.stun_server.as_deref()),
             Some(state_tx),
             Some(video_mime_tx),
         )

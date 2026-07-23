@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use webrtc::peer_connection::PeerConnection;
+use webrtc::peer_connection::{PeerConnection, RTCIceServer};
 
 use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
@@ -71,6 +71,9 @@ struct WhepClientContext {
     whep_url: String,
     token: Option<String>,
     config: InternalSourceConfig,
+    /// ICE servers from the server config (`[[ice_servers]]`), used for the
+    /// outgoing peer's ICE gathering instead of any hardcoded default.
+    ice_servers: Vec<RTCIceServer>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -101,6 +104,7 @@ pub struct WhepSource {
     config: InternalSourceConfig,
     whep_url: String,
     token: Option<String>,
+    ice_servers: Vec<RTCIceServer>,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -111,7 +115,11 @@ pub struct WhepSource {
 }
 
 impl WhepSource {
-    pub fn new(config: InternalSourceConfig, whep_url: &str) -> Result<Self> {
+    pub fn new(
+        config: InternalSourceConfig,
+        whep_url: &str,
+        ice_servers: Vec<RTCIceServer>,
+    ) -> Result<Self> {
         let (http_url, token) = parse_whep_url(whep_url)?;
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
@@ -120,6 +128,7 @@ impl WhepSource {
             config,
             whep_url: http_url,
             token,
+            ice_servers,
             state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
@@ -240,6 +249,7 @@ impl WhepSource {
             video_tx,
             audio_tx,
             codec_info.clone(),
+            ctx.ice_servers.clone(),
             None,
             None,
         )
@@ -572,6 +582,7 @@ impl StreamSource for WhepSource {
             whep_url: self.whep_url.clone(),
             token: self.token.clone(),
             config: self.config.clone(),
+            ice_servers: self.ice_servers.clone(),
             rtp_tx: self.rtp_tx.clone(),
             state: self.state.clone(),
             state_tx: self.state_tx.clone(),

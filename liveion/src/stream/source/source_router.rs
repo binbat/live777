@@ -5,6 +5,7 @@
 
 use super::StreamSource;
 use anyhow::Result;
+use webrtc::peer_connection::RTCIceServer;
 
 #[cfg(any(
     feature = "source-rtsp",
@@ -31,8 +32,9 @@ pub async fn create_source_extended(
     stream_id: &str,
     url: &str,
     config: &SourceConfig,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<Box<dyn StreamSource>> {
-    super::create_url_source(stream_id, url, config).await
+    super::create_url_source(stream_id, url, config, ice_servers).await
 }
 
 #[cfg(not(any(
@@ -44,6 +46,7 @@ pub async fn create_source_extended(
     _stream_id: &str,
     _url: &str,
     _config: &crate::config::SourceConfig,
+    _ice_servers: Vec<RTCIceServer>,
 ) -> Result<Box<dyn StreamSource>> {
     anyhow::bail!("URL-based sources require source-rtsp, source-sdp or source-whep feature")
 }

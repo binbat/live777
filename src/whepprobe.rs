@@ -50,6 +50,10 @@ struct Args {
     /// Authentication token to use, sent in the HTTP Authorization header as 'Bearer '
     #[arg(short, long)]
     token: Option<String>,
+
+    /// STUN server URL used for ICE gathering (empty string disables STUN)
+    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
+    stun_server: String,
 }
 
 #[tokio::main]
@@ -132,6 +136,7 @@ fn build_config(args: &Args) -> Result<ProbeConfig> {
         video_codec: codec,
         sprop_params: args.sprop_params.clone(),
         token: args.token.clone(),
+        stun_server: Some(args.stun_server.clone()),
     })
 }
 

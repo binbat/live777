@@ -82,6 +82,7 @@ The `whip` subcommand publishes synthetic test patterns generated in-process
 |--------|---------|-------------|
 | `--verify-window` | none | Enable rotating decode verification (seconds per window) |
 | `--verify-tolerant` | `false` | Report verification failures without failing the whole run |
+| `--stun-server` | `stun:stun.l.google.com:19302` | STUN server for ICE gathering (empty string disables STUN) |
 
 ### Rotating decode verification
 
