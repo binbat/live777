@@ -331,7 +331,85 @@ pub(crate) async fn create_url_source(
     } else {
         anyhow::bail!(
             "Unsupported URL format: {}. Use rtsp://, whep://, file:// or .sdp file path",
-            url
+            redact_url(url)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_url_strips_userinfo() {
+        assert_eq!(
+            redact_url("rtsp://user:pass@example.com:8554/cam?x=1"),
+            "rtsp://example.com:8554/cam?x=1"
+        );
+        assert_eq!(
+            redact_url("whep://token@edge-0:7777/whep/cam1"),
+            "whep://edge-0:7777/whep/cam1"
+        );
+        // Nothing to strip: returned unchanged.
+        assert_eq!(
+            redact_url("rtsp://example.com:8554/cam"),
+            "rtsp://example.com:8554/cam"
+        );
+    }
+
+    #[test]
+    fn redact_url_falls_back_without_leaking_credentials() {
+        // An unparseable URL may still embed credentials: only the scheme
+        // (or nothing) survives.
+        assert_eq!(redact_url("whep://tok en@not a host"), "whep://<redacted>");
+        assert_eq!(redact_url("not-a-url"), "<redacted>");
+    }
+
+    #[test]
+    fn url_source_kind_matches_factory_dispatch() {
+        assert_eq!(url_source_kind("rtsp://h/s"), "rtsp");
+        assert_eq!(url_source_kind("rtsps://h/s"), "rtsp");
+        assert_eq!(url_source_kind("whep://h/whep/s"), "whep");
+        assert_eq!(url_source_kind("wheps://h/whep/s"), "whep");
+        assert_eq!(url_source_kind("file://cam.sdp"), "sdp");
+        assert_eq!(url_source_kind("cam.sdp"), "sdp");
+    }
+
+    #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
+    mod reconnect {
+        use super::*;
+
+        fn config(url: &str) -> InternalSourceConfig {
+            InternalSourceConfig {
+                stream_id: "test".to_string(),
+                url: url.to_string(),
+            }
+        }
+
+        #[test]
+        fn reconnect_enabled_for_rtsp_and_whep_schemes() {
+            for url in [
+                "rtsp://h/s",
+                "rtsps://h/s",
+                "whep://h/whep/s",
+                "wheps://h/whep/s",
+            ] {
+                assert!(config(url).reconnect_enabled(), "{url}");
+            }
+            assert!(!config("file://cam.sdp").reconnect_enabled());
+        }
+
+        #[test]
+        fn reconnect_delay_doubles_with_cap() {
+            let config = config("whep://h/whep/s");
+            assert_eq!(config.reconnect_delay_ms(1), 5_000);
+            assert_eq!(config.reconnect_delay_ms(2), 10_000);
+            assert_eq!(config.reconnect_delay_ms(3), 20_000);
+            assert_eq!(config.reconnect_delay_ms(4), 40_000);
+            assert_eq!(config.reconnect_delay_ms(5), 60_000);
+            // Capped afterwards, and saturating on huge attempt counts.
+            assert_eq!(config.reconnect_delay_ms(6), 60_000);
+            assert_eq!(config.reconnect_delay_ms(u32::MAX), 60_000);
+        }
     }
 }

@@ -143,10 +143,14 @@ async fn request<T: Into<Body>>(
     body: T,
 ) -> Result<Response> {
     // Bounded so a peer that accepts the connection but never answers cannot
-    // wedge callers (e.g. a WHEP source's reconnect loop or `stop()`).
+    // wedge callers (e.g. a WHEP source's reconnect loop or `stop()`). The
+    // total budget stays well above liveion's on-demand source start wait
+    // (`on_demand_start_timeout_ms`, default 10 s): a WHIP/WHEP subscribe
+    // against a cold on-demand stream is legitimately held that long before
+    // the answer arrives, so a tighter timeout would fail healthy pulls.
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()?;
     client
         .request(Method::from_str(method)?, url)

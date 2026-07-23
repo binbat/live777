@@ -593,8 +593,8 @@ fn default_on_demand_start_timeout_ms() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
-    /// URL source for RTSP / SDP inputs. Mutually exclusive with structured native fields.
-    /// Supported: rtsp://, rtsps://, file://, .sdp
+    /// URL source for RTSP / WHEP / SDP inputs. Mutually exclusive with structured native fields.
+    /// Supported: rtsp://, rtsps://, whep://, wheps://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
 

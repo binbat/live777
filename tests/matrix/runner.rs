@@ -19,8 +19,10 @@ use crate::common::shutdown_signal;
 
 /// Cancels the wrapped token on drop, so a panicking test cannot leak the
 /// server it spawned.
+#[cfg(feature = "source-whep")]
 struct CancelOnDrop(CancellationToken);
 
+#[cfg(feature = "source-whep")]
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
@@ -29,6 +31,7 @@ impl Drop for CancelOnDrop {
 
 /// Whether this is a GitHub-hosted Windows runner: media-heavy matrix cases
 /// skip there (they run everywhere else, including local Windows hosts).
+#[cfg(any(feature = "source-whep", feature = "rtsp"))]
 pub fn windows_ci() -> bool {
     cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
 }

@@ -431,8 +431,18 @@ impl SourceBridge {
                 result = rtcp_rx.recv() => {
                     let (rtcp_msg, ssrc) = match result {
                         Ok(pair) => pair,
-                        Err(e) => {
-                            error!("[{}] RTCP receiver error: {}", source_id, e);
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            // Recoverable: feedback bursts can overflow the
+                            // channel. Keep listening instead of killing
+                            // keyframe forwarding for the rest of the bridge.
+                            warn!(
+                                "[{}] RTCP receiver lagged, skipped {} messages",
+                                source_id, skipped
+                            );
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!("[{}] RTCP channel closed, handler shutting down", source_id);
                             break;
                         }
                     };

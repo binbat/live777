@@ -692,4 +692,39 @@ mod tests {
         assert!(codec_wait_satisfied((false, false), false, true, false));
         assert!(!codec_wait_satisfied((false, false), false, false, true));
     }
+
+    #[test]
+    fn snapshot_lacks_kind_only_when_upstream_adds_one() {
+        let av = CodecSnapshot {
+            video: Some(RTCRtpCodecParameters::default()),
+            audio: Some(RTCRtpCodecParameters::default()),
+        };
+        let video_only = CodecSnapshot {
+            video: Some(RTCRtpCodecParameters::default()),
+            audio: None,
+        };
+        let empty = CodecSnapshot::default();
+
+        // Same or fewer kinds across a reconnect are routable.
+        assert!(!av.lacks_kind_of(&av));
+        assert!(!av.lacks_kind_of(&video_only));
+        assert!(!av.lacks_kind_of(&empty));
+        // An added kind cannot be routed by the fixed channel mapping.
+        assert!(video_only.lacks_kind_of(&av));
+        assert!(empty.lacks_kind_of(&video_only));
+    }
+
+    #[test]
+    fn audio_channel_matches_bridge_mapping() {
+        let av = CodecSnapshot {
+            video: Some(RTCRtpCodecParameters::default()),
+            audio: Some(RTCRtpCodecParameters::default()),
+        };
+        let audio_only = CodecSnapshot {
+            video: None,
+            audio: Some(RTCRtpCodecParameters::default()),
+        };
+        assert_eq!(av.audio_channel(), 2);
+        assert_eq!(audio_only.audio_channel(), 0);
+    }
 }
