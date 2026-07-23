@@ -111,7 +111,14 @@ url = "whep://edge-0:7777/whep/cam1"
 上游 WHEP/on-demand 源可以完成 HTTP setup 超时预算并送出第一包媒体。
 
 外出的 WHEP peer 使用服务器自己的 `[[ice_servers]]` 配置收集 ICE
-候选（不再有硬编码的 STUN 服务器）。
+候选，并使用 `[webrtc] ice_udp_addrs` 绑定的 UDP 端口（不再有硬编码的
+STUN 服务器）。
+
+链式 on-demand 拉流默认支持一跳：该源的 WHEP HTTP 请求最长等待
+`40000ms` 应答，可以覆盖自身最多挂起 `35000ms` 的上游（on-demand WHEP
+源）。更深的链路需要按部署对齐各级预算。停止该源（例如 `on_demand`
+流的最后一个订阅者离开）可能需要等待一个在途的 WHEP HTTP 请求结束，
+上限同为 `40000ms`。
 
 ## DataChannel 转发
 

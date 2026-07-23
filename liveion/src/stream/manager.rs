@@ -1191,7 +1191,10 @@ impl Manager {
                     stream_id,
                     url,
                     source_cfg,
-                    self.config.ice_servers.clone(),
+                    crate::stream::source::SourceNetConfig {
+                        ice_servers: self.config.ice_servers.clone(),
+                        ice_udp_addrs: self.config.ice_udp_addrs.clone(),
+                    },
                 )
                 .await
                 {

@@ -22,7 +22,7 @@ use crate::utils::stats::start_stats_monitor;
 use rtsp::constants::media_type;
 
 pub use output::OutputTarget;
-pub use webrtc::{forward_rtcp_to_peer, setup_whep_peer, stun_ice_servers};
+pub use webrtc::{WhepPeerOptions, forward_rtcp_to_peer, setup_whep_peer, stun_ice_servers};
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 512;
 
@@ -90,7 +90,10 @@ pub async fn from_with_state(
         video_send,
         audio_send,
         codec_info.clone(),
-        webrtc::stun_ice_servers(stun_server.as_deref()),
+        webrtc::WhepPeerOptions {
+            ice_servers: webrtc::stun_ice_servers(stun_server.as_deref()),
+            ..Default::default()
+        },
         state_tx,
         None,
     )

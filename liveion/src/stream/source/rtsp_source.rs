@@ -78,6 +78,12 @@ impl RtspSource {
                 let tx = rtcp_tx.read().await.clone();
                 match tx {
                     Some(tx) => {
+                        // Channel 1 is always the right interleaved target:
+                        // the bridge only forwards video keyframe feedback
+                        // (PLI/FIR/SLI), and in every ChannelMapping the
+                        // first RTCP channel belongs to the kind that
+                        // feedback targets (video when present, audio in an
+                        // audio-only stream).
                         if let Err(e) = tx.send((1, data)).await {
                             // The connection is gone; the reconnect installs
                             // a fresh channel.

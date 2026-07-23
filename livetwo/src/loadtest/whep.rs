@@ -170,7 +170,10 @@ async fn run_session(
             video_tx,
             audio_tx,
             codec_info,
-            crate::whep::stun_ice_servers(params.stun_server.as_deref()),
+            crate::whep::WhepPeerOptions {
+                ice_servers: crate::whep::stun_ice_servers(params.stun_server.as_deref()),
+                ..Default::default()
+            },
             Some(state_tx),
             verify.is_some().then_some(video_mime_tx),
         ) => match result {

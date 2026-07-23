@@ -7,8 +7,8 @@
 //! readiness, RTCP feedback) like any other source.
 
 use super::{
-    ChannelMapping, InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource,
-    StreamSourceState,
+    ChannelMapping, InternalSourceConfig, MediaPacket, SourceNetConfig, StateChangeEvent,
+    StreamSource, StreamSourceState,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use webrtc::peer_connection::{PeerConnection, RTCIceServer};
+use webrtc::peer_connection::PeerConnection;
 
 use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
@@ -30,6 +30,13 @@ const MEDIA_CHANNEL_CAPACITY: usize = 512;
 /// Upper bound of one codec wait: the negotiated media kinds must deliver
 /// their first RTP packet within this budget.
 const CODEC_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// HTTP timeout for the WHEP POST: an upstream liveion may hold the request
+/// until its on-demand source is ready (up to 35 s for WHEP-sourced
+/// streams, `WHEP_ON_DEMAND_CODEC_WAIT`), so libwish's default 30 s would
+/// cut off healthy chained pulls. 40 s = 35 s + margin; deeper chains need
+/// their budgets aligned per deployment.
+const WHEP_HTTP_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// After the first codec becomes known, accept a partially ready codec set
 /// (e.g. a negotiated audio track that never sends) once this grace elapses.
@@ -94,9 +101,9 @@ struct WhepClientContext {
     whep_url: String,
     token: Option<String>,
     config: InternalSourceConfig,
-    /// ICE servers from the server config (`[[ice_servers]]`), used for the
-    /// outgoing peer's ICE gathering instead of any hardcoded default.
-    ice_servers: Vec<RTCIceServer>,
+    /// Server-wide WebRTC network settings (`[[ice_servers]]`, ICE UDP
+    /// addrs), used for the outgoing peer instead of any hardcoded default.
+    net: SourceNetConfig,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -127,7 +134,7 @@ pub struct WhepSource {
     config: InternalSourceConfig,
     whep_url: String,
     token: Option<String>,
-    ice_servers: Vec<RTCIceServer>,
+    net: SourceNetConfig,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -138,11 +145,7 @@ pub struct WhepSource {
 }
 
 impl WhepSource {
-    pub fn new(
-        config: InternalSourceConfig,
-        whep_url: &str,
-        ice_servers: Vec<RTCIceServer>,
-    ) -> Result<Self> {
+    pub fn new(config: InternalSourceConfig, whep_url: &str, net: SourceNetConfig) -> Result<Self> {
         let (http_url, token) = parse_whep_url(whep_url)?;
         // The token reaches the Authorization header verbatim on every
         // attempt; reject invalid header values now, at construction,
@@ -155,7 +158,7 @@ impl WhepSource {
             config,
             whep_url: http_url,
             token,
-            ice_servers,
+            net,
             state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
@@ -274,7 +277,7 @@ impl WhepSource {
                 };
             }
         };
-        let mut client = Client::new(ctx.whep_url.clone(), auth);
+        let mut client = Client::new(ctx.whep_url.clone(), auth).with_timeout(WHEP_HTTP_TIMEOUT);
         let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
         let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
         let codec_info = Arc::new(Mutex::new(rtsp::CodecInfo::new()));
@@ -285,7 +288,12 @@ impl WhepSource {
             video_tx,
             audio_tx,
             codec_info.clone(),
-            ctx.ice_servers.clone(),
+            livetwo::whep::WhepPeerOptions {
+                ice_servers: ctx.net.ice_servers.clone(),
+                ice_udp_addrs: ctx.net.ice_udp_addrs.clone(),
+                // Pure pull: no need to join the upstream's WHEP control group.
+                control_channel: false,
+            },
             None,
             None,
         )
@@ -550,6 +558,12 @@ impl WhepSource {
         let event = {
             let mut s = state.write().unwrap();
             let old_state = *s;
+            // No-op transitions carry no information (e.g. Disconnected after
+            // an already-reported failure); skip them like the RTSP source
+            // does instead of broadcasting duplicates.
+            if old_state == new_state {
+                return;
+            }
             *s = new_state;
 
             StateChangeEvent {
@@ -567,14 +581,13 @@ impl WhepSource {
 /// client POSTs to. A Bearer token can be carried as userinfo:
 /// `whep://token@host:port/whep/stream`.
 fn parse_whep_url(raw: &str) -> Result<(String, Option<String>)> {
-    // Scheme replacement is done textually: `whep` is not a WHATWG "special"
-    // scheme, so `Url::set_scheme` refuses the conversion to `http(s)`.
-    let http_url = if let Some(rest) = raw.strip_prefix("whep://") {
-        format!("http://{}", rest)
-    } else if let Some(rest) = raw.strip_prefix("wheps://") {
-        format!("https://{}", rest)
-    } else {
-        anyhow::bail!("Unsupported WHEP source URL: {}", super::redact_url(raw));
+    // Scheme matching is case-insensitive (RFC 3986). The replacement itself
+    // is done textually: `whep` is not a WHATWG "special" scheme, so
+    // `Url::set_scheme` refuses the conversion to `http(s)`.
+    let http_url = match raw.split_once("://") {
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("whep") => format!("http://{rest}"),
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("wheps") => format!("https://{rest}"),
+        _ => anyhow::bail!("Unsupported WHEP source URL: {}", super::redact_url(raw)),
     };
 
     let mut url = url::Url::parse(&http_url)?;
@@ -622,16 +635,17 @@ fn mime_of(codec: &Option<RTCRtpCodecParameters>) -> &str {
 }
 
 /// Derive the media kinds negotiated in the WHEP answer SDP. A rejected
-/// m-line (port 0) does not count as expected.
+/// m-line (port 0) does not count as expected; with multiple m-lines of the
+/// same kind, any active one counts (accumulate, not last-wins).
 fn expected_media_kinds(answer_sdp: &str) -> (bool, bool) {
     let mut video = false;
     let mut audio = false;
     for line in answer_sdp.lines() {
         let line = line.trim_start();
         if let Some(rest) = line.strip_prefix("m=video") {
-            video = media_line_active(rest);
+            video |= media_line_active(rest);
         } else if let Some(rest) = line.strip_prefix("m=audio") {
-            audio = media_line_active(rest);
+            audio |= media_line_active(rest);
         }
     }
     (video, audio)
@@ -684,7 +698,7 @@ impl StreamSource for WhepSource {
             whep_url: self.whep_url.clone(),
             token: self.token.clone(),
             config: self.config.clone(),
-            ice_servers: self.ice_servers.clone(),
+            net: self.net.clone(),
             rtp_tx: self.rtp_tx.clone(),
             state: self.state.clone(),
             state_tx: self.state_tx.clone(),
@@ -776,6 +790,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_whep_url_scheme_is_case_insensitive() {
+        let (url, _) = parse_whep_url("WHEP://example.com:7777/whep/cam1").unwrap();
+        assert_eq!(url, "http://example.com:7777/whep/cam1");
+        let (url, _) = parse_whep_url("Wheps://example.com/whep/cam1").unwrap();
+        assert_eq!(url, "https://example.com/whep/cam1");
+    }
+
+    #[test]
     fn parse_wheps_url_maps_to_https() {
         let (url, token) = parse_whep_url("wheps://example.com/whep/cam1").unwrap();
         assert_eq!(url, "https://example.com/whep/cam1");
@@ -831,6 +853,17 @@ mod tests {
     fn expected_kinds_detect_both_kinds() {
         let sdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n";
         assert_eq!(expected_media_kinds(sdp), (true, true));
+    }
+
+    #[test]
+    fn expected_kinds_accumulate_multiple_m_lines() {
+        // An active m-line followed by a rejected one of the same kind must
+        // still count (any active wins, not last-wins)…
+        let sdp = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\nm=video 0 UDP/TLS/RTP/SAVPF 97\r\n";
+        assert_eq!(expected_media_kinds(sdp), (true, false));
+        // …and a rejected line before the active one.
+        let sdp = "v=0\r\nm=audio 0 UDP/TLS/RTP/SAVPF 111\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\n";
+        assert_eq!(expected_media_kinds(sdp), (false, true));
     }
 
     #[test]
@@ -953,7 +986,7 @@ mod tests {
                 stream_id: "test".to_string(),
                 url: String::new(),
             },
-            ice_servers: vec![],
+            net: SourceNetConfig::default(),
             rtp_tx,
             state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             state_tx,

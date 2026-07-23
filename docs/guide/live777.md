@@ -112,7 +112,16 @@ When this source is used with `on_demand = true`, live777 waits at least
 pulls that may spend the WHEP HTTP request timeout before delivering media.
 
 The outgoing WHEP peer gathers ICE candidates using the server's own
-`[[ice_servers]]` configuration (no hardcoded STUN server).
+`[[ice_servers]]` configuration and binds the UDP sockets from
+`[webrtc] ice_udp_addrs` (no hardcoded STUN server).
+
+Chained on-demand pulls work one hop deep by default: this source's WHEP
+HTTP request waits up to `40000ms` for the answer, covering an upstream
+that itself holds subscribes for up to `35000ms` (an on-demand WHEP
+source). Deeper chains need their budgets aligned per deployment. Stopping
+this source (e.g. when the last subscriber leaves an `on_demand` stream)
+may wait out an in-flight WHEP HTTP request, bounded by that same `40000ms`
+timeout.
 
 ## DataChannel Forward
 

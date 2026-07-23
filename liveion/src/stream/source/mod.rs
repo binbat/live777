@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 #[cfg(feature = "native-source")]
 use rtc::rtp::packet::Packet;
+use std::net::SocketAddr;
 #[cfg(feature = "native-source")]
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -161,6 +162,8 @@ pub(crate) fn redact_url(raw: &str) -> String {
 /// Source-kind label for a URL, mirroring `create_url_source`'s dispatch.
 #[cfg(feature = "source")]
 pub(crate) fn url_source_kind(url: &str) -> &'static str {
+    // Schemes are case-insensitive (RFC 3986), same as config validation.
+    let url = url.to_ascii_lowercase();
     if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
         "rtsp"
     } else if url.starts_with("whep://") || url.starts_with("wheps://") {
@@ -206,10 +209,12 @@ impl InternalSourceConfig {
 #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
 impl InternalSourceConfig {
     pub fn reconnect_enabled(&self) -> bool {
-        self.url.starts_with("rtsp://")
-            || self.url.starts_with("rtsps://")
-            || self.url.starts_with("whep://")
-            || self.url.starts_with("wheps://")
+        // Schemes are case-insensitive (RFC 3986), same as config validation.
+        let url = self.url.to_ascii_lowercase();
+        url.starts_with("rtsp://")
+            || url.starts_with("rtsps://")
+            || url.starts_with("whep://")
+            || url.starts_with("wheps://")
     }
 
     /// Delay before reconnect `attempt` (1-based): exponential backoff from a
@@ -262,13 +267,25 @@ pub trait StreamSource: Send + Sync {
     }
 }
 
+/// Server-wide WebRTC network settings handed to sources that dial out to
+/// an upstream (currently only the WHEP source; RTSP/SDP sources ignore
+/// them).
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // fields are only read by the source-whep feature
+pub struct SourceNetConfig {
+    /// ICE servers for the outgoing peer's ICE gathering.
+    pub ice_servers: Vec<RTCIceServer>,
+    /// UDP sockets ICE binds to (already resolved from config/env).
+    pub ice_udp_addrs: Vec<SocketAddr>,
+}
+
 pub async fn create_source_from_url(
     stream_id: &str,
     url: &str,
     config: &crate::config::SourceConfig,
-    ice_servers: Vec<RTCIceServer>,
+    net: SourceNetConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    source_router::create_source_extended(stream_id, url, config, ice_servers).await
+    source_router::create_source_extended(stream_id, url, config, net).await
 }
 
 #[cfg(feature = "native-source")]
@@ -287,16 +304,20 @@ pub(crate) async fn create_url_source(
     stream_id: &str,
     url: &str,
     config: &crate::config::SourceConfig,
-    ice_servers: Vec<RTCIceServer>,
+    net: SourceNetConfig,
 ) -> Result<Box<dyn StreamSource>> {
     let internal_config = InternalSourceConfig::from_config(stream_id, config);
 
-    // Only the WHEP source consumes the server-wide ICE servers; keep other
-    // feature combinations warning-free.
+    // Only the WHEP source consumes the server-wide network settings; keep
+    // other feature combinations warning-free.
     #[cfg(not(feature = "source-whep"))]
-    let _ = ice_servers;
+    let _ = net;
 
-    if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
+    // Scheme/suffix checks are case-insensitive (RFC 3986), matching config
+    // validation; the sources are still constructed from the original URL.
+    let url_lower = url.to_ascii_lowercase();
+
+    if url_lower.starts_with("rtsp://") || url_lower.starts_with("rtsps://") {
         #[cfg(feature = "source-rtsp")]
         {
             let source = RtspSource::new(internal_config, url.to_string())?;
@@ -307,10 +328,10 @@ pub(crate) async fn create_url_source(
         {
             anyhow::bail!("RTSP source support not enabled. Enable 'source-rtsp' feature.");
         }
-    } else if url.starts_with("whep://") || url.starts_with("wheps://") {
+    } else if url_lower.starts_with("whep://") || url_lower.starts_with("wheps://") {
         #[cfg(feature = "source-whep")]
         {
-            let source = WhepSource::new(internal_config, url, ice_servers)?;
+            let source = WhepSource::new(internal_config, url, net)?;
             Ok(Box::new(source))
         }
 
@@ -318,11 +339,11 @@ pub(crate) async fn create_url_source(
         {
             anyhow::bail!("WHEP source support not enabled. Enable 'source-whep' feature.");
         }
-    } else if url.starts_with("file://") || url.ends_with(".sdp") {
+    } else if url_lower.starts_with("file://") || url_lower.ends_with(".sdp") {
         #[cfg(feature = "source-sdp")]
         {
-            let file_path = if url.starts_with("file://") {
-                url.strip_prefix("file://").unwrap()
+            let file_path = if url_lower.starts_with("file://") {
+                &url["file://".len()..]
             } else {
                 url
             };
@@ -381,6 +402,9 @@ mod tests {
         assert_eq!(url_source_kind("wheps://h/whep/s"), "whep");
         assert_eq!(url_source_kind("file://cam.sdp"), "sdp");
         assert_eq!(url_source_kind("cam.sdp"), "sdp");
+        // Schemes are case-insensitive, same as the factory dispatch.
+        assert_eq!(url_source_kind("WHEP://h/whep/s"), "whep");
+        assert_eq!(url_source_kind("RTSP://h/s"), "rtsp");
     }
 
     #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
