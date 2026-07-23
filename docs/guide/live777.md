@@ -106,6 +106,11 @@ url = "whep://edge-0:7777/whep/cam1"
 # url = "whep://token@edge-0:7777/whep/cam1"
 ```
 
+When this source is used with `on_demand = true`, live777 waits at least
+`35000ms` for the upstream WHEP source to become ready, even if
+`on_demand_start_timeout_ms` is lower. This covers cold upstream on-demand
+pulls that may spend the WHEP HTTP request timeout before delivering media.
+
 ## DataChannel Forward
 
 > NOTE: About `createDataChannel()`
@@ -215,4 +220,3 @@ Notes:
   already debounce via `on_demand_close_after_ms`.
 - No hooks fire on server shutdown (no `stream-deleted` events are emitted
   then).
-

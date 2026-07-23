@@ -39,7 +39,8 @@ ice_udp_addrs = ["auto"]
 # Grace period after the last subscriber leaves before sources stop (ms)
 # on_demand_close_after_ms = 10000
 # How long the first subscriber waits for the source to become ready (ms)
-# before the subscribe request fails
+# before the subscribe request fails. WHEP URL sources use at least 35000ms
+# effectively, so a cold upstream WHEP/on-demand pull can finish.
 # on_demand_start_timeout_ms = 10000
 # [[stream.cam1.sources]]
 # url = "rtsp://username:password@host:port/path"

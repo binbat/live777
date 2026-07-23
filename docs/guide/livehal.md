@@ -105,6 +105,11 @@ request fails and the client can retry. Source start/stop emits
 which also drives recording (`recorder.auto_streams`) and
 `on_publish_started` / `on_publish_stopped` hooks.
 
+For WHEP URL sources, the effective source readiness wait is at least
+`35000ms`, even if `on_demand_start_timeout_ms` is lower. This lets a cold
+upstream WHEP/on-demand source complete its HTTP setup timeout and deliver
+the first media packet.
+
 On-demand streams show a `standby` badge in the Dashboard while idle and
 `on-demand` while their sources are running; other provisioned streams are
 marked `config`.
@@ -370,4 +375,3 @@ gop = 60
 payload_type = 96
 clock_rate = 90000
 ```
-

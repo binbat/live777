@@ -96,6 +96,16 @@ async fn create_source(
         .await
     {
         error!("Failed to create bridge: {}", e);
+        if let Err(cleanup_err) = state
+            .stream_manager
+            .stop_stream_source(&stream, crate::event::SessionStopReason::PeerClosed)
+            .await
+        {
+            error!(
+                "Failed to clean up source {} after bridge creation failure: {:?}",
+                stream, cleanup_err
+            );
+        }
         return Err(e.into());
     }
     state.stream_manager.emit_source_publish_started(&stream);

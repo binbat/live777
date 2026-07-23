@@ -80,7 +80,15 @@ struct WhepClientContext {
 
 enum AttemptEnd {
     Shutdown,
-    Failed(String),
+    Failed { reason: String, connected: bool },
+}
+
+fn next_reconnect_count(current: u32, connected: bool) -> u32 {
+    if connected {
+        1
+    } else {
+        current.saturating_add(1)
+    }
 }
 
 enum WaitOutcome {
@@ -138,9 +146,9 @@ impl WhepSource {
             )
             .await;
 
-            match Self::run_attempt(&ctx, &mut shutdown_rx).await {
+            let connected = match Self::run_attempt(&ctx, &mut shutdown_rx).await {
                 AttemptEnd::Shutdown => break,
-                AttemptEnd::Failed(reason) => {
+                AttemptEnd::Failed { reason, connected } => {
                     warn!("[{}] WHEP session ended: {}", ctx.stream_id, reason);
                     Self::emit_state_change(
                         &ctx.state,
@@ -149,15 +157,16 @@ impl WhepSource {
                         Some(reason),
                     )
                     .await;
+                    connected
                 }
-            }
+            };
 
             if !ctx.config.reconnect_enabled() {
                 info!("[{}] Reconnect disabled, exiting", ctx.stream_id);
                 break;
             }
 
-            reconnect_count += 1;
+            reconnect_count = next_reconnect_count(reconnect_count, connected);
 
             if ctx.config.max_reconnect_attempts() > 0
                 && reconnect_count > ctx.config.max_reconnect_attempts()
@@ -239,7 +248,10 @@ impl WhepSource {
             Ok(connected) => connected,
             Err(e) => {
                 error!("[{}] WHEP connection failed: {}", ctx.stream_id, e);
-                return AttemptEnd::Failed(format!("Connection failed: {}", e));
+                return AttemptEnd::Failed {
+                    reason: format!("Connection failed: {}", e),
+                    connected: false,
+                };
             }
         };
         *ctx.peer_store.write().await = Some(peer.clone());
@@ -263,7 +275,10 @@ impl WhepSource {
                                 snapshot.audio.is_some()
                             );
                             Self::cleanup(ctx, &mut client, peer).await;
-                            return AttemptEnd::Failed("Upstream media kinds changed".to_string());
+                            return AttemptEnd::Failed {
+                                reason: "Upstream media kinds changed".to_string(),
+                                connected: false,
+                            };
                         }
                         Some(snapshot)
                     }
@@ -315,7 +330,10 @@ impl WhepSource {
                 )
                 .await
             }
-            None => AttemptEnd::Failed("Codec wait timed out".to_string()),
+            None => AttemptEnd::Failed {
+                reason: "Codec wait timed out".to_string(),
+                connected: false,
+            },
         };
 
         Self::cleanup(ctx, &mut client, peer).await;
@@ -392,7 +410,10 @@ impl WhepSource {
                     return AttemptEnd::Shutdown;
                 }
                 _ = ct.cancelled() => {
-                    return AttemptEnd::Failed("Connection closed".to_string());
+                    return AttemptEnd::Failed {
+                        reason: "Connection closed".to_string(),
+                        connected: true,
+                    };
                 }
                 result = video_rx.recv() => {
                     match result {
@@ -403,7 +424,10 @@ impl WhepSource {
                             });
                         }
                         None => {
-                            return AttemptEnd::Failed("Video channel closed".to_string());
+                            return AttemptEnd::Failed {
+                                reason: "Video channel closed".to_string(),
+                                connected: true,
+                            };
                         }
                     }
                 }
@@ -416,7 +440,10 @@ impl WhepSource {
                             });
                         }
                         None => {
-                            return AttemptEnd::Failed("Audio channel closed".to_string());
+                            return AttemptEnd::Failed {
+                                reason: "Audio channel closed".to_string(),
+                                connected: true,
+                            };
                         }
                     }
                 }
@@ -726,5 +753,12 @@ mod tests {
         };
         assert_eq!(av.audio_channel(), 2);
         assert_eq!(audio_only.audio_channel(), 0);
+    }
+
+    #[test]
+    fn connected_attempt_resets_reconnect_count() {
+        assert_eq!(next_reconnect_count(0, false), 1);
+        assert_eq!(next_reconnect_count(1, false), 2);
+        assert_eq!(next_reconnect_count(5, true), 1);
     }
 }
