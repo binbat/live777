@@ -1,4 +1,6 @@
 use crate::config::Config;
+#[cfg(feature = "source")]
+use crate::event::SessionStopReason;
 use crate::event::{Event, StreamDeleteReason};
 
 use crate::result::Result;
@@ -18,6 +20,8 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, trace};
 use webrtc::peer_connection::RTCSessionDescription;
 
+#[cfg(feature = "source")]
+use crate::forward::VIRTUAL_SOURCE_SESSION;
 use crate::forward::message::Layer;
 use crate::forward::{PeerForward, RemovePeerOutcome};
 use crate::stream::config::ManagerConfig;
@@ -90,11 +94,48 @@ pub struct Manager {
     pub source_manager: SourceManager,
 }
 
-/// Session id reported for the synthesized publisher of a configured source
-/// (RTSP pull / SDP file / native capture). Mirrors the id synthesized in
-/// `PeerForward::info` (`forward/internal.rs`).
+/// Knobs bounding how long one stream's source startup may block.
 #[cfg(feature = "source")]
-const VIRTUAL_SOURCE_SESSION: &str = "virtual-source";
+#[derive(Clone, Copy)]
+struct SourceStartBudget {
+    /// How long to wait for the source's codec to become known before the
+    /// start is considered failed.
+    codec_timeout: Duration,
+    /// Per-attempt codec re-wait inside bridge creation. Startup paths give
+    /// the source an extra grace period here; on-demand passes zero because
+    /// the subscriber's wait budget was already spent on `codec_timeout`.
+    bridge_codec_wait: Duration,
+    /// How long to wait for the source's RTCP sender before continuing
+    /// without it (non-fatal: keyframe requests just won't work).
+    rtcp_wait: Duration,
+    /// Bridge creation attempts before giving up.
+    max_bridge_retries: u32,
+}
+
+/// Budget for startup-triggered source starts (auto-start, provisioned
+/// reset): no one is synchronously waiting, so retries are cheap.
+#[cfg(feature = "source")]
+const STARTUP_SOURCE_BUDGET: SourceStartBudget = SourceStartBudget {
+    codec_timeout: Duration::from_secs(10),
+    bridge_codec_wait: crate::stream::source::manager::DEFAULT_BRIDGE_CODEC_WAIT,
+    rtcp_wait: crate::stream::source::manager::DEFAULT_BRIDGE_RTCP_WAIT,
+    max_bridge_retries: 3,
+};
+
+#[cfg(feature = "source")]
+impl SourceStartBudget {
+    /// Budget for subscriber-triggered (on-demand) starts: a single bridge
+    /// attempt with no inner re-wait, so the waiting subscriber gets the
+    /// outcome within roughly `on_demand_start_timeout_ms`.
+    fn on_demand(entry: &crate::config::StreamEntry) -> Self {
+        Self {
+            codec_timeout: Duration::from_millis(entry.on_demand_start_timeout_ms),
+            bridge_codec_wait: Duration::ZERO,
+            rtcp_wait: Duration::from_millis(500),
+            max_bridge_retries: 1,
+        }
+    }
+}
 
 pub type Response = (RTCSessionDescription, String);
 
@@ -381,12 +422,23 @@ impl Manager {
         }
     }
 
+    /// Public stream creation (admin API). Provisioned streams are owned by
+    /// the config file: creating one through the API is always a conflict,
+    /// even in the brief window where an internal teardown has unregistered
+    /// the forward but not yet reset it.
     pub async fn stream_create(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
+        if self.is_provisioned(&stream) {
+            return Err(anyhow::anyhow!(
+                "stream '{stream}' is declared in the config file and cannot be created through the API"
+            ));
+        }
+        self.do_stream_create(stream).await
+    }
+
+    async fn do_stream_create(&self, stream: String) -> std::result::Result<(), anyhow::Error> {
         {
             let stream_map = self.stream_map.read().await;
             if stream_map.contains_key(&stream) {
-                // Provisioned streams always exist, so creating one through
-                // the API is a conflict like any other duplicate create.
                 return Err(anyhow::anyhow!("resource already exists"));
             }
         }
@@ -417,7 +469,7 @@ impl Manager {
         let mut names: Vec<&String> = self.config.stream.streams.keys().collect();
         names.sort();
         for stream in names {
-            if let Err(e) = self.stream_create(stream.clone()).await {
+            if let Err(e) = self.do_stream_create(stream.clone()).await {
                 // A stream can already exist if e.g. the RTSP server created
                 // it first; that is not an error worth aborting startup for.
                 debug!("provision stream {} skipped: {}", stream, e);
@@ -515,7 +567,7 @@ impl Manager {
             emit_stream_deleted(&self.event_sender, stream, StreamDeleteReason::Reset);
             #[cfg(feature = "source")]
             let _ = self
-                .stop_stream_source(stream, crate::event::SessionStopReason::PeerClosed)
+                .stop_stream_source(stream, SessionStopReason::PeerClosed)
                 .await;
             self.reset_provisioned_stream(stream).await;
         } else {
@@ -550,7 +602,8 @@ impl Manager {
             && !entry.on_demand
             && !entry.sources.is_empty()
         {
-            self.start_stream_sources(stream, entry, 10_000, 3).await;
+            self.start_stream_sources(stream, entry, STARTUP_SOURCE_BUDGET)
+                .await;
         }
     }
 
@@ -563,6 +616,18 @@ impl Manager {
             "Publishing to stream: {}, offer type: {:?}",
             stream, offer.sdp_type
         );
+        // A stream whose configured source is actively feeding tracks cannot
+        // also accept a WHIP publisher — every subscriber would receive both
+        // publishers' tracks mixed. Reject like mediamtx's "already
+        // publishing" instead. (The reverse direction — a subscriber
+        // starting the on-demand source while a publisher is live — is
+        // guarded in `ensure_on_demand_source`.)
+        #[cfg(feature = "source")]
+        if self.source_manager.has_bridge(&stream).await {
+            return Err(AppError::stream_source_active(format!(
+                "stream '{stream}' has an active configured source"
+            )));
+        }
         let forward = self
             .get_or_create_forward_for_operation(
                 &stream,
@@ -927,10 +992,10 @@ impl Manager {
     }
 
     #[cfg(feature = "source")]
-    async fn wait_for_source_codec(&self, stream_id: &str, timeout_ms: u64) -> bool {
+    async fn wait_for_source_codec(&self, stream_id: &str, timeout: Duration) -> bool {
         let start = std::time::Instant::now();
 
-        while start.elapsed().as_millis() < timeout_ms as u128 {
+        while start.elapsed() < timeout {
             if self.source_manager.is_codec_ready(stream_id).await {
                 return true;
             }
@@ -949,15 +1014,23 @@ impl Manager {
     // The stream itself is provisioned and stays listed the whole time.
 
     /// Start the stream's configured sources if it is an on-demand stream
-    /// whose sources are not running. Blocks until the codec is ready (up to
-    /// `on_demand_start_timeout_ms`) so the caller's SDP answer can include
-    /// the source tracks — WHIP/WHEP has no renegotiation, so a subscriber
-    /// answered before the tracks exist would never receive media; instead
-    /// the subscribe fails with an error and the client can retry.
+    /// whose sources are not running. Blocks until the source bridge is up
+    /// (up to `on_demand_start_timeout_ms`) so the caller's SDP answer can
+    /// include the source tracks — WHIP/WHEP has no renegotiation, so a
+    /// subscriber answered before the tracks exist would never receive
+    /// media; instead the subscribe fails with an error and the client can
+    /// retry.
     ///
-    /// No-op (Ok) for non-on-demand streams, streams with running sources,
-    /// and streams with a live WHIP publisher (the publisher feeds the media,
-    /// starting the configured source would mix two publishers' tracks).
+    /// No-op (Ok) for non-on-demand streams, streams whose source bridge is
+    /// already up, and streams with a live WHIP publisher (the publisher
+    /// feeds the media, starting the configured source would mix two
+    /// publishers' tracks).
+    ///
+    /// Readiness is judged by the *bridge*, not by source existence: a
+    /// source that is merely present (a concurrent start still waiting for
+    /// its codec, or a zombie from a failed start) has no tracks yet, so
+    /// answering a subscriber now would break it silently. Such callers
+    /// serialize behind the per-stream lock below instead.
     #[cfg(feature = "source")]
     pub async fn ensure_on_demand_source(&self, stream: &str) -> Result<()> {
         // A pending stop from the previous viewer epoch is obsolete the
@@ -970,29 +1043,42 @@ impl Manager {
         if !entry.on_demand || entry.sources.is_empty() {
             return Ok(());
         }
-        if self.source_manager.has_source(stream).await {
+        if self.source_manager.has_bridge(stream).await {
             return Ok(());
         }
 
         // Serialize start vs. start and start vs. stop for THIS stream only.
+        // A subscriber arriving while another one's start is in flight
+        // blocks here and then finds the bridge up.
         let lock = self.on_demand_lock(stream).await;
         let _guard = lock.lock().await;
-        if self.source_manager.has_source(stream).await {
+        if self.source_manager.has_bridge(stream).await {
             return Ok(());
         }
-        if let Some(forward) = self.stream_map.read().await.get(stream)
+
+        // A live WHIP/cascade publisher feeds the media; starting the
+        // configured source would mix two publishers' tracks.
+        let forward = self.stream_map.read().await.get(stream).cloned();
+        if let Some(forward) = forward
             && !forward.has_no_live_publisher().await
         {
             return Ok(());
         }
 
+        // A source left over from a failed start (present, but no bridge)
+        // would make `add_source` bail — remove the zombie before retrying.
+        // No PublishStopped can be emitted here: the zombie never had a
+        // bridge, so no PublishStarted was ever paired with it.
+        if self.source_manager.has_source(stream).await {
+            self.stop_stream_source_locked(stream, SessionStopReason::PeerClosed)
+                .await?;
+        }
+
         info!("on-demand: starting sources for stream {}", stream);
-        // Single bridge attempt: a waiting subscriber should get the error
-        // within roughly `on_demand_start_timeout_ms`, not after retries.
-        self.start_stream_sources(stream, entry, entry.on_demand_start_timeout_ms, 1)
+        self.start_stream_sources(stream, entry, SourceStartBudget::on_demand(entry))
             .await;
 
-        if self.source_manager.is_codec_ready(stream).await {
+        if self.source_manager.has_bridge(stream).await {
             // Safety net: arm the close-after timer now. A subscriber that
             // actually attaches cancels it via SubscribeStarted; a caller
             // that never consumes (RTSP DESCRIBE without PLAY, a failed
@@ -1004,14 +1090,16 @@ impl Manager {
             return Ok(());
         }
 
-        // Not ready: stop the half-started source so a zombie doesn't linger
-        // (the armed timer would take close_after to clean it up otherwise).
+        // Not ready: stop the half-started source inline so no zombie
+        // lingers (and blocks later ensures) until the close-after timer
+        // would get around to it.
         tracing::error!(
             "on-demand: source for stream {} not ready after {}ms",
             stream,
             entry.on_demand_start_timeout_ms
         );
-        self.maybe_arm_on_demand_stop(stream).await;
+        self.stop_stream_source_locked(stream, SessionStopReason::PeerClosed)
+            .await?;
         Err(AppError::throw(format!(
             "on-demand source for stream '{stream}' not ready"
         )))
@@ -1029,18 +1117,14 @@ impl Manager {
     }
 
     /// Start all configured sources of one stream entry (shared by
-    /// `auto_start_sources` and `ensure_on_demand_source`). Waits up to
-    /// `codec_timeout_ms` per source for its codec to become known.
-    /// `max_bridge_retries` bounds the bridge-creation attempts: startup
-    /// paths pass 3, while on-demand starts pass 1 so a dead source fails
-    /// the waiting subscriber within roughly `codec_timeout_ms`.
+    /// `auto_start_sources` and `ensure_on_demand_source`). `budget` bounds
+    /// each wait along the way; see [`SourceStartBudget`].
     #[cfg(feature = "source")]
     async fn start_stream_sources(
         &self,
         stream_id: &str,
         entry: &crate::config::StreamEntry,
-        codec_timeout_ms: u64,
-        max_bridge_retries: u32,
+        budget: SourceStartBudget,
     ) {
         for source_cfg in &entry.sources {
             // Structured native sources: kind + capture + encoder
@@ -1058,13 +1142,8 @@ impl Manager {
                         continue;
                     }
                 };
-                self.start_single_source(
-                    source,
-                    &spec.stream_id,
-                    codec_timeout_ms,
-                    max_bridge_retries,
-                )
-                .await;
+                self.start_single_source(source, &spec.stream_id, budget)
+                    .await;
                 continue;
             }
             // URL-based sources (RTSP / SDP)
@@ -1077,22 +1156,31 @@ impl Manager {
                         continue;
                     }
                 };
-                self.start_single_source(source, stream_id, codec_timeout_ms, max_bridge_retries)
-                    .await;
+                self.start_single_source(source, stream_id, budget).await;
             }
         }
     }
 
     /// Stop the stream's source bridge + source (if running) and remove the
     /// virtual tracks they installed, returning the stream to standby.
-    /// `PublishStopped` (and the `metrics::PUBLISH` decrement) is emitted
-    /// only when a bridge actually existed, pairing the `PublishStarted`
-    /// from bridge creation.
+    /// Serialized with on-demand starts through the per-stream lock, so a
+    /// stop can never interleave with an in-flight `ensure_on_demand_source`.
     #[cfg(feature = "source")]
-    pub async fn stop_stream_source(
+    pub async fn stop_stream_source(&self, stream: &str, reason: SessionStopReason) -> Result<()> {
+        let lock = self.on_demand_lock(stream).await;
+        let _guard = lock.lock().await;
+        self.stop_stream_source_locked(stream, reason).await
+    }
+
+    /// Lock-free inner half of [`Manager::stop_stream_source`], for callers
+    /// already holding the stream's on-demand lock. `PublishStopped` (and
+    /// the `metrics::PUBLISH` decrement) is emitted only when a bridge
+    /// actually existed, pairing the `PublishStarted` from bridge creation.
+    #[cfg(feature = "source")]
+    async fn stop_stream_source_locked(
         &self,
         stream: &str,
-        reason: crate::event::SessionStopReason,
+        reason: SessionStopReason,
     ) -> Result<()> {
         if !self.source_manager.has_source(stream).await {
             return Ok(());
@@ -1190,22 +1278,31 @@ impl Manager {
             let stream = stream.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(close_after).await;
-                // Re-check: a subscriber or RTSP pull may have arrived while
-                // the timer was sleeping without cancelling it (e.g. events
-                // dropped under broadcast lag).
+                // Unregister BEFORE stopping: from here on this task is the
+                // stopper, and a cancel must become a no-op instead of
+                // aborting the stop halfway through (which would leave
+                // stale virtual tracks and an unpaired PublishStarted
+                // behind). Cancels during the sleep above still abort.
+                manager.on_demand_stop_timers.lock().await.remove(&stream);
+                // Re-check under the start/stop lock: a subscriber or RTSP
+                // pull may have arrived while the timer was sleeping
+                // without cancelling it (e.g. events dropped under
+                // broadcast lag), and the stop must not interleave with an
+                // in-flight start.
+                let lock = manager.on_demand_lock(&stream).await;
+                let _guard = lock.lock().await;
                 if manager.on_demand_stream_idle(&stream).await {
                     info!(
                         "on-demand: stopping sources for stream {} (no subscribers for {:?})",
                         stream, close_after
                     );
                     if let Err(e) = manager
-                        .stop_stream_source(&stream, crate::event::SessionStopReason::PeerClosed)
+                        .stop_stream_source_locked(&stream, SessionStopReason::IdleTimeout)
                         .await
                     {
                         tracing::error!("on-demand: failed to stop source for {}: {:?}", stream, e);
                     }
                 }
-                manager.on_demand_stop_timers.lock().await.remove(&stream);
             })
         };
 
@@ -1295,7 +1392,8 @@ impl Manager {
             if entry.on_demand {
                 continue;
             }
-            self.start_stream_sources(stream_id, entry, 10_000, 3).await;
+            self.start_stream_sources(stream_id, entry, STARTUP_SOURCE_BUDGET)
+                .await;
         }
 
         tracing::info!("Auto-start sources completed");
@@ -1307,8 +1405,7 @@ impl Manager {
         &self,
         source: Box<dyn crate::stream::source::StreamSource>,
         stream_id: &str,
-        codec_timeout_ms: u64,
-        max_retries: u32,
+        budget: SourceStartBudget,
     ) {
         if let Err(e) = self.source_manager.add_source(source).await {
             tracing::error!("Failed to start source {}: {}", stream_id, e);
@@ -1316,14 +1413,14 @@ impl Manager {
         }
 
         let codec_ready = self
-            .wait_for_source_codec(stream_id, codec_timeout_ms)
+            .wait_for_source_codec(stream_id, budget.codec_timeout)
             .await;
 
         if !codec_ready {
             tracing::warn!(
-                "Codec not ready for source: {} after {}ms, continuing anyway",
+                "Codec not ready for source: {} after {:?}, continuing anyway",
                 stream_id,
-                codec_timeout_ms
+                budget.codec_timeout
             );
         }
 
@@ -1334,7 +1431,12 @@ impl Manager {
         loop {
             match self
                 .source_manager
-                .create_bridge(stream_id, forward.clone())
+                .create_bridge(
+                    stream_id,
+                    forward.clone(),
+                    budget.bridge_codec_wait,
+                    budget.rtcp_wait,
+                )
                 .await
             {
                 Ok(_) => {
@@ -1344,11 +1446,11 @@ impl Manager {
                 }
                 Err(e) => {
                     retry_count += 1;
-                    if retry_count >= max_retries {
+                    if retry_count >= budget.max_bridge_retries {
                         tracing::error!(
                             "Failed to create bridge for {} after {} retries: {}",
                             stream_id,
-                            max_retries,
+                            budget.max_bridge_retries,
                             e
                         );
                         break;
@@ -1358,7 +1460,7 @@ impl Manager {
                         "Failed to create bridge for {} (attempt {}/{}): {}, retrying...",
                         stream_id,
                         retry_count,
-                        max_retries,
+                        budget.max_bridge_retries,
                         e
                     );
 
@@ -1775,15 +1877,22 @@ mod tests {
 
         #[tokio::test]
         async fn ensure_fails_and_cleans_up_when_source_never_ready() {
-            // An SDP file that doesn't exist: source creation fails, so the
-            // ensure must error out instead of letting the subscriber hang.
+            // An SDP file that doesn't exist yet: source creation fails, so
+            // the ensure must error out instead of letting the subscriber
+            // hang — and clean up inline so a later ensure gets a fresh
+            // retry instead of finding a zombie.
+            let sdp_path = std::env::temp_dir().join(format!(
+                "live777-on-demand-retry-{}.sdp",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&sdp_path);
             let cancel = CancellationToken::new();
             let mut streams = HashMap::new();
             streams.insert(
                 "od".to_string(),
                 crate::config::StreamEntry {
                     sources: vec![crate::config::SourceConfig {
-                        url: Some("file:///nonexistent/live777-missing.sdp".to_string()),
+                        url: Some(format!("file://{}", sdp_path.to_string_lossy())),
                         #[cfg(feature = "native-source")]
                         capture: None,
                         #[cfg(feature = "native-source")]
@@ -1807,8 +1916,143 @@ mod tests {
                 "failed source must not linger"
             );
 
-            // A subsequent ensure can retry (e.g. after the file appears).
+            // The file appears: the next ensure retries cleanly and brings
+            // the bridge (and with it the answer-ready tracks) up.
+            let sdp = "v=0\r\n\
+                       o=- 0 0 IN IP4 127.0.0.1\r\n\
+                       s=test\r\n\
+                       c=IN IP4 127.0.0.1\r\n\
+                       t=0 0\r\n\
+                       m=video 0 RTP/AVP 96\r\n\
+                       a=rtpmap:96 H264/90000\r\n";
+            tokio::fs::write(&sdp_path, sdp).await.unwrap();
+            manager.ensure_on_demand_source("od").await.unwrap();
+            assert!(
+                manager.source_manager.has_bridge("od").await,
+                "retry after the file appeared must bring the bridge up"
+            );
+
+            manager
+                .stop_stream_source("od", crate::event::SessionStopReason::PeerClosed)
+                .await
+                .unwrap();
             cancel.cancel();
+            let _ = std::fs::remove_file(&sdp_path);
+        }
+
+        /// A source whose codec never becomes ready: stands in for the
+        /// zombie a failed start would leave behind.
+        struct NeverReadySource {
+            id: String,
+            stopped: Arc<std::sync::atomic::AtomicBool>,
+            rtp_tx: broadcast::Sender<crate::stream::source::MediaPacket>,
+            state_tx: broadcast::Sender<crate::stream::source::StateChangeEvent>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::stream::source::StreamSource for NeverReadySource {
+            fn stream_id(&self) -> &str {
+                &self.id
+            }
+
+            fn state(&self) -> crate::stream::source::StreamSourceState {
+                crate::stream::source::StreamSourceState::Connected
+            }
+
+            async fn start(&mut self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn stop(&mut self) -> anyhow::Result<()> {
+                self.stopped
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn subscribe_rtp(&self) -> broadcast::Receiver<crate::stream::source::MediaPacket> {
+                self.rtp_tx.subscribe()
+            }
+
+            fn subscribe_state(
+                &self,
+            ) -> broadcast::Receiver<crate::stream::source::StateChangeEvent> {
+                self.state_tx.subscribe()
+            }
+        }
+
+        #[tokio::test]
+        async fn ensure_replaces_zombie_source_and_retries() {
+            let sdp_path = write_test_sdp("zombie").await;
+            let cancel = CancellationToken::new();
+            let manager = Manager::new(on_demand_config(&sdp_path), cancel.clone()).await;
+            manager.provision_streams().await;
+
+            // Simulate the leftover of a failed start: a source that exists
+            // but has no bridge (its codec never became ready). An ensure
+            // that mistook source existence for readiness would return a
+            // track-less Ok here.
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (rtp_tx, _) = broadcast::channel(1);
+            let (state_tx, _) = broadcast::channel(1);
+            manager
+                .source_manager
+                .add_source(Box::new(NeverReadySource {
+                    id: "od".to_string(),
+                    stopped: stopped.clone(),
+                    rtp_tx,
+                    state_tx,
+                }))
+                .await
+                .unwrap();
+            assert!(manager.source_manager.has_source("od").await);
+            assert!(!manager.source_manager.has_bridge("od").await);
+
+            manager.ensure_on_demand_source("od").await.unwrap();
+            assert!(
+                stopped.load(std::sync::atomic::Ordering::SeqCst),
+                "zombie source was not stopped"
+            );
+            assert!(
+                manager.source_manager.has_bridge("od").await,
+                "configured source was not started after zombie cleanup"
+            );
+
+            manager
+                .stop_stream_source("od", crate::event::SessionStopReason::PeerClosed)
+                .await
+                .unwrap();
+            cancel.cancel();
+            let _ = std::fs::remove_file(&sdp_path);
+        }
+
+        #[tokio::test]
+        async fn publish_rejected_while_source_is_running() {
+            let sdp_path = write_test_sdp("publish-guard").await;
+            let cancel = CancellationToken::new();
+            let manager = Manager::new(on_demand_config(&sdp_path), cancel.clone()).await;
+            manager.provision_streams().await;
+            manager.ensure_on_demand_source("od").await.unwrap();
+            assert!(manager.source_manager.has_bridge("od").await);
+
+            // A WHIP publisher attaching to a stream whose configured source
+            // is actively feeding tracks would mix both publishers' tracks
+            // into every subscriber — reject instead.
+            let offer = RTCSessionDescription::offer(
+                "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=test\r\nt=0 0\r\n".to_string(),
+            )
+            .unwrap();
+            let err = manager.publish("od".to_string(), offer).await;
+            assert!(
+                matches!(err, Err(AppError::StreamSourceActive(_))),
+                "publish onto a source-active stream must be a source-active conflict: {err:?}"
+            );
+
+            manager
+                .stop_stream_source("od", crate::event::SessionStopReason::PeerClosed)
+                .await
+                .unwrap();
+            cancel.cancel();
+            let _ = std::fs::remove_file(&sdp_path);
         }
     }
 }

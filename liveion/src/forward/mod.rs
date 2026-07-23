@@ -66,6 +66,12 @@ const ANSWER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::f
 const ANSWER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(25);
 
+/// Session id reported for the synthesized publisher of a configured source
+/// (RTSP pull / SDP file / native capture). Used both when synthesizing the
+/// publish session in `PeerForward::info` and when emitting the source's
+/// `PublishStarted`/`PublishStopped` lifecycle events in the manager.
+pub(crate) const VIRTUAL_SOURCE_SESSION: &str = "virtual-source";
+
 #[cfg(feature = "source")]
 pub mod bridge;
 

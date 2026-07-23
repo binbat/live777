@@ -54,8 +54,10 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 ## Config
 
 Sources are configured under per-stream `[[stream.<name>.sources]]` blocks in `conf/live777.toml`.
-The stream name is the key under `[stream]`; each stream can have one or more sources and an
-optional DataChannel <-> UDP channel.
+The stream name is the key under `[stream]`; each stream can have an
+optional DataChannel <-> UDP channel. Only **one** source per stream runs at
+a time — the source registry is keyed by stream name, so configure a single
+source per stream.
 
 ### Provisioned streams and on-demand sources
 
@@ -64,6 +66,18 @@ startup, always appears in the API and Dashboard (even while idle), is
 exempt from the automatic teardown strategies (orphan reaper,
 `auto_delete_whip` / `auto_delete_whep`), and cannot be created or deleted
 through the admin API (`POST` / `DELETE /api/streams/<name>` return 409).
+
+A provisioned stream is permanent, but its media plane still follows
+publisher lifecycles:
+
+- When a WHIP publisher leaves gracefully, the stream is **reset to
+  standby**: its subscribers are disconnected (WHEP cannot renegotiate
+  tracks, so viewers must re-subscribe) and a `stream-deleted` +
+  `stream-created` hook pair with reason `reset` fires. Always-on sources
+  are restarted; on-demand sources stay stopped until the next subscriber.
+- A WHIP publisher cannot attach while the stream's configured source is
+  running (and vice versa) — that would mix two publishers' tracks; the
+  publish request fails with 409.
 
 By default a stream's sources start unconditionally at server startup. Set
 `on_demand = true` to run them only while someone is watching — the camera /
@@ -82,6 +96,14 @@ on_demand_start_timeout_ms = 10000
 [[stream.cam1.sources]]
 url = "rtsp://192.168.1.100:554/stream"
 ```
+
+Subscribers that arrive while a source start is still in flight wait for it
+(and for each other) instead of receiving a track-less answer; if the source
+does not become ready within `on_demand_start_timeout_ms` the subscribe
+request fails and the client can retry. Source start/stop emits
+`PublishStarted` / `PublishStopped` with the session id `virtual-source`,
+which also drives recording (`recorder.auto_streams`) and
+`on_publish_started` / `on_publish_stopped` hooks.
 
 On-demand streams show a `standby` badge in the Dashboard while idle and
 `on-demand` while their sources are running; other provisioned streams are

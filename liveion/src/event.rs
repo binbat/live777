@@ -45,6 +45,10 @@ pub enum SessionStopReason {
     /// gracefully hanging up (WHIP/WHEP session delete) or an admin kick; both
     /// share the endpoint and are indistinguishable at this layer.
     ApiDeleted,
+    /// An on-demand source was stopped because the stream had no consumers
+    /// for `on_demand_close_after_ms` (no subscribers, no RTSP pull clients).
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    IdleTimeout,
 }
 
 /// A stream-lifecycle event. `stream` is the stream name; `session` is the

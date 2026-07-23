@@ -54,8 +54,9 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 ## 配置
 
 源配置在 `conf/live777.toml` 中按 stream 划分，写在 `[[stream.<name>.sources]]` 下。
-`[stream]` 下的每个键就是 stream 名称；每个 stream 可以包含一个或多个源，也可以选配一个
-DataChannel <-> UDP 通道。
+`[stream]` 下的每个键就是 stream 名称；每个 stream 可以选配一个
+DataChannel <-> UDP 通道。每个 stream 同时只能运行**一个**源——源注册表以流名为键，
+因此请为每个流只配置一个源。
 
 ### 预注册流与按需源（on-demand）
 
@@ -63,6 +64,15 @@ DataChannel <-> UDP 通道。
 即使空闲也始终出现在 API 和 Dashboard 中，不受自动回收策略影响
 （orphan reaper、`auto_delete_whip` / `auto_delete_whep`），
 也不能通过 admin API 创建或删除（`POST` / `DELETE /api/streams/<name>` 返回 409）。
+
+预注册流是永久的，但其媒体面仍跟随推流生命周期：
+
+- WHIP 推流端正常离开时，流会被**重置为待机**：其订阅者全部断线
+  （WHEP 无法重协商 track，观众需重新订阅），并触发一对 reason 为
+  `reset` 的 `stream-deleted` + `stream-created` hook。常驻源会重启；
+  on-demand 源保持停止直到下一个订阅者到来。
+- 配置源运行期间 WHIP 推流端无法挂载（反之亦然）——否则两个推流方的
+  track 会混入所有订阅者，该推流请求返回 409。
 
 默认情况下，流的源在服务器启动时无条件启动。设置 `on_demand = true` 后，
 源只在有人观看时运行——摄像头 / 编码器 / RTSP 拉流在第一个订阅者
@@ -79,6 +89,12 @@ on_demand_start_timeout_ms = 10000
 [[stream.cam1.sources]]
 url = "rtsp://192.168.1.100:554/stream"
 ```
+
+在源启动进行期间到达的订阅者会等待启动完成（以及彼此），而不是拿到一个
+不含 track 的应答；若源在 `on_demand_start_timeout_ms` 内未就绪，订阅请求
+失败，客户端可重试。源的启停会以 `virtual-source` 会话 ID 发出
+`PublishStarted` / `PublishStopped` 事件，同时驱动录制
+（`recorder.auto_streams`）和 `on_publish_started` / `on_publish_stopped` 钩子。
 
 on-demand 流在空闲时 Dashboard 显示 `standby` 徽标，源运行时显示
 `on-demand`；其他预注册流显示 `config` 徽标。

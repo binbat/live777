@@ -470,7 +470,8 @@ pub enum OnError {
 ///
 /// Scripts are executed directly (no shell). Each receives the event
 /// metadata as argv (`<event> <stream> [reason]`) and as the environment
-/// variables `LIVE777_EVENT` / `LIVE777_STREAM` / `LIVE777_REASON`.
+/// variables `LIVE777_EVENT` / `LIVE777_STREAM` / `LIVE777_REASON`;
+/// publish events additionally export `LIVE777_SESSION`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HookConfig {
     /// Scripts run, in order, when a stream is created.
@@ -479,6 +480,18 @@ pub struct HookConfig {
     /// Scripts run, in order, when a stream is deleted.
     #[serde(default)]
     pub on_stream_deleted: Vec<String>,
+    /// Scripts run, in order, when a publisher attaches to a stream — a
+    /// WHIP/cascade publisher, or a configured source starting (session id
+    /// `virtual-source`). For on-demand streams this is the "someone is
+    /// watching" signal that `on_stream_created` (fired at startup) cannot
+    /// provide.
+    #[serde(default)]
+    pub on_publish_started: Vec<String>,
+    /// Scripts run, in order, when a publisher detaches or a configured
+    /// source stops. The stop reason (`peer-closed` / `api-deleted` /
+    /// `idle-timeout`) is passed as argv[3] / `LIVE777_REASON`.
+    #[serde(default)]
+    pub on_publish_stopped: Vec<String>,
 }
 
 /// Global `[hooks]` section: hook scripts plus execution policy.

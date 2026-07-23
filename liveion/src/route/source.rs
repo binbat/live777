@@ -86,7 +86,15 @@ async fn create_source(
         .stream_manager
         .get_or_create_forward_for_source(&stream)
         .await;
-    if let Err(e) = source_manager.create_bridge(&stream, forward).await {
+    if let Err(e) = source_manager
+        .create_bridge(
+            &stream,
+            forward,
+            crate::stream::source::manager::DEFAULT_BRIDGE_CODEC_WAIT,
+            crate::stream::source::manager::DEFAULT_BRIDGE_RTCP_WAIT,
+        )
+        .await
+    {
         error!("Failed to create bridge: {}", e);
         return Err(e.into());
     }

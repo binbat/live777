@@ -11,6 +11,16 @@ use crate::forward::{PeerForward, SourceBridge};
 
 type SourceMap = Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<Box<dyn StreamSource>>>>>>;
 
+/// Default per-attempt codec re-wait inside bridge creation, for callers
+/// without their own wait budget (startup auto-start, source API).
+#[cfg(feature = "source")]
+pub const DEFAULT_BRIDGE_CODEC_WAIT: Duration = Duration::from_secs(6);
+
+/// Default RTCP-sender wait inside bridge creation (non-fatal when it
+/// elapses: keyframe requests just won't work).
+#[cfg(feature = "source")]
+pub const DEFAULT_BRIDGE_RTCP_WAIT: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 pub struct SourceManager {
     pub(crate) sources: SourceMap,
@@ -91,8 +101,21 @@ impl SourceManager {
         result
     }
 
+    /// Install the media bridge (virtual tracks) for a source.
+    ///
+    /// `codec_wait` bounds how long to poll for the source's codec to become
+    /// known before giving up; `rtcp_wait` bounds the (non-fatal) wait for
+    /// the source's RTCP sender. Both are caller-controlled so a subscriber
+    /// blocked in on-demand source startup is not held longer than its own
+    /// start budget, while startup paths can afford a longer grace period.
     #[cfg(feature = "source")]
-    pub async fn create_bridge(&self, stream_id: &str, forward: PeerForward) -> Result<()> {
+    pub async fn create_bridge(
+        &self,
+        stream_id: &str,
+        forward: PeerForward,
+        codec_wait: Duration,
+        rtcp_wait: Duration,
+    ) -> Result<()> {
         info!("Creating bridge for {}", stream_id);
 
         {
@@ -109,46 +132,38 @@ impl SourceManager {
             .clone();
         drop(sources);
 
-        let max_retries = 30;
-        let mut video_codec = None;
-        let mut audio_codec = None;
-
-        for attempt in 1..=max_retries {
+        let codec_deadline = std::time::Instant::now() + codec_wait;
+        let (video_codec, audio_codec) = loop {
             let source_guard = source.lock().await;
 
-            video_codec = source_guard.get_video_codec().await;
-            audio_codec = source_guard.get_audio_codec().await;
+            let video_codec = source_guard.get_video_codec().await;
+            let audio_codec = source_guard.get_audio_codec().await;
 
             if video_codec.is_some() || audio_codec.is_some() {
                 info!(
-                    "Codec ready for {} (attempt {}/{}): video={}, audio={}",
+                    "Codec ready for {}: video={}, audio={}",
                     stream_id,
-                    attempt,
-                    max_retries,
                     video_codec.is_some(),
                     audio_codec.is_some()
                 );
                 drop(source_guard);
-                break;
+                break (video_codec, audio_codec);
             }
 
             drop(source_guard);
 
-            if attempt == max_retries {
-                anyhow::bail!(
-                    "Codec not ready for {} after {} attempts",
-                    stream_id,
-                    max_retries
-                );
+            let now = std::time::Instant::now();
+            if now >= codec_deadline {
+                anyhow::bail!("Codec not ready for {} within {:?}", stream_id, codec_wait);
             }
 
-            warn!(
-                "Codec not ready for {} (attempt {}/{}), retrying...",
-                stream_id, attempt, max_retries
-            );
+            warn!("Codec not ready for {}, retrying...", stream_id);
 
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+            tokio::time::sleep(
+                Duration::from_millis(200).min(codec_deadline.saturating_duration_since(now)),
+            )
+            .await;
+        };
 
         let has_video = video_codec.is_some();
         let has_audio = audio_codec.is_some();
@@ -199,25 +214,29 @@ impl SourceManager {
 
         info!("Waiting for RTCP sender for {}", stream_id);
 
-        let mut rtcp_sender = None;
-        for attempt in 1..=20 {
-            rtcp_sender = source_guard.get_rtcp_sender().await;
+        let rtcp_deadline = std::time::Instant::now() + rtcp_wait;
+        let rtcp_sender = loop {
+            let rtcp_sender = source_guard.get_rtcp_sender().await;
 
             if rtcp_sender.is_some() {
-                info!("RTCP sender ready for {} (attempt {})", stream_id, attempt);
-                break;
+                info!("RTCP sender ready for {}", stream_id);
+                break rtcp_sender;
             }
 
-            if attempt == 20 {
+            let now = std::time::Instant::now();
+            if now >= rtcp_deadline {
                 warn!(
-                    "RTCP sender not ready for {} after 20 attempts, continuing without it",
-                    stream_id
+                    "RTCP sender not ready for {} within {:?}, continuing without it",
+                    stream_id, rtcp_wait
                 );
-                break;
+                break None;
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+            tokio::time::sleep(
+                Duration::from_millis(100).min(rtcp_deadline.saturating_duration_since(now)),
+            )
+            .await;
+        };
 
         drop(source_guard);
 

@@ -299,6 +299,14 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     let stream_id = stream_id.clone();
                     let detach_cancel = pull_cancel.clone();
                     manager.rtsp_pull_attach(&stream_id).await;
+                    // The safety-net timer may have stopped the source
+                    // between DESCRIBE and PLAY (or this client never sent
+                    // DESCRIBE): make sure the on-demand source is running
+                    // before tapping its tracks.
+                    if let Err(e) = manager.ensure_on_demand_source(&stream_id).await {
+                        manager.rtsp_pull_detach(&stream_id).await;
+                        return Err(anyhow!("on-demand source not ready: {e:?}"));
+                    }
                     tokio::spawn(async move {
                         detach_cancel.cancelled().await;
                         manager.rtsp_pull_detach(&stream_id).await;

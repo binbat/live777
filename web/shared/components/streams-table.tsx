@@ -407,13 +407,17 @@ export function StreamsTable(props: StreamTableProps) {
                                     </Button>
                                 ) : null}
                                 {props.renderExtraActions?.(i)}
-                                <Button
-                                    size="sm"
-                                    color="error"
-                                    disabled={i.provisioned}
-                                    title={i.provisioned ? 'Configured streams cannot be deleted' : undefined}
-                                    onClick={() => handleDestroyStream(i.id)}
-                                >Destroy</Button>
+                                {/* disabled buttons don't fire mouse events in
+                                    some browsers, so the tooltip lives on the
+                                    wrapper */}
+                                <span title={i.provisioned ? 'Configured streams cannot be deleted' : undefined}>
+                                    <Button
+                                        size="sm"
+                                        color="error"
+                                        disabled={i.provisioned}
+                                        onClick={() => handleDestroyStream(i.id)}
+                                    >Destroy</Button>
+                                </span>
                             </div>
                         </Table.Row>
                     ) : <tr><td colspan={6} className="text-center">N/A</td></tr>}

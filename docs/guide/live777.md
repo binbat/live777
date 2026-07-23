@@ -129,16 +129,24 @@ segment is used as the liveion stream identifier.
 
 ## Stream Hooks
 
-Live777 can run external scripts when streams are created or deleted. A
-typical use is on-demand source activation for devices live777 cannot drive
-directly: when a WHEP subscriber triggers `auto_create_whep`, a hook starts a
-capture device / hardware encoder; when the stream is torn down, the hook
-stops it again to save resources.
+Live777 can run external scripts on stream lifecycle events: stream
+creation/deletion, and publish start/stop (a WHIP/cascade publisher
+attaching, or a configured source starting/stopping). A typical use is
+on-demand source activation for devices live777 cannot drive directly: a
+hook starts a capture device / hardware encoder when media is actually
+wanted, and stops it when the last consumer leaves to save resources.
 
 > Built-in alternative: configured sources (`[[stream.<name>.sources]]`)
 > support `on_demand = true`, which starts/stops the camera or RTSP pull
 > automatically with subscriber presence — no scripts needed. See
 > [livehal — Provisioned streams and on-demand sources](./livehal#provisioned-streams-and-on-demand-sources).
+
+> Which events signal "someone is watching"? For **provisioned** streams
+> (any `[stream.<name>]` entry) `stream-created` fires once at startup, so
+> it cannot drive power control — use `publish-started` / `publish-stopped`
+> instead. Configured sources report their start/stop as publish events
+> with the session id `virtual-source`. For **dynamic** streams
+> (`auto_create_whep`), `stream-created` still coincides with first use.
 
 ```toml
 # Global hooks, run for every stream.
@@ -148,11 +156,15 @@ on_error = "stop"    # "stop" skips the remaining hooks of the same event;
                      # "continue" runs them anyway
 on_stream_created = ["/etc/live777/hooks/notify.sh"]
 on_stream_deleted = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup.sh"]
+on_publish_started = ["/etc/live777/hooks/camera-power.sh"]
+on_publish_stopped = ["/etc/live777/hooks/camera-power.sh"]
 
 # Per-stream hooks, run after the global ones.
 [stream.cam1.hooks]
 on_stream_created = ["/etc/live777/hooks/cam1-created.sh"]
 on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
+on_publish_started = ["/etc/live777/hooks/cam1-power-on.sh"]
+on_publish_stopped = ["/etc/live777/hooks/cam1-power-off.sh"]
 ```
 
 Execution guarantees:
@@ -168,11 +180,12 @@ Execution guarantees:
 Scripts are executed directly (no shell) and receive the event metadata both
 as argv and as environment variables:
 
-| argv          | env               | value                                                                            |
-| ------------- | ----------------- | -------------------------------------------------------------------------------- |
-| `$1`          | `LIVE777_EVENT`   | `stream-created` / `stream-deleted`                                                      |
-| `$2`          | `LIVE777_STREAM`  | stream name                                                                      |
-| `$3` (deleted only) | `LIVE777_REASON` | `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` |
+| argv                | env               | value                                                                                     |
+| ------------------- | ----------------- | ----------------------------------------------------------------------------------------- |
+| `$1`                | `LIVE777_EVENT`   | `stream-created` / `stream-deleted` / `publish-started` / `publish-stopped`               |
+| `$2`                | `LIVE777_STREAM`  | stream name                                                                               |
+| `$3` (deleted/stopped only) | `LIVE777_REASON` | stream-deleted: `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` / `reset`; publish-stopped: `peer-closed` / `api-deleted` / `idle-timeout` |
+| —                   | `LIVE777_SESSION` | (publish events only) publisher session id; `virtual-source` for configured sources       |
 
 Notes:
 
@@ -184,7 +197,8 @@ Notes:
 - For on-demand sources, combine with `[strategy] auto_create_whep = true`
   and a generous `auto_delete_whep` (e.g. `30000`) so brief subscriber
   flapping does not cycle the hardware. Per-stream overrides live under
-  `[stream.<name>.strategy]`.
+  `[stream.<name>.strategy]`. Streams configured with `on_demand = true`
+  already debounce via `on_demand_close_after_ms`.
 - No hooks fire on server shutdown (no `stream-deleted` events are emitted
   then).
 
