@@ -79,19 +79,15 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
                 listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
                 target: format!("127.0.0.1:{liveion_ch_target}").parse().unwrap(),
             }),
+            ..Default::default()
         },
     );
     let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
-    // ── 3. Create the stream ────────────────────────────────────────────────────
-    let res = reqwest::Client::new()
-        .post(format!("http://{addr}{}", api::path::streams(stream_id)))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(http::StatusCode::NO_CONTENT, res.status());
+    // The stream is provisioned from the config above, so it already exists
+    // (a POST create would be a 409 conflict) and its UDP channel is up.
 
     // ── 4. Start whepfrom with --channel ───────────────────────────────────────
     let ct = CancellationToken::new();

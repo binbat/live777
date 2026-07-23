@@ -1,16 +1,18 @@
 //! Stream-lifecycle hook scripts.
 //!
 //! A consumer of the manager's event bus (see [`crate::event`]) that runs
-//! user-configured scripts when streams are created or deleted. Typical
-//! use: start a capture device / hardware encoder when an on-demand
-//! (`auto_create_whep`) stream appears, stop it when the stream is torn
-//! down to save resources.
+//! user-configured scripts on stream lifecycle transitions. Typical use:
+//! start a capture device / hardware encoder when media actually starts
+//! flowing on a stream and stop it when it ends to save resources — for
+//! on-demand/provisioned streams the publish events (not `StreamCreated`,
+//! which fires at startup) carry that signal.
 //!
 //! Execution model:
 //!
-//! - A dispatcher task forwards `StreamCreated`/`StreamDeleted` events into an
-//!   internal unbounded queue. It never awaits a script, so slow hooks can
-//!   never overrun the broadcast buffer and lose events.
+//! - A dispatcher task forwards `StreamCreated`/`StreamDeleted`/
+//!   `PublishStarted`/`PublishStopped` events into an internal unbounded
+//!   queue. It never awaits a script, so slow hooks can never overrun the
+//!   broadcast buffer and lose events.
 //! - A single executor task drains the queue FIFO and runs each event's
 //!   scripts sequentially: global `[hooks]` first, then the per-stream
 //!   `[stream.<name>.hooks]`, each in configured order. All hooks of an
@@ -24,17 +26,22 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 
-use crate::config::{HooksConfig, OnError, StreamConfig};
-use crate::event::{Event, StreamDeleteReason};
+use crate::config::{HookConfig, HooksConfig, OnError, StreamConfig};
+use crate::event::{Event, SessionStopReason, StreamDeleteReason};
 use crate::stream::manager::Manager;
 
 /// One lifecycle event's worth of hook work.
 struct HookJob {
-    /// `"stream-created"` or `"stream-deleted"` — passed to scripts as argv[1] and
+    /// `"stream-created"`, `"stream-deleted"`, `"publish-started"` or
+    /// `"publish-stopped"` — passed to scripts as argv[1] and
     /// `LIVE777_EVENT`.
     event: &'static str,
     stream: String,
-    reason: Option<StreamDeleteReason>,
+    /// Stop reason for `stream-deleted` / `publish-stopped` — argv[3] and
+    /// `LIVE777_REASON`.
+    reason: Option<&'static str>,
+    /// Publisher session id for publish events — `LIVE777_SESSION`.
+    session: Option<String>,
     /// Global scripts followed by per-stream scripts, in configured order.
     scripts: Vec<String>,
 }
@@ -45,6 +52,15 @@ fn reason_str(reason: StreamDeleteReason) -> &'static str {
         StreamDeleteReason::PublishLeaveTimeout => "publish-leave-timeout",
         StreamDeleteReason::SubscribeLeaveTimeout => "subscribe-leave-timeout",
         StreamDeleteReason::Orphaned => "orphaned",
+        StreamDeleteReason::Reset => "reset",
+    }
+}
+
+fn session_reason_str(reason: SessionStopReason) -> &'static str {
+    match reason {
+        SessionStopReason::PeerClosed => "peer-closed",
+        SessionStopReason::ApiDeleted => "api-deleted",
+        SessionStopReason::IdleTimeout => "idle-timeout",
     }
 }
 
@@ -65,12 +81,16 @@ fn effective_scripts(global: &[String], per_stream: Option<&[String]>) -> Vec<St
 /// startup are not missed: the broadcast bus does not replay events sent
 /// before the subscription.
 pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
-    let global_empty =
-        hooks.hooks.on_stream_created.is_empty() && hooks.hooks.on_stream_deleted.is_empty();
-    let per_stream_empty = stream_cfg
-        .streams
-        .values()
-        .all(|e| e.hooks.on_stream_created.is_empty() && e.hooks.on_stream_deleted.is_empty());
+    let global_empty = hooks.hooks.on_stream_created.is_empty()
+        && hooks.hooks.on_stream_deleted.is_empty()
+        && hooks.hooks.on_publish_started.is_empty()
+        && hooks.hooks.on_publish_stopped.is_empty();
+    let per_stream_empty = stream_cfg.streams.values().all(|e| {
+        e.hooks.on_stream_created.is_empty()
+            && e.hooks.on_stream_deleted.is_empty()
+            && e.hooks.on_publish_started.is_empty()
+            && e.hooks.on_publish_stopped.is_empty()
+    });
     if global_empty && per_stream_empty {
         debug!("no stream hooks configured, hook executor disabled");
         return;
@@ -83,11 +103,15 @@ pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
         .on_stream_created
         .iter()
         .chain(&hooks.hooks.on_stream_deleted)
+        .chain(&hooks.hooks.on_publish_started)
+        .chain(&hooks.hooks.on_publish_stopped)
         .chain(stream_cfg.streams.values().flat_map(|e| {
             e.hooks
                 .on_stream_created
                 .iter()
                 .chain(&e.hooks.on_stream_deleted)
+                .chain(&e.hooks.on_publish_started)
+                .chain(&e.hooks.on_publish_stopped)
         }));
     for script in all_scripts {
         if !std::path::Path::new(script).exists() {
@@ -100,8 +124,17 @@ pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
     let timeout = (hooks.timeout_ms > 0).then(|| Duration::from_millis(hooks.timeout_ms));
     tokio::spawn(executor(rx, timeout, hooks.on_error));
 
-    let global = hooks.hooks;
-    let mut events = manager.subscribe_event();
+    spawn_dispatcher(manager.subscribe_event(), hooks.hooks, stream_cfg, tx);
+}
+
+/// Forward matching bus events into the executor queue. Never awaits a
+/// script, so a slow hook can never overrun the broadcast buffer.
+fn spawn_dispatcher(
+    mut events: broadcast::Receiver<Event>,
+    global: HookConfig,
+    stream_cfg: StreamConfig,
+    tx: mpsc::UnboundedSender<HookJob>,
+) {
     tokio::spawn(async move {
         loop {
             let job = match events.recv().await {
@@ -116,6 +149,7 @@ pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
                     ),
                     stream,
                     reason: None,
+                    session: None,
                 },
                 Ok(Event::StreamDeleted { stream, reason }) => HookJob {
                     event: "stream-deleted",
@@ -127,7 +161,38 @@ pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
                             .map(|e| e.hooks.on_stream_deleted.as_slice()),
                     ),
                     stream,
-                    reason: Some(reason),
+                    reason: Some(reason_str(reason)),
+                    session: None,
+                },
+                Ok(Event::PublishStarted { stream, session }) => HookJob {
+                    event: "publish-started",
+                    scripts: effective_scripts(
+                        &global.on_publish_started,
+                        stream_cfg
+                            .streams
+                            .get(&stream)
+                            .map(|e| e.hooks.on_publish_started.as_slice()),
+                    ),
+                    stream,
+                    reason: None,
+                    session: Some(session),
+                },
+                Ok(Event::PublishStopped {
+                    stream,
+                    session,
+                    reason,
+                }) => HookJob {
+                    event: "publish-stopped",
+                    scripts: effective_scripts(
+                        &global.on_publish_stopped,
+                        stream_cfg
+                            .streams
+                            .get(&stream)
+                            .map(|e| e.hooks.on_publish_stopped.as_slice()),
+                    ),
+                    stream,
+                    reason: Some(session_reason_str(reason)),
+                    session: Some(session),
                 },
                 Ok(_) => continue,
                 // Unlike snapshot consumers, hooks cannot reconcile after the
@@ -175,19 +240,23 @@ async fn executor(
 /// Run one hook script and wait for it to exit.
 ///
 /// Contract: argv is `<event> <stream> [reason]`; the same values are also
-/// exported as `LIVE777_EVENT` / `LIVE777_STREAM` / `LIVE777_REASON`.
-/// Scripts should return quickly after initiating their work (e.g. launch
-/// an encoder in the background) — a blocked script blocks the whole hook
-/// queue. Non-zero exit, spawn failure, and timeout kill all count as
-/// failure and are handled per `on_error`.
+/// exported as `LIVE777_EVENT` / `LIVE777_STREAM` / `LIVE777_REASON`, and
+/// publish events additionally export `LIVE777_SESSION`. Scripts should
+/// return quickly after initiating their work (e.g. launch an encoder in
+/// the background) — a blocked script blocks the whole hook queue.
+/// Non-zero exit, spawn failure, and timeout kill all count as failure and
+/// are handled per `on_error`.
 async fn run_script(script: &str, job: &HookJob, timeout: Option<Duration>) -> anyhow::Result<()> {
     let mut cmd = tokio::process::Command::new(script);
     cmd.arg(job.event).arg(&job.stream);
     cmd.env("LIVE777_EVENT", job.event)
         .env("LIVE777_STREAM", &job.stream);
     if let Some(reason) = job.reason {
-        cmd.arg(reason_str(reason));
-        cmd.env("LIVE777_REASON", reason_str(reason));
+        cmd.arg(reason);
+        cmd.env("LIVE777_REASON", reason);
+    }
+    if let Some(session) = &job.session {
+        cmd.env("LIVE777_SESSION", session);
     }
     // Dropping the expired timeout future drops the Child, which kills it.
     cmd.kill_on_drop(true);
@@ -304,6 +373,7 @@ mod tests {
                 event,
                 stream: "cam1".to_string(),
                 reason: None,
+                session: None,
                 scripts,
             }
         }
@@ -381,6 +451,7 @@ mod tests {
                 hooks: HookConfig {
                     on_stream_created: vec![created_global],
                     on_stream_deleted: vec![deleted_global],
+                    ..Default::default()
                 },
                 timeout_ms: 5_000,
                 on_error: OnError::Stop,
@@ -414,6 +485,68 @@ mod tests {
                 ]
             );
             cancel.cancel();
+        }
+
+        #[tokio::test]
+        async fn publish_hooks_carry_event_session_and_reason() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = dir.path().join("publish.log");
+            // argv contract: $1 = event, $3 = reason; env: LIVE777_SESSION.
+            let started = log_line_script(
+                dir.path(),
+                "started.sh",
+                &log,
+                "started $1 $LIVE777_SESSION",
+            );
+            let stopped = log_line_script(
+                dir.path(),
+                "stopped.sh",
+                &log,
+                "stopped $3 $LIVE777_SESSION",
+            );
+
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = tokio::spawn(executor(rx, None, OnError::Stop));
+
+            let (event_tx, event_rx) = broadcast::channel(16);
+            spawn_dispatcher(
+                event_rx,
+                HookConfig {
+                    on_publish_started: vec![started],
+                    on_publish_stopped: vec![stopped],
+                    ..Default::default()
+                },
+                StreamConfig::default(),
+                tx,
+            );
+
+            event_tx
+                .send(Event::PublishStarted {
+                    stream: "cam1".to_string(),
+                    session: "virtual-source".to_string(),
+                })
+                .unwrap();
+            event_tx
+                .send(Event::PublishStopped {
+                    stream: "cam1".to_string(),
+                    session: "virtual-source".to_string(),
+                    reason: SessionStopReason::IdleTimeout,
+                })
+                .unwrap();
+
+            let content = wait_for_lines(&log, 2).await;
+            assert_eq!(
+                content.lines().collect::<Vec<_>>(),
+                [
+                    "started publish-started virtual-source",
+                    "stopped idle-timeout virtual-source"
+                ]
+            );
+
+            // Closing the bus ends the dispatcher, which drops the queue
+            // sender and lets the executor finish.
+            drop(event_tx);
+            handle.await.unwrap();
         }
     }
 }

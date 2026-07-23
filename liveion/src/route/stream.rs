@@ -29,15 +29,7 @@ async fn index(
     State(state): State<AppState>,
     Query(req): Query<api::request::QueryInfo>,
 ) -> crate::result::Result<Json<Vec<api::response::Stream>>> {
-    Ok(Json(
-        state
-            .stream_manager
-            .info(req.streams)
-            .await
-            .into_iter()
-            .map(|forward_info| forward_info.into())
-            .collect(),
-    ))
+    Ok(Json(state.stream_manager.info(req.streams).await))
 }
 
 async fn show(
@@ -48,9 +40,6 @@ async fn show(
         .stream_manager
         .info(vec![stream.clone()])
         .await
-        .into_iter()
-        .map(|forward_info| forward_info.into())
-        .collect::<Vec<api::response::Stream>>()
         .first()
     {
         Some(stream) => Ok(Json(stream.clone())),
@@ -74,10 +63,13 @@ async fn destroy(
     State(state): State<AppState>,
     Path(stream): Path<String>,
 ) -> crate::result::Result<Response<String>> {
-    match state.stream_manager.stream_delete(stream).await {
+    match state.stream_manager.stream_delete(stream.clone()).await {
         Ok(_) => Ok(Response::builder()
             .status(StatusCode::NO_CONTENT)
             .body("".to_string())?),
+        Err(e) if state.stream_manager.is_provisioned(&stream) => {
+            Err(AppError::StreamProvisioned(e.to_string()))
+        }
         Err(e) => Err(AppError::StreamNotFound(e.to_string())),
     }
 }

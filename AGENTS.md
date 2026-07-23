@@ -194,7 +194,21 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   stream, strategy, source, recorder, info, sdp).
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
   track, bridge, media, RTCP).
-- `liveion/src/stream/` — stream manager + source adapters.
+- `liveion/src/stream/` — stream manager + source adapters. Every
+  `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
+  (`Manager::provision_streams`), always listed in the API/Dashboard, exempt
+  from orphan/auto-delete reapers, and rejected (409) on admin API
+  create/delete. Internal teardowns (`Manager::teardown_stream`, used by RTSP
+  re-ANNOUNCE and session cascades) reset a provisioned stream to standby
+  with a `StreamDeleted`+`StreamCreated` pair instead of removing it. With
+  `on_demand = true` the stream's sources start on the first subscriber
+  (WHEP/cascade push/RTSP pull) and stop `on_demand_close_after_ms` after the
+  last one leaves; source start/stop emits `PublishStarted`/`PublishStopped`
+  with the synthesized `virtual-source` session id. On-demand readiness is
+  judged by the source *bridge* (`SourceManager::has_bridge`), not source
+  existence, and starts/stops serialize on a per-stream lock
+  (`on_demand_locks`). A WHIP publish onto a stream with an active source
+  bridge is rejected (409) to avoid mixing two publishers' tracks.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
@@ -203,9 +217,10 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   codec-specific writers).
 - `liveion/src/hook.rs` — stream-lifecycle hook scripts (`[hooks]` global +
   `[stream.<name>.hooks]` per stream) run by a single FIFO executor:
-  dispatcher forwards `StreamCreated`/`StreamDeleted` into an internal queue, then
-  scripts run sequentially (global first, per-stream after, configured
-  order) with per-script timeout and `on_error` policy.
+  dispatcher forwards `StreamCreated`/`StreamDeleted`/`PublishStarted`/
+  `PublishStopped` into an internal queue, then scripts run sequentially
+  (global first, per-stream after, configured order) with per-script timeout
+  and `on_error` policy.
 - `liveman/src/route/` — proxy/cascade/admin routes.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.

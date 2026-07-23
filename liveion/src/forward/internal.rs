@@ -834,7 +834,7 @@ impl PeerForwardInternal {
         let effective_publish_session_info =
             if publish_session_info.is_none() && has_virtual_publisher {
                 Some(SessionInfo {
-                    id: "virtual-source".to_string(),
+                    id: super::VIRTUAL_SOURCE_SESSION.to_string(),
                     create_at: self.create_at,
                     leave_at: 0,
                     state: RTCPeerConnectionState::Connected,

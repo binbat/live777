@@ -174,17 +174,15 @@ async fn setup_topology(
                     .parse()
                     .unwrap(),
             }),
+            ..Default::default()
         },
     );
     let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
-    reqwest::Client::new()
-        .post(format!("http://{addr}{}", api::path::streams(stream_id)))
-        .send()
-        .await
-        .unwrap();
+    // The stream is provisioned from the config above, so it already exists
+    // and its UDP channel is up — no POST create needed.
 
     let ct = CancellationToken::new();
     let whep_channel_url = format!(

@@ -127,9 +127,20 @@ listen = "0.0.0.0:8554"
 
 ## 流钩子（Stream Hooks）
 
-Live777 可以在流创建或删除时执行外部脚本。典型用途是按需激活源：当 WHEP
-观众触发 `auto_create_whep` 建流时，hook 启动采集设备 / 硬件编码器；流删
-除时，hook 再把它关掉以节省资源。
+Live777 可以在流生命周期事件上执行外部脚本：流的创建/删除，以及推流
+开始/停止（WHIP/cascade 推流端挂载，或配置源启停）。典型用途是为
+live777 无法直接驱动的设备做按需激活：真正需要媒体时由 hook 启动采集
+设备 / 硬件编码器，最后一个消费者离开时再把它关掉以节省资源。
+
+> 内置替代方案：配置的源（`[[stream.<name>.sources]]`）支持 `on_demand = true`，
+> 可随订阅者有无自动启停摄像头或 RTSP 拉流——无需编写脚本。参见
+> [livehal — 预注册流与按需源](./livehal#预注册流与按需源on-demand)。
+
+> 哪些事件代表"有人在看"？对**预注册**流（任何 `[stream.<name>]` 条目），
+> `stream-created` 在启动时触发一次，无法用于电源控制——请改用
+> `publish-started` / `publish-stopped`。配置源的启停以会话 ID
+> `virtual-source` 上报为推流事件。对**动态**流（`auto_create_whep`），
+> `stream-created` 仍与首次使用同时发生。
 
 ```toml
 # 全局 hook，对所有流生效
@@ -139,11 +150,15 @@ on_error = "stop"    # "stop"：脚本失败后跳过本事件剩余 hook；
                      # "continue"：失败后仍继续执行
 on_stream_created = ["/etc/live777/hooks/notify.sh"]
 on_stream_deleted = ["/etc/live777/hooks/notify.sh", "/etc/live777/hooks/cleanup.sh"]
+on_publish_started = ["/etc/live777/hooks/camera-power.sh"]
+on_publish_stopped = ["/etc/live777/hooks/camera-power.sh"]
 
 # 每流 hook，在全局 hook 之后执行
 [stream.cam1.hooks]
 on_stream_created = ["/etc/live777/hooks/cam1-created.sh"]
 on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
+on_publish_started = ["/etc/live777/hooks/cam1-power-on.sh"]
+on_publish_stopped = ["/etc/live777/hooks/cam1-power-off.sh"]
 ```
 
 执行保证：
@@ -158,11 +173,12 @@ on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
 脚本以直接执行方式启动（不经过 shell），事件元数据同时通过 argv 和环境
 变量传入：
 
-| argv          | 环境变量          | 取值                                                                               |
-| ------------- | ----------------- | ---------------------------------------------------------------------------------- |
-| `$1`          | `LIVE777_EVENT`   | `stream-created` / `stream-deleted`                                                        |
-| `$2`          | `LIVE777_STREAM`  | 流名                                                                               |
-| `$3`（仅删除时）| `LIVE777_REASON`  | `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned`   |
+| argv              | 环境变量          | 取值                                                                                     |
+| ----------------- | ----------------- | ---------------------------------------------------------------------------------------- |
+| `$1`              | `LIVE777_EVENT`   | `stream-created` / `stream-deleted` / `publish-started` / `publish-stopped`              |
+| `$2`              | `LIVE777_STREAM`  | 流名                                                                                     |
+| `$3`（仅删除/停止时）| `LIVE777_REASON` | stream-deleted:`api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` / `reset`;publish-stopped:`peer-closed` / `api-deleted` / `idle-timeout` |
+| —                 | `LIVE777_SESSION` | （仅推流事件）推流会话 ID；配置源为 `virtual-source`                                       |
 
 注意事项：
 
@@ -172,5 +188,6 @@ on_stream_deleted = ["/etc/live777/hooks/cam1-deleted.sh"]
   `stream-deleted` hook，停止脚本必须能容忍设备已经停止的状态。
 - 做按需源时，配合 `[strategy] auto_create_whep = true` 和较大的
   `auto_delete_whep`（如 `30000`），避免观众短暂掉线导致硬件反复启停。
-  每流覆盖配置在 `[stream.<name>.strategy]` 下。
+  每流覆盖配置在 `[stream.<name>.strategy]` 下。配置了 `on_demand = true`
+  的流已通过 `on_demand_close_after_ms` 自带防抖。
 - 服务器关闭时不会触发 hook（此时不产生 `stream-deleted` 事件）。

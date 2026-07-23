@@ -86,6 +86,9 @@ pub async fn index(
                                     },
                                 },
                                 codecs: vec![],
+                                // Config flags: true if true on any node.
+                                provisioned: s.provisioned || v.provisioned,
+                                on_demand: s.on_demand || v.on_demand,
                             }
                         }
                         None => s.clone(),

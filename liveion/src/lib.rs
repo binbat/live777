@@ -67,6 +67,10 @@ where
         cfg.stream.clone(),
     );
 
+    // Pre-register configured streams so they are listed even while idle.
+    // Must run after hook/recorder init: their StreamCreated events fire here.
+    app_state.stream_manager.provision_streams().await;
+
     #[cfg(feature = "source")]
     {
         let total: usize = cfg.stream.streams.values().map(|e| e.sources.len()).sum();

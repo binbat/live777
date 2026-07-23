@@ -39,6 +39,10 @@ export interface Stream {
         leaveAt: number;
         sessions: Session[];
     };
+    /** Declared in the server config file; always listed, never auto-deleted. */
+    provisioned?: boolean;
+    /** Sources start on the first subscriber and stop after the last leaves. */
+    onDemand?: boolean;
 }
 
 export interface Session {

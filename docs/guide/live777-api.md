@@ -160,6 +160,10 @@ For Example:
 
 Response: [204]
 
+Streams declared in the config file (`[stream.<name>]`) are provisioned and
+cannot be deleted or recreated through the API: `DELETE` and the duplicate
+`POST` return [409] for them.
+
 ## Streams SSE
 
 `GET` `/api/sse/streams`

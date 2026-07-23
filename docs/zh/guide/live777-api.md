@@ -160,6 +160,9 @@ Response: [200]
 
 Response: [204]
 
+配置文件中声明的流（`[stream.<name>]`）是预注册的，不能通过 API 删除或重复创建：
+对这些流执行 `DELETE` 或重复的 `POST` 会返回 [409]。
+
 ## 流状态 SSE
 
 `GET` `/api/sse/streams`
