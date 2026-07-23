@@ -81,7 +81,8 @@ rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
 source = ["dep:rtsp", "dep:url"]
 source-sdp = ["source"]
 source-rtsp = ["source", "rtsp/client"]
-source-all = ["source-sdp", "source-rtsp"]
+source-whep = ["source", "dep:livetwo", "dep:libwish"]
+source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
 native-source = ["source", "dep:livehal"]
 

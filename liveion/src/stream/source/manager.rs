@@ -170,6 +170,7 @@ impl SourceManager {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
+            feature = "source-whep",
             feature = "native-source"
         ))]
         let video_codec_name = video_codec.as_ref().and_then(|c| {
@@ -248,6 +249,7 @@ impl SourceManager {
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
+                feature = "source-whep",
                 feature = "native-source"
             ))]
             video_codec_name,

@@ -92,6 +92,20 @@ live777 Cascade 有两种模式：
 
 ![live777-cascade](/live777-cascade.excalidraw.svg)
 
+### 静态 cascade-pull（WHEP 源）
+
+`cascade-pull` 除了调用 API，也可以声明为静态流的输入。构建时启用
+`source-whep` feature，然后在预注册流上添加 `whep://` 源即可；它与其他
+配置源一样参与完整的生命周期（`on_demand` 启停、断线重连、RTCP 关键帧
+反馈）：
+
+```toml
+[[stream.cam1.sources]]
+url = "whep://edge-0:7777/whep/cam1"
+# 需要 Bearer 鉴权时：
+# url = "whep://token@edge-0:7777/whep/cam1"
+```
+
 ## DataChannel 转发
 
 > NOTE: 关于 `createDataChannel()`

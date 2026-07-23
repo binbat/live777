@@ -73,8 +73,10 @@ async fn create_source(
 
     let source = create_source_from_url(&stream, &req.url, &config).await?;
 
-    let source_type = if req.url.starts_with("rtsp://") {
+    let source_type = if req.url.starts_with("rtsp://") || req.url.starts_with("rtsps://") {
         "rtsp"
+    } else if req.url.starts_with("whep://") || req.url.starts_with("wheps://") {
+        "whep"
     } else {
         "sdp"
     };

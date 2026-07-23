@@ -1337,7 +1337,7 @@ impl Manager {
 
     /// Register an RTSP pull client attach/detach for on-demand accounting.
     /// The returned guard is unused by callers; counting is internal.
-    #[cfg(feature = "source")]
+    #[cfg(all(feature = "source", feature = "rtsp"))]
     pub async fn rtsp_pull_attach(&self, stream: &str) {
         *self
             .rtsp_pull_counts
@@ -1348,7 +1348,7 @@ impl Manager {
         self.cancel_on_demand_stop(stream).await;
     }
 
-    #[cfg(feature = "source")]
+    #[cfg(all(feature = "source", feature = "rtsp"))]
     pub async fn rtsp_pull_detach(&self, stream: &str) {
         let remaining = {
             let mut counts = self.rtsp_pull_counts.write().await;

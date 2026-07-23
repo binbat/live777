@@ -32,6 +32,8 @@ fn enabled_features() -> Vec<String> {
         "source-sdp".to_string(),
         #[cfg(feature = "source-rtsp")]
         "source-rtsp".to_string(),
+        #[cfg(feature = "source-whep")]
+        "source-whep".to_string(),
         #[cfg(feature = "source-all")]
         "source-all".to_string(),
     ]

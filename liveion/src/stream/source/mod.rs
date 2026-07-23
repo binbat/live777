@@ -1,6 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 use bytes::Bytes;
 #[cfg(feature = "native-source")]
 use rtc::rtp::packet::Packet;
@@ -12,6 +16,8 @@ use tokio::sync::broadcast;
 mod rtsp_source;
 #[cfg(feature = "source-sdp")]
 mod sdp_source;
+#[cfg(feature = "source-whep")]
+mod whep_source;
 
 #[cfg(feature = "native-source")]
 pub mod native_encoded_source;
@@ -27,6 +33,8 @@ pub mod native_source;
 pub use rtsp_source::RtspSource;
 #[cfg(feature = "source-sdp")]
 pub use sdp_source::SdpSource;
+#[cfg(feature = "source-whep")]
+pub use whep_source::WhepSource;
 
 pub use manager::SourceManager;
 
@@ -49,7 +57,11 @@ pub struct StateChangeEvent {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum MediaPacket {
-    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep"
+    ))]
     Rtp { channel: u8, data: Bytes },
     #[cfg(feature = "native-source")]
     RtpPacket(Arc<Packet>),
@@ -59,19 +71,28 @@ pub enum MediaPacket {
     #[cfg(not(any(
         feature = "source-rtsp",
         feature = "source-sdp",
+        feature = "source-whep",
         feature = "native-source"
     )))]
     _Unused,
 }
 
 #[derive(Debug, Clone)]
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 pub struct InternalSourceConfig {
     pub stream_id: String,
     pub url: String,
 }
 
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 impl InternalSourceConfig {
     pub fn from_config(stream_id: &str, config: &crate::config::SourceConfig) -> Self {
         Self {
@@ -81,7 +102,10 @@ impl InternalSourceConfig {
     }
 
     pub fn reconnect_enabled(&self) -> bool {
-        self.url.starts_with("rtsp://") || self.url.starts_with("rtsps://")
+        self.url.starts_with("rtsp://")
+            || self.url.starts_with("rtsps://")
+            || self.url.starts_with("whep://")
+            || self.url.starts_with("wheps://")
     }
 
     pub fn reconnect_interval_ms(&self) -> u64 {
@@ -142,7 +166,11 @@ pub async fn create_source_from_spec(
     source_router::create_source_from_spec(spec).await
 }
 
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 pub(crate) async fn create_url_source(
     stream_id: &str,
     url: &str,
@@ -160,6 +188,17 @@ pub(crate) async fn create_url_source(
         #[cfg(not(feature = "source-rtsp"))]
         {
             anyhow::bail!("RTSP source support not enabled. Enable 'source-rtsp' feature.");
+        }
+    } else if url.starts_with("whep://") || url.starts_with("wheps://") {
+        #[cfg(feature = "source-whep")]
+        {
+            let source = WhepSource::new(internal_config, url)?;
+            Ok(Box::new(source))
+        }
+
+        #[cfg(not(feature = "source-whep"))]
+        {
+            anyhow::bail!("WHEP source support not enabled. Enable 'source-whep' feature.");
         }
     } else if url.starts_with("file://") || url.ends_with(".sdp") {
         #[cfg(feature = "source-sdp")]
@@ -181,7 +220,7 @@ pub(crate) async fn create_url_source(
         }
     } else {
         anyhow::bail!(
-            "Unsupported URL format: {}. Use rtsp:// or file:// or .sdp file path",
+            "Unsupported URL format: {}. Use rtsp://, whep://, file:// or .sdp file path",
             url
         );
     }

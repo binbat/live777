@@ -575,6 +575,99 @@ pub fn reserve_and_release_tcp_port(ip: IpAddr) -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+/// Two-node WHEP source relay: the source publishes into liveion A via WHIP;
+/// liveion B is provisioned with a `whep://` source that pulls A's stream as
+/// a static input (static cascade-pull). The player validates playback of
+/// the relayed stream from B.
+#[cfg(feature = "source-whep")]
+pub async fn run_whep_source_test<S, P>(source: S, player: P, bind_ip: IpAddr, whep_host: &str)
+where
+    S: Source,
+    P: Player,
+{
+    let profile = source.profile();
+    let (api_addr_a, _port_a, source_handle, whip_ct, whip_handle) =
+        start_published_stream(&source, bind_ip).await;
+    source.wait_for_ready().await;
+
+    // liveion B: provisioned stream whose input is the WHEP pull from A.
+    let stream_id = "relay";
+    let mut cfg = liveion::config::Config::default();
+    cfg.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            sources: vec![liveion::config::SourceConfig {
+                url: Some(format!("whep://{api_addr_a}{}", api::path::whep("-"))),
+                #[cfg(feature = "native-source")]
+                capture: None,
+                #[cfg(feature = "native-source")]
+                encoder: None,
+                #[cfg(feature = "native-source")]
+                output: Default::default(),
+            }],
+            ..Default::default()
+        },
+    );
+
+    let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let port_b = listener.local_addr().unwrap().port();
+    let api_addr_b = SocketAddr::new(bind_ip, port_b);
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    // Wait until the WHEP source connected and liveion B learned the codecs.
+    wait_stream_codecs_ready(&api_addr_b, stream_id).await;
+
+    let whep_url = format!("http://{whep_host}:{port_b}{}", api::path::whep(stream_id));
+    let playback = player
+        .play(&whep_url, &profile)
+        .await
+        .expect("WHEP player failed");
+
+    tracing::info!(
+        source = source.name(),
+        player = player.name(),
+        ?playback,
+        "WHEP source relay playback result"
+    );
+
+    assert_playback_ok(player.name(), &profile, &playback);
+
+    source_handle.stop().await;
+    whip_ct.cancel();
+    let result_whip = whip_handle.await.unwrap();
+    assert!(result_whip.is_ok());
+}
+
+/// Wait until a (provisioned) stream's source bridge is up and liveion has
+/// learned its codecs. Provisioned streams are always listed, so a missing
+/// entry is not retried silently: only the codec condition polls.
+#[cfg(feature = "source-whep")]
+async fn wait_stream_codecs_ready(api_addr: &SocketAddr, stream_id: &str) {
+    let mut last_codecs = Vec::new();
+    for attempt in 0..300 {
+        let res = reqwest::get(format!("http://{api_addr}{}", api::path::streams("")))
+            .await
+            .unwrap();
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
+        if let Some(r) = body.into_iter().find(|i| i.id == stream_id) {
+            last_codecs = r.codecs.clone();
+            if !r.codecs.is_empty() {
+                return;
+            }
+        }
+
+        if attempt == 299 {
+            panic!("Stream '{stream_id}' did not become codec-ready; last_codecs={last_codecs:?}");
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Run one matrix case: publish `source` through liveion, then play it back
 /// with `player` and validate the result against the source's media profile.
 pub async fn run_whep_test_with_host<S, P>(source: S, player: P, bind_ip: IpAddr, whep_host: &str)

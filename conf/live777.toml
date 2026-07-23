@@ -60,6 +60,10 @@ ice_udp_addrs = ["auto"]
 # - RTSP: rtsp://username:password@host:port/path
 # [[stream.test-source.sources]]
 # url = "rtsp://username:password@host:port/path"
+# Need enabled `--features=source-whep`
+# - WHEP pull (static cascade-pull): whep://[token@]host:port/whep/<stream>
+# [[stream.test-source.sources]]
+# url = "whep://token@edge-0:7777/whep/cam1"
 
 # --- Native source examples (structured config, recommended) ---
 #

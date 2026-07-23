@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -65,6 +66,64 @@ pub async fn setup_whep_peer(
     let stats = Arc::new(RtcpStats::new());
 
     Ok((peer, answer, stats, dc_recv_rx, dc_send_tx))
+}
+
+/// Forward RTCP feedback (e.g. PLI from downstream subscribers) to the
+/// remote track of a WHEP peer, so it reaches the upstream publisher.
+///
+/// `data` is a marshalled RTCP packet buffer as received from the RTP side;
+/// packets without a destination SSRC, or whose destination matches no
+/// remote track, are dropped.
+pub async fn forward_rtcp_to_peer(data: &[u8], peer: &Arc<dyn PeerConnection>) {
+    let mut cursor = Cursor::new(data);
+    match rtc_rtcp::packet::unmarshal(&mut cursor) {
+        Ok(packets) => {
+            for packet in packets {
+                crate::whip::log_rtcp_feedback_packet("WHEP peer RTCP", packet.as_ref());
+                forward_rtcp_packet_to_peer(packet, peer).await;
+            }
+        }
+        Err(e) => {
+            warn!("Failed to parse RTCP: {}", e);
+        }
+    }
+}
+
+async fn forward_rtcp_packet_to_peer(
+    packet: Box<dyn rtc_rtcp::packet::Packet + Send + Sync>,
+    peer: &Arc<dyn PeerConnection>,
+) {
+    let destination_ssrcs = packet.destination_ssrc();
+    if destination_ssrcs.is_empty() {
+        debug!("Dropping RTCP packet without destination SSRC");
+        return;
+    }
+
+    let receivers = peer.get_receivers().await;
+    let mut target_track = None;
+    for receiver in receivers {
+        let track = receiver.track().clone();
+        let track_ssrcs = track.ssrcs().await;
+        if destination_ssrcs
+            .iter()
+            .any(|destination| track_ssrcs.contains(destination))
+        {
+            target_track = Some(track);
+            break;
+        }
+    }
+
+    let Some(track) = target_track else {
+        warn!(
+            "Dropping RTCP packet for unknown WHEP destination SSRC(s): {:?}",
+            destination_ssrcs
+        );
+        return;
+    };
+
+    if let Err(error) = track.write_rtcp(vec![packet]).await {
+        warn!("Failed to forward RTCP packet to WHEP track: {}", error);
+    }
 }
 
 #[derive(Clone)]

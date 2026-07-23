@@ -136,6 +136,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source`         — auto-start configured media sources.
 - `source-sdp`     — SDP-file sources.
 - `source-rtsp`    — RTSP sources.
+- `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
 - `source-all`     — enables all source types.
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.

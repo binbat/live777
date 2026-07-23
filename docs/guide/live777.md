@@ -92,6 +92,20 @@ live777 Cascade have two mode:
 
 ![live777-cascade](/live777-cascade.excalidraw.svg)
 
+### Static cascade-pull (WHEP source)
+
+`cascade-pull` can also be declared as a static stream input instead of an
+API call. Build with the `source-whep` feature and add a `whep://` source to
+a provisioned stream; it behaves like any other configured source
+(`on_demand` start/stop, reconnect, RTCP keyframe feedback):
+
+```toml
+[[stream.cam1.sources]]
+url = "whep://edge-0:7777/whep/cam1"
+# With Bearer auth:
+# url = "whep://token@edge-0:7777/whep/cam1"
+```
+
 ## DataChannel Forward
 
 > NOTE: About `createDataChannel()`

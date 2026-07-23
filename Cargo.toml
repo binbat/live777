@@ -180,6 +180,7 @@ net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]
 recorder = ["liveion/recorder", "liveman/recorder"]
 source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
+source-whep = ["liveion/source-whep"]
 source-all = ["liveion/source-all"]
 rtsp = ["liveion/rtsp"]
 

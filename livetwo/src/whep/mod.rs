@@ -22,7 +22,7 @@ use crate::utils::stats::start_stats_monitor;
 use rtsp::constants::media_type;
 
 pub use output::OutputTarget;
-pub use webrtc::setup_whep_peer;
+pub use webrtc::{forward_rtcp_to_peer, setup_whep_peer};
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 512;
 

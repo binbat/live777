@@ -2,18 +2,31 @@ use super::PeerForward;
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
+    feature = "source-whep",
     feature = "native-source"
 ))]
 use crate::forward::av1_repacketizer::Av1Repacketizer;
 use crate::forward::rtcp::RtcpMessage;
 use crate::stream::source::{MediaPacket, StateChangeEvent};
 use anyhow::Result;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 use anyhow::anyhow;
 use rtc::shared::marshal::Marshal;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 use rtc::shared::marshal::Unmarshal;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 use rtc_rtp::packet::Packet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +36,7 @@ use tracing::{debug, error, info, trace, warn};
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
+    feature = "source-whep",
     feature = "native-source"
 ))]
 const LOG_PACKET_INTERVAL: u64 = 100;
@@ -93,6 +107,7 @@ pub struct SourceBridge {
     #[cfg(any(
         feature = "source-rtsp",
         feature = "source-sdp",
+        feature = "source-whep",
         feature = "native-source"
     ))]
     av1_repacketizer: Option<Av1Repacketizer>,
@@ -112,6 +127,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
+            feature = "source-whep",
             feature = "native-source"
         ))]
         video_codec_name: Option<String>,
@@ -120,6 +136,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
+            feature = "source-whep",
             feature = "native-source"
         ))]
         let av1_repacketizer = video_codec_name
@@ -137,6 +154,7 @@ impl SourceBridge {
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
+                feature = "source-whep",
                 feature = "native-source"
             ))]
             av1_repacketizer,
@@ -180,6 +198,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
+            feature = "source-whep",
             feature = "native-source"
         ))]
         let forward_clone = self.forward.clone();
@@ -189,6 +208,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
+            feature = "source-whep",
             feature = "native-source"
         ))]
         let mut av1_repacketizer = self.av1_repacketizer.take();
@@ -202,150 +222,173 @@ impl SourceBridge {
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
+                feature = "source-whep",
                 feature = "native-source"
             ))]
             let mut video_count = 0u64;
             #[cfg(not(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
+                feature = "source-whep",
                 feature = "native-source"
             )))]
             let video_count = 0u64;
-            #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            ))]
             let mut audio_count = 0u64;
-            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
+            #[cfg(not(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            )))]
             let audio_count = 0u64;
-            #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            ))]
             let mut video_dropped = 0u64;
-            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
+            #[cfg(not(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            )))]
             let video_dropped = 0u64;
 
             loop {
                 tokio::select! {
-                    _ = shutdown_rx1.recv() => {
-                        info!(
-                            "[{}] RTP task shutting down, forwarded {} packets (video: {}, audio: {}, dropped: {})",
-                            source_id_clone, packet_count, video_count, audio_count, video_dropped
-                        );
-                        break;
-                    }
-                    result = rtp_rx.recv() => {
-                        match result {
-                            Ok(packet) => {
-                                packet_count += 1;
-
-                                let inject_result: anyhow::Result<()> = match packet {
-                                    #[cfg(feature = "native-source")]
-                                    MediaPacket::RtpPacket(packet) => {
-                                        video_count += 1;
-                                        if video_count % LOG_PACKET_INTERVAL == 1 {
-                                            debug!(
-                                                "[{}] Forwarding video packet #{}, size: {}",
-                                                source_id_clone, video_count, packet.payload.len()
-                                            );
-                                        }
-                                        forward_clone.inject_video_rtp_packet(packet).await.map_err(|e| anyhow::anyhow!("{:?}", e))
+                                    _ = shutdown_rx1.recv() => {
+                                        info!(
+                                            "[{}] RTP task shutting down, forwarded {} packets (video: {}, audio: {}, dropped: {})",
+                                            source_id_clone, packet_count, video_count, audio_count, video_dropped
+                                        );
+                                        break;
                                     }
-                                    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
-                                    MediaPacket::Rtp { channel, data, .. } => {
-                                        if channel_mapping.is_video_rtp(channel) {
-                                            video_count += 1;
-                                            if video_count % LOG_PACKET_INTERVAL == 1 {
-                                                debug!(
-                                                    "[{}] Forwarding video packet #{}, size: {}",
-                                                    source_id_clone, video_count, data.len()
-                                                );
-                                            }
-                                            if let Some(ref mut repacketizer) = av1_repacketizer {
-                                                match Packet::unmarshal(&mut &data[..]) {
-                                                    Ok(packet) => {
-                                                        match repacketizer.process(&packet) {
-                                                            Ok(packets) => {
-                                                                for packet in packets {
-                                                                    if let Err(e) = forward_clone.inject_video_rtp_packet(std::sync::Arc::new(packet)).await {
-                                                                        error!("[{}] Failed to inject repacketized AV1 RTP packet: {:?}", source_id_clone, e);
+                                    result = rtp_rx.recv() => {
+                                        match result {
+                                            Ok(packet) => {
+                                                packet_count += 1;
+
+                                                let inject_result: anyhow::Result<()> = match packet {
+                                                    #[cfg(feature = "native-source")]
+                                                    MediaPacket::RtpPacket(packet) => {
+                                                        video_count += 1;
+                                                        if video_count % LOG_PACKET_INTERVAL == 1 {
+                                                            debug!(
+                                                                "[{}] Forwarding video packet #{}, size: {}",
+                                                                source_id_clone, video_count, packet.payload.len()
+                                                            );
+                                                        }
+                                                        forward_clone.inject_video_rtp_packet(packet).await.map_err(|e| anyhow::anyhow!("{:?}", e))
+                                                    }
+                                                    #[cfg(any(
+                    feature = "source-rtsp",
+                    feature = "source-sdp",
+                    feature = "source-whep"
+                ))]
+                                                    MediaPacket::Rtp { channel, data, .. } => {
+                                                        if channel_mapping.is_video_rtp(channel) {
+                                                            video_count += 1;
+                                                            if video_count % LOG_PACKET_INTERVAL == 1 {
+                                                                debug!(
+                                                                    "[{}] Forwarding video packet #{}, size: {}",
+                                                                    source_id_clone, video_count, data.len()
+                                                                );
+                                                            }
+                                                            if let Some(ref mut repacketizer) = av1_repacketizer {
+                                                                match Packet::unmarshal(&mut &data[..]) {
+                                                                    Ok(packet) => {
+                                                                        match repacketizer.process(&packet) {
+                                                                            Ok(packets) => {
+                                                                                for packet in packets {
+                                                                                    if let Err(e) = forward_clone.inject_video_rtp_packet(std::sync::Arc::new(packet)).await {
+                                                                                        error!("[{}] Failed to inject repacketized AV1 RTP packet: {:?}", source_id_clone, e);
+                                                                                    }
+                                                                                }
+                                                                                Ok(())
+                                                                            }
+                                                                            Err(e) => {
+                                                                                video_dropped += 1;
+                                                                                warn!("[{}] AV1 repacketization failed, dropping packet: {}", source_id_clone, e);
+                                                                                Ok(())
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        video_dropped += 1;
+                                                                        warn!("[{}] Failed to unmarshal AV1 RTP packet, dropping: {}", source_id_clone, e);
+                                                                        Ok(())
                                                                     }
                                                                 }
-                                                                Ok(())
+                                                            } else {
+                                                                forward_clone.inject_video_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
                                                             }
-                                                            Err(e) => {
-                                                                video_dropped += 1;
-                                                                warn!("[{}] AV1 repacketization failed, dropping packet: {}", source_id_clone, e);
-                                                                Ok(())
+                                                        } else if channel_mapping.is_audio_rtp(channel) {
+                                                            audio_count += 1;
+                                                            if audio_count % LOG_PACKET_INTERVAL == 1 {
+                                                                debug!(
+                                                                    "[{}] Forwarding audio packet #{}, size: {}",
+                                                                    source_id_clone, audio_count, data.len()
+                                                                );
                                                             }
+                                                            forward_clone.inject_audio_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
+                                                        } else if channel_mapping.is_video_rtcp(channel) || channel_mapping.is_audio_rtcp(channel) {
+                                                            trace!(
+                                                                "[{}] Received RTCP packet on channel {}",
+                                                                source_id_clone, channel
+                                                            );
+                                                            Ok(())
+                                                        } else {
+                                                            warn!(
+                                                                "[{}] Unknown channel: {}",
+                                                                source_id_clone, channel
+                                                            );
+                                                            Ok(())
                                                         }
                                                     }
-                                                    Err(e) => {
-                                                        video_dropped += 1;
-                                                        warn!("[{}] Failed to unmarshal AV1 RTP packet, dropping: {}", source_id_clone, e);
-                                                        Ok(())
-                                                    }
+                                                    // The `source` feature alone enables no
+                                                    // concrete source implementation; the enum
+                                                    // carries a placeholder variant in that
+                                                    // configuration, so we just ignore it.
+                                                    #[cfg(not(any(
+                                                        feature = "source-rtsp",
+                                                        feature = "source-sdp",
+                                                        feature = "source-whep",
+                                                        feature = "native-source"
+                                                    )))]
+                                                    _ => Ok(()),
+                                                };
+
+                                                if let Err(e) = inject_result {
+                                                    error!(
+                                                        "[{}] Failed to inject RTP packet #{}: {:?}",
+                                                        source_id_clone, packet_count, e
+                                                    );
                                                 }
-                                            } else {
-                                                forward_clone.inject_video_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
+
+                                                if packet_count.is_multiple_of(1000) {
+                                                    debug!(
+                                                        "[{}] Forwarded {} packets (video: {}, audio: {})",
+                                                        source_id_clone, packet_count, video_count, audio_count
+                                                    );
+                                                }
                                             }
-                                        } else if channel_mapping.is_audio_rtp(channel) {
-                                            audio_count += 1;
-                                            if audio_count % LOG_PACKET_INTERVAL == 1 {
-                                                debug!(
-                                                    "[{}] Forwarding audio packet #{}, size: {}",
-                                                    source_id_clone, audio_count, data.len()
+                                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                                warn!(
+                                                    "[{}] Lagged, skipped {} packets",
+                                                    source_id_clone, skipped
                                                 );
                                             }
-                                            forward_clone.inject_audio_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
-                                        } else if channel_mapping.is_video_rtcp(channel) || channel_mapping.is_audio_rtcp(channel) {
-                                            trace!(
-                                                "[{}] Received RTCP packet on channel {}",
-                                                source_id_clone, channel
-                                            );
-                                            Ok(())
-                                        } else {
-                                            warn!(
-                                                "[{}] Unknown channel: {}",
-                                                source_id_clone, channel
-                                            );
-                                            Ok(())
+                                            Err(broadcast::error::RecvError::Closed) => {
+                                                info!("[{}] Source channel closed", source_id_clone);
+                                                break;
+                                            }
                                         }
                                     }
-                                    // The `source` feature alone enables no
-                                    // concrete source implementation; the enum
-                                    // carries a placeholder variant in that
-                                    // configuration, so we just ignore it.
-                                    #[cfg(not(any(
-                                        feature = "source-rtsp",
-                                        feature = "source-sdp",
-                                        feature = "native-source"
-                                    )))]
-                                    _ => Ok(()),
-                                };
-
-                                if let Err(e) = inject_result {
-                                    error!(
-                                        "[{}] Failed to inject RTP packet #{}: {:?}",
-                                        source_id_clone, packet_count, e
-                                    );
                                 }
-
-                                if packet_count.is_multiple_of(1000) {
-                                    debug!(
-                                        "[{}] Forwarded {} packets (video: {}, audio: {})",
-                                        source_id_clone, packet_count, video_count, audio_count
-                                    );
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                warn!(
-                                    "[{}] Lagged, skipped {} packets",
-                                    source_id_clone, skipped
-                                );
-                            }
-                            Err(broadcast::error::RecvError::Closed) => {
-                                info!("[{}] Source channel closed", source_id_clone);
-                                break;
-                            }
-                        }
-                    }
-                }
             }
         });
 
@@ -637,7 +680,14 @@ impl Drop for SourceBridge {
     }
 }
 
-#[cfg(all(test, any(feature = "source-rtsp", feature = "source-sdp")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep"
+    )
+))]
 mod integration_tests {
     use super::*;
     use crate::forward::PeerForward;

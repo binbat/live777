@@ -1,6 +1,5 @@
 use rtc::rtp::packet::Packet;
 use rtc_shared::marshal::Unmarshal;
-use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
 use tokio_util::sync::CancellationToken;
@@ -215,55 +214,7 @@ impl TcpHandler {
     }
 
     async fn forward_rtcp_to_webrtc(data: &[u8], peer: &Arc<dyn PeerConnection>) {
-        let mut cursor = Cursor::new(data);
-        match rtc_rtcp::packet::unmarshal(&mut cursor) {
-            Ok(packets) => {
-                for packet in packets {
-                    crate::whip::log_rtcp_feedback_packet("TCP output RTCP", packet.as_ref());
-                    Self::forward_rtcp_packet_to_webrtc(packet, peer).await;
-                }
-            }
-            Err(e) => {
-                warn!("Failed to parse RTCP: {}", e);
-            }
-        }
-    }
-
-    async fn forward_rtcp_packet_to_webrtc(
-        packet: Box<dyn rtc_rtcp::packet::Packet + Send + Sync>,
-        peer: &Arc<dyn PeerConnection>,
-    ) {
-        let destination_ssrcs = packet.destination_ssrc();
-        if destination_ssrcs.is_empty() {
-            debug!("Dropping RTCP packet without destination SSRC");
-            return;
-        }
-
-        let receivers = peer.get_receivers().await;
-        let mut target_track = None;
-        for receiver in receivers {
-            let track = receiver.track().clone();
-            let track_ssrcs = track.ssrcs().await;
-            if destination_ssrcs
-                .iter()
-                .any(|destination| track_ssrcs.contains(destination))
-            {
-                target_track = Some(track);
-                break;
-            }
-        }
-
-        let Some(track) = target_track else {
-            warn!(
-                "Dropping RTCP packet for unknown WHEP destination SSRC(s): {:?}",
-                destination_ssrcs
-            );
-            return;
-        };
-
-        if let Err(error) = track.write_rtcp(vec![packet]).await {
-            warn!("Failed to forward RTCP packet to WHEP track: {}", error);
-        }
+        crate::whep::forward_rtcp_to_peer(data, peer).await;
     }
 }
 

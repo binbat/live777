@@ -52,6 +52,7 @@ Live777 支持以下 Cargo feature 来定制构建：
 | `source`     | liveion   | 启用源拉取（RTSP, SDP）                  |
 | `source-sdp` | liveion   | 通过 SDP 拉取源                          |
 | `source-rtsp`| liveion   | 通过 RTSP 拉取源                         |
+| `source-whep`| liveion   | 通过 WHEP 拉取源（静态 cascade-pull）    |
 | `net4mqtt`   | liveion   | 启用 MQTT 隧道代理                       |
 
 构建时启用特性：
