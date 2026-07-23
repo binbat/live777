@@ -17,6 +17,22 @@ use crate::source::{Source, SourceHandle};
 
 use crate::common::shutdown_signal;
 
+/// Cancels the wrapped token on drop, so a panicking test cannot leak the
+/// server it spawned.
+struct CancelOnDrop(CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+/// Whether this is a GitHub-hosted Windows runner: media-heavy matrix cases
+/// skip there (they run everywhere else, including local Windows hosts).
+pub fn windows_ci() -> bool {
+    cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
+}
+
 /// Check that the GStreamer runtime and the given elements are available on
 /// this host. Gst-based matrix cases skip themselves when this returns false,
 /// so developers without GStreamer still run the rest of the suite.
@@ -618,7 +634,13 @@ where
         .unwrap();
     let port_b = listener.local_addr().unwrap().port();
     let api_addr_b = SocketAddr::new(bind_ip, port_b);
-    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+    // B's WHEP source keeps reconnecting (WHEP setup + a fresh peer per
+    // attempt) after the upstream publisher goes away at the end of this
+    // test; leaving B running would keep that churn on the shared runtime
+    // and starve later tests. Shut B down on exit, panic included.
+    let cancel_b = CancellationToken::new();
+    let _cancel_b_on_drop = CancelOnDrop(cancel_b.clone());
+    tokio::spawn(liveion::serve(cfg, listener, cancel_b.cancelled_owned()));
 
     // Wait until the WHEP source connected and liveion B learned the codecs.
     wait_stream_codecs_ready(&api_addr_b, stream_id).await;

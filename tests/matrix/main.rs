@@ -163,6 +163,13 @@ where
     S: Source,
     P: Player,
 {
+    // Media-heavy relay (two liveion instances plus ffmpeg and decode), so
+    // skip on Windows CI like the mediamtx matrices: the runners are too
+    // slow and downstream players time out (same class as live777#212).
+    if runner::windows_ci() {
+        tracing::warn!("skipping: media-heavy relay cases are too slow for Windows CI runners");
+        return;
+    }
     run_whep_source_test(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
 }
 

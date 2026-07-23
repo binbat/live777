@@ -51,7 +51,7 @@ pub fn available() -> bool {
 /// the suites fine locally, so the cases are compiled in and skipped only
 /// here.
 pub fn windows_ci() -> bool {
-    cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
+    crate::runner::windows_ci()
 }
 
 /// A spawned mediamtx instance with a minimal generated config: RTSP and the
