@@ -45,6 +45,7 @@ fn reason_str(reason: StreamDeleteReason) -> &'static str {
         StreamDeleteReason::PublishLeaveTimeout => "publish-leave-timeout",
         StreamDeleteReason::SubscribeLeaveTimeout => "subscribe-leave-timeout",
         StreamDeleteReason::Orphaned => "orphaned",
+        StreamDeleteReason::Reset => "reset",
     }
 }
 

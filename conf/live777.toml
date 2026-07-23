@@ -23,6 +23,26 @@ ice_udp_addrs = ["auto"]
 
 # Per-stream configuration. Each key under [stream] is a stream name and may
 # contain sources (media inputs) and/or a channel (DataChannel <-> UDP bridge).
+#
+# Configured streams are "provisioned": they are registered at startup and
+# always listed in the API/Dashboard (even while idle), are exempt from the
+# automatic teardown strategies (orphan reaper, auto_delete_*), and cannot be
+# created or deleted through the admin API (POST/DELETE return 409).
+#
+# Sources of a stream start unconditionally at startup by default. Set
+# `on_demand = true` to start them only while the stream has subscribers
+# (WHEP, cascade push, or RTSP pull) — the camera/encoder stays off until the
+# first viewer arrives and stops again after the last one leaves:
+#
+# [stream.cam1]
+# on_demand = true
+# Grace period after the last subscriber leaves before sources stop (ms)
+# on_demand_close_after_ms = 10000
+# How long the first subscriber waits for the source to become ready (ms)
+# before the subscribe request fails
+# on_demand_start_timeout_ms = 10000
+# [[stream.cam1.sources]]
+# url = "rtsp://username:password@host:port/path"
 
 # DataChannel <-> UDP forwarding for the "dc-udp" stream.
 # [stream.dc-udp]

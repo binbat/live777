@@ -68,6 +68,17 @@ impl SourceManager {
         }
     }
 
+    pub async fn has_source(&self, stream_id: &str) -> bool {
+        self.sources.read().await.contains_key(stream_id)
+    }
+
+    /// Whether a media bridge (virtual tracks) was installed for the stream.
+    /// A source can exist without a bridge when bridge creation failed.
+    #[cfg(feature = "source")]
+    pub async fn has_bridge(&self, stream_id: &str) -> bool {
+        self.bridges.read().await.contains_key(stream_id)
+    }
+
     pub async fn list_sources(&self) -> Vec<(String, String, StreamSourceState)> {
         let sources = self.sources.read().await;
         let mut result = Vec::new();

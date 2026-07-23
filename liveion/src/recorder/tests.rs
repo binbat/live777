@@ -148,3 +148,103 @@ fn test_should_record_glob() {
     assert!(!should_record(&patterns, "other/stream"));
     assert!(should_record(&patterns, "demo"));
 }
+
+#[cfg(all(test, feature = "recorder", feature = "source-sdp"))]
+mod on_demand {
+    use crate::config::{Config, RecorderConfig, StreamConfig, StreamEntry};
+    use crate::recorder::{self, is_recording};
+    use crate::stream::manager::Manager;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
+
+    async fn wait_for_recording(stream: &str, expected: bool, what: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if is_recording(stream).await == expected {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for: {what}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// An on-demand stream must not be recorded while in standby: recording
+    /// starts when its sources (virtual publisher) start and stops when they
+    /// stop, driven by PublishStarted/PublishStopped.
+    #[tokio::test]
+    async fn on_demand_recording_follows_source_lifecycle() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let sdp_path = tmp.path().join("od.sdp");
+        let sdp = "v=0\r\n\
+                   o=- 0 0 IN IP4 127.0.0.1\r\n\
+                   s=test\r\n\
+                   c=IN IP4 127.0.0.1\r\n\
+                   t=0 0\r\n\
+                   m=video 0 RTP/AVP 96\r\n\
+                   a=rtpmap:96 H264/90000\r\n";
+        std::fs::write(&sdp_path, sdp).unwrap();
+
+        let mut streams = HashMap::new();
+        streams.insert(
+            "od".to_string(),
+            StreamEntry {
+                sources: vec![crate::config::SourceConfig {
+                    url: Some(format!("file://{}", sdp_path.to_string_lossy())),
+                    #[cfg(feature = "native-source")]
+                    capture: None,
+                    #[cfg(feature = "native-source")]
+                    encoder: None,
+                    #[cfg(feature = "native-source")]
+                    output: Default::default(),
+                }],
+                on_demand: true,
+                ..Default::default()
+            },
+        );
+        let cfg = Config {
+            stream: StreamConfig { streams },
+            recorder: RecorderConfig {
+                auto_streams: vec!["od".to_string()],
+                storage: storage::StorageConfig::Fs {
+                    root: tmp.path().join("rec").to_string_lossy().to_string(),
+                },
+                max_recording_seconds: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let manager = Arc::new(Manager::new(cfg.clone(), cancel.clone()).await);
+        recorder::init(manager.clone(), cfg.recorder.clone()).await;
+        manager.provision_streams().await;
+
+        // Standby on-demand stream: StreamCreated fired at provisioning, but
+        // recording must NOT have started.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !is_recording("od").await,
+            "standby on-demand stream is being recorded"
+        );
+
+        // First subscriber arrives -> source starts -> PublishStarted ->
+        // recording starts.
+        manager.ensure_on_demand_source("od").await.unwrap();
+        wait_for_recording("od", true, "recording start").await;
+
+        // Sources stop -> PublishStopped -> recording stops.
+        manager
+            .stop_stream_source("od", crate::event::SessionStopReason::PeerClosed)
+            .await
+            .unwrap();
+        wait_for_recording("od", false, "recording stop").await;
+
+        cancel.cancel();
+    }
+}

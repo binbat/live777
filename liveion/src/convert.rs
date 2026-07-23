@@ -38,6 +38,10 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
                     fmtp: media_code.fmtp,
                 })
                 .collect(),
+            // Config-derived flags are backfilled by the manager, which owns
+            // the stream config; the forward itself doesn't know them.
+            provisioned: false,
+            on_demand: false,
         }
     }
 }

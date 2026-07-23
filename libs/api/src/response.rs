@@ -23,6 +23,15 @@ pub struct Stream {
     pub publish: PubSub,
     pub subscribe: PubSub,
     pub codecs: Vec<Codec>,
+    /// Declared in the server config file (`[stream.<id>]`). Provisioned
+    /// streams always exist (shown even when idle) and are exempt from
+    /// automatic teardown.
+    #[serde(default)]
+    pub provisioned: bool,
+    /// This stream's configured sources start on the first subscriber and
+    /// stop after the last one leaves (implies `provisioned`).
+    #[serde(default)]
+    pub on_demand: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

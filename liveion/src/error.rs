@@ -5,6 +5,9 @@ use http::StatusCode;
 pub enum AppError {
     StreamNotFound(String),
     StreamAlreadyExists(String),
+    /// Operation rejected because the stream is declared in the config file
+    /// (provisioned): it cannot be deleted or recreated through the API.
+    StreamProvisioned(String),
     SessionNotFound(String),
     Throw(String),
     InternalServerError(anyhow::Error),
@@ -45,6 +48,7 @@ impl IntoResponse for AppError {
         match self {
             AppError::StreamNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::StreamAlreadyExists(err) => (StatusCode::CONFLICT, err).into_response(),
+            AppError::StreamProvisioned(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::SessionNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::InternalServerError(err) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()

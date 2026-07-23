@@ -57,6 +57,36 @@ Sources are configured under per-stream `[[stream.<name>.sources]]` blocks in `c
 The stream name is the key under `[stream]`; each stream can have one or more sources and an
 optional DataChannel <-> UDP channel.
 
+### Provisioned streams and on-demand sources
+
+Every `[stream.<name>]` entry is *provisioned*: the stream is registered at
+startup, always appears in the API and Dashboard (even while idle), is
+exempt from the automatic teardown strategies (orphan reaper,
+`auto_delete_whip` / `auto_delete_whep`), and cannot be created or deleted
+through the admin API (`POST` / `DELETE /api/streams/<name>` return 409).
+
+By default a stream's sources start unconditionally at server startup. Set
+`on_demand = true` to run them only while someone is watching — the camera /
+encoder / RTSP pull stays off until the first subscriber (WHEP, cascade push,
+or RTSP pull) arrives, and stops again after the last one leaves:
+
+```toml
+[stream.cam1]
+on_demand = true
+# Grace period after the last subscriber leaves before sources stop (default 10000)
+on_demand_close_after_ms = 10000
+# How long the first subscriber waits for the source to become ready before
+# its subscribe request fails (default 10000)
+on_demand_start_timeout_ms = 10000
+
+[[stream.cam1.sources]]
+url = "rtsp://192.168.1.100:554/stream"
+```
+
+On-demand streams show a `standby` badge in the Dashboard while idle and
+`on-demand` while their sources are running; other provisioned streams are
+marked `config`.
+
 ### URL-based (non-native: RTSP / SDP / RTP)
 
 ```toml

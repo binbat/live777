@@ -84,10 +84,12 @@ impl rtsp::server::SessionHandler for RtspHandler {
         let media_info = rtsp::parse_media_info_from_sdp(&sdp)?;
 
         // Recreate the stream so a new publisher always starts from a clean state.
-        let _ = self.manager.stream_delete(stream_id.clone()).await;
-        self.manager.stream_create(stream_id.clone()).await?;
-        // stream_create already inserted the forward; get_forward is sufficient
-        // and avoids an unnecessary second insertion path.
+        // A provisioned stream is only reset to standby by the teardown (it
+        // still exists), so the create is conditional on the forward being gone.
+        let _ = self.manager.teardown_stream(&stream_id).await;
+        if self.manager.get_forward(&stream_id).await.is_none() {
+            self.manager.stream_create(stream_id.clone()).await?;
+        }
         let forward = self
             .manager
             .get_forward(&stream_id)
@@ -121,6 +123,13 @@ impl rtsp::server::SessionHandler for RtspHandler {
 
     async fn on_describe(&self, path: String) -> Result<Vec<u8>> {
         let stream_id = stream_id_from_path(path);
+        // An on-demand stream starts its configured sources here so the
+        // tracks exist by the time the SDP is built.
+        #[cfg(feature = "source")]
+        self.manager
+            .ensure_on_demand_source(&stream_id)
+            .await
+            .map_err(|e| anyhow!("on-demand source not ready: {e:?}"))?;
         let forward = wait_for_forward(&self.manager, &self.stream_ready, &stream_id)
             .await
             .map_err(|e| anyhow!("Stream {} not available: {}", stream_id, e))?;
@@ -245,7 +254,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     }
                     info!("RTSP push forward stopped for {}", stream_id);
                     push_cancel.cancel();
-                    if let Err(e) = manager.stream_delete(stream_id.clone()).await {
+                    if let Err(e) = manager.teardown_stream(&stream_id).await {
                         debug!(
                             "Failed to delete stream {} on push disconnect: {}",
                             stream_id, e
@@ -280,6 +289,21 @@ impl rtsp::server::SessionHandler for RtspHandler {
                         }
                     }
                 });
+
+                // On-demand accounting: a pull client keeps the stream's
+                // sources alive even though it taps tracks directly (no
+                // subscribe session).
+                #[cfg(feature = "source")]
+                {
+                    let manager = self.manager.clone();
+                    let stream_id = stream_id.clone();
+                    let detach_cancel = pull_cancel.clone();
+                    manager.rtsp_pull_attach(&stream_id).await;
+                    tokio::spawn(async move {
+                        detach_cancel.cancelled().await;
+                        manager.rtsp_pull_detach(&stream_id).await;
+                    });
+                }
 
                 tokio::spawn(async move {
                     let forward = match wait_for_forward(&manager, &stream_ready, &stream_id).await

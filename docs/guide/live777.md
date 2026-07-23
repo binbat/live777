@@ -130,9 +130,15 @@ segment is used as the liveion stream identifier.
 ## Stream Hooks
 
 Live777 can run external scripts when streams are created or deleted. A
-typical use is on-demand source activation: when a WHEP subscriber triggers
-`auto_create_whep`, a hook starts a capture device / hardware encoder; when
-the stream is torn down, the hook stops it again to save resources.
+typical use is on-demand source activation for devices live777 cannot drive
+directly: when a WHEP subscriber triggers `auto_create_whep`, a hook starts a
+capture device / hardware encoder; when the stream is torn down, the hook
+stops it again to save resources.
+
+> Built-in alternative: configured sources (`[[stream.<name>.sources]]`)
+> support `on_demand = true`, which starts/stops the camera or RTSP pull
+> automatically with subscriber presence — no scripts needed. See
+> [livehal — Provisioned streams and on-demand sources](./livehal#provisioned-streams-and-on-demand-sources).
 
 ```toml
 # Global hooks, run for every stream.

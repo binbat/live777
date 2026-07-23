@@ -201,7 +201,17 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   stream, strategy, source, recorder, info, sdp).
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
   track, bridge, media, RTCP).
-- `liveion/src/stream/` — stream manager + source adapters.
+- `liveion/src/stream/` — stream manager + source adapters. Every
+  `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
+  (`Manager::provision_streams`), always listed in the API/Dashboard, exempt
+  from orphan/auto-delete reapers, and rejected (409) on admin API
+  create/delete. Internal teardowns (`Manager::teardown_stream`, used by RTSP
+  re-ANNOUNCE and session cascades) reset a provisioned stream to standby
+  with a `StreamDeleted`+`StreamCreated` pair instead of removing it. With
+  `on_demand = true` the stream's sources start on the first subscriber
+  (WHEP/cascade push/RTSP pull) and stop `on_demand_close_after_ms` after the
+  last one leaves; source start/stop emits `PublishStarted`/`PublishStopped`
+  with the synthesized `virtual-source` session id.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

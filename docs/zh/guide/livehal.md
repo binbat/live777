@@ -57,6 +57,32 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 `[stream]` 下的每个键就是 stream 名称；每个 stream 可以包含一个或多个源，也可以选配一个
 DataChannel <-> UDP 通道。
 
+### 预注册流与按需源（on-demand）
+
+每个 `[stream.<name>]` 条目都是"预注册"（provisioned）的：流在启动时即注册，
+即使空闲也始终出现在 API 和 Dashboard 中，不受自动回收策略影响
+（orphan reaper、`auto_delete_whip` / `auto_delete_whep`），
+也不能通过 admin API 创建或删除（`POST` / `DELETE /api/streams/<name>` 返回 409）。
+
+默认情况下，流的源在服务器启动时无条件启动。设置 `on_demand = true` 后，
+源只在有人观看时运行——摄像头 / 编码器 / RTSP 拉流在第一个订阅者
+（WHEP、cascade push 或 RTSP 拉流）到来时才启动，在最后一个订阅者离开后停止：
+
+```toml
+[stream.cam1]
+on_demand = true
+# 最后一个订阅者离开后停止源的宽限时间（毫秒，默认 10000）
+on_demand_close_after_ms = 10000
+# 第一个订阅者等待源就绪的最长时间，超时后订阅请求失败（毫秒，默认 10000）
+on_demand_start_timeout_ms = 10000
+
+[[stream.cam1.sources]]
+url = "rtsp://192.168.1.100:554/stream"
+```
+
+on-demand 流在空闲时 Dashboard 显示 `standby` 徽标，源运行时显示
+`on-demand`；其他预注册流显示 `config` 徽标。
+
 ### 基于 URL 的方式（非原生：RTSP / SDP / RTP）
 
 ```toml

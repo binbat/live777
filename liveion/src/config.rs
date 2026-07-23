@@ -525,7 +525,7 @@ pub struct StreamConfig {
     pub streams: HashMap<String, StreamEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamEntry {
     /// Media input sources for this stream.
     #[serde(default)]
@@ -540,6 +540,42 @@ pub struct StreamEntry {
     /// Optional per-stream hooks, run after the global `[hooks]`.
     #[serde(default)]
     pub hooks: HookConfig,
+    /// Start this stream's sources only while it has subscribers instead of at
+    /// server startup. The last subscriber leaving stops the sources again
+    /// after `on_demand_close_after_ms`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// Grace period in milliseconds after the last subscriber leaves before
+    /// on-demand sources are stopped.
+    #[serde(default = "default_on_demand_close_after_ms")]
+    pub on_demand_close_after_ms: u64,
+    /// How long a subscriber waits for an on-demand source to become ready
+    /// (codec known) before the subscribe fails.
+    #[serde(default = "default_on_demand_start_timeout_ms")]
+    pub on_demand_start_timeout_ms: u64,
+}
+
+impl Default for StreamEntry {
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            #[cfg(feature = "source")]
+            channel: None,
+            strategy: None,
+            hooks: HookConfig::default(),
+            on_demand: false,
+            on_demand_close_after_ms: default_on_demand_close_after_ms(),
+            on_demand_start_timeout_ms: default_on_demand_start_timeout_ms(),
+        }
+    }
+}
+
+fn default_on_demand_close_after_ms() -> u64 {
+    10_000
+}
+
+fn default_on_demand_start_timeout_ms() -> u64 {
+    10_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

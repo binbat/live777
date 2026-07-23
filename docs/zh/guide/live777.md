@@ -127,9 +127,13 @@ listen = "0.0.0.0:8554"
 
 ## 流钩子（Stream Hooks）
 
-Live777 可以在流创建或删除时执行外部脚本。典型用途是按需激活源：当 WHEP
-观众触发 `auto_create_whep` 建流时，hook 启动采集设备 / 硬件编码器；流删
-除时，hook 再把它关掉以节省资源。
+Live777 可以在流创建或删除时执行外部脚本。典型用途是为 live777 无法直接驱动的
+设备做按需激活：当 WHEP 观众触发 `auto_create_whep` 建流时，hook 启动采集设备 /
+硬件编码器；流删除时，hook 再把它关掉以节省资源。
+
+> 内置替代方案：配置的源（`[[stream.<name>.sources]]`）支持 `on_demand = true`，
+> 可随订阅者有无自动启停摄像头或 RTSP 拉流——无需编写脚本。参见
+> [livehal — 预注册流与按需源](./livehal#预注册流与按需源on-demand)。
 
 ```toml
 # 全局 hook，对所有流生效

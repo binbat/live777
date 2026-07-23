@@ -219,6 +219,19 @@ impl PeerForward {
         self.internal.cleanup_closed_sessions().await;
     }
 
+    /// No active subscriber sessions. Used by the on-demand supervisor to
+    /// decide when a stream's sources can be stopped.
+    #[cfg(feature = "source")]
+    pub(crate) async fn has_no_subscribers(&self) -> bool {
+        !self.internal.has_subscribers().await
+    }
+
+    /// No live WHIP/cascade publisher (virtual source tracks don't count).
+    #[cfg(feature = "source")]
+    pub(crate) async fn has_no_live_publisher(&self) -> bool {
+        !self.internal.publish_is_some().await
+    }
+
     #[cfg(feature = "source")]
     pub async fn get_subscribe_peer(&self, session_id: &str) -> Option<Arc<dyn PeerConnection>> {
         let subscribe_group = self.internal.subscribe_group.read().await;
@@ -899,6 +912,25 @@ impl PeerForward {
         debug!("[{}] Added virtual {:?} track", self.stream, kind);
 
         Ok(())
+    }
+
+    /// Remove all virtual (source-provided) publish tracks. Called when a
+    /// configured source stops so the stream returns to standby instead of
+    /// showing a stale virtual publisher.
+    #[cfg(feature = "source")]
+    pub async fn remove_virtual_tracks(&self) {
+        use crate::forward::track::PublishTrackRemote;
+
+        let mut publish_tracks = self.internal.publish_tracks.write().await;
+        let before = publish_tracks.len();
+        publish_tracks.retain(|t| !matches!(t, PublishTrackRemote::Virtual(_)));
+        let removed = before - publish_tracks.len();
+        drop(publish_tracks);
+
+        if removed > 0 {
+            let _ = self.internal.publish_tracks_change.send(());
+            debug!("[{}] Removed {} virtual tracks", self.stream, removed);
+        }
     }
     #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
     pub async fn inject_video_rtp(&self, mut data: &[u8]) -> Result<()> {

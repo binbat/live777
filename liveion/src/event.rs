@@ -29,6 +29,10 @@ pub enum StreamDeleteReason {
     SubscribeLeaveTimeout,
     /// No publisher and no subscribers; reclaimed after the orphan grace period.
     Orphaned,
+    /// Internal reset of a provisioned stream back to standby (RTSP
+    /// re-ANNOUNCE, publisher-leave cascade). Always paired with an
+    /// immediate `StreamCreated`; the registration itself never lapses.
+    Reset,
 }
 
 /// Why a publish/subscribe session ended.

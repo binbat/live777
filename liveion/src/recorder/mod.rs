@@ -133,10 +133,32 @@ pub async fn init(manager: Arc<Manager>, cfg: RecorderConfig) {
         loop {
             match recv.recv().await {
                 Ok(Event::StreamCreated { stream }) => {
+                    // On-demand streams have no media yet at StreamCreated;
+                    // their recording starts on PublishStarted instead.
+                    if manager_clone.is_on_demand_stream(&stream) {
+                        continue;
+                    }
                     if should_record(&cfg_for_events.auto_streams, &stream)
                         && let Err(e) = start(manager_clone.clone(), stream.clone(), None).await
                     {
                         tracing::error!("[recorder] start failed: {}", e);
+                    }
+                }
+                Ok(Event::PublishStarted { stream, .. }) => {
+                    // Media just became available on an on-demand stream
+                    // (virtual source started or a publisher attached).
+                    if manager_clone.is_on_demand_stream(&stream)
+                        && should_record(&cfg_for_events.auto_streams, &stream)
+                        && let Err(e) = start(manager_clone.clone(), stream.clone(), None).await
+                    {
+                        tracing::error!("[recorder] start failed: {}", e);
+                    }
+                }
+                Ok(Event::PublishStopped { stream, .. }) => {
+                    // On-demand stream went idle; stop and finalize the
+                    // recording for this active epoch.
+                    if manager_clone.is_on_demand_stream(&stream) {
+                        stop_task(&stream).await;
                     }
                 }
                 Ok(Event::StreamDeleted { stream, .. }) => {
@@ -202,6 +224,11 @@ async fn reconcile(manager: &Arc<Manager>, cfg: &RecorderConfig) {
     }
 
     for stream in streams {
+        // Standby on-demand streams have no media; their recording starts
+        // with the next PublishStarted, not here.
+        if manager.is_on_demand_stream(&stream.id) && stream.publish.sessions.is_empty() {
+            continue;
+        }
         if should_record(&cfg.auto_streams, &stream.id)
             && let Err(e) = start(manager.clone(), stream.id.clone(), None).await
         {

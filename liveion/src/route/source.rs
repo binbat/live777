@@ -90,6 +90,7 @@ async fn create_source(
         error!("Failed to create bridge: {}", e);
         return Err(e.into());
     }
+    state.stream_manager.emit_source_publish_started(&stream);
 
     Ok(Json(SourceResponse {
         id,
@@ -173,8 +174,7 @@ async fn delete_source(
 
     state
         .stream_manager
-        .source_manager
-        .remove_source(&stream)
+        .stop_stream_source(&stream, crate::event::SessionStopReason::ApiDeleted)
         .await?;
 
     Ok(Json(serde_json::json!({

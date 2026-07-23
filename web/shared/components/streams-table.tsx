@@ -371,7 +371,15 @@ export function StreamsTable(props: StreamTableProps) {
                 <Table.Body>
                     {streams.data.length > 0 ? streams.data.map(i =>
                         <Table.Row>
-                            <span>{i.id}</span>
+                            <span>
+                                {i.id}
+                                {i.onDemand ? (
+                                    countActiveSessions(i.publish.sessions) > 0
+                                        ? <Badge size="sm" color="info" className="ml-2">on-demand</Badge>
+                                        : <Badge size="sm" color="ghost" className="ml-2">standby</Badge>
+                                ) : null}
+                                {!i.onDemand && i.provisioned ? <Badge size="sm" color="ghost" className="ml-2">config</Badge> : null}
+                            </span>
                             <span>{countActiveSessions(i.publish.sessions)}</span>
                             <span>{countActiveSessions(i.subscribe.sessions)}</span>
                             <span>{countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade))}</span>
@@ -399,7 +407,13 @@ export function StreamsTable(props: StreamTableProps) {
                                     </Button>
                                 ) : null}
                                 {props.renderExtraActions?.(i)}
-                                <Button size="sm" color="error" onClick={() => handleDestroyStream(i.id)}>Destroy</Button>
+                                <Button
+                                    size="sm"
+                                    color="error"
+                                    disabled={i.provisioned}
+                                    title={i.provisioned ? 'Configured streams cannot be deleted' : undefined}
+                                    onClick={() => handleDestroyStream(i.id)}
+                                >Destroy</Button>
                             </div>
                         </Table.Row>
                     ) : <tr><td colspan={6} className="text-center">N/A</td></tr>}
