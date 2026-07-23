@@ -26,6 +26,10 @@ pub struct ProbeConfig {
     pub sprop_params: Option<String>,
     /// Optional Bearer token for WHIP/WHEP endpoints that require authentication.
     pub token: Option<String>,
+    /// STUN server URL used for ICE gathering. `None` or a blank string
+    /// disables STUN (host candidates only), same as the WHIP side's
+    /// `--stun-server ""`.
+    pub stun_server: Option<String>,
 }
 
 impl Default for ProbeConfig {
@@ -36,6 +40,7 @@ impl Default for ProbeConfig {
             video_codec: None,
             sprop_params: None,
             token: None,
+            stun_server: Some(crate::whip::core::DEFAULT_STUN_SERVER.to_string()),
         }
     }
 }

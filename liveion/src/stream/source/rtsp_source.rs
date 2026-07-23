@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rtsp::RtspMode;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace};
 
 #[cfg(feature = "source")]
 use tokio::sync::mpsc;
@@ -21,7 +21,7 @@ struct RtspClientContext {
     rtsp_url: String,
     config: InternalSourceConfig,
     rtp_tx: broadcast::Sender<MediaPacket>,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     media_info_store: Arc<RwLock<Option<rtsp::MediaInfo>>>,
     rtcp_tx_store: RtcpSender,
@@ -30,7 +30,7 @@ struct RtspClientContext {
 pub struct RtspSource {
     config: InternalSourceConfig,
     rtsp_url: String,
-    state: Arc<RwLock<StreamSourceState>>,
+    state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -49,7 +49,7 @@ impl RtspSource {
         Ok(Self {
             config,
             rtsp_url,
-            state: Arc::new(RwLock::new(StreamSourceState::Initializing)),
+            state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
             task_handle: None,
@@ -63,68 +63,65 @@ impl RtspSource {
 
     #[cfg(feature = "source")]
     pub async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
-        let rtcp_tx = self.rtcp_tx.read().await;
-        debug!(
-            "[{}] get_rtcp_sender called, available: {}",
-            self.config.stream_id,
-            rtcp_tx.is_some()
-        );
+        // Always hand out the wrapper, even while the RTSP client is down:
+        // the forwarding task resolves the current RTCP channel per message,
+        // so subscriber feedback (e.g. PLI keyframe requests) keeps flowing
+        // across reconnects instead of dying with the connection that was
+        // active when the bridge was created — same pattern as the WHEP
+        // source's peer_store.
+        let (wrapper_tx, mut wrapper_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let rtcp_tx = self.rtcp_tx.clone();
+        let stream_id = self.config.stream_id.clone();
 
-        if let Some(tx) = rtcp_tx.as_ref() {
-            let (wrapper_tx, mut wrapper_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-            let tx_clone = tx.clone();
-            let stream_id = self.config.stream_id.clone();
-
-            tokio::spawn(async move {
-                info!("[{}] RTCP wrapper task started", stream_id);
-
-                while let Some(data) = wrapper_rx.recv().await {
-                    debug!(
-                        "[{}] Forwarding RTCP to source, size: {} bytes",
-                        stream_id,
-                        data.len()
-                    );
-
-                    if let Err(e) = tx_clone.send((1, data)).await {
-                        error!("[{}] Failed to forward RTCP: {}", stream_id, e);
-                        break;
+        tokio::spawn(async move {
+            while let Some(data) = wrapper_rx.recv().await {
+                let tx = rtcp_tx.read().await.clone();
+                match tx {
+                    Some(tx) => {
+                        // Channel 1 is always the right interleaved target:
+                        // the bridge only forwards video keyframe feedback
+                        // (PLI/FIR/SLI), and in every ChannelMapping the
+                        // first RTCP channel belongs to the kind that
+                        // feedback targets (video when present, audio in an
+                        // audio-only stream).
+                        if let Err(e) = tx.send((1, data)).await {
+                            // The connection is gone; the reconnect installs
+                            // a fresh channel.
+                            debug!(
+                                "[{}] Dropping RTCP: connection channel closed ({})",
+                                stream_id, e
+                            );
+                        }
                     }
-
-                    info!("[{}] RTCP forwarded successfully", stream_id);
+                    None => {
+                        debug!("[{}] Dropping RTCP: RTSP client not connected", stream_id);
+                    }
                 }
+            }
+        });
 
-                info!("[{}] RTCP wrapper task stopped", stream_id);
-            });
-
-            info!(
-                "[{}] RTCP sender wrapper created successfully",
-                self.config.stream_id
-            );
-
-            Some(wrapper_tx)
-        } else {
-            warn!(
-                "[{}] RTCP sender not available in get_rtcp_sender",
-                self.config.stream_id
-            );
-            None
-        }
+        Some(wrapper_tx)
     }
 
     async fn set_state(&self, new_state: StreamSourceState, error: Option<String>) {
-        let mut state = self.state.write().await;
-        let old_state = *state;
+        let changed = {
+            let mut state = self.state.write().unwrap();
+            let old_state = *state;
 
-        if old_state != new_state {
-            *state = new_state;
+            if old_state != new_state {
+                *state = new_state;
+                Some(old_state)
+            } else {
+                None
+            }
+        };
 
-            let event = StateChangeEvent {
+        if let Some(old_state) = changed {
+            let _ = self.state_tx.send(StateChangeEvent {
                 old_state,
                 new_state,
                 error,
-            };
-
-            let _ = self.state_tx.send(event);
+            });
 
             info!(
                 "[{}] State changed: {:?} -> {:?}",
@@ -141,10 +138,14 @@ impl RtspSource {
         let mut reconnect_count = 0u32;
 
         loop {
-            info!("[{}] Connecting to {}", ctx.stream_id, ctx.rtsp_url);
+            info!(
+                "[{}] Connecting to {}",
+                ctx.stream_id,
+                super::redact_url(&ctx.rtsp_url)
+            );
 
             {
-                let mut s = ctx.state.write().await;
+                let mut s = ctx.state.write().unwrap();
                 *s = if reconnect_count > 0 {
                     StreamSourceState::Reconnecting
                 } else {
@@ -237,6 +238,11 @@ impl RtspSource {
                     )
                     .await;
 
+                    // The connection's RTCP channel dies with it; drop the
+                    // store so RTCP forwarding falls quiet until the
+                    // reconnect installs a fresh one.
+                    *ctx.rtcp_tx_store.write().await = None;
+
                     match result {
                         Ok(()) => {
                             info!("[{}] Gracefully stopped", ctx.stream_id);
@@ -299,7 +305,7 @@ impl RtspSource {
             info!(
                 "[{}] Reconnecting in {}ms (attempt {}/{})",
                 ctx.stream_id,
-                ctx.config.reconnect_interval_ms(),
+                ctx.config.reconnect_delay_ms(reconnect_count),
                 reconnect_count,
                 if ctx.config.max_reconnect_attempts() == 0 {
                     "∞".to_string()
@@ -308,21 +314,18 @@ impl RtspSource {
                 }
             );
 
-            match shutdown_rx.try_recv() {
-                Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
                     info!(
                         "[{}] Shutdown signal received during reconnect wait",
                         ctx.stream_id
                     );
                     break;
                 }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(
+                    ctx.config.reconnect_delay_ms(reconnect_count),
+                )) => {}
             }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(
-                ctx.config.reconnect_interval_ms(),
-            ))
-            .await;
         }
 
         Self::emit_state_change(
@@ -390,19 +393,21 @@ impl RtspSource {
     }
 
     async fn emit_state_change(
-        state: &Arc<RwLock<StreamSourceState>>,
+        state: &Arc<std::sync::RwLock<StreamSourceState>>,
         state_tx: &broadcast::Sender<StateChangeEvent>,
         new_state: StreamSourceState,
         error: Option<String>,
     ) {
-        let mut s = state.write().await;
-        let old_state = *s;
-        *s = new_state;
+        let event = {
+            let mut s = state.write().unwrap();
+            let old_state = *s;
+            *s = new_state;
 
-        let event = StateChangeEvent {
-            old_state,
-            new_state,
-            error,
+            StateChangeEvent {
+                old_state,
+                new_state,
+                error,
+            }
         };
 
         let _ = state_tx.send(event);
@@ -421,7 +426,7 @@ impl StreamSource for RtspSource {
     }
 
     fn state(&self) -> StreamSourceState {
-        *self.state.blocking_read()
+        *self.state.read().unwrap()
     }
 
     async fn start(&mut self) -> Result<()> {

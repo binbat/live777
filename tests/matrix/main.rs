@@ -18,6 +18,8 @@ mod source;
 
 use player::{Player, livetwo::LivetwoWhepPlayer};
 use profile::{AudioCodec, MediaProfile, VideoCodec};
+#[cfg(feature = "source-whep")]
+use runner::run_whep_source_test;
 use runner::run_whep_test_with_host;
 use source::{Source, ffmpeg::FfmpegSource};
 
@@ -135,6 +137,40 @@ async fn whep_ffmpeg_vp9_4k_test() {
         "127.0.0.1",
     )
     .await;
+}
+
+// ============================================================
+// WHEP source (static cascade-pull): liveion B pulls a WHIP-published
+// stream from liveion A through a configured `whep://` source
+// ============================================================
+
+/// WHEP-source relay validated by the livetwo WHEP player with ffprobe.
+/// The profile rows pin the source bridge's channel mapping: video-only,
+/// audio-only (audio on channel 0) and A/V (audio on channel 2).
+#[cfg(feature = "source-whep")]
+#[test_matrix(
+    [
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        FfmpegSource::new(MediaProfile::audio_only(AudioCodec::Opus)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::H264, AudioCodec::Opus)),
+    ],
+    [LivetwoWhepPlayer]
+)]
+#[tokio::test]
+async fn whep_source_livetwo_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    // Media-heavy relay (two liveion instances plus ffmpeg and decode), so
+    // skip on Windows CI like the mediamtx matrices: the runners are too
+    // slow and downstream players time out (same class as live777#212).
+    if runner::windows_ci() {
+        tracing::warn!("skipping: media-heavy relay cases are too slow for Windows CI runners");
+        return;
+    }
+    run_whep_source_test(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
 }
 
 // ============================================================

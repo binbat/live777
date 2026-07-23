@@ -127,6 +127,10 @@ struct WhepArgs {
     /// Only report verification failures instead of failing the whole run
     #[arg(long)]
     verify_tolerant: bool,
+
+    /// STUN server URL used for ICE gathering (empty string disables STUN)
+    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
+    stun_server: String,
 }
 
 #[tokio::main]
@@ -279,6 +283,7 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     let params = livetwo::loadtest::whep::WhepLoadParams {
         whep_url: args.whep,
         token: args.token,
+        stun_server: Some(args.stun_server),
         verify_window: args.verify_window.map(Duration::from_secs),
     };
 

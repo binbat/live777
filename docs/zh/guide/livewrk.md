@@ -77,6 +77,7 @@ just livewrk-whep 100 60 load-0
 |------|--------|------|
 | `--verify-window` | 无 | 启用旋转解码验证（每个窗口的秒数） |
 | `--verify-tolerant` | `false` | 只报告验证失败，不让整个运行失败 |
+| `--stun-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的 STUN 服务器（空字符串表示禁用 STUN） |
 
 ### 旋转解码验证
 

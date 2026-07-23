@@ -2,18 +2,30 @@ use super::PeerForward;
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "native-source"
+    feature = "source-whep"
 ))]
 use crate::forward::av1_repacketizer::Av1Repacketizer;
 use crate::forward::rtcp::RtcpMessage;
-use crate::stream::source::{MediaPacket, StateChangeEvent};
+use crate::stream::source::{ChannelMapping, MediaPacket, StateChangeEvent};
 use anyhow::Result;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 use anyhow::anyhow;
 use rtc::shared::marshal::Marshal;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 use rtc::shared::marshal::Unmarshal;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep"
+))]
 use rtc_rtp::packet::Packet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,66 +35,11 @@ use tracing::{debug, error, info, trace, warn};
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
+    feature = "source-whep",
     feature = "native-source"
 ))]
 const LOG_PACKET_INTERVAL: u64 = 100;
 
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-struct ChannelMapping {
-    video_rtp: Option<u8>,
-    video_rtcp: Option<u8>,
-    audio_rtp: Option<u8>,
-    audio_rtcp: Option<u8>,
-}
-
-#[allow(dead_code)]
-impl ChannelMapping {
-    fn new(has_video: bool, has_audio: bool) -> Self {
-        match (has_video, has_audio) {
-            (true, false) => Self {
-                video_rtp: Some(0),
-                video_rtcp: Some(1),
-                audio_rtp: None,
-                audio_rtcp: None,
-            },
-            (false, true) => Self {
-                video_rtp: None,
-                video_rtcp: None,
-                audio_rtp: Some(0),
-                audio_rtcp: Some(1),
-            },
-            (true, true) => Self {
-                video_rtp: Some(0),
-                video_rtcp: Some(1),
-                audio_rtp: Some(2),
-                audio_rtcp: Some(3),
-            },
-            (false, false) => Self {
-                video_rtp: None,
-                video_rtcp: None,
-                audio_rtp: None,
-                audio_rtcp: None,
-            },
-        }
-    }
-
-    fn is_video_rtp(&self, channel: u8) -> bool {
-        self.video_rtp == Some(channel)
-    }
-
-    fn is_video_rtcp(&self, channel: u8) -> bool {
-        self.video_rtcp == Some(channel)
-    }
-
-    fn is_audio_rtp(&self, channel: u8) -> bool {
-        self.audio_rtp == Some(channel)
-    }
-
-    fn is_audio_rtcp(&self, channel: u8) -> bool {
-        self.audio_rtcp == Some(channel)
-    }
-}
 pub struct SourceBridge {
     source_id: String,
     forward: PeerForward,
@@ -93,14 +50,12 @@ pub struct SourceBridge {
     #[cfg(any(
         feature = "source-rtsp",
         feature = "source-sdp",
-        feature = "native-source"
+        feature = "source-whep"
     ))]
     av1_repacketizer: Option<Av1Repacketizer>,
 
     #[cfg(feature = "source")]
     rtcp_to_source_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
-    #[cfg(feature = "source")]
-    rtcp_ready: Arc<tokio::sync::Notify>,
 }
 
 impl SourceBridge {
@@ -112,7 +67,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
-            feature = "native-source"
+            feature = "source-whep"
         ))]
         video_codec_name: Option<String>,
     ) -> Self {
@@ -120,7 +75,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
-            feature = "native-source"
+            feature = "source-whep"
         ))]
         let av1_repacketizer = video_codec_name
             .as_deref()
@@ -137,21 +92,18 @@ impl SourceBridge {
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
-                feature = "native-source"
+                feature = "source-whep"
             ))]
             av1_repacketizer,
             #[cfg(feature = "source")]
             rtcp_to_source_tx: None,
-            #[cfg(feature = "source")]
-            rtcp_ready: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     #[cfg(feature = "source")]
     pub fn set_rtcp_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) {
         self.rtcp_to_source_tx = Some(tx);
-        self.rtcp_ready.notify_one();
-        info!("[{}] RTCP sender set and notified", self.source_id);
+        info!("[{}] RTCP sender set", self.source_id);
     }
 
     pub async fn start_bridging(
@@ -162,24 +114,10 @@ impl SourceBridge {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
         self.shutdown_tx = Some(shutdown_tx.clone());
 
-        #[cfg(feature = "source")]
-        {
-            tokio::select! {
-                _ = self.rtcp_ready.notified() => {
-                    debug!("[{}] RTCP sender is ready", self.source_id);
-                }
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                    warn!(
-                        "[{}] RTCP sender timeout, keyframe requests may not work",
-                        self.source_id
-                    );
-                }
-            }
-        }
-
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
+            feature = "source-whep",
             feature = "native-source"
         ))]
         let forward_clone = self.forward.clone();
@@ -189,7 +127,7 @@ impl SourceBridge {
         #[cfg(any(
             feature = "source-rtsp",
             feature = "source-sdp",
-            feature = "native-source"
+            feature = "source-whep"
         ))]
         let mut av1_repacketizer = self.av1_repacketizer.take();
 
@@ -202,22 +140,40 @@ impl SourceBridge {
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
+                feature = "source-whep",
                 feature = "native-source"
             ))]
             let mut video_count = 0u64;
             #[cfg(not(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
+                feature = "source-whep",
                 feature = "native-source"
             )))]
             let video_count = 0u64;
-            #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            ))]
             let mut audio_count = 0u64;
-            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
+            #[cfg(not(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            )))]
             let audio_count = 0u64;
-            #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            ))]
             let mut video_dropped = 0u64;
-            #[cfg(not(any(feature = "source-rtsp", feature = "source-sdp")))]
+            #[cfg(not(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep"
+            )))]
             let video_dropped = 0u64;
 
             loop {
@@ -244,9 +200,16 @@ impl SourceBridge {
                                                 source_id_clone, video_count, packet.payload.len()
                                             );
                                         }
-                                        forward_clone.inject_video_rtp_packet(packet).await.map_err(|e| anyhow::anyhow!("{:?}", e))
+                                        forward_clone
+                                            .inject_video_rtp_packet(packet)
+                                            .await
+                                            .map_err(|e| anyhow::anyhow!("{:?}", e))
                                     }
-                                    #[cfg(any(feature = "source-rtsp", feature = "source-sdp"))]
+                                    #[cfg(any(
+                                        feature = "source-rtsp",
+                                        feature = "source-sdp",
+                                        feature = "source-whep"
+                                    ))]
                                     MediaPacket::Rtp { channel, data, .. } => {
                                         if channel_mapping.is_video_rtp(channel) {
                                             video_count += 1;
@@ -256,33 +219,47 @@ impl SourceBridge {
                                                     source_id_clone, video_count, data.len()
                                                 );
                                             }
+
                                             if let Some(ref mut repacketizer) = av1_repacketizer {
                                                 match Packet::unmarshal(&mut &data[..]) {
-                                                    Ok(packet) => {
-                                                        match repacketizer.process(&packet) {
-                                                            Ok(packets) => {
-                                                                for packet in packets {
-                                                                    if let Err(e) = forward_clone.inject_video_rtp_packet(std::sync::Arc::new(packet)).await {
-                                                                        error!("[{}] Failed to inject repacketized AV1 RTP packet: {:?}", source_id_clone, e);
-                                                                    }
+                                                    Ok(packet) => match repacketizer.process(&packet) {
+                                                        Ok(packets) => {
+                                                            for packet in packets {
+                                                                if let Err(e) = forward_clone
+                                                                    .inject_video_rtp_packet(std::sync::Arc::new(packet))
+                                                                    .await
+                                                                {
+                                                                    error!(
+                                                                        "[{}] Failed to inject repacketized AV1 RTP packet: {:?}",
+                                                                        source_id_clone, e
+                                                                    );
                                                                 }
-                                                                Ok(())
                                                             }
-                                                            Err(e) => {
-                                                                video_dropped += 1;
-                                                                warn!("[{}] AV1 repacketization failed, dropping packet: {}", source_id_clone, e);
-                                                                Ok(())
-                                                            }
+                                                            Ok(())
                                                         }
-                                                    }
+                                                        Err(e) => {
+                                                            video_dropped += 1;
+                                                            warn!(
+                                                                "[{}] AV1 repacketization failed, dropping packet: {}",
+                                                                source_id_clone, e
+                                                            );
+                                                            Ok(())
+                                                        }
+                                                    },
                                                     Err(e) => {
                                                         video_dropped += 1;
-                                                        warn!("[{}] Failed to unmarshal AV1 RTP packet, dropping: {}", source_id_clone, e);
+                                                        warn!(
+                                                            "[{}] Failed to unmarshal AV1 RTP packet, dropping: {}",
+                                                            source_id_clone, e
+                                                        );
                                                         Ok(())
                                                     }
                                                 }
                                             } else {
-                                                forward_clone.inject_video_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
+                                                forward_clone
+                                                    .inject_video_rtp(&data)
+                                                    .await
+                                                    .map_err(|e| anyhow!("{:?}", e))
                                             }
                                         } else if channel_mapping.is_audio_rtp(channel) {
                                             audio_count += 1;
@@ -292,18 +269,20 @@ impl SourceBridge {
                                                     source_id_clone, audio_count, data.len()
                                                 );
                                             }
-                                            forward_clone.inject_audio_rtp(&data).await.map_err(|e| anyhow!("{:?}", e))
-                                        } else if channel_mapping.is_video_rtcp(channel) || channel_mapping.is_audio_rtcp(channel) {
+                                            forward_clone
+                                                .inject_audio_rtp(&data)
+                                                .await
+                                                .map_err(|e| anyhow!("{:?}", e))
+                                        } else if channel_mapping.is_video_rtcp(channel)
+                                            || channel_mapping.is_audio_rtcp(channel)
+                                        {
                                             trace!(
                                                 "[{}] Received RTCP packet on channel {}",
                                                 source_id_clone, channel
                                             );
                                             Ok(())
                                         } else {
-                                            warn!(
-                                                "[{}] Unknown channel: {}",
-                                                source_id_clone, channel
-                                            );
+                                            warn!("[{}] Unknown channel: {}", source_id_clone, channel);
                                             Ok(())
                                         }
                                     }
@@ -314,6 +293,7 @@ impl SourceBridge {
                                     #[cfg(not(any(
                                         feature = "source-rtsp",
                                         feature = "source-sdp",
+                                        feature = "source-whep",
                                         feature = "native-source"
                                     )))]
                                     _ => Ok(()),
@@ -334,10 +314,7 @@ impl SourceBridge {
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                warn!(
-                                    "[{}] Lagged, skipped {} packets",
-                                    source_id_clone, skipped
-                                );
+                                warn!("[{}] Lagged, skipped {} packets", source_id_clone, skipped);
                             }
                             Err(broadcast::error::RecvError::Closed) => {
                                 info!("[{}] Source channel closed", source_id_clone);
@@ -450,8 +427,18 @@ impl SourceBridge {
                 result = rtcp_rx.recv() => {
                     let (rtcp_msg, ssrc) = match result {
                         Ok(pair) => pair,
-                        Err(e) => {
-                            error!("[{}] RTCP receiver error: {}", source_id, e);
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            // Recoverable: feedback bursts can overflow the
+                            // channel. Keep listening instead of killing
+                            // keyframe forwarding for the rest of the bridge.
+                            warn!(
+                                "[{}] RTCP receiver lagged, skipped {} messages",
+                                source_id, skipped
+                            );
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!("[{}] RTCP channel closed, handler shutting down", source_id);
                             break;
                         }
                     };
@@ -637,7 +624,14 @@ impl Drop for SourceBridge {
     }
 }
 
-#[cfg(all(test, any(feature = "source-rtsp", feature = "source-sdp")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep"
+    )
+))]
 mod integration_tests {
     use super::*;
     use crate::forward::PeerForward;

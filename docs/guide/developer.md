@@ -49,9 +49,10 @@ Live777 supports the following Cargo feature flags to customize the build:
 | `webui`      | liveion   | Enable Web UI (embedded assets)                |
 | `cascade`    | liveion   | Enable cascade push/pull between servers       |
 | `recorder`   | liveion   | Enable stream recording (H264/H265)            |
-| `source`     | liveion   | Enable source pulling (RTSP, SDP)              |
+| `source`     | liveion   | Enable source pulling (RTSP, WHEP, SDP)        |
 | `source-sdp` | liveion   | Source pulling via SDP                         |
 | `source-rtsp`| liveion   | Source pulling via RTSP                        |
+| `source-whep`| liveion   | Source pulling via WHEP (static cascade-pull)  |
 | `net4mqtt`   | liveion   | Enable MQTT tunnel proxy                       |
 
 Enable features at build time:

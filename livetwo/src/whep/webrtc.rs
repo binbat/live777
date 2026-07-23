@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,12 +24,59 @@ use crate::utils::stats::RtcpStats;
 /// DataChannel label used to join liveion's WHEP group for bidirectional control messaging.
 const DATA_CHANNEL_LABEL: &str = "control";
 
+/// Connection-level options for an outgoing WHEP peer.
+#[derive(Clone)]
+pub struct WhepPeerOptions {
+    /// ICE servers used for gathering the offer; an empty list means host
+    /// candidates only. The upstream's own ice-servers from the WHEP
+    /// response Link headers replace this list via `set_configuration` once
+    /// the answer arrives.
+    pub ice_servers: Vec<RTCIceServer>,
+    /// UDP sockets ICE binds to. Empty falls back to the
+    /// `LIVE777_WEBRTC_ICE_UDP_ADDRS` resolution (env override or OS
+    /// default allocation).
+    pub ice_udp_addrs: Vec<std::net::SocketAddr>,
+    /// Create the "control" DataChannel joining liveion's WHEP group for
+    /// bidirectional control messaging. Pull-only consumers (e.g. the
+    /// liveion WHEP source) should disable it.
+    pub control_channel: bool,
+}
+
+impl Default for WhepPeerOptions {
+    fn default() -> Self {
+        Self {
+            ice_servers: Vec::new(),
+            ice_udp_addrs: Vec::new(),
+            control_channel: true,
+        }
+    }
+}
+
+/// Build an ICE server list from an optional STUN server URL. A `None` or
+/// blank URL yields an empty list (host candidates only), matching the WHIP
+/// publish side's `--stun-server ""` opt-out (`whip::core`).
+pub fn stun_ice_servers(stun_server: Option<&str>) -> Vec<RTCIceServer> {
+    stun_server
+        .filter(|url| !url.trim().is_empty())
+        .map(|url| RTCIceServer {
+            urls: vec![url.to_string()],
+            username: String::new(),
+            credential: String::new(),
+        })
+        .into_iter()
+        .collect()
+}
+
+/// Set up a WHEP client peer with `options`, POST the offer and apply the
+/// answer; see [`WhepPeerOptions`] for the connection-level knobs.
+#[allow(clippy::too_many_arguments)]
 pub async fn setup_whep_peer(
     ct: CancellationToken,
     client: &mut Client,
     video_send: mpsc::Sender<Vec<u8>>,
     audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    options: WhepPeerOptions,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     video_mime_tx: Option<watch::Sender<Option<String>>>,
 ) -> Result<(
@@ -47,6 +95,7 @@ pub async fn setup_whep_peer(
         video_send,
         audio_send,
         codec_info.clone(),
+        options,
         gather_complete.clone(),
         dc_recv_tx,
         dc_send_rx,
@@ -65,6 +114,64 @@ pub async fn setup_whep_peer(
     let stats = Arc::new(RtcpStats::new());
 
     Ok((peer, answer, stats, dc_recv_rx, dc_send_tx))
+}
+
+/// Forward RTCP feedback (e.g. PLI from downstream subscribers) to the
+/// remote track of a WHEP peer, so it reaches the upstream publisher.
+///
+/// `data` is a marshalled RTCP packet buffer as received from the RTP side;
+/// packets without a destination SSRC, or whose destination matches no
+/// remote track, are dropped.
+pub async fn forward_rtcp_to_peer(data: &[u8], peer: &Arc<dyn PeerConnection>) {
+    let mut cursor = Cursor::new(data);
+    match rtc_rtcp::packet::unmarshal(&mut cursor) {
+        Ok(packets) => {
+            for packet in packets {
+                crate::whip::log_rtcp_feedback_packet("WHEP peer RTCP", packet.as_ref());
+                forward_rtcp_packet_to_peer(packet, peer).await;
+            }
+        }
+        Err(e) => {
+            warn!("Failed to parse RTCP: {}", e);
+        }
+    }
+}
+
+async fn forward_rtcp_packet_to_peer(
+    packet: Box<dyn rtc_rtcp::packet::Packet + Send + Sync>,
+    peer: &Arc<dyn PeerConnection>,
+) {
+    let destination_ssrcs = packet.destination_ssrc();
+    if destination_ssrcs.is_empty() {
+        debug!("Dropping RTCP packet without destination SSRC");
+        return;
+    }
+
+    let receivers = peer.get_receivers().await;
+    let mut target_track = None;
+    for receiver in receivers {
+        let track = receiver.track().clone();
+        let track_ssrcs = track.ssrcs().await;
+        if destination_ssrcs
+            .iter()
+            .any(|destination| track_ssrcs.contains(destination))
+        {
+            target_track = Some(track);
+            break;
+        }
+    }
+
+    let Some(track) = target_track else {
+        warn!(
+            "Dropping RTCP packet for unknown WHEP destination SSRC(s): {:?}",
+            destination_ssrcs
+        );
+        return;
+    };
+
+    if let Err(error) = track.write_rtcp(vec![packet]).await {
+        warn!("Failed to forward RTCP packet to WHEP track: {}", error);
+    }
 }
 
 #[derive(Clone)]
@@ -320,6 +427,7 @@ async fn create_peer(
     video_send: mpsc::Sender<Vec<u8>>,
     audio_send: mpsc::Sender<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    options: WhepPeerOptions,
     gather_complete: Arc<Notify>,
     dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
     dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -342,32 +450,38 @@ async fn create_peer(
     });
 
     let config = RTCConfigurationBuilder::new()
-        .with_ice_servers(vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_string()],
-            username: "".to_string(),
-            credential: "".to_string(),
-        }])
+        .with_ice_servers(options.ice_servers.clone())
         .build();
+
+    // Caller-provided UDP addrs win; otherwise fall back to the
+    // LIVE777_WEBRTC_ICE_UDP_ADDRS resolution (env override or OS default).
+    let udp_addrs = if options.ice_udp_addrs.is_empty() {
+        utils::webrtc::ice_udp_addrs()
+    } else {
+        options.ice_udp_addrs
+    };
 
     let peer: Arc<dyn PeerConnection> = Arc::new(
         PeerConnectionBuilder::<std::net::SocketAddr>::new()
             .with_media_engine(media_engine)
             .with_handler(handler)
-            .with_udp_addrs(utils::webrtc::ice_udp_addrs())
+            .with_udp_addrs(udp_addrs)
             .with_configuration(config)
             .build()
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
 
-    // Create DataChannel to participate in liveion's WHEP group
-    let dc = peer
-        .create_data_channel(DATA_CHANNEL_LABEL, None)
-        .await
-        .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
+    if options.control_channel {
+        // Create DataChannel to participate in liveion's WHEP group
+        let dc = peer
+            .create_data_channel(DATA_CHANNEL_LABEL, None)
+            .await
+            .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
 
-    // Start the data channel polling loop
-    setup_data_channel_loop(dc, dc_recv_tx, dc_send_rx);
+        // Start the data channel polling loop
+        setup_data_channel_loop(dc, dc_recv_tx, dc_send_rx);
+    }
 
     peer.add_transceiver_from_kind(
         RtpCodecKind::Video,

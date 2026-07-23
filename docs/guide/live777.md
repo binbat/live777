@@ -92,6 +92,37 @@ live777 Cascade have two mode:
 
 ![live777-cascade](/live777-cascade.excalidraw.svg)
 
+### Static cascade-pull (WHEP source)
+
+`cascade-pull` can also be declared as a static stream input instead of an
+API call. Build with the `source-whep` feature and add a `whep://` source to
+a provisioned stream; it behaves like any other configured source
+(`on_demand` start/stop, reconnect, RTCP keyframe feedback):
+
+```toml
+[[stream.cam1.sources]]
+url = "whep://edge-0:7777/whep/cam1"
+# With Bearer auth:
+# url = "whep://token@edge-0:7777/whep/cam1"
+```
+
+When this source is used with `on_demand = true`, live777 waits at least
+`35000ms` for the upstream WHEP source to become ready, even if
+`on_demand_start_timeout_ms` is lower. This covers cold upstream on-demand
+pulls that may spend the WHEP HTTP request timeout before delivering media.
+
+The outgoing WHEP peer gathers ICE candidates using the server's own
+`[[ice_servers]]` configuration and binds the UDP sockets from
+`[webrtc] ice_udp_addrs` (no hardcoded STUN server).
+
+Chained on-demand pulls work one hop deep by default: this source's WHEP
+HTTP request waits up to `40000ms` for the answer, covering an upstream
+that itself holds subscribes for up to `35000ms` (an on-demand WHEP
+source). Deeper chains need their budgets aligned per deployment. Stopping
+this source (e.g. when the last subscriber leaves an `on_demand` stream)
+may wait out an in-flight WHEP HTTP request, bounded by that same `40000ms`
+timeout.
+
 ## DataChannel Forward
 
 > NOTE: About `createDataChannel()`
@@ -201,4 +232,3 @@ Notes:
   already debounce via `on_demand_close_after_ms`.
 - No hooks fire on server shutdown (no `stream-deleted` events are emitted
   then).
-

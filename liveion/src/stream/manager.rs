@@ -122,6 +122,12 @@ const STARTUP_SOURCE_BUDGET: SourceStartBudget = SourceStartBudget {
     max_bridge_retries: 3,
 };
 
+/// WHEP pulls can legitimately spend the libwish request timeout waiting for
+/// a cold upstream on-demand source before the first media packet reveals the
+/// codec. Keep the subscriber-side source wait above that 30 s HTTP budget.
+#[cfg(feature = "source")]
+const WHEP_ON_DEMAND_CODEC_WAIT: Duration = Duration::from_secs(35);
+
 #[cfg(feature = "source")]
 impl SourceStartBudget {
     /// Budget for subscriber-triggered (on-demand) starts: a single bridge
@@ -135,6 +141,33 @@ impl SourceStartBudget {
             max_bridge_retries: 1,
         }
     }
+
+    fn for_source(self, source_cfg: &crate::config::SourceConfig) -> Self {
+        let Some(url) = source_cfg.url.as_deref() else {
+            return self;
+        };
+        if is_whep_source_url(url) {
+            Self {
+                codec_timeout: self.codec_timeout.max(WHEP_ON_DEMAND_CODEC_WAIT),
+                ..self
+            }
+        } else {
+            self
+        }
+    }
+
+    fn for_entry(self, entry: &crate::config::StreamEntry) -> Self {
+        entry
+            .sources
+            .iter()
+            .fold(self, |budget, source_cfg| budget.for_source(source_cfg))
+    }
+}
+
+#[cfg(feature = "source")]
+fn is_whep_source_url(url: &str) -> bool {
+    let url = url.to_ascii_lowercase();
+    url.starts_with("whep://") || url.starts_with("wheps://")
 }
 
 pub type Response = (RTCSessionDescription, String);
@@ -1074,9 +1107,10 @@ impl Manager {
                 .await?;
         }
 
+        let budget = SourceStartBudget::on_demand(entry).for_entry(entry);
+
         info!("on-demand: starting sources for stream {}", stream);
-        self.start_stream_sources(stream, entry, SourceStartBudget::on_demand(entry))
-            .await;
+        self.start_stream_sources(stream, entry, budget).await;
 
         if self.source_manager.has_bridge(stream).await {
             // Safety net: arm the close-after timer now. A subscriber that
@@ -1094,9 +1128,9 @@ impl Manager {
         // lingers (and blocks later ensures) until the close-after timer
         // would get around to it.
         tracing::error!(
-            "on-demand: source for stream {} not ready after {}ms",
+            "on-demand: source for stream {} not ready after {:?}",
             stream,
-            entry.on_demand_start_timeout_ms
+            budget.codec_timeout
         );
         self.stop_stream_source_locked(stream, SessionStopReason::PeerClosed)
             .await?;
@@ -1146,17 +1180,32 @@ impl Manager {
                     .await;
                 continue;
             }
-            // URL-based sources (RTSP / SDP)
+            // URL-based sources (RTSP / SDP / WHEP)
             if let Some(ref url) = source_cfg.url {
-                tracing::info!("Starting URL-based source: {} from {}", stream_id, url);
-                let source = match create_source_from_url(stream_id, url, source_cfg).await {
+                tracing::info!(
+                    "Starting URL-based source: {} from {}",
+                    stream_id,
+                    crate::stream::source::redact_url(url)
+                );
+                let source = match create_source_from_url(
+                    stream_id,
+                    url,
+                    source_cfg,
+                    crate::stream::source::SourceNetConfig {
+                        ice_servers: self.config.ice_servers.clone(),
+                        ice_udp_addrs: self.config.ice_udp_addrs.clone(),
+                    },
+                )
+                .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!("Failed to create source {}: {}", stream_id, e);
                         continue;
                     }
                 };
-                self.start_single_source(source, stream_id, budget).await;
+                self.start_single_source(source, stream_id, budget.for_source(source_cfg))
+                    .await;
             }
         }
     }
@@ -1337,7 +1386,7 @@ impl Manager {
 
     /// Register an RTSP pull client attach/detach for on-demand accounting.
     /// The returned guard is unused by callers; counting is internal.
-    #[cfg(feature = "source")]
+    #[cfg(all(feature = "source", feature = "rtsp"))]
     pub async fn rtsp_pull_attach(&self, stream: &str) {
         *self
             .rtsp_pull_counts
@@ -1348,7 +1397,7 @@ impl Manager {
         self.cancel_on_demand_stop(stream).await;
     }
 
-    #[cfg(feature = "source")]
+    #[cfg(all(feature = "source", feature = "rtsp"))]
     pub async fn rtsp_pull_detach(&self, stream: &str) {
         let remaining = {
             let mut counts = self.rtsp_pull_counts.write().await;
@@ -1453,6 +1502,16 @@ impl Manager {
                             budget.max_bridge_retries,
                             e
                         );
+                        if let Err(cleanup_err) = self
+                            .stop_stream_source_locked(stream_id, SessionStopReason::PeerClosed)
+                            .await
+                        {
+                            tracing::error!(
+                                "Failed to clean up source {} after bridge creation failure: {:?}",
+                                stream_id,
+                                cleanup_err
+                            );
+                        }
                         break;
                     }
 
@@ -1545,6 +1604,61 @@ mod tests {
             stream: crate::config::StreamConfig { streams },
             ..Default::default()
         }
+    }
+
+    #[cfg(feature = "source")]
+    fn source_config(url: &str) -> crate::config::SourceConfig {
+        crate::config::SourceConfig {
+            url: Some(url.to_string()),
+            #[cfg(feature = "native-source")]
+            capture: None,
+            #[cfg(feature = "native-source")]
+            encoder: None,
+            #[cfg(feature = "native-source")]
+            output: Default::default(),
+        }
+    }
+
+    #[cfg(feature = "source")]
+    #[test]
+    fn whep_source_extends_on_demand_codec_budget() {
+        let budget = SourceStartBudget {
+            codec_timeout: Duration::from_secs(10),
+            bridge_codec_wait: Duration::ZERO,
+            rtcp_wait: Duration::ZERO,
+            max_bridge_retries: 1,
+        };
+
+        assert_eq!(
+            budget
+                .for_source(&source_config("whep://edge/whep/cam"))
+                .codec_timeout,
+            WHEP_ON_DEMAND_CODEC_WAIT
+        );
+        assert_eq!(
+            budget
+                .for_source(&source_config("rtsp://edge/cam"))
+                .codec_timeout,
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            budget
+                .for_source(&source_config("file://cam.sdp"))
+                .codec_timeout,
+            Duration::from_secs(10)
+        );
+
+        let entry = crate::config::StreamEntry {
+            sources: vec![
+                source_config("rtsp://edge/cam"),
+                source_config("wheps://edge/whep/cam"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            budget.for_entry(&entry).codec_timeout,
+            WHEP_ON_DEMAND_CODEC_WAIT
+        );
     }
 
     #[tokio::test]
@@ -1978,6 +2092,48 @@ mod tests {
             ) -> broadcast::Receiver<crate::stream::source::StateChangeEvent> {
                 self.state_tx.subscribe()
             }
+        }
+
+        #[tokio::test]
+        async fn start_single_source_cleans_up_when_bridge_creation_fails() {
+            let cancel = CancellationToken::new();
+            let manager = Manager::new(Config::default(), cancel.clone()).await;
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (rtp_tx, _) = broadcast::channel(1);
+            let (state_tx, _) = broadcast::channel(1);
+
+            manager
+                .start_single_source(
+                    Box::new(NeverReadySource {
+                        id: "dead".to_string(),
+                        stopped: stopped.clone(),
+                        rtp_tx,
+                        state_tx,
+                    }),
+                    "dead",
+                    SourceStartBudget {
+                        codec_timeout: Duration::from_millis(10),
+                        bridge_codec_wait: Duration::ZERO,
+                        rtcp_wait: Duration::ZERO,
+                        max_bridge_retries: 1,
+                    },
+                )
+                .await;
+
+            assert!(
+                stopped.load(std::sync::atomic::Ordering::SeqCst),
+                "failed source was not stopped"
+            );
+            assert!(
+                !manager.source_manager.has_source("dead").await,
+                "failed source must not remain registered"
+            );
+            assert!(
+                !manager.source_manager.has_bridge("dead").await,
+                "failed bridge must not remain registered"
+            );
+
+            cancel.cancel();
         }
 
         #[tokio::test]

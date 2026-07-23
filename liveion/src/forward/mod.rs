@@ -3,12 +3,32 @@ use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast, watch};
-#[cfg(any(feature = "source", feature = "cascade"))]
-use tracing::error;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
-use tracing::trace;
 #[cfg(feature = "source")]
-use tracing::{debug, warn};
+use tracing::debug;
+#[cfg(any(
+    feature = "cascade",
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "native-source",
+    feature = "rtsp"
+))]
+use tracing::error;
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "rtsp"
+))]
+use tracing::trace;
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "native-source",
+    feature = "rtsp"
+))]
+use tracing::warn;
 use webrtc::peer_connection::{
     PeerConnection, RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionState,
     RTCSessionDescription,
@@ -25,9 +45,20 @@ use crate::result::Result;
 use crate::{AppError, constant};
 #[cfg(feature = "source")]
 pub use bridge::SourceBridge;
-#[cfg(feature = "source")]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "native-source",
+    feature = "rtsp"
+))]
 use rtc::rtp::packet::Packet;
-#[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "rtsp"
+))]
 use rtc::shared::marshal::Unmarshal;
 
 use self::codec_compat::{fmtp_param_case_preserving, is_h265_codec, remove_fmtp_key};
@@ -39,14 +70,14 @@ use crate::event::Event;
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "native-source",
+    feature = "source-whep",
     feature = "recorder"
 ))]
 pub(crate) mod av1_assembler;
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "native-source"
+    feature = "source-whep"
 ))]
 pub(crate) mod av1_repacketizer;
 #[cfg(feature = "source")]
@@ -376,7 +407,7 @@ impl PeerForward {
 
             let mut client = Client::new(
                 src.clone(),
-                Client::get_authorization_header_map(token.clone()),
+                Client::get_authorization_header_map(token.clone())?,
             );
 
             let (target_sdp, _) = client
@@ -433,11 +464,6 @@ impl PeerForward {
         } else {
             Err(AppError::throw("not layers"))
         }
-    }
-
-    #[cfg(feature = "recorder")]
-    pub async fn first_video_codec(&self) -> Option<String> {
-        self.internal.first_publish_video_codec().await
     }
 
     #[cfg(feature = "recorder")]
@@ -663,7 +689,7 @@ impl PeerForward {
 
             let mut client = Client::new(
                 dst.clone(),
-                Client::get_authorization_header_map(token.clone()),
+                Client::get_authorization_header_map(token.clone())?,
             );
 
             let (target_sdp, _) = client.wish(description.sdp.clone()).await.map_err(|err| {
@@ -938,7 +964,12 @@ impl PeerForward {
             debug!("[{}] Removed {} virtual tracks", self.stream, removed);
         }
     }
-    #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
+        feature = "rtsp"
+    ))]
     pub async fn inject_video_rtp(&self, mut data: &[u8]) -> Result<()> {
         let packet = match Packet::unmarshal(&mut data) {
             Ok(p) => p,
@@ -985,6 +1016,7 @@ impl PeerForward {
     #[cfg(any(
         feature = "source-rtsp",
         feature = "source-sdp",
+        feature = "source-whep",
         feature = "native-source"
     ))]
     pub async fn inject_video_rtp_packet(&self, packet: Arc<Packet>) -> Result<()> {
@@ -1005,7 +1037,12 @@ impl PeerForward {
         }
     }
 
-    #[cfg(any(feature = "source-rtsp", feature = "source-sdp", feature = "rtsp"))]
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
+        feature = "rtsp"
+    ))]
     pub async fn inject_audio_rtp(&self, mut data: &[u8]) -> Result<()> {
         let packet = match Packet::unmarshal(&mut data) {
             Ok(p) => p,

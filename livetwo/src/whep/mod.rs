@@ -22,10 +22,14 @@ use crate::utils::stats::start_stats_monitor;
 use rtsp::constants::media_type;
 
 pub use output::OutputTarget;
-pub use webrtc::setup_whep_peer;
+pub use webrtc::{WhepPeerOptions, forward_rtcp_to_peer, setup_whep_peer, stun_ice_servers};
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 512;
 
+/// `stun_server` selects the STUN server used for ICE gathering; `None` or a
+/// blank string disables STUN (host candidates only), same as the WHIP
+/// side's `--stun-server ""`.
+#[allow(clippy::too_many_arguments)]
 pub async fn from(
     ct: CancellationToken,
     target_url: String,
@@ -34,6 +38,7 @@ pub async fn from(
     token: Option<String>,
     command: Option<String>,
     channel_url: Option<String>,
+    stun_server: Option<String>,
 ) -> Result<()> {
     from_with_state(
         ct,
@@ -44,6 +49,7 @@ pub async fn from(
         command,
         channel_url,
         None,
+        stun_server,
     )
     .await
 }
@@ -58,6 +64,7 @@ pub async fn from_with_state(
     command: Option<String>,
     channel_url: Option<String>,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
+    stun_server: Option<String>,
 ) -> Result<()> {
     info!("Starting WHEP session: {}", target_url);
 
@@ -72,7 +79,10 @@ pub async fn from_with_state(
         tokio::sync::mpsc::channel::<Vec<u8>>(MEDIA_CHANNEL_CAPACITY);
     let codec_info = Arc::new(tokio::sync::Mutex::new(rtsp::CodecInfo::new()));
 
-    let mut client = Client::new(whep_url.clone(), Client::get_auth_header_map(token.clone()));
+    let mut client = Client::new(
+        whep_url.clone(),
+        Client::get_auth_header_map(token.clone())?,
+    );
 
     let (peer, answer, stats, dc_recv_rx, dc_send_tx) = webrtc::setup_whep_peer(
         ct.clone(),
@@ -80,6 +90,10 @@ pub async fn from_with_state(
         video_send,
         audio_send,
         codec_info.clone(),
+        webrtc::WhepPeerOptions {
+            ice_servers: webrtc::stun_ice_servers(stun_server.as_deref()),
+            ..Default::default()
+        },
         state_tx,
         None,
     )

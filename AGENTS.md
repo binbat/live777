@@ -136,6 +136,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source`         — auto-start configured media sources.
 - `source-sdp`     — SDP-file sources.
 - `source-rtsp`    — RTSP sources.
+- `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
 - `source-all`     — enables all source types.
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
@@ -298,7 +299,10 @@ downloads the pinned release into `target/`, or install mediamtx into `PATH`;
 `MEDIAMTX_BIN` overrides the lookup. The tests skip when no binary is found.
 They also run on Windows hosts, but skip on Windows CI: GitHub-hosted
 Windows runners encode video at ~0.03x realtime, so media-heavy cases time
-out downstream (the same flake class as a390dc7).
+out downstream (the same flake class as a390dc7). The WHEP-source relay
+matrix (`whep_source_livetwo_*`, two liveion instances per case) skips on
+Windows CI for the same reason; the shared `runner::windows_ci()` helper
+carries the check.
 
 ## Security Considerations
 

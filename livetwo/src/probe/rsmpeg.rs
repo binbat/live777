@@ -84,7 +84,7 @@ impl ProbeBackend for RsmpegProbe {
 
         let mut client = Client::new(
             config.whep_url.clone(),
-            Client::get_auth_header_map(config.token.clone()),
+            Client::get_auth_header_map(config.token.clone())?,
         );
 
         // Create the peer connection in the current task so that the returned
@@ -95,6 +95,10 @@ impl ProbeBackend for RsmpegProbe {
             video_tx,
             audio_tx,
             codec_info.clone(),
+            crate::whep::WhepPeerOptions {
+                ice_servers: crate::whep::stun_ice_servers(config.stun_server.as_deref()),
+                ..Default::default()
+            },
             Some(state_tx),
             Some(video_mime_tx),
         )

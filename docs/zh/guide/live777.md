@@ -92,6 +92,34 @@ live777 Cascade 有两种模式：
 
 ![live777-cascade](/live777-cascade.excalidraw.svg)
 
+### 静态 cascade-pull（WHEP 源）
+
+`cascade-pull` 除了调用 API，也可以声明为静态流的输入。构建时启用
+`source-whep` feature，然后在预注册流上添加 `whep://` 源即可；它与其他
+配置源一样参与完整的生命周期（`on_demand` 启停、断线重连、RTCP 关键帧
+反馈）：
+
+```toml
+[[stream.cam1.sources]]
+url = "whep://edge-0:7777/whep/cam1"
+# 需要 Bearer 鉴权时：
+# url = "whep://token@edge-0:7777/whep/cam1"
+```
+
+当这个源配合 `on_demand = true` 使用时，即使 `on_demand_start_timeout_ms`
+更低，live777 也会至少等待 `35000ms` 让上游 WHEP 源就绪。这样冷启动的
+上游 WHEP/on-demand 源可以完成 HTTP setup 超时预算并送出第一包媒体。
+
+外出的 WHEP peer 使用服务器自己的 `[[ice_servers]]` 配置收集 ICE
+候选，并使用 `[webrtc] ice_udp_addrs` 绑定的 UDP 端口（不再有硬编码的
+STUN 服务器）。
+
+链式 on-demand 拉流默认支持一跳：该源的 WHEP HTTP 请求最长等待
+`40000ms` 应答，可以覆盖自身最多挂起 `35000ms` 的上游（on-demand WHEP
+源）。更深的链路需要按部署对齐各级预算。停止该源（例如 `on_demand`
+流的最后一个订阅者离开）可能需要等待一个在途的 WHEP HTTP 请求结束，
+上限同为 `40000ms`。
+
 ## DataChannel 转发
 
 > NOTE: 关于 `createDataChannel()`

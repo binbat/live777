@@ -13,18 +13,42 @@ use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
 use tracing::{debug, info, trace, warn};
 
-#[cfg(feature = "source")]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "rtsp",
+    feature = "native-source"
+))]
 use base64::Engine;
-#[cfg(feature = "source")]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "rtsp",
+    feature = "native-source"
+))]
 use livetwo::payload::{Forward, RePayload, RePayloadCodec};
-#[cfg(feature = "source")]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "rtsp",
+    feature = "native-source"
+))]
 use rtc::peer_connection::configuration::media_engine::{
     MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP8, MIME_TYPE_VP9,
 };
 #[cfg(feature = "source")]
 use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
-#[cfg(feature = "source")]
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-sdp",
+    feature = "source-whep",
+    feature = "rtsp",
+    feature = "native-source"
+))]
 use tracing::error;
 use webrtc::media_stream::track_remote::TrackRemote;
 
@@ -591,7 +615,13 @@ impl PublishTrackRemote {
         }
     }
 
-    #[cfg(feature = "source")]
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
+        feature = "rtsp",
+        feature = "native-source"
+    ))]
     pub(crate) fn inject_rtp(&self, packet: Arc<Packet>) -> Result<(), String> {
         match self {
             Self::Virtual(v) => v.inject_rtp(packet),
@@ -624,11 +654,25 @@ pub struct VirtualPublishTrack {
     pub kind: RtpCodecKind,
     pub codec_params: RTCRtpCodecParameters,
     pub rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
+        feature = "rtsp",
+        feature = "native-source"
+    ))]
     stream_id: String,
     actual_ssrc: Arc<AtomicU32>,
     packets_sent: Arc<AtomicU64>,
     bytes_sent: Arc<AtomicU64>,
     last_ntp_time_ms: Arc<AtomicU64>,
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
+        feature = "rtsp",
+        feature = "native-source"
+    ))]
     sequence_number: Arc<AtomicU32>,
     clock_rate: u32,
     start_time: SystemTime,
@@ -638,7 +682,13 @@ pub struct VirtualPublishTrack {
     /// whipinto applies (RePayloadCodec would misparse audio payloads).
     /// The lock is held only briefly — never across `.await` points — so
     /// `std::sync::Mutex` is safe here.
-    #[cfg(feature = "source")]
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
+        feature = "rtsp",
+        feature = "native-source"
+    ))]
     repayloader: std::sync::Mutex<Option<Box<dyn RePayload + Send>>>,
 }
 
@@ -659,15 +709,35 @@ impl VirtualPublishTrack {
             kind,
             codec_params: codec_params.clone(),
             rtp_broadcast: Arc::new(rtp_sender),
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep",
+                feature = "rtsp",
+                feature = "native-source"
+            ))]
             stream_id,
             actual_ssrc: Arc::new(AtomicU32::new(0)),
             packets_sent: Arc::new(AtomicU64::new(0)),
             bytes_sent: Arc::new(AtomicU64::new(0)),
             last_ntp_time_ms: Arc::new(AtomicU64::new(0)),
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep",
+                feature = "rtsp",
+                feature = "native-source"
+            ))]
             sequence_number: Arc::new(AtomicU32::new(rand::random::<u16>() as u32)),
             clock_rate: codec_params.rtp_codec.clock_rate,
             start_time: SystemTime::now(),
-            #[cfg(feature = "source")]
+            #[cfg(any(
+                feature = "source-rtsp",
+                feature = "source-sdp",
+                feature = "source-whep",
+                feature = "rtsp",
+                feature = "native-source"
+            ))]
             repayloader: std::sync::Mutex::new(None),
         }
     }
@@ -697,6 +767,13 @@ impl VirtualPublishTrack {
         }
     }
 
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
+        feature = "rtsp",
+        feature = "native-source"
+    ))]
     pub fn inject_rtp(&self, packet: Arc<Packet>) -> Result<(), String> {
         if self.actual_ssrc.load(Ordering::Relaxed) == 0 {
             self.actual_ssrc
@@ -715,7 +792,6 @@ impl VirtualPublishTrack {
         // and repacketises into clean single-NAL packets.
         // Only video goes through RePayloadCodec; audio and unknown codecs
         // use Forward passthrough (whipinto's rule).
-        #[cfg(feature = "source")]
         let outgoing: Vec<Packet> = {
             let mut guard = self.repayloader.lock().unwrap();
             let rp = guard.get_or_insert_with(|| {
@@ -763,8 +839,6 @@ impl VirtualPublishTrack {
             });
             rp.payload(&packet_mut)
         };
-        #[cfg(not(feature = "source"))]
-        let outgoing: Vec<Packet> = vec![packet_mut];
 
         for packet_mut in outgoing {
             let seq = self.sequence_number.fetch_add(1, Ordering::Relaxed) as u16;

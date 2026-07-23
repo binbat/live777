@@ -96,6 +96,10 @@ url = "rtsp://192.168.1.100:554/stream"
 `PublishStarted` / `PublishStopped` 事件，同时驱动录制
 （`recorder.auto_streams`）和 `on_publish_started` / `on_publish_stopped` 钩子。
 
+WHEP URL 源的有效源就绪等待时间至少为 `35000ms`，即使
+`on_demand_start_timeout_ms` 配得更低也是如此。这样冷启动的上游
+WHEP/on-demand 源可以完成 HTTP setup 超时预算并送出第一包媒体。
+
 on-demand 流在空闲时 Dashboard 显示 `standby` 徽标，源运行时显示
 `on-demand`；其他预注册流显示 `config` 徽标。
 

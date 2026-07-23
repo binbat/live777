@@ -593,8 +593,8 @@ fn default_on_demand_start_timeout_ms() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
-    /// URL source for RTSP / SDP inputs. Mutually exclusive with structured native fields.
-    /// Supported: rtsp://, rtsps://, file://, .sdp
+    /// URL source for RTSP / WHEP / SDP inputs. Mutually exclusive with structured native fields.
+    /// Supported: rtsp://, rtsps://, whep://, wheps://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
 
@@ -653,12 +653,16 @@ impl SourceConfig {
         let url_lower = url.to_lowercase();
         if !url_lower.starts_with("rtsp://")
             && !url_lower.starts_with("rtsps://")
+            && !url_lower.starts_with("whep://")
+            && !url_lower.starts_with("wheps://")
             && !url_lower.starts_with("file://")
             && !url_lower.ends_with(".sdp")
         {
+            // Scheme-only message: echoing the full URL could leak embedded
+            // credentials (e.g. whep://token@…) into startup error logs.
+            let scheme = url.split_once("://").map(|(s, _)| s).unwrap_or("<none>");
             anyhow::bail!(
-                "Unsupported URL: {}. Valid: rtsp://, rtsps://, file://, .sdp",
-                url
+                "Unsupported source URL scheme '{scheme}'. Valid: rtsp://, rtsps://, whep://, wheps://, file://, .sdp"
             );
         }
         Ok(())

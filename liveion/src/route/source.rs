@@ -59,7 +59,11 @@ async fn create_source(
     Path(stream): Path<String>,
     Json(req): Json<CreateSourceRequest>,
 ) -> Result<Json<SourceResponse>> {
-    info!("Creating source for stream: {} from {}", stream, req.url);
+    info!(
+        "Creating source for stream: {} from {}",
+        stream,
+        redact_url(&req.url)
+    );
 
     let config = crate::config::SourceConfig {
         url: Some(req.url.clone()),
@@ -71,13 +75,26 @@ async fn create_source(
         output: Default::default(),
     };
 
-    let source = create_source_from_url(&stream, &req.url, &config).await?;
+    let source = create_source_from_url(
+        &stream,
+        &req.url,
+        &config,
+        crate::stream::source::SourceNetConfig {
+            ice_servers: state
+                .config
+                .ice_servers
+                .clone()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            ice_udp_addrs: api::webrtc::resolve_webrtc_ice_udp_addrs(Some(
+                state.config.webrtc.ice_udp_addrs.clone(),
+            )),
+        },
+    )
+    .await?;
 
-    let source_type = if req.url.starts_with("rtsp://") {
-        "rtsp"
-    } else {
-        "sdp"
-    };
+    let source_type = url_source_kind(&req.url);
 
     let source_manager = &state.stream_manager.source_manager;
     let id = source_manager.add_source(source).await?;
@@ -96,6 +113,16 @@ async fn create_source(
         .await
     {
         error!("Failed to create bridge: {}", e);
+        if let Err(cleanup_err) = state
+            .stream_manager
+            .stop_stream_source(&stream, crate::event::SessionStopReason::PeerClosed)
+            .await
+        {
+            error!(
+                "Failed to clean up source {} after bridge creation failure: {:?}",
+                stream, cleanup_err
+            );
+        }
         return Err(e.into());
     }
     state.stream_manager.emit_source_publish_started(&stream);

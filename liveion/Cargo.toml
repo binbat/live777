@@ -61,6 +61,7 @@ scuffle-h265 = { version = "0.2.2", optional = true }
 
 glob = "0.3"
 url = { workspace = true, optional = true }
+percent-encoding = { version = "2.3", optional = true }
 fs2 = "0.4"
 
 [features]
@@ -78,10 +79,11 @@ recorder = [
 ]
 
 rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
-source = ["dep:rtsp", "dep:url"]
+source = ["dep:rtsp", "dep:url", "dep:livetwo"]
 source-sdp = ["source"]
 source-rtsp = ["source", "rtsp/client"]
-source-all = ["source-sdp", "source-rtsp"]
+source-whep = ["source", "dep:libwish", "dep:percent-encoding"]
+source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
 native-source = ["source", "dep:livehal"]
 

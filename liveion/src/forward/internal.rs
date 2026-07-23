@@ -6,6 +6,8 @@ use chrono::Utc;
 #[cfg(feature = "cascade")]
 use libwish::Client;
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
+#[cfg(feature = "cascade")]
+use tracing::error;
 use tracing::trace;
 use tracing::{debug, info, warn};
 
@@ -1498,22 +1500,6 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    #[cfg(feature = "recorder")]
-    pub(crate) async fn first_publish_video_codec(&self) -> Option<String> {
-        let publish_tracks = self.publish_tracks.read().await;
-        for t in publish_tracks.iter() {
-            if t.kind() == RtpCodecKind::Video {
-                let c = t.codec();
-                return Some(format!(
-                    "{}/{}",
-                    c.kind.to_lowercase(),
-                    c.codec.to_lowercase()
-                ));
-            }
-        }
-        None
-    }
-
     #[cfg(any(feature = "recorder", feature = "rtsp"))]
     pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.publish_tracks_change.subscribe()
@@ -1908,15 +1894,22 @@ impl PeerForwardInternal {
         if let Some(cascade) = subscribe.cascade.clone() {
             metrics::REFORWARD.dec();
 
-            let client = Client::build(
-                cascade.target_url.clone().unwrap(),
-                cascade.session_url.clone(),
-                Client::get_authorization_header_map(cascade.token.clone()),
-            );
+            match Client::get_authorization_header_map(cascade.token.clone()) {
+                Ok(auth) => {
+                    let client = Client::build(
+                        cascade.target_url.clone().unwrap(),
+                        cascade.session_url.clone(),
+                        auth,
+                    );
 
-            tokio::spawn(async move {
-                let _ = client.remove_resource().await;
-            });
+                    tokio::spawn(async move {
+                        let _ = client.remove_resource().await;
+                    });
+                }
+                Err(e) => {
+                    error!("Invalid cascade token, skipping session cleanup: {}", e);
+                }
+            }
         }
 
         let mut session_info = subscribe.info().await;

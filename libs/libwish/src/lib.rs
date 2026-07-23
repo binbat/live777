@@ -4,36 +4,63 @@ use reqwest::{
     header::{self, HeaderMap, HeaderValue},
 };
 use std::str::FromStr;
+use std::time::Duration;
 use url::Url;
 use webrtc::peer_connection::{RTCIceServer, RTCSessionDescription};
+
+/// Default overall per-request timeout. Bounded so a peer that accepts the
+/// connection but never answers cannot wedge callers (e.g. a WHEP source's
+/// reconnect loop or `stop()`). The budget stays above liveion's default
+/// on-demand source start wait (`on_demand_start_timeout_ms`, default 10
+/// s): a WHIP/WHEP subscribe against a cold on-demand stream is
+/// legitimately held that long before the answer arrives, so a tighter
+/// timeout would fail healthy pulls. Callers talking to a potentially
+/// colder upstream (e.g. chained on-demand WHEP pulls) raise this via
+/// [`Client::with_timeout`].
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct Client {
     pub url: String,
     pub session_url: Option<String>,
     pub default_headers: HeaderMap,
+    /// Overall per-request timeout; see [`DEFAULT_REQUEST_TIMEOUT`].
+    pub timeout: Duration,
 }
 
 impl Client {
-    pub fn get_auth_header_map(token: Option<String>) -> Option<HeaderMap> {
+    /// Build the `Authorization: Bearer <token>` header map for a token.
+    ///
+    /// Returns an error instead of panicking when the token contains
+    /// characters that are invalid in a header value (e.g. control
+    /// characters) — a malformed token is a configuration error, and a
+    /// panic here would kill the caller's task silently.
+    pub fn get_auth_header_map(token: Option<String>) -> Result<Option<HeaderMap>> {
         let mut header_map = HeaderMap::new();
         if let Some(auth_token) = token {
             header_map.insert(
                 header::AUTHORIZATION,
-                format!("Bearer {auth_token}").parse().unwrap(),
+                format!("Bearer {auth_token}").parse()?,
             );
-            Some(header_map)
+            Ok(Some(header_map))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    pub fn get_authorization_header_map(authorization: Option<String>) -> Option<HeaderMap> {
-        authorization.map(|authorization| {
-            let mut header_map = HeaderMap::new();
-            header_map.insert(header::AUTHORIZATION, authorization.parse().unwrap());
-            header_map
-        })
+    /// Build an `Authorization` header map from a verbatim header value.
+    /// Same error contract as [`Self::get_auth_header_map`].
+    pub fn get_authorization_header_map(
+        authorization: Option<String>,
+    ) -> Result<Option<HeaderMap>> {
+        let Some(authorization) = authorization else {
+            return Ok(None);
+        };
+        let mut header_map = HeaderMap::new();
+        header_map.insert(header::AUTHORIZATION, authorization.parse()?);
+        Ok(Some(header_map))
     }
 
     pub fn new(url: String, defulat_headers: Option<HeaderMap>) -> Self {
@@ -41,6 +68,7 @@ impl Client {
             url,
             session_url: None,
             default_headers: defulat_headers.unwrap_or_default(),
+            timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 
@@ -53,7 +81,15 @@ impl Client {
             url,
             session_url,
             default_headers: defulat_headers.unwrap_or_default(),
+            timeout: DEFAULT_REQUEST_TIMEOUT,
         }
+    }
+
+    /// Override the overall per-request timeout (see
+    /// [`DEFAULT_REQUEST_TIMEOUT`] for why the default is 30 s).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     pub async fn wish(
@@ -65,7 +101,7 @@ impl Client {
             header::CONTENT_TYPE,
             HeaderValue::from_str("application/sdp")?,
         );
-        let response = request(self.url.clone(), "POST", header_map, sdp).await?;
+        let response = request(self.url.clone(), "POST", header_map, sdp, self.timeout).await?;
         if response.status() != StatusCode::CREATED {
             return Err(anyhow::anyhow!(get_response_error(response).await));
         }
@@ -119,7 +155,7 @@ impl Client {
             .clone()
             .ok_or(anyhow::anyhow!("there is no resource url"))?;
         let header_map = self.default_headers.clone();
-        let response = request(session_url, "DELETE", header_map, "").await?;
+        let response = request(session_url, "DELETE", header_map, "", self.timeout).await?;
         if response.status() != StatusCode::NO_CONTENT {
             Err(anyhow::anyhow!(get_response_error(response).await))
         } else {
@@ -141,8 +177,12 @@ async fn request<T: Into<Body>>(
     method: &str,
     headers: HeaderMap,
     body: T,
+    timeout: Duration,
 ) -> Result<Response> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(timeout)
+        .build()?;
     client
         .request(Method::from_str(method)?, url)
         .headers(headers)
