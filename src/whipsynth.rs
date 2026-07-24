@@ -60,11 +60,8 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     timeout: u64,
 
-    /// ICE server used for offer gathering, repeatable; format
-    /// `<url>[,<username>[,<credential>]]`. Pass an empty string to use host
-    /// candidates only.
-    #[arg(long = "ice-server", value_name = "SPEC", default_value = iceserver::DEFAULT_ICE_SERVER_URL)]
-    ice_servers: Vec<iceserver::IceServer>,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[tokio::main]
@@ -117,7 +114,7 @@ async fn run() -> Result<()> {
         height: args.height,
         fps: args.fps,
         duration: args.duration.map(Duration::from_secs),
-        ice_servers: iceserver::to_rtc_ice_servers(args.ice_servers),
+        ice_servers: args.ice.to_rtc_ice_servers(),
     };
 
     info!(

@@ -149,7 +149,7 @@ liveman = { path = "liveman" }
 livetwo = { path = "livetwo" }
 net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
-iceserver = { path = "libs/iceserver" }
+iceserver = { path = "libs/iceserver", features = ["clap"] }
 
 storage = { path = "libs/storage" }
 api = { path = "libs/api" }

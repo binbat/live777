@@ -51,11 +51,8 @@ struct Args {
     #[arg(short, long)]
     token: Option<String>,
 
-    /// ICE server used for offer gathering, repeatable; format
-    /// `<url>[,<username>[,<credential>]]`. Pass an empty string to use host
-    /// candidates only.
-    #[arg(long = "ice-server", value_name = "SPEC", default_value = iceserver::DEFAULT_ICE_SERVER_URL)]
-    ice_servers: Vec<iceserver::IceServer>,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[tokio::main]
@@ -138,7 +135,7 @@ fn build_config(args: &Args) -> Result<ProbeConfig> {
         video_codec: codec,
         sprop_params: args.sprop_params.clone(),
         token: args.token.clone(),
-        ice_servers: iceserver::to_rtc_ice_servers(args.ice_servers.clone()),
+        ice_servers: args.ice.to_rtc_ice_servers(),
     })
 }
 

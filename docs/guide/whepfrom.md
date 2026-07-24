@@ -6,6 +6,19 @@ This tool has two working mode:
 - `rtp`
 - `rtsp as client`
 
+## Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-o`, `--output` | `sdp://0.0.0.0:8555` | Output target: `rtp://` / `rtsp://` / `sdp://` |
+| `-w`, `--whep` | required | WHEP endpoint URL |
+| `--sdp-file` | `output.sdp` | SDP filename to write (RTP mode) |
+| `-t`, `--token` | none | Bearer token for WHEP authentication |
+| `--command` | none | Run a command as child process |
+| `--channel` | none | DataChannel &lt;-&gt; UDP forwarding URL, e.g. `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `-v` | `warn` | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace) |
+
 ## RTP
 
 RTP mode need `target` and `sdp file`

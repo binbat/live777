@@ -86,11 +86,8 @@ struct WhipArgs {
     #[arg(long, default_value_t = 30)]
     fps: u32,
 
-    /// ICE server used for offer gathering, repeatable; format
-    /// `<url>[,<username>[,<credential>]]`. Pass an empty string to use host
-    /// candidates only.
-    #[arg(long = "ice-server", value_name = "SPEC", default_value = iceserver::DEFAULT_ICE_SERVER_URL)]
-    ice_servers: Vec<iceserver::IceServer>,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[derive(clap::Args)]
@@ -130,11 +127,8 @@ struct WhepArgs {
     #[arg(long)]
     verify_tolerant: bool,
 
-    /// ICE server used for offer gathering, repeatable; format
-    /// `<url>[,<username>[,<credential>]]`. Pass an empty string to use host
-    /// candidates only.
-    #[arg(long = "ice-server", value_name = "SPEC", default_value = iceserver::DEFAULT_ICE_SERVER_URL)]
-    ice_servers: Vec<iceserver::IceServer>,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[tokio::main]
@@ -259,7 +253,7 @@ async fn run_whip(args: WhipArgs) -> Result<()> {
         height: args.height,
         fps: args.fps,
         duration: None,
-        ice_servers: iceserver::to_rtc_ice_servers(args.ice_servers),
+        ice_servers: args.ice.to_rtc_ice_servers(),
     };
 
     let config = livetwo::loadtest::LoadtestConfig {
@@ -287,7 +281,7 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     let params = livetwo::loadtest::whep::WhepLoadParams {
         whep_url: args.whep,
         token: args.token,
-        ice_servers: iceserver::to_rtc_ice_servers(args.ice_servers),
+        ice_servers: args.ice.to_rtc_ice_servers(),
         verify_window: args.verify_window.map(Duration::from_secs),
     };
 

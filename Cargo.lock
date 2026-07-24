@@ -2129,6 +2129,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "clap",
  "hmac",
  "http 1.4.2",
  "reqwest",

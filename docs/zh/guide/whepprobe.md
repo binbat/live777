@@ -43,6 +43,7 @@ whepprobe -w http://localhost:7777/whep/live --output json
 | `--decode-duration` | `5` | WHEP 连接成功后持续解码的秒数。超过 `10` 的值会被静默截断。 |
 | `--output` | `human` | 输出格式：`human`、`json` |
 | `--timeout` | `30` | 整体超时时间（秒） |
+| `--ice-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`（空字符串表示禁用 ICE 服务器） |
 
 ## 退出码
 
@@ -57,7 +58,6 @@ whepprobe -w http://localhost:7777/whep/live --output json
 use cli::Codec;
 use livetwo::probe::{ProbeBackend, ProbeConfig};
 use livetwo::probe::rsmpeg::RsmpegProbe;
-use std::time::Duration;
 
 // RsmpegProbe 需要 `livetwo` 启用 `rsmpeg` feature 才能使用。
 let config = ProbeConfig {

@@ -45,7 +45,7 @@ libs/api             # shared REST/WebRTC request/response types
 libs/auth            # JWT + static-token auth middleware
 libs/cli             # shared CLI helpers (SDP parsing, shellwords)
 libs/http-log        # Axum request/response logging middleware
-libs/iceserver       # STUN/TURN/Cloudflare/Coturn ICE helpers
+libs/iceserver       # STUN/TURN/Cloudflare/Coturn ICE helpers, shared `--ice-server` CLI args
 libs/libwish         # WHIP/WHEP client utilities
 libs/net4mqtt        # TCP/UDP-over-MQTT proxy / tunnel
 libs/playwright-whep # Rust-callable Playwright WHEP test harness

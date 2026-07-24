@@ -45,7 +45,7 @@ pub struct WhepPeerOptions {
 impl Default for WhepPeerOptions {
     fn default() -> Self {
         Self {
-            ice_servers: Vec::new(),
+            ice_servers: iceserver::default_rtc_ice_servers(),
             ice_udp_addrs: Vec::new(),
             control_channel: true,
         }

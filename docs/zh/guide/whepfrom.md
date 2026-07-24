@@ -6,6 +6,19 @@
 - `rtp`
 - `rtsp as client`
 
+## 选项
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `-o`, `--output` | `sdp://0.0.0.0:8555` | 输出目标：`rtp://` / `rtsp://` / `sdp://` |
+| `-w`, `--whep` | 必填 | WHEP 端点 URL |
+| `--sdp-file` | `output.sdp` | 写出的 SDP 文件名（RTP 模式） |
+| `-t`, `--token` | 无 | WHEP 认证使用的 Bearer token |
+| `--command` | 无 | 以子进程方式运行命令 |
+| `--channel` | 无 | DataChannel &lt;-&gt; UDP 转发 URL，例如 `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--ice-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`（空字符串表示禁用 ICE 服务器） |
+| `-v` | `warn` | 提高日志级别（`-v` info，`-vv` debug，`-vvv` trace） |
+
 ## RTP
 
 RTP 模式需要 `target` 和 `sdp file`
