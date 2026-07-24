@@ -128,6 +128,25 @@ impl MediaStats {
         self.bitrate_bps.store(bitrate, Ordering::Relaxed);
     }
 
+    /// Counter deltas the sampler has not seen yet: `(bytes, packets)`
+    /// accumulated since the previous [`MediaStats::sample`]. Only
+    /// meaningful on per-flow counters (publish tracks, subscribe
+    /// sessions) — stream/server totals are never sampled, so for them
+    /// this would return everything. A folded total plus the live flows'
+    /// `unsampled()` tails equals the sum of the flows' `snapshot()s`,
+    /// which keeps the stream-level API counters consistent with the
+    /// per-session ones between stats ticks.
+    pub(crate) fn unsampled(&self) -> (u64, u64) {
+        (
+            self.bytes
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.sampled_bytes.load(Ordering::Relaxed)),
+            self.packets
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.sampled_packets.load(Ordering::Relaxed)),
+        )
+    }
+
     pub(crate) fn snapshot(&self) -> api::response::Stats {
         api::response::Stats {
             bytes: self.bytes.load(Ordering::Relaxed),
@@ -192,5 +211,32 @@ mod tests {
         assert_eq!(snap.bytes, 150);
         assert_eq!(snap.packets, 3);
         assert_eq!(snap.bitrate, 1200);
+    }
+
+    #[test]
+    fn unsampled_bridges_total_and_live_counters() {
+        // Simulates the stream-total + live-flow accounting: a folded
+        // total plus each flow's unsampled tail must equal the sum of the
+        // flows' cumulative counters at any point in time.
+        let flow = MediaStats::new_at(1000);
+        let total = MediaStats::new();
+
+        flow.inc(1000);
+        assert_eq!(flow.unsampled(), (1000, 1));
+
+        let sample = flow.sample_at(2000);
+        total.add_delta(sample.bytes, sample.packets);
+        assert_eq!(flow.unsampled(), (0, 0));
+        assert_eq!(
+            total.snapshot().bytes + flow.unsampled().0,
+            flow.snapshot().bytes
+        );
+
+        flow.inc(500);
+        assert_eq!(flow.unsampled(), (500, 1));
+        assert_eq!(
+            total.snapshot().bytes + flow.unsampled().0,
+            flow.snapshot().bytes
+        );
     }
 }

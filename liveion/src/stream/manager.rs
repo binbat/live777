@@ -958,11 +958,11 @@ impl Manager {
 
     /// Periodic media-statistics sampler: refreshes per-session bitrates,
     /// folds byte deltas into the stream and server totals, and bumps the
-    /// stats version so SSE stream subscribers refresh their snapshot on a
-    /// fixed cadence. The version bump is unconditional on purpose: snapshot
-    /// dedup ignores stats, and any trigger based on byte deltas cannot see
-    /// derived values change — most notably a silent stream's rate decaying
-    /// to zero — so stats freshness is driven by cadence, not detection.
+    /// stats version so SSE/net4mqtt stream subscribers refresh their
+    /// snapshot on a fixed cadence. The version bump is unconditional on
+    /// purpose: any trigger based on byte deltas cannot see derived values
+    /// change — most notably a silent stream's rate decaying to zero — so
+    /// stats freshness is driven by cadence, not detection.
     async fn stats_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
         stats_version: watch::Sender<u64>,
@@ -979,10 +979,14 @@ impl Manager {
             for forward in forwards {
                 let deltas = forward.sample_stats().await;
                 if deltas.inbound > 0 {
-                    metrics::BYTES_IN_TOTAL.inc_by(deltas.inbound);
+                    metrics::RTP_BYTES_TOTAL
+                        .with_label_values(&["in"])
+                        .inc_by(deltas.inbound);
                 }
                 if deltas.outbound > 0 {
-                    metrics::BYTES_OUT_TOTAL.inc_by(deltas.outbound);
+                    metrics::RTP_BYTES_TOTAL
+                        .with_label_values(&["out"])
+                        .inc_by(deltas.outbound);
                 }
             }
             stats_version.send_modify(|v| *v += 1);
@@ -1698,6 +1702,13 @@ impl Manager {
 
     pub fn subscribe_event(&self) -> broadcast::Receiver<Event> {
         self.event_sender.subscribe()
+    }
+
+    /// Subscribe to the stats-tick version stream: bumped on every
+    /// [`Manager::stats_tick`] sample, so snapshot consumers (SSE, net4mqtt)
+    /// refresh live counters on the sampling cadence.
+    pub(crate) fn subscribe_stats_version(&self) -> watch::Receiver<u64> {
+        self.stats_version.subscribe()
     }
 
     #[cfg(any(feature = "rtsp", feature = "recorder"))]

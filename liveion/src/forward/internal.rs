@@ -897,11 +897,31 @@ impl PeerForwardInternal {
             subscribe_session_infos,
             codecs: publish_tracks.iter().map(|track| track.codec()).collect(),
             has_virtual_publisher,
-            stats: api::response::StreamStats {
-                publish: self.stats_publish.snapshot(),
-                subscribe: self.stats_subscribe.snapshot(),
-            },
+            stats: self.stream_stats(&publish_tracks, &subscribe_group),
         }
+    }
+
+    /// Stream-level totals: the folded (monotonic) counters plus each live
+    /// flow's un-sampled tail, so they line up exactly with the per-session
+    /// counters between stats ticks. Bitrates stay as of the last sample.
+    fn stream_stats(
+        &self,
+        publish_tracks: &[PublishTrackRemote],
+        subscribe_group: &[SubscribeRTCPeerConnection],
+    ) -> api::response::StreamStats {
+        let mut publish = self.stats_publish.snapshot();
+        for track in publish_tracks.iter() {
+            let (bytes, packets) = track.stats().unsampled();
+            publish.bytes += bytes;
+            publish.packets += packets;
+        }
+        let mut subscribe = self.stats_subscribe.snapshot();
+        for session in subscribe_group.iter() {
+            let (bytes, packets) = session.stats.unsampled();
+            subscribe.bytes += bytes;
+            subscribe.packets += packets;
+        }
+        api::response::StreamStats { publish, subscribe }
     }
 
     /// Publish-session media counters are the sum of its tracks: a real
@@ -978,7 +998,9 @@ impl PeerForwardInternal {
         }
         self.stats_publish.add_delta(bytes, packets);
         if bytes > 0 {
-            metrics::BYTES_IN_TOTAL.inc_by(bytes);
+            metrics::RTP_BYTES_TOTAL
+                .with_label_values(&["in"])
+                .inc_by(bytes);
         }
     }
 
@@ -988,7 +1010,9 @@ impl PeerForwardInternal {
         let sample = subscribe.stats.sample();
         self.stats_subscribe.add_delta(sample.bytes, sample.packets);
         if sample.bytes > 0 {
-            metrics::BYTES_OUT_TOTAL.inc_by(sample.bytes);
+            metrics::RTP_BYTES_TOTAL
+                .with_label_values(&["out"])
+                .inc_by(sample.bytes);
         }
     }
 

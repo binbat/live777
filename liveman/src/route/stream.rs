@@ -104,10 +104,10 @@ pub async fn index(
                                 // Config flags: true if true on any node.
                                 provisioned: s.provisioned || v.provisioned,
                                 on_demand: s.on_demand || v.on_demand,
-                                stats: api::response::Live(api::response::StreamStats {
+                                stats: api::response::StreamStats {
                                     publish: merge_stats(&s.stats.publish, &v.stats.publish),
                                     subscribe: merge_stats(&s.stats.subscribe, &v.stats.subscribe),
-                                }),
+                                },
                             }
                         }
                         None => s.clone(),

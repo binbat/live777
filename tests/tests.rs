@@ -236,7 +236,9 @@ async fn test_livetwo_whipinto_synth_input() {
     assert!(result_whip.is_ok());
 }
 
-/// Parse one counter out of a Prometheus text exposition.
+/// Parse one counter out of a Prometheus text exposition. `name` is the
+/// full series key, including any label set (e.g.
+/// `live777_rtp_bytes_total{direction="in"}`).
 #[cfg(feature = "rsmpeg")]
 fn metric_value(body: &str, name: &str) -> Option<u64> {
     body.lines()
@@ -372,12 +374,14 @@ async fn test_liveion_stream_stats() {
         .await
         .unwrap();
     assert!(
-        metric_value(&metrics, "live777_bytes_in_total").unwrap_or(0) > 0,
-        "live777_bytes_in_total missing or zero in /metrics:\n{metrics}"
+        metric_value(&metrics, r#"live777_rtp_bytes_total{direction="in"}"#).unwrap_or(0) > 0,
+        r#"live777_rtp_bytes_total{{direction="in"}} missing or zero in /metrics:
+{metrics}"#
     );
     assert!(
-        metric_value(&metrics, "live777_bytes_out_total").unwrap_or(0) > 0,
-        "live777_bytes_out_total missing or zero in /metrics:\n{metrics}"
+        metric_value(&metrics, r#"live777_rtp_bytes_total{direction="out"}"#).unwrap_or(0) > 0,
+        r#"live777_rtp_bytes_total{{direction="out"}} missing or zero in /metrics:
+{metrics}"#
     );
 
     let result_whip = handle_whip.await.unwrap();

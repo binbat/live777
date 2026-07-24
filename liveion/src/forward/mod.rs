@@ -964,20 +964,20 @@ impl PeerForward {
     pub async fn remove_virtual_tracks(&self) {
         use crate::forward::track::PublishTrackRemote;
 
-        let removed = {
+        let removed_count = {
             let mut publish_tracks = self.internal.publish_tracks.write().await;
             let (virtual_tracks, real_tracks): (Vec<_>, Vec<_>) = publish_tracks
                 .drain(..)
                 .partition(|t| matches!(t, PublishTrackRemote::Virtual(_)));
+            // Fold the tail the stats tick has not seen yet into the
+            // stream/server totals, still under the write lock so `info()`
+            // never observes a gap between the tracks and their counters.
+            self.internal.fold_publish_tracks_final(&virtual_tracks);
             *publish_tracks = real_tracks;
-            virtual_tracks
+            virtual_tracks.len()
         };
-        let removed_count = removed.len();
 
         if removed_count > 0 {
-            // Fold the tail the stats tick has not seen yet into the
-            // stream/server totals before dropping the tracks.
-            self.internal.fold_publish_tracks_final(&removed);
             let _ = self.internal.publish_tracks_change.send(());
             debug!("[{}] Removed {} virtual tracks", self.stream, removed_count);
         }

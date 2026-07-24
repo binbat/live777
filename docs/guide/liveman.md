@@ -171,7 +171,7 @@ For every node configured under `[[nodes]]`, Liveman automatically opens an SSE 
 
 ### net4mqtt xdata (for net4mqtt-discovered nodes)
 
-When `net4mqtt` is enabled, each Liveion node periodically pushes a stream snapshot through `xdata` with key `streams`. Liveman decodes it and updates the corresponding node entry.
+When `net4mqtt` is enabled, each Liveion node pushes a stream snapshot through `xdata` with key `streams` whenever the stream state changes, and on the 2-second media-stats sampling tick when the reported counters change (payloads are deduplicated, so an idle node stays silent). Liveman decodes it and updates the corresponding node entry.
 
 ## Cluster {#cluster}
 

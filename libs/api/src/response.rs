@@ -15,38 +15,6 @@ pub struct Layer {
     pub encoding_id: String,
 }
 
-/// Wrapper for continuously-updating fields that must not participate in
-/// equality. Snapshot dedup (SSE `Manager::sse_handler`, the net4mqtt
-/// snapshot comparison) relies on `==` to suppress unchanged snapshots, and
-/// live counters would make every snapshot differ. `Live` compares always
-/// equal and serializes transparently, so the parent struct keeps a plain
-/// derived `PartialEq` and fields added later automatically participate in
-/// dedup — no hand-written field list to drift out of sync.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-#[serde(transparent)]
-pub struct Live<T>(pub T);
-
-impl<T> PartialEq for Live<T> {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-impl<T> Eq for Live<T> {}
-
-impl<T> std::ops::Deref for Live<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-impl<T> std::ops::DerefMut for Live<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.0
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Stream {
@@ -66,8 +34,11 @@ pub struct Stream {
     pub on_demand: bool,
     /// Stream-level media statistics: `publish` is the inbound (publisher)
     /// side, `subscribe` the sum of all outbound subscriber sessions.
+    /// Snapshot consumers that dedup on equality must be aware these
+    /// counters change continuously (both SSE and the net4mqtt xdata
+    /// channel dedup on the serialized payload instead of `PartialEq`).
     #[serde(default)]
-    pub stats: Live<StreamStats>,
+    pub stats: StreamStats,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -88,9 +59,10 @@ pub struct Session {
     pub cascade: Option<CascadeInfo>,
     pub has_data_channel: bool,
     /// Media statistics for this session: inbound for a publish session,
-    /// outbound for a subscribe session.
+    /// outbound for a subscribe session. Changes continuously; see the
+    /// equality note on [`Stream::stats`].
     #[serde(default)]
-    pub stats: Live<Stats>,
+    pub stats: Stats,
 }
 
 /// Media statistics counters. `bitrate` is the rate over the last sampling
@@ -183,7 +155,7 @@ mod tests {
             state: RTCPeerConnectionState::Connected,
             cascade: None,
             has_data_channel: false,
-            stats: Live(stats),
+            stats,
         }
     }
 
@@ -202,52 +174,39 @@ mod tests {
             codecs: vec![],
             provisioned: false,
             on_demand: false,
-            stats: Live(StreamStats::default()),
+            stats: StreamStats::default(),
         }
     }
 
     #[test]
-    fn session_eq_ignores_stats() {
+    fn eq_covers_all_fields_including_stats() {
+        // `PartialEq` is honest: every field participates, stats included.
+        // Snapshot dedup must therefore compare serialized payloads, never
+        // `==` — see the doc on `Stream::stats`.
+        let a = stream();
+        let mut b = a.clone();
+        b.stats.publish.bytes = 42;
+        assert_ne!(a, b);
+
         let a = session(Stats::default());
         let b = session(Stats {
             bytes: 100,
             packets: 1,
             bitrate: 800,
         });
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn stream_eq_ignores_stats() {
-        let mut a = stream();
-        let mut b = a.clone();
-        b.stats.publish.bytes = 42;
-        assert_eq!(a, b);
-        b.publish.sessions.push(session(Stats {
-            bytes: 7,
-            packets: 1,
-            bitrate: 56,
-        }));
-        a.publish.sessions.push(session(Stats::default()));
-        assert_eq!(a, b);
-        b.id = "other".to_string();
         assert_ne!(a, b);
-    }
 
-    #[test]
-    fn derived_eq_covers_non_stats_fields() {
-        // The whole point of `Live`: fields added to the structs compare
-        // via the derived `PartialEq` without touching a hand-written list.
         let a = stream();
         let mut b = a.clone();
         b.provisioned = true;
         assert_ne!(a, b);
+        b.provisioned = false;
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn live_serializes_transparently() {
+    fn stats_serialize_as_plain_objects() {
         let value = serde_json::to_value(stream()).unwrap();
-        // `stats` is the plain inner object on the wire, not a wrapper.
         assert_eq!(
             value["stats"],
             serde_json::json!({
