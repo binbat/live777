@@ -15,7 +15,39 @@ pub struct Layer {
     pub encoding_id: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+/// Wrapper for continuously-updating fields that must not participate in
+/// equality. Snapshot dedup (SSE `Manager::sse_handler`, the net4mqtt
+/// snapshot comparison) relies on `==` to suppress unchanged snapshots, and
+/// live counters would make every snapshot differ. `Live` compares always
+/// equal and serializes transparently, so the parent struct keeps a plain
+/// derived `PartialEq` and fields added later automatically participate in
+/// dedup — no hand-written field list to drift out of sync.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(transparent)]
+pub struct Live<T>(pub T);
+
+impl<T> PartialEq for Live<T> {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl<T> Eq for Live<T> {}
+
+impl<T> std::ops::Deref for Live<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Live<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Stream {
     pub id: String,
@@ -35,25 +67,8 @@ pub struct Stream {
     /// Stream-level media statistics: `publish` is the inbound (publisher)
     /// side, `subscribe` the sum of all outbound subscriber sessions.
     #[serde(default)]
-    pub stats: StreamStats,
+    pub stats: Live<StreamStats>,
 }
-
-// Stats change continuously while media flows and must not participate in
-// equality: SSE snapshot dedup (`Manager::sse_handler`) and the net4mqtt
-// snapshot comparison rely on `==` to suppress unchanged snapshots, and live
-// counters would make every snapshot differ.
-impl PartialEq for Stream {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.created_at == other.created_at
-            && self.publish == other.publish
-            && self.subscribe == other.subscribe
-            && self.codecs == other.codecs
-            && self.provisioned == other.provisioned
-            && self.on_demand == other.on_demand
-    }
-}
-impl Eq for Stream {}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -62,7 +77,7 @@ pub struct PubSub {
     pub sessions: Vec<Session>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
@@ -75,21 +90,8 @@ pub struct Session {
     /// Media statistics for this session: inbound for a publish session,
     /// outbound for a subscribe session.
     #[serde(default)]
-    pub stats: Stats,
+    pub stats: Live<Stats>,
 }
-
-// See `Stream`'s `PartialEq` for why stats are excluded from equality.
-impl PartialEq for Session {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.created_at == other.created_at
-            && self.leave_at == other.leave_at
-            && self.state == other.state
-            && self.cascade == other.cascade
-            && self.has_data_channel == other.has_data_channel
-    }
-}
-impl Eq for Session {}
 
 /// Media statistics counters. `bitrate` is the rate over the last sampling
 /// interval, in bits per second; `bytes`/`packets` are cumulative.
@@ -181,7 +183,26 @@ mod tests {
             state: RTCPeerConnectionState::Connected,
             cascade: None,
             has_data_channel: false,
-            stats,
+            stats: Live(stats),
+        }
+    }
+
+    fn stream() -> Stream {
+        Stream {
+            id: "live".to_string(),
+            created_at: 1,
+            publish: PubSub {
+                leave_at: 0,
+                sessions: vec![],
+            },
+            subscribe: PubSub {
+                leave_at: 0,
+                sessions: vec![],
+            },
+            codecs: vec![],
+            provisioned: false,
+            on_demand: false,
+            stats: Live(StreamStats::default()),
         }
     }
 
@@ -198,22 +219,7 @@ mod tests {
 
     #[test]
     fn stream_eq_ignores_stats() {
-        let mut a = Stream {
-            id: "live".to_string(),
-            created_at: 1,
-            publish: PubSub {
-                leave_at: 0,
-                sessions: vec![],
-            },
-            subscribe: PubSub {
-                leave_at: 0,
-                sessions: vec![],
-            },
-            codecs: vec![],
-            provisioned: false,
-            on_demand: false,
-            stats: StreamStats::default(),
-        };
+        let mut a = stream();
         let mut b = a.clone();
         b.stats.publish.bytes = 42;
         assert_eq!(a, b);
@@ -226,5 +232,38 @@ mod tests {
         assert_eq!(a, b);
         b.id = "other".to_string();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derived_eq_covers_non_stats_fields() {
+        // The whole point of `Live`: fields added to the structs compare
+        // via the derived `PartialEq` without touching a hand-written list.
+        let a = stream();
+        let mut b = a.clone();
+        b.provisioned = true;
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn live_serializes_transparently() {
+        let value = serde_json::to_value(stream()).unwrap();
+        // `stats` is the plain inner object on the wire, not a wrapper.
+        assert_eq!(
+            value["stats"],
+            serde_json::json!({
+                "publish": { "bytes": 0, "packets": 0, "bitrate": 0 },
+                "subscribe": { "bytes": 0, "packets": 0, "bitrate": 0 },
+            })
+        );
+        let session_value = serde_json::to_value(session(Stats {
+            bytes: 1,
+            packets: 2,
+            bitrate: 3,
+        }))
+        .unwrap();
+        assert_eq!(
+            session_value["stats"],
+            serde_json::json!({ "bytes": 1, "packets": 2, "bitrate": 3 })
+        );
     }
 }

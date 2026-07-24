@@ -36,6 +36,12 @@ export interface Stats {
     bitrate: number;
 }
 
+/** Per-stream statistics: inbound publisher / aggregate outbound subscribers. */
+export interface StreamStats {
+    publish: Stats;
+    subscribe: Stats;
+}
+
 export interface Stream {
     id: string;
     createdAt: number;
@@ -52,10 +58,7 @@ export interface Stream {
     /** Sources start on the first subscriber and stop after the last leaves. */
     onDemand?: boolean;
     /** Stream-level media statistics: inbound publisher / outbound subscribers. */
-    stats?: {
-        publish: Stats;
-        subscribe: Stats;
-    };
+    stats?: StreamStats;
 }
 
 export interface Session {

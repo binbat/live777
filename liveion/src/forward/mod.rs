@@ -250,9 +250,9 @@ impl PeerForward {
     }
 
     /// Sample this stream's media counters; see
-    /// [`PeerForwardInternal::sample_stats`]. Returns the `(inbound,
-    /// outbound)` byte deltas since the previous sample.
-    pub(crate) async fn sample_stats(&self) -> (u64, u64) {
+    /// [`PeerForwardInternal::sample_stats`]. Returns the byte deltas since
+    /// the previous sample.
+    pub(crate) async fn sample_stats(&self) -> stats::ByteDeltas {
         self.internal.sample_stats().await
     }
 
@@ -964,15 +964,22 @@ impl PeerForward {
     pub async fn remove_virtual_tracks(&self) {
         use crate::forward::track::PublishTrackRemote;
 
-        let mut publish_tracks = self.internal.publish_tracks.write().await;
-        let before = publish_tracks.len();
-        publish_tracks.retain(|t| !matches!(t, PublishTrackRemote::Virtual(_)));
-        let removed = before - publish_tracks.len();
-        drop(publish_tracks);
+        let removed = {
+            let mut publish_tracks = self.internal.publish_tracks.write().await;
+            let (virtual_tracks, real_tracks): (Vec<_>, Vec<_>) = publish_tracks
+                .drain(..)
+                .partition(|t| matches!(t, PublishTrackRemote::Virtual(_)));
+            *publish_tracks = real_tracks;
+            virtual_tracks
+        };
+        let removed_count = removed.len();
 
-        if removed > 0 {
+        if removed_count > 0 {
+            // Fold the tail the stats tick has not seen yet into the
+            // stream/server totals before dropping the tracks.
+            self.internal.fold_publish_tracks_final(&removed);
             let _ = self.internal.publish_tracks_change.send(());
-            debug!("[{}] Removed {} virtual tracks", self.stream, removed);
+            debug!("[{}] Removed {} virtual tracks", self.stream, removed_count);
         }
     }
     #[cfg(any(

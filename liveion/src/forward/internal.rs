@@ -42,7 +42,7 @@ use super::RemovePeerOutcome;
 use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
 use super::message::CascadeInfo;
 use super::publish::PublishRTCPeerConnection;
-use super::stats::MediaStats;
+use super::stats::{ByteDeltas, MediaStats};
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
@@ -836,27 +836,12 @@ impl PeerForwardInternal {
         #[cfg(not(feature = "source"))]
         let has_virtual_publisher = false;
 
-        // Publish-session media counters are the sum of its tracks: a real
-        // WHIP publisher owns all `Real` tracks, a configured source owns all
-        // `Virtual` ones, and the two never mix.
-        let publish_track_stats = {
-            let mut acc = api::response::Stats::default();
-            for track in publish_tracks.iter() {
-                let snap = track.stats().snapshot();
-                acc.bytes += snap.bytes;
-                acc.packets += snap.packets;
-                acc.bitrate += snap.bitrate;
-            }
-            acc
-        };
+        let publish_track_stats = Self::aggregate_publish_stats(&publish_tracks);
 
-        let mut publish_session_info = match self.publish.read().await.as_ref() {
-            Some(publish) => Some(publish.info().await),
+        let publish_session_info = match self.publish.read().await.as_ref() {
+            Some(publish) => Some(publish.info(publish_track_stats.clone()).await),
             None => None,
         };
-        if let Some(info) = publish_session_info.as_mut() {
-            info.stats = publish_track_stats.clone();
-        }
 
         let effective_publish_session_info =
             if publish_session_info.is_none() && has_virtual_publisher {
@@ -919,40 +904,92 @@ impl PeerForwardInternal {
         }
     }
 
+    /// Publish-session media counters are the sum of its tracks: a real
+    /// WHIP publisher owns all `Real` tracks, a configured source owns all
+    /// `Virtual` ones, and the two never mix.
+    fn aggregate_publish_stats(publish_tracks: &[PublishTrackRemote]) -> api::response::Stats {
+        let mut acc = api::response::Stats::default();
+        for track in publish_tracks.iter() {
+            let snap = track.stats().snapshot();
+            acc.bytes += snap.bytes;
+            acc.packets += snap.packets;
+            acc.bitrate += snap.bitrate;
+        }
+        acc
+    }
+
+    /// Aggregate the current publish-track counters under a fresh read
+    /// lock. Lock order note: this acquires `publish_tracks` on its own and
+    /// must never be called while holding the `publish` lock (the
+    /// established order is `publish_tracks` before `publish`, see
+    /// [`PeerForwardInternal::info`]).
+    async fn current_publish_stats(&self) -> api::response::Stats {
+        let publish_tracks = self.publish_tracks.read().await;
+        Self::aggregate_publish_stats(&publish_tracks)
+    }
+
     /// Sample all per-track/per-session counters: refresh their bitrates and
     /// fold the byte/packet deltas into the stream-level totals, which stay
-    /// monotonic across republishes and subscriber churn. Returns the
-    /// `(inbound, outbound)` byte deltas for server-wide metrics.
-    pub(crate) async fn sample_stats(&self) -> (u64, u64) {
-        let mut in_delta = (0u64, 0u64);
+    /// monotonic across republishes and subscriber churn. Returns the byte
+    /// deltas for server-wide metrics.
+    pub(crate) async fn sample_stats(&self) -> ByteDeltas {
+        let mut deltas = ByteDeltas::default();
+        let mut in_packets = 0u64;
         let mut in_bitrate = 0u64;
         {
             let publish_tracks = self.publish_tracks.read().await;
             for track in publish_tracks.iter() {
-                let (bytes, packets) = track.stats().sample();
-                in_delta.0 += bytes;
-                in_delta.1 += packets;
-                in_bitrate += track.stats().bitrate();
+                let sample = track.stats().sample();
+                deltas.inbound += sample.bytes;
+                in_packets += sample.packets;
+                in_bitrate += sample.bitrate;
             }
         }
-        self.stats_publish.add_delta(in_delta.0, in_delta.1);
+        self.stats_publish.add_delta(deltas.inbound, in_packets);
         self.stats_publish.set_bitrate(in_bitrate);
 
-        let mut out_delta = (0u64, 0u64);
+        let mut out_packets = 0u64;
         let mut out_bitrate = 0u64;
         {
             let subscribe_group = self.subscribe_group.read().await;
             for subscribe in subscribe_group.iter() {
-                let (bytes, packets) = subscribe.stats.sample();
-                out_delta.0 += bytes;
-                out_delta.1 += packets;
-                out_bitrate += subscribe.stats.bitrate();
+                let sample = subscribe.stats.sample();
+                deltas.outbound += sample.bytes;
+                out_packets += sample.packets;
+                out_bitrate += sample.bitrate;
             }
         }
-        self.stats_subscribe.add_delta(out_delta.0, out_delta.1);
+        self.stats_subscribe.add_delta(deltas.outbound, out_packets);
         self.stats_subscribe.set_bitrate(out_bitrate);
 
-        (in_delta.0, out_delta.0)
+        deltas
+    }
+
+    /// Fold the un-sampled tail of departing publish tracks into the stream
+    /// total and the server-wide metric, so the cumulative counters lose
+    /// nothing between the last stats tick and the removal.
+    pub(crate) fn fold_publish_tracks_final(&self, tracks: &[PublishTrackRemote]) {
+        let mut bytes = 0u64;
+        let mut packets = 0u64;
+        for track in tracks {
+            let sample = track.stats().sample();
+            bytes += sample.bytes;
+            packets += sample.packets;
+        }
+        self.stats_publish.add_delta(bytes, packets);
+        if bytes > 0 {
+            metrics::BYTES_IN_TOTAL.inc_by(bytes);
+        }
+    }
+
+    /// Fold a departing subscriber's un-sampled tail into the stream total
+    /// and the server-wide metric; see [`Self::fold_publish_tracks_final`].
+    fn fold_subscribe_final(&self, subscribe: &SubscribeRTCPeerConnection) {
+        let sample = subscribe.stats.sample();
+        self.stats_subscribe.add_delta(sample.bytes, sample.packets);
+        if sample.bytes > 0 {
+            metrics::BYTES_OUT_TOTAL.inc_by(sample.bytes);
+        }
     }
 
     pub(crate) async fn add_ice_candidate(
@@ -1027,11 +1064,14 @@ impl PeerForwardInternal {
     pub(crate) async fn remove_peer(&self, id: String) -> Result<RemovePeerOutcome> {
         // ── Publish: atomic check-and-take under write lock ──
         {
+            // Aggregated before the `publish` write lock: the lock order is
+            // `publish_tracks` before `publish` (see `info`).
+            let stats = self.current_publish_stats().await;
             let mut publish = self.publish.write().await;
             if let Some(ref p) = *publish
                 && p.id == id
             {
-                let mut session_info = p.info().await;
+                let mut session_info = p.info(stats).await;
                 session_info.state = RTCPeerConnectionState::Closed;
                 session_info.leave_at = Utc::now().timestamp_millis();
                 let old = publish.take().unwrap();
@@ -1054,9 +1094,14 @@ impl PeerForwardInternal {
                 if is_empty {
                     *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
                 }
+                // Close before cleanup: the write loop stops here, so the
+                // final stats fold inside the cleanup is exact. The close
+                // re-enters `remove_subscribe` via the state handler, which
+                // is an idempotent no-op because the session is already out
+                // of `subscribe_group`.
+                let _ = old.peer.close().await;
                 self.do_remove_subscribe_cleanup(&old, SessionStopReason::ApiDeleted)
                     .await;
-                let _ = old.peer.close().await;
                 // Orphan hint: with the publisher already gone and no
                 // sessions left, the stream entry would linger forever.
                 // The caller re-confirms (virtual publisher, in-flight
@@ -1079,7 +1124,10 @@ impl PeerForwardInternal {
     pub(crate) async fn close(&self) -> Result<()> {
         let publish = self.publish.write().await.take();
         if let Some(publish) = publish {
-            let mut session_info = publish.info().await;
+            // The `publish` lock is released by the take above, so reading
+            // `publish_tracks` here keeps the established lock order.
+            let stats = self.current_publish_stats().await;
+            let mut session_info = publish.info(stats).await;
             session_info.state = RTCPeerConnectionState::Closed;
             session_info.leave_at = Utc::now().timestamp_millis();
             let _ = publish.peer.close().await;
@@ -1092,9 +1140,11 @@ impl PeerForwardInternal {
             *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
         }
         for subscribe in subscribe_group {
+            // Close before cleanup, so the final stats fold is exact (see
+            // `remove_peer` for why the re-entrant removal is harmless).
+            let _ = subscribe.peer.close().await;
             self.do_remove_subscribe_cleanup(&subscribe, SessionStopReason::PeerClosed)
                 .await;
-            let _ = subscribe.peer.close().await;
         }
 
         info!("{} close", self.stream);
@@ -1307,6 +1357,9 @@ impl PeerForwardInternal {
     }
 
     pub(crate) async fn remove_publish(&self, peer: Arc<dyn PeerConnection>) -> Result<()> {
+        // Aggregated before the `publish` write lock: the lock order is
+        // `publish_tracks` before `publish` (see `info`).
+        let stats = self.current_publish_stats().await;
         let closed_session = {
             let mut publish = self.publish.write().await;
             if publish.is_none() {
@@ -1320,7 +1373,7 @@ impl PeerForwardInternal {
                 return Err(AppError::throw("publish not myself"));
             }
 
-            let mut session_info = publish.as_ref().unwrap().info().await;
+            let mut session_info = publish.as_ref().unwrap().info(stats).await;
             session_info.state = RTCPeerConnectionState::Closed;
             session_info.leave_at = Utc::now().timestamp_millis();
             *publish = None;
@@ -1348,6 +1401,9 @@ impl PeerForwardInternal {
 
         {
             let mut publish_tracks = self.publish_tracks.write().await;
+            // Fold the tail the stats tick has not seen yet, then drop the
+            // tracks: stream/server totals stay monotonic across republish.
+            self.fold_publish_tracks_final(&publish_tracks);
             publish_tracks.clear();
             let _ = self.publish_tracks_change.send(());
         }
@@ -1359,6 +1415,10 @@ impl PeerForwardInternal {
 
         let session_id = closed_session.id.clone();
         {
+            // A closed session has no current rate; keep only its
+            // cumulative counters.
+            let mut closed_session = closed_session;
+            closed_session.stats.bitrate = 0;
             let mut closed_publish_sessions = self.closed_publish_sessions.write().await;
             closed_publish_sessions.push(closed_session);
         }
@@ -1962,14 +2022,20 @@ impl PeerForwardInternal {
 
     /// Shared cleanup after a subscribe session has been removed from
     /// `self.subscribe_group`.  The caller must have already removed the entry
-    /// from the vec (so the write lock is released before this runs) and
-    /// finalized `subscribe_leave_at`, since this emits the `SubscribeStopped`
-    /// event and the paired `ForwardChanged` ping itself.
+    /// from the vec (so the write lock is released before this runs),
+    /// finalized `subscribe_leave_at`, and closed the peer (so the write
+    /// loop has stopped and the final stats fold below is exact), since
+    /// this emits the `SubscribeStopped` event and the paired
+    /// `ForwardChanged` ping itself.
     async fn do_remove_subscribe_cleanup(
         &self,
         subscribe: &SubscribeRTCPeerConnection,
         reason: SessionStopReason,
     ) {
+        // Fold the tail the stats tick has not seen yet, so stream/server
+        // totals stay monotonic across subscriber churn.
+        self.fold_subscribe_final(subscribe);
+
         #[cfg(feature = "cascade")]
         if let Some(cascade) = subscribe.cascade.clone() {
             metrics::REFORWARD.dec();
@@ -1995,6 +2061,9 @@ impl PeerForwardInternal {
         let mut session_info = subscribe.info().await;
         session_info.state = RTCPeerConnectionState::Closed;
         session_info.leave_at = Utc::now().timestamp_millis();
+        // A closed session has no current rate; keep only its cumulative
+        // counters.
+        session_info.stats.bitrate = 0;
         let session_id = session_info.id.clone();
 
         {

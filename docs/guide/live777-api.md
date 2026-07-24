@@ -188,7 +188,7 @@ Pushes the full snapshot of all streams whenever the stream state changes. Each 
 ]
 ```
 
-Use this endpoint to keep a live view of the current stream state. The first message is sent when the connection is established; subsequent messages are sent on every state change and, while media is flowing, on every stats tick (every 2 seconds) so the reported bitrates stay live.
+Use this endpoint to keep a live view of the current stream state. The first message is sent when the connection is established; subsequent messages are sent on every state change, and the 2-second stats tick pushes a snapshot whenever it changed, so the reported bitrates refresh while media flows and decay to zero when a stream goes silent.
 
 ## Cascade
 

@@ -12,3 +12,6 @@ crate-type = ["lib"]
 serde = { workspace = true, features = ["serde_derive"] }
 serde_html_form = "0.4"
 tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

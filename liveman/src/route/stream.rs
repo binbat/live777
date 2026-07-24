@@ -28,7 +28,12 @@ fn get_map_server_stream(map_info: HashMap<String, Vec<Stream>>) -> HashMap<Stri
 }
 
 /// Media statistics merge across nodes serving the same stream: cumulative
-/// counters and current rates both add up.
+/// counters and current rates both add up. Note the semantic is "sum of
+/// per-node work", not "cluster edge traffic": on a cascade chain the same
+/// stream id exists on several nodes, and inbound bytes relayed from node
+/// to node are counted once per hop, so `publish` totals can exceed what
+/// entered the cluster. `subscribe` sums are exact (each node serves its
+/// own subscribers).
 fn merge_stats(a: &api::response::Stats, b: &api::response::Stats) -> api::response::Stats {
     api::response::Stats {
         bytes: a.bytes + b.bytes,
@@ -99,10 +104,10 @@ pub async fn index(
                                 // Config flags: true if true on any node.
                                 provisioned: s.provisioned || v.provisioned,
                                 on_demand: s.on_demand || v.on_demand,
-                                stats: api::response::StreamStats {
+                                stats: api::response::Live(api::response::StreamStats {
                                     publish: merge_stats(&s.stats.publish, &v.stats.publish),
                                     subscribe: merge_stats(&s.stats.subscribe, &v.stats.subscribe),
-                                },
+                                }),
                             }
                         }
                         None => s.clone(),

@@ -199,12 +199,20 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   per-session counters live in `forward/stats.rs` (`MediaStats`); hot paths
   only `inc()` them (publish read loop in `track.rs`, subscriber write loop
   in `subscribe.rs`), and the manager's `stats_tick` (2 s) `sample()`s them
-  into bitrates plus monotonic stream totals. They surface as the `stats`
-  field on the stream/session API types and as the
+  into bitrates plus monotonic stream totals. Removal paths
+  (`do_remove_publish_cleanup`, `do_remove_subscribe_cleanup`,
+  `remove_virtual_tracks`) fold each departing flow's un-sampled tail into
+  the totals, so counters stay exact across churn. Stats surface as the
+  `stats` field on the stream/session API types and as the
   `live777_bytes_in_total`/`live777_bytes_out_total` Prometheus counters.
-  Stats are excluded from `PartialEq` on `api::response::Stream`/`Session` so
-  SSE/net4mqtt snapshot dedup keeps working; SSE gets live stats via the
-  manager's `stats_notify` force-push branch instead.
+  The `stats` fields are wrapped in `api::response::Live<T>`, whose
+  `PartialEq` is always true and whose serde form is transparent, so the
+  net4mqtt snapshot comparison keeps its derived `==` and never sees stats.
+  SSE freshness is cadence-driven: `stats_tick` unconditionally bumps a
+  `watch` version (byte-delta triggers cannot see derived rates decay to
+  zero), and the SSE loop dedups on the exact serialized payload — live
+  rates push every tick while media flows, a silent stream's zero rate
+  flushes exactly once, and an idle server sends nothing.
 - `liveion/src/stream/` — stream manager + source adapters. Every
   `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
   (`Manager::provision_streams`), always listed in the API/Dashboard, exempt

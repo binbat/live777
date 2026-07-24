@@ -8,7 +8,7 @@ use crate::result::Result;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use std::vec;
@@ -97,10 +97,12 @@ pub struct Manager {
     rtsp_pull_counts: Arc<RwLock<HashMap<String, usize>>>,
     #[cfg(feature = "source")]
     pub source_manager: SourceManager,
-    /// Signalled by the stats tick whenever media bytes moved, so SSE
-    /// stream subscribers refresh their snapshot even without lifecycle
-    /// events (snapshot equality ignores stats).
-    stats_notify: Arc<Notify>,
+    /// Bumped by the stats tick on every sample, so SSE stream subscribers
+    /// refresh their snapshot on a fixed cadence even without lifecycle
+    /// events (snapshot equality ignores stats). A `watch` version is
+    /// level-triggered: slow consumers coalesce missed ticks instead of
+    /// losing them.
+    stats_version: watch::Sender<u64>,
 }
 
 /// Knobs bounding how long one stream's source startup may block.
@@ -204,10 +206,10 @@ impl Manager {
             cancel.clone(),
         ));
 
-        let stats_notify = Arc::new(Notify::new());
+        let (stats_version, _) = watch::channel(0u64);
         tokio::spawn(Self::stats_tick(
             stream_map.clone(),
-            stats_notify.clone(),
+            stats_version.clone(),
             cancel.clone(),
         ));
 
@@ -225,7 +227,7 @@ impl Manager {
             rtsp_pull_counts: Default::default(),
             #[cfg(feature = "source")]
             source_manager: SourceManager::new(),
-            stats_notify,
+            stats_version,
         };
 
         #[cfg(feature = "source")]
@@ -955,12 +957,15 @@ impl Manager {
     }
 
     /// Periodic media-statistics sampler: refreshes per-session bitrates,
-    /// folds byte deltas into the stream and server totals, and wakes SSE
-    /// stream subscribers so dashboards see live rates without waiting for
-    /// lifecycle events.
+    /// folds byte deltas into the stream and server totals, and bumps the
+    /// stats version so SSE stream subscribers refresh their snapshot on a
+    /// fixed cadence. The version bump is unconditional on purpose: snapshot
+    /// dedup ignores stats, and any trigger based on byte deltas cannot see
+    /// derived values change — most notably a silent stream's rate decaying
+    /// to zero — so stats freshness is driven by cadence, not detection.
     async fn stats_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
-        stats_notify: Arc<Notify>,
+        stats_version: watch::Sender<u64>,
         cancel: CancellationToken,
     ) {
         loop {
@@ -968,24 +973,19 @@ impl Manager {
                 _ = tokio::time::sleep(STATS_SAMPLE_INTERVAL) => {}
                 _ = cancel.cancelled() => return,
             }
-            let mut moved = false;
-            {
-                let stream_map_read = stream_map.read().await;
-                for forward in stream_map_read.values() {
-                    let (bytes_in, bytes_out) = forward.sample_stats().await;
-                    if bytes_in > 0 {
-                        metrics::BYTES_IN_TOTAL.inc_by(bytes_in);
-                        moved = true;
-                    }
-                    if bytes_out > 0 {
-                        metrics::BYTES_OUT_TOTAL.inc_by(bytes_out);
-                        moved = true;
-                    }
+            // Clone the forwards out first so stream creation/teardown
+            // (write lock on the map) is not blocked while sampling.
+            let forwards: Vec<PeerForward> = stream_map.read().await.values().cloned().collect();
+            for forward in forwards {
+                let deltas = forward.sample_stats().await;
+                if deltas.inbound > 0 {
+                    metrics::BYTES_IN_TOTAL.inc_by(deltas.inbound);
+                }
+                if deltas.outbound > 0 {
+                    metrics::BYTES_OUT_TOTAL.inc_by(deltas.outbound);
                 }
             }
-            if moved {
-                stats_notify.notify_waiters();
-            }
+            stats_version.send_modify(|v| *v += 1);
         }
     }
 
@@ -1053,39 +1053,40 @@ impl Manager {
         let mut event_recv = self.event_sender.subscribe();
         let stream_map = self.stream_map.clone();
         let stream_cfg = self.config.stream.clone();
-        let stats_notify = self.stats_notify.clone();
+        let mut stats_version = self.stats_version.subscribe();
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
-            let mut last_sent: Option<Vec<api::response::Stream>> = None;
+            // Dedup on the exact serialized payload, which covers the stats
+            // too (`PartialEq` on the structs deliberately ignores them):
+            // the stats tick transmits only when something visible actually
+            // changed — live rates refresh every tick while media flows, a
+            // silent stream's decay to zero is pushed exactly once, and an
+            // idle server sends nothing.
+            let mut last_payload: Option<String> = None;
 
             async fn send_snapshot(
                 stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
                 stream_cfg: &crate::config::StreamConfig,
                 streams: &[String],
-                last_sent: &mut Option<Vec<api::response::Stream>>,
+                last_payload: &mut Option<String>,
                 send: &tokio::sync::mpsc::Sender<Vec<api::response::Stream>>,
-                force: bool,
             ) -> bool {
                 let infos = Manager::do_snapshot(stream_map, stream_cfg, streams).await;
-                if !force && last_sent.as_ref() == Some(&infos) {
+                let Ok(payload) = serde_json::to_string(&infos) else {
+                    // Plain-data structs cannot realistically fail to
+                    // serialize; keep the stream alive if they ever do.
+                    return true;
+                };
+                if last_payload.as_deref() == Some(payload.as_str()) {
                     return true;
                 }
                 trace!("sse send snapshot with {} streams", infos.len());
-                *last_sent = Some(infos.clone());
+                *last_payload = Some(payload);
                 send.send(infos).await.is_ok()
             }
 
             // Send an initial snapshot so the consumer has current state immediately.
-            if !send_snapshot(
-                &stream_map,
-                &stream_cfg,
-                &streams,
-                &mut last_sent,
-                &send,
-                false,
-            )
-            .await
-            {
+            if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
                 return;
             }
 
@@ -1102,15 +1103,20 @@ impl Manager {
                             Err(broadcast::error::RecvError::Lagged(_)) => {}
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
-                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send, false).await {
+                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
                             break;
                         }
                     }
-                    // Media bytes moved: stats-only snapshots would be
-                    // suppressed by the equality check (which ignores stats),
-                    // so push them forcibly.
-                    _ = stats_notify.notified() => {
-                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send, true).await {
+                    // Stats tick: `watch` is level-triggered — a slow
+                    // consumer coalesces missed ticks rather than losing
+                    // them, and a closed channel ends the loop. The payload
+                    // dedup in `send_snapshot` decides whether the tick
+                    // produced anything worth sending.
+                    result = stats_version.changed() => {
+                        if result.is_err() {
+                            break;
+                        }
+                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
                             break;
                         }
                     }

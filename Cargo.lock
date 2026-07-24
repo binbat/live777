@@ -152,6 +152,7 @@ version = "0.9.0"
 dependencies = [
  "serde",
  "serde_html_form 0.4.1",
+ "serde_json",
  "tracing",
 ]
 
