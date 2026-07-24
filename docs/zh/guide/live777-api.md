@@ -68,6 +68,11 @@ Response: [200]
 - `(publish | subscribe).sessions.[].cascade.sourceUrl`: Optional(String(URL))
 - `(publish | subscribe).sessions.[].cascade.targetUrl`: Optional(String(URL))
 - `(publish | subscribe).sessions.[].cascade.sessionUrl`: String(URL)
+- `(publish | subscribe).sessions.[].stats`: `Object(Stats)`，该会话的媒体统计：推流会话为输入方向，订阅会话为输出方向
+- `(publish | subscribe).sessions.[].stats.bytes`: Int，累计字节数（RTP 线上大小：头部 + 扩展 + 负载）
+- `(publish | subscribe).sessions.[].stats.packets`: Int，累计包数
+- `(publish | subscribe).sessions.[].stats.bitrate`: Int，当前码率（比特/秒，每 2 秒采样一次）
+- `stats`: `Object`，流级统计：`stats.publish` 为输入（推流）合计，`stats.subscribe` 为全部订阅输出合计；结构同为 `Stats`，累计计数在重新推流和订阅者进出时保持单调递增
 
 例如:
 
@@ -182,7 +187,7 @@ Server-Sent Events 端点，和管理接口使用同样的鉴权。
 ]
 ```
 
-连接建立后会立即发送第一条消息，之后每次状态变更都会再次推送当前完整状态。
+连接建立后会立即发送第一条消息，之后每次状态变更都会再次推送当前完整状态；有媒体流量时，每个统计采样周期（2 秒）也会推送一次快照，保证码率显示实时更新。
 
 ## ​级联
 

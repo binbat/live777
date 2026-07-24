@@ -67,6 +67,9 @@ impl PublishRTCPeerConnection {
             state: *self.connection_state_rx.borrow(),
             cascade: self.cascade.clone(),
             has_data_channel: self.media_info.has_data_channel,
+            // The publish peer does not own its tracks, so the counters are
+            // aggregated from `publish_tracks` by `PeerForwardInternal::info`.
+            stats: Default::default(),
         }
     }
 

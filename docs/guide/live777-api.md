@@ -68,6 +68,11 @@ Response: [200]
 - `(publish | subscribe).sessions.[].cascade.sourceUrl`: Optional(String(URL))
 - `(publish | subscribe).sessions.[].cascade.targetUrl`: Optional(String(URL))
 - `(publish | subscribe).sessions.[].cascade.sessionUrl`: String(URL)
+- `(publish | subscribe).sessions.[].stats`: `Object(Stats)`, media statistics for this session: inbound for a publish session, outbound for a subscribe session
+- `(publish | subscribe).sessions.[].stats.bytes`: Int, cumulative bytes (RTP wire size: header + extensions + payload)
+- `(publish | subscribe).sessions.[].stats.packets`: Int, cumulative packets
+- `(publish | subscribe).sessions.[].stats.bitrate`: Int, current rate in bits per second, re-sampled every 2 seconds
+- `stats`: `Object`, stream-level statistics: `stats.publish` is the inbound (publisher) aggregate, `stats.subscribe` the sum of all outbound subscribers; both use the same `Stats` shape, and their cumulative counters stay monotonic across republishes and subscriber churn
 
 For Example:
 
@@ -183,7 +188,7 @@ Pushes the full snapshot of all streams whenever the stream state changes. Each 
 ]
 ```
 
-Use this endpoint to keep a live view of the current stream state. The first message is sent when the connection is established; subsequent messages are sent on every state change.
+Use this endpoint to keep a live view of the current stream state. The first message is sent when the connection is established; subsequent messages are sent on every state change and, while media is flowing, on every stats tick (every 2 seconds) so the reported bitrates stay live.
 
 ## Cascade
 

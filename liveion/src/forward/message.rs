@@ -15,6 +15,11 @@ pub struct ForwardInfo {
     pub subscribe_session_infos: Vec<SessionInfo>,
     pub codecs: Vec<Codec>,
     pub has_virtual_publisher: bool,
+    /// Stream-level media statistics: `publish` is the inbound (publisher)
+    /// direction, `subscribe` the aggregate of all outbound subscribers.
+    /// Cumulative counters are monotonic across republishes and subscriber
+    /// churn; the bitrate is the current sampled rate.
+    pub stats: api::response::StreamStats,
 }
 #[derive(Clone, Debug)]
 pub struct SessionInfo {
@@ -24,6 +29,9 @@ pub struct SessionInfo {
     pub state: RTCPeerConnectionState,
     pub cascade: Option<CascadeInfo>,
     pub has_data_channel: bool,
+    /// Media counters for this session: inbound for the publisher, outbound
+    /// for a subscriber.
+    pub stats: api::response::Stats,
 }
 
 #[derive(Clone, Debug)]

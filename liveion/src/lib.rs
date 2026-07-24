@@ -348,6 +348,12 @@ pub fn metrics_register() {
     metrics::REGISTRY
         .register(Box::new(metrics::REFORWARD.clone()))
         .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::BYTES_IN_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::BYTES_OUT_TOTAL.clone()))
+        .unwrap();
 }
 
 async fn metrics() -> String {

@@ -8,7 +8,7 @@ use crate::result::Result;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use std::vec;
@@ -32,6 +32,11 @@ use crate::{AppError, metrics, new_broadcast_channel};
 /// `add_subscribe` handshake to attach and never touches freshly created
 /// forwards (`subscribe_leave_at` starts at the creation time).
 const ORPHAN_GRACE: Duration = Duration::from_secs(5);
+
+/// How often the stats tick refreshes bitrates and folds byte deltas into
+/// the stream/server totals. Also the effective refresh rate of the media
+/// statistics in the API and dashboard.
+const STATS_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Orphan teardown only applies to auto-created streams: when neither
 /// auto-create is enabled, an empty stream was provisioned explicitly (e.g.
@@ -92,6 +97,10 @@ pub struct Manager {
     rtsp_pull_counts: Arc<RwLock<HashMap<String, usize>>>,
     #[cfg(feature = "source")]
     pub source_manager: SourceManager,
+    /// Signalled by the stats tick whenever media bytes moved, so SSE
+    /// stream subscribers refresh their snapshot even without lifecycle
+    /// events (snapshot equality ignores stats).
+    stats_notify: Arc<Notify>,
 }
 
 /// Knobs bounding how long one stream's source startup may block.
@@ -195,6 +204,13 @@ impl Manager {
             cancel.clone(),
         ));
 
+        let stats_notify = Arc::new(Notify::new());
+        tokio::spawn(Self::stats_tick(
+            stream_map.clone(),
+            stats_notify.clone(),
+            cancel.clone(),
+        ));
+
         let manager = Manager {
             stream_map,
             config: cfg,
@@ -209,6 +225,7 @@ impl Manager {
             rtsp_pull_counts: Default::default(),
             #[cfg(feature = "source")]
             source_manager: SourceManager::new(),
+            stats_notify,
         };
 
         #[cfg(feature = "source")]
@@ -937,6 +954,41 @@ impl Manager {
         }
     }
 
+    /// Periodic media-statistics sampler: refreshes per-session bitrates,
+    /// folds byte deltas into the stream and server totals, and wakes SSE
+    /// stream subscribers so dashboards see live rates without waiting for
+    /// lifecycle events.
+    async fn stats_tick(
+        stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
+        stats_notify: Arc<Notify>,
+        cancel: CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(STATS_SAMPLE_INTERVAL) => {}
+                _ = cancel.cancelled() => return,
+            }
+            let mut moved = false;
+            {
+                let stream_map_read = stream_map.read().await;
+                for forward in stream_map_read.values() {
+                    let (bytes_in, bytes_out) = forward.sample_stats().await;
+                    if bytes_in > 0 {
+                        metrics::BYTES_IN_TOTAL.inc_by(bytes_in);
+                        moved = true;
+                    }
+                    if bytes_out > 0 {
+                        metrics::BYTES_OUT_TOTAL.inc_by(bytes_out);
+                        moved = true;
+                    }
+                }
+            }
+            if moved {
+                stats_notify.notify_waiters();
+            }
+        }
+    }
+
     /// Static WHIP push targets declared in the config file, as
     /// `(stream, target)` pairs sorted by stream name for a deterministic
     /// startup order.
@@ -1001,6 +1053,7 @@ impl Manager {
         let mut event_recv = self.event_sender.subscribe();
         let stream_map = self.stream_map.clone();
         let stream_cfg = self.config.stream.clone();
+        let stats_notify = self.stats_notify.clone();
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
             let mut last_sent: Option<Vec<api::response::Stream>> = None;
@@ -1011,9 +1064,10 @@ impl Manager {
                 streams: &[String],
                 last_sent: &mut Option<Vec<api::response::Stream>>,
                 send: &tokio::sync::mpsc::Sender<Vec<api::response::Stream>>,
+                force: bool,
             ) -> bool {
                 let infos = Manager::do_snapshot(stream_map, stream_cfg, streams).await;
-                if last_sent.as_ref() == Some(&infos) {
+                if !force && last_sent.as_ref() == Some(&infos) {
                     return true;
                 }
                 trace!("sse send snapshot with {} streams", infos.len());
@@ -1022,7 +1076,16 @@ impl Manager {
             }
 
             // Send an initial snapshot so the consumer has current state immediately.
-            if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send).await {
+            if !send_snapshot(
+                &stream_map,
+                &stream_cfg,
+                &streams,
+                &mut last_sent,
+                &send,
+                false,
+            )
+            .await
+            {
                 return;
             }
 
@@ -1039,7 +1102,15 @@ impl Manager {
                             Err(broadcast::error::RecvError::Lagged(_)) => {}
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
-                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send).await {
+                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send, false).await {
+                            break;
+                        }
+                    }
+                    // Media bytes moved: stats-only snapshots would be
+                    // suppressed by the equality check (which ignores stats),
+                    // so push them forcibly.
+                    _ = stats_notify.notified() => {
+                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send, true).await {
                             break;
                         }
                     }
