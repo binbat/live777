@@ -138,6 +138,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source-rtsp`    — RTSP sources.
 - `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
 - `source-all`     — enables all source types.
+- `target-whip`    — WHIP push targets (static cascade-push).
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`   — encoder backends.
@@ -145,8 +146,8 @@ Key feature groups defined in the root `Cargo.toml`:
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
-builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright` instead of
-`--all-features`.
+builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip`
+instead of `--all-features`.
 
 ### Cross-Compilation
 
@@ -222,6 +223,15 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   `PublishStopped` into an internal queue, then scripts run sequentially
   (global first, per-stream after, configured order) with per-script timeout
   and `on_error` policy.
+- `liveion/src/target.rs` — static WHIP push targets
+  (`[[stream.<name>.targets]]`, declarative cascade-push; `target-whip`
+  feature). One supervisor task per target keeps the push media-driven:
+  established on `PublishStarted`, torn down on `PublishStopped` (the push
+  negotiates per media epoch, so its codecs always match the current
+  publisher), retried with source-style backoff (5 s doubling, 60 s cap),
+  reconciled against the manager on event-bus lag; a target on an
+  `on_demand` stream acts as standing demand and kicks its sources once at
+  startup (no re-kick afterwards — an idle stream returns to standby).
 - `liveman/src/route/` — proxy/cascade/admin routes.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.
@@ -257,7 +267,7 @@ Run tests:
 ```bash
 # full workspace with coverage, matching the CI feature set
 cargo llvm-cov nextest --profile ci --workspace \
-  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp \
+  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip \
   --lcov --output-path lcov.info
 
 # without coverage

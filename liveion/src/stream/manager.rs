@@ -516,8 +516,9 @@ impl Manager {
     }
 
     /// Whether `stream` is a provisioned stream with `on_demand = true`.
-    /// Drives the recorder's publish-triggered recording for such streams.
-    #[cfg(feature = "recorder")]
+    /// Drives the recorder's publish-triggered recording for such streams,
+    /// and the target supervisor's on-demand source kick.
+    #[cfg(any(feature = "recorder", all(feature = "target-whip", feature = "source")))]
     pub fn is_on_demand_stream(&self, stream: &str) -> bool {
         self.config
             .stream
@@ -910,7 +911,7 @@ impl Manager {
         stream: String,
         dst: String,
         token: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         // A cascade push is a subscriber of this stream: start on-demand
         // sources before the reforward session is set up.
         #[cfg(feature = "source")]
@@ -919,7 +920,7 @@ impl Manager {
         let forward = streams.get(&stream).cloned();
         drop(streams);
         if let Some(forward) = forward {
-            forward.subscribe_push(dst, token).await?;
+            let session_id = forward.subscribe_push(dst, token).await?;
             if forward.strategy().cascade_push_close_sub {
                 for subscribe_session_info in forward.info().await.subscribe_session_infos {
                     if subscribe_session_info.cascade.is_none() {
@@ -930,10 +931,37 @@ impl Manager {
                     }
                 }
             }
-            Ok(())
+            Ok(session_id)
         } else {
             Err(AppError::stream_not_found("stream not exists"))
         }
+    }
+
+    /// Static WHIP push targets declared in the config file, as
+    /// `(stream, target)` pairs sorted by stream name for a deterministic
+    /// startup order.
+    #[cfg(feature = "target-whip")]
+    pub fn static_targets(&self) -> Vec<(String, crate::config::TargetConfig)> {
+        let mut targets: Vec<(String, crate::config::TargetConfig)> = self
+            .config
+            .stream
+            .streams
+            .iter()
+            .flat_map(|(stream, entry)| {
+                entry
+                    .targets
+                    .iter()
+                    .map(move |target| (stream.clone(), target.clone()))
+            })
+            .collect();
+        targets.sort_by(|a, b| a.0.cmp(&b.0));
+        targets
+    }
+
+    /// Shutdown token shared by the manager's background tasks.
+    #[cfg(feature = "target-whip")]
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel.clone()
     }
 
     async fn do_snapshot(

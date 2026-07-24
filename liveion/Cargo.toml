@@ -85,6 +85,9 @@ source-rtsp = ["source", "rtsp/client"]
 source-whep = ["source", "dep:libwish", "dep:percent-encoding"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
+# Static WHIP push targets (declarative cascade-push)
+target-whip = ["cascade", "dep:url", "dep:percent-encoding"]
+
 native-source = ["source", "dep:livehal"]
 
 # Capture backends

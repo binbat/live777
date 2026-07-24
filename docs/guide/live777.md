@@ -123,6 +123,29 @@ this source (e.g. when the last subscriber leaves an `on_demand` stream)
 may wait out an in-flight WHEP HTTP request, bounded by that same `40000ms`
 timeout.
 
+### Static cascade-push (WHIP target)
+
+`cascade-push` can also be declared as a static stream output instead of an
+API call. Build with the `target-whip` feature and add a `whip://` target
+to a provisioned stream:
+
+```toml
+[[stream.cam1.targets]]
+url = "whip://edge-1:7777/whip/cam1"
+# With Bearer auth:
+# url = "whip://token@edge-1:7777/whip/cam1"
+```
+
+The push is media-driven: it is established when the stream gains a
+publisher (WHIP or a configured source) and torn down when the publisher
+goes away, so the downstream node sees ordinary publisher attach/detach
+cycles and its own `auto_delete_*`/on-demand strategies keep working. A
+configured target on an `on_demand` stream acts as standing demand and
+starts its sources once at startup (an `on_demand` stream that later goes
+idle returns to standby instead of being power-cycled). A lost session
+(downstream close, ICE failure, provisioned-stream reset) is
+re-established with exponential backoff (5s doubling, 60s cap).
+
 ## DataChannel Forward
 
 > NOTE: About `createDataChannel()`

@@ -664,7 +664,7 @@ impl PeerForward {
     }
 
     #[cfg(feature = "cascade")]
-    pub async fn subscribe_push(&self, dst: String, token: Option<String>) -> Result<()> {
+    pub async fn subscribe_push(&self, dst: String, token: Option<String>) -> Result<String> {
         let media_info = MediaInfo {
             _codec: vec![],
             video_transceiver: (0, 1, false),
@@ -707,11 +707,11 @@ impl PeerForward {
                     }),
                     media_info,
                     connection_state_rx,
-                    session_id,
+                    session_id.clone(),
                 )
                 .await?;
             let _ = peer.set_remote_description(target_sdp).await;
-            Ok(())
+            Ok(session_id)
         }
         .await;
         if result.is_err() {

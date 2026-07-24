@@ -332,6 +332,22 @@ impl Config {
                 );
             }
         }
+
+        #[cfg(feature = "target-whip")]
+        for (stream_id, entry) in &self.stream.streams {
+            let mut seen_urls = std::collections::HashSet::new();
+            for target in &entry.targets {
+                target.validate().map_err(|e| {
+                    anyhow::anyhow!("stream[{}] target config error: {}", stream_id, e)
+                })?;
+                // Duplicate targets would race on the downstream ("A
+                // connection has already been established") and retry
+                // forever; reject them at startup instead.
+                if !seen_urls.insert(target.url.trim().to_string()) {
+                    anyhow::bail!("stream[{}] duplicate target url", stream_id);
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -566,6 +582,11 @@ pub struct StreamEntry {
     /// (codec known) before the subscribe fails.
     #[serde(default = "default_on_demand_start_timeout_ms")]
     pub on_demand_start_timeout_ms: u64,
+    /// Static output targets: push this stream to downstream WHIP endpoints
+    /// (declarative cascade-push).
+    #[cfg(feature = "target-whip")]
+    #[serde(default)]
+    pub targets: Vec<TargetConfig>,
 }
 
 impl Default for StreamEntry {
@@ -579,6 +600,8 @@ impl Default for StreamEntry {
             on_demand: false,
             on_demand_close_after_ms: default_on_demand_close_after_ms(),
             on_demand_start_timeout_ms: default_on_demand_start_timeout_ms(),
+            #[cfg(feature = "target-whip")]
+            targets: Vec::new(),
         }
     }
 }
@@ -589,6 +612,27 @@ fn default_on_demand_close_after_ms() -> u64 {
 
 fn default_on_demand_start_timeout_ms() -> u64 {
     10_000
+}
+
+/// A static output target of a stream: media is pushed to a downstream WHIP
+/// endpoint (declarative cascade-push), on par with how a WHEP source pulls
+/// media in. The push is media-driven: it is established when the stream
+/// gains a publisher and torn down when the publisher goes away; failures
+/// are retried with backoff. A target on an `on_demand` stream acts as
+/// standing demand and starts its sources once at startup.
+#[cfg(feature = "target-whip")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetConfig {
+    /// Downstream WHIP endpoint: `whip://[token@]host:port/whip/<stream>`
+    /// (or `whips://`). A Bearer token can be carried as userinfo.
+    pub url: String,
+}
+
+#[cfg(feature = "target-whip")]
+impl TargetConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        crate::target::validate_target_url(self.url.trim())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -943,4 +987,86 @@ fn default_rtsp_session_timeout() -> u64 {
 #[cfg(feature = "rtsp")]
 fn default_rtsp_realm() -> String {
     "live777".to_string()
+}
+
+#[cfg(feature = "target-whip")]
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    #[test]
+    fn target_config_validate_accepts_whip_schemes() {
+        for url in [
+            "whip://edge-1:7777/whip/cam1",
+            "whips://edge-1/whip/cam1",
+            "whip://token@edge-1:7777/whip/cam1",
+            "WHIP://edge-1/whip/cam1",
+        ] {
+            let target = TargetConfig { url: url.into() };
+            target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    #[test]
+    fn target_config_validate_rejects_bad_input() {
+        for url in [
+            "",
+            "whep://edge-1/whep/cam1",
+            "rtsp://edge-1/cam1",
+            "whip://user:pass@edge-1/whip/cam1",
+        ] {
+            let target = TargetConfig { url: url.into() };
+            assert!(target.validate().is_err(), "{url} must be rejected");
+        }
+    }
+
+    #[test]
+    fn stream_entry_targets_roundtrip_toml() {
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[targets]]
+            url = "whip://token@edge-1:7777/whip/cam1"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(entry.targets.len(), 1);
+        assert_eq!(entry.targets[0].url, "whip://token@edge-1:7777/whip/cam1");
+    }
+
+    #[test]
+    fn config_validate_reports_stream_target_error() {
+        let mut cfg = Config::default();
+        cfg.stream.streams.insert(
+            "cam1".to_string(),
+            StreamEntry {
+                targets: vec![TargetConfig {
+                    url: "whep://edge-1/whep/cam1".into(),
+                }],
+                ..Default::default()
+            },
+        );
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("cam1"), "error must name the stream: {err}");
+    }
+
+    #[test]
+    fn config_validate_rejects_duplicate_target_urls() {
+        let mut cfg = Config::default();
+        cfg.stream.streams.insert(
+            "cam1".to_string(),
+            StreamEntry {
+                targets: vec![
+                    TargetConfig {
+                        url: "whip://edge-1:7777/whip/cam1".into(),
+                    },
+                    TargetConfig {
+                        url: "whip://edge-1:7777/whip/cam1".into(),
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("duplicate"), "error must say duplicate: {err}");
+    }
 }
