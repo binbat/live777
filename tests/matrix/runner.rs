@@ -19,10 +19,10 @@ use crate::common::shutdown_signal;
 
 /// Cancels the wrapped token on drop, so a panicking test cannot leak the
 /// server it spawned.
-#[cfg(feature = "source-whep")]
+#[cfg(any(feature = "source-whep", feature = "target-whip"))]
 struct CancelOnDrop(CancellationToken);
 
-#[cfg(feature = "source-whep")]
+#[cfg(any(feature = "source-whep", feature = "target-whip"))]
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
@@ -31,7 +31,7 @@ impl Drop for CancelOnDrop {
 
 /// Whether this is a GitHub-hosted Windows runner: media-heavy matrix cases
 /// skip there (they run everywhere else, including local Windows hosts).
-#[cfg(any(feature = "source-whep", feature = "rtsp"))]
+#[cfg(any(feature = "source-whep", feature = "target-whip", feature = "rtsp"))]
 pub fn windows_ci() -> bool {
     cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
 }
@@ -705,6 +705,162 @@ async fn wait_stream_codecs_ready(api_addr: &SocketAddr, stream_id: &str) {
     }
 }
 
+/// Two-node WHIP target relay: liveion A is provisioned with a `whip://`
+/// target that pushes its stream to liveion B (static cascade-push); the
+/// source publishes into A via WHIP, and the player validates playback of
+/// the relayed stream from B.
+#[cfg(feature = "target-whip")]
+pub async fn run_whip_target_test<S, P>(source: S, player: P, bind_ip: IpAddr, whep_host: &str)
+where
+    S: Source,
+    P: Player,
+{
+    init_liveion_test_environment();
+    let profile = source.profile();
+    let stream_id = "relay";
+
+    // liveion B (downstream): default config; the pushed stream is created
+    // explicitly so it does not depend on auto-create strategy defaults.
+    let mut cfg_b = liveion::config::Config::default();
+    cfg_b.http.cors = true;
+    let listener_b = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let port_b = listener_b.local_addr().unwrap().port();
+    let api_addr_b = SocketAddr::new(bind_ip, port_b);
+    tokio::spawn(liveion::serve(cfg_b, listener_b, shutdown_signal()));
+
+    let res = reqwest::Client::new()
+        .post(format!(
+            "http://{api_addr_b}{}",
+            api::path::streams(stream_id)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::NO_CONTENT, res.status());
+
+    // liveion A (upstream): provisioned stream with a static WHIP push
+    // target pointing at B. Loopback relay: host candidates suffice; keep
+    // the test hermetic (no STUN traffic from A's push peer, whose ICE
+    // servers come from this list).
+    let mut cfg_a = liveion::config::Config {
+        ice_servers: vec![],
+        ..Default::default()
+    };
+    cfg_a.http.cors = true;
+    cfg_a.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            targets: vec![liveion::config::TargetConfig {
+                url: format!("whip://{api_addr_b}{}", api::path::whip(stream_id)),
+            }],
+            ..Default::default()
+        },
+    );
+
+    // The TOML-facing config validator must accept every scheme the matrix
+    // provisions, or the same config would be rejected at `live777` startup.
+    cfg_a.validate().expect("WHIP target config must validate");
+
+    let listener_a = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr_a = SocketAddr::new(bind_ip, listener_a.local_addr().unwrap().port());
+    // A's target supervisor keeps re-establishing the push after this test
+    // tears the publisher down; shut A down on exit, panic included.
+    let cancel_a = CancellationToken::new();
+    let _cancel_a_on_drop = CancelOnDrop(cancel_a.clone());
+    tokio::spawn(liveion::serve(
+        cfg_a,
+        listener_a,
+        cancel_a.cancelled_owned(),
+    ));
+
+    // The push is media-driven: A must not push before media exists — the
+    // relay session negotiates its codecs from the publisher, so an early
+    // push would lock the wrong codec in. Give A's supervisor a moment to
+    // (not) act, so a broken eager-push implementation loses the race
+    // deterministically.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let body = reqwest::get(format!("http://{api_addr_b}{}", api::path::streams("")))
+        .await
+        .unwrap()
+        .json::<Vec<api::response::Stream>>()
+        .await
+        .unwrap();
+    let relay = body
+        .iter()
+        .find(|i| i.id == stream_id)
+        .expect("relay stream must exist on B");
+    assert!(
+        relay.publish.sessions.iter().all(|s| s.leave_at != 0),
+        "WHIP target pushed before media existed: {:?}",
+        relay.publish.sessions
+    );
+
+    // Publish the source into A; the target's push session forwards the
+    // media to B.
+    let (source_handle, whip_ct, whip_handle) =
+        start_sdp_whip_publish(&source, api_addr_a, stream_id).await;
+    source.wait_for_ready().await;
+
+    // The push appears as a (cascade) subscriber on A and as the publisher
+    // on B; wait for the B-side publisher to connect so the WHEP subscribe
+    // does not race the relay setup.
+    wait_for_publish_connected(&api_addr_b, stream_id, None).await;
+
+    let whep_url = format!("http://{whep_host}:{port_b}{}", api::path::whep(stream_id));
+    let playback = player
+        .play(&whep_url, &profile)
+        .await
+        .expect("WHEP player failed");
+
+    tracing::info!(
+        source = source.name(),
+        player = player.name(),
+        ?playback,
+        "WHIP target relay playback result"
+    );
+
+    assert_playback_ok(player.name(), &profile, &playback);
+
+    // Media-driven teardown: once the publisher leaves A, the target must
+    // tear the push down and B's publisher must disappear with it.
+    whip_ct.cancel();
+    let result_whip = whip_handle.await.unwrap();
+    assert!(result_whip.is_ok());
+    wait_for_no_live_publish(&api_addr_b, stream_id).await;
+
+    source_handle.stop().await;
+}
+
+/// Wait until a stream has no live publish session left: the WHIP target's
+/// push is torn down when the upstream media goes away, so the downstream
+/// publisher must disappear within the poll budget.
+#[cfg(feature = "target-whip")]
+async fn wait_for_no_live_publish(api_addr: &SocketAddr, stream_id: &str) {
+    for attempt in 0..300 {
+        let res = reqwest::get(format!("http://{api_addr}{}", api::path::streams("")))
+            .await
+            .unwrap();
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
+        let gone = body
+            .iter()
+            .find(|i| i.id == stream_id)
+            .is_none_or(|r| r.publish.sessions.iter().all(|s| s.leave_at != 0));
+        if gone {
+            return;
+        }
+        if attempt == 299 {
+            panic!("Stream '{stream_id}' still has a live publish session after the media stopped");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Run one matrix case: publish `source` through liveion, then play it back
 /// with `player` and validate the result against the source's media profile.
 pub async fn run_whep_test_with_host<S, P>(source: S, player: P, bind_ip: IpAddr, whep_host: &str)
@@ -905,7 +1061,7 @@ where
             .start_rtsp(&rtsp_url)
             .expect("Failed to start RTSP FFmpeg source");
 
-        wait_for_publish_connected(&api_addr, None).await;
+        wait_for_publish_connected(&api_addr, "-", None).await;
 
         // No WHIP handle — return a no-op join handle so callers can
         // keep the same shape.
@@ -920,6 +1076,28 @@ where
     if source.publishes_directly() {
         return start_direct_published_stream(source, api_addr, port, whip_url).await;
     }
+
+    let (source_handle, ct, handle_whip) = start_sdp_whip_publish(source, api_addr, "-").await;
+    (api_addr, port, source_handle, ct, handle_whip)
+}
+
+/// Publish `source` into `stream` on the liveion at `api_addr` via the
+/// SDP-file → whipinto → WHIP flow (the RTP-source path): write an SDP
+/// describing the RTP listeners, bridge it with livetwo, and start the
+/// source once the WHIP/RTP listener is bound.
+async fn start_sdp_whip_publish<S>(
+    source: &S,
+    api_addr: SocketAddr,
+    stream: &str,
+) -> (
+    Box<dyn SourceHandle>,
+    CancellationToken,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+)
+where
+    S: Source,
+{
+    let whip_url = format!("http://{api_addr}{}", api::path::whip(stream));
 
     let profile = source.profile();
     let whip_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -948,7 +1126,7 @@ where
         livetwo::whip::into(whip_ct, sdp_path, whip_url, None, None).await
     });
 
-    wait_for_publish_connected(&api_addr, Some(&mut handle_whip)).await;
+    wait_for_publish_connected(&api_addr, stream, Some(&mut handle_whip)).await;
 
     // Start the media source only after the WHIP/RTP listener is bound so that
     // sources which open a connected UDP socket don't hit ICMP errors before
@@ -957,7 +1135,7 @@ where
         .start_with_audio(video_addr, audio_addr)
         .expect("Failed to start media source");
 
-    (api_addr, port, source_handle, ct, handle_whip)
+    (source_handle, ct, handle_whip)
 }
 
 async fn start_direct_published_stream<S>(
@@ -982,7 +1160,7 @@ where
     // Sources that bridge through an internal publish task (livetwo WHIP)
     // expose it so a task that dies early fails fast with the real error
     // instead of timing out this poll.
-    wait_for_publish_connected(&api_addr, source_handle.publish_task_mut()).await;
+    wait_for_publish_connected(&api_addr, "-", source_handle.publish_task_mut()).await;
 
     // The publisher is already running inside the source handle; return a
     // no-op WHIP handle so callers can keep the same shape.
@@ -994,6 +1172,7 @@ where
 
 async fn wait_for_publish_connected(
     api_addr: &SocketAddr,
+    stream: &str,
     mut handle_whip: Option<&mut tokio::task::JoinHandle<anyhow::Result<()>>>,
 ) {
     let mut publish_connected = false;
@@ -1004,7 +1183,7 @@ async fn wait_for_publish_connected(
         assert_eq!(http::StatusCode::OK, res.status());
 
         let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
-        if let Some(r) = body.into_iter().find(|i| i.id == "-")
+        if let Some(r) = body.into_iter().find(|i| i.id == stream)
             && !r.publish.sessions.is_empty()
         {
             // A reconnecting publisher leaves stale sessions behind; index 0

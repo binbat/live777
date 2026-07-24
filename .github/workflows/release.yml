@@ -110,7 +110,7 @@ jobs:
           # images. The rsmpeg-enabled tools (whepprobe, whipsynth) are
           # built and tested in CI but are not part of the release matrix.
           $BUILD_CMD $BUILD_NDK build --locked --all-targets \
-            --features source-all,webui,net4mqtt,recorder,cascade,whepwright \
+            --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip \
             --release --target=${{ matrix.job.target }}
 
       - name: Archive

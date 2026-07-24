@@ -33,6 +33,12 @@ mod forward;
 mod hook;
 mod r#macro;
 mod metrics;
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-whep",
+    feature = "target-whip"
+))]
+mod reconnect;
 mod result;
 mod route;
 #[cfg(any(feature = "rtsp", feature = "source-rtsp", feature = "source-sdp"))]
@@ -40,6 +46,8 @@ mod rtsp_codec;
 #[cfg(feature = "rtsp")]
 mod rtsp_server;
 mod stream;
+#[cfg(feature = "target-whip")]
+mod target;
 
 #[cfg(feature = "recorder")]
 pub mod recorder;
@@ -90,6 +98,11 @@ where
             tracing::info!("No sources configured for auto-start");
         }
     }
+
+    // Static WHIP push targets (declarative cascade-push). Must run after
+    // provision_streams: the first push attempt needs the stream to exist.
+    #[cfg(feature = "target-whip")]
+    crate::target::init(app_state.stream_manager.clone());
     let app = Router::new().merge(
         whip::route()
             .merge(whep::route())

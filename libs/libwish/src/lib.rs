@@ -8,6 +8,10 @@ use std::time::Duration;
 use url::Url;
 use webrtc::peer_connection::{RTCIceServer, RTCSessionDescription};
 
+mod endpoint;
+
+pub use endpoint::{parse_whep_url, parse_whip_url, redact_url};
+
 /// Default overall per-request timeout. Bounded so a peer that accepts the
 /// connection but never answers cannot wedge callers (e.g. a WHEP source's
 /// reconnect loop or `stop()`). The budget stays above liveion's default

@@ -120,6 +120,27 @@ STUN 服务器）。
 流的最后一个订阅者离开）可能需要等待一个在途的 WHEP HTTP 请求结束，
 上限同为 `40000ms`。
 
+### 静态 cascade-push（WHIP target）
+
+`cascade-push` 除了调用 API，也可以声明为静态流的输出。构建时启用
+`target-whip` feature，然后在预注册流上添加 `whip://` target 即可：
+
+```toml
+[[stream.cam1.targets]]
+url = "whip://edge-1:7777/whip/cam1"
+# 需要 Bearer 鉴权时：
+# url = "whip://token@edge-1:7777/whip/cam1"
+```
+
+推流是媒体驱动的：当流获得发布者（WHIP 发布端或配置的 source）时建立，
+发布者离开时拆除，因此下游节点看到的是普通的发布者上线/下线周期，
+下游自己的 `auto_delete_*`/on-demand 策略可以正常工作。在 `on_demand`
+流上配置的 target 相当于常驻需求：只要流既没有发布者也没有推流会话，
+就会（重新）拉起该流的源，因此下游从不可达恢复后继流会自动恢复。
+会话丢失后（下游关闭、ICE 失败、预注册流 reset）会以指数退避重建
+（5 秒起步翻倍，60 秒封顶）——on-demand 源的重新拉起也受同一退避约束，
+大约每分钟最多一次。
+
 ## DataChannel 转发
 
 > NOTE: 关于 `createDataChannel()`

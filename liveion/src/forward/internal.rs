@@ -1005,16 +1005,30 @@ impl PeerForwardInternal {
         Ok(RemovePeerOutcome::None)
     }
 
+    /// Close every session of this forward. Sessions go through the same
+    /// cleanup path as explicit removals (lifecycle events, metrics, cascade
+    /// session DELETE) instead of relying on the peer-state handler: after a
+    /// stream teardown the forward is dropped, and the handler's weak
+    /// reference to this internal would fail before it could clean up.
     pub(crate) async fn close(&self) -> Result<()> {
-        let publish = self.publish.read().await;
-        let subscribe_group = self.subscribe_group.read().await;
-
-        if publish.is_some() {
-            publish.as_ref().unwrap().peer.close().await?;
+        let publish = self.publish.write().await.take();
+        if let Some(publish) = publish {
+            let mut session_info = publish.info().await;
+            session_info.state = RTCPeerConnectionState::Closed;
+            session_info.leave_at = Utc::now().timestamp_millis();
+            let _ = publish.peer.close().await;
+            self.do_remove_publish_cleanup(session_info, SessionStopReason::PeerClosed)
+                .await;
         }
 
-        for subscribe in subscribe_group.iter() {
-            subscribe.peer.close().await?;
+        let subscribe_group = std::mem::take(&mut *self.subscribe_group.write().await);
+        if !subscribe_group.is_empty() {
+            *self.subscribe_leave_at.write().await = Utc::now().timestamp_millis();
+        }
+        for subscribe in subscribe_group {
+            self.do_remove_subscribe_cleanup(&subscribe, SessionStopReason::PeerClosed)
+                .await;
+            let _ = subscribe.peer.close().await;
         }
 
         info!("{} close", self.stream);
