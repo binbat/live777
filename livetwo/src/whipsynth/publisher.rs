@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 use webrtc::media_stream::Track;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
-use webrtc::peer_connection::PeerConnection;
+use webrtc::peer_connection::{PeerConnection, RTCIceServer};
 
 use crate::source::{AudioCodec, MediaFrame, VideoCodec, extract_h265_sprop};
 use crate::utils;
@@ -33,8 +33,9 @@ pub struct PublisherConfig {
     pub height: u32,
     pub fps: u32,
     pub duration: Option<Duration>,
-    /// STUN server URL used for ICE gathering.
-    pub stun_server: String,
+    /// ICE servers used for gathering the offer; an empty list means host
+    /// candidates only (loopback setups).
+    pub ice_servers: Vec<RTCIceServer>,
 }
 
 /// Outcome of a [`Publisher::run`] call.
@@ -87,7 +88,7 @@ impl Publisher {
         let publish = core::create_publish_peer(
             gather_complete.clone(),
             PublishPeerOptions {
-                stun_server: Some(self.config.stun_server.clone()),
+                ice_servers: self.config.ice_servers.clone(),
                 extra_video_codecs,
             },
         )

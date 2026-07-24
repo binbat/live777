@@ -180,14 +180,16 @@ async fn test_livetwo_whipinto_synth_input() {
 
     // Publish an in-process synthetic stream through the unified `whip::into`
     // entry point, the same path `whipinto --input synth://...` uses.
-    // `stun=` (empty) disables ICE servers so the test stays on loopback.
+    // The empty ICE server list disables ICE servers so the test stays on
+    // loopback.
     let ct = CancellationToken::new();
     let handle_whip = tokio::spawn(livetwo::whip::into(
         ct.clone(),
-        "synth://vp8?width=320&height=240&fps=15&duration=30&stun=".to_string(),
+        "synth://vp8?width=320&height=240&fps=15&duration=30".to_string(),
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         None,
+        Vec::new(),
     ));
 
     let mut result = None;

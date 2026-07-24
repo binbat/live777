@@ -64,7 +64,7 @@ impl Player for LivetwoWhepPlayer {
                     None,
                     None,
                     None,
-                    None,
+                    Vec::new(),
                 )
                 .await
             }

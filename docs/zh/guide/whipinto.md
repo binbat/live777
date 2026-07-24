@@ -7,6 +7,17 @@
 - `rtsp as client`
 - `rtsp as server`
 
+## 选项
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `-i`, `--input` | `sdp://0.0.0.0:8554` | 输入源：`sdp://`（RTP/SDP 文件或 RTSP server 模式）、`rtsp://`（RTSP client 模式）、`synth://`（生成测试帧） |
+| `-w`, `--whip` | 必填 | WHIP 端点 URL |
+| `-t`, `--token` | 无 | WHIP 认证使用的 Bearer token |
+| `--command` | 无 | 以子进程方式运行命令 |
+| `--ice-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`（空字符串表示禁用 ICE 服务器） |
+| `-v` | `warn` | 提高日志级别（`-v` info，`-vv` debug，`-vvv` trace） |
+
 ## RTP
 
 ```bash
@@ -118,6 +129,26 @@ whipinto -i rtsp://127.0.0.1:8554 -w http://localhost:7777/whip/777
 ```bash
 whipinto -i rtsp://localhost:8554/test-rtsp?transport=tcp -w http://localhost:7777/whip/test-rtsp
 ```
+
+## 合成输入（Synthetic input）
+
+启用 `rsmpeg` feature 后，`-i` 也接受 `synth://` URL，在进程内生成测试帧（无需外部编码器）：
+
+```bash
+whipinto -i 'synth://h264?audio=opus&width=1280&height=720&fps=30' \
+  -w http://localhost:7777/whip/777
+```
+
+格式：`synth://<vcodec>?<parameters>`；`<vcodec>` 为 `vp8`、`vp9`、`h264`、`h265`、`av1` 之一，所有参数均可选：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `audio` | 无 | 音频编码：`opus`、`g722`（省略表示无音频） |
+| `width` | `640` | 视频宽度（像素） |
+| `height` | `480` | 视频高度（像素） |
+| `fps` | `30` | 视频帧率 |
+| `duration` | 无 | 发布指定秒数后停止 |
+| `ice` | `--ice-server` 的值 | ICE 服务器规格 `<url>[,<username>[,<credential>]]`，可重复指定；对该输入替换命令行列表（空值表示禁用 ICE 服务器） |
 
 ## About `pkt_size=1200`
 

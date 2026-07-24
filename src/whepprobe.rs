@@ -51,9 +51,8 @@ struct Args {
     #[arg(short, long)]
     token: Option<String>,
 
-    /// STUN server URL used for ICE gathering (empty string disables STUN)
-    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
-    stun_server: String,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[tokio::main]
@@ -136,7 +135,7 @@ fn build_config(args: &Args) -> Result<ProbeConfig> {
         video_codec: codec,
         sprop_params: args.sprop_params.clone(),
         token: args.token.clone(),
-        stun_server: Some(args.stun_server.clone()),
+        ice_servers: args.ice.to_rtc_ice_servers(),
     })
 }
 

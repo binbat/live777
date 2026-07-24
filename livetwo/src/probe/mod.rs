@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use cli::Codec;
 use serde::Serialize;
+use webrtc::peer_connection::RTCIceServer;
 
 #[cfg(feature = "rsmpeg")]
 pub mod decoder;
@@ -26,10 +27,9 @@ pub struct ProbeConfig {
     pub sprop_params: Option<String>,
     /// Optional Bearer token for WHIP/WHEP endpoints that require authentication.
     pub token: Option<String>,
-    /// STUN server URL used for ICE gathering. `None` or a blank string
-    /// disables STUN (host candidates only), same as the WHIP side's
-    /// `--stun-server ""`.
-    pub stun_server: Option<String>,
+    /// ICE servers used for gathering the offer; an empty list means host
+    /// candidates only (loopback setups).
+    pub ice_servers: Vec<RTCIceServer>,
 }
 
 impl Default for ProbeConfig {
@@ -40,7 +40,7 @@ impl Default for ProbeConfig {
             video_codec: None,
             sprop_params: None,
             token: None,
-            stun_server: Some(crate::whip::core::DEFAULT_STUN_SERVER.to_string()),
+            ice_servers: iceserver::default_rtc_ice_servers(),
         }
     }
 }

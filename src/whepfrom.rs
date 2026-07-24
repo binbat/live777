@@ -32,9 +32,8 @@ struct Args {
     /// Example: udp://0.0.0.0:9001?host=127.0.0.1&port=9000
     #[arg(long)]
     channel: Option<String>,
-    /// STUN server URL used for ICE gathering (empty string disables STUN)
-    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
-    stun_server: String,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[tokio::main]
@@ -62,7 +61,7 @@ async fn main() -> Result<()> {
         args.token.clone(),
         args.command.clone(),
         args.channel.clone(),
-        Some(args.stun_server.clone()),
+        args.ice.to_rtc_ice_servers(),
     ));
 
     utils::shutdown_signal().await;

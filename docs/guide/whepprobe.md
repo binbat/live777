@@ -45,6 +45,7 @@ whepprobe -w http://localhost:7777/whep/live --output json
 | `--decode-duration` | `5` | Seconds to decode after the WHEP session connects. Values above `10` are silently capped. |
 | `--output` | `human` | Output format: `human`, `json` |
 | `--timeout` | `30` | Overall timeout in seconds |
+| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
 
 ## Exit code
 
@@ -60,15 +61,12 @@ or other Rust tools:
 use cli::Codec;
 use livetwo::probe::{ProbeBackend, ProbeConfig};
 use livetwo::probe::rsmpeg::RsmpegProbe;
-use std::time::Duration;
 
 // RsmpegProbe requires `livetwo` to be built with the `rsmpeg` feature.
 let config = ProbeConfig {
     whep_url: "http://localhost:7777/whep/live".to_string(),
-    timeout: Duration::from_secs(30),
-    codec: Some(Codec::Vp8),
-    sprop_params: None,
-    token: None,
+    video_codec: Some(Codec::Vp8),
+    ..Default::default()
 };
 
 let result = RsmpegProbe::default().probe(&config).await?;

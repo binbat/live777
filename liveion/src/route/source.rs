@@ -80,13 +80,7 @@ async fn create_source(
         &req.url,
         &config,
         crate::stream::source::SourceNetConfig {
-            ice_servers: state
-                .config
-                .ice_servers
-                .clone()
-                .into_iter()
-                .map(Into::into)
-                .collect(),
+            ice_servers: iceserver::to_rtc_ice_servers(state.config.ice_servers.clone()),
             ice_udp_addrs: api::webrtc::resolve_webrtc_ice_udp_addrs(Some(
                 state.config.webrtc.ice_udp_addrs.clone(),
             )),

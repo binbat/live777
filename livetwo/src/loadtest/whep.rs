@@ -19,7 +19,7 @@ use libwish::Client;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use webrtc::peer_connection::RTCPeerConnectionState;
+use webrtc::peer_connection::{RTCIceServer, RTCPeerConnectionState};
 
 #[cfg(feature = "rsmpeg")]
 use std::sync::atomic::AtomicBool;
@@ -52,10 +52,9 @@ pub struct WhepLoadParams {
     /// segment).
     pub whep_url: String,
     pub token: Option<String>,
-    /// STUN server URL used for ICE gathering. `None` or a blank string
-    /// disables STUN (host candidates only), same as the WHIP side's
-    /// `--stun-server ""`.
-    pub stun_server: Option<String>,
+    /// ICE servers used for gathering the offer; an empty list means host
+    /// candidates only (loopback setups).
+    pub ice_servers: Vec<RTCIceServer>,
     /// When set, a single rotating verifier decodes one session at a time and
     /// switches to the next live session every interval. Requires the
     /// `rsmpeg` feature.
@@ -171,7 +170,7 @@ async fn run_session(
             audio_tx,
             codec_info,
             crate::whep::WhepPeerOptions {
-                ice_servers: crate::whep::stun_ice_servers(params.stun_server.as_deref()),
+                ice_servers: params.ice_servers.clone(),
                 ..Default::default()
             },
             Some(state_tx),

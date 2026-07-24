@@ -24,6 +24,8 @@ struct Args {
     /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[tokio::main]
@@ -49,6 +51,7 @@ async fn main() -> Result<()> {
         args.whip.clone(),
         args.token.clone(),
         args.command.clone(),
+        args.ice.to_rtc_ice_servers(),
     ));
 
     utils::shutdown_signal().await;

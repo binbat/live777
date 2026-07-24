@@ -86,9 +86,8 @@ struct WhipArgs {
     #[arg(long, default_value_t = 30)]
     fps: u32,
 
-    /// STUN server URL used for ICE gathering
-    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
-    stun_server: String,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[derive(clap::Args)]
@@ -128,9 +127,8 @@ struct WhepArgs {
     #[arg(long)]
     verify_tolerant: bool,
 
-    /// STUN server URL used for ICE gathering (empty string disables STUN)
-    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
-    stun_server: String,
+    #[command(flatten)]
+    ice: iceserver::IceServerArgs,
 }
 
 #[tokio::main]
@@ -255,7 +253,7 @@ async fn run_whip(args: WhipArgs) -> Result<()> {
         height: args.height,
         fps: args.fps,
         duration: None,
-        stun_server: args.stun_server,
+        ice_servers: args.ice.to_rtc_ice_servers(),
     };
 
     let config = livetwo::loadtest::LoadtestConfig {
@@ -283,7 +281,7 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     let params = livetwo::loadtest::whep::WhepLoadParams {
         whep_url: args.whep,
         token: args.token,
-        stun_server: Some(args.stun_server),
+        ice_servers: args.ice.to_rtc_ice_servers(),
         verify_window: args.verify_window.map(Duration::from_secs),
     };
 

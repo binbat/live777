@@ -261,8 +261,8 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
 
     // Publisher A: one stream (`single-0`); publisher B: three streams
     // (`multi-0/1/2`). The whip session index is appended to the URL's last
-    // path segment. `--stun-server ""` disables STUN on both sides, so the
-    // test sends no STUN traffic anywhere and passes on CI runners without
+    // path segment. `--ice-server ""` disables ICE servers on both sides, so
+    // the test sends no STUN traffic anywhere and passes on CI runners without
     // UDP egress: every peer connects over loopback host candidates.
     //
     // The 45s duration outlasts the 30s connect budget of
@@ -276,7 +276,7 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "1",
         "--duration",
         "45",
-        "--stun-server",
+        "--ice-server",
         "",
     ]);
     let mut whip_multi = spawn_livewrk(&[
@@ -287,7 +287,7 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "3",
         "--duration",
         "45",
-        "--stun-server",
+        "--ice-server",
         "",
     ]);
 
@@ -311,7 +311,7 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "12",
         "--verify-window",
         "2",
-        "--stun-server",
+        "--ice-server",
         "",
     ]);
     let mut whep_multi = livewrk(&[
@@ -324,7 +324,7 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "12",
         "--verify-window",
         "2",
-        "--stun-server",
+        "--ice-server",
         "",
     ]);
     let (whep_single, whep_multi) = tokio::join!(whep_single.output(), whep_multi.output());
@@ -432,7 +432,7 @@ async fn whip_whep_fail_when_server_unreachable() {
         "2",
         "--duration",
         "5",
-        "--stun-server",
+        "--ice-server",
         "",
     ]);
     let (whep, whip) = tokio::join!(

@@ -50,6 +50,7 @@ whipsynth -w http://localhost:7777/whip/live \
 | `--height` | `480` | 视频高度（像素） |
 | `--fps` | `30` | 视频帧率 |
 | `--duration` | 无 | 运行指定秒数后退出 |
+| `--ice-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`（空字符串表示禁用 ICE 服务器） |
 
 ## 负载测试模式
 

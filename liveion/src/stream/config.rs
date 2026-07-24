@@ -14,12 +14,7 @@ pub struct ManagerConfig {
 
 impl ManagerConfig {
     pub fn from_config(cfg: Config) -> Self {
-        let ice_servers = cfg
-            .ice_servers
-            .clone()
-            .into_iter()
-            .map(|i| i.into())
-            .collect();
+        let ice_servers = iceserver::to_rtc_ice_servers(cfg.ice_servers);
         Self {
             ice_servers,
             ice_udp_addrs: api::webrtc::resolve_webrtc_ice_udp_addrs(Some(
