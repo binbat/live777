@@ -1707,6 +1707,7 @@ impl Manager {
     /// Subscribe to the stats-tick version stream: bumped on every
     /// [`Manager::stats_tick`] sample, so snapshot consumers (SSE, net4mqtt)
     /// refresh live counters on the sampling cadence.
+    #[cfg(feature = "net4mqtt")]
     pub(crate) fn subscribe_stats_version(&self) -> watch::Receiver<u64> {
         self.stats_version.subscribe()
     }
