@@ -42,6 +42,7 @@ use super::RemovePeerOutcome;
 use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
 use super::message::CascadeInfo;
 use super::publish::PublishRTCPeerConnection;
+use super::stats::MediaStats;
 use super::subscribe::SubscribeRTCPeerConnection;
 use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
@@ -761,6 +762,11 @@ pub(crate) struct PeerForwardInternal {
     manual_twcc_feedback: std::sync::Mutex<Option<SharedManualTwccFeedback>>,
     media_generation_id: RwLock<u64>,
     last_publish_profile: RwLock<Option<MediaProfile>>,
+    /// Stream-level media statistics. The manager's stats tick folds each
+    /// track/session sample delta into these, so the cumulative counters
+    /// stay monotonic across republishes and subscriber churn.
+    stats_publish: MediaStats,
+    stats_subscribe: MediaStats,
     #[cfg(feature = "source")]
     channel: Option<ChannelConfig>,
     /// Effective strategy for this stream (global strategy merged with any
@@ -804,6 +810,8 @@ impl PeerForwardInternal {
             manual_twcc_feedback: std::sync::Mutex::new(None),
             media_generation_id: RwLock::new(0),
             last_publish_profile: RwLock::new(None),
+            stats_publish: MediaStats::new(),
+            stats_subscribe: MediaStats::new(),
             #[cfg(feature = "source")]
             channel,
             strategy,
@@ -828,10 +836,27 @@ impl PeerForwardInternal {
         #[cfg(not(feature = "source"))]
         let has_virtual_publisher = false;
 
-        let publish_session_info = match self.publish.read().await.as_ref() {
+        // Publish-session media counters are the sum of its tracks: a real
+        // WHIP publisher owns all `Real` tracks, a configured source owns all
+        // `Virtual` ones, and the two never mix.
+        let publish_track_stats = {
+            let mut acc = api::response::Stats::default();
+            for track in publish_tracks.iter() {
+                let snap = track.stats().snapshot();
+                acc.bytes += snap.bytes;
+                acc.packets += snap.packets;
+                acc.bitrate += snap.bitrate;
+            }
+            acc
+        };
+
+        let mut publish_session_info = match self.publish.read().await.as_ref() {
             Some(publish) => Some(publish.info().await),
             None => None,
         };
+        if let Some(info) = publish_session_info.as_mut() {
+            info.stats = publish_track_stats.clone();
+        }
 
         let effective_publish_session_info =
             if publish_session_info.is_none() && has_virtual_publisher {
@@ -842,6 +867,7 @@ impl PeerForwardInternal {
                     state: RTCPeerConnectionState::Connected,
                     cascade: None,
                     has_data_channel: false,
+                    stats: publish_track_stats,
                 })
             } else {
                 publish_session_info
@@ -886,7 +912,47 @@ impl PeerForwardInternal {
             subscribe_session_infos,
             codecs: publish_tracks.iter().map(|track| track.codec()).collect(),
             has_virtual_publisher,
+            stats: api::response::StreamStats {
+                publish: self.stats_publish.snapshot(),
+                subscribe: self.stats_subscribe.snapshot(),
+            },
         }
+    }
+
+    /// Sample all per-track/per-session counters: refresh their bitrates and
+    /// fold the byte/packet deltas into the stream-level totals, which stay
+    /// monotonic across republishes and subscriber churn. Returns the
+    /// `(inbound, outbound)` byte deltas for server-wide metrics.
+    pub(crate) async fn sample_stats(&self) -> (u64, u64) {
+        let mut in_delta = (0u64, 0u64);
+        let mut in_bitrate = 0u64;
+        {
+            let publish_tracks = self.publish_tracks.read().await;
+            for track in publish_tracks.iter() {
+                let (bytes, packets) = track.stats().sample();
+                in_delta.0 += bytes;
+                in_delta.1 += packets;
+                in_bitrate += track.stats().bitrate();
+            }
+        }
+        self.stats_publish.add_delta(in_delta.0, in_delta.1);
+        self.stats_publish.set_bitrate(in_bitrate);
+
+        let mut out_delta = (0u64, 0u64);
+        let mut out_bitrate = 0u64;
+        {
+            let subscribe_group = self.subscribe_group.read().await;
+            for subscribe in subscribe_group.iter() {
+                let (bytes, packets) = subscribe.stats.sample();
+                out_delta.0 += bytes;
+                out_delta.1 += packets;
+                out_bitrate += subscribe.stats.bitrate();
+            }
+        }
+        self.stats_subscribe.add_delta(out_delta.0, out_delta.1);
+        self.stats_subscribe.set_bitrate(out_bitrate);
+
+        (in_delta.0, out_delta.0)
     }
 
     pub(crate) async fn add_ice_candidate(

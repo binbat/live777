@@ -88,6 +88,7 @@ mod media;
 pub mod message;
 mod publish;
 pub mod rtcp;
+pub(crate) mod stats;
 mod subscribe;
 
 #[cfg(not(feature = "source"))]
@@ -246,6 +247,13 @@ impl PeerForward {
 
     pub async fn info(&self) -> ForwardInfo {
         self.internal.info().await
+    }
+
+    /// Sample this stream's media counters; see
+    /// [`PeerForwardInternal::sample_stats`]. Returns the `(inbound,
+    /// outbound)` byte deltas since the previous sample.
+    pub(crate) async fn sample_stats(&self) -> (u64, u64) {
+        self.internal.sample_stats().await
     }
 
     pub(crate) fn strategy(&self) -> &api::strategy::Strategy {

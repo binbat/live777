@@ -194,7 +194,16 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
 - `liveion/src/route/` — Axum route handlers (whip, whep, session, admin,
   stream, strategy, source, recorder, info, sdp).
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
-  track, bridge, media, RTCP).
+  track, bridge, media, RTCP). Media statistics (issue #252): per-track and
+  per-session counters live in `forward/stats.rs` (`MediaStats`); hot paths
+  only `inc()` them (publish read loop in `track.rs`, subscriber write loop
+  in `subscribe.rs`), and the manager's `stats_tick` (2 s) `sample()`s them
+  into bitrates plus monotonic stream totals. They surface as the `stats`
+  field on the stream/session API types and as the
+  `live777_bytes_in_total`/`live777_bytes_out_total` Prometheus counters.
+  Stats are excluded from `PartialEq` on `api::response::Stream`/`Session` so
+  SSE/net4mqtt snapshot dedup keeps working; SSE gets live stats via the
+  manager's `stats_notify` force-push branch instead.
 - `liveion/src/stream/` — stream manager + source adapters. Every
   `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
   (`Manager::provision_streams`), always listed in the API/Dashboard, exempt

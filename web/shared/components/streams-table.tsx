@@ -5,7 +5,7 @@ import { Badge, Button, Checkbox, Table } from 'react-daisyui';
 import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 
 import { type CapabilityProbeStatus, type SessionConnectionState, type Stream, deleteStream, getRecordingStatus, getStreams, parseStreamsSSE, probeRecorderFeature, startRecording, stopRecording } from '../api';
-import { formatTime, nextSeqId } from '../utils';
+import { formatBitrate, formatBytes, formatTime, nextSeqId } from '../utils';
 import { useRefreshTimer } from '../hooks/use-refresh-timer';
 import { useStreamSSE } from '../hooks/use-stream-sse';
 import { TokenContext } from '../context';
@@ -233,6 +233,18 @@ export function StreamsTable(props: StreamTableProps) {
         window.open(url);
     };
 
+    // Server-wide media statistics (issue #252): sum of all streams' rates
+    // and cumulative bytes.
+    const statsTotals = streams.data.reduce(
+        (acc, s) => ({
+            rateIn: acc.rateIn + (s.stats?.publish.bitrate ?? 0),
+            rateOut: acc.rateOut + (s.stats?.subscribe.bitrate ?? 0),
+            bytesIn: acc.bytesIn + (s.stats?.publish.bytes ?? 0),
+            bytesOut: acc.bytesOut + (s.stats?.subscribe.bytes ?? 0),
+        }),
+        { rateIn: 0, rateOut: 0, bytesIn: 0, bytesOut: 0 },
+    );
+
     const handleDestroyStream = async (id: string) => {
         await deleteStream(id);
         await streams.updateData();
@@ -323,6 +335,12 @@ export function StreamsTable(props: StreamTableProps) {
             <div className="flex items-center gap-2 px-4 h-12">
                 <span className="font-bold text-lg">Streams</span>
                 <Badge color="ghost" className="font-bold mr-auto">{streams.data.length}</Badge>
+                <span
+                    className="text-sm opacity-70"
+                    title={`Total in ${formatBytes(statsTotals.bytesIn)} / out ${formatBytes(statsTotals.bytesOut)}`}
+                >
+                    {formatBitrate(statsTotals.rateIn)} in · {formatBitrate(statsTotals.rateOut)} out
+                </span>
                 {props.showCascade ? (
                     <Button
                         size="sm"
@@ -364,6 +382,8 @@ export function StreamsTable(props: StreamTableProps) {
                     <span>ID</span>
                     <span>Publisher</span>
                     <span>Subscriber</span>
+                    <span>In</span>
+                    <span>Out</span>
                     <span>Cascade</span>
                     <span>Creation Time</span>
                     <span>Operation</span>
@@ -382,6 +402,12 @@ export function StreamsTable(props: StreamTableProps) {
                             </span>
                             <span>{countActiveSessions(i.publish.sessions)}</span>
                             <span>{countActiveSessions(i.subscribe.sessions)}</span>
+                            <span title={`${formatBytes(i.stats?.publish.bytes ?? 0)} total`}>
+                                {formatBitrate(i.stats?.publish.bitrate ?? 0)}
+                            </span>
+                            <span title={`${formatBytes(i.stats?.subscribe.bytes ?? 0)} total`}>
+                                {formatBitrate(i.stats?.subscribe.bitrate ?? 0)}
+                            </span>
                             <span>{countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade))}</span>
                             <span>{formatTime(i.createdAt)}</span>
                             <div className="flex gap-1">
@@ -420,7 +446,7 @@ export function StreamsTable(props: StreamTableProps) {
                                 </span>
                             </div>
                         </Table.Row>
-                    ) : <tr><td colspan={6} className="text-center">N/A</td></tr>}
+                    ) : <tr><td colspan={8} className="text-center">N/A</td></tr>}
                 </Table.Body>
             </Table>
 

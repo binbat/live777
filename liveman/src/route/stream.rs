@@ -27,6 +27,16 @@ fn get_map_server_stream(map_info: HashMap<String, Vec<Stream>>) -> HashMap<Stri
     map_server_stream
 }
 
+/// Media statistics merge across nodes serving the same stream: cumulative
+/// counters and current rates both add up.
+fn merge_stats(a: &api::response::Stats, b: &api::response::Stats) -> api::response::Stats {
+    api::response::Stats {
+        bytes: a.bytes + b.bytes,
+        packets: a.packets + b.packets,
+        bitrate: a.bitrate + b.bitrate,
+    }
+}
+
 pub async fn index(
     State(mut state): State<AppState>,
     Query(query_extract): Query<QueryExtract>,
@@ -89,6 +99,10 @@ pub async fn index(
                                 // Config flags: true if true on any node.
                                 provisioned: s.provisioned || v.provisioned,
                                 on_demand: s.on_demand || v.on_demand,
+                                stats: api::response::StreamStats {
+                                    publish: merge_stats(&s.stats.publish, &v.stats.publish),
+                                    subscribe: merge_stats(&s.stats.subscribe, &v.stats.subscribe),
+                                },
                             }
                         }
                         None => s.clone(),
