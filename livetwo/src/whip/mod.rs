@@ -14,6 +14,7 @@ mod webrtc;
 use crate::transport;
 use crate::utils::shutdown::graceful_shutdown;
 use crate::utils::stats::start_stats_monitor;
+use ::webrtc::peer_connection::RTCIceServer;
 use cli::create_child;
 use libwish::Client;
 
@@ -22,21 +23,29 @@ pub use input::InputSource;
 pub(crate) use webrtc::log_rtcp_feedback_packet;
 pub use webrtc::setup_whip_peer;
 
+/// `ice_servers` selects the ICE servers used for gathering the offer; an
+/// empty list means host candidates only (loopback setups). For `synth://`
+/// inputs it is the default ICE server list, overridable with the URL's `ice`
+/// query parameter.
 pub async fn into(
     ct: CancellationToken,
     target_url: String,
     whip_url: String,
     token: Option<String>,
     command: Option<String>,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
     info!("Starting WHIP session: {}", target_url);
 
     // Synthetic input: generate frames in-process and publish them directly,
     // bypassing the RTP/RTSP input bridge entirely.
     #[cfg(feature = "rsmpeg")]
-    if let Some(publisher) =
-        crate::whipsynth::publisher_from_input(&target_url, whip_url.clone(), token.clone())?
-    {
+    if let Some(publisher) = crate::whipsynth::publisher_from_input(
+        &target_url,
+        whip_url.clone(),
+        token.clone(),
+        ice_servers.clone(),
+    )? {
         if command.is_some() {
             anyhow::bail!("--command is not supported with a synthetic input");
         }
@@ -76,7 +85,13 @@ pub async fn into(
     info!("Input source configured: {:?}", input_source.scheme());
 
     let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
-        webrtc::setup_whip_peer(&mut client, input_source.media_info(), target_url.clone()).await?;
+        webrtc::setup_whip_peer(
+            &mut client,
+            input_source.media_info(),
+            target_url.clone(),
+            ice_servers,
+        )
+        .await?;
     info!("WHIP peer setup completed; waiting for WebRTC connection");
 
     core::wait_for_peer_connected(

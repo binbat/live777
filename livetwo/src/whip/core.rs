@@ -25,17 +25,16 @@ use webrtc::peer_connection::{
 
 use crate::utils;
 
-/// Default STUN server used when the caller does not override ICE servers.
-pub const DEFAULT_STUN_SERVER: &str = "stun:stun.l.google.com:19302";
-
 /// How long to wait for the peer to reach `Connected` before giving up.
 const WAIT_FOR_PEER_CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Options for [`create_publish_peer`].
 pub struct PublishPeerOptions {
-    /// STUN server URL used for ICE gathering. `None` (or blank) disables ICE
-    /// servers, which is useful on loopback-only test setups.
-    pub stun_server: Option<String>,
+    /// ICE servers used for gathering the offer; an empty list means host
+    /// candidates only, which is useful on loopback-only test setups. The
+    /// server's own ice-servers from the WHIP response Link headers replace
+    /// this list via `set_configuration` once the answer arrives.
+    pub ice_servers: Vec<RTCIceServer>,
     /// Extra video codec registrations applied *before* the default codecs so
     /// the SDP offer prefers them (e.g. H265 with sprop parameters or AV1 with
     /// a resolution-derived level-idx).
@@ -45,7 +44,7 @@ pub struct PublishPeerOptions {
 impl Default for PublishPeerOptions {
     fn default() -> Self {
         Self {
-            stun_server: Some(DEFAULT_STUN_SERVER.to_string()),
+            ice_servers: iceserver::default_rtc_ice_servers(),
             extra_video_codecs: Vec::new(),
         }
     }
@@ -92,14 +91,9 @@ pub async fn create_publish_peer(
         diagnostics: diagnostics.clone(),
     });
 
-    let mut config_builder = RTCConfigurationBuilder::new();
-    if let Some(stun_server) = options.stun_server.filter(|s| !s.trim().is_empty()) {
-        config_builder = config_builder.with_ice_servers(vec![RTCIceServer {
-            urls: vec![stun_server],
-            username: String::new(),
-            credential: String::new(),
-        }]);
-    }
+    let config = RTCConfigurationBuilder::new()
+        .with_ice_servers(options.ice_servers)
+        .build();
 
     let peer: Arc<dyn PeerConnection> = Arc::new(
         PeerConnectionBuilder::new()
@@ -107,7 +101,7 @@ pub async fn create_publish_peer(
             .with_interceptor_registry(registry)
             .with_handler(handler)
             .with_udp_addrs(utils::webrtc::ice_udp_addrs())
-            .with_configuration(config_builder.build())
+            .with_configuration(config)
             .build()
             .await
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
@@ -515,7 +509,7 @@ mod tests {
         create_publish_peer(
             Arc::new(Notify::new()),
             PublishPeerOptions {
-                stun_server: None,
+                ice_servers: Vec::new(),
                 extra_video_codecs: Vec::new(),
             },
         )

@@ -6,38 +6,12 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::peer_connection::{
-    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
-    RTCConfiguration, RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer,
-    RTCPeerConnectionState, RTCSessionDescription, Registry,
+    PeerConnection, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceGatheringState,
+    RTCPeerConnectionState, RTCSessionDescription,
 };
 
 const OFFER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const OFFER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
-
-pub fn create_peer_connection_builder() -> Result<(
-    PeerConnectionBuilder<std::net::SocketAddr>,
-    RTCConfiguration,
-)> {
-    debug!("Creating WebRTC API");
-    let m = MediaEngine::default();
-
-    let registry = Registry::new();
-
-    let builder = PeerConnectionBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry);
-
-    let config = RTCConfigurationBuilder::new()
-        .with_ice_servers(vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_string()],
-            username: "".to_string(),
-            credential: "".to_string(),
-        }])
-        .build();
-
-    debug!("Default ICE configuration created");
-    Ok((builder, config))
-}
 
 pub fn ice_udp_addrs() -> Vec<SocketAddr> {
     api::webrtc::resolve_webrtc_ice_udp_addrs(None)
@@ -201,33 +175,15 @@ impl PeerConnectionEventHandler for Handler {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Clone)]
-    struct NoopHandler;
-    #[async_trait::async_trait]
-    impl PeerConnectionEventHandler for NoopHandler {}
-
-    #[tokio::test]
-    async fn test_create_peer_connection() {
-        let (builder, config) = create_peer_connection_builder().unwrap();
-        assert_eq!(config.ice_servers().len(), 1);
-        assert_eq!(
-            config.ice_servers()[0].urls,
-            vec!["stun:stun.l.google.com:19302"]
-        );
-        let peer = builder
-            .with_configuration(config)
-            .with_handler(Arc::new(NoopHandler))
-            .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
-            .build()
-            .await
-            .unwrap();
-        let _ = peer;
-    }
+    use webrtc::peer_connection::{MediaEngine, PeerConnectionBuilder, Registry};
 
     #[tokio::test]
     async fn offer_sdp_does_not_advertise_unspecified_candidate_addr() {
-        let (builder, config) = create_peer_connection_builder().unwrap();
+        // Host candidates only: no ICE servers needed for a loopback offer.
+        let builder = PeerConnectionBuilder::new()
+            .with_media_engine(MediaEngine::default())
+            .with_interceptor_registry(Registry::new());
+        let config = RTCConfigurationBuilder::new().build();
         let gather_complete = Arc::new(Notify::new());
         let peer = builder
             .with_configuration(config)

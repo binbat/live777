@@ -149,6 +149,7 @@ liveman = { path = "liveman" }
 livetwo = { path = "livetwo" }
 net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
+iceserver = { path = "libs/iceserver", features = ["clap"] }
 
 storage = { path = "libs/storage" }
 api = { path = "libs/api" }
@@ -182,6 +183,8 @@ source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
 source-whep = ["liveion/source-whep"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
+# Static WHIP push targets (declarative cascade-push)
+target-whip = ["liveion/target-whip"]
 rtsp = ["liveion/rtsp"]
 
 # Native source infrastructure (required by all capture-/encoder-* features)

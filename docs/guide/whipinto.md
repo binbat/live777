@@ -7,6 +7,17 @@ This tool has three working mode:
 - `rtsp as client`
 - `rtsp as server`
 
+## Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-i`, `--input` | `sdp://0.0.0.0:8554` | Input source: `sdp://` (RTP/SDP file or RTSP server mode), `rtsp://` (RTSP client mode), `synth://` (generated test frames) |
+| `-w`, `--whip` | required | WHIP endpoint URL |
+| `-t`, `--token` | none | Bearer token for WHIP authentication |
+| `--command` | none | Run a command as child process |
+| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `-v` | `warn` | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace) |
+
 ## RTP
 
 ```bash
@@ -118,6 +129,28 @@ whipinto -i rtsp://127.0.0.1:8554 -w http://localhost:7777/whip/777
 ```bash
 whipinto -i rtsp://localhost:8554/test-rtsp?transport=tcp -w http://localhost:7777/whip/test-rtsp
 ```
+
+## Synthetic input
+
+With the `rsmpeg` feature enabled, `-i` also accepts a `synth://` URL that
+generates test frames in-process (no external encoder needed):
+
+```bash
+whipinto -i 'synth://h264?audio=opus&width=1280&height=720&fps=30' \
+  -w http://localhost:7777/whip/777
+```
+
+Format: `synth://<vcodec>?<parameters>`; `<vcodec>` is one of `vp8`, `vp9`,
+`h264`, `h265`, `av1` and every parameter is optional:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `audio` | none | Audio codec: `opus`, `g722` (omit for no audio) |
+| `width` | `640` | Video width in pixels |
+| `height` | `480` | Video height in pixels |
+| `fps` | `30` | Video frame rate |
+| `duration` | none | Stop publishing after this many seconds |
+| `ice` | `--ice-server` value | ICE server spec `<url>[,<username>[,<credential>]]`, repeatable; replaces the CLI list for this input (an empty value disables ICE servers) |
 
 ## About `pkt_size=1200`
 

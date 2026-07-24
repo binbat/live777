@@ -16,3 +16,4 @@ url = { workspace = true }
 webrtc = { workspace = true }
 
 parse_link_header = "0.4"
+percent-encoding = "2.3"

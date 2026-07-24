@@ -217,15 +217,10 @@ impl InternalSourceConfig {
             || url.starts_with("wheps://")
     }
 
-    /// Delay before reconnect `attempt` (1-based): exponential backoff from a
-    /// 5 s base, capped at 60 s (5 s, 10 s, 20 s, 40 s, 60 s, …).
+    /// Delay before reconnect `attempt` (1-based) in milliseconds; see
+    /// [`crate::reconnect::reconnect_delay`] for the policy.
     pub fn reconnect_delay_ms(&self, attempt: u32) -> u64 {
-        const RECONNECT_BASE_MS: u64 = 5_000;
-        const RECONNECT_MAX_MS: u64 = 60_000;
-        let shift = attempt.saturating_sub(1).min(4);
-        RECONNECT_BASE_MS
-            .saturating_mul(1u64 << shift)
-            .min(RECONNECT_MAX_MS)
+        crate::reconnect::reconnect_delay(attempt).as_millis() as u64
     }
 
     pub fn max_reconnect_attempts(&self) -> u32 {

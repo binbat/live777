@@ -175,7 +175,7 @@ impl Source for GstRtspServerSource {
         let rtsp_url = format!("rtsp://127.0.0.1:{port}/gst?transport=tcp");
         let whip_url = whip_url.to_string();
         let whip_handle = tokio::spawn(async move {
-            livetwo::whip::into(whip_ct, rtsp_url, whip_url, None, None).await
+            livetwo::whip::into(whip_ct, rtsp_url, whip_url, None, None, Vec::new()).await
         });
 
         Ok(Box::new(GstRtspServerHandle {

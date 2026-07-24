@@ -12,7 +12,7 @@ use super::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use libwish::Client;
+use libwish::{Client, parse_whep_url};
 use livetwo::utils::graceful_shutdown;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -577,55 +577,6 @@ impl WhepSource {
     }
 }
 
-/// Map a `whep://` / `wheps://` source URL to the `http(s)://` URL the WHEP
-/// client POSTs to. A Bearer token can be carried as userinfo:
-/// `whep://token@host:port/whep/stream`.
-fn parse_whep_url(raw: &str) -> Result<(String, Option<String>)> {
-    // Scheme matching is case-insensitive (RFC 3986). The replacement itself
-    // is done textually: `whep` is not a WHATWG "special" scheme, so
-    // `Url::set_scheme` refuses the conversion to `http(s)`.
-    let http_url = match raw.split_once("://") {
-        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("whep") => format!("http://{rest}"),
-        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("wheps") => format!("https://{rest}"),
-        _ => anyhow::bail!("Unsupported WHEP source URL: {}", super::redact_url(raw)),
-    };
-
-    let mut url = url::Url::parse(&http_url)?;
-    if url.host_str().is_none() {
-        anyhow::bail!(
-            "Invalid WHEP source URL (no host): {}",
-            super::redact_url(raw)
-        );
-    }
-
-    // Only token-in-username is supported. A password means the user:pass
-    // form, which has no mapping onto Bearer auth — fail fast instead of
-    // silently dropping it (the error must not echo the URL: it contains
-    // the credential).
-    if url.password().is_some() {
-        anyhow::bail!(
-            "WHEP source URL must not carry a password; use whep://token@host… for Bearer auth"
-        );
-    }
-
-    // `Url::username` is still percent-encoded; decode so tokens containing
-    // reserved characters reach the Bearer header in their original form.
-    let token = (!url.username().is_empty()).then(|| {
-        percent_encoding::percent_decode_str(url.username())
-            .decode_utf8_lossy()
-            .into_owned()
-    });
-
-    // Strip userinfo unconditionally: the URL is used for requests and log
-    // lines, neither of which may see the credential.
-    url.set_username("")
-        .map_err(|_| anyhow::anyhow!("Invalid WHEP source URL"))?;
-    url.set_password(None)
-        .map_err(|_| anyhow::anyhow!("Invalid WHEP source URL"))?;
-
-    Ok((url.to_string(), token))
-}
-
 /// Short codec label for logs: the mime type, or `-` when absent.
 fn mime_of(codec: &Option<RTCRtpCodecParameters>) -> &str {
     codec
@@ -781,67 +732,6 @@ impl StreamSource for WhepSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_whep_url_maps_scheme() {
-        let (url, token) = parse_whep_url("whep://example.com:7777/whep/cam1").unwrap();
-        assert_eq!(url, "http://example.com:7777/whep/cam1");
-        assert_eq!(token, None);
-    }
-
-    #[test]
-    fn parse_whep_url_scheme_is_case_insensitive() {
-        let (url, _) = parse_whep_url("WHEP://example.com:7777/whep/cam1").unwrap();
-        assert_eq!(url, "http://example.com:7777/whep/cam1");
-        let (url, _) = parse_whep_url("Wheps://example.com/whep/cam1").unwrap();
-        assert_eq!(url, "https://example.com/whep/cam1");
-    }
-
-    #[test]
-    fn parse_wheps_url_maps_to_https() {
-        let (url, token) = parse_whep_url("wheps://example.com/whep/cam1").unwrap();
-        assert_eq!(url, "https://example.com/whep/cam1");
-        assert_eq!(token, None);
-    }
-
-    #[test]
-    fn parse_whep_url_extracts_userinfo_token() {
-        let (url, token) = parse_whep_url("whep://secret@example.com/whep/cam1").unwrap();
-        assert_eq!(url, "http://example.com/whep/cam1");
-        assert_eq!(token, Some("secret".to_string()));
-    }
-
-    #[test]
-    fn parse_whep_url_decodes_percent_encoded_token() {
-        let (url, token) = parse_whep_url("whep://tok%2Fen%3D@example.com/whep/cam1").unwrap();
-        assert_eq!(url, "http://example.com/whep/cam1");
-        assert_eq!(token, Some("tok/en=".to_string()));
-    }
-
-    #[test]
-    fn parse_whep_url_rejects_other_schemes() {
-        assert!(parse_whep_url("rtsp://example.com/stream").is_err());
-    }
-
-    #[test]
-    fn parse_whep_url_rejects_password_without_leaking_it() {
-        for raw in [
-            "whep://user:s3cret@example.com/whep/cam1",
-            "whep://:s3cret@example.com/whep/cam1",
-        ] {
-            let err = parse_whep_url(raw).unwrap_err();
-            assert!(
-                !err.to_string().contains("s3cret"),
-                "error leaks the credential: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_whep_url_error_redacts_credentials() {
-        let err = parse_whep_url("whelp://secret@example.com/whep/cam1").unwrap_err();
-        assert!(!err.to_string().contains("secret"));
-    }
 
     #[test]
     fn expected_kinds_ignore_rejected_m_lines() {

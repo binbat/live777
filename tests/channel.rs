@@ -101,7 +101,7 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
         None,
         None,
         Some(whep_channel_url),
-        None,
+        Vec::new(),
     ));
 
     assert!(
