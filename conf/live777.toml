@@ -71,7 +71,8 @@ ice_udp_addrs = ["auto"]
 # when the stream gains a publisher (WHIP or a configured source) and torn
 # down when the publisher goes away, so the downstream sees ordinary
 # publisher attach/detach cycles. A configured target on an `on_demand`
-# stream acts as standing demand and starts its sources once at startup.
+# stream acts as standing demand: its sources are (re)started whenever the
+# stream has neither a publisher nor a push session.
 # Lost sessions are re-established with exponential backoff.
 # Need enabled `--features=target-whip`
 # - WHIP push: whip://[token@]host:port/whip/<stream>

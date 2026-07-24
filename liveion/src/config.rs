@@ -619,7 +619,8 @@ fn default_on_demand_start_timeout_ms() -> u64 {
 /// media in. The push is media-driven: it is established when the stream
 /// gains a publisher and torn down when the publisher goes away; failures
 /// are retried with backoff. A target on an `on_demand` stream acts as
-/// standing demand and starts its sources once at startup.
+/// standing demand: its sources are (re)started whenever the stream has
+/// neither a publisher nor a push session.
 #[cfg(feature = "target-whip")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetConfig {

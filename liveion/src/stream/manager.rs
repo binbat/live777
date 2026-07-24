@@ -1105,6 +1105,13 @@ impl Manager {
             return Ok(());
         }
         if self.source_manager.has_bridge(stream).await {
+            // The sources are already running, and the pending stop was
+            // cancelled above: re-arm the close-after timer so a caller
+            // that never consumes (a failed subscribe handshake, a cascade
+            // push retrying an unreachable downstream) leaves the sources
+            // running only for close_after instead of forever. A real
+            // subscriber cancels it again via SubscribeStarted.
+            self.maybe_arm_on_demand_stop(stream).await;
             return Ok(());
         }
 
@@ -1114,6 +1121,8 @@ impl Manager {
         let lock = self.on_demand_lock(stream).await;
         let _guard = lock.lock().await;
         if self.source_manager.has_bridge(stream).await {
+            // Same re-arm as above: the pending stop was cancelled on entry.
+            self.maybe_arm_on_demand_stop(stream).await;
             return Ok(());
         }
 
@@ -2013,6 +2022,40 @@ mod tests {
                 .stop_stream_source("od", crate::event::SessionStopReason::PeerClosed)
                 .await
                 .unwrap();
+            cancel.cancel();
+            let _ = std::fs::remove_file(&sdp_path);
+        }
+
+        /// A consumer that cancels the pending stop but never materializes
+        /// (a cascade push retrying an unreachable downstream, a failed
+        /// WHEP handshake) must not leave the sources running forever: the
+        /// ensure early-return re-arms the close-after timer.
+        #[tokio::test]
+        async fn ensure_with_running_source_rearms_stop_timer() {
+            let sdp_path = write_test_sdp("rearm").await;
+            let cancel = CancellationToken::new();
+            let manager = Manager::new(on_demand_config(&sdp_path), cancel.clone()).await;
+            manager.provision_streams().await;
+
+            manager.ensure_on_demand_source("od").await.unwrap();
+            assert!(manager.source_manager.has_source("od").await);
+
+            // Simulate the consumer-less ensure: cancel the pending
+            // safety-net stop (as ensure does on entry) with no
+            // SubscribeStarted ever following.
+            manager.cancel_on_demand_stop("od").await;
+
+            // The bridge is already up: the early return must re-arm the
+            // stop instead of leaving the sources running forever.
+            manager.ensure_on_demand_source("od").await.unwrap();
+
+            // Well past close_after (200ms): the sources must have stopped.
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            assert!(
+                !manager.source_manager.has_source("od").await,
+                "on-demand source kept running after a consumer-less ensure"
+            );
+
             cancel.cancel();
             let _ = std::fs::remove_file(&sdp_path);
         }

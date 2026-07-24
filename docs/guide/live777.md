@@ -140,11 +140,13 @@ The push is media-driven: it is established when the stream gains a
 publisher (WHIP or a configured source) and torn down when the publisher
 goes away, so the downstream node sees ordinary publisher attach/detach
 cycles and its own `auto_delete_*`/on-demand strategies keep working. A
-configured target on an `on_demand` stream acts as standing demand and
-starts its sources once at startup (an `on_demand` stream that later goes
-idle returns to standby instead of being power-cycled). A lost session
-(downstream close, ICE failure, provisioned-stream reset) is
-re-established with exponential backoff (5s doubling, 60s cap).
+configured target on an `on_demand` stream acts as standing demand: its
+sources are (re)started whenever the stream has neither a publisher nor a
+push session, so the relay recovers on its own once an unreachable
+downstream is back. A lost session (downstream close, ICE failure,
+provisioned-stream reset) is re-established with exponential backoff
+(5s doubling, 60s cap) — the same pacing bounds the on-demand source
+restarts, at roughly one attempt per minute.
 
 ## DataChannel Forward
 

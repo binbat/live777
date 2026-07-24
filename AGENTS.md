@@ -230,8 +230,9 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   negotiates per media epoch, so its codecs always match the current
   publisher), retried with source-style backoff (5 s doubling, 60 s cap),
   reconciled against the manager on event-bus lag; a target on an
-  `on_demand` stream acts as standing demand and kicks its sources once at
-  startup (no re-kick afterwards — an idle stream returns to standby).
+  `on_demand` stream acts as standing demand: its sources are (re)started
+  whenever the stream has neither a publisher nor a push session, paced by
+  the same backoff.
 - `liveman/src/route/` — proxy/cascade/admin routes.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.

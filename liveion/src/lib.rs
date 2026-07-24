@@ -33,6 +33,12 @@ mod forward;
 mod hook;
 mod r#macro;
 mod metrics;
+#[cfg(any(
+    feature = "source-rtsp",
+    feature = "source-whep",
+    feature = "target-whip"
+))]
+mod reconnect;
 mod result;
 mod route;
 #[cfg(any(feature = "rtsp", feature = "source-rtsp", feature = "source-sdp"))]

@@ -710,7 +710,10 @@ impl PeerForward {
                     session_id.clone(),
                 )
                 .await?;
-            let _ = peer.set_remote_description(target_sdp).await;
+            // Propagate a bad answer instead of reporting an established
+            // session that cannot carry media: the error path closes the
+            // peer, and the session cleanup above removes it again.
+            peer.set_remote_description(target_sdp).await?;
             Ok(session_id)
         }
         .await;

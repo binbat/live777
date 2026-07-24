@@ -61,7 +61,6 @@ scuffle-h265 = { version = "0.2.2", optional = true }
 
 glob = "0.3"
 url = { workspace = true, optional = true }
-percent-encoding = { version = "2.3", optional = true }
 fs2 = "0.4"
 
 [features]
@@ -82,11 +81,11 @@ rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
 source = ["dep:rtsp", "dep:url", "dep:livetwo"]
 source-sdp = ["source"]
 source-rtsp = ["source", "rtsp/client"]
-source-whep = ["source", "dep:libwish", "dep:percent-encoding"]
+source-whep = ["source", "dep:libwish"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
 # Static WHIP push targets (declarative cascade-push)
-target-whip = ["cascade", "dep:url", "dep:percent-encoding"]
+target-whip = ["cascade"]
 
 native-source = ["source", "dep:livehal"]
 
