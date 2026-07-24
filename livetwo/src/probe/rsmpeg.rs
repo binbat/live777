@@ -96,7 +96,7 @@ impl ProbeBackend for RsmpegProbe {
             audio_tx,
             codec_info.clone(),
             crate::whep::WhepPeerOptions {
-                ice_servers: crate::whep::stun_ice_servers(config.stun_server.as_deref()),
+                ice_servers: config.ice_servers.clone(),
                 ..Default::default()
             },
             Some(state_tx),

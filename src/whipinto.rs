@@ -24,6 +24,11 @@ struct Args {
     /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
+    /// ICE server used for offer gathering, repeatable; format
+    /// `<url>[,<username>[,<credential>]]`. Pass an empty string to use host
+    /// candidates only.
+    #[arg(long = "ice-server", value_name = "SPEC", default_value = iceserver::DEFAULT_ICE_SERVER_URL)]
+    ice_servers: Vec<iceserver::IceServer>,
 }
 
 #[tokio::main]
@@ -49,6 +54,7 @@ async fn main() -> Result<()> {
         args.whip.clone(),
         args.token.clone(),
         args.command.clone(),
+        iceserver::to_rtc_ice_servers(args.ice_servers),
     ));
 
     utils::shutdown_signal().await;

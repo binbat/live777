@@ -258,7 +258,7 @@ impl Source for MediamtxPullSource {
         let whip_url = whip_url.to_string();
         let whip_handle = tokio::spawn(async move {
             wait_path_ready(api_addr, "mt", &whip_ct, None).await;
-            livetwo::whip::into(whip_ct, rtsp_url, whip_url, None, None).await
+            livetwo::whip::into(whip_ct, rtsp_url, whip_url, None, None, Vec::new()).await
         });
 
         Ok(Box::new(MediamtxPullHandle {

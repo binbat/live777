@@ -60,9 +60,11 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     timeout: u64,
 
-    /// STUN server URL used for ICE gathering.
-    #[arg(long, default_value = "stun:stun.l.google.com:19302")]
-    stun_server: String,
+    /// ICE server used for offer gathering, repeatable; format
+    /// `<url>[,<username>[,<credential>]]`. Pass an empty string to use host
+    /// candidates only.
+    #[arg(long = "ice-server", value_name = "SPEC", default_value = iceserver::DEFAULT_ICE_SERVER_URL)]
+    ice_servers: Vec<iceserver::IceServer>,
 }
 
 #[tokio::main]
@@ -115,7 +117,7 @@ async fn run() -> Result<()> {
         height: args.height,
         fps: args.fps,
         duration: args.duration.map(Duration::from_secs),
-        stun_server: args.stun_server.clone(),
+        ice_servers: iceserver::to_rtc_ice_servers(args.ice_servers),
     };
 
     info!(

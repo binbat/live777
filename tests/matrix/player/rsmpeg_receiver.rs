@@ -73,8 +73,8 @@ impl Player for RsmpegWhepReceiver {
             video_codec: codec,
             sprop_params: self.sprop_params.clone(),
             token: None,
-            // Loopback test: host candidates suffice, no STUN needed.
-            stun_server: None,
+            // Loopback test: host candidates suffice, no ICE servers needed.
+            ice_servers: Vec::new(),
         };
 
         let backend = RsmpegProbe {

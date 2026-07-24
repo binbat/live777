@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use ::webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
+use ::webrtc::peer_connection::{PeerConnection, RTCIceServer, RTCPeerConnectionState};
 use cli::create_child;
 use libwish::Client;
 use tokio::sync::{Notify, watch};
@@ -22,13 +22,12 @@ use crate::utils::stats::start_stats_monitor;
 use rtsp::constants::media_type;
 
 pub use output::OutputTarget;
-pub use webrtc::{WhepPeerOptions, forward_rtcp_to_peer, setup_whep_peer, stun_ice_servers};
+pub use webrtc::{WhepPeerOptions, forward_rtcp_to_peer, setup_whep_peer};
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 512;
 
-/// `stun_server` selects the STUN server used for ICE gathering; `None` or a
-/// blank string disables STUN (host candidates only), same as the WHIP
-/// side's `--stun-server ""`.
+/// `ice_servers` selects the ICE servers used for gathering the offer; an
+/// empty list means host candidates only (loopback setups).
 #[allow(clippy::too_many_arguments)]
 pub async fn from(
     ct: CancellationToken,
@@ -38,7 +37,7 @@ pub async fn from(
     token: Option<String>,
     command: Option<String>,
     channel_url: Option<String>,
-    stun_server: Option<String>,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
     from_with_state(
         ct,
@@ -49,7 +48,7 @@ pub async fn from(
         command,
         channel_url,
         None,
-        stun_server,
+        ice_servers,
     )
     .await
 }
@@ -64,7 +63,7 @@ pub async fn from_with_state(
     command: Option<String>,
     channel_url: Option<String>,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
-    stun_server: Option<String>,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
     info!("Starting WHEP session: {}", target_url);
 
@@ -91,7 +90,7 @@ pub async fn from_with_state(
         audio_send,
         codec_info.clone(),
         webrtc::WhepPeerOptions {
-            ice_servers: webrtc::stun_ice_servers(stun_server.as_deref()),
+            ice_servers,
             ..Default::default()
         },
         state_tx,

@@ -78,7 +78,8 @@ impl Source for SynthSource {
             // Tests only need a few seconds of media; a longer duration wastes
             // time and keeps the publisher alive after teardown.
             duration: Some(Duration::from_secs(10)),
-            stun_server: String::new(),
+            // Loopback test: host candidates suffice, no ICE servers needed.
+            ice_servers: Vec::new(),
         };
 
         let handle = tokio::spawn(async move {

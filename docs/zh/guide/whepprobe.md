@@ -62,10 +62,8 @@ use std::time::Duration;
 // RsmpegProbe 需要 `livetwo` 启用 `rsmpeg` feature 才能使用。
 let config = ProbeConfig {
     whep_url: "http://localhost:7777/whep/live".to_string(),
-    timeout: Duration::from_secs(30),
-    codec: Some(Codec::Vp8),
-    sprop_params: None,
-    token: None,
+    video_codec: Some(Codec::Vp8),
+    ..Default::default()
 };
 
 let result = RsmpegProbe::default().probe(&config).await?;

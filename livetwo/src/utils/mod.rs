@@ -8,7 +8,7 @@ use url::Url;
 
 pub use host::{format_bind_addr, is_ipv4, is_ipv6, parse_host, parse_host_from_sdp};
 pub use shutdown::graceful_shutdown;
-pub use webrtc::{create_event_handler, create_peer_connection_builder, setup_connection};
+pub use webrtc::{create_event_handler, setup_connection};
 
 pub fn parse_input_url(target_url: &str) -> Result<Url> {
     Ok(Url::parse(target_url).unwrap_or_else(|_| {

@@ -7,8 +7,13 @@ pub mod coturn;
 use rtc::peer_connection::transport::RTCIceServer;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::str::FromStr;
 use tracing::warn;
 use webrtc::error::Error;
+
+/// ICE server URL used when nothing is configured (a single public STUN
+/// server). Also the CLI default for the livetwo-based tools.
+pub const DEFAULT_ICE_SERVER_URL: &str = "stun:stun.l.google.com:19302";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct IceServer {
@@ -18,6 +23,35 @@ pub struct IceServer {
     pub username: String,
     #[serde(default)]
     pub credential: String,
+}
+
+impl FromStr for IceServer {
+    type Err = String;
+
+    /// Parse one server spec: `<url>[,<username>[,<credential>]]`.
+    ///
+    /// An empty (or blank) string yields an entry without URLs, which
+    /// [`to_rtc_ice_servers`] drops — this is how CLI flags express "no ICE
+    /// servers" (host candidates only).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Ok(IceServer::default());
+        }
+        let mut parts = s.splitn(3, ',');
+        let url = parts.next().unwrap_or_default().trim().to_string();
+        let username = parts.next().unwrap_or_default().to_string();
+        let credential = parts.next().unwrap_or_default().to_string();
+        let server = IceServer {
+            urls: vec![url],
+            username,
+            credential,
+        };
+        server
+            .validate()
+            .map_err(|e| format!("invalid ICE server '{s}': {e}"))?;
+        Ok(server)
+    }
 }
 
 impl IceServer {
@@ -133,10 +167,25 @@ pub fn format_iceserver(urls: Vec<String>, username: String, password: String) -
 
 pub fn default_ice_servers() -> Vec<IceServer> {
     vec![IceServer {
-        urls: vec!["stun:stun.l.google.com:19302".to_string()],
+        urls: vec![DEFAULT_ICE_SERVER_URL.to_string()],
         username: "".to_string(),
         credential: "".to_string(),
     }]
+}
+
+/// Convert configured ICE servers into runtime `RTCIceServer`s, dropping
+/// entries without URLs (an entry with no URLs disables ICE gathering).
+pub fn to_rtc_ice_servers(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
+    servers
+        .into_iter()
+        .filter(|server| !server.urls.is_empty())
+        .map(Into::into)
+        .collect()
+}
+
+/// The default ICE servers as runtime `RTCIceServer`s.
+pub fn default_rtc_ice_servers() -> Vec<RTCIceServer> {
+    to_rtc_ice_servers(default_ice_servers())
 }
 
 pub fn link_header(ice_servers: Vec<IceServer>) -> Vec<String> {
@@ -425,5 +474,75 @@ mod tests {
         assert_eq!(rtc.urls[1], "stun:203.0.113.2:19302");
         assert!(rtc.username.is_empty());
         assert!(rtc.credential.is_empty());
+    }
+
+    // --- FromStr (CLI spec) ---
+
+    #[test]
+    fn from_str_plain_stun() {
+        let server: IceServer = "stun:stun.l.google.com:19302".parse().unwrap();
+        assert_eq!(server.urls, vec!["stun:stun.l.google.com:19302"]);
+        assert!(server.username.is_empty());
+        assert!(server.credential.is_empty());
+    }
+
+    #[test]
+    fn from_str_turn_with_credentials() {
+        let server: IceServer = "turn:turn.example.com:3478,user,pass".parse().unwrap();
+        assert_eq!(server.urls, vec!["turn:turn.example.com:3478"]);
+        assert_eq!(server.username, "user");
+        assert_eq!(server.credential, "pass");
+    }
+
+    #[test]
+    fn from_str_turn_with_transport_query() {
+        let server: IceServer = "turn:turn.example.com:3478?transport=tcp,user,pass"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            server.urls,
+            vec!["turn:turn.example.com:3478?transport=tcp"]
+        );
+        assert_eq!(server.username, "user");
+        assert_eq!(server.credential, "pass");
+    }
+
+    #[test]
+    fn from_str_empty_disables_ice_servers() {
+        for input in ["", "  "] {
+            let server: IceServer = input.parse().unwrap();
+            assert!(server.urls.is_empty());
+        }
+    }
+
+    #[test]
+    fn from_str_turn_without_credentials_fails() {
+        assert!("turn:turn.example.com:3478".parse::<IceServer>().is_err());
+    }
+
+    #[test]
+    fn from_str_invalid_url_fails() {
+        assert!("http:example.com".parse::<IceServer>().is_err());
+    }
+
+    #[test]
+    fn to_rtc_ice_servers_drops_entries_without_urls() {
+        let servers = vec![
+            IceServer::default(),
+            IceServer {
+                urls: vec!["stun:203.0.113.1".into()],
+                ..Default::default()
+            },
+        ];
+        let rtc = to_rtc_ice_servers(servers);
+        assert_eq!(rtc.len(), 1);
+        assert_eq!(rtc[0].urls, vec!["stun:203.0.113.1:3478"]);
+    }
+
+    #[test]
+    fn default_rtc_ice_servers_is_public_stun() {
+        let rtc = default_rtc_ice_servers();
+        assert_eq!(rtc.len(), 1);
+        assert_eq!(rtc[0].urls, vec![DEFAULT_ICE_SERVER_URL]);
     }
 }

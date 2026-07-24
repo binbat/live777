@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **WHIP/WHEP session IDs are now UUIDs** (previously an opaque hash of an internal pointer). Session IDs remain opaque strings for API clients, but anything pattern-matching the old 32-hex format must be updated.
   - Webhook-style push notifications are replaced by Server-Sent Events (`GET /api/sse/streams`) and the `net4mqtt` xdata channel, both of which push full stream-state snapshots when the state changes.
   - The `/api/sse/events` endpoint has been removed. Use `/api/sse/streams` instead.
+- **Unified ICE server configuration across the livetwo-based tools.** The `--stun-server` flag on `whepfrom`, `whepprobe`, `whipsynth` and `livewrk` is replaced by a repeatable `--ice-server <url>[,<username>[,<credential>]]` flag that also supports TURN credentials (an empty string still disables ICE servers); `whipinto` gained the same flag (its ICE servers were previously hardcoded). The `synth://` input URL parameter `stun=` is now `ice=` (repeatable). In `livetwo`, the `stun_server` fields/parameters of `PublishPeerOptions`, `WhepLoadParams`, `ProbeConfig`, `PublisherConfig`, `livetwo::whip::into` and `livetwo::whep::from`/`from_with_state` are all replaced by `ice_servers: Vec<RTCIceServer>`, parsed and converted through the shared `iceserver` crate (`IceServer::from_str`, `to_rtc_ice_servers`, `default_rtc_ice_servers`, `DEFAULT_ICE_SERVER_URL`); the dead `livetwo::utils::create_peer_connection_builder` helper (which hardcoded a STUN server) was removed.
 
 ### Added
 

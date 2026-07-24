@@ -52,21 +52,6 @@ impl Default for WhepPeerOptions {
     }
 }
 
-/// Build an ICE server list from an optional STUN server URL. A `None` or
-/// blank URL yields an empty list (host candidates only), matching the WHIP
-/// publish side's `--stun-server ""` opt-out (`whip::core`).
-pub fn stun_ice_servers(stun_server: Option<&str>) -> Vec<RTCIceServer> {
-    stun_server
-        .filter(|url| !url.trim().is_empty())
-        .map(|url| RTCIceServer {
-            urls: vec![url.to_string()],
-            username: String::new(),
-            credential: String::new(),
-        })
-        .into_iter()
-        .collect()
-}
-
 /// Set up a WHEP client peer with `options`, POST the offer and apply the
 /// answer; see [`WhepPeerOptions`] for the connection-level knobs.
 #[allow(clippy::too_many_arguments)]

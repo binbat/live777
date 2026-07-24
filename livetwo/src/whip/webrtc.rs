@@ -10,7 +10,7 @@ use rtc_rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
 use rtc_rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
 use tokio::sync::{Notify, mpsc::UnboundedSender, watch};
 use tracing::debug;
-use webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
+use webrtc::peer_connection::{PeerConnection, RTCIceServer, RTCPeerConnectionState};
 
 use crate::utils;
 use crate::utils::stats::RtcpStats;
@@ -21,6 +21,7 @@ pub async fn setup_whip_peer(
     client: &mut Client,
     media_info: &rtsp::MediaInfo,
     input_id: String,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<(
     Arc<dyn PeerConnection>,
     Option<UnboundedSender<Vec<u8>>>,
@@ -31,8 +32,14 @@ pub async fn setup_whip_peer(
 )> {
     let gather_complete = Arc::new(Notify::new());
 
-    let publish =
-        core::create_publish_peer(gather_complete.clone(), PublishPeerOptions::default()).await?;
+    let publish = core::create_publish_peer(
+        gather_complete.clone(),
+        PublishPeerOptions {
+            ice_servers,
+            extra_video_codecs: Vec::new(),
+        },
+    )
+    .await?;
     let peer = publish.peer;
 
     let video_tx = if let Some(ref video_codec_params) = media_info.video_codec {
