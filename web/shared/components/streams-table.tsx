@@ -233,8 +233,9 @@ export function StreamsTable(props: StreamTableProps) {
         window.open(url);
     };
 
-    // Server-wide media statistics (issue #252): sum of all streams' rates
-    // and cumulative bytes.
+    // Media statistics (issue #252): sum of all streams' rates and
+    // cumulative bytes. Liveman marks merged cluster snapshots as node-work
+    // totals because cascade hops are counted on each relay node.
     const statsTotals = streams.data.reduce(
         (acc, s) => ({
             rateIn: acc.rateIn + (s.stats?.publish.bitrate ?? 0),
@@ -244,6 +245,7 @@ export function StreamsTable(props: StreamTableProps) {
         }),
         { rateIn: 0, rateOut: 0, bytesIn: 0, bytesOut: 0 },
     );
+    const statsLabel = streams.data.some(s => s.statsScope === 'clusterNodeWork') ? 'Node work' : 'Total';
 
     const handleDestroyStream = async (id: string) => {
         await deleteStream(id);
@@ -337,9 +339,9 @@ export function StreamsTable(props: StreamTableProps) {
                 <Badge color="ghost" className="font-bold mr-auto">{streams.data.length}</Badge>
                 <span
                     className="text-sm opacity-70"
-                    title={`Total in ${formatBytes(statsTotals.bytesIn)} / out ${formatBytes(statsTotals.bytesOut)}`}
+                    title={`${statsLabel} in ${formatBytes(statsTotals.bytesIn)} / out ${formatBytes(statsTotals.bytesOut)}`}
                 >
-                    {formatBitrate(statsTotals.rateIn)} in · {formatBitrate(statsTotals.rateOut)} out
+                    {statsLabel}: {formatBitrate(statsTotals.rateIn)} in · {formatBitrate(statsTotals.rateOut)} out
                 </span>
                 {props.showCascade ? (
                     <Button
@@ -402,10 +404,10 @@ export function StreamsTable(props: StreamTableProps) {
                             </span>
                             <span>{countActiveSessions(i.publish.sessions)}</span>
                             <span>{countActiveSessions(i.subscribe.sessions)}</span>
-                            <span title={`${formatBytes(i.stats?.publish.bytes ?? 0)} total`}>
+                            <span title={`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`}>
                                 {formatBitrate(i.stats?.publish.bitrate ?? 0)}
                             </span>
-                            <span title={`${formatBytes(i.stats?.subscribe.bytes ?? 0)} total`}>
+                            <span title={`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`}>
                                 {formatBitrate(i.stats?.subscribe.bitrate ?? 0)}
                             </span>
                             <span>{countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade))}</span>

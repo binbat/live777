@@ -938,6 +938,19 @@ impl PeerForwardInternal {
         acc
     }
 
+    fn aggregate_subscribe_bitrate(subscribe_group: &[SubscribeRTCPeerConnection]) -> u64 {
+        subscribe_group
+            .iter()
+            .map(|session| session.stats.snapshot().bitrate)
+            .sum()
+    }
+
+    #[cfg(feature = "source")]
+    pub(crate) fn set_publish_bitrate_from_tracks(&self, publish_tracks: &[PublishTrackRemote]) {
+        self.stats_publish
+            .set_bitrate(Self::aggregate_publish_stats(publish_tracks).bitrate);
+    }
+
     /// Aggregate the current publish-track counters under a fresh read
     /// lock. Lock order note: this acquires `publish_tracks` on its own and
     /// must never be called while holding the `publish` lock (the
@@ -1002,6 +1015,12 @@ impl PeerForwardInternal {
                 .with_label_values(&["in"])
                 .inc_by(bytes);
         }
+    }
+
+    async fn refresh_subscribe_bitrate(&self) {
+        let subscribe_group = self.subscribe_group.read().await;
+        self.stats_subscribe
+            .set_bitrate(Self::aggregate_subscribe_bitrate(&subscribe_group));
     }
 
     /// Fold a departing subscriber's un-sampled tail into the stream total
@@ -1411,7 +1430,8 @@ impl PeerForwardInternal {
 
     /// Shared cleanup after a publish session has been taken out of `self.publish`.
     /// Callers must have already set `self.publish` to `None` and prepared the
-    /// `SessionInfo` with the final state and `leave_at` timestamp.
+    /// `SessionInfo` state and `leave_at`; this method refreshes its final
+    /// cumulative stats while folding the departing tracks.
     async fn do_remove_publish_cleanup(
         &self,
         closed_session: SessionInfo,
@@ -1423,14 +1443,17 @@ impl PeerForwardInternal {
         // in `PublishPeerHandler::on_track`.
         *self.publish_peer_ref.lock().await = None;
 
-        {
+        let final_stats = {
             let mut publish_tracks = self.publish_tracks.write().await;
             // Fold the tail the stats tick has not seen yet, then drop the
             // tracks: stream/server totals stay monotonic across republish.
             self.fold_publish_tracks_final(&publish_tracks);
+            let final_stats = Self::aggregate_publish_stats(&publish_tracks);
             publish_tracks.clear();
+            self.stats_publish.set_bitrate(0);
             let _ = self.publish_tracks_change.send(());
-        }
+            final_stats
+        };
 
         {
             let mut publish_leave_at = self.publish_leave_at.write().await;
@@ -1442,6 +1465,7 @@ impl PeerForwardInternal {
             // A closed session has no current rate; keep only its
             // cumulative counters.
             let mut closed_session = closed_session;
+            closed_session.stats = final_stats;
             closed_session.stats.bitrate = 0;
             let mut closed_publish_sessions = self.closed_publish_sessions.write().await;
             closed_publish_sessions.push(closed_session);
@@ -2059,6 +2083,7 @@ impl PeerForwardInternal {
         // Fold the tail the stats tick has not seen yet, so stream/server
         // totals stay monotonic across subscriber churn.
         self.fold_subscribe_final(subscribe);
+        self.refresh_subscribe_bitrate().await;
 
         #[cfg(feature = "cascade")]
         if let Some(cascade) = subscribe.cascade.clone() {

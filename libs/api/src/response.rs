@@ -39,6 +39,11 @@ pub struct Stream {
     /// channel dedup on the serialized payload instead of `PartialEq`).
     #[serde(default)]
     pub stats: StreamStats,
+    /// Scope of `stats`. `node` is one liveion node's media work;
+    /// `clusterNodeWork` is liveman's sum of the node-level work for the
+    /// same stream across nodes, including cascade hops.
+    #[serde(default)]
+    pub stats_scope: StatsScope,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -82,6 +87,17 @@ pub struct Stats {
 pub struct StreamStats {
     pub publish: Stats,
     pub subscribe: Stats,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StatsScope {
+    /// Statistics from one liveion node.
+    #[default]
+    Node,
+    /// Sum of node-level work across a liveman cluster. Internal cascade
+    /// hops are intentionally counted as work on the relay nodes.
+    ClusterNodeWork,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -175,6 +191,7 @@ mod tests {
             provisioned: false,
             on_demand: false,
             stats: StreamStats::default(),
+            stats_scope: StatsScope::Node,
         }
     }
 
@@ -186,6 +203,9 @@ mod tests {
         let a = stream();
         let mut b = a.clone();
         b.stats.publish.bytes = 42;
+        assert_ne!(a, b);
+        let mut b = a.clone();
+        b.stats_scope = StatsScope::ClusterNodeWork;
         assert_ne!(a, b);
 
         let a = session(Stats::default());
@@ -214,6 +234,12 @@ mod tests {
                 "subscribe": { "bytes": 0, "packets": 0, "bitrate": 0 },
             })
         );
+        assert_eq!(value["statsScope"], serde_json::json!("node"));
+        let mut cluster_stream = stream();
+        cluster_stream.stats_scope = StatsScope::ClusterNodeWork;
+        let value = serde_json::to_value(cluster_stream).unwrap();
+        assert_eq!(value["statsScope"], serde_json::json!("clusterNodeWork"));
+
         let session_value = serde_json::to_value(session(Stats {
             bytes: 1,
             packets: 2,

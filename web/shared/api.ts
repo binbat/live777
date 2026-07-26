@@ -42,6 +42,8 @@ export interface StreamStats {
     subscribe: Stats;
 }
 
+export type StatsScope = 'node' | 'clusterNodeWork';
+
 export interface Stream {
     id: string;
     createdAt: number;
@@ -59,6 +61,8 @@ export interface Stream {
     onDemand?: boolean;
     /** Stream-level media statistics: inbound publisher / outbound subscribers. */
     stats?: StreamStats;
+    /** Scope of stream-level media statistics. */
+    statsScope?: StatsScope;
 }
 
 export interface Session {

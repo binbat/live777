@@ -173,6 +173,8 @@ For every node configured under `[[nodes]]`, Liveman automatically opens an SSE 
 
 When `net4mqtt` is enabled, each Liveion node pushes a stream snapshot through `xdata` with key `streams` whenever the stream state changes, and on the 2-second media-stats sampling tick when the reported counters change (payloads are deduplicated, so an idle node stays silent). Liveman decodes it and updates the corresponding node entry.
 
+When Liveman merges the same stream across multiple nodes, the merged `stats` field is marked with `statsScope: "clusterNodeWork"`. It is a sum of node-level work, not cluster edge traffic: cascade hops are counted once on each relay node.
+
 ## Cluster {#cluster}
 
 Cluster mode must liveman. We can use [`net4mqtt`](/guide/net4mqtt) extra network
@@ -184,4 +186,3 @@ Cluster mode must liveman. We can use [`net4mqtt`](/guide/net4mqtt) extra networ
 We support cloud and verge mix cluster
 
 ![live777-verge](/live777-verge.excalidraw.svg)
-

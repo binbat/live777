@@ -73,6 +73,7 @@ Response: [200]
 - `(publish | subscribe).sessions.[].stats.packets`: Int，累计包数
 - `(publish | subscribe).sessions.[].stats.bitrate`: Int，当前码率（比特/秒，每 2 秒采样一次）
 - `stats`: `Object`，流级统计：`stats.publish` 为输入（推流）合计，`stats.subscribe` 为全部订阅输出合计；结构同为 `Stats`，累计计数在重新推流和订阅者进出时保持单调递增
+- `statsScope`: String，`stats` 的范围；`node` 表示单个 liveion 节点，`clusterNodeWork` 表示 liveman 跨节点合并的节点工作量，级联链路会计入每个中继节点
 
 例如:
 

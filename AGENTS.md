@@ -204,9 +204,14 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   `remove_virtual_tracks`) fold each departing flow's un-sampled tail into
   the totals, so counters stay exact across churn; `info()` adds each live
   flow's `unsampled()` tail to the folded totals so stream-level counters
-  line up with the per-session ones between ticks. Stats surface as the
-  `stats` field on the stream/session API types and as the
-  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter.
+  line up with the per-session ones between ticks; removal also refreshes
+  the aggregate bitrate immediately so closed directions do not keep a stale
+  rate until the next tick. Stats surface as the `stats` field on the
+  stream/session API types and as the
+  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. The
+  stream API includes `statsScope`: `node` for liveion snapshots and
+  `clusterNodeWork` for liveman's merged sum of per-node work, where cascade
+  hops are counted on each relay node.
   Snapshot freshness is cadence-driven: `stats_tick` unconditionally bumps
   a `watch` version that both SSE and the net4mqtt xdata notifier
   subscribe to, and both dedup on the exact serialized payload (which

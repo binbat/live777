@@ -353,18 +353,19 @@ async fn test_liveion_stream_stats() {
             CONNECTION_WAIT_ATTEMPTS * 100
         )
     });
+    assert_eq!(stream.stats_scope, api::response::StatsScope::Node);
 
     // Per-session counters mirror the stream direction: inbound for the
     // publisher, outbound for the subscriber.
-    let publish_session = &stream.publish.sessions[0];
-    assert!(publish_session.stats.bytes > 0);
-    assert!(publish_session.stats.packets > 0);
-    assert!(publish_session.stats.bitrate > 0);
+    let publish_session_stats = stream.publish.sessions[0].stats.clone();
+    assert!(publish_session_stats.bytes > 0);
+    assert!(publish_session_stats.packets > 0);
+    assert!(publish_session_stats.bitrate > 0);
 
-    let subscribe_session = &stream.subscribe.sessions[0];
-    assert!(subscribe_session.stats.bytes > 0);
-    assert!(subscribe_session.stats.packets > 0);
-    assert!(subscribe_session.stats.bitrate > 0);
+    let subscribe_session_stats = stream.subscribe.sessions[0].stats.clone();
+    assert!(subscribe_session_stats.bytes > 0);
+    assert!(subscribe_session_stats.packets > 0);
+    assert!(subscribe_session_stats.bitrate > 0);
 
     // Server-wide totals via the Prometheus endpoint.
     let metrics = reqwest::get(format!("http://{addr}{}", api::path::METRICS))

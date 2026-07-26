@@ -974,6 +974,8 @@ impl PeerForward {
             // never observes a gap between the tracks and their counters.
             self.internal.fold_publish_tracks_final(&virtual_tracks);
             *publish_tracks = real_tracks;
+            self.internal
+                .set_publish_bitrate_from_tracks(&publish_tracks);
             virtual_tracks.len()
         };
 

@@ -73,6 +73,7 @@ Response: [200]
 - `(publish | subscribe).sessions.[].stats.packets`: Int, cumulative packets
 - `(publish | subscribe).sessions.[].stats.bitrate`: Int, current rate in bits per second, re-sampled every 2 seconds
 - `stats`: `Object`, stream-level statistics: `stats.publish` is the inbound (publisher) aggregate, `stats.subscribe` the sum of all outbound subscribers; both use the same `Stats` shape, and their cumulative counters stay monotonic across republishes and subscriber churn
+- `statsScope`: String, scope of `stats`; `node` for one liveion node, `clusterNodeWork` for liveman's sum of node-level work across nodes, where cascade hops are counted on each relay node
 
 For Example:
 
@@ -255,4 +256,3 @@ Response: [200]
 Stops an active recording session for the specified stream. Returns [200] with an empty body on success.
 
 Reference: [Recorder](recorder)
-

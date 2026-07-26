@@ -1060,8 +1060,7 @@ impl Manager {
         let mut stats_version = self.stats_version.subscribe();
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
-            // Dedup on the exact serialized payload, which covers the stats
-            // too (`PartialEq` on the structs deliberately ignores them):
+            // Dedup on the exact serialized payload, which covers the stats:
             // the stats tick transmits only when something visible actually
             // changed — live rates refresh every tick while media flows, a
             // silent stream's decay to zero is pushed exactly once, and an

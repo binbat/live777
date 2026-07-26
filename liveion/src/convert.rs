@@ -43,6 +43,7 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
             provisioned: false,
             on_demand: false,
             stats: value.stats,
+            stats_scope: api::response::StatsScope::Node,
         }
     }
 }
