@@ -261,6 +261,9 @@ static EncoderConfig to_encoder_config(const EncoderConfigFFI* ffi) {
     cfg.fps = ffi->fps;
     cfg.bitrate = ffi->bitrate;
     cfg.profile = ffi->profile ? ffi->profile : "42001f";
+    cfg.profile_idc = ffi->profile_idc;
+    cfg.level_idc = ffi->level_idc;
+    cfg.tier_flag = ffi->tier_flag;
     cfg.gop = ffi->gop;
     cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
     return cfg;
