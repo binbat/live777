@@ -28,6 +28,10 @@ capture-v4l2 = []
 # --- encoder backends (C++ native-pipeline) ---
 encoder-v4l2-m2m = []
 encoder-rdk = []
+encoder-rkmpp = []
+
+# --- Ascend DVPP VENC encoder (Huawei Ascend 310B1) ---
+encoder-ascend-dvpp = []
 
 # future
 # encoded-source-waybeam-venc = []
