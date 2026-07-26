@@ -59,7 +59,7 @@ pub struct CaptureSpec {
 /// Encoder specification.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EncoderSpec {
-    /// Encoder backend: `"v4l2-m2m"` or `"rdk"`.
+    /// Encoder backend: `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, or `"ascend-dvpp"`.
     pub backend: String,
     /// Video codec: `"h264"` or `"h265"`.
     pub codec: String,
@@ -169,16 +169,38 @@ impl SourceSpec {
         }
 
         let encoder_backend = self.encoder.backend.to_lowercase();
-        if encoder_backend != "v4l2-m2m" && encoder_backend != "rdk" {
+        if encoder_backend != "v4l2-m2m"
+            && encoder_backend != "rdk"
+            && encoder_backend != "rkmpp"
+            && encoder_backend != "ascend-dvpp"
+        {
             anyhow::bail!(
-                "encoder.backend must be 'v4l2-m2m' or 'rdk', got '{}'",
+                "encoder.backend must be 'v4l2-m2m', 'rdk', 'rkmpp', or 'ascend-dvpp', got '{}'",
                 self.encoder.backend
             );
         }
 
-        // Validate profile/level/tier resolve to a usable profile-level-id.
-        if let Err(e) = self.encoder.profile_level_id() {
-            anyhow::bail!("encoder.profile/level/tier: {}", e);
+        // Per-backend codec validation.
+        if self.encoder.backend.eq_ignore_ascii_case("rkmpp")
+            || self.encoder.backend.eq_ignore_ascii_case("ascend-dvpp")
+        {
+            match self.encoder.codec.to_ascii_lowercase().as_str() {
+                "h264" => {
+                    self.encoder.h264_profile_level_id()?;
+                }
+                "h265" | "hevc" => {
+                    self.encoder.h265_profile_params()?;
+                }
+                codec => anyhow::bail!(
+                    "encoder backend 'rkmpp' supports only h264 and h265, got '{}'",
+                    codec
+                ),
+            }
+        } else {
+            // v4l2-m2m / rdk: use existing profile-level-id validation
+            if let Err(e) = self.encoder.profile_level_id() {
+                anyhow::bail!("encoder.profile/level/tier: {}", e);
+            }
         }
 
         // Validate pixel_format and codec strings early so config errors
@@ -290,8 +312,8 @@ pub fn video_codec_from_str(s: &str) -> anyhow::Result<VideoCodec> {
 impl EncoderSpec {
     /// Resolve the effective H.264 profile-level-id string.
     ///
-    /// - If `profile` is already a 6-digit hex string, it is returned unchanged.
-    /// - Otherwise `profile` is treated as a profile name and `level` must be provided.
+    /// For H.264 the level is encoded in the 6-char profile-level-id hex.
+    /// A separate `level` field is not used for H.264 — if set, it is an error.
     pub fn profile_level_id(&self) -> anyhow::Result<String> {
         if self.profile.len() == 6 && self.profile.chars().all(|c| c.is_ascii_hexdigit()) {
             return Ok(self.profile.clone());
@@ -305,6 +327,101 @@ impl EncoderSpec {
         };
         let (profile_idc, constraint) = h264_profile_to_idc(&self.profile)?;
         Ok(format!("{}{}{:02x}", profile_idc, constraint, level_idc))
+    }
+
+    /// Parse a 6-char H.264 profile-level-id hex string into (profile_idc, level_idc).
+    ///
+    /// Only accepts Baseline (66), Main (77), and High (100) profile_idc.
+    /// Rejects a separate `level` field — the level comes from the hex string only.
+    pub fn h264_profile_level_id(&self) -> anyhow::Result<(u8, u8)> {
+        if self.level.is_some() {
+            anyhow::bail!(
+                "H.264 does not use a separate 'level' field; \
+                 the level is encoded in the profile-level-id hex (e.g. '420028' = Baseline Level 4.0). \
+                 Remove the 'level' field from this encoder config."
+            );
+        }
+        let hex = self.profile.trim();
+        if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            anyhow::bail!(
+                "H.264 requires a 6-character profile-level-id hex string (e.g. '420028'), got '{}'",
+                self.profile
+            );
+        }
+        let profile_idc = u8::from_str_radix(&hex[0..2], 16)?;
+        let level_idc = u8::from_str_radix(&hex[4..6], 16)?;
+
+        match profile_idc {
+            66 | 77 | 100 => {}
+            other => anyhow::bail!(
+                "unsupported H.264 profile_idc {} (from '{}'); \
+                 supported: 66=Baseline, 77=Main, 100=High",
+                other,
+                self.profile
+            ),
+        }
+        if level_idc == 0 || level_idc > 186 {
+            anyhow::bail!(
+                "invalid H.264 level_idc {} in '{}'",
+                level_idc,
+                self.profile
+            );
+        }
+        Ok((profile_idc, level_idc))
+    }
+
+    /// Resolve H.265 profile parameters.
+    ///
+    /// Returns `(profile_idc, tier_flag, level_idc)`.
+    /// MVP accepts only Main profile + Main tier.
+    pub fn h265_profile_params(&self) -> anyhow::Result<(u8, u8, u8)> {
+        let profile = self.profile.trim();
+
+        // Hex check BEFORE name match — produces targeted error
+        if profile.len() == 6 && profile.chars().all(|c| c.is_ascii_hexdigit()) {
+            anyhow::bail!(
+                "H.265 does not use H.264-style profile-level-id '{}'; use profile='main'",
+                profile
+            );
+        }
+
+        let profile_idc = match profile.to_ascii_lowercase().as_str() {
+            "" | "main" => 1u8,
+            other => anyhow::bail!(
+                "unsupported H.265 profile '{}'; only 'main' is supported",
+                other
+            ),
+        };
+
+        let tier_flag = match self.tier.as_deref() {
+            None | Some("main") => 0u8,
+            Some("high") => anyhow::bail!("H.265 high tier is not supported in MVP"),
+            Some(other) => anyhow::bail!("unsupported H.265 tier '{}'", other),
+        };
+
+        let level_idc = match self.level.as_deref() {
+            Some(l) => h265_level_to_idc(l)?,
+            None => 120u8, // default Level 4.0
+        };
+
+        Ok((profile_idc, tier_flag, level_idc))
+    }
+}
+
+/// Map H.265 level strings (e.g. "4.0") to level_idc per HEVC spec.
+/// level_idc = level × 30 (e.g. 4.0 → 120).
+fn h265_level_to_idc(level: &str) -> anyhow::Result<u8> {
+    match level.trim() {
+        "3.0" => Ok(90),
+        "3.1" => Ok(93),
+        "4.0" => Ok(120),
+        "4.1" => Ok(123),
+        "5.0" => Ok(150),
+        "5.1" => Ok(153),
+        other => anyhow::bail!(
+            "unsupported H.265 level '{}'. Supported: 3.0, 3.1, 4.0, 4.1, 5.0, 5.1",
+            other
+        ),
     }
 }
 
@@ -356,6 +473,32 @@ impl SourceSpec {
             anyhow::bail!("unsupported capture backend: {}", self.capture.backend);
         }
         let capture_device = self.capture.device.clone().unwrap_or_default();
+        let codec_str = self.encoder.codec.to_ascii_lowercase();
+
+        // Resolve profile_idc / level_idc / tier_flag per codec.
+        // Rust is the sole parsing layer; C++ receives numeric values directly.
+        // rkmpp uses numeric-only profiling; v4l2-m2m/rdk use string-based.
+        let is_numeric_profile = self.encoder.backend.eq_ignore_ascii_case("rkmpp")
+            || self.encoder.backend.eq_ignore_ascii_case("ascend-dvpp");
+        let (profile_idc, level_idc, tier_flag) = if is_numeric_profile {
+            match codec_str.as_str() {
+                "h264" => {
+                    let (pidc, lidc) = self.encoder.h264_profile_level_id()?;
+                    (u32::from(pidc), u32::from(lidc), 0u32)
+                }
+                "h265" | "hevc" => {
+                    // h265_profile_params returns (profile_idc, tier_flag, level_idc)
+                    let (pidc, tier, lidc) = self.encoder.h265_profile_params()?;
+                    (u32::from(pidc), u32::from(lidc), u32::from(tier))
+                }
+                other => anyhow::bail!("unsupported codec for native params: '{}'", other),
+            }
+        } else {
+            // v4l2-m2m / rdk: profile/level are resolved via string helpers;
+            // numeric fields are unused by these backends.
+            (0u32, 0u32, 0u32)
+        };
+
         Ok(NativeSourceParams {
             capture_backend: self.capture.backend.clone(),
             capture_device,
@@ -374,6 +517,9 @@ impl SourceSpec {
             encoder_prefer_dmabuf: self.encoder.prefer_dmabuf as u8,
             codec_name: self.encoder.codec.to_uppercase(),
             default_profile: self.encoder.profile_level_id()?,
+            profile_idc,
+            level_idc,
+            tier_flag,
         })
     }
 }
@@ -430,6 +576,58 @@ mod tests {
                 bitrate: 2_000_000,
                 profile: "high".into(),
                 level: Some("4.2".into()),
+                tier: None,
+                gop: 60,
+                prefer_dmabuf: false,
+            },
+            output: OutputSpec::default(),
+        }
+    }
+
+    fn rkmpp_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "rk-cam".into(),
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: Some("/dev/video11".into()),
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                pixel_format: "nv12".into(),
+                prefer_dmabuf: false,
+            },
+            encoder: EncoderSpec {
+                backend: "rkmpp".into(),
+                codec: "h264".into(),
+                bitrate: 4_000_000,
+                profile: "640028".into(), // High Level 4.0
+                level: None,
+                tier: None,
+                gop: 60,
+                prefer_dmabuf: false,
+            },
+            output: OutputSpec::default(),
+        }
+    }
+
+    fn rkmpp_h265_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "rk-h265".into(),
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: Some("/dev/video11".into()),
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                pixel_format: "nv12".into(),
+                prefer_dmabuf: false,
+            },
+            encoder: EncoderSpec {
+                backend: "rkmpp".into(),
+                codec: "h265".into(),
+                bitrate: 4_000_000,
+                profile: "main".into(),
+                level: Some("4.0".into()),
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
@@ -523,11 +721,11 @@ mod tests {
     #[test]
     fn test_profile_level_id_hex_passthrough() {
         let enc = EncoderSpec {
-            profile: "64001f".into(),
+            profile: "420028".into(),
             level: None,
             ..Default::default()
         };
-        assert_eq!(enc.profile_level_id().unwrap(), "64001f");
+        assert_eq!(enc.profile_level_id().unwrap(), "420028");
     }
 
     #[test]
@@ -548,6 +746,178 @@ mod tests {
             ..Default::default()
         };
         assert!(enc.profile_level_id().is_err());
+    }
+
+    // --- H.264 profile-level-id numeric tests ---
+
+    #[test]
+    fn test_h264_profile_420028() {
+        let enc = EncoderSpec {
+            profile: "420028".into(),
+            codec: "h264".into(),
+            level: None,
+            ..Default::default()
+        };
+        let (pidc, lidc) = enc.h264_profile_level_id().unwrap();
+        assert_eq!(pidc, 66); // Baseline
+        assert_eq!(lidc, 40); // Level 4.0
+    }
+
+    #[test]
+    fn test_h264_profile_4d0028() {
+        let enc = EncoderSpec {
+            profile: "4d0028".into(),
+            codec: "h264".into(),
+            level: None,
+            ..Default::default()
+        };
+        let (pidc, _) = enc.h264_profile_level_id().unwrap();
+        assert_eq!(pidc, 77); // Main
+    }
+
+    #[test]
+    fn test_h264_profile_640028() {
+        let enc = EncoderSpec {
+            profile: "640028".into(),
+            codec: "h264".into(),
+            level: None,
+            ..Default::default()
+        };
+        let (pidc, _) = enc.h264_profile_level_id().unwrap();
+        assert_eq!(pidc, 100); // High
+    }
+
+    #[test]
+    fn test_h264_with_separate_level_rejected() {
+        let enc = EncoderSpec {
+            profile: "640028".into(),
+            codec: "h264".into(),
+            level: Some("4.2".into()),
+            ..Default::default()
+        };
+        assert!(enc.h264_profile_level_id().is_err());
+    }
+
+    #[test]
+    fn test_h264_unsupported_profile_rejected() {
+        let enc = EncoderSpec {
+            profile: "580028".into(), // Extended
+            codec: "h264".into(),
+            level: None,
+            ..Default::default()
+        };
+        assert!(enc.h264_profile_level_id().is_err());
+    }
+
+    // --- H.265 profile params tests ---
+
+    #[test]
+    fn test_h265_profile_main_valid() {
+        let enc = EncoderSpec {
+            profile: "main".into(),
+            codec: "h265".into(),
+            level: Some("4.0".into()),
+            tier: None,
+            ..Default::default()
+        };
+        let (pidc, tier, lidc) = enc.h265_profile_params().unwrap();
+        assert_eq!(pidc, 1);
+        assert_eq!(tier, 0);
+        assert_eq!(lidc, 120);
+    }
+
+    #[test]
+    fn test_h265_profile_empty_defaults() {
+        let enc = EncoderSpec {
+            profile: "".into(),
+            codec: "h265".into(),
+            level: None,
+            tier: None,
+            ..Default::default()
+        };
+        let (pidc, tier, lidc) = enc.h265_profile_params().unwrap();
+        assert_eq!(pidc, 1);
+        assert_eq!(tier, 0);
+        assert_eq!(lidc, 120);
+    }
+
+    #[test]
+    fn test_h265_hex_profile_rejected() {
+        let enc = EncoderSpec {
+            profile: "42001f".into(),
+            codec: "h265".into(),
+            level: Some("4.0".into()),
+            tier: None,
+            ..Default::default()
+        };
+        assert!(enc.h265_profile_params().is_err());
+    }
+
+    #[test]
+    fn test_h265_bad_profile_rejected() {
+        let enc = EncoderSpec {
+            profile: "foo".into(),
+            codec: "h265".into(),
+            level: Some("4.0".into()),
+            tier: None,
+            ..Default::default()
+        };
+        assert!(enc.h265_profile_params().is_err());
+    }
+
+    #[test]
+    fn test_h265_high_tier_rejected() {
+        let enc = EncoderSpec {
+            profile: "main".into(),
+            codec: "h265".into(),
+            level: Some("4.0".into()),
+            tier: Some("high".into()),
+            ..Default::default()
+        };
+        assert!(enc.h265_profile_params().is_err());
+    }
+
+    #[test]
+    fn test_h265_level_4_0_maps_to_120() {
+        assert_eq!(h265_level_to_idc("4.0").unwrap(), 120);
+    }
+
+    #[test]
+    fn test_h265_level_4_1_maps_to_123() {
+        assert_eq!(h265_level_to_idc("4.1").unwrap(), 123);
+    }
+
+    #[test]
+    fn test_h265_level_unsupported() {
+        assert!(h265_level_to_idc("6.0").is_err());
+    }
+
+    // --- SourceSpec validation tests (rkmpp codec gate) ---
+
+    #[test]
+    fn test_rkmpp_h264_valid() {
+        let spec = rkmpp_spec();
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_rkmpp_h265_valid() {
+        let spec = rkmpp_h265_spec();
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_rkmpp_invalid_codec_av1() {
+        let mut spec = rkmpp_h265_spec();
+        spec.encoder.codec = "av1".into();
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_rkmpp_invalid_codec_vp8() {
+        let mut spec = rkmpp_h265_spec();
+        spec.encoder.codec = "vp8".into();
+        assert!(spec.validate().is_err());
     }
 
     // --- NativeSourceParams conversion tests ---
@@ -574,6 +944,33 @@ mod tests {
         assert_eq!(params.capture_device, "0");
         assert_eq!(params.encoder_backend, "rdk");
         assert_eq!(params.profile, "64002a");
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_rkmpp_h264() {
+        let params = rkmpp_spec().to_native_params().unwrap();
+        assert_eq!(params.capture_backend, "v4l2");
+        assert_eq!(params.encoder_backend, "rkmpp");
+        assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.codec, 100); // h264
+        assert_eq!(params.profile, "640028");
+        assert_eq!(params.profile_idc, 100);
+        assert_eq!(params.level_idc, 40);
+        assert_eq!(params.tier_flag, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_rkmpp_h265() {
+        let params = rkmpp_h265_spec().to_native_params().unwrap();
+        assert_eq!(params.capture_backend, "v4l2");
+        assert_eq!(params.encoder_backend, "rkmpp");
+        assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.codec, 101); // h265
+        assert_eq!(params.profile_idc, 1);
+        assert_eq!(params.level_idc, 120);
+        assert_eq!(params.tier_flag, 0);
     }
 
     #[test]

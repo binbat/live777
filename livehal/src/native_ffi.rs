@@ -33,6 +33,9 @@ pub(crate) struct EncoderConfigFFI {
     pub fps: u32,
     pub bitrate: u32,
     pub profile: *const c_char,
+    pub profile_idc: u32,
+    pub level_idc: u32,
+    pub tier_flag: u32,
     pub gop: u32,
     pub prefer_dmabuf: u8,
 }

@@ -27,6 +27,14 @@ pub struct NativeSourceParams {
     pub codec_name: String,
     /// Default profile-level-id for SDP (e.g. "42001f").
     pub default_profile: String,
+
+    // --- Numeric profile / level / tier (Rust resolves; C++ and SDP use directly) ---
+    /// Numeric profile_idc — 66=Baseline, 77=Main, 100=High (H.264); 1=Main (H.265).
+    pub profile_idc: u32,
+    /// Numeric level_idc — 40=H.264 4.0, 120=H.265 4.0.
+    pub level_idc: u32,
+    /// Numeric tier_flag — 0=Main tier (always 0 for H.264; 0 for H.265 MVP).
+    pub tier_flag: u32,
 }
 
 /// An encoded video packet received from the C++ pipeline.
