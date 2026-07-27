@@ -28,6 +28,22 @@ export function deleteStream(streamId: string) {
 
 export type SessionConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed';
 
+/** Media statistics counters: cumulative bytes/packets and the current
+ * sampled rate in bits per second. */
+export interface Stats {
+    bytes: number;
+    packets: number;
+    bitrate: number;
+}
+
+/** Per-stream statistics: inbound publisher / aggregate outbound subscribers. */
+export interface StreamStats {
+    publish: Stats;
+    subscribe: Stats;
+}
+
+export type StatsScope = 'node' | 'clusterNodeWork';
+
 export interface Stream {
     id: string;
     createdAt: number;
@@ -43,6 +59,10 @@ export interface Stream {
     provisioned?: boolean;
     /** Sources start on the first subscriber and stop after the last leaves. */
     onDemand?: boolean;
+    /** Stream-level media statistics: inbound publisher / outbound subscribers. */
+    stats?: StreamStats;
+    /** Scope of stream-level media statistics. */
+    statsScope?: StatsScope;
 }
 
 export interface Session {
@@ -56,6 +76,8 @@ export interface Session {
         sessionUrl: string;
     };
     reforward?: boolean;
+    /** Media statistics for this session (inbound for publisher, outbound for subscriber). */
+    stats?: Stats;
 }
 
 export interface Cascade {

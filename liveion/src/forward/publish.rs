@@ -59,7 +59,12 @@ impl PublishRTCPeerConnection {
         })
     }
 
-    pub(crate) async fn info(&self) -> SessionInfo {
+    /// `stats` carries this publisher's aggregated inbound counters. The
+    /// peer does not own its tracks, so callers aggregate them from
+    /// `publish_tracks` (see
+    /// `PeerForwardInternal::aggregate_publish_stats`) and pass the result
+    /// in — a publish `SessionInfo` never carries placeholder counters.
+    pub(crate) async fn info(&self, stats: api::response::Stats) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
             create_at: self.create_at,
@@ -67,6 +72,7 @@ impl PublishRTCPeerConnection {
             state: *self.connection_state_rx.borrow(),
             cascade: self.cascade.clone(),
             has_data_channel: self.media_info.has_data_channel,
+            stats,
         }
     }
 

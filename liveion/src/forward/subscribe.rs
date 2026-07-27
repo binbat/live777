@@ -7,6 +7,7 @@ use rtc::rtp_transceiver::PayloadType;
 use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
+use rtc::shared::marshal::MarshalSize;
 use tokio::sync::{RwLock, broadcast, watch};
 use tokio::time::{Duration, Instant, sleep};
 use tracing::{debug, info, warn};
@@ -18,6 +19,7 @@ use webrtc::rtp_transceiver::RtpSender;
 use crate::error::AppError;
 use crate::forward::message::SessionInfo;
 use crate::forward::rtcp::RtcpMessage;
+use crate::forward::stats::MediaStats;
 use crate::new_broadcast_channel;
 use crate::{constant, result::Result};
 
@@ -48,6 +50,9 @@ struct SubscribeForwardChannel {
     publish_track_change: broadcast::Receiver<()>,
     connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     generation_id: u64,
+    /// Per-session outbound counters, shared by the audio/video forward
+    /// tasks of one subscriber.
+    stats: Arc<MediaStats>,
 }
 
 pub(crate) struct SubscribeRuntime {
@@ -63,6 +68,8 @@ pub(crate) struct SubscribeRTCPeerConnection {
     select_layer_sender: broadcast::Sender<SelectLayerBody>,
     pub(crate) media_info: MediaInfo,
     connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
+    /// Outbound media counters for this subscriber (both media kinds).
+    pub(crate) stats: Arc<MediaStats>,
 }
 
 impl SubscribeRTCPeerConnection {
@@ -81,6 +88,7 @@ impl SubscribeRTCPeerConnection {
         let select_layer_sender = new_broadcast_channel!(1);
         let connection_state_rx = runtime.connection_state_rx;
         let track_binding_publish_rid = Arc::new(RwLock::new(HashMap::new()));
+        let stats = Arc::new(MediaStats::new());
         for (sender, kind) in [
             (video_sender, RtpCodecKind::Video),
             (audio_sender, RtpCodecKind::Audio),
@@ -102,6 +110,7 @@ impl SubscribeRTCPeerConnection {
                     publish_track_change: publish_track_change.subscribe(),
                     connection_state_rx: connection_state_rx.clone(),
                     generation_id: runtime.generation_id,
+                    stats: stats.clone(),
                 },
             ));
         }
@@ -114,6 +123,7 @@ impl SubscribeRTCPeerConnection {
             select_layer_sender,
             media_info,
             connection_state_rx,
+            stats,
         }
     }
 
@@ -125,6 +135,7 @@ impl SubscribeRTCPeerConnection {
             state: *self.connection_state_rx.borrow(),
             cascade: self.cascade.clone(),
             has_data_channel: self.media_info.has_data_channel,
+            stats: self.stats.snapshot(),
         }
     }
 
@@ -650,6 +661,7 @@ impl SubscribeRTCPeerConnection {
 
                                     // H264 STAP-A NRI fix applied above when needed.
 
+                                    let packet_bytes = packet.marshal_size() as u64;
                                     if let Err(err) = track.write_rtp(packet).await {
                                         // The webrtc crate surfaces pre-ready
                                         // write failures as untyped
@@ -734,6 +746,9 @@ impl SubscribeRTCPeerConnection {
                                         sleep(TRACK_BIND_RETRY_DELAY).await;
                                         continue;
                                     }
+                                    // Outbound media stats: only packets
+                                    // actually written to the subscriber.
+                                    forward_channel.stats.inc(packet_bytes);
                                     transient_write_error_since = None;
                                     if first_packet {
                                         info!(

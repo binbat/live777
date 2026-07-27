@@ -8,7 +8,7 @@ use crate::result::Result;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use std::vec;
@@ -32,6 +32,11 @@ use crate::{AppError, metrics, new_broadcast_channel};
 /// `add_subscribe` handshake to attach and never touches freshly created
 /// forwards (`subscribe_leave_at` starts at the creation time).
 const ORPHAN_GRACE: Duration = Duration::from_secs(5);
+
+/// How often the stats tick refreshes bitrates and folds byte deltas into
+/// the stream/server totals. Also the effective refresh rate of the media
+/// statistics in the API and dashboard.
+const STATS_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Orphan teardown only applies to auto-created streams: when neither
 /// auto-create is enabled, an empty stream was provisioned explicitly (e.g.
@@ -92,6 +97,12 @@ pub struct Manager {
     rtsp_pull_counts: Arc<RwLock<HashMap<String, usize>>>,
     #[cfg(feature = "source")]
     pub source_manager: SourceManager,
+    /// Bumped by the stats tick on every sample, so SSE stream subscribers
+    /// refresh their snapshot on a fixed cadence even without lifecycle
+    /// events (snapshot equality ignores stats). A `watch` version is
+    /// level-triggered: slow consumers coalesce missed ticks instead of
+    /// losing them.
+    stats_version: watch::Sender<u64>,
 }
 
 /// Knobs bounding how long one stream's source startup may block.
@@ -195,6 +206,13 @@ impl Manager {
             cancel.clone(),
         ));
 
+        let (stats_version, _) = watch::channel(0u64);
+        tokio::spawn(Self::stats_tick(
+            stream_map.clone(),
+            stats_version.clone(),
+            cancel.clone(),
+        ));
+
         let manager = Manager {
             stream_map,
             config: cfg,
@@ -209,6 +227,7 @@ impl Manager {
             rtsp_pull_counts: Default::default(),
             #[cfg(feature = "source")]
             source_manager: SourceManager::new(),
+            stats_version,
         };
 
         #[cfg(feature = "source")]
@@ -937,6 +956,43 @@ impl Manager {
         }
     }
 
+    /// Periodic media-statistics sampler: refreshes per-session bitrates,
+    /// folds byte deltas into the stream and server totals, and bumps the
+    /// stats version so SSE/net4mqtt stream subscribers refresh their
+    /// snapshot on a fixed cadence. The version bump is unconditional on
+    /// purpose: any trigger based on byte deltas cannot see derived values
+    /// change — most notably a silent stream's rate decaying to zero — so
+    /// stats freshness is driven by cadence, not detection.
+    async fn stats_tick(
+        stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
+        stats_version: watch::Sender<u64>,
+        cancel: CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(STATS_SAMPLE_INTERVAL) => {}
+                _ = cancel.cancelled() => return,
+            }
+            // Clone the forwards out first so stream creation/teardown
+            // (write lock on the map) is not blocked while sampling.
+            let forwards: Vec<PeerForward> = stream_map.read().await.values().cloned().collect();
+            for forward in forwards {
+                let deltas = forward.sample_stats().await;
+                if deltas.inbound > 0 {
+                    metrics::RTP_BYTES_TOTAL
+                        .with_label_values(&["in"])
+                        .inc_by(deltas.inbound);
+                }
+                if deltas.outbound > 0 {
+                    metrics::RTP_BYTES_TOTAL
+                        .with_label_values(&["out"])
+                        .inc_by(deltas.outbound);
+                }
+            }
+            stats_version.send_modify(|v| *v += 1);
+        }
+    }
+
     /// Static WHIP push targets declared in the config file, as
     /// `(stream, target)` pairs sorted by stream name for a deterministic
     /// startup order.
@@ -1001,28 +1057,39 @@ impl Manager {
         let mut event_recv = self.event_sender.subscribe();
         let stream_map = self.stream_map.clone();
         let stream_cfg = self.config.stream.clone();
+        let mut stats_version = self.stats_version.subscribe();
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
-            let mut last_sent: Option<Vec<api::response::Stream>> = None;
+            // Dedup on the exact serialized payload, which covers the stats:
+            // the stats tick transmits only when something visible actually
+            // changed — live rates refresh every tick while media flows, a
+            // silent stream's decay to zero is pushed exactly once, and an
+            // idle server sends nothing.
+            let mut last_payload: Option<String> = None;
 
             async fn send_snapshot(
                 stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
                 stream_cfg: &crate::config::StreamConfig,
                 streams: &[String],
-                last_sent: &mut Option<Vec<api::response::Stream>>,
+                last_payload: &mut Option<String>,
                 send: &tokio::sync::mpsc::Sender<Vec<api::response::Stream>>,
             ) -> bool {
                 let infos = Manager::do_snapshot(stream_map, stream_cfg, streams).await;
-                if last_sent.as_ref() == Some(&infos) {
+                let Ok(payload) = serde_json::to_string(&infos) else {
+                    // Plain-data structs cannot realistically fail to
+                    // serialize; keep the stream alive if they ever do.
+                    return true;
+                };
+                if last_payload.as_deref() == Some(payload.as_str()) {
                     return true;
                 }
                 trace!("sse send snapshot with {} streams", infos.len());
-                *last_sent = Some(infos.clone());
+                *last_payload = Some(payload);
                 send.send(infos).await.is_ok()
             }
 
             // Send an initial snapshot so the consumer has current state immediately.
-            if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send).await {
+            if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
                 return;
             }
 
@@ -1039,7 +1106,20 @@ impl Manager {
                             Err(broadcast::error::RecvError::Lagged(_)) => {}
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
-                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_sent, &send).await {
+                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
+                            break;
+                        }
+                    }
+                    // Stats tick: `watch` is level-triggered — a slow
+                    // consumer coalesces missed ticks rather than losing
+                    // them, and a closed channel ends the loop. The payload
+                    // dedup in `send_snapshot` decides whether the tick
+                    // produced anything worth sending.
+                    result = stats_version.changed() => {
+                        if result.is_err() {
+                            break;
+                        }
+                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
                             break;
                         }
                     }
@@ -1621,6 +1701,14 @@ impl Manager {
 
     pub fn subscribe_event(&self) -> broadcast::Receiver<Event> {
         self.event_sender.subscribe()
+    }
+
+    /// Subscribe to the stats-tick version stream: bumped on every
+    /// [`Manager::stats_tick`] sample, so snapshot consumers (SSE, net4mqtt)
+    /// refresh live counters on the sampling cadence.
+    #[cfg(feature = "net4mqtt")]
+    pub(crate) fn subscribe_stats_version(&self) -> watch::Receiver<u64> {
+        self.stats_version.subscribe()
     }
 
     #[cfg(any(feature = "rtsp", feature = "recorder"))]

@@ -7,7 +7,7 @@ use rtc::rtcp::transport_feedbacks::transport_layer_cc::{
     SymbolSizeTypeTcc, SymbolTypeTcc, TransportLayerCc,
 };
 use rtc::rtp::packet::Packet;
-use rtc::shared::marshal::Unmarshal;
+use rtc::shared::marshal::{MarshalSize, Unmarshal};
 use std::collections::BTreeMap;
 use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
@@ -59,6 +59,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::internal::{PUBLISH_CONNECTED_TIMEOUT, wait_for_peer_connected};
 use super::message::Codec;
+use super::stats::MediaStats;
 use crate::new_broadcast_channel;
 
 #[cfg(feature = "source")]
@@ -305,6 +306,8 @@ pub(crate) enum PublishTrackRemote {
         payload_type: Arc<OnceLock<u8>>,
         track: Arc<dyn TrackRemote>,
         rtp_broadcast: Arc<broadcast::Sender<ForwardData>>,
+        /// Inbound media counters, incremented by the track read loop.
+        stats: Arc<MediaStats>,
     },
     #[cfg(feature = "source")]
     Virtual(Arc<VirtualPublishTrack>),
@@ -348,6 +351,7 @@ impl PublishTrackRemote {
             channels: raw_codec.channels,
         };
         let payload_type = Arc::new(OnceLock::new());
+        let stats = Arc::new(MediaStats::new());
 
         tokio::spawn(Self::track_forward(
             stream.clone(),
@@ -355,6 +359,7 @@ impl PublishTrackRemote {
             track.clone(),
             rtp_sender.clone(),
             payload_type.clone(),
+            stats.clone(),
             connected_gate,
             twcc_ext_id,
             native_twcc_bound,
@@ -369,6 +374,7 @@ impl PublishTrackRemote {
             payload_type,
             track,
             rtp_broadcast: Arc::new(rtp_sender),
+            stats,
         }
     }
 
@@ -379,6 +385,7 @@ impl PublishTrackRemote {
         track: Arc<dyn TrackRemote>,
         rtp_sender: broadcast::Sender<ForwardData>,
         payload_type: Arc<OnceLock<u8>>,
+        stats: Arc<MediaStats>,
         connected_gate: Option<watch::Receiver<webrtc::peer_connection::RTCPeerConnectionState>>,
         twcc_ext_id: u8,
         native_twcc_bound: Arc<AtomicBool>,
@@ -453,6 +460,10 @@ impl PublishTrackRemote {
                             stream, id, rtp_packet.header.payload_type
                         );
                     }
+
+                    // Inbound media stats: count every packet from the
+                    // publisher, whether or not anyone is subscribed.
+                    stats.inc(rtp_packet.marshal_size() as u64);
 
                     // --- TWCC inbound probe ---
                     let total = packets_total.fetch_add(1, Ordering::Relaxed) + 1;
@@ -646,6 +657,16 @@ impl PublishTrackRemote {
             Self::Virtual(_) => 0,
         }
     }
+
+    /// Inbound media counters for this track (real read loop or virtual
+    /// source injection alike).
+    pub(crate) fn stats(&self) -> &MediaStats {
+        match self {
+            Self::Real { stats, .. } => stats,
+            #[cfg(feature = "source")]
+            Self::Virtual(v) => &v.stats,
+        }
+    }
 }
 
 #[cfg(feature = "source")]
@@ -665,6 +686,10 @@ pub struct VirtualPublishTrack {
     actual_ssrc: Arc<AtomicU32>,
     packets_sent: Arc<AtomicU64>,
     bytes_sent: Arc<AtomicU64>,
+    /// Inbound media counters (full RTP wire size), sampled for the stream
+    /// statistics API. Separate from `bytes_sent` above, which is
+    /// payload-only for the RTCP sender report octet count.
+    stats: MediaStats,
     last_ntp_time_ms: Arc<AtomicU64>,
     #[cfg(any(
         feature = "source-rtsp",
@@ -720,6 +745,7 @@ impl VirtualPublishTrack {
             actual_ssrc: Arc::new(AtomicU32::new(0)),
             packets_sent: Arc::new(AtomicU64::new(0)),
             bytes_sent: Arc::new(AtomicU64::new(0)),
+            stats: MediaStats::new(),
             last_ntp_time_ms: Arc::new(AtomicU64::new(0)),
             #[cfg(any(
                 feature = "source-rtsp",
@@ -848,6 +874,7 @@ impl VirtualPublishTrack {
             let packet_count = self.packets_sent.fetch_add(1, Ordering::Relaxed) + 1;
             self.bytes_sent
                 .fetch_add(pkt.payload.len() as u64, Ordering::Relaxed);
+            self.stats.inc(pkt.marshal_size() as u64);
 
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

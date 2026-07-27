@@ -195,7 +195,29 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
 - `liveion/src/route/` — Axum route handlers (whip, whep, session, admin,
   stream, strategy, source, recorder, info, sdp).
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
-  track, bridge, media, RTCP).
+  track, bridge, media, RTCP). Media statistics (issue #252): per-track and
+  per-session counters live in `forward/stats.rs` (`MediaStats`); hot paths
+  only `inc()` them (publish read loop in `track.rs`, subscriber write loop
+  in `subscribe.rs`), and the manager's `stats_tick` (2 s) `sample()`s them
+  into bitrates plus monotonic stream totals. Removal paths
+  (`do_remove_publish_cleanup`, `do_remove_subscribe_cleanup`,
+  `remove_virtual_tracks`) fold each departing flow's un-sampled tail into
+  the totals, so counters stay exact across churn; `info()` adds each live
+  flow's `unsampled()` tail to the folded totals so stream-level counters
+  line up with the per-session ones between ticks; removal also refreshes
+  the aggregate bitrate immediately so closed directions do not keep a stale
+  rate until the next tick. Stats surface as the `stats` field on the
+  stream/session API types and as the
+  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. The
+  stream API includes `statsScope`: `node` for liveion snapshots and
+  `clusterNodeWork` for liveman's merged sum of per-node work, where cascade
+  hops are counted on each relay node.
+  Snapshot freshness is cadence-driven: `stats_tick` unconditionally bumps
+  a `watch` version that both SSE and the net4mqtt xdata notifier
+  subscribe to, and both dedup on the exact serialized payload (which
+  covers stats) — live rates push every tick while media flows, a silent
+  stream's zero rate flushes exactly once, and an idle server sends
+  nothing.
 - `liveion/src/stream/` — stream manager + source adapters. Every
   `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
   (`Manager::provision_streams`), always listed in the API/Dashboard, exempt

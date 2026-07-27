@@ -182,53 +182,100 @@ where
 
                             let notify_handle = tokio::spawn(async move {
                                 let mut event_recv = stream_manager_notify.subscribe_event();
-                                let mut last_sent: Option<Vec<api::response::Stream>> = None;
-                                loop {
-                                    match event_recv.recv().await {
-                                        Ok(_) => {}
-                                        // Re-sync after dropped events; a
-                                        // silently dead notifier is worse than
-                                        // an extra snapshot.
-                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(
-                                            _,
-                                        )) => {}
-                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                            break;
-                                        }
-                                    }
-                                    // Debounce: wait a short interval and drain
-                                    // additional events so rapid state changes
-                                    // produce only one snapshot.
-                                    let deadline =
-                                        tokio::time::Instant::now() + Duration::from_millis(100);
-                                    loop {
-                                        tokio::select! {
-                                            event = event_recv.recv() => {
-                                                if matches!(event, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
-                                                    break;
-                                                }
-                                            }
-                                            _ = tokio::time::sleep_until(deadline) => break,
-                                        }
-                                    }
+                                let mut stats_version =
+                                    stream_manager_notify.subscribe_stats_version();
+                                // Dedup on the exact serialized payload,
+                                // which covers the stats too: the stats tick
+                                // transmits only when something visible
+                                // actually changed (same semantics as the
+                                // SSE handler).
+                                let mut last_payload: Option<Vec<u8>> = None;
 
-                                    let streams = stream_manager_notify.snapshot(&[]).await;
-                                    if last_sent.as_ref() == Some(&streams) {
-                                        continue;
+                                async fn push_snapshot(
+                                    stream_manager: &Manager,
+                                    alias: &str,
+                                    last_payload: &mut Option<Vec<u8>>,
+                                    x_sender: &tokio::sync::mpsc::Sender<
+                                        (String, String, Vec<u8>),
+                                    >,
+                                ) {
+                                    let streams = stream_manager.snapshot(&[]).await;
+                                    let Ok(data) = serde_json::to_vec(&streams) else {
+                                        return;
+                                    };
+                                    if last_payload.as_ref() == Some(&data) {
+                                        return;
                                     }
-                                    last_sent = Some(streams.clone());
-                                    if let Ok(data) = serde_json::to_vec(&streams)
-                                        && let Err(e) = x_sender_notify.try_send((
-                                            alias.clone(),
-                                            "streams".to_string(),
-                                            data,
-                                        ))
-                                    {
+                                    // Record the payload only after a
+                                    // successful enqueue: a dropped snapshot
+                                    // must not suppress the retry of the same
+                                    // state on a later event/tick.
+                                    if let Err(e) = x_sender.try_send((
+                                        alias.to_string(),
+                                        "streams".to_string(),
+                                        data.clone(),
+                                    )) {
                                         tracing::warn!(
                                             alias,
                                             error = %e,
                                             "net4mqtt xdata channel full or closed"
                                         );
+                                        return;
+                                    }
+                                    *last_payload = Some(data);
+                                }
+
+                                loop {
+                                    tokio::select! {
+                                        event = event_recv.recv() => {
+                                            match event {
+                                                Ok(_) => {}
+                                                // Re-sync after dropped events; a
+                                                // silently dead notifier is worse than
+                                                // an extra snapshot.
+                                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                            }
+                                            // Debounce: wait a short interval and drain
+                                            // additional events so rapid state changes
+                                            // produce only one snapshot.
+                                            let deadline =
+                                                tokio::time::Instant::now() + Duration::from_millis(100);
+                                            loop {
+                                                tokio::select! {
+                                                    event = event_recv.recv() => {
+                                                        if matches!(event, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                                                            break;
+                                                        }
+                                                    }
+                                                    _ = tokio::time::sleep_until(deadline) => break,
+                                                }
+                                            }
+                                            push_snapshot(
+                                                &stream_manager_notify,
+                                                &alias,
+                                                &mut last_payload,
+                                                &x_sender_notify,
+                                            )
+                                            .await;
+                                        }
+                                        // Stats tick: live counters refresh
+                                        // on the sampling cadence; the
+                                        // payload dedup decides whether the
+                                        // tick produced anything worth
+                                        // sending.
+                                        result = stats_version.changed() => {
+                                            if result.is_err() {
+                                                break;
+                                            }
+                                            push_snapshot(
+                                                &stream_manager_notify,
+                                                &alias,
+                                                &mut last_payload,
+                                                &x_sender_notify,
+                                            )
+                                            .await;
+                                        }
                                     }
                                 }
                             });
@@ -347,6 +394,9 @@ pub fn metrics_register() {
         .unwrap();
     metrics::REGISTRY
         .register(Box::new(metrics::REFORWARD.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::RTP_BYTES_TOTAL.clone()))
         .unwrap();
 }
 

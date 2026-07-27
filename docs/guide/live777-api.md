@@ -68,6 +68,12 @@ Response: [200]
 - `(publish | subscribe).sessions.[].cascade.sourceUrl`: Optional(String(URL))
 - `(publish | subscribe).sessions.[].cascade.targetUrl`: Optional(String(URL))
 - `(publish | subscribe).sessions.[].cascade.sessionUrl`: String(URL)
+- `(publish | subscribe).sessions.[].stats`: `Object(Stats)`, media statistics for this session: inbound for a publish session, outbound for a subscribe session
+- `(publish | subscribe).sessions.[].stats.bytes`: Int, cumulative bytes (RTP wire size: header + extensions + payload)
+- `(publish | subscribe).sessions.[].stats.packets`: Int, cumulative packets
+- `(publish | subscribe).sessions.[].stats.bitrate`: Int, current rate in bits per second, re-sampled every 2 seconds
+- `stats`: `Object`, stream-level statistics: `stats.publish` is the inbound (publisher) aggregate, `stats.subscribe` the sum of all outbound subscribers; both use the same `Stats` shape, and their cumulative counters stay monotonic across republishes and subscriber churn
+- `statsScope`: String, scope of `stats`; `node` for one liveion node, `clusterNodeWork` for liveman's sum of node-level work across nodes, where cascade hops are counted on each relay node
 
 For Example:
 
@@ -183,7 +189,7 @@ Pushes the full snapshot of all streams whenever the stream state changes. Each 
 ]
 ```
 
-Use this endpoint to keep a live view of the current stream state. The first message is sent when the connection is established; subsequent messages are sent on every state change.
+Use this endpoint to keep a live view of the current stream state. The first message is sent when the connection is established; subsequent messages are sent on every state change, and the 2-second stats tick pushes a snapshot whenever it changed, so the reported bitrates refresh while media flows and decay to zero when a stream goes silent.
 
 ## Cascade
 
@@ -250,4 +256,3 @@ Response: [200]
 Stops an active recording session for the specified stream. Returns [200] with an empty body on success.
 
 Reference: [Recorder](recorder)
-

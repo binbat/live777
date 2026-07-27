@@ -42,6 +42,8 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
             // the stream config; the forward itself doesn't know them.
             provisioned: false,
             on_demand: false,
+            stats: value.stats,
+            stats_scope: api::response::StatsScope::Node,
         }
     }
 }
@@ -69,6 +71,7 @@ impl From<crate::forward::message::SessionInfo> for api::response::Session {
                 }
             }),
             has_data_channel: value.has_data_channel,
+            stats: value.stats,
         }
     }
 }

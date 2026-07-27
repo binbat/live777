@@ -173,7 +173,9 @@ Liveman 可以通过推送方式获取 Liveion 的流状态，而不只是依赖
 
 ### net4mqtt xdata（用于 net4mqtt 发现的节点）
 
-当启用 `net4mqtt` 时，每个 Liveion 节点会定期通过 `xdata`（key 为 `streams`）推送流快照。Liveman 解码后更新对应节点条目。
+当启用 `net4mqtt` 时，每个 Liveion 节点会在流状态变化时通过 `xdata`（key 为 `streams`）推送流快照，媒体统计采样周期（2 秒）内计数有变化时也会推送（负载经过去重，空闲节点保持静默）。Liveman 解码后更新对应节点条目。
+
+当 Liveman 合并多个节点上的同名流时，合并后的 `stats` 会标记 `statsScope: "clusterNodeWork"`。它表示跨节点的节点工作量总和，而不是集群边缘流量；级联链路会在每个中继节点各计一次。
 
 ## 集群模式
 
@@ -186,4 +188,3 @@ Liveman 可以通过推送方式获取 Liveion 的流状态，而不只是依赖
 我们支持边缘端和云端混合集群
 
 ![live777-verge](/live777-verge.excalidraw.svg)
-
