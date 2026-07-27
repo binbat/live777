@@ -81,9 +81,16 @@ pub struct Log {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Sdp {
-    /// Disable specific codecs in SDP negotiation, e.g. ["VP8", "H264"]
+    /// Only allow these video codecs in SDP negotiation, e.g. ["H264"].
+    /// Empty means no restriction.
+    /// Available: VP8, VP9, H264, H265, AV1
     #[serde(default)]
-    pub disable_codecs: Vec<String>,
+    pub video_codecs: Vec<String>,
+    /// Only allow these audio codecs in SDP negotiation, e.g. ["OPUS"].
+    /// Empty means no restriction.
+    /// Available: OPUS, G722, PCMU, PCMA
+    #[serde(default)]
+    pub audio_codecs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
