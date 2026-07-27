@@ -139,6 +139,7 @@ async-trait = { workspace = true }
 url = { workspace = true }
 tempfile = { workspace = true }
 webrtc = { workspace = true }
+rtc = { workspace = true }
 test-case = "3"
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }

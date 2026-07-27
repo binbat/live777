@@ -2563,6 +2563,7 @@ dependencies = [
  "portpicker",
  "reqwest",
  "rsmpeg",
+ "rtc",
  "serde",
  "serde_json",
  "signal",
