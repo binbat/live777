@@ -206,18 +206,23 @@ where
                                     if last_payload.as_ref() == Some(&data) {
                                         return;
                                     }
-                                    *last_payload = Some(data.clone());
+                                    // Record the payload only after a
+                                    // successful enqueue: a dropped snapshot
+                                    // must not suppress the retry of the same
+                                    // state on a later event/tick.
                                     if let Err(e) = x_sender.try_send((
                                         alias.to_string(),
                                         "streams".to_string(),
-                                        data,
+                                        data.clone(),
                                     )) {
                                         tracing::warn!(
                                             alias,
                                             error = %e,
                                             "net4mqtt xdata channel full or closed"
                                         );
+                                        return;
                                     }
+                                    *last_payload = Some(data);
                                 }
 
                                 loop {
