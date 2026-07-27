@@ -27,7 +27,11 @@ async fn whip(
     if content_type.to_str()? != "application/sdp" {
         return Err(anyhow::anyhow!("Content-Type must be application/sdp").into());
     }
-    let filtered_sdp = maybe_filter_codecs(&body, &state.config.sdp.disable_codecs)?;
+    let filtered_sdp = maybe_filter_codecs(
+        &body,
+        &state.config.sdp.video_codecs,
+        &state.config.sdp.audio_codecs,
+    )?;
     let offer = RTCSessionDescription::offer(filtered_sdp)?;
     debug!("offer: {}", offer.sdp);
     let (answer, session) = state.stream_manager.publish(stream.clone(), offer).await?;
