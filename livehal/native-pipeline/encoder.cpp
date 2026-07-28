@@ -26,6 +26,8 @@ public:
     uint32_t fps = 0;
     uint32_t bitrate = 0;
     VideoCodec codec_ = VideoCodec::H264;
+    RawPixelFormat input_format_ = RawPixelFormat::Yuv420p;
+    uint32_t input_stride_ = 0;
 
     std::string errorMsg;
 
@@ -87,6 +89,20 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     fps = cfg.fps;
     bitrate = cfg.bitrate;
     codec_ = cfg.codec;
+    input_format_ = cfg.input_format;
+
+    uint32_t input_fourcc = 0;
+    switch (input_format_) {
+    case RawPixelFormat::Nv12:
+        input_fourcc = V4L2_PIX_FMT_NV12;
+        break;
+    case RawPixelFormat::Yuv420p:
+        input_fourcc = V4L2_PIX_FMT_YUV420;
+        break;
+    default:
+        if (err) *err = "V4L2 M2M encoder supports only NV12 or YUV420P input";
+        return false;
+    }
 
     const char* dev = default_device_path();
     fd = open(dev, O_RDWR | O_NONBLOCK | O_CLOEXEC);
@@ -99,12 +115,25 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
     fmt.fmt.pix_mp.width = width;
     fmt.fmt.pix_mp.height = height;
-    fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_YUV420;
+    fmt.fmt.pix_mp.pixelformat = input_fourcc;
     fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
     fmt.fmt.pix_mp.num_planes = 1;
 
     if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
         if (err) *err = std::string("S_FMT (OUTPUT) failed: ") + strerror(errno);
+        cleanup();
+        return false;
+    }
+    if (fmt.fmt.pix_mp.pixelformat != input_fourcc
+        || fmt.fmt.pix_mp.num_planes != 1) {
+        if (err) *err = "V4L2 M2M encoder did not accept the requested single-plane input format";
+        cleanup();
+        return false;
+    }
+    input_stride_ = fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
+    if (input_stride_ == 0) input_stride_ = width;
+    if ((width & 1U) != 0 || (height & 1U) != 0 || input_stride_ < width) {
+        if (err) *err = "encoder returned an invalid 4:2:0 input layout";
         cleanup();
         return false;
     }
@@ -294,23 +323,134 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
 
     // Feed input frame
     if (!freeInputIndices.empty()) {
-        const uint8_t* src = frame.planes[0].data;
-        size_t src_size = frame.planes[0].bytes;
-
-        if (src == nullptr) {
-            if (err) *err = "frame data is null";
+        if (frame.width != width || frame.height != height) {
+            if (err) *err = "frame dimensions do not match encoder configuration";
             return false;
         }
 
         int idx = freeInputIndices.front();
         freeInputIndices.pop();
-
-        if (src_size > inputBuffers[idx].length) {
+        auto fail_input = [&](const char* message) {
             freeInputIndices.push(idx);
-            if (err) *err = "frame size exceeds input buffer";
+            if (err) *err = message;
             return false;
+        };
+
+        auto* destination = static_cast<uint8_t*>(inputBuffers[idx].start);
+        size_t src_size = 0;
+        if (input_format_ == RawPixelFormat::Nv12) {
+            if (frame.format != RawPixelFormat::Nv12 || frame.plane_count < 2
+                || frame.planes[0].data == nullptr
+                || frame.planes[1].data == nullptr) {
+                return fail_input("NV12 encoder input requires Y and UV planes");
+            }
+            const size_t y_destination_bytes =
+                static_cast<size_t>(input_stride_) * height;
+            const size_t uv_destination_bytes =
+                static_cast<size_t>(input_stride_) * (height / 2);
+            src_size = y_destination_bytes + uv_destination_bytes;
+            if (src_size > inputBuffers[idx].length) {
+                return fail_input("NV12 frame exceeds encoder input buffer");
+            }
+            if (frame.planes[0].stride < width || frame.planes[1].stride < width
+                || frame.planes[0].bytes
+                       < static_cast<size_t>(frame.planes[0].stride) * height
+                || frame.planes[1].bytes
+                       < static_cast<size_t>(frame.planes[1].stride) * (height / 2)) {
+                return fail_input("NV12 frame plane is shorter than its declared stride");
+            }
+            memset(destination, 0, src_size);
+            for (uint32_t row = 0; row < height; ++row) {
+                memcpy(destination + static_cast<size_t>(row) * input_stride_,
+                       frame.planes[0].data
+                           + static_cast<size_t>(row) * frame.planes[0].stride,
+                       width);
+            }
+            uint8_t* destination_uv = destination + y_destination_bytes;
+            for (uint32_t row = 0; row < height / 2; ++row) {
+                memcpy(destination_uv + static_cast<size_t>(row) * input_stride_,
+                       frame.planes[1].data
+                           + static_cast<size_t>(row) * frame.planes[1].stride,
+                       width);
+            }
+        } else {
+            if (frame.format != RawPixelFormat::Yuv420p
+                || (frame.plane_count != 1 && frame.plane_count != 3)
+                || frame.planes[0].data == nullptr) {
+                return fail_input("YUV420P encoder input requires one or three planes");
+            }
+
+            const uint32_t destination_chroma_stride = input_stride_ / 2;
+            const size_t destination_y_bytes =
+                static_cast<size_t>(input_stride_) * height;
+            const size_t destination_chroma_bytes =
+                static_cast<size_t>(destination_chroma_stride) * (height / 2);
+            src_size = destination_y_bytes + destination_chroma_bytes * 2;
+            if (src_size > inputBuffers[idx].length) {
+                return fail_input("YUV420P frame exceeds encoder input buffer");
+            }
+
+            const uint8_t* source_y = frame.planes[0].data;
+            const uint32_t source_y_stride =
+                frame.planes[0].stride ? frame.planes[0].stride : width;
+            const uint8_t* source_u = nullptr;
+            const uint8_t* source_v = nullptr;
+            uint32_t source_u_stride = 0;
+            uint32_t source_v_stride = 0;
+
+            if (frame.plane_count == 3) {
+                if (frame.planes[1].data == nullptr || frame.planes[2].data == nullptr) {
+                    return fail_input("YUV420P chroma plane is null");
+                }
+                source_u = frame.planes[1].data;
+                source_v = frame.planes[2].data;
+                source_u_stride =
+                    frame.planes[1].stride ? frame.planes[1].stride : width / 2;
+                source_v_stride =
+                    frame.planes[2].stride ? frame.planes[2].stride : width / 2;
+                if (frame.planes[0].bytes
+                        < static_cast<size_t>(source_y_stride) * height
+                    || frame.planes[1].bytes
+                        < static_cast<size_t>(source_u_stride) * (height / 2)
+                    || frame.planes[2].bytes
+                        < static_cast<size_t>(source_v_stride) * (height / 2)) {
+                    return fail_input("YUV420P plane is shorter than its declared stride");
+                }
+            } else {
+                const uint32_t source_chroma_stride = source_y_stride / 2;
+                const size_t source_y_bytes =
+                    static_cast<size_t>(source_y_stride) * height;
+                const size_t source_chroma_bytes =
+                    static_cast<size_t>(source_chroma_stride) * (height / 2);
+                if (frame.planes[0].bytes
+                    < source_y_bytes + source_chroma_bytes * 2) {
+                    return fail_input("contiguous YUV420P frame is too short");
+                }
+                source_u = source_y + source_y_bytes;
+                source_v = source_u + source_chroma_bytes;
+                source_u_stride = source_chroma_stride;
+                source_v_stride = source_chroma_stride;
+            }
+
+            memset(destination, 0, src_size);
+            for (uint32_t row = 0; row < height; ++row) {
+                memcpy(destination + static_cast<size_t>(row) * input_stride_,
+                       source_y + static_cast<size_t>(row) * source_y_stride,
+                       width);
+            }
+            uint8_t* destination_u = destination + destination_y_bytes;
+            uint8_t* destination_v = destination_u + destination_chroma_bytes;
+            for (uint32_t row = 0; row < height / 2; ++row) {
+                memcpy(destination_u
+                           + static_cast<size_t>(row) * destination_chroma_stride,
+                       source_u + static_cast<size_t>(row) * source_u_stride,
+                       width / 2);
+                memcpy(destination_v
+                           + static_cast<size_t>(row) * destination_chroma_stride,
+                       source_v + static_cast<size_t>(row) * source_v_stride,
+                       width / 2);
+            }
         }
-        memcpy(inputBuffers[idx].start, src, src_size);
 
         // Re-initialise the buffer structure before QBUF.  The same
         // structure was used for DQBUF above and may contain stale

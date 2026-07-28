@@ -107,6 +107,7 @@ fn main() {
             || has_encoder_v4l2_m2m
             || has_encoder_rdk
             || has_encoder_rkmpp
+            || has_encoder_ascend_dvpp
         {
             println!(
                 "cargo:warning=native backend requires Linux (current: {target_os}); \

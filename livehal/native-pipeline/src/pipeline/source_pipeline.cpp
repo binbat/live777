@@ -59,12 +59,21 @@ public:
         }
         if (!capture_->init(ccfg, err)) return false;
 
-        encoder_ = create_encoder_backend(ecfg);
+        EncoderConfig encoder_cfg = ecfg;
+        // The generic V4L2 capture backend converts YUYV to YUV420P, while
+        // native NV12/YUV420 frames keep their negotiated layout.
+        encoder_cfg.input_format = ccfg.pixel_format;
+        if (ecfg.backend == "v4l2-m2m"
+            && ccfg.pixel_format == RawPixelFormat::Yuyv422) {
+            encoder_cfg.input_format = RawPixelFormat::Yuv420p;
+        }
+
+        encoder_ = create_encoder_backend(encoder_cfg);
         if (!encoder_) {
             if (err) *err = "failed to create encoder backend";
             return false;
         }
-        if (!encoder_->init(ecfg, err)) return false;
+        if (!encoder_->init(encoder_cfg, err)) return false;
 
         // Encoder backends call this lambda synchronously from their own
         // context.  We copy the payload and enqueue it; the worker thread will

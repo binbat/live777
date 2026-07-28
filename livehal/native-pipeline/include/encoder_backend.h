@@ -30,16 +30,17 @@ enum EncodedFlags : uint32_t {
 // Encoder configuration
 // ---------------------------------------------------------------------------
 struct EncoderConfig {
-    std::string backend;  // "v4l2-m2m", "rdk", or "rkmpp"
+    std::string backend;  // "v4l2-m2m", "rdk", "rkmpp", or "ascend-dvpp"
     VideoCodec codec;     // H264 or H265
+    RawPixelFormat input_format = RawPixelFormat::Yuv420p;
     uint32_t width;
     uint32_t height;
     uint32_t fps;
     uint32_t bitrate;     // bits per second
-    std::string profile;  // e.g. "42001f" (H.264) or "main" (H.265)
+    std::string profile;  // e.g. "42001f"
     uint32_t profile_idc = 0;  // 66=baseline,77=main,100=high (H.264); 1=main (H.265)
     uint32_t level_idc = 0;    // 40=H.264 4.0, 120=H.265 4.0
-    uint32_t tier_flag = 0;    // 0=main tier (H.265 only; always 0 for H.264)
+    uint32_t tier_flag = 0;    // 0=main tier (H.265 only)
     uint32_t gop = 60;
     bool prefer_dmabuf = false;
 };
