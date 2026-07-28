@@ -359,6 +359,14 @@ carries the check.
   `conf/liveman.service`.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux
   packages; GitHub Actions upload them to releases.
+- **Size-optimized builds are opt-in**: official release binaries use the
+  default `release` profile. For size-sensitive deployments (embedded,
+  containers) use the `release-size` profile (`Cargo.toml`: fat LTO, 1
+  codegen unit, stripped, `panic=abort`, opt-level stays 3) plus
+  `upx --best --lzma` — via `just build-size` / `just pack-size` locally,
+  or `just cross-build-size <target> <features>` /
+  `just cross-pack-size <target> <features>` for cross-compiled embedded
+  targets (cross-rs; UPX packs foreign-arch ELFs from the host).
 - **Releases**: `.github/workflows/release.yml` builds for many targets
   including x86_64, aarch64, armv7, i686, riscv64, Android, Windows, and macOS.
 - **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
