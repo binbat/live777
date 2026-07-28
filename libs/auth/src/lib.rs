@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 
-use anyhow::{Error, anyhow};
+use anyhow::Error;
 use headers::authorization::{Bearer, Credentials};
 use http::{StatusCode, header};
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 
 use axum::{
     extract::{Request, State},
@@ -15,36 +14,37 @@ use crate::claims::Claims;
 
 pub mod access;
 pub mod claims;
+mod jwt;
 
 pub const ANY_ID: &str = "*";
 
 pub struct Keys {
-    encoding: EncodingKey,
+    secret: Vec<u8>,
 }
 
 impl Keys {
     pub fn new(secret: &[u8]) -> Self {
         Self {
-            encoding: EncodingKey::from_secret(secret),
+            secret: secret.to_vec(),
         }
     }
 
     pub fn token(self, claims: Claims) -> Result<String, Error> {
-        encode(&Header::default(), &claims, &self.encoding).map_err(|e| anyhow!(e))
+        jwt::encode(&claims, &self.secret)
     }
 }
 
 #[derive(Clone)]
 pub struct AuthState {
     tokens: HashSet<String>,
-    decoding: DecodingKey,
+    secret: Vec<u8>,
 }
 
 impl AuthState {
     pub fn new(secret: String, tokens: Vec<String>) -> Self {
         Self {
             tokens: tokens.into_iter().collect(),
-            decoding: DecodingKey::from_secret(secret.as_bytes()),
+            secret: secret.into_bytes(),
         }
     }
 }
@@ -75,10 +75,8 @@ pub async fn validate_middleware(
                     return true;
                 }
                 Some(bearer) => {
-                    if let Ok(token_data) =
-                        decode::<Claims>(bearer.token(), &state.decoding, &Validation::default())
-                    {
-                        request.extensions_mut().insert(token_data.claims);
+                    if let Ok(claims) = jwt::decode(bearer.token(), &state.secret) {
+                        request.extensions_mut().insert(claims);
                         return true;
                     }
                 }
