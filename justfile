@@ -68,6 +68,23 @@ cross-build-size target features="webui":
 cross-pack-size target features="webui": (cross-build-size target features)
     upx --best --lzma target/{{target}}/release-size/live777 || echo "warning: UPX cannot pack {{target}}, leaving the binary unpacked"
 
+# Raspberry Pi (native-rpi: libcamera + V4L2 capture, V4L2 M2M encoder)
+[group('embedded')]
+rpi-pack-size:
+    test -n "${PI_SYSROOT:?set PI_SYSROOT to the Raspberry Pi sysroot first (see AGENTS.md)}" && \
+        just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui
+
+# RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
+[group('embedded')]
+rdk-pack-size:
+    test -n "${RDK_SYSROOT:?set RDK_SYSROOT to the RDK sysroot first (see AGENTS.md)}" && \
+        just cross-pack-size aarch64-unknown-linux-gnu native-rdk,webui
+
+# Generic V4L2 device (native-generic-v4l2; override the target for 64-bit boards)
+[group('embedded')]
+v4l2-pack-size target="armv7-unknown-linux-gnueabihf":
+    just cross-pack-size {{target}} native-generic-v4l2,webui
+
 # MacOS:
 #   brew install gstreamer
 # Debian:
