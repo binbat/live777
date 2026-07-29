@@ -59,7 +59,6 @@ pub struct CaptureSpec {
 /// Encoder specification.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EncoderSpec {
-    /// Encoder backend: `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, or `"ascend-dvpp"`.
     pub backend: String,
     /// Video codec: `"h264"` or `"h265"`.
     pub codec: String,
@@ -172,17 +171,16 @@ impl SourceSpec {
         if encoder_backend != "v4l2-m2m"
             && encoder_backend != "rdk"
             && encoder_backend != "rkmpp"
-            && encoder_backend != "ascend-dvpp"
+           
         {
             anyhow::bail!(
-                "encoder.backend must be 'v4l2-m2m', 'rdk', 'rkmpp', or 'ascend-dvpp', got '{}'",
+                "encoder.backend must be 'v4l2-m2m', 'rdk', or 'rkmpp', got '{}'",
                 self.encoder.backend
             );
         }
 
         // Per-backend codec validation.
         if self.encoder.backend.eq_ignore_ascii_case("rkmpp")
-            || self.encoder.backend.eq_ignore_ascii_case("ascend-dvpp")
         {
             match self.encoder.codec.to_ascii_lowercase().as_str() {
                 "h264" => {
@@ -478,8 +476,7 @@ impl SourceSpec {
         // Resolve profile_idc / level_idc / tier_flag per codec.
         // Rust is the sole parsing layer; C++ receives numeric values directly.
         // rkmpp uses numeric-only profiling; v4l2-m2m/rdk use string-based.
-        let is_numeric_profile = self.encoder.backend.eq_ignore_ascii_case("rkmpp")
-            || self.encoder.backend.eq_ignore_ascii_case("ascend-dvpp");
+        let is_numeric_profile = self.encoder.backend.eq_ignore_ascii_case("rkmpp");
         let (profile_idc, level_idc, tier_flag) = if is_numeric_profile {
             match codec_str.as_str() {
                 "h264" => {

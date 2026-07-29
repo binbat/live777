@@ -97,7 +97,6 @@ capture-v4l2 = ["native-source", "livehal/capture-v4l2"]
 encoder-v4l2-m2m = ["native-source", "livehal/encoder-v4l2-m2m"]
 encoder-rdk = ["native-source", "livehal/encoder-rdk"]
 encoder-rkmpp = ["native-source", "livehal/encoder-rkmpp"]
-encoder-ascend-dvpp = ["native-source", "livehal/encoder-ascend-dvpp"]
 
 # Platform presets
 # native-rpi: builds both libcamera (Pi CSI camera) and V4L2 (Pi USB camera).
@@ -106,7 +105,6 @@ native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
 # native-rk3588: RK3588(S) boards (Orange Pi 5, etc.) — V4L2 capture + MPP encoder.
 native-rk3588 = ["capture-v4l2", "encoder-rkmpp"]
-native-ascend310b = ["capture-v4l2", "encoder-ascend-dvpp"]
 
 [dev-dependencies]
 tempfile = "3.26"

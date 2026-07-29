@@ -17,8 +17,6 @@ option(ENABLE_CAPTURE_V4L2 "Enable V4L2 capture backend" OFF)
 option(ENABLE_ENCODER_V4L2_M2M "Enable V4L2 M2M encoder backend" OFF)
 option(ENABLE_ENCODER_RDK_X5 "Enable RDK X5 encoder backend" OFF)
 option(ENABLE_ENCODER_RKMPP "Enable Rockchip MPP encoder backend" OFF)
-option(ENABLE_ENCODER_ASCEND_DVPP "Enable Ascend DVPP VENC encoder backend" OFF)
-
 # --- Collect sources based on enabled options ---
 
 set(SOURCES "")
@@ -55,11 +53,6 @@ if(ENABLE_ENCODER_RKMPP)
     list(APPEND SOURCES encoder_rkmpp.cpp)
 endif()
 
-if(ENABLE_ENCODER_ASCEND_DVPP)
-    message(STATUS "native-pipeline: Ascend DVPP VENC encoder enabled")
-    list(APPEND SOURCES encoder_ascend_dvpp.cpp)
-endif()
-
 if(ENABLE_BACKEND_PI)
     message(STATUS "native-pipeline: Raspberry Pi backend enabled")
 endif()
@@ -93,9 +86,6 @@ if(ENABLE_ENCODER_RDK_X5)
 endif()
 if(ENABLE_ENCODER_RKMPP)
     target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_RKMPP=1)
-endif()
-if(ENABLE_ENCODER_ASCEND_DVPP)
-    target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_ASCEND_DVPP=1)
 endif()
 
 target_include_directories(native-pipeline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -156,37 +146,6 @@ if(ENABLE_ENCODER_RKMPP)
     target_link_libraries(native-pipeline PRIVATE ${ROCKCHIP_MPP_LIB})
 endif()
 
-# Ascend DVPP VENC — find libs from ASCEND_TOOLKIT_PATH or CMAKE_PREFIX_PATH
-if(ENABLE_ENCODER_ASCEND_DVPP)
-    set(ASCEND_TOOLKIT "$ENV{ASCEND_TOOLKIT_PATH}")
-    if(NOT ASCEND_TOOLKIT)
-        set(ASCEND_TOOLKIT "${CMAKE_PREFIX_PATH}")
-    endif()
-    find_library(ASCEND_CL_LIB
-        NAMES ascendcl
-        PATHS ${ASCEND_TOOLKIT}/lib64 ${ASCEND_TOOLKIT}/lib
-              ${ASCEND_TOOLKIT}/aarch64-linux/devlib
-        NO_DEFAULT_PATH
-    )
-    find_library(ACL_DVPP_LIB
-        NAMES acl_dvpp
-        PATHS ${ASCEND_TOOLKIT}/lib64 ${ASCEND_TOOLKIT}/lib
-              ${ASCEND_TOOLKIT}/aarch64-linux/devlib
-        NO_DEFAULT_PATH
-    )
-    find_path(ASCEND_INCLUDE_DIR
-        NAMES acl/acl.h acl/ops/acl_dvpp.h
-        PATHS ${ASCEND_TOOLKIT}/include
-        NO_DEFAULT_PATH
-    )
-    if(NOT ASCEND_CL_LIB OR NOT ACL_DVPP_LIB OR NOT ASCEND_INCLUDE_DIR)
-        message(FATAL_ERROR "Ascend SDK not found. Set ASCEND_TOOLKIT_PATH env var.")
-    endif()
-    message(STATUS "native-pipeline: Ascend CL   ${ASCEND_CL_LIB}")
-    message(STATUS "native-pipeline: Ascend DVPP ${ACL_DVPP_LIB}")
-    target_include_directories(native-pipeline PRIVATE ${ASCEND_INCLUDE_DIR})
-    target_link_libraries(native-pipeline PRIVATE ${ASCEND_CL_LIB} ${ACL_DVPP_LIB})
-endif()
 
 # --- Compile options ---
 target_compile_options(native-pipeline PRIVATE -Wall -Wextra)

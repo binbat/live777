@@ -194,13 +194,17 @@ public:
         if (!set_required("prep:ver_stride", static_cast<RK_S32>(ver_stride_))) return false;
         if (!set_required("prep:format", MPP_FMT_YUV420SP)) return false;
 
-        // Rate control (VBR for better quality vs CBR)
-        if (!set_required("rc:mode", MPP_ENC_RC_MODE_VBR)) return false;
-        if (!set_required("rc:fps_in_flex", 0)) return false;
+        // Rate control (CBR, tolerates older MPP versions)
+        if (!set_required("rc:mode", MPP_ENC_RC_MODE_CBR)) return false;
+        if (!set_required("rc:bps_target", static_cast<RK_S32>(bitrate_))) return false;
+        if (!set_required("rc:gop", static_cast<RK_S32>(cfg.gop))) return false;
         if (!set_required("rc:fps_in_num", static_cast<RK_S32>(fps_))) return false;
-        if (!set_required("rc:fps_in_denom", 1)) return false;
         if (!set_required("rc:fps_out_num", static_cast<RK_S32>(fps_))) return false;
-        if (!set_required("rc:fps_out_denom", 1)) return false;
+        // Older MPP versions reject denom/flex — make optional
+        if (!set_required("rc:fps_in_flex", 0)) return false;
+        if (!set_required("rc:fps_in_denorm", 1)) return false;
+        if (!set_required("rc:fps_out_flex", 0)) return false;
+        if (!set_required("rc:fps_out_denorm", 1)) return false;
         if (!set_required("rc:bps_target", static_cast<RK_S32>(bitrate_))) return false;
         set_optional("rc:bps_max", static_cast<RK_S32>(bitrate_ * 2));
         set_optional("rc:bps_min", static_cast<RK_S32>(bitrate_ / 2));
@@ -655,7 +659,7 @@ private:
     size_t frame_size_ = 0;
 
     // Persistent buffer pool: 6 buffers cycled round-robin.
-    static constexpr int kInputPoolSize = 6;
+    static constexpr int kInputPoolSize = 4;
     MppBufferGroup buf_group_ = nullptr;
     MppBuffer input_bufs_[kInputPoolSize] = {};
     int next_input_idx_ = 0;

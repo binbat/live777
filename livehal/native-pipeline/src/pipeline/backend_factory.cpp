@@ -39,10 +39,6 @@ std::shared_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfi
 std::shared_ptr<EncoderBackend> create_rkmpp_encoder_backend(const EncoderConfig& cfg);
 #endif
 
-#if ENABLE_ENCODER_ASCEND_DVPP
-std::shared_ptr<EncoderBackend> create_ascend_dvpp_encoder_backend(const EncoderConfig& cfg);
-#endif
-
 // ---------------------------------------------------------------------------
 // Dispatchers
 // ---------------------------------------------------------------------------
@@ -68,9 +64,6 @@ std::shared_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg)
 #endif
 #if ENABLE_ENCODER_RKMPP
     if (cfg.backend == "rkmpp") return create_rkmpp_encoder_backend(cfg);
-#endif
-#if ENABLE_ENCODER_ASCEND_DVPP
-    if (cfg.backend == "ascend-dvpp") return create_ascend_dvpp_encoder_backend(cfg);
 #endif
     return nullptr;
 }
