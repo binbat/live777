@@ -168,11 +168,7 @@ impl SourceSpec {
         }
 
         let encoder_backend = self.encoder.backend.to_lowercase();
-        if encoder_backend != "v4l2-m2m"
-            && encoder_backend != "rdk"
-            && encoder_backend != "rkmpp"
-           
-        {
+        if encoder_backend != "v4l2-m2m" && encoder_backend != "rdk" && encoder_backend != "rkmpp" {
             anyhow::bail!(
                 "encoder.backend must be 'v4l2-m2m', 'rdk', or 'rkmpp', got '{}'",
                 self.encoder.backend
@@ -180,8 +176,7 @@ impl SourceSpec {
         }
 
         // Per-backend codec validation.
-        if self.encoder.backend.eq_ignore_ascii_case("rkmpp")
-        {
+        if self.encoder.backend.eq_ignore_ascii_case("rkmpp") {
             match self.encoder.codec.to_ascii_lowercase().as_str() {
                 "h264" => {
                     self.encoder.h264_profile_level_id()?;
