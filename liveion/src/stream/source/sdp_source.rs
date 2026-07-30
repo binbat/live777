@@ -387,11 +387,13 @@ impl SdpSource {
         let mut params = crate::rtsp_codec::video_codec_to_rtc(codec);
         // Keep the historical H265 browser fallback: when the source SDP
         // carries no sprop parameters, offer a default H265 fmtp so browsers
-        // can negotiate the codec.
+        // can negotiate the codec.  profile-id 1 = Main (RFC 7798); browsers
+        // offering H265 (Safari, Chrome 136+) use profile-id=1, and 0 is not
+        // a valid HEVC profile-id, so it never matches a real offer.
         if matches!(codec, rtsp::VideoCodecParams::H265 { .. })
             && params.rtp_codec.sdp_fmtp_line.is_empty()
         {
-            params.rtp_codec.sdp_fmtp_line = "profile-id=0;tier-flag=0;tx-mode=SRST".to_string();
+            params.rtp_codec.sdp_fmtp_line = "profile-id=1;tier-flag=0;tx-mode=SRST".to_string();
         }
         params
     }
@@ -629,7 +631,7 @@ mod tests {
 
         assert_eq!(params.rtp_codec.mime_type, "video/H265");
         assert!(
-            params.rtp_codec.sdp_fmtp_line.contains("profile-id=0"),
+            params.rtp_codec.sdp_fmtp_line.contains("profile-id=1"),
             "expected default profile-id, got {}",
             params.rtp_codec.sdp_fmtp_line
         );
