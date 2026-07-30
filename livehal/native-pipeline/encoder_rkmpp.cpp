@@ -208,6 +208,9 @@ public:
         if (!set_required("rc:bps_target", static_cast<RK_S32>(bitrate_))) return false;
         set_optional("rc:bps_max", static_cast<RK_S32>(bitrate_ * 2));
         set_optional("rc:bps_min", static_cast<RK_S32>(bitrate_ / 2));
+        set_optional("rc:qp_init", 26);
+        set_optional("rc:qp_min", 18);
+        set_optional("rc:qp_max", 40);
         if (!set_required("rc:gop", static_cast<RK_S32>(cfg.gop))) return false;
 
         // Codec-specific
@@ -224,7 +227,7 @@ public:
             if (!set_required("h264:cabac_idc", 0)) return false;
             if (!set_required("h264:trans8x8", tools.trans8x8)) return false;
         } else {
-            RK_S32 h265_level_val = static_cast<RK_S32>(cfg.level_idc) / 3;
+            RK_S32 h265_level_val = static_cast<RK_S32>(cfg.level_idc);
             if (!set_required("h265:profile", static_cast<RK_S32>(cfg.profile_idc))) return false;
             if (!set_required("h265:level",   h265_level_val)) return false;
             set_optional("h265:tier", static_cast<RK_S32>(cfg.tier_flag));
@@ -312,6 +315,7 @@ public:
         // Pre-RTP debug file (uncomment to debug encoding output):
         // debug_file_ = std::fopen("/tmp/live777-pre-rtp.h265", "wb");
 
+        running_ = true;
         initialized_ = true;
         return true;
     }
@@ -327,8 +331,17 @@ public:
             return false;
         }
 
+        // Input validation
+        if (frame.format != RawPixelFormat::Nv12) {
+            if (err) *err = "encoder-rkmpp: only NV12 input is supported";
+            return false;
+        }
+        if (frame.kind != BufferKind::Cpu) {
+            if (err) *err = "encoder-rkmpp: only CPU buffers are supported";
+            return false;
+        }
         if (frame.plane_count < 2) {
-            if (err) *err = "encoder-rkmpp: NV12 requires ≥2 planes";
+            if (err) *err = "encoder-rkmpp: NV12 requires >= 2 planes";
             return false;
         }
 
@@ -422,14 +435,9 @@ public:
         mpp_frame_set_hor_stride(mpp_frame, hor_stride_);
         mpp_frame_set_ver_stride(mpp_frame, ver_stride_);
         mpp_frame_set_fmt(mpp_frame, MPP_FMT_YUV420SP);
-        // ISP outputs Full Range (0-255) YUV. Tell MPP so the encoder
-        // writes correct VUI in SPS; otherwise decoder defaults to
-        // Limited Range (16-235) → dark, washed-out video.
-        mpp_frame_set_color_range(mpp_frame, MPP_FRAME_RANGE_JPEG);
         mpp_frame_set_eos(mpp_frame, 0);
 
-        RK_S64 pts_ms = static_cast<RK_S64>(frame.pts_us / 1000);
-        mpp_frame_set_pts(mpp_frame, pts_ms);
+        mpp_frame_set_pts(mpp_frame, static_cast<RK_S64>(frame.pts_us));
 
         // --- Submit to encoder ---
         inflight_depth_++;
@@ -562,10 +570,10 @@ private:
                     inflight_depth_--;
                     return dispatched;
                 }
-                // Use PTS from first MPP packet (actual encoded frame PTS)
+                // Use PTS from first MPP packet (actual encoded frame PTS, µs)
                 if (au.empty())
                     au_pts_us = static_cast<uint64_t>(
-                        mpp_packet_get_pts(packet)) * 1000;
+                        mpp_packet_get_pts(packet));
 
                 au.insert(au.end(), pkt_data, pkt_data + pkt_size);
 
@@ -581,7 +589,23 @@ private:
             mpp_packet_deinit(&packet);
         }
 
+        // If we got a partition without EOI and then ran out of packets,
+        // buffer the partial AU for the next drain call.
+        if (!frame_complete) {
+            pending_au_ = std::move(au);
+            pending_au_flags_ = au_flags;
+            return dispatched;
+        }
+
         if (au.empty()) return dispatched;
+
+        // Merge with any pending partial AU from a previous drain
+        if (!pending_au_.empty()) {
+            au.insert(au.begin(), pending_au_.begin(), pending_au_.end());
+            au_flags |= pending_au_flags_;
+            pending_au_.clear();
+            pending_au_flags_ = 0;
+        }
 
         if (debug_file_) {
             std::fwrite(au.data(), 1, au.size(), debug_file_);
@@ -659,10 +683,14 @@ private:
     size_t frame_size_ = 0;
 
     // Persistent buffer pool: 6 buffers cycled round-robin.
-    static constexpr int kInputPoolSize = 4;
+    static constexpr int kInputPoolSize = 2;
     MppBufferGroup buf_group_ = nullptr;
     MppBuffer input_bufs_[kInputPoolSize] = {};
     int next_input_idx_ = 0;
+
+    // Partial AU buffered across drain calls (partition without EOI)
+    std::vector<uint8_t> pending_au_;
+    uint32_t pending_au_flags_ = 0;
 
     // Pre-RTP debug file
     FILE* debug_file_ = nullptr;
@@ -676,7 +704,7 @@ private:
     int peak_inflight_depth_ = 0;
     size_t max_partitions_per_frame_ = 0;
 
-    std::atomic<bool> running_{true};
+    std::atomic<bool> running_{false};
     bool initialized_ = false;
 
     EncodedPacketCallback encoded_cb_;
