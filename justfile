@@ -40,6 +40,51 @@ build:
     pnpm run build
     cargo build --release --all-targets --all-features
 
+# Size-optimized build: fat LTO, 1 codegen unit, stripped, panic=abort
+# (same feature set as the release workflow)
+[group('build')]
+build-size:
+    cargo build --profile release-size --bins \
+        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip
+
+# Extreme size build: build-size + UPX LZMA (needs upx installed)
+[group('build')]
+pack-size: build-size
+    upx --best --lzma target/release-size/live777 target/release-size/liveman target/release-size/whepfrom target/release-size/whipinto target/release-size/net4mqtt
+
+# Examples:
+#   just cross-build-size aarch64-unknown-linux-gnu native-rpi,webui   # Raspberry Pi (needs PI_SYSROOT)
+#   just cross-build-size armv7-unknown-linux-gnueabihf native-generic-v4l2,webui
+#   just cross-build-size aarch64-unknown-linux-musl webui             # static musl, no native capture
+# Cross-compile a size-optimized live777 for an embedded target
+# (needs cross <https://github.com/cross-rs/cross> and docker)
+[group('build')]
+cross-build-size target features="webui":
+    cross build --target {{target}} --bin live777 --profile release-size \
+        --no-default-features --features {{features}}
+
+# cross-build-size + UPX LZMA; UPX packs foreign-arch ELFs directly from the host
+[group('build')]
+cross-pack-size target features="webui": (cross-build-size target features)
+    upx --best --lzma target/{{target}}/release-size/live777 || echo "warning: UPX cannot pack {{target}}, leaving the binary unpacked"
+
+# Raspberry Pi (native-rpi: libcamera + V4L2 capture, V4L2 M2M encoder)
+[group('embedded')]
+rpi-pack-size:
+    test -n "${PI_SYSROOT:?set PI_SYSROOT to the Raspberry Pi sysroot first (see AGENTS.md)}" && \
+        just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui
+
+# RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
+[group('embedded')]
+rdk-pack-size:
+    test -n "${RDK_SYSROOT:?set RDK_SYSROOT to the RDK sysroot first (see AGENTS.md)}" && \
+        just cross-pack-size aarch64-unknown-linux-gnu native-rdk,webui
+
+# Generic V4L2 device (native-generic-v4l2; override the target for 64-bit boards)
+[group('embedded')]
+v4l2-pack-size target="armv7-unknown-linux-gnueabihf":
+    just cross-pack-size {{target}} native-generic-v4l2,webui
+
 # MacOS:
 #   brew install gstreamer
 # Debian:
