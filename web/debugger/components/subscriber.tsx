@@ -34,6 +34,7 @@ export default function Subscriber() {
     const [disabled, setDisabled] = createSignal(true);
     const [disabledAudio, setDisabledAudio] = createSignal(false);
     const [disabledVideo, setDisabledVideo] = createSignal(false);
+    const [lowLatency, setLowLatency] = createSignal(false);
     const [logs, setLogs, clear] = createLogger();
 
     const [isMeasuringQrLatency, setIsMeasuringQrLatency] = createSignal(false);
@@ -71,6 +72,7 @@ export default function Subscriber() {
         },
         token: () => (searchParams.token as string) || "",
         createDataChannel: true,
+        lowLatency,
         log: setLogs,
     });
 
@@ -159,6 +161,16 @@ export default function Subscriber() {
                             <option value={o.value}>{o.text}</option>
                         ))}
                     </select>
+                </section>
+                <section>
+                    <label title="Disable the jitter buffer so decoded frames render immediately (lower latency, helps high-fps playback such as 120fps)">
+                        <input
+                            type="checkbox"
+                            checked={lowLatency()}
+                            onChange={(e) => setLowLatency(e.target.checked)}
+                        />
+                        Low Latency (No Jitter Buffer)
+                    </label>
                 </section>
                 <section>
                     <button
