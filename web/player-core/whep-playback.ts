@@ -200,7 +200,10 @@ export function createWhepPlayback(options: WhepPlaybackOptions): WhepPlayback {
         pc.ontrack = (event) => {
             if (playToken !== nextPlayToken) return;
             log(`track: ${event.track.kind}`);
-            applyLatencyHints(event.receiver, resolve(options.lowLatency, false));
+            applyLatencyHints(
+                event.receiver,
+                resolve(options.lowLatency, false),
+            );
             ms.addTrack(event.track);
             syncTrackCounts();
             setStream(ms);
