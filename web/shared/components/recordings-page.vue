@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { RefreshCw, Calendar, Search, Play, Link2, Copy } from "lucide-vue-next";
+import RefreshCw from "@/shared/components/icons/refresh-cw.vue";
+import Calendar from "@/shared/components/icons/calendar.vue";
+import Search from "@/shared/components/icons/search.vue";
+import Play from "@/shared/components/icons/play.vue";
+import Link2 from "@/shared/components/icons/link-2.vue";
+import Copy from "@/shared/components/icons/copy.vue";
 
 import * as api from "../api";
 import { useToken } from "../context";

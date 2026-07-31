@@ -28,7 +28,9 @@ import {
     type ComputedRef,
     type MaybeRefOrGetter,
 } from "vue";
-import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from "@heroicons/vue/24/outline";
+import ArrowPathIcon from "@/shared/components/icons/arrow-path.vue";
+import ArrowRightEndOnRectangleIcon from "@/shared/components/icons/arrow-right-end-on-rectangle.vue";
+import PlusIcon from "@/shared/components/icons/plus.vue";
 
 import {
     type CapabilityProbeStatus,

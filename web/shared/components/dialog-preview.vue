@@ -6,7 +6,7 @@ export interface IPreviewDialog {
 
 <script setup lang="ts">
 import { ref, useTemplateRef } from "vue";
-import { ClockIcon } from "@heroicons/vue/24/outline";
+import ClockIcon from "@/shared/components/icons/clock.vue";
 import { WHEPClient } from "@binbat/whip-whep/whep.js";
 
 import { useToken } from "../context";
