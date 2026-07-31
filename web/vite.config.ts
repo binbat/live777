@@ -1,7 +1,6 @@
 import { resolve } from 'node:path';
 
 import { defineConfig } from 'vite';
-import preact from '@preact/preset-vite';
 import vue from '@vitejs/plugin-vue';
 import tailwindcss from 'tailwindcss';
 import daisyui from 'daisyui';
@@ -26,13 +25,12 @@ const appContentRoots = packageName
 
 const tailwindContentGlobs = [
     'node_modules/daisyui/dist/**/*.js',
-    'node_modules/react-daisyui/dist/**/*.js',
     ...appContentRoots.flatMap(root => [
         `${root}/index.html`,
-        `${root}/**/*.{ts,tsx,html}`
+        `${root}/**/*.{ts,tsx,vue,html}`
     ]),
     ...workspaceContentRoots.flatMap(root => [
-        `${root}/**/*.{ts,tsx,html}`
+        `${root}/**/*.{ts,tsx,vue,html}`
     ])
 ]
     .map(p => resolve(ProjectRoot, p));
@@ -47,7 +45,6 @@ export default defineConfig({
         emptyOutDir: true,
     },
     plugins: [
-        preact(),
         vue()
     ],
     resolve: {

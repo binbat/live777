@@ -1,31 +1,38 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { computed, onUnmounted, ref, shallowRef, type ComputedRef, type ShallowRef } from "vue";
 
-export function useRefreshTimer<T>(initial: T, fetchData: () => Promise<T>, timeout = 3000) {
-    const [data, setData] = useState<T>(initial);
-    const [refreshTimer, setRefreshTimer] = useState(-1);
-    const isRefreshing = refreshTimer > 0;
+export interface UseRefreshTimerReturn<T> {
+    data: ShallowRef<T>;
+    isRefreshing: ComputedRef<boolean>;
+    updateData: () => Promise<void>;
+    toggleTimer: () => void;
+}
 
-    const updateData = useCallback(async () => setData(await fetchData()), [fetchData]);
+export function useRefreshTimer<T>(initial: T, fetchData: () => Promise<T>, timeout = 3000): UseRefreshTimerReturn<T> {
+    const data = shallowRef(initial) as ShallowRef<T>;
+    const refreshTimer = ref(-1);
+    const isRefreshing = computed(() => refreshTimer.value > 0);
 
-    useEffect(() => {
-        if (isRefreshing) {
-            window.clearInterval(refreshTimer);
-            setRefreshTimer(window.setInterval(updateData, timeout));
-        }
-        return () => {
-            window.clearInterval(refreshTimer);
-        };
-    }, [updateData, timeout]);
+    const updateData = async () => {
+        data.value = await fetchData();
+    };
 
-    const toggleTimer = () => {
-        if (isRefreshing) {
-            clearInterval(refreshTimer);
-            setRefreshTimer(-1);
-        } else {
-            updateData();
-            setRefreshTimer(window.setInterval(updateData, timeout));
+    const stopTimer = () => {
+        if (refreshTimer.value > 0) {
+            window.clearInterval(refreshTimer.value);
+            refreshTimer.value = -1;
         }
     };
+
+    const toggleTimer = () => {
+        if (isRefreshing.value) {
+            stopTimer();
+        } else {
+            void updateData();
+            refreshTimer.value = window.setInterval(updateData, timeout);
+        }
+    };
+
+    onUnmounted(stopTimer);
 
     return {
         data,

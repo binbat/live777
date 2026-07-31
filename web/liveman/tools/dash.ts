@@ -1,3 +1,1 @@
-import '../../shared/tools/dash-player/main.tsx';
-
-
+import '../../shared/tools/dash-player/main.ts';
