@@ -6,6 +6,7 @@ export {
     type WhepPlaybackStatus,
 } from "player-core";
 export { default as PlayerSurface } from "./player-surface.vue";
+export { default as StandaloneWhepPlayer } from "./standalone-whep-player.vue";
 export { default as StatsForNerds } from "./stats-for-nerds.vue";
 export {
     type UseWhepPlayback,

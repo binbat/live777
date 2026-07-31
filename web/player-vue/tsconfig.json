@@ -24,6 +24,7 @@
     "index.ts",
     "use-whep-playback.ts",
     "player-surface.vue",
+    "standalone-whep-player.vue",
     "stats-for-nerds.vue",
     "whep-player.vue"
   ]

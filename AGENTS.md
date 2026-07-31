@@ -79,8 +79,12 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 
 ### WebUI Packages (`web/*`)
 
-- `player-core`  — reusable WHEP player component.
-- `alone-player` — standalone player widget.
+- `player-core`  — WHEP player core: framework-agnostic playback engine
+  (`whep-core.ts`) plus a Solid adapter (`createWhepPlayback`).
+- `player-vue`   — Vue WHEP player component library
+  (`@binbat/whep-player-vue`): `useWhepPlayback` composable, `WhepPlayer`,
+  `PlayerSurface`, `StatsForNerds`, `StandaloneWhepPlayer` (full-page,
+  query-param driven; serves `/tools/player.html` in both admin apps).
 - `debugger`     — debugging UI widget.
 - `liveion`      — WebUI embedded by the `live777` binary.
 - `liveman`      — WebUI embedded by the `liveman` binary.

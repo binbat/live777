@@ -1,3 +1,6 @@
-//import '../../shared/tools/player/main.tsx';
-import 'alone-player';
-import 'alone-player/style.css';
+import { StandaloneWhepPlayer } from "@binbat/whep-player-vue";
+import "@binbat/whep-player-vue/style.css";
+import "@/shared/player-page.css";
+import { createApp } from "vue";
+
+createApp(StandaloneWhepPlayer).mount("#app");

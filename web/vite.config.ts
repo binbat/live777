@@ -10,8 +10,7 @@ export const ProjectRoot = resolve(import.meta.dirname, '..');
 
 const workspaceContentRoots = [
     'web/shared',
-    'web/debugger',
-    'web/alone-player'
+    'web/debugger'
 ];
 
 const defaultAppContentRoots = [

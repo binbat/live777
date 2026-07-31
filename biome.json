@@ -2,8 +2,6 @@
   "$schema": "https://biomejs.dev/schemas/2.3.3/schema.json",
   "files": {
     "includes": [
-      "web/alone-player/**",
-      "!web/alone-player/dist",
       "web/player-core/**",
       "!web/player-core/dist",
       "web/player-vue/**",
