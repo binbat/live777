@@ -8,17 +8,17 @@
     "dev": "pnpm run dev:liveion",
     "dev:player": "pnpm --filter player-core build && pnpm --filter alone-player dev:player",
     "dev:debugger": "pnpm --filter player-core build && pnpm --filter debugger dev:debugger",
-    "dev:liveion": "pnpm --filter player-core build && pnpm --filter alone-player build && pnpm --filter debugger build && pnpm --filter player-core --filter debugger --filter alone-player --filter liveion dev",
+    "dev:liveion": "pnpm --filter player-core build && pnpm --filter alone-player build && pnpm --filter debugger build && pnpm --filter @binbat/whep-player-vue build && pnpm --filter player-core --filter debugger --filter alone-player --filter @binbat/whep-player-vue --filter liveion dev",
     "dev:liveman": "pnpm --filter player-core build && pnpm --filter alone-player build && pnpm --filter debugger build && pnpm --filter player-core --filter debugger --filter alone-player --filter liveman dev",
     "build": "pnpm -r build",
-    "build:liveion": "pnpm --filter player-core build && pnpm --filter alone-player build && pnpm --filter debugger build && pnpm --filter liveion build",
+    "build:liveion": "pnpm --filter player-core build && pnpm --filter alone-player build && pnpm --filter debugger build && pnpm --filter @binbat/whep-player-vue build && pnpm --filter liveion build",
     "build:liveman": "pnpm --filter player-core build && pnpm --filter alone-player build && pnpm --filter debugger build && pnpm --filter liveman build",
     "preview": "pnpm run preview:liveion",
     "preview:liveion": "pnpm --filter liveion preview",
     "preview:liveman": "pnpm --filter liveman preview",
     "check": "biome check",
     "lint": "eslint && pnpm run typecheck",
-    "typecheck": "tsc --noEmit && pnpm --filter alone-player exec tsc --noEmit && pnpm --filter debugger exec tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm --filter alone-player exec tsc --noEmit && pnpm --filter debugger exec tsc --noEmit && pnpm --filter @binbat/whep-player-vue exec vue-tsc --noEmit",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
@@ -42,6 +42,7 @@
     "@preact/preset-vite": "^2.10.2",
     "@stylistic/eslint-plugin-js": "^4.4.1",
     "@types/node": "^24.10.0",
+    "@vitejs/plugin-vue": "^6.0.8",
     "daisyui": "^4.12.24",
     "eslint": "^9.39.1",
     "playwright": "^1.61.1",
@@ -50,6 +51,8 @@
     "typescript-eslint": "^8.46.3",
     "vite": "^7.2.0",
     "vite-plugin-solid": "^2.11.10",
-    "vitepress": "^1.6.4"
+    "vitepress": "^1.6.4",
+    "vue": "^3.5.22",
+    "vue-tsc": "^3.3.9"
   }
 }

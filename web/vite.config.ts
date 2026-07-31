@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
+import vue from '@vitejs/plugin-vue';
 import tailwindcss from 'tailwindcss';
 import daisyui from 'daisyui';
 
@@ -47,7 +48,8 @@ export default defineConfig({
         emptyOutDir: true,
     },
     plugins: [
-        preact()
+        preact(),
+        vue()
     ],
     resolve: {
         alias: {
