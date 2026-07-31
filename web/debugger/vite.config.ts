@@ -3,11 +3,18 @@ import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-    plugins: [vue()],
+    plugins: [vue({ features: { vapor: true } })],
     resolve: {
-        alias: {
-            "@": resolve(__dirname, ".."),
-        },
+        alias: [
+            {
+                find: /^@binbat\/whep-player-vue$/,
+                replacement: "@binbat/whep-player-vue/vapor",
+            },
+            {
+                find: "@",
+                replacement: resolve(__dirname, ".."),
+            },
+        ],
     },
     build: {
         lib: {
