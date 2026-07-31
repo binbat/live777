@@ -17,7 +17,7 @@
     "preview:liveman": "pnpm --filter liveman preview",
     "check": "biome check",
     "lint": "eslint && pnpm run typecheck",
-    "typecheck": "tsc --noEmit && pnpm --filter debugger exec tsc --noEmit && pnpm --filter @binbat/whep-player-vue exec vue-tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm --filter debugger exec vue-tsc --noEmit && pnpm --filter @binbat/whep-player-vue exec vue-tsc --noEmit",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
@@ -49,7 +49,6 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.3",
     "vite": "^7.2.0",
-    "vite-plugin-solid": "^2.11.10",
     "vitepress": "^1.6.4",
     "vue": "^3.5.22",
     "vue-tsc": "^3.3.9"

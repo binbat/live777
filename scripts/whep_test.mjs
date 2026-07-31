@@ -149,7 +149,7 @@ const result = await page.evaluate(
         const mVideo = answerSdp
           .split("\r\n")
           .filter(
-            (l, i, arr) =>
+            (l) =>
               l.startsWith("m=") && l.includes("video"),
           );
         addLog("ANSWER m=video: " + (mVideo[0] || "<none>"));

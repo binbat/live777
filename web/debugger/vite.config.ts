@@ -1,9 +1,9 @@
 import { resolve } from "node:path";
+import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
-import solid from "vite-plugin-solid";
 
 export default defineConfig({
-    plugins: [solid()],
+    plugins: [vue()],
     resolve: {
         alias: {
             "@": resolve(__dirname, ".."),
@@ -11,12 +11,12 @@ export default defineConfig({
     },
     build: {
         lib: {
-            entry: resolve(__dirname, "main.tsx"),
+            entry: resolve(__dirname, "main.ts"),
             fileName: "index",
             formats: ["es"],
         },
         rollupOptions: {
-            external: ["solid-js", "solid-js/web"],
+            external: ["vue"],
         },
         minify: true,
         outDir: "dist",

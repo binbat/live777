@@ -28,7 +28,7 @@ provides the embedded WebUIs.
 - **WebRTC stack** — `webrtc`/`rtc-*` crates, pinned to upstream
   `https://github.com/webrtc-rs/rtc` at revision `de84c7c8` via
   `[patch.crates-io]` until the next tag is released.
-- **Web UI** — Vite, Preact, SolidJS, Tailwind CSS, DaisyUI, TypeScript.
+- **Web UI** — Vite, Vue 3, Preact, Tailwind CSS, DaisyUI, TypeScript.
 - **Package manager** — pnpm 10.20.0 (workspace covers `web/*`).
 - **Storage** — OpenDAL for object/FS storage; Sea-ORM + SQLite (or Postgres)
   in `liveman` for recording indexes.
@@ -80,7 +80,7 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 ### WebUI Packages (`web/*`)
 
 - `player-core`  — WHEP player core: framework-agnostic playback engine
-  (`whep-core.ts`) plus a Solid adapter (`createWhepPlayback`).
+  (`WhepPlaybackCore` in `whep-core.ts`) plus WebRTC stats helpers.
 - `player-vue`   — Vue WHEP player component library
   (`@binbat/whep-player-vue`): `useWhepPlayback` composable, `WhepPlayer`,
   `PlayerSurface`, `StatsForNerds`, `StandaloneWhepPlayer` (full-page,

@@ -1,5 +1,3 @@
-export { default as PlayerSurface } from "./player-surface";
-export { default as StatsForNerds } from "./stats";
 export type { StatsNerds } from "./types";
 export {
     collectVideoRtpFps,
@@ -14,8 +12,3 @@ export {
     type WhepPlaybackCoreState,
     type WhepPlaybackStatus,
 } from "./whep-core";
-export {
-    createWhepPlayback,
-    type WhepPlayback,
-    type WhepPlaybackOptions,
-} from "./whep-playback";
