@@ -35,6 +35,15 @@ type OptionalRtpSender = Option<Arc<dyn RtpSender>>;
 
 const TRACK_BIND_RETRY_DELAY: Duration = Duration::from_millis(20);
 const TRACK_BIND_RETRY_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the forward loop tolerates continuous write failures while the
+/// peer sits in `Disconnected`. ICE recovery restores successful writes
+/// quickly, and a peer that never recovers is normally closed by the
+/// connection-state watchdog (which ends this loop via the terminal-state
+/// branch). If the close never propagates — observed: the sender channel is
+/// already closed and every write fails, yet the state stays `Disconnected`
+/// — an unbounded wait would turn this task into a zombie that drains the
+/// publish ring at sleep pace and floods the log with lag warnings.
+const DISCONNECTED_WRITE_GIVE_UP: Duration = Duration::from_secs(15);
 
 struct BoundPublishTrack {
     recv: broadcast::Receiver<ForwardData>,
@@ -509,6 +518,9 @@ impl SubscribeRTCPeerConnection {
         let mut track = None;
         let mut first_packet = true;
         let mut transient_write_error_since = None;
+        let mut disconnected_write_error_since = None;
+        let mut last_lagged_warn = Instant::now();
+        let mut lagged_suppressed = 0u64;
         let mut source_codec = None;
         let mut selected_codec = None;
 
@@ -693,7 +705,23 @@ impl SubscribeRTCPeerConnection {
                                             // peer that never recovers is
                                             // closed by the connection-state
                                             // watchdog, which ends this loop
-                                            // via the terminal branch above.
+                                            // via the terminal branch above;
+                                            // if that close never propagates,
+                                            // DISCONNECTED_WRITE_GIVE_UP is
+                                            // the backstop that keeps this
+                                            // task from zombifying.
+                                            let started = disconnected_write_error_since
+                                                .get_or_insert_with(Instant::now);
+                                            if started.elapsed() >= DISCONNECTED_WRITE_GIVE_UP {
+                                                warn!(
+                                                    "[{}] [{}] {} track write giving up after {}ms with peer stuck in disconnected, stopping forward loop",
+                                                    stream,
+                                                    id,
+                                                    kind,
+                                                    started.elapsed().as_millis(),
+                                                );
+                                                break;
+                                            }
                                             transient_write_error_since = None;
                                             debug!(
                                                 "[{}] [{}] {} track write paused while peer is disconnected: {}",
@@ -702,6 +730,7 @@ impl SubscribeRTCPeerConnection {
                                             sleep(TRACK_BIND_RETRY_DELAY).await;
                                             continue;
                                         }
+                                        disconnected_write_error_since = None;
                                         let now = Instant::now();
                                         let started = transient_write_error_since.get_or_insert(now);
                                         let elapsed = started.elapsed();
@@ -750,6 +779,7 @@ impl SubscribeRTCPeerConnection {
                                     // actually written to the subscriber.
                                     forward_channel.stats.inc(packet_bytes);
                                     transient_write_error_since = None;
+                                    disconnected_write_error_since = None;
                                     if first_packet {
                                         info!(
                                             "[{}] [{}] {} first RTP packet written: source_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
@@ -780,7 +810,20 @@ impl SubscribeRTCPeerConnection {
                             } // match track
                         } // Ok(packet)
                         Err(err) => {
-                            warn!("[{}] [{}] {} rtp receiver err: {}", stream, id, kind, err);
+                            // Rate-limit: a slow or stuck consumer lags on
+                            // nearly every receive once the publish ring is
+                            // full (at 120fps that is ~50 warns per second),
+                            // so report at most once per second and fold the
+                            // skipped ones into a suppression count.
+                            lagged_suppressed += 1;
+                            if last_lagged_warn.elapsed() >= Duration::from_secs(1) {
+                                warn!(
+                                    "[{}] [{}] {} rtp receiver err: {} ({} suppressed)",
+                                    stream, id, kind, err, lagged_suppressed - 1
+                                );
+                                last_lagged_warn = Instant::now();
+                                lagged_suppressed = 0;
+                            }
                         }
                     }
                 }
