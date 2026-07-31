@@ -7,9 +7,15 @@ export {
     type VideoFpsSamples,
 } from "./webrtc-stats";
 export {
-    createWhepPlayback,
     type WhepMute,
+    WhepPlaybackCore,
+    type WhepPlaybackCoreListener,
+    type WhepPlaybackCoreOptions,
+    type WhepPlaybackCoreState,
+    type WhepPlaybackStatus,
+} from "./whep-core";
+export {
+    createWhepPlayback,
     type WhepPlayback,
     type WhepPlaybackOptions,
-    type WhepPlaybackStatus,
 } from "./whep-playback";

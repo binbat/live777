@@ -28,6 +28,7 @@
     "stats.tsx",
     "types.ts",
     "webrtc-stats.ts",
+    "whep-core.ts",
     "whep-playback.ts"
   ]
 }

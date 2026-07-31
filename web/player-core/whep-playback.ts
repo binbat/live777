@@ -1,20 +1,13 @@
-import { WHEPClient } from "@binbat/whip-whep/whep.js";
 import { type Accessor, createEffect, createSignal, onCleanup } from "solid-js";
+import {
+    type WhepMute,
+    WhepPlaybackCore,
+    type WhepPlaybackStatus,
+} from "./whep-core";
+
+export type { WhepMute, WhepPlaybackStatus };
 
 type MaybeAccessor<T> = T | Accessor<T>;
-
-export type WhepMute = {
-    kind: "audio" | "video";
-    enabled: boolean;
-};
-
-export type WhepPlaybackStatus =
-    | "idle"
-    | "connecting"
-    | "playing"
-    | "reconnecting"
-    | "stopped"
-    | "error";
 
 export type WhepPlaybackOptions = {
     url: Accessor<string>;
@@ -49,32 +42,17 @@ function resolve<T>(value: MaybeAccessor<T> | undefined, fallback: T): T {
     return value ?? fallback;
 }
 
-function is404Error(error: unknown) {
-    const maybe = error as { response?: { status?: number }; status?: number };
-    const status = maybe?.response?.status ?? maybe?.status;
-    return status === 404 || String(error).includes("404");
-}
-
-// Latency hints from the WebRTC Extensions spec (Chrome 125+). Both default
-// to null, which selects the browser's adaptive jitter buffer. Setting them
-// to 0 makes the receiver hand decoded frames to the renderer immediately;
-// setting them back to null restores the default buffering behavior.
-type RtpReceiverLatencyHints = RTCRtpReceiver & {
-    playoutDelayHint?: number | null;
-    jitterBufferTarget?: number | null;
-};
-
-function applyLatencyHints(receiver: RTCRtpReceiver, lowLatency: boolean) {
-    const hinted = receiver as RtpReceiverLatencyHints;
-    if ("jitterBufferTarget" in hinted) {
-        hinted.jitterBufferTarget = lowLatency ? 0 : null;
-    }
-    if ("playoutDelayHint" in hinted) {
-        hinted.playoutDelayHint = lowLatency ? 0 : null;
-    }
-}
-
+// Solid adapter over the framework-agnostic `WhepPlaybackCore`: mirrors the
+// core state into signals and forwards the imperative methods.
 export function createWhepPlayback(options: WhepPlaybackOptions): WhepPlayback {
+    const core = new WhepPlaybackCore({
+        url: options.url,
+        token: options.token,
+        reconnectMs: options.reconnectMs,
+        createDataChannel: options.createDataChannel,
+        log: options.log,
+    });
+
     const [stream, setStream] = createSignal<MediaStream | null>(null);
     const [peerConnection, setPeerConnection] =
         createSignal<RTCPeerConnection | null>(null);
@@ -86,236 +64,26 @@ export function createWhepPlayback(options: WhepPlaybackOptions): WhepPlayback {
     const [audioTrackCount, setAudioTrackCount] = createSignal(0);
     const [videoTrackCount, setVideoTrackCount] = createSignal(0);
 
-    let whepClient: WHEPClient | null = null;
-    let activePeerConnection: RTCPeerConnection | null = null;
-    let playToken = 0;
-    let disconnectTimer: ReturnType<typeof setTimeout> | undefined;
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const log = options.log ?? (() => {});
-
-    const clearReconnectTimer = () => {
-        if (reconnectTimer !== undefined) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = undefined;
-        }
-    };
-
-    const clearDisconnectTimer = () => {
-        if (disconnectTimer !== undefined) {
-            clearTimeout(disconnectTimer);
-            disconnectTimer = undefined;
-        }
-    };
-
-    const resetState = () => {
-        setStream(null);
-        setPeerConnection(null);
-        setDatachannel(null);
-        setAudioTrackCount(0);
-        setVideoTrackCount(0);
-    };
-
-    const cleanupPeerConnection = (pc: RTCPeerConnection | null) => {
-        if (!pc) return;
-        pc.ontrack = null;
-        pc.oniceconnectionstatechange = null;
-        pc.onconnectionstatechange = null;
-        try {
-            pc.close();
-        } catch {
-            // Ignore close errors during teardown.
-        }
-    };
-
-    const cleanupClient = async (client: WHEPClient | null) => {
-        if (!client) return;
-        try {
-            await client.stop();
-        } catch (stopError) {
-            if (!is404Error(stopError)) {
-                log(`stop error: ${String(stopError)}`);
-            }
-        }
-    };
-
-    const stop = async (opts: { reconnect?: boolean } = {}) => {
-        const shouldReconnect = opts.reconnect ?? false;
-        const reconnectDelay = resolve(options.reconnectMs, 0);
-        const shouldScheduleReconnect = shouldReconnect && reconnectDelay > 0;
-        const client = whepClient;
-        const pc = activePeerConnection;
-        whepClient = null;
-        activePeerConnection = null;
-        playToken += 1;
-        clearDisconnectTimer();
-        clearReconnectTimer();
-        resetState();
-        setStatus(shouldScheduleReconnect ? "reconnecting" : "stopped");
-
-        await cleanupClient(client);
-        cleanupPeerConnection(pc);
-
-        if (!shouldScheduleReconnect) {
-            return;
-        }
-
-        reconnectTimer = setTimeout(() => {
-            reconnectTimer = undefined;
-            void play();
-        }, reconnectDelay);
-    };
-
-    const play = async () => {
-        if (peerConnection()) return;
-
-        clearDisconnectTimer();
-        clearReconnectTimer();
-        setStatus("connecting");
-        setError(null);
-
-        const pc = new RTCPeerConnection();
-        const ms = new MediaStream();
-        const client = new WHEPClient();
-        const nextPlayToken = playToken + 1;
-        playToken = nextPlayToken;
-
-        whepClient = client;
-        activePeerConnection = pc;
-        setPeerConnection(pc);
-        setStream(ms);
-
-        if (options.createDataChannel) {
-            setDatachannel(pc.createDataChannel(""));
-        }
-
-        pc.addTransceiver("video", { direction: "recvonly" });
-        pc.addTransceiver("audio", { direction: "recvonly" });
-
-        const syncTrackCounts = () => {
-            setAudioTrackCount(ms.getAudioTracks().length);
-            setVideoTrackCount(ms.getVideoTracks().length);
-        };
-
-        pc.ontrack = (event) => {
-            if (playToken !== nextPlayToken) return;
-            log(`track: ${event.track.kind}`);
-            applyLatencyHints(
-                event.receiver,
-                resolve(options.lowLatency, false),
-            );
-            ms.addTrack(event.track);
-            syncTrackCounts();
-            setStream(ms);
-        };
-
-        pc.oniceconnectionstatechange = () => {
-            if (playToken !== nextPlayToken) return;
-            log(`ICE State: ${pc.iceConnectionState}`);
-            if (
-                pc.iceConnectionState === "connected" ||
-                pc.iceConnectionState === "completed"
-            ) {
-                clearDisconnectTimer();
-                setStatus("playing");
-                return;
-            }
-            if (pc.iceConnectionState === "disconnected") {
-                const reconnectMs = options.reconnectMs?.();
-                const disconnectDelay =
-                    reconnectMs === undefined ? 3000 : reconnectMs;
-                const shouldReconnect =
-                    reconnectMs !== undefined && reconnectMs > 0;
-
-                clearDisconnectTimer();
-
-                if (disconnectDelay <= 0) {
-                    void stop({ reconnect: false });
-                    return;
-                }
-
-                setStatus("reconnecting");
-                disconnectTimer = setTimeout(() => {
-                    disconnectTimer = undefined;
-                    void stop({ reconnect: shouldReconnect });
-                }, disconnectDelay);
-                return;
-            }
-            if (pc.iceConnectionState === "failed") {
-                void stop({
-                    reconnect: resolve(options.reconnectMs, 0) > 0,
-                });
-                return;
-            }
-            if (pc.iceConnectionState === "closed") {
-                void stop({
-                    reconnect: resolve(options.reconnectMs, 0) > 0,
-                });
-            }
-        };
-
-        pc.onconnectionstatechange = () => {
-            if (playToken !== nextPlayToken) return;
-            log(`connection State: ${pc.connectionState}`);
-        };
-
-        try {
-            log("http begined");
-            await client.view(pc, options.url(), resolve(options.token, ""));
-            if (playToken === nextPlayToken) {
-                syncTrackCounts();
-                setStatus("playing");
-            }
-        } catch (playError) {
-            if (playToken !== nextPlayToken) return;
-            const err =
-                playError instanceof Error
-                    ? playError
-                    : new Error(String(playError));
-            setError(err);
-            setStatus("error");
-            log(`ERROR: ${String(playError)}`);
-            await stop({
-                reconnect: resolve(options.reconnectMs, 0) > 0,
-            });
-        }
-    };
-
-    const mute = async (muted: WhepMute) => {
-        if (!whepClient) return;
-        log(`mute: ${JSON.stringify(muted)}`);
-        await whepClient.mute(muted);
-    };
-
-    const selectLayer = async (layer: string) => {
-        if (!whepClient) return;
-        if (!layer) {
-            await whepClient.unselectLayer();
-            return;
-        }
-        // @ts-expect-error legacy WHEP client typing is incomplete here.
-        await whepClient.selectLayer({ encodingId: layer }).catch((e) => {
-            log(String(e));
-        });
-    };
+    const unsubscribe = core.subscribe((state) => {
+        setStream(state.stream);
+        setPeerConnection(state.peerConnection);
+        setDatachannel(state.datachannel);
+        setStatus(state.status);
+        setError(state.error);
+        setAudioTrackCount(state.audioTrackCount);
+        setVideoTrackCount(state.videoTrackCount);
+    });
 
     // Live-toggle the low-latency hints on every receiver of the active
-    // peer connection. Receivers that arrive later pick the flag up in
-    // `ontrack`.
+    // peer connection. Receivers that arrive later pick the flag up from
+    // the core's `ontrack` handler.
     createEffect(() => {
-        const enabled = resolve(options.lowLatency, false);
-        const pc = activePeerConnection;
-        if (!pc) return;
-        for (const receiver of pc.getReceivers()) {
-            applyLatencyHints(receiver, enabled);
-        }
-        log(`low latency (jitter buffer off): ${enabled}`);
+        core.setLowLatency(resolve(options.lowLatency, false));
     });
 
     onCleanup(() => {
-        clearDisconnectTimer();
-        clearReconnectTimer();
-        void stop({ reconnect: false });
+        unsubscribe();
+        void core.destroy();
     });
 
     return {
@@ -326,9 +94,9 @@ export function createWhepPlayback(options: WhepPlaybackOptions): WhepPlayback {
         error,
         audioTrackCount,
         videoTrackCount,
-        play,
-        stop,
-        mute,
-        selectLayer,
+        play: () => core.play(),
+        stop: (stopOptions) => core.stop(stopOptions),
+        mute: (muted) => core.mute(muted),
+        selectLayer: (layer) => core.selectLayer(layer),
     };
 }
