@@ -52,6 +52,17 @@ struct SdpMediaInfo {
     audio_rtcp_addr: Option<SocketAddr>,
 }
 
+/// Whether the SDP connection address is unspecified (`0.0.0.0` / `::`).
+/// Senders commonly write `c=IN IP4 0.0.0.0` (e.g. FFmpeg), which is not a
+/// usable RTCP destination.
+#[cfg(feature = "source")]
+fn addr_is_unspecified(connection_info: &Option<(String, bool)>) -> bool {
+    connection_info.as_ref().is_some_and(|(addr, _)| {
+        addr.parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_unspecified())
+    })
+}
+
 impl SdpSource {
     pub fn new(config: InternalSourceConfig, sdp_content: String) -> Result<Self> {
         let (rtp_tx, _) = broadcast::channel(1024);
@@ -146,7 +157,14 @@ impl SdpSource {
                     if let Ok(port) = parts[1].parse::<u16>() {
                         ports.push((channel, port));
 
-                        if let Some((ref addr, _)) = connection_info {
+                        // An unspecified connection address (0.0.0.0 / ::)
+                        // carries no RTCP destination; skip it instead of
+                        // sending RTCP into the void (os error 65).
+                        let unspecified = addr_is_unspecified(&connection_info);
+
+                        if let Some((ref addr, _)) = connection_info
+                            && !unspecified
+                        {
                             let rtcp_port = port + 1;
                             let rtcp_addr_str = if is_ipv6 {
                                 format!("[{}]:{}", addr, rtcp_port)
@@ -445,14 +463,16 @@ impl SdpSource {
 
                     return Some(wrapper_tx);
                 } else {
-                    tracing::warn!(
+                    // Polled by the source manager until its wait deadline;
+                    // it reports the timeout, so stay quiet here.
+                    debug!(
                         "[{}] No RTCP address available in media info",
                         self.config.stream_id
                     );
                 }
             }
         } else {
-            tracing::warn!(
+            debug!(
                 "[{}] RTCP sender not available in get_rtcp_sender",
                 self.config.stream_id
             );
