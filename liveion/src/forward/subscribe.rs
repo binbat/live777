@@ -51,12 +51,18 @@ struct BoundPublishTrack {
     payload_type: Option<PayloadType>,
     source_codec: RTCRtpCodec,
     selected_codec: RTCRtpCodec,
+    /// First SSRC of the bound publish track, used to detect that the
+    /// bound publisher was replaced while change events lagged.
+    publish_ssrc: u32,
 }
 
 struct SubscribeForwardChannel {
     publish_rtcp_sender: broadcast::Sender<(RtcpMessage, u32)>,
     select_layer_recv: broadcast::Receiver<SelectLayerBody>,
     publish_track_change: broadcast::Receiver<()>,
+    /// Kept so the forward task can nudge itself (and the other media-kind
+    /// task) into a re-bind after it drops a stale binding.
+    publish_track_change_sender: broadcast::Sender<()>,
     connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     generation_id: u64,
     /// Per-session outbound counters, shared by the audio/video forward
@@ -117,6 +123,7 @@ impl SubscribeRTCPeerConnection {
                     publish_rtcp_sender: publish_rtcp_sender.clone(),
                     select_layer_recv: select_layer_sender.subscribe(),
                     publish_track_change: publish_track_change.subscribe(),
+                    publish_track_change_sender: publish_track_change.clone(),
                     connection_state_rx: connection_state_rx.clone(),
                     generation_id: runtime.generation_id,
                     stats: stats.clone(),
@@ -311,9 +318,47 @@ impl SubscribeRTCPeerConnection {
                 payload_type,
                 source_codec: publisher_codec,
                 selected_codec: codec,
+                publish_ssrc: ssrc,
             });
         }
         None
+    }
+
+    /// Reset the current publish-track binding: re-subscribe to the silent
+    /// virtual sender, clear all bound-track state, and drop the rid binding
+    /// (unless the layer is explicitly disabled — that choice must survive
+    /// re-binds). Used when the publisher goes away, when the bound track
+    /// turns out to be stale, and when write retries are exhausted so the
+    /// forward task can bind again on the next track-change event.
+    #[allow(clippy::too_many_arguments)]
+    fn unbind_publish_track(
+        kind: RtpCodecKind,
+        rid_map: &mut HashMap<String, String>,
+        virtual_sender: &broadcast::Sender<ForwardData>,
+        recv: &mut broadcast::Receiver<ForwardData>,
+        track: &mut Option<Arc<dyn TrackLocal>>,
+        payload_type: &mut Option<PayloadType>,
+        source_codec: &mut Option<RTCRtpCodec>,
+        selected_codec: &mut Option<RTCRtpCodec>,
+        pre_rid: &mut Option<String>,
+        publish_ssrc: &mut Option<u32>,
+        transient_write_error_since: &mut Option<Instant>,
+    ) {
+        *recv = virtual_sender.subscribe();
+        *track = None;
+        *payload_type = None;
+        *source_codec = None;
+        *selected_codec = None;
+        *pre_rid = None;
+        *publish_ssrc = None;
+        *transient_write_error_since = None;
+
+        if rid_map
+            .get(&kind.to_string())
+            .is_some_and(|rid| rid != constant::RID_DISABLE)
+        {
+            rid_map.remove(&kind.to_string());
+        }
     }
 
     fn format_codec(codec: &RTCRtpCodec) -> String {
@@ -527,6 +572,7 @@ impl SubscribeRTCPeerConnection {
         // Check for existing publish tracks immediately at startup,
         // so we don't depend on a potentially-missed publish_track_change event.
         let mut payload_type = None;
+        let mut publish_ssrc = None;
 
         if let Some(bound) = Self::try_bind_publish_track(
             &stream,
@@ -546,6 +592,7 @@ impl SubscribeRTCPeerConnection {
             payload_type = bound.payload_type;
             source_codec = Some(bound.source_codec);
             selected_codec = Some(bound.selected_codec);
+            publish_ssrc = Some(bound.publish_ssrc);
             transient_write_error_since = None;
         }
 
@@ -561,28 +608,75 @@ impl SubscribeRTCPeerConnection {
                     {
                         let mut rid_map = track_binding_publish_rid.write().await;
                         let pts = publish_tracks.read().await;
-                        let current_rid = rid_map.get(&kind.to_string());
+                        let current_rid = rid_map.get(&kind.to_string()).cloned();
 
                         if pts.is_empty() {
                             debug!("{} {} publish track len 0 , probably offline", stream, id);
-                            recv = virtual_sender.subscribe();
-                            track = None;
-                            payload_type = None;
-                            source_codec = None;
-                            selected_codec = None;
-                            pre_rid = None;
-
-                            if current_rid.is_some() && current_rid.cloned().unwrap() != constant::RID_DISABLE {
-                                rid_map.remove(&kind.to_string());
-                            }
+                            Self::unbind_publish_track(
+                                kind,
+                                &mut rid_map,
+                                &virtual_sender,
+                                &mut recv,
+                                &mut track,
+                                &mut payload_type,
+                                &mut source_codec,
+                                &mut selected_codec,
+                                &mut pre_rid,
+                                &mut publish_ssrc,
+                                &mut transient_write_error_since,
+                            );
                             continue;
                         }
 
                         if track.is_some() {
-                            continue;
+                            // Change events can coalesce or lag while a
+                            // publisher is replaced, so a bound track is not
+                            // proof of a live binding: keep it only if the
+                            // bound publish track (by SSRC) is still present,
+                            // otherwise unbind and fall through to re-bind.
+                            let mut bound_track_present = false;
+                            for publish_track in pts.iter() {
+                                if publish_track.kind() != kind {
+                                    continue;
+                                }
+                                let ssrc = match publish_track {
+                                    PublishTrackRemote::Real { track, .. } => track
+                                        .ssrcs()
+                                        .await
+                                        .first()
+                                        .copied()
+                                        .unwrap_or(0),
+                                    #[cfg(feature = "source")]
+                                    PublishTrackRemote::Virtual(v) => v.ssrc(),
+                                };
+                                if publish_ssrc == Some(ssrc) {
+                                    bound_track_present = true;
+                                    break;
+                                }
+                            }
+                            if bound_track_present {
+                                continue;
+                            }
+                            info!(
+                                "[{}] [{}] {} bound publish track is gone (publisher replaced), re-binding",
+                                stream, id, kind
+                            );
+                            Self::unbind_publish_track(
+                                kind,
+                                &mut rid_map,
+                                &virtual_sender,
+                                &mut recv,
+                                &mut track,
+                                &mut payload_type,
+                                &mut source_codec,
+                                &mut selected_codec,
+                                &mut pre_rid,
+                                &mut publish_ssrc,
+                                &mut transient_write_error_since,
+                            );
                         }
 
-                        if current_rid.is_some() && current_rid.cloned().unwrap() == constant::RID_DISABLE {
+                        if current_rid.as_deref() == Some(constant::RID_DISABLE) {
                             continue;
                         }
                     }
@@ -596,6 +690,7 @@ impl SubscribeRTCPeerConnection {
                         payload_type = bound.payload_type;
                         source_codec = Some(bound.source_codec);
                         selected_codec = Some(bound.selected_codec);
+                        publish_ssrc = Some(bound.publish_ssrc);
                         transient_write_error_since = None;
                     }
                 }
@@ -605,7 +700,7 @@ impl SubscribeRTCPeerConnection {
                         Ok(packet) => {
                             match track {
                                 None => continue,
-                                Some(ref track) => {
+                                Some(ref local_track) => {
                                     let mut packet = packet.as_ref().clone();
                                     let source_ssrc = packet.header.ssrc;
                                     let input_payload_type = packet.header.payload_type;
@@ -674,7 +769,7 @@ impl SubscribeRTCPeerConnection {
                                     // H264 STAP-A NRI fix applied above when needed.
 
                                     let packet_bytes = packet.marshal_size() as u64;
-                                    if let Err(err) = track.write_rtp(packet).await {
+                                    if let Err(err) = local_track.write_rtp(packet).await {
                                         // The webrtc crate surfaces pre-ready
                                         // write failures as untyped
                                         // `Error::Other` strings ("track is
@@ -735,11 +830,16 @@ impl SubscribeRTCPeerConnection {
                                         let started = transient_write_error_since.get_or_insert(now);
                                         let elapsed = started.elapsed();
                                         if elapsed >= TRACK_BIND_RETRY_TIMEOUT {
-                                            // Giving up. This fires both for a
-                                            // peer that never came up and for
-                                            // a genuinely broken track — the
-                                            // untyped error cannot tell them
-                                            // apart.
+                                            // Giving up on this binding.
+                                            // This fires both for a peer
+                                            // that never came up and for a
+                                            // genuinely broken track — the
+                                            // untyped error cannot tell
+                                            // them apart. Unbind and wait
+                                            // for the next track-change
+                                            // event instead of dying, so
+                                            // forwarding can resume once
+                                            // the subscriber side is ready.
                                             warn!(
                                                 "[{}] [{}] {} track write giving up after {}ms of retries, state={}, source_codec={}, selected_codec={}, payload_type={:?}, input_payload_type={}, outgoing_payload_type={}, ssrc={}: {}",
                                                 stream,
@@ -761,7 +861,32 @@ impl SubscribeRTCPeerConnection {
                                                 sender_ssrc,
                                                 err
                                             );
-                                            break;
+                                            {
+                                                let mut rid_map =
+                                                    track_binding_publish_rid.write().await;
+                                                Self::unbind_publish_track(
+                                                    kind,
+                                                    &mut rid_map,
+                                                    &virtual_sender,
+                                                    &mut recv,
+                                                    &mut track,
+                                                    &mut payload_type,
+                                                    &mut source_codec,
+                                                    &mut selected_codec,
+                                                    &mut pre_rid,
+                                                    &mut publish_ssrc,
+                                                    &mut transient_write_error_since,
+                                                );
+                                            }
+                                            // Nudge an immediate re-bind
+                                            // attempt; if writes keep
+                                            // failing, the budget above
+                                            // rate-limits the cycle to one
+                                            // per TRACK_BIND_RETRY_TIMEOUT.
+                                            let _ = forward_channel
+                                                .publish_track_change_sender
+                                                .send(());
+                                            continue;
                                         }
                                         debug!(
                                             "[{}] [{}] {} track write deferred for {}ms, state={}: {}",
@@ -806,10 +931,39 @@ impl SubscribeRTCPeerConnection {
                                         }
                                         first_packet = false;
                                     } // if first_packet
-                            } // Some(ref track)
+                            } // Some(ref local_track)
                             } // match track
                         } // Ok(packet)
                         Err(err) => {
+                            if matches!(err, broadcast::error::RecvError::Closed) {
+                                // The bound publisher's RTP sender was
+                                // dropped (publisher removed or replaced). A
+                                // closed broadcast never yields packets
+                                // again, so unbind and nudge a re-bind
+                                // instead of spinning on Closed forever.
+                                warn!(
+                                    "[{}] [{}] {} publish track channel closed, unbinding to re-bind",
+                                    stream, id, kind
+                                );
+                                {
+                                    let mut rid_map = track_binding_publish_rid.write().await;
+                                    Self::unbind_publish_track(
+                                        kind,
+                                        &mut rid_map,
+                                        &virtual_sender,
+                                        &mut recv,
+                                        &mut track,
+                                        &mut payload_type,
+                                        &mut source_codec,
+                                        &mut selected_codec,
+                                        &mut pre_rid,
+                                        &mut publish_ssrc,
+                                        &mut transient_write_error_since,
+                                    );
+                                }
+                                let _ = forward_channel.publish_track_change_sender.send(());
+                                continue;
+                            }
                             // Rate-limit: a slow or stuck consumer lags on
                             // nearly every receive once the publish ring is
                             // full (at 120fps that is ~50 warns per second),
@@ -855,6 +1009,7 @@ impl SubscribeRTCPeerConnection {
                                     payload_type = None;
                                     source_codec = None;
                                     selected_codec = None;
+                                    publish_ssrc = None;
                                     pre_rid = Some(rid.clone());
                                     {
                                         let mut binding = track_binding_publish_rid.write().await;
@@ -995,6 +1150,7 @@ impl SubscribeRTCPeerConnection {
                                 #[cfg(feature = "source")]
                                 PublishTrackRemote::Virtual(v) => v.ssrc(),
                             };
+                            publish_ssrc = Some(ssrc);
 
                             let _ = forward_channel
                                 .publish_rtcp_sender
@@ -1035,7 +1191,92 @@ impl SubscribeRTCPeerConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rtc::rtp::packet::Packet;
     use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
+
+    /// The unbind reset behind "closed publish channel → re-bind",
+    /// "stale binding → re-bind" and "write budget exhausted → re-bind":
+    /// all bound state is cleared, the receiver is moved back to the
+    /// virtual (silent) sender, and the rid binding is dropped — unless
+    /// the layer was explicitly disabled, which must survive re-binds.
+    #[tokio::test]
+    async fn unbind_publish_track_clears_state_and_preserves_disable_rid() {
+        let kind = RtpCodecKind::Video;
+        let virtual_sender: broadcast::Sender<ForwardData> = new_broadcast_channel!(4);
+        let codec = RTCRtpCodec {
+            mime_type: "video/H264".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "".to_string(),
+            rtcp_feedback: vec![],
+        };
+
+        for bound_rid in [Some("f"), Some(constant::RID_DISABLE), None] {
+            let bound_sender: broadcast::Sender<ForwardData> = new_broadcast_channel!(4);
+            let mut rid_map = HashMap::new();
+            if let Some(rid) = bound_rid {
+                rid_map.insert(kind.to_string(), rid.to_string());
+            }
+            let mut recv = bound_sender.subscribe();
+            let mut track: Option<Arc<dyn TrackLocal>> =
+                Some(Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
+                    "webrtc".to_string(),
+                    "webrtc-video".to_string(),
+                    "webrtc".to_string(),
+                    kind,
+                    vec![],
+                ))));
+            let mut payload_type: Option<PayloadType> = Some(111);
+            let mut source_codec = Some(codec.clone());
+            let mut selected_codec = Some(codec.clone());
+            let mut pre_rid = Some("f".to_string());
+            let mut publish_ssrc = Some(4242);
+            let mut transient_write_error_since = Some(Instant::now());
+
+            SubscribeRTCPeerConnection::unbind_publish_track(
+                kind,
+                &mut rid_map,
+                &virtual_sender,
+                &mut recv,
+                &mut track,
+                &mut payload_type,
+                &mut source_codec,
+                &mut selected_codec,
+                &mut pre_rid,
+                &mut publish_ssrc,
+                &mut transient_write_error_since,
+            );
+
+            assert!(track.is_none());
+            assert!(payload_type.is_none());
+            assert!(source_codec.is_none());
+            assert!(selected_codec.is_none());
+            assert!(pre_rid.is_none());
+            assert!(publish_ssrc.is_none());
+            assert!(transient_write_error_since.is_none());
+
+            if bound_rid == Some(constant::RID_DISABLE) {
+                assert_eq!(
+                    rid_map.get(&kind.to_string()).map(String::as_str),
+                    Some(constant::RID_DISABLE),
+                    "an explicit disable must survive unbind"
+                );
+            } else {
+                assert!(!rid_map.contains_key(&kind.to_string()));
+            }
+
+            // The receiver is re-subscribed to the virtual sender: dropping
+            // the old bound sender must not close it (this was the stranded
+            // "connected but muted" state), and virtual traffic flows.
+            drop(bound_sender);
+            assert!(matches!(
+                recv.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+            virtual_sender.send(Arc::new(Packet::default())).unwrap();
+            assert!(recv.try_recv().is_ok());
+        }
+    }
 
     #[test]
     fn terminal_connection_states_stop_track_write_retries() {
