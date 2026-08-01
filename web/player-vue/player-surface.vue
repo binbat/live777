@@ -29,7 +29,7 @@ let statsInterval: ReturnType<typeof setInterval> | null = null;
 
 const tryPlay = () => {
     const video = videoEl.value;
-    if (!props.autoplay || !video || !video.srcObject) return;
+    if (!props.autoplay || !video?.srcObject) return;
     video.muted = props.muted;
     video.play().catch(() => {
         // Autoplay can be blocked if the caller does not mute the video.
