@@ -23,6 +23,10 @@
 
 #include "include/encoder_backend.h"
 
+#include <unordered_map>
+
+#include <unistd.h>
+
 // ---------------------------------------------------------------------------
 // Inline Annex-B NAL scanner
 // ---------------------------------------------------------------------------
@@ -128,6 +132,7 @@ public:
         }
 
         width_ = cfg.width;
+        prefer_dmabuf_ = cfg.prefer_dmabuf;
         height_ = cfg.height;
         fps_ = cfg.fps;
         bitrate_ = cfg.bitrate;
@@ -356,8 +361,10 @@ public:
             if (err) *err = "encoder-rkmpp: only NV12 input is supported";
             return false;
         }
-        if (frame.kind != BufferKind::Cpu) {
-            if (err) *err = "encoder-rkmpp: only CPU buffers are supported";
+        if (frame.kind != BufferKind::Cpu
+            && !(frame.kind == BufferKind::DmaBuf && prefer_dmabuf_)) {
+            if (err) *err = "encoder-rkmpp: only CPU buffers are supported"
+                " (or dmabuf without prefer_dmabuf)";
             return false;
         }
         if (frame.plane_count < 2) {
@@ -389,6 +396,49 @@ public:
             return false;
         }
 
+        // --- Zero-copy path: import the capture dmabuf directly ---
+        // The capture owns the memory; we import once per fd and reuse.
+        // Frame layout must be NV12 contiguous (single fd, UV at offset).
+        uint32_t frame_hor_stride = hor_stride_;
+        uint32_t frame_ver_stride = ver_stride_;
+        bool use_dmabuf = false;
+        if (prefer_dmabuf_ && frame.kind == BufferKind::DmaBuf
+            && frame.planes[0].dma_fd >= 0 && frame.planes[1].offset > 0) {
+            const int fd = frame.planes[0].dma_fd;
+            auto it = dmabuf_cache_.find(fd);
+            if (it == dmabuf_cache_.end()) {
+                MppBufferInfo info{};
+                info.type = MPP_BUFFER_TYPE_DRM;
+                info.fd = fd;
+                info.size = static_cast<size_t>(frame.planes[0].stride) * src_h
+                            + static_cast<size_t>(frame.planes[0].stride) * src_h / 2;
+                MppBuffer imported = nullptr;
+                if (mpp_buffer_import(&imported, &info) == MPP_OK
+                    && imported != nullptr) {
+                    it = dmabuf_cache_.emplace(fd, imported).first;
+                } else if (err) {
+                    *err = "encoder-rkmpp: dmabuf import failed (fd="
+                        + std::to_string(fd) + ")";
+                }
+            }
+            if (it != dmabuf_cache_.end()) {
+                buf = it->second;
+                use_dmabuf = true;
+                // Use the capture's own stride (may exceed width due to ISP
+                // padding); the pool path normalises to configured strides.
+                frame_hor_stride = frame.planes[0].stride;
+                // ver_stride stays height-based: MPP expects UV at
+                // hor_stride x ver_stride, which matches the capture's
+                // planes[1].offset (= stride x height) exactly.
+                frame_ver_stride = ver_stride_;
+            }
+        }
+
+        if (use_dmabuf) {
+            // Data was written by the ISP via DMA; guard CPU-side cache ops.
+            mpp_buffer_sync_begin(buf);
+            mpp_buffer_sync_end(buf);
+        } else {
         // --- Copy frame data into the selected buffer ---
         // DMA buffer cache sync: CPU writes must be flushed so MPP's DMA
         // engine sees the data.
@@ -439,6 +489,7 @@ public:
         }
 
         mpp_buffer_sync_end(buf);
+        }
 
         // --- Build MppFrame ---
         MppFrame mpp_frame = nullptr;
@@ -452,8 +503,8 @@ public:
         mpp_frame_set_buffer(mpp_frame, buf);
         mpp_frame_set_width(mpp_frame, width_);
         mpp_frame_set_height(mpp_frame, height_);
-        mpp_frame_set_hor_stride(mpp_frame, hor_stride_);
-        mpp_frame_set_ver_stride(mpp_frame, ver_stride_);
+        mpp_frame_set_hor_stride(mpp_frame, frame_hor_stride);
+        mpp_frame_set_ver_stride(mpp_frame, frame_ver_stride);
         mpp_frame_set_fmt(mpp_frame, MPP_FMT_YUV420SP);
         mpp_frame_set_eos(mpp_frame, 0);
 
@@ -497,6 +548,22 @@ public:
 
         // --- Drain and dispatch (this frame may not be ready yet) ---
         drain_and_dispatch(frame.pts_us);
+
+        // Zero-copy lifetime rule: the capture requeues this V4L2 dmabuf as
+        // soon as submit() returns, so the frame's AU must be fully drained
+        // here. MPP completes a frame per put in practice (depth peak=1);
+        // the bounded retry only covers transient encoder lag.
+        if (use_dmabuf) {
+            for (int retry = 0; retry < 3 && !pending_au_.empty(); ++retry) {
+                usleep(2000);
+                drain_and_dispatch(frame.pts_us);
+            }
+            if (!pending_au_.empty()) {
+                fprintf(stderr,
+                    "[RkMppEncoder] warn: dmabuf frame not drained in time "
+                    "(capture may requeue early)\n");
+            }
+        }
 
         // Periodic stats
         print_stats_if_due();
@@ -727,11 +794,17 @@ private:
     uint32_t hor_stride_ = 0, ver_stride_ = 0;
     size_t frame_size_ = 0;
 
+    bool prefer_dmabuf_ = false;
+
     // Persistent buffer pool: kInputPoolSize buffers cycled round-robin.
     // See the allocation site for why DRM+CACHABLE is preferred on RV1126B.
     static constexpr int kInputPoolSize = 3;
     MppBufferGroup buf_group_ = nullptr;
     MppBuffer input_bufs_[kInputPoolSize] = {};
+
+    // Zero-copy path: imported MppBuffer per capture dmabuf fd, imported once
+    // and reused (the capture owns the memory; fds are stable per V4L2 slot).
+    std::unordered_map<int, MppBuffer> dmabuf_cache_;
     int next_input_idx_ = 0;
 
     // Explicit output packet buffers (attached per-frame via meta) and a

@@ -58,6 +58,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     struct MappedPlane {
         void* start = nullptr;
         size_t length = 0;
+        int dma_fd = -1;  // VIDIOC_EXPBUF export (only when prefer_dmabuf)
     };
 
     struct Buffer {
@@ -70,6 +71,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     uint32_t fps = 0;
     uint32_t pixel_format = 0;
     v4l2_buf_type buffer_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    bool prefer_dmabuf = false;
     uint32_t memory_plane_count = 1;
     std::array<uint32_t, VIDEO_MAX_PLANES> plane_strides{};
     std::array<uint32_t, VIDEO_MAX_PLANES> plane_sizeimages{};
@@ -245,13 +247,17 @@ bool V4L2CaptureImpl::make_frame(
         }
         frame->format = RawPixelFormat::Nv12;
         frame->plane_count = 2;
+        if (prefer_dmabuf && mapped.planes[0].dma_fd >= 0
+            && mapped.planes[1].dma_fd >= 0) {
+            frame->kind = BufferKind::DmaBuf;
+        }
         for (uint32_t plane = 0; plane < 2; ++plane) {
             const size_t used = std::min(bytes_used(plane), available_bytes(plane));
             frame->planes[plane] = {
                 static_cast<const uint8_t*>(mapped.planes[plane].start)
                     + data_offset(plane),
                 plane_strides[plane] ? plane_strides[plane] : width,
-                static_cast<uint32_t>(used), -1, 0};
+                static_cast<uint32_t>(used), mapped.planes[plane].dma_fd, 0};
         }
         return true;
     }
@@ -267,14 +273,18 @@ bool V4L2CaptureImpl::make_frame(
         }
         const auto* base =
             static_cast<const uint8_t*>(mapped.planes[0].start) + data_offset(0);
+        const int dma_fd = mapped.planes[0].dma_fd;
+        if (prefer_dmabuf && dma_fd >= 0) {
+            frame->kind = BufferKind::DmaBuf;
+        }
         frame->format = RawPixelFormat::Nv12;
         frame->plane_count = 2;
         frame->planes[0] = {
-            base, stride, static_cast<uint32_t>(y_bytes), -1, 0};
+            base, stride, static_cast<uint32_t>(y_bytes), dma_fd, 0};
         frame->planes[1] = {
             base + y_bytes, stride,
             static_cast<uint32_t>(static_cast<size_t>(stride) * (height / 2)),
-            -1, static_cast<uint32_t>(y_bytes)};
+            dma_fd, static_cast<uint32_t>(y_bytes)};
         return true;
     }
 
@@ -390,6 +400,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
     width = cfg.width;
     height = cfg.height;
     fps = cfg.fps;
+    prefer_dmabuf = cfg.prefer_dmabuf;
 
     fd = ::open(cfg.device.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
@@ -556,6 +567,28 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
                 return false;
             }
             mapped.planes.push_back({start, length});
+        }
+
+        // Zero-copy: export each buffer as a dmabuf (works for MMAP buffers;
+        // rkaiisp/rkcif support expbuf, mirroring what the vendor VI uses).
+        if (prefer_dmabuf) {
+            for (uint32_t plane = 0; plane < memory_plane_count; ++plane) {
+                v4l2_exportbuffer ebuf{};
+                ebuf.type = buffer_type;
+                ebuf.index = index;
+                ebuf.plane = plane;
+                ebuf.flags = O_RDWR | O_CLOEXEC;
+                if (ioctl(fd, VIDIOC_EXPBUF, &ebuf) == 0) {
+                    mapped.planes[plane].dma_fd = ebuf.fd;
+                } else {
+                    fprintf(stderr,
+                        "[V4L2Capture] EXPBUF failed for buffer %u plane %u: %s "
+                        "(zero-copy disabled, CPU path in use)\n",
+                        index, plane, strerror(errno));
+                    prefer_dmabuf = false;  // don't retry every buffer
+                    break;
+                }
+            }
         }
         buffers.push_back(std::move(mapped));
     }
