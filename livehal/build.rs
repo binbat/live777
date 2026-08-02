@@ -309,6 +309,7 @@ fn main() {
                 if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
             );
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
+            cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
         }
         "rdk-x5" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
@@ -329,6 +330,7 @@ fn main() {
                 "ENABLE_ENCODER_RDK_X5",
                 if rdk_available { "ON" } else { "OFF" },
             );
+            cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
         }
         "generic-v4l2" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");

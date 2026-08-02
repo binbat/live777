@@ -10,10 +10,10 @@
 //! Input: NV12 only (CPU path, no DMA-BUF yet).
 //! Profile/level/tier are resolved by Rust and passed as numeric values.
 //!
-//! Buffer model (6-buffer pool, partition aggregation):
-//!   Six persistent input buffers allocated at init and cycled each frame.
-//!   Each frame gets its own buffer slot.  MPP may produce multiple
-//!   packets/partitions per frame — these are aggregated until EOI
+//! Buffer model (persistent pool, partition aggregation):
+//!   A small pool of persistent input buffers allocated at init and cycled
+//!   each frame.  Each frame gets its own buffer slot.  MPP may produce
+//!   multiple packets/partitions per frame — these are aggregated until EOI
 //!   (end-of-image) and dispatched as a single complete Access Unit.
 //!   This matches GStreamer mpph265enc behaviour and fixes screen tearing
 //!   caused by per-partition dispatch.
@@ -24,7 +24,7 @@
 #include "include/encoder_backend.h"
 
 // ---------------------------------------------------------------------------
-// Inline Annex-B NAL scanner (shared with encoder_ascend_dvpp.cpp)
+// Inline Annex-B NAL scanner
 // ---------------------------------------------------------------------------
 
 static inline size_t annex_b_start_code_len(const uint8_t* p, size_t size) {
@@ -40,13 +40,6 @@ static inline int h264_nal_type(const uint8_t* p, size_t len) {
     size_t o = annex_b_start_code_len(p, len);
     if (o == 0 || o >= len) return -1;
     return p[o] & 0x1F;
-}
-
-static inline int h265_nal_type(const uint8_t* p, size_t len) {
-    if (!p || len < 5) return -1;
-    size_t o = annex_b_start_code_len(p, len);
-    if (o == 0 || o + 2 > len) return -1;
-    return (p[o] >> 1) & 0x3F;
 }
 
 struct NalFlags { bool keyframe; bool config; };
@@ -110,7 +103,7 @@ static inline bool resolve_h264_coding_tools(uint32_t pid, H264CodingTools& out)
 #include <algorithm>
 
 // ---------------------------------------------------------------------------
-// RkMppEncoder — 3-buffer pool, round-robin model
+// RkMppEncoder — persistent buffer pool, round-robin model
 // ---------------------------------------------------------------------------
 
 class RkMppEncoder : public EncoderBackend {
@@ -126,6 +119,10 @@ public:
 
         if (cfg.codec != VideoCodec::H264 && cfg.codec != VideoCodec::H265) {
             if (err) *err = "encoder-rkmpp: only H.264 and H.265 are supported";
+            return false;
+        }
+        if (cfg.input_format != RawPixelFormat::Nv12) {
+            if (err) *err = "encoder-rkmpp: only NV12 input is supported";
             return false;
         }
 
@@ -201,17 +198,15 @@ public:
         if (!set_required("rc:fps_in_num", static_cast<RK_S32>(fps_))) return false;
         if (!set_required("rc:fps_out_num", static_cast<RK_S32>(fps_))) return false;
         // Older MPP versions reject denom/flex — make optional
-        if (!set_required("rc:fps_in_flex", 0)) return false;
-        if (!set_required("rc:fps_in_denorm", 1)) return false;
-        if (!set_required("rc:fps_out_flex", 0)) return false;
-        if (!set_required("rc:fps_out_denorm", 1)) return false;
-        if (!set_required("rc:bps_target", static_cast<RK_S32>(bitrate_))) return false;
+        set_optional("rc:fps_in_flex", 0);
+        set_optional("rc:fps_in_denorm", 1);
+        set_optional("rc:fps_out_flex", 0);
+        set_optional("rc:fps_out_denorm", 1);
         set_optional("rc:bps_max", static_cast<RK_S32>(bitrate_ * 2));
         set_optional("rc:bps_min", static_cast<RK_S32>(bitrate_ / 2));
         set_optional("rc:qp_init", 26);
         set_optional("rc:qp_min", 18);
         set_optional("rc:qp_max", 40);
-        if (!set_required("rc:gop", static_cast<RK_S32>(cfg.gop))) return false;
 
         // Codec-specific
         if (cfg.codec == VideoCodec::H264) {
@@ -266,7 +261,7 @@ public:
             return false;
         }
 
-        // --- Persistent input buffer pool (3 buffers, round-robin) ---
+        // --- Persistent input buffer pool (kInputPoolSize, round-robin) ---
         // Three buffers allocated at init and cycled each frame.
         // By the time we wrap around to slot N, MPP has drained the
         // frame that previously used that slot.
@@ -552,7 +547,8 @@ private:
                 if (packet) mpp_packet_deinit(&packet);
                 get_packet_failures_++;
                 au.clear();
-                inflight_depth_--; // abandon the in-flight frame
+                // May fire from the pre-submit drain with nothing in flight.
+                if (inflight_depth_ > 0) inflight_depth_--;
                 return dispatched;
             }
             if (!packet) break;
@@ -613,16 +609,13 @@ private:
         }
 
         // Per-frame AU log throttled to stats interval (not hot path)
-        {
-            static uint64_t au_log_count = 0;
-            if (++au_log_count % 150 == 0) {
-                std::fprintf(stderr,
-                    "rkmpp-au: pts=%llu size=%zu parts=%zu key=%d cfg=%d\n",
-                    static_cast<unsigned long long>(au_pts_us),
-                    au.size(), partition_count,
-                    (au_flags & EncodedKeyframe) != 0,
-                    (au_flags & EncodedConfig) != 0);
-            }
+        if (++au_log_count_ % 150 == 0) {
+            std::fprintf(stderr,
+                "rkmpp-au: pts=%llu size=%zu parts=%zu key=%d cfg=%d\n",
+                static_cast<unsigned long long>(au_pts_us),
+                au.size(), partition_count,
+                (au_flags & EncodedKeyframe) != 0,
+                (au_flags & EncodedConfig) != 0);
         }
 
         if (partition_count > max_partitions_per_frame_)
@@ -682,7 +675,7 @@ private:
     uint32_t hor_stride_ = 0, ver_stride_ = 0;
     size_t frame_size_ = 0;
 
-    // Persistent buffer pool: 6 buffers cycled round-robin.
+    // Persistent buffer pool: kInputPoolSize buffers cycled round-robin.
     static constexpr int kInputPoolSize = 2;
     MppBufferGroup buf_group_ = nullptr;
     MppBuffer input_bufs_[kInputPoolSize] = {};
@@ -700,6 +693,7 @@ private:
     uint64_t encoded_frames_ = 0;
     uint64_t put_frame_failures_ = 0;
     uint64_t get_packet_failures_ = 0;
+    uint64_t au_log_count_ = 0;
     int inflight_depth_ = 0;
     int peak_inflight_depth_ = 0;
     size_t max_partitions_per_frame_ = 0;

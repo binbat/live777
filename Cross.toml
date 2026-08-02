@@ -13,7 +13,7 @@
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
 
 [target.aarch64-unknown-linux-gnu.env]
-volumes = ["PI_SYSROOT"]
+volumes = ["PI_SYSROOT", "RK_MPP_SYSROOT"]
 
 [target.armv7-unknown-linux-gnueabihf]
 image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:main"

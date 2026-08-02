@@ -60,13 +60,11 @@ public:
         if (!capture_->init(ccfg, err)) return false;
 
         EncoderConfig encoder_cfg = ecfg;
-        // The generic V4L2 capture backend converts YUYV to YUV420P, while
-        // native NV12/YUV420 frames keep their negotiated layout.
-        encoder_cfg.input_format = ccfg.pixel_format;
-        if (ecfg.backend == "v4l2-m2m"
-            && ccfg.pixel_format == RawPixelFormat::Yuyv422) {
-            encoder_cfg.input_format = RawPixelFormat::Yuv420p;
-        }
+        // Use the format the capture backend actually delivers, not the
+        // requested one: the generic V4L2 backend converts YUYV to
+        // YUV420P, and libcamera always delivers YUV420P regardless of
+        // the configured pixel_format.
+        encoder_cfg.input_format = capture_->outputFormat();
 
         encoder_ = create_encoder_backend(encoder_cfg);
         if (!encoder_) {

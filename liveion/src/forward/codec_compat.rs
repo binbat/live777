@@ -85,23 +85,15 @@ pub fn h265_fmtp_param_or_default(fmtp: &str, key: &str) -> String {
 }
 
 pub fn h265_candidate_level_sufficient(candidate: &RTCRtpCodec, publisher: &RTCRtpCodec) -> bool {
-    // candidate = the codec being proposed (e.g. browser SDP offer).
-    // publisher = the codec already in use (the source track).
+    // level-id in the offer indicates the highest level the receiver can
+    // support, so the publisher's level must be <= the candidate's level.
+    // RFC 7798 defines level-id as a *decimal* integer equal to
+    // general_level_idc (e.g. 93 = Level 3.1, 180 = Level 6.0).
     //
-    // level-id in the offer indicates the HIGHEST level the receiver can
-    // support, so the PUBLISHER's level must NOT EXCEED the candidate's
-    // level.  Equivalently: publisher_level_idc <= candidate_level_idc.
-    //
-    // Example: publisher=120 (Level 4.0), candidate=180 (Level 6.0)
-    // → 120 <= 180 → TRUE (receiver can handle it).
-    //
-    // RFC 7798: level-id is a decimal integer equal to general_level_idc
-    // (e.g. 93 = Level 3.1, 180 = Level 6.0).
-    //
-    // Only enforce when both sides explicitly declare level-id.  Browsers
-    // such as Safari/WebKit commonly omit level-id; treating an absent
-    // value as "no level limit declared" avoids rejecting subscribers
-    // that previously matched before this gate existed.
+    // Only enforce the comparison when both sides explicitly declare level-id.
+    // Browsers such as Safari/WebKit commonly omit level-id from their offer;
+    // treating an omitted value as "no level limit declared" avoids rejecting
+    // subscribers that previously matched before this gate existed.
     let candidate_level = fmtp_param(&candidate.sdp_fmtp_line, "level-id");
     let publisher_level = fmtp_param(&publisher.sdp_fmtp_line, "level-id");
     let (Some(candidate_level), Some(publisher_level)) = (candidate_level, publisher_level) else {
@@ -111,7 +103,6 @@ pub fn h265_candidate_level_sufficient(candidate: &RTCRtpCodec, publisher: &RTCR
         candidate_level.parse::<u32>(),
         publisher_level.parse::<u32>(),
     ) {
-        // Publisher level must fit within candidate's declared capability.
         (Ok(candidate_level), Ok(publisher_level)) => publisher_level <= candidate_level,
         // Don't reject on an unparseable fmtp value.
         _ => true,
@@ -189,7 +180,7 @@ pub fn sender_track_codec_compatible(
     rtp_codecs_match(sender_track_codec, selected_codec)
         || (is_h264_codec(sender_track_codec) && is_h264_codec(selected_codec))
         || (h265_codecs_are_compatible(sender_track_codec, selected_codec)
-            && h265_candidate_level_sufficient(selected_codec, sender_track_codec))
+            && h265_candidate_level_sufficient(sender_track_codec, selected_codec))
         || av1_codecs_are_compatible(sender_track_codec, selected_codec)
 }
 

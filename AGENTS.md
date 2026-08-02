@@ -141,8 +141,9 @@ Key feature groups defined in the root `Cargo.toml`:
 - `target-whip`    — WHIP push targets (static cascade-push).
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
-- `encoder-v4l2-m2m`, `encoder-rdk`   — encoder backends.
-- Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`.
+- `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
+- Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
+  `native-rk3588`.
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
@@ -153,7 +154,8 @@ instead of `--all-features`.
 
 `Cross.toml` configures `cross` images for `aarch64-unknown-linux-gnu` and
 `armv7-unknown-linux-gnueabihf`. For Raspberry Pi libcamera builds you need a
-sysroot and `PI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`. Example:
+sysroot and `PI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`; for
+Rockchip RK3588 (RKMPP) builds use `RK_MPP_SYSROOT`. Example:
 
 ```bash
 export PI_SYSROOT=/path/to/pi-sysroot
@@ -162,8 +164,8 @@ cross build --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rpi,webui
 ```
 
-`livehal/build.rs` reads `PI_SYSROOT`/`RDK_SYSROOT` to configure `pkg-config`
-and linker paths.
+`livehal/build.rs` reads `PI_SYSROOT`/`RDK_SYSROOT`/`RK_MPP_SYSROOT` to
+configure `pkg-config` and linker paths.
 
 ## Runtime Architecture
 

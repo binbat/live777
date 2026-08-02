@@ -54,6 +54,12 @@ public:
 
     /// Returns true if the backend is currently streaming.
     virtual bool isRunning() const = 0;
+
+    /// The pixel format of the frames this backend actually delivers,
+    /// valid after a successful init().  May differ from
+    /// `CaptureConfig::pixel_format` — e.g. the generic V4L2 backend
+    /// converts YUYV to YUV420P, and libcamera always delivers YUV420P.
+    virtual RawPixelFormat outputFormat() const = 0;
 };
 
 /// Platform-specific capture factories — defined in backend .cpp files.

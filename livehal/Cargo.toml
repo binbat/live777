@@ -30,7 +30,5 @@ encoder-v4l2-m2m = []
 encoder-rdk = []
 encoder-rkmpp = []
 
-# --- Ascend DVPP VENC encoder (Huawei Ascend 310B1) ---
-
 # future
 # encoded-source-waybeam-venc = []

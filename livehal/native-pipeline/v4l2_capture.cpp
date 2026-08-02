@@ -89,6 +89,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     bool start(CaptureFrameCallback cb, std::string* err) override;
     void stop() override;
     bool isRunning() const override;
+    RawPixelFormat outputFormat() const override;
 
     void capture_loop();
     void release_resources();
@@ -110,6 +111,28 @@ bool V4L2CaptureImpl::supports_format(v4l2_buf_type type, uint32_t fourcc) const
         }
     }
     return false;
+}
+
+// Maps the negotiated V4L2 fourcc to the RawPixelFormat that make_frame()
+// actually emits.  YUYV is converted to YUV420P; everything else keeps its
+// native layout.
+RawPixelFormat V4L2CaptureImpl::outputFormat() const {
+    switch (pixel_format) {
+    case V4L2_PIX_FMT_YUYV:
+        return RawPixelFormat::Yuv420p;
+    case V4L2_PIX_FMT_NV12:
+    case V4L2_PIX_FMT_NV12M:
+        return RawPixelFormat::Nv12;
+    case V4L2_PIX_FMT_YUV420:
+    case V4L2_PIX_FMT_YUV420M:
+        return RawPixelFormat::Yuv420p;
+    case V4L2_PIX_FMT_MJPEG:
+        return RawPixelFormat::Mjpeg;
+    case V4L2_PIX_FMT_RGB24:
+        return RawPixelFormat::Rgb888;
+    default:
+        return RawPixelFormat::Yuv420p;
+    }
 }
 
 bool V4L2CaptureImpl::select_format(
