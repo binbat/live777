@@ -153,16 +153,22 @@ instead of `--all-features`.
 ### Cross-Compilation
 
 `Cross.toml` configures `cross` images for `aarch64-unknown-linux-gnu` and
-`armv7-unknown-linux-gnueabihf`. For Raspberry Pi libcamera builds you need a
-sysroot and `RPI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`; for
-Rockchip RKMPP (RK3588, RV1126B) builds use the RKMPP cross image
-(`ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, MPP sysroot baked at
-`/opt/rkmpp-sysroot`) or set `RKMPP_SYSROOT` to override it with a sysroot
-pulled from a device. Example:
+`armv7-unknown-linux-gnueabihf`. Per-platform cross images are published to
+ghcr with the sysroot baked in; `*_SYSROOT` env vars override them with a
+device-pulled sysroot when developing locally:
+
+- Rockchip RKMPP (RK3588, RV1126B): `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`
+  (sysroot at `/opt/rkmpp-sysroot`), or set `RKMPP_SYSROOT`.
+- Raspberry Pi: `ghcr.io/binbat/crossbuilder-aarch64-rpi:latest`, or set
+  `RPI_SYSROOT`.
+- RDK X5: set `RDK_SYSROOT` (no published image; see the licensing note in
+  `AGENTS.md` "Security Considerations").
+
+Example:
 
 ```bash
-export RPI_SYSROOT=/path/to/rpi-sysroot
-cross build --target aarch64-unknown-linux-gnu \
+CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64-rpi:latest \
+  cross build --target aarch64-unknown-linux-gnu \
   --bin live777 --release \
   --no-default-features --features native-rpi,webui
 
@@ -379,7 +385,7 @@ carries the check.
   `just cross-pack-size <target> <features>` for cross-compiled embedded
   targets (cross-rs; UPX packs foreign-arch ELFs from the host).
   Device-pinned shortcuts cover the supported embedded presets:
-  `just rpi-pack-size` (needs `RPI_SYSROOT`), `just rdk-pack-size`
+  `just rpi-pack-size` (uses the RPi cross image), `just rdk-pack-size`
   (needs `RDK_SYSROOT`), and `just v4l2-pack-size [target]`
   (armv7 by default).
 - **Releases**: `.github/workflows/release.yml` builds for many targets

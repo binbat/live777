@@ -11,6 +11,7 @@ on:
     paths:
       - '.github/workflows/cross-images.yml'
       - 'docker/Dockerfile.cross-aarch64-rkmpp'
+      - 'docker/Dockerfile.cross-aarch64-rpi'
   workflow_dispatch:
 
 permissions:
@@ -18,9 +19,19 @@ permissions:
   packages: write
 
 jobs:
-  rkmpp:
-    name: Rockchip RKMPP cross image
+  build:
+    name: ${{ matrix.name }} cross image
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Rockchip RKMPP
+            dockerfile: docker/Dockerfile.cross-aarch64-rkmpp
+            image: crossbuilder-aarch64-rkmpp
+          - name: Raspberry Pi
+            dockerfile: docker/Dockerfile.cross-aarch64-rpi
+            image: crossbuilder-aarch64-rpi
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -29,7 +40,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/binbat/crossbuilder-aarch64-rkmpp
+          images: ghcr.io/binbat/${{ matrix.image }}
           tags: |
             type=raw,value=latest
             type=ref,event=branch
@@ -53,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: docker/Dockerfile.cross-aarch64-rkmpp
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

@@ -5,6 +5,7 @@ port := "7777"
 server := "http://" + host + ":" + port
 stream := "test-stream"
 rkmpp_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest"
+rpi_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rpi:latest"
 
 isdp := "i.sdp"
 osdp := "o.sdp"
@@ -54,7 +55,7 @@ pack-size: build-size
     upx --best --lzma target/release-size/live777 target/release-size/liveman target/release-size/whepfrom target/release-size/whipinto target/release-size/net4mqtt
 
 # Examples:
-#   just cross-build-size aarch64-unknown-linux-gnu native-rpi,webui   # Raspberry Pi (needs RPI_SYSROOT)
+#   just rpi-cross-build                                               # Raspberry Pi (uses GHCR image sysroot)
 #   just cross-build-size armv7-unknown-linux-gnueabihf native-generic-v4l2,webui
 #   just cross-build-size aarch64-unknown-linux-musl webui             # static musl, no native capture
 # Cross-compile a size-optimized live777 for an embedded target
@@ -149,15 +150,20 @@ rpi-cross-build sysroot="target/rpi-sysroot":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    if [[ ! -d "{{sysroot}}" ]]; then
-        echo "error: {{sysroot}} does not exist"
-        echo "run: just rpi-sync-sysroot <pi-ssh-host> {{sysroot}}"
-        exit 1
+    if [[ -d "{{sysroot}}" ]]; then
+        sysroot=$(cd "{{sysroot}}" && pwd)
+        RPI_SYSROOT="$sysroot" \
+            CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
+            cross build --target aarch64-unknown-linux-gnu \
+            --bin live777 --release \
+            --no-default-features --features native-rpi,webui
+    else
+        echo "warning: {{sysroot}} does not exist; using sysroot baked into {{rpi_cross_image}}"
+        CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
+            cross build --target aarch64-unknown-linux-gnu \
+            --bin live777 --release \
+            --no-default-features --features native-rpi,webui
     fi
-    sysroot=$(cd "{{sysroot}}" && pwd)
-    RPI_SYSROOT="$sysroot" cross build --target aarch64-unknown-linux-gnu \
-        --bin live777 --release \
-        --no-default-features --features native-rpi,webui
 
 [group('embedded')]
 rpi-sync-and-cross-build host="raspberrypi" sysroot="target/rpi-sysroot":
@@ -166,7 +172,7 @@ rpi-sync-and-cross-build host="raspberrypi" sysroot="target/rpi-sysroot":
 
 [group('embedded')]
 rpi-pack-size:
-    test -n "${RPI_SYSROOT:?set RPI_SYSROOT to the Raspberry Pi sysroot first (see AGENTS.md)}" && \
+    CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
         just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui
 
 # RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)

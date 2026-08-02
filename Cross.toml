@@ -6,8 +6,13 @@
 #     --bin live777 --release \
 #     --no-default-features --features native-rpi,webui
 #
-# The RPI_SYSROOT directory is mounted into the container at the same path.
-# livehal/build.rs reads RPI_SYSROOT to set pkg-config sysroot and link paths.
+# The default aarch64 image stays generic. Raspberry Pi builds should override
+# the target image with CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE pointing
+# to ghcr.io/binbat/crossbuilder-aarch64-rpi:latest, which has a libcamera
+# sysroot baked at /opt/rpi-sysroot. For local builds, RPI_SYSROOT can still
+# point to a Raspberry Pi sysroot copied from a target device; cross mounts it
+# into the container at the same path and livehal/build.rs reads it to configure
+# pkg-config and linker paths.
 
 [target.aarch64-unknown-linux-gnu]
 # The default aarch64 image stays generic. Rockchip RKMPP (RK3588, RV1126B)

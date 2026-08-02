@@ -1,0 +1,78 @@
+ARG RPI_SYSROOT_PLATFORM=linux/arm64
+FROM --platform=$RPI_SYSROOT_PLATFORM debian:trixie-slim AS rpi-sysroot
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends pkg-config; \
+    printf '%s\n' \
+        'deb [trusted=yes] http://archive.raspberrypi.com/debian trixie main' \
+        > /etc/apt/sources.list.d/raspberrypi.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libcamera-dev libcamera-ipa; \
+    sysroot=/rpi-sysroot; \
+    triplet=aarch64-linux-gnu; \
+    mkdir -p "${sysroot}"; \
+    pc_dir=$(pkg-config --variable=pcfiledir libcamera); \
+    mkdir -p "${sysroot}${pc_dir}"; \
+    pc_modules=$( \
+        { printf '%s\n' libcamera; pkg-config --print-requires --print-requires-private libcamera; } \
+            | awk '{print $1}' \
+            | sort -u \
+    ); \
+    for module in ${pc_modules}; do \
+        cp -a "${pc_dir}/${module}.pc" "${sysroot}${pc_dir}/"; \
+    done; \
+    pkg-config --cflags-only-I libcamera | tr ' ' '\n' | sed -n 's/^-I//p' | while read -r path; do \
+        [ -n "${path}" ] || continue; \
+        mkdir -p "${sysroot}$(dirname "${path}")"; \
+        cp -a "${path}" "${sysroot}${path}"; \
+    done; \
+    lib_dirs=$(pkg-config --libs-only-L libcamera | tr ' ' '\n' | sed -n 's/^-L//p'); \
+    if [ -z "${lib_dirs}" ]; then lib_dirs="/usr/lib/${triplet}"; fi; \
+    pkg-config --libs-only-l libcamera | tr ' ' '\n' | sed -n 's/^-l//p' | while read -r lib; do \
+        [ -n "${lib}" ] || continue; \
+        copied=0; \
+        for dir in ${lib_dirs}; do \
+            for file in "${dir}/lib${lib}.so"*; do \
+                [ -e "${file}" ] || continue; \
+                mkdir -p "${sysroot}${dir}"; \
+                cp -a "${file}" "${sysroot}${dir}/"; \
+                copied=1; \
+            done; \
+        done; \
+        if [ "${copied}" -ne 1 ]; then \
+            echo "error: lib${lib}.so was not found"; \
+            exit 1; \
+        fi; \
+    done; \
+    ldd /usr/lib/${triplet}/libcamera.so /usr/lib/${triplet}/libcamera-base.so 2>/dev/null \
+        | awk '/=> \// { print $3 } /^\// { print $1 }' \
+        | sed 's/:$//' \
+        | sort -u \
+        | while read -r file; do \
+            [ -n "${file}" ] || continue; \
+            mkdir -p "${sysroot}$(dirname "${file}")"; \
+            cp -aL "${file}" "${sysroot}$(dirname "${file}")/"; \
+        done; \
+    if [ -d /usr/lib/${triplet}/libcamera ]; then \
+        mkdir -p "${sysroot}/usr/lib/${triplet}"; \
+        cp -a /usr/lib/${triplet}/libcamera "${sysroot}/usr/lib/${triplet}/"; \
+    fi; \
+    if [ -d /usr/share/libcamera ]; then \
+        mkdir -p "${sysroot}/usr/share"; \
+        cp -a /usr/share/libcamera "${sysroot}/usr/share/"; \
+    fi; \
+    PKG_CONFIG_SYSROOT_DIR="${sysroot}" \
+        PKG_CONFIG_PATH="${sysroot}/usr/lib/${triplet}/pkgconfig" \
+        PKG_CONFIG_ALLOW_CROSS=1 \
+        pkg-config --exists libcamera; \
+    test -e "${sysroot}/usr/lib/${triplet}/libcamera.so"; \
+    test -e "${sysroot}/usr/lib/${triplet}/libcamera-base.so"
+
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+
+ENV RPI_SYSROOT=/opt/rpi-sysroot
+
+COPY --from=rpi-sysroot /rpi-sysroot/ /opt/rpi-sysroot/
