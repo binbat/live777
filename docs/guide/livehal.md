@@ -242,7 +242,9 @@ cargo build --bin live777 --release \
   --no-default-features --features native-rpi,webui
 ```
 
-Requires the Raspberry Pi sysroot with libcamera-dev. Set `RPI_SYSROOT` if the sysroot is not at the default path.
+For cross builds, `just rpi-cross-build` uses the GHCR cross image with a
+Raspberry Pi libcamera sysroot baked in. Set `RPI_SYSROOT` only when overriding
+that with a sysroot copied from a device.
 
 ### Generic Linux V4L2
 
@@ -276,7 +278,7 @@ cargo check --features native-rpi,webui
 
 | Variable | Purpose |
 |----------|---------|
-| `RPI_SYSROOT` | Path to the Raspberry Pi sysroot containing `libcamera-dev`. Used when building `capture-libcamera` / `native-rpi`. |
+| `RPI_SYSROOT` | Optional Raspberry Pi sysroot with `libcamera-dev`; overrides the sysroot baked into the RPi cross image. |
 | `RDK_SYSROOT` | Path to the Horizon RDK X5 SDK sysroot. **Required** when building `encoder-rdk` / `native-rdk` for aarch64. |
 | `LIVEHAL_CXX_STDLIB` | Override the C++ standard library to link (`stdc++`, `c++`, etc.). Useful for cross-compilation toolchains. |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | Set to `1` to allow unresolved symbols in RDK shared libraries during cross-compilation with an incomplete sysroot. |
