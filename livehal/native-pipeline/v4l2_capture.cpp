@@ -562,6 +562,9 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
                 if (err) *err = std::string("mmap failed: ") + strerror(errno);
                 for (MappedPlane& mapped_plane : mapped.planes) {
                     munmap(mapped_plane.start, mapped_plane.length);
+                    if (mapped_plane.dma_fd >= 0) {
+                        close(mapped_plane.dma_fd);
+                    }
                 }
                 release_resources();
                 return false;
@@ -628,6 +631,11 @@ void V4L2CaptureImpl::release_resources() {
         for (MappedPlane& plane : buffer.planes) {
             if (plane.start && plane.start != MAP_FAILED) {
                 munmap(plane.start, plane.length);
+                plane.start = nullptr;
+            }
+            if (plane.dma_fd >= 0) {
+                close(plane.dma_fd);
+                plane.dma_fd = -1;
             }
         }
     }

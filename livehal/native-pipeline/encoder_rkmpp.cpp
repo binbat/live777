@@ -602,6 +602,15 @@ public:
             mpi_ = nullptr;
         }
 
+        // Imported buffers wrap capture-owned dmabuf fds.  Release the MPP
+        // handles here, but do not close the original fds.
+        for (auto& entry : dmabuf_cache_) {
+            if (entry.second) {
+                mpp_buffer_put(entry.second);
+            }
+        }
+        dmabuf_cache_.clear();
+
         for (int i = 0; i < kInputPoolSize; i++) {
             if (input_bufs_[i]) {
                 mpp_buffer_put(input_bufs_[i]);
