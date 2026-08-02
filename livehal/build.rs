@@ -15,6 +15,94 @@ struct ProbedLibrary {
     libs: Vec<String>,
 }
 
+fn read_needed_libraries(lib_path: &Path, triplet: &str) -> Vec<String> {
+    for readelf in [format!("{triplet}-readelf"), "readelf".to_string()] {
+        let Ok(output) = Command::new(&readelf).args(["-d"]).arg(lib_path).output() else {
+            continue;
+        };
+
+        if !output.status.success() {
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return stdout
+            .lines()
+            .filter(|line| line.contains("(NEEDED)"))
+            .filter_map(|line| {
+                let start = line.find('[')? + 1;
+                let end = line[start..].find(']')? + start;
+                Some(line[start..end].to_string())
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+fn linked_library_path(search_dirs: &[PathBuf], lib_name: &str) -> Option<PathBuf> {
+    search_dirs
+        .iter()
+        .map(|dir| dir.join(format!("lib{lib_name}.so")))
+        .find(|path| path.exists())
+}
+
+fn needed_library_path(search_dirs: &[PathBuf], needed: &str) -> Option<PathBuf> {
+    search_dirs
+        .iter()
+        .map(|dir| dir.join(needed))
+        .find(|path| path.exists())
+}
+
+fn should_link_needed_library(name: &str) -> bool {
+    ![
+        "ld-linux-",
+        "libc.so.",
+        "libcamera-base.so.",
+        "libdl.so.",
+        "libgcc_s.so.",
+        "libm.so.",
+        "libpthread.so.",
+        "librt.so.",
+        "libstdc++.so.",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+}
+
+fn emit_sysroot_needed_libraries(search_dirs: &[PathBuf], roots: &[String], triplet: &str) {
+    let mut pending: Vec<PathBuf> = roots
+        .iter()
+        .filter_map(|root| linked_library_path(search_dirs, root))
+        .collect();
+    let mut visited = Vec::new();
+    let mut emitted = Vec::new();
+
+    while let Some(lib_path) = pending.pop() {
+        if visited.contains(&lib_path) {
+            continue;
+        }
+        visited.push(lib_path.clone());
+
+        for needed in read_needed_libraries(&lib_path, triplet) {
+            let Some(needed_path) = needed_library_path(search_dirs, &needed) else {
+                continue;
+            };
+
+            if !should_link_needed_library(&needed) || emitted.contains(&needed) {
+                if !visited.contains(&needed_path) {
+                    pending.push(needed_path);
+                }
+                continue;
+            }
+
+            println!("cargo:rustc-link-lib=dylib:+verbatim={needed}");
+            emitted.push(needed);
+            pending.push(needed_path);
+        }
+    }
+}
+
 /// Probe `libcamera` via pkg-config inside the given sysroot without mutating
 /// the current process environment.
 fn probe_libcamera_in_sysroot(sysroot: &Path, triplet: &str) -> Option<ProbedLibrary> {
@@ -81,7 +169,7 @@ fn detect_cpp_stdlib(target_os: &str) -> String {
 fn main() {
     // Rebuild when environment variables that affect sysroot/linker selection
     // change.
-    println!("cargo:rerun-if-env-changed=PI_SYSROOT");
+    println!("cargo:rerun-if-env-changed=RPI_SYSROOT");
     println!("cargo:rerun-if-env-changed=RDK_SYSROOT");
     println!("cargo:rerun-if-env-changed=LIVEHAL_CXX_STDLIB");
     println!("cargo:rerun-if-env-changed=LIVEHAL_RDK_ALLOW_UNDEFINED");
@@ -215,12 +303,16 @@ fn main() {
             );
         }
     } else if native_backend == "rpi" {
-        if let Ok(sysroot) = env::var("PI_SYSROOT") {
+        if let Ok(sysroot) = env::var("RPI_SYSROOT") {
             let sysroot = PathBuf::from(sysroot);
-            println!(
-                "cargo:rustc-link-search=native={}",
-                sysroot.join(format!("usr/lib/{target_triplet}")).display()
-            );
+            let sysroot_lib_dirs = [
+                sysroot.join(format!("usr/lib/{target_triplet}")),
+                sysroot.join(format!("lib/{target_triplet}")),
+            ];
+
+            for dir in &sysroot_lib_dirs {
+                println!("cargo:rustc-link-search=native={}", dir.display());
+            }
 
             // Find libcamera via pkg-config inside the sysroot without
             // mutating the global process environment.
@@ -231,9 +323,10 @@ fn main() {
                 for path in lib.link_paths {
                     println!("cargo:rustc-link-search=native={}", path.display());
                 }
-                for lib_name in lib.libs {
+                for lib_name in &lib.libs {
                     println!("cargo:rustc-link-lib=dylib={}", lib_name);
                 }
+                emit_sysroot_needed_libraries(&sysroot_lib_dirs, &lib.libs, target_triplet);
                 libcamera_linked = true;
             }
         } else {
@@ -258,6 +351,19 @@ fn main() {
     // Build the C++ bridge library using CMake
     let mut cmake_config = cmake::Config::new("native-pipeline");
     cmake_config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+    if native_backend == "rpi"
+        && let Ok(sysroot) = env::var("RPI_SYSROOT")
+    {
+        let sysroot = PathBuf::from(sysroot);
+        cmake_config.env("PKG_CONFIG_SYSROOT_DIR", sysroot.as_os_str());
+        cmake_config.env(
+            "PKG_CONFIG_PATH",
+            sysroot
+                .join(format!("usr/lib/{target_triplet}/pkgconfig"))
+                .as_os_str(),
+        );
+        cmake_config.env("PKG_CONFIG_ALLOW_CROSS", "1");
+    }
     if native_backend == "rdk-x5"
         && let Ok(sysroot) = env::var("RDK_SYSROOT")
     {

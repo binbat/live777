@@ -229,7 +229,7 @@ cargo build --bin live777 --release \
   --no-default-features --features native-rpi,webui
 ```
 
-需要带有 libcamera-dev 的 Pi sysroot。如果 sysroot 不在默认路径，请设置 `PI_SYSROOT`。
+需要带有 libcamera-dev 的 Raspberry Pi sysroot。如果 sysroot 不在默认路径，请设置 `RPI_SYSROOT`。
 
 ### 通用 Linux V4L2
 
@@ -263,7 +263,7 @@ cargo check --features native-rpi,webui
 
 | 变量 | 用途 |
 |----------|---------|
-| `PI_SYSROOT` | 包含 `libcamera-dev` 的树莓派 sysroot 路径。在构建 `capture-libcamera` / `native-rpi` 时使用。 |
+| `RPI_SYSROOT` | 包含 `libcamera-dev` 的树莓派 sysroot 路径。在构建 `capture-libcamera` / `native-rpi` 时使用。 |
 | `RDK_SYSROOT` | 地平线 RDK X5 SDK sysroot 路径。在 aarch64 上构建 `encoder-rdk` / `native-rdk` 时**必须**设置。 |
 | `LIVEHAL_CXX_STDLIB` | 覆盖要链接的 C++ 标准库（如 `stdc++`、`c++` 等），用于交叉编译工具链。 |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | 设为 `1` 可在 sysroot 不完整时允许 RDK 共享库存在未解析符号。 |

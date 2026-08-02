@@ -153,16 +153,16 @@ instead of `--all-features`.
 
 `Cross.toml` configures `cross` images for `aarch64-unknown-linux-gnu` and
 `armv7-unknown-linux-gnueabihf`. For Raspberry Pi libcamera builds you need a
-sysroot and `PI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`. Example:
+sysroot and `RPI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`. Example:
 
 ```bash
-export PI_SYSROOT=/path/to/pi-sysroot
+export RPI_SYSROOT=/path/to/rpi-sysroot
 cross build --target aarch64-unknown-linux-gnu \
   --bin live777 --release \
   --no-default-features --features native-rpi,webui
 ```
 
-`livehal/build.rs` reads `PI_SYSROOT`/`RDK_SYSROOT` to configure `pkg-config`
+`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT` to configure `pkg-config`
 and linker paths.
 
 ## Runtime Architecture
@@ -368,7 +368,7 @@ carries the check.
   `just cross-pack-size <target> <features>` for cross-compiled embedded
   targets (cross-rs; UPX packs foreign-arch ELFs from the host).
   Device-pinned shortcuts cover the supported embedded presets:
-  `just rpi-pack-size` (needs `PI_SYSROOT`), `just rdk-pack-size`
+  `just rpi-pack-size` (needs `RPI_SYSROOT`), `just rdk-pack-size`
   (needs `RDK_SYSROOT`), and `just v4l2-pack-size [target]`
   (armv7 by default).
 - **Releases**: `.github/workflows/release.yml` builds for many targets
