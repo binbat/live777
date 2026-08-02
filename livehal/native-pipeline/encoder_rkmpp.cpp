@@ -86,6 +86,7 @@ static inline bool resolve_h264_coding_tools(uint32_t pid, H264CodingTools& out)
 #include <rockchip/mpp_frame.h>
 #include <rockchip/mpp_packet.h>
 #include <rockchip/mpp_buffer.h>
+#include <rockchip/mpp_meta.h>
 #include <rockchip/mpp_task.h>
 #include <rockchip/mpp_err.h>
 #include <rockchip/rk_type.h>
@@ -262,15 +263,20 @@ public:
         }
 
         // --- Persistent input buffer pool (kInputPoolSize, round-robin) ---
-        // Three buffers allocated at init and cycled each frame.
-        // By the time we wrap around to slot N, MPP has drained the
-        // frame that previously used that slot.
+        // Buffers allocated at init and cycled each frame.
+        // Mirror mpi_enc_test: DRM + CACHABLE first (CMA-backed, known to
+        // work with rkvenc2 on RV1126B vendor kernels); dma_heap system
+        // buffers make the encoder fault with RKV_ENC_INT_BUS_WRITE_ERROR
+        // (rk_iommu "no memory region mapped") on that platform.
         ret = mpp_buffer_group_get_internal(
-            &buf_group_, MPP_BUFFER_TYPE_DMA_HEAP);
+            &buf_group_, MPP_BUFFER_TYPE_DRM | MPP_BUFFER_FLAGS_CACHABLE);
         if (ret != MPP_OK) {
-            // Fall back to DRM if DMA_HEAP group creation fails
             ret = mpp_buffer_group_get_internal(
                 &buf_group_, MPP_BUFFER_TYPE_DRM);
+        }
+        if (ret != MPP_OK) {
+            ret = mpp_buffer_group_get_internal(
+                &buf_group_, MPP_BUFFER_TYPE_DMA_HEAP);
         }
         if (ret != MPP_OK) {
             ret = mpp_buffer_group_get_internal(
@@ -278,7 +284,7 @@ public:
         }
         if (ret != MPP_OK || buf_group_ == nullptr) {
             if (err) *err = "encoder-rkmpp: failed to create buffer group "
-                "(tried DMA_HEAP, DRM, ION)";
+                "(tried DRM|CACHABLE, DRM, DMA_HEAP, ION)";
             return false;
         }
 
@@ -306,6 +312,25 @@ public:
         std::fprintf(stderr,
             "[RkMppEncoder] Persistent input buffer pool: %zu bytes x %d\n",
             frame_size_, kInputPoolSize);
+
+        // --- Explicit output packet + motion-info buffers ---
+        // Mirror mpi_enc_test: attach an app-supplied output packet (and a
+        // motion-info buffer) to every frame's meta.  Without them the
+        // encoder hal falls back to internal dma_heap buffers, which makes
+        // vepu511/rkvenc2 fault (RKV_ENC_INT_BUS_WRITE_ERROR) on RV1126B.
+        for (int i = 0; i < kPacketPoolSize; i++) {
+            ret = mpp_buffer_get(buf_group_, &pkt_bufs_[i], frame_size_);
+            if (ret != MPP_OK || pkt_bufs_[i] == nullptr) {
+                if (err) *err = "encoder-rkmpp: packet buffer alloc failed";
+                return false;
+            }
+        }
+        // 64 KiB covers the RV1126B / RK3588 md_info formulas up to 1080p+.
+        ret = mpp_buffer_get(buf_group_, &md_info_, 64 * 1024);
+        if (ret != MPP_OK || md_info_ == nullptr) {
+            if (err) *err = "encoder-rkmpp: md_info buffer alloc failed";
+            return false;
+        }
 
         // Pre-RTP debug file (uncomment to debug encoding output):
         // debug_file_ = std::fopen("/tmp/live777-pre-rtp.h265", "wb");
@@ -434,6 +459,23 @@ public:
 
         mpp_frame_set_pts(mpp_frame, static_cast<RK_S64>(frame.pts_us));
 
+        // Attach an explicit output packet and motion-info buffer (see init).
+        // mpp returns this same packet object from encode_get_packet; the
+        // drain path deinits it after copying the data out.
+        {
+            MppMeta meta = mpp_frame_get_meta(mpp_frame);
+            MppPacket out_pkt = nullptr;
+            if (mpp_packet_init_with_buffer(
+                    &out_pkt, pkt_bufs_[next_pkt_idx_]) == MPP_OK) {
+                // NOTE: output packet length must be cleared before use.
+                mpp_packet_set_length(out_pkt, 0);
+                mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, out_pkt);
+                next_pkt_idx_ = (next_pkt_idx_ + 1) % kPacketPoolSize;
+            }
+            if (md_info_)
+                mpp_meta_set_buffer(meta, KEY_MOTION_INFO, md_info_);
+        }
+
         // --- Submit to encoder ---
         inflight_depth_++;
         if (inflight_depth_ > peak_inflight_depth_)
@@ -498,6 +540,16 @@ public:
                 mpp_buffer_put(input_bufs_[i]);
                 input_bufs_[i] = nullptr;
             }
+        }
+        for (int i = 0; i < kPacketPoolSize; i++) {
+            if (pkt_bufs_[i]) {
+                mpp_buffer_put(pkt_bufs_[i]);
+                pkt_bufs_[i] = nullptr;
+            }
+        }
+        if (md_info_) {
+            mpp_buffer_put(md_info_);
+            md_info_ = nullptr;
         }
         if (buf_group_) {
             mpp_buffer_group_put(buf_group_);
@@ -676,10 +728,18 @@ private:
     size_t frame_size_ = 0;
 
     // Persistent buffer pool: kInputPoolSize buffers cycled round-robin.
-    static constexpr int kInputPoolSize = 2;
+    // See the allocation site for why DRM+CACHABLE is preferred on RV1126B.
+    static constexpr int kInputPoolSize = 3;
     MppBufferGroup buf_group_ = nullptr;
     MppBuffer input_bufs_[kInputPoolSize] = {};
     int next_input_idx_ = 0;
+
+    // Explicit output packet buffers (attached per-frame via meta) and a
+    // motion-info buffer, mirroring mpi_enc_test; required on RV1126B.
+    static constexpr int kPacketPoolSize = 4;
+    MppBuffer pkt_bufs_[kPacketPoolSize] = {};
+    int next_pkt_idx_ = 0;
+    MppBuffer md_info_ = nullptr;
 
     // Partial AU buffered across drain calls (partition without EOI)
     std::vector<uint8_t> pending_au_;
