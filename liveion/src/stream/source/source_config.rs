@@ -449,7 +449,7 @@ fn h264_level_to_idc(level: &str) -> anyhow::Result<u8> {
     } else {
         normalized.parse::<u8>()? * 10
     };
-    if idc == 0 || idc > 186 {
+    if idc == 0 || idc > 62 {
         anyhow::bail!("invalid H.264 level '{}'", level);
     }
     Ok(idc)
@@ -735,6 +735,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(enc.profile_level_id().unwrap(), "64002a");
+    }
+
+    #[test]
+    fn test_h264_level_6_2_maps_to_62() {
+        assert_eq!(h264_level_to_idc("6.2").unwrap(), 62);
+    }
+
+    #[test]
+    fn test_h264_level_above_6_2_rejected() {
+        assert!(h264_level_to_idc("6.3").is_err());
+        assert!(h264_level_to_idc("18.6").is_err());
     }
 
     #[test]

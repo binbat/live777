@@ -159,5 +159,3 @@ install(TARGETS native-pipeline
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
 )
-
-
