@@ -36,7 +36,11 @@ std::shared_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfi
 #endif
 
 #if ENABLE_ENCODER_RKMPP
+#if RKMPP_NO_BUFFER_GROUP
+std::shared_ptr<EncoderBackend> create_rockit_encoder_backend(const EncoderConfig& cfg);
+#else
 std::shared_ptr<EncoderBackend> create_rkmpp_encoder_backend(const EncoderConfig& cfg);
+#endif
 #endif
 
 // ---------------------------------------------------------------------------
@@ -63,7 +67,11 @@ std::shared_ptr<EncoderBackend> create_encoder_backend(const EncoderConfig& cfg)
     if (cfg.backend == "rdk") return create_rdk_x5_encoder_backend(cfg);
 #endif
 #if ENABLE_ENCODER_RKMPP
+#if RKMPP_NO_BUFFER_GROUP
+    if (cfg.backend == "rkmpp") return create_rockit_encoder_backend(cfg);
+#else
     if (cfg.backend == "rkmpp") return create_rkmpp_encoder_backend(cfg);
+#endif
 #endif
     return nullptr;
 }

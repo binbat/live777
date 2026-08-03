@@ -21,7 +21,18 @@
 
 namespace {
 
+// Buffer queue depth. Default 16 for desktop/large SoCs.
+// On CMA-constrained targets (RV1106 rockit builds, RKMPP_NO_BUFFER_GROUP):
+// each 1080p NV12 buffer costs ~3 MB and the SoC has only ~100 MB total CMA
+// (half already used), so a 16-buffer mmap queue starves the VENC ring
+// buffer allocation (kernel cma_alloc fails, userspace sees EFAULT on
+// channel start). 4 buffers matches the v4l2-ctl default and is verified to
+// coexist with VENC on RV1106. Other platforms keep the original 16.
+#ifdef RKMPP_NO_BUFFER_GROUP
+constexpr uint32_t kBufferCount = 4;
+#else
 constexpr uint32_t kBufferCount = 16;
+#endif
 
 const char* fourcc_to_string(uint32_t fourcc, char (&text)[5]) {
     text[0] = static_cast<char>(fourcc & 0xff);

@@ -11,9 +11,9 @@ Unit) that uses the `WHIP`/`WHEP` protocols as its primary interface. It is
 designed for real-time audio/video streaming and interoperates with clients
 such as GStreamer, FFmpeg, OBS Studio, VLC, and browsers.
 
-The repository is a mixed Rust + TypeScript/Preact/Solid project. Rust provides
-the media server, protocol conversion, and command-line tools. TypeScript/Vite
-provides the embedded WebUIs.
+The repository is a mixed Rust + TypeScript project. Rust provides the media
+server, protocol conversion, and command-line tools. TypeScript/Vite provides
+the embedded WebUIs (Preact for the admin UIs, SolidJS for the player widgets).
 
 - Repository: <https://github.com/binbat/live777>
 - License: `MPL-2.0`
@@ -24,20 +24,25 @@ provides the embedded WebUIs.
 
 - **Rust** — edition 2024, workspace version `0.9.0`.
 - **Async runtime** — Tokio.
-- **HTTP/API layer** — Axum, `tower-http` (CORS, tracing).
-- **WebRTC stack** — `webrtc`/`rtc-*` crates, pinned to upstream
-  `https://github.com/webrtc-rs/rtc` at revision `de84c7c8` via
+- **HTTP/API layer** — Axum 0.8, `tower-http` (CORS, tracing).
+- **WebRTC stack** — `webrtc`/`rtc-*` crates (`0.20.0-rc.2`), pinned to
+  upstream `https://github.com/webrtc-rs/rtc` at revision `de84c7c8` via
   `[patch.crates-io]` until the next tag is released.
-- **Web UI** — Vite, Preact, SolidJS, Tailwind CSS, DaisyUI, TypeScript.
-- **Package manager** — pnpm 10.20.0 (workspace covers `web/*`).
+- **Web UI** — Vite 7, Preact (`web/liveion`, `web/liveman`, `web/shared`),
+  SolidJS (`web/player-core`, `web/alone-player`, `web/debugger`), Tailwind
+  CSS, DaisyUI, TypeScript. Docs site uses VitePress (`docs/`).
+- **Package manager** — pnpm 10.20.0 (workspace covers `web/*`, see
+  `pnpm-workspace.yaml`).
 - **Storage** — OpenDAL for object/FS storage; Sea-ORM + SQLite (or Postgres)
   in `liveman` for recording indexes.
-- **Media testing** — FFmpeg and GStreamer pipelines (see `justfile`).
+- **Media testing** — FFmpeg and GStreamer pipelines (see `justfile`);
+  `rsmpeg` (system FFmpeg bindings) for in-process encode/decode test tools.
 - **Task runner / local recipes** — `just` (`justfile`).
 
 ## Workspace Layout
 
-The root `Cargo.toml` defines a workspace with these members:
+The root `Cargo.toml` defines a workspace with these members (`libs/auth` is
+pulled in as a path dependency of `liveion`/`liveman`):
 
 ```
 .                    # root crate, produces several binaries
@@ -61,29 +66,32 @@ livehal              # native capture/encoder backend (C++ pipeline)
 
 ### Binaries Produced
 
-Built from `src/bin/` or `src/<name>.rs` in the root crate:
+Built from `src/<name>.rs` or `src/bin/<name>.rs` in the root crate:
 
-- `live777`      — main SFU server (uses `liveion`).
+- `live777`      — main SFU server (uses `liveion`); default-run binary.
 - `liveman`      — cluster manager for multiple `live777` nodes.
-- `livetwo`      — provided as a library; command tools below use it.
+- `livenil`      — cluster nil/bare runner for local multi-node tests.
 - `whipinto`     — push RTP/RTSP into a WHIP endpoint; with the `rsmpeg`
   feature it also accepts a `synth://<vcodec>?...` input that publishes
   in-process generated test frames (no external encoder needed).
 - `whepfrom`     — pull a WHEP stream and output RTP/RTSP.
-- `whepwright`   — browser-based WHEP playback tester (feature gated).
+- `whepprobe`    — WHEP stream probe/inspector (requires `rsmpeg`).
+- `whipsynth`    — synthetic WHIP publisher generating test frames in-process
+  (requires `rsmpeg`).
+- `whepwright`   — browser-based WHEP playback tester (requires `whepwright`).
 - `net4mqtt`     — net-over-MQTT proxy binary.
-- `livenil`      — cluster nil/bare runner for local multi-node tests.
-- `datachannel_loadtest` — load-test binary (feature gated).
-- `livewrk`       — load-testing tool (named after `wrk`) with `whip`
-  (requires `rsmpeg`), `whep` subcommands.
+- `datachannel_loadtest` — DataChannel load-test binary (requires `source`).
+- `livewrk`      — load-testing tool (named after `wrk`) with `whip`
+  (requires `rsmpeg`) and `whep` subcommands.
 
 ### WebUI Packages (`web/*`)
 
-- `player-core`  — reusable WHEP player component.
-- `alone-player` — standalone player widget.
-- `debugger`     — debugging UI widget.
-- `liveion`      — WebUI embedded by the `live777` binary.
-- `liveman`      — WebUI embedded by the `liveman` binary.
+- `shared`       — Preact components/hooks/API client shared by the admin UIs.
+- `liveion`      — WebUI embedded by the `live777` binary (Preact).
+- `liveman`      — WebUI embedded by the `liveman` binary (Preact).
+- `player-core`  — reusable WHEP player component (SolidJS library).
+- `alone-player` — standalone player widget (SolidJS).
+- `debugger`     — debugging UI widget (SolidJS).
 
 Built assets are placed under `assets/<crate>/` and embedded at compile time via
 `rust_embed::RustEmbed` when the `webui` feature is enabled.
@@ -93,11 +101,12 @@ Built assets are placed under `assets/<crate>/` and embedded at compile time via
 ### Prerequisites
 
 - Rust toolchain (stable; targets vary by platform).
-- `pnpm` 10.20.0 or compatible.
-- Node.js (CI uses `latest`).
+- `pnpm` 10.20.0 or compatible, plus Node.js.
 - For WebUI builds: `pnpm install`.
+- For `rsmpeg` features: system FFmpeg development libraries.
 - For native source features on Linux: `libcamera-dev`, `libv4l-dev`.
-- For GStreamer-based tests: `gstreamer`, `gstreamer-rtsp-server`.
+- For GStreamer-based tools/tests: `gstreamer`, `gstreamer-rtsp-server`
+  (Debian: `libgstreamer1.0-dev libgstrtspserver-1.0-dev`).
 - For cross-compilation: `cross` from <https://github.com/cross-rs/cross>.
 
 ### Common Commands
@@ -107,22 +116,19 @@ Built assets are placed under `assets/<crate>/` and embedded at compile time via
 pnpm install
 
 # Build the web UIs
-pnpm -r build
+pnpm -r build          # or: pnpm run build:liveion / build:liveman
 
 # Build all Rust targets with all features (Linux; needs native deps)
 cargo build --release --all-targets --all-features
 
-# Run the main server with the embedded WebUI
-cargo run --features=webui
-
-# Run a local multi-node cluster
-just run-cluster
-
 # Build everything (web + Rust release)
 just build
 
-# Run the server with default config
-cargo run --features=webui
+# Run the main server with the embedded WebUI
+cargo run --features=webui        # or: just run
+
+# Run a local multi-node cluster
+just run-cluster
 ```
 
 ### Feature Flags (Root Crate)
@@ -133,12 +139,16 @@ Key feature groups defined in the root `Cargo.toml`:
 - `cascade`        — cluster cascading via `libwish`.
 - `net4mqtt`       — enable MQTT-based tunneling.
 - `recorder`       — stream recording to storage (FS/S3).
+- `rtsp`           — built-in RTSP server in liveion (push via ANNOUNCE/RECORD,
+  pull via DESCRIBE/PLAY).
 - `source`         — auto-start configured media sources.
 - `source-sdp`     — SDP-file sources.
 - `source-rtsp`    — RTSP sources.
 - `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
 - `source-all`     — enables all source types.
 - `target-whip`    — WHIP push targets (static cascade-push).
+- `rsmpeg`         — enables rsmpeg-based tools (`whepprobe`, `whipsynth`) and
+  livetwo rsmpeg support.
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
@@ -147,8 +157,15 @@ Key feature groups defined in the root `Cargo.toml`:
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
-builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip`
-instead of `--all-features`.
+builds with `source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip`
+instead of `--all-features` (this is also the CI test feature set).
+
+There is also a size-optimized `[profile.release-size]` (fat LTO, single
+codegen unit, stripped symbols, `panic = "abort"`):
+
+```bash
+cargo build --profile release-size --bin live777 --features ...
+```
 
 ### Cross-Compilation
 
@@ -174,13 +191,60 @@ CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64
 ```
 
 `livehal/build.rs` reads `PI_SYSROOT`/`RDK_SYSROOT`/`RK_MPP_SYSROOT` to
-configure `pkg-config` and linker paths.
+configure `pkg-config` and linker paths. The `*-gcc-wrapper.sh` scripts at
+the repo root are linker wrappers used by these cross setups.
+
+### Luckfox Pico (RV1106, uClibc)
+
+The RV1106 build cross-compiles the standard `armv7-unknown-linux-gnueabihf`
+(glibc) Rust target against the Luckfox uClibc toolchain and rootfs. It uses
+the RKMPI/Rockit VENC backend (`encoder_rockit.cpp`); the standard MPP path
+is not usable on this SoC (its venc540c adapter cannot create userspace
+buffer groups or emit packets without rockit-managed memory, and
+`RK_MPI_MMZ_Fd2Handle` rejects external dma-buf fds, so zero-copy input is
+not possible either).
+
+Machine-local prerequisites (not in git):
+
+- Luckfox SDK toolchain `arm-rockchip830-linux-uclibcgnueabihf` (from the
+  `luckfox-pico` SDK, under `tools/linux/toolchain/`).
+- A sysroot (e.g. `~/luckfox-sysroot`) with `include/` (RKMPI + MPP
+  headers) and `mpp-lib/` (`librockit.so`, `librockchip_mpp.so`,
+  `librga.so`) matching the board's `/oem/usr/lib`.
+
+Everything else is in the repo: `livehal/build.rs` auto-enables the uClibc
+compat shims (`native-pipeline/uclibc_compat.c`, providing `getauxval` and
+`posix_spawnattr_*`, compiled into the native static lib) whenever
+`LUCKFOX_SYSROOT` is set for an arm target.
+
+```bash
+export LUCKFOX_SYSROOT=~/luckfox-sysroot
+export LIVEHAL_RKMPP_ROCKIT=1   # selects the Rockit VENC backend on arm
+export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=/path/to/arm-rockchip830-linux-uclibcgnueabihf-gcc
+cargo build --release --target armv7-unknown-linux-gnueabihf --bin live777 \
+  --no-default-features --features native-rk3588,webui
+```
+
+Runtime notes on the board:
+
+- Stop the stock `rkipc` app (`/oem/usr/bin/RkLunch-stop.sh`) before
+  starting live777; it holds the camera. The ISP also needs an rkaiq
+  process feeding params (`/oem/usr/bin/rkaiq_3A_server`), otherwise
+  `/dev/video11` produces no frames ("waiting on params stream on event
+  timeout").
+- Set `webrtc.ice_udp_addrs` explicitly (e.g. `["172.32.0.93:0"]`): the
+  `"auto"` discovery needs a default route, and on RNDIS-only devices it
+  falls back to 127.0.0.1 candidates, which remote browsers cannot reach.
+- RV1106 has ~100 MB CMA, half of it permanently consumed. Segfaulted
+  processes leak kernel-side CMA; if allocation errors cascade
+  (`cma_alloc ... ret: -12`), reboot.
 
 ## Runtime Architecture
 
 - `live777` (`liveion`) is the edge SFU. It exposes WHIP publish endpoints,
-  WHEP subscribe endpoints, admin/session APIs, Prometheus metrics, and an
-  optional embedded WebUI.
+  WHEP subscribe endpoints, admin/session APIs, Prometheus metrics, an
+  optional built-in RTSP server (`rtsp` feature), and an optional embedded
+  WebUI.
 - `liveman` sits in front of multiple `live777` nodes, proxies requests,
   manages cascade state, records via cluster policy, and stores recording
   indexes in a database.
@@ -193,8 +257,11 @@ configure `pkg-config` and linker paths.
 
 Configuration files:
 
-- `conf/live777.toml` / `live777.toml` — main SFU config.
-- `conf/liveman.toml` — cluster manager config.
+- The server takes `-c/--config <path>`; the default path is `live777.toml`
+  in the current directory. If the file does not exist, built-in defaults are
+  used with a warning.
+- `conf/live777.toml` — main SFU config template.
+- `conf/liveman.toml` — cluster manager config template.
 - `conf/livenil/` — cluster nil config samples.
 
 Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
@@ -206,7 +273,8 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
 - `liveion/src/route/` — Axum route handlers (whip, whep, session, admin,
   stream, strategy, source, recorder, info, sdp).
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
-  track, bridge, media, RTCP). Media statistics (issue #252): per-track and
+  track, bridge, media, RTCP, codec compatibility, AV1
+  assembler/repacketizer). Media statistics (issue #252): per-track and
   per-session counters live in `forward/stats.rs` (`MediaStats`); hot paths
   only `inc()` them (publish read loop in `track.rs`, subscriber write loop
   in `subscribe.rs`), and the manager's `stats_tick` (2 s) `sample()`s them
@@ -250,6 +318,8 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   loop (and re-snapshotting where applicable).
 - `liveion/src/recorder/` — recording pipeline (fmp4, segmenter, uploader,
   codec-specific writers).
+- `liveion/src/rtsp_server/` — the built-in RTSP server (`rtsp` feature):
+  accept push (ANNOUNCE/RECORD) and serve pull (DESCRIBE/PLAY).
 - `liveion/src/hook.rs` — stream-lifecycle hook scripts (`[hooks]` global +
   `[stream.<name>.hooks]` per stream) run by a single FIFO executor:
   dispatcher forwards `StreamCreated`/`StreamDeleted`/`PublishStarted`/
@@ -266,6 +336,8 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   `on_demand` stream acts as standing demand: its sources are (re)started
   whenever the stream has neither a publisher nor a push session, paced by
   the same backoff.
+- `liveion/src/metrics.rs` — Prometheus metric registration
+  (`metrics_register()` is called first thing in `main`).
 - `liveman/src/route/` — proxy/cascade/admin routes.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.
@@ -278,8 +350,10 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   4-space indent (2 for JSON), max line length 120.
 - Rust code is formatted with `cargo fmt` and linted with `cargo clippy -D
   warnings`.
-- Web code is formatted/linted with Biome (`biome.json`) and ESLint +
-  TypeScript (`eslint.config.js`, `pnpm run lint`, `pnpm run typecheck`).
+- Web code: Biome (`biome.json`, `pnpm run check`) covers only
+  `web/alone-player`, `web/player-core`, `web/debugger`, and
+  `libs/playwright-whep/static`; ESLint + TypeScript (`eslint.config.js`,
+  `pnpm run lint`, `pnpm run typecheck`) cover the whole web tree.
 - Keep changes scoped to the modules the request implies; avoid unrelated
   refactors.
 - Match surrounding style, naming, and comment density.
@@ -293,8 +367,11 @@ The project uses `cargo nextest` with configuration in `.config/nextest.toml`.
 
 - Default profile: retries up to 4 times with exponential backoff.
 - `ci` profile: 1 retry, 120 s slow-timeout, `fail-fast = false`.
-- Integration tests that use FFmpeg, sockets, or browsers are forced serial
-  (`serial-integration` test group) to avoid port/resource collisions.
+- Two test groups control parallelism: `resource-limited` (max 4 threads) for
+  unit/lib tests, and `serial-integration` (max 1 thread) for the integration
+  binaries `channel`, `tests`, `matrix`, and `livewrk_e2e`, which exercise
+  FFmpeg, local sockets, and/or real browsers. The `ci` profile additionally
+  serializes the four `net4mqtt` UDP tests.
 
 Run tests:
 
@@ -308,7 +385,8 @@ cargo llvm-cov nextest --profile ci --workspace \
 cargo nextest run --workspace
 ```
 
-Integration test binaries live in `tests/`:
+Integration test binaries live in `tests/` (`common.rs` is a shared helper
+module, not a test binary):
 
 - `tests/matrix/` — the end-to-end source × media-profile × player matrix
   harness (test binary `matrix`). Codec combinations are declared once in
@@ -316,15 +394,14 @@ Integration test binaries live in `tests/`:
   (livetwo+ffprobe, rsmpeg, Playwright) in `tests/matrix/player/`, and the
   shared liveion/port/wait/ffprobe infrastructure in
   `tests/matrix/runner.rs` and `tests/matrix/probe.rs`. The liveion RTSP
-  server push→pull round-trip (former `tests/rtsp.rs`) and the full
-  RTSP→WHIP→WHEP→RTSP conversion cycle (former `tests/rtsp2.rs`) live here
-  as the `rtsp_roundtrip_*` and `rtsp_cycle_*` matrices.
-- `tests/channel.rs`
-- `tests/tests.rs` — liveion API smoke tests
-- `tests/recorder.rs`
+  server push→pull round-trip and the full RTSP→WHIP→WHEP→RTSP conversion
+  cycle live here as the `rtsp_roundtrip_*` and `rtsp_cycle_*` matrices.
+- `tests/tests.rs` — liveion API smoke tests.
+- `tests/channel.rs` — DataChannel tests.
+- `tests/whipsynth_packets.rs` — synthetic-publisher packet tests.
 - `tests/livewrk_e2e.rs` — livewrk CLI end-to-end: real `livewrk` whip/whep
   subprocesses against in-process liveion, including the rotating decode
-  verification (needs the `rsmpeg` feature)
+  verification (needs the `rsmpeg` feature).
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
@@ -339,14 +416,15 @@ export PLAYWRIGHT_BROWSERS_PATH=$PWD/.playwright
 
 mediamtx interop tests (`whep_mediamtx_pull_*` and `rtsp_push_mediamtx_*` in
 the matrix binary, live777#212) need a mediamtx binary: `just mediamtx`
-downloads the pinned release into `target/`, or install mediamtx into `PATH`;
-`MEDIAMTX_BIN` overrides the lookup. The tests skip when no binary is found.
-They also run on Windows hosts, but skip on Windows CI: GitHub-hosted
-Windows runners encode video at ~0.03x realtime, so media-heavy cases time
-out downstream (the same flake class as a390dc7). The WHEP-source relay
-matrix (`whep_source_livetwo_*`, two liveion instances per case) skips on
-Windows CI for the same reason; the shared `runner::windows_ci()` helper
-carries the check.
+downloads the pinned release (version in `mediamtx.version`, shared with the
+CI action) into `target/`, or install mediamtx into `PATH`; `MEDIAMTX_BIN`
+overrides the lookup. The tests skip when no binary is found. They also run
+on Windows hosts, but skip on Windows CI: GitHub-hosted Windows runners
+encode video at ~0.03x realtime, so media-heavy cases time out downstream
+(the same flake class as a390dc7). The WHEP-source relay matrix
+(`whep_source_livetwo_*`, two liveion instances per case) skips on Windows CI
+for the same reason; the shared `runner::windows_ci()` helper carries the
+check.
 
 ## Security Considerations
 
@@ -364,29 +442,38 @@ carries the check.
 ## Deployment & Packaging
 
 - **Docker**: multi-stage Dockerfiles in `docker/` for `live777`, `liveman`,
-  `whipinto`, `whepfrom`, `net4mqtt`, `ffmpeg`, and `gstreamer` variants.
-  Images are published to `ghcr.io/binbat/<app>`.
+  `whipinto`, `whepfrom`, `net4mqtt`, `ffmpeg`, and `gstreamer` variants;
+  `compose.yml` at the repo root ties them together. Images are published to
+  `ghcr.io/binbat/<app>`.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux
   packages; GitHub Actions upload them to releases.
-- **Releases**: `.github/workflows/release.yml` builds for many targets
-  including x86_64, aarch64, armv7, i686, riscv64, Android, Windows, and macOS.
-- **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
+- **CI**: `.github/workflows/rust.yml` (build + nextest/llvm-cov),
+  `quality.yml` (fmt/clippy/lint), `docker.yml`, and `release.yml` (builds for
+  many targets including x86_64, aarch64, armv7, i686, riscv64, Android,
+  Windows, and macOS).
+- **Docs**: VitePress site in `docs/` (English under `docs/guide`, Chinese
+  under `docs/zh`); run `pnpm run docs:dev` / `docs:build`.
 
 ## Useful Local Recipes (justfile)
 
 ```bash
-just build            # web + Rust release build
-just run              # cargo run --features=webui
-just run-cluster      # local livenil cluster
+just build              # web + Rust release build
+just run                # cargo run --features=webui
+just run-cluster        # local livenil cluster
+just build-tools        # compile tools/test-rtsp-server.c (needs GStreamer dev libs)
+just mediamtx           # download pinned mediamtx into target/ for interop tests
 just gst-whip-rtp-h264  # GStreamer WHIP ingest smoke test
 just ffmpeg-rtp-h264    # FFmpeg WHIP ingest smoke test
 just ffplay-rtp         # WHEP playback to ffplay via RTP
+just livewrk-whip 100 60  # WHIP publish load test (streams load-0..load-99)
+just livewrk-whep 100 60  # WHEP subscribe load test
 ```
 
-The `justfile` contains many grouped recipes for GStreamer, FFmpeg, RTSP, and
-cycle tests; they are the fastest way to exercise a local `live777` instance.
+The `justfile` contains many grouped recipes for GStreamer, FFmpeg, RTSP
+push/pull, cycle tests, and load tests; they are the fastest way to exercise
+a local `live777` instance.
 
 ## Quick Start for Agents
 
@@ -394,7 +481,9 @@ cycle tests; they are the fastest way to exercise a local `live777` instance.
 2. `cargo build --release --all-targets --features webui,source-all,recorder`
    (adjust features for your platform; native features need Linux).
 3. `pnpm -r build` if you changed WebUI code.
-4. Edit `live777.toml` or `conf/live777.toml` as needed.
+4. Edit `conf/live777.toml` and pass it with `-c`, or drop a `live777.toml`
+   in the working directory (the default lookup path).
 5. `cargo run --features=webui` or `just run`.
 6. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --workspace --
-   -D warnings`, and `cargo nextest run --workspace` before finishing.
+   -D warnings`, and `cargo nextest run --workspace` before finishing; for web
+   changes also run `pnpm run check` and `pnpm run lint`.

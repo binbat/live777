@@ -95,6 +95,103 @@ static inline bool resolve_h264_coding_tools(uint32_t pid, H264CodingTools& out)
 #include <rockchip/mpp_err.h>
 #include <rockchip/rk_type.h>
 
+// --- mpp_buffer_sync_* compatibility --------------------------------------
+// RV1106's older librockchip_mpp predates mpp_buffer_sync_begin_f/_end_f
+// (declared in the headers, absent from the .so).  Resolve them at runtime
+// and fall back to a raw dma-buf SYNC ioctl, which is all they amount to
+// for a DRM/CMA-backed buffer.  On newer MPP (RK3588 etc.) the real symbols
+// are used, so behaviour there is unchanged.
+
+#include <dlfcn.h>
+#include <sys/ioctl.h>
+#include <linux/dma-buf.h>
+
+namespace {
+
+using MppSyncFn = MPP_RET (*)(MppBuffer, RK_S32, const char*);
+MppSyncFn g_sync_begin_f = nullptr;
+MppSyncFn g_sync_end_f = nullptr;
+bool g_sync_resolved = false;
+
+void resolve_sync_symbols() {
+    if (g_sync_resolved) return;
+    g_sync_resolved = true;
+    g_sync_begin_f = reinterpret_cast<MppSyncFn>(
+        dlsym(RTLD_DEFAULT, "mpp_buffer_sync_begin_f"));
+    g_sync_end_f = reinterpret_cast<MppSyncFn>(
+        dlsym(RTLD_DEFAULT, "mpp_buffer_sync_end_f"));
+    if (!g_sync_begin_f || !g_sync_end_f)
+        fprintf(stderr,
+            "[RkMppEncoder] mpp_buffer_sync_* not exported by this MPP, "
+            "using dma-buf SYNC ioctl fallback\n");
+}
+
+void buf_sync_begin(MppBuffer buf) {
+    resolve_sync_symbols();
+    if (g_sync_begin_f) { g_sync_begin_f(buf, 0, __FUNCTION__); return; }
+    int fd = mpp_buffer_get_fd(buf);
+    if (fd >= 0) {
+        __u64 flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW;
+        ioctl(fd, DMA_BUF_IOCTL_SYNC, &flags);
+    }
+}
+
+void buf_sync_end(MppBuffer buf) {
+    resolve_sync_symbols();
+    if (g_sync_end_f) { g_sync_end_f(buf, 0, __FUNCTION__); return; }
+    int fd = mpp_buffer_get_fd(buf);
+    if (fd >= 0) {
+        __u64 flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW;
+        ioctl(fd, DMA_BUF_IOCTL_SYNC, &flags);
+    }
+}
+
+} // namespace
+
+// --- Rockit MMZ bridge (RV1106 adapter mode) -------------------------------
+// RV1106's MPP encoder adapter can neither create userspace buffer groups
+// nor emit packets without an attached output buffer (mpi_enc_test fails
+// the same way), but mpp_buffer_import() works and rockit's MMZ allocator
+// produces memory the vcodec always accepts.  Bridge the two worlds:
+// allocate output packet buffers from rockit MMZ and import them into MPP.
+// Everything is resolved with dlopen/dlsym so non-RV1106 builds are
+// completely unaffected (the bridge is only used when group creation
+// failed, which does not happen on RK3588 & co).
+namespace {
+
+struct RockitMmzApi {
+    void* handle = nullptr;
+    int (*sys_init)(void) = nullptr;
+    int (*sys_exit)(void) = nullptr;
+    int (*mmz_alloc)(void**, const char*, const char*, uint32_t) = nullptr;
+    int (*mmz_free)(void*) = nullptr;
+    int (*handle2fd)(void*) = nullptr;
+
+    bool resolve() {
+        if (handle) return true;
+        handle = dlopen("librockit.so", RTLD_NOW | RTLD_LOCAL);
+        if (!handle) return false;
+        sys_init = reinterpret_cast<decltype(sys_init)>(
+            dlsym(handle, "RK_MPI_SYS_Init"));
+        sys_exit = reinterpret_cast<decltype(sys_exit)>(
+            dlsym(handle, "RK_MPI_SYS_Exit"));
+        mmz_alloc = reinterpret_cast<decltype(mmz_alloc)>(
+            dlsym(handle, "RK_MPI_SYS_MmzAlloc"));
+        mmz_free = reinterpret_cast<decltype(mmz_free)>(
+            dlsym(handle, "RK_MPI_SYS_MmzFree"));
+        handle2fd = reinterpret_cast<decltype(handle2fd)>(
+            dlsym(handle, "RK_MPI_MMZ_Handle2Fd"));
+        if (!sys_init || !sys_exit || !mmz_alloc || !mmz_free || !handle2fd) {
+            dlclose(handle);
+            handle = nullptr;
+            return false;
+        }
+        return true;
+    }
+};
+
+} // namespace
+
 #ifndef MPP_ALIGN
 #define MPP_ALIGN(x, a) (((x) + (a) - 1) & ~((a) - 1))
 #endif
@@ -288,53 +385,98 @@ public:
                 &buf_group_, MPP_BUFFER_TYPE_ION);
         }
         if (ret != MPP_OK || buf_group_ == nullptr) {
-            if (err) *err = "encoder-rkmpp: failed to create buffer group "
-                "(tried DRM|CACHABLE, DRM, DMA_HEAP, ION)";
-            return false;
+            // RV1106's MPP (venc540c adapter) manages encoder memory
+            // internally: userspace group creation returns NULL for every
+            // type.  The pool only backs the CPU-copy input path and the
+            // optional output/md_info attachments, so continue without it —
+            // dmabuf (zero-copy) input works, CPU-copy submits fail with a
+            // clear error below.
+            std::fprintf(stderr,
+                "[RkMppEncoder] no internal buffer group on this MPP; "
+                "dmabuf-only input, adapter-managed output buffers\n");
+            buf_group_ = nullptr;
         }
 
-        ret = mpp_buffer_get(buf_group_, &input_bufs_[0], frame_size_);
-        if (ret != MPP_OK || input_bufs_[0] == nullptr) {
-            mpp_buffer_group_put(buf_group_);
-            buf_group_ = nullptr;
-            if (err) *err = "encoder-rkmpp: persistent buffer alloc failed";
-            return false;
-        }
-        for (int i = 1; i < kInputPoolSize; i++) {
-            ret = mpp_buffer_get(buf_group_, &input_bufs_[i], frame_size_);
-            if (ret != MPP_OK || input_bufs_[i] == nullptr) {
-                for (int j = 0; j < i; j++) {
-                    mpp_buffer_put(input_bufs_[j]);
-                    input_bufs_[j] = nullptr;
-                }
+        if (buf_group_) {
+            ret = mpp_buffer_get(buf_group_, &input_bufs_[0], frame_size_);
+            if (ret != MPP_OK || input_bufs_[0] == nullptr) {
                 mpp_buffer_group_put(buf_group_);
                 buf_group_ = nullptr;
-                if (err) *err = "encoder-rkmpp: pool buffer alloc failed";
+                if (err) *err = "encoder-rkmpp: persistent buffer alloc failed";
                 return false;
             }
-        }
+            for (int i = 1; i < kInputPoolSize; i++) {
+                ret = mpp_buffer_get(buf_group_, &input_bufs_[i], frame_size_);
+                if (ret != MPP_OK || input_bufs_[i] == nullptr) {
+                    for (int j = 0; j < i; j++) {
+                        mpp_buffer_put(input_bufs_[j]);
+                        input_bufs_[j] = nullptr;
+                    }
+                    mpp_buffer_group_put(buf_group_);
+                    buf_group_ = nullptr;
+                    if (err) *err = "encoder-rkmpp: pool buffer alloc failed";
+                    return false;
+                }
+            }
 
-        std::fprintf(stderr,
-            "[RkMppEncoder] Persistent input buffer pool: %zu bytes x %d\n",
-            frame_size_, kInputPoolSize);
+            std::fprintf(stderr,
+                "[RkMppEncoder] Persistent input buffer pool: %zu bytes x %d\n",
+                frame_size_, kInputPoolSize);
 
-        // --- Explicit output packet + motion-info buffers ---
-        // Mirror mpi_enc_test: attach an app-supplied output packet (and a
-        // motion-info buffer) to every frame's meta.  Without them the
-        // encoder hal falls back to internal dma_heap buffers, which makes
-        // vepu511/rkvenc2 fault (RKV_ENC_INT_BUS_WRITE_ERROR) on RV1126B.
-        for (int i = 0; i < kPacketPoolSize; i++) {
-            ret = mpp_buffer_get(buf_group_, &pkt_bufs_[i], frame_size_);
-            if (ret != MPP_OK || pkt_bufs_[i] == nullptr) {
-                if (err) *err = "encoder-rkmpp: packet buffer alloc failed";
+            // --- Explicit output packet + motion-info buffers ---
+            // Mirror mpi_enc_test: attach an app-supplied output packet (and a
+            // motion-info buffer) to every frame's meta.  Without them the
+            // encoder hal falls back to internal dma_heap buffers, which makes
+            // vepu511/rkvenc2 fault (RKV_ENC_INT_BUS_WRITE_ERROR) on RV1126B.
+            for (int i = 0; i < kPacketPoolSize; i++) {
+                ret = mpp_buffer_get(buf_group_, &pkt_bufs_[i], frame_size_);
+                if (ret != MPP_OK || pkt_bufs_[i] == nullptr) {
+                    if (err) *err = "encoder-rkmpp: packet buffer alloc failed";
+                    return false;
+                }
+            }
+            // 64 KiB covers the RV1126B / RK3588 md_info formulas up to 1080p+.
+            ret = mpp_buffer_get(buf_group_, &md_info_, 64 * 1024);
+            if (ret != MPP_OK || md_info_ == nullptr) {
+                if (err) *err = "encoder-rkmpp: md_info buffer alloc failed";
                 return false;
             }
-        }
-        // 64 KiB covers the RV1126B / RK3588 md_info formulas up to 1080p+.
-        ret = mpp_buffer_get(buf_group_, &md_info_, 64 * 1024);
-        if (ret != MPP_OK || md_info_ == nullptr) {
-            if (err) *err = "encoder-rkmpp: md_info buffer alloc failed";
-            return false;
+        } else {
+            // RV1106 adapter mode: no userspace group, but the adapter only
+            // emits packets when an output buffer is attached.  Allocate
+            // them from rockit MMZ (memory the vcodec always accepts) and
+            // import into MPP.
+            if (rockit_.resolve()) {
+                rockit_.sys_init();
+                int ok = 0;
+                for (int i = 0; i < kPacketPoolSize; i++) {
+                    void* blk = nullptr;
+                    if (rockit_.mmz_alloc(&blk, nullptr, nullptr,
+                                          frame_size_) != 0 || !blk)
+                        continue;
+                    MppBufferInfo info{};
+                    info.type = MPP_BUFFER_TYPE_DRM;
+                    info.fd = rockit_.handle2fd(blk);
+                    info.size = frame_size_;
+                    MppBuffer imported = nullptr;
+                    if (info.fd >= 0
+                        && mpp_buffer_import(&imported, &info) == MPP_OK
+                        && imported) {
+                        pkt_bufs_[i] = imported;
+                        mmz_blks_.push_back(blk);
+                        ok++;
+                    } else {
+                        rockit_.mmz_free(blk);
+                    }
+                }
+                std::fprintf(stderr,
+                    "[RkMppEncoder] output packet buffers via rockit MMZ: "
+                    "%d/%d\n", ok, kPacketPoolSize);
+            } else {
+                std::fprintf(stderr,
+                    "[RkMppEncoder] librockit not available; no output "
+                    "packet buffers (encoder may not emit packets)\n");
+            }
         }
 
         // Pre-RTP debug file (uncomment to debug encoding output):
@@ -436,16 +578,21 @@ public:
 
         if (use_dmabuf) {
             // Data was written by the ISP via DMA; guard CPU-side cache ops.
-            mpp_buffer_sync_begin(buf);
-            mpp_buffer_sync_end(buf);
+            buf_sync_begin(buf);
+            buf_sync_end(buf);
         } else {
+        if (!buf) {
+            if (err) *err = "encoder-rkmpp: no input pool buffer on this MPP; "
+                "capture must deliver dmabuf frames (prefer_dmabuf)";
+            return false;
+        }
         // --- Copy frame data into the selected buffer ---
         // DMA buffer cache sync: CPU writes must be flushed so MPP's DMA
         // engine sees the data.
-        mpp_buffer_sync_begin(buf);
+        buf_sync_begin(buf);
         uint8_t* dst = static_cast<uint8_t*>(mpp_buffer_get_ptr(buf));
         if (!dst) {
-            mpp_buffer_sync_end(buf);
+            buf_sync_end(buf);
             if (err) *err = "encoder-rkmpp: input buffer has no mapped ptr";
             return false;
         }
@@ -488,7 +635,7 @@ public:
             }
         }
 
-        mpp_buffer_sync_end(buf);
+        buf_sync_end(buf);
         }
 
         // --- Build MppFrame ---
@@ -516,7 +663,8 @@ public:
         {
             MppMeta meta = mpp_frame_get_meta(mpp_frame);
             MppPacket out_pkt = nullptr;
-            if (mpp_packet_init_with_buffer(
+            if (pkt_bufs_[next_pkt_idx_]
+                && mpp_packet_init_with_buffer(
                     &out_pkt, pkt_bufs_[next_pkt_idx_]) == MPP_OK) {
                 // NOTE: output packet length must be cleared before use.
                 mpp_packet_set_length(out_pkt, 0);
@@ -631,6 +779,12 @@ public:
             mpp_buffer_group_put(buf_group_);
             buf_group_ = nullptr;
         }
+        // Rockit MMZ bridge cleanup (RV1106 adapter mode).
+        for (void* blk : mmz_blks_) {
+            if (blk) rockit_.mmz_free(blk);
+        }
+        mmz_blks_.clear();
+        if (rockit_.handle) rockit_.sys_exit();
         if (debug_file_) {
             std::fclose(debug_file_);
             debug_file_ = nullptr;
@@ -822,6 +976,11 @@ private:
     MppBuffer pkt_bufs_[kPacketPoolSize] = {};
     int next_pkt_idx_ = 0;
     MppBuffer md_info_ = nullptr;
+
+    // RV1106 adapter mode: output packet buffers allocated from rockit MMZ
+    // and imported into MPP (used only when no userspace group exists).
+    RockitMmzApi rockit_;
+    std::vector<void*> mmz_blks_;
 
     // Partial AU buffered across drain calls (partition without EOI)
     std::vector<uint8_t> pending_au_;
