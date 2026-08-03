@@ -18,7 +18,11 @@ COPY . .
 
 COPY --from=builder-node /app/assets/ assets
 
-RUN cargo build --release --all-targets --all-features
+# Keep in sync with the release workflow feature set: rsmpeg and the native
+# capture/encoder features need system FFmpeg/libcamera dev libraries that are
+# not available in this slim builder image.
+RUN cargo build --release --bin=live777 --bin=liveman \
+    --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip
 
 FROM debian:trixie-slim
 
@@ -27,10 +31,5 @@ COPY --from=builder-rust /app/target/release/live777 /usr/local/bin/live777
 
 COPY --from=builder-rust /app/conf/liveman.toml /etc/live777/liveman.toml
 COPY --from=builder-rust /app/target/release/liveman /usr/local/bin/liveman
-
-COPY --from=builder-rust /app/target/release/whipinto /usr/local/bin/whipinto
-COPY --from=builder-rust /app/target/release/whepfrom /usr/local/bin/whepfrom
-
-COPY --from=builder-rust /app/target/release/net4mqtt /usr/local/bin/net4mqtt
 
 CMD ["live777"]

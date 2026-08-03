@@ -354,9 +354,12 @@ carries the check.
 
 ## Deployment & Packaging
 
-- **Docker**: multi-stage Dockerfiles in `docker/` for `live777`, `liveman`,
-  `whipinto`, `whepfrom`, `net4mqtt`, `ffmpeg`, and `gstreamer` variants.
-  Images are published to `ghcr.io/binbat/<app>`.
+- **Docker**: multi-stage Dockerfiles in `docker/` for `live777-server`
+  (live777 + liveman), `live777-client` (self-contained FFmpeg + whipinto +
+  whepfrom; its FFmpeg build mirrors `Dockerfile.ffmpeg`), `liveion`
+  (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
+  `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
+  `ghcr.io/binbat/<app>`.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux

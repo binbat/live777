@@ -18,7 +18,11 @@ COPY . .
 
 COPY --from=builder-node /app/assets/ assets
 
-RUN cargo build --bin=liveman --all-features --release
+# Keep in sync with the release workflow feature set: rsmpeg and the native
+# capture/encoder features need system FFmpeg/libcamera dev libraries that are
+# not available in this slim builder image.
+RUN cargo build --bin=liveman --release \
+    --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip
 
 FROM debian:trixie-slim
 
