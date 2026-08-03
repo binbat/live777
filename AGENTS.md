@@ -155,13 +155,22 @@ instead of `--all-features`.
 `Cross.toml` configures `cross` images for `aarch64-unknown-linux-gnu` and
 `armv7-unknown-linux-gnueabihf`. For Raspberry Pi libcamera builds you need a
 sysroot and `PI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`; for
-Rockchip RK3588 (RKMPP) builds use `RK_MPP_SYSROOT`. Example:
+Rockchip RK3588 (RKMPP) builds use the RKMPP cross image
+(`ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, MPP sysroot baked at
+`/opt/rkmpp-sysroot`) or set `RK_MPP_SYSROOT` to override it with a sysroot
+pulled from a device. Example:
 
 ```bash
 export PI_SYSROOT=/path/to/pi-sysroot
 cross build --target aarch64-unknown-linux-gnu \
   --bin live777 --release \
   --no-default-features --features native-rpi,webui
+
+# Rockchip RK3588 (RKMPP), using the published cross image
+CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest \
+  cross build --target aarch64-unknown-linux-gnu \
+  --bin live777 --release \
+  --no-default-features --features native-rk3588,webui
 ```
 
 `livehal/build.rs` reads `PI_SYSROOT`/`RDK_SYSROOT`/`RK_MPP_SYSROOT` to

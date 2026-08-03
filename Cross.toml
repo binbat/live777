@@ -10,16 +10,16 @@
 # livehal/build.rs reads PI_SYSROOT to set pkg-config sysroot and link paths.
 
 [target.aarch64-unknown-linux-gnu]
-# Custom Debian 13 (trixie, glibc 2.41) image matching the Luckfox Aura
-# target rootfs exactly — no glibc-version variables. The stock cross image
-# is Ubuntu 20.04 (glibc 2.31) and cannot link board-provided
-# librockchip_mpp.so (needs GLIBC_2.34+). Ubuntu 22.04 (glibc 2.35,
-# docker/Dockerfile.cross-aarch64-u2204) is the lower-baseline alternative
-# for older rootfs (e.g. the Luckfox buildroot image, glibc but older).
-# Build it with:
-#   docker build -f docker/Dockerfile.cross-aarch64-debian13 \
-#     -t live777-cross-aarch64-debian13:local .
-image = "ghcr.io/binbat/live777-cross-aarch64-u2204:latest"
+# The default aarch64 image stays generic. Rockchip RK3588 (RKMPP) builds
+# should override the target image with
+# CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE pointing to
+# ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest, which has the Rockchip
+# MPP sysroot baked at /opt/rkmpp-sysroot (the stock cross image is Ubuntu
+# 20.04, glibc 2.31, too old to link librockchip_mpp.so). For local builds,
+# RK_MPP_SYSROOT can still point to a sysroot pulled from a device; cross
+# mounts it into the container at the same path and livehal/build.rs reads
+# it to configure the library search path.
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
 
 [target.aarch64-unknown-linux-gnu.env]
 volumes = ["PI_SYSROOT", "RK_MPP_SYSROOT"]

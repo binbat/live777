@@ -4,6 +4,7 @@ host := "127.0.0.1"
 port := "7777"
 server := "http://" + host + ":" + port
 stream := "test-stream"
+rkmpp_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest"
 
 isdp := "i.sdp"
 osdp := "o.sdp"
@@ -516,47 +517,10 @@ loadtest-channel mode="all":
     cargo run --release --features=source --bin datachannel_loadtest -- {{mode}}
 
 
-# ---------------------------------------------------------------------------
-# Cross images (u2204 base, hermetic sysroot-baked variants for CI)
-# ---------------------------------------------------------------------------
-
-ghcr := "ghcr.io/binbat"
-u2204_image := "live777-cross-aarch64-u2204"
-
-# Build the Ubuntu 22.04 (glibc 2.35) aarch64 cross base image
-[group('cross-image')]
-cross-image-base:
-    docker build --platform linux/amd64 -f docker/Dockerfile.cross-aarch64-u2204 \
-        -t {{ghcr}}/{{u2204_image}}:latest .
-
-# Assemble the Rockchip MPP sysroot from the target board into docker/sysroots/rkmpp
-[group('cross-image')]
-sysroot-pull-rkmpp board="aura@192.168.127.164":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    dir=docker/sysroots/rkmpp
-    mkdir -p "$dir/mpp-lib" "$dir/usr/lib/aarch64-linux-gnu" "$dir/usr/include"
-    scp -q {{board}}:/usr/lib/aarch64-linux-gnu/librockchip_mpp.so.0 "$dir/mpp-lib/"
-    ln -sf librockchip_mpp.so.0 "$dir/mpp-lib/librockchip_mpp.so.1"
-    ln -sf librockchip_mpp.so.1 "$dir/mpp-lib/librockchip_mpp.so"
-    cp -a "$dir/mpp-lib/." "$dir/usr/lib/aarch64-linux-gnu/"
-    scp -qr {{board}}:/usr/include/rockchip "$dir/usr/include/"
-    echo "rkmpp sysroot ready at $dir"
-
-# Bake the rkmpp sysroot into the cross image (hermetic CI builds)
-[group('cross-image')]
-cross-image-rkmpp: cross-image-base
-    docker build -f docker/Dockerfile.sysroot-rkmpp \
-        -t {{ghcr}}/{{u2204_image}}-rkmpp:latest .
-
-# Push cross images to ghcr (needs `docker login ghcr.io` first)
-[group('cross-image')]
-cross-images-push:
-    docker push {{ghcr}}/{{u2204_image}}:latest
-    docker push {{ghcr}}/{{u2204_image}}-rkmpp:latest
-
 # Luckfox Aura / RV1126B (native-rk3588: V4L2 capture, Rockchip MPP encoder)
+# Uses the RKMPP cross image (sysroot baked at /opt/rkmpp-sysroot); set
+# RK_MPP_SYSROOT to override it with a sysroot pulled from a device.
 [group('embedded')]
 rkmpp-pack-size:
-    test -n "${RK_MPP_SYSROOT:?set RK_MPP_SYSROOT to the Rockchip MPP sysroot first (or use the -rkmpp cross image)}" && \
+    CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rkmpp_cross_image}} \
         just cross-pack-size aarch64-unknown-linux-gnu native-rk3588,webui
