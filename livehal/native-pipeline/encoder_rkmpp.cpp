@@ -528,15 +528,10 @@ public:
         }
 
         // --- Submit to encoder ---
-        inflight_depth_++;
-        if (inflight_depth_ > peak_inflight_depth_)
-            peak_inflight_depth_ = inflight_depth_;
-
         ret = mpi_->encode_put_frame(ctx_, mpp_frame);
         mpp_frame_deinit(&mpp_frame);
 
         if (ret != MPP_OK) {
-            inflight_depth_--;
             put_frame_failures_++;
             if (err) *err = "encoder-rkmpp: encode_put_frame failed (ret="
                 + std::to_string(ret) + ")";
@@ -545,6 +540,10 @@ public:
 
         // Advance slot index only on successful submit
         next_input_idx_ = (next_input_idx_ + 1) % kInputPoolSize;
+
+        const int depth = inflight_depth();
+        if (depth > peak_inflight_depth_)
+            peak_inflight_depth_ = depth;
 
         // --- Drain and dispatch (this frame may not be ready yet) ---
         drain_and_dispatch(frame.pts_us);
@@ -675,8 +674,6 @@ private:
                 if (packet) mpp_packet_deinit(&packet);
                 get_packet_failures_++;
                 au.clear();
-                // May fire from the pre-submit drain with nothing in flight.
-                if (inflight_depth_ > 0) inflight_depth_--;
                 return dispatched;
             }
             if (!packet) break;
@@ -691,7 +688,6 @@ private:
                 if (au.size() > kMaxEncodedAccessUnitSize - pkt_size) {
                     mpp_packet_deinit(&packet);
                     au.clear();
-                    inflight_depth_--;
                     return dispatched;
                 }
                 // Use PTS from first MPP packet (actual encoded frame PTS, µs)
@@ -720,6 +716,10 @@ private:
             pending_au_flags_ = au_flags;
             return dispatched;
         }
+
+        // One completion per submitted frame, counted exactly once when its
+        // EOI is observed — whether or not the AU carried any data.
+        completed_frames_++;
 
         if (au.empty()) return dispatched;
 
@@ -761,7 +761,6 @@ private:
             dispatched = 1;
         }
 
-        inflight_depth_--;
         encoded_frames_++;
         return dispatched;
     }
@@ -788,7 +787,7 @@ private:
             group_unused, group_usage,
             static_cast<unsigned long long>(put_frame_failures_),
             static_cast<unsigned long long>(get_packet_failures_),
-            inflight_depth_, peak_inflight_depth_,
+            inflight_depth(), peak_inflight_depth_,
             max_partitions_per_frame_);
     }
 
@@ -835,10 +834,21 @@ private:
     uint64_t encoded_frames_ = 0;
     uint64_t put_frame_failures_ = 0;
     uint64_t get_packet_failures_ = 0;
+    // Frames whose EOI was observed in drain_and_dispatch(); each submitted
+    // frame completes exactly once, so in-flight depth can be derived.
+    uint64_t completed_frames_ = 0;
     uint64_t au_log_count_ = 0;
-    int inflight_depth_ = 0;
     int peak_inflight_depth_ = 0;
     size_t max_partitions_per_frame_ = 0;
+
+    // In-flight depth derived from counters: submitted minus put-failures
+    // minus completed.  Deriving it (instead of maintaining a mutable
+    // counter across the drain exit paths) makes double-decrement bugs
+    // impossible by construction.
+    int inflight_depth() const {
+        return static_cast<int>(
+            submitted_frames_ - put_frame_failures_ - completed_frames_);
+    }
 
     std::atomic<bool> running_{false};
     bool initialized_ = false;
