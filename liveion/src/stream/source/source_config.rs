@@ -132,6 +132,55 @@ impl Default for OutputSpec {
 }
 
 impl SourceSpec {
+    /// Resolved profile parameters for the configured codec.
+    ///
+    /// `profile_idc`/`level_idc`/`tier_flag` are the numeric values passed
+    /// to the native encoder and the H.265 SDP fmtp line; `profile_string`
+    /// is the H.264-style profile-level-id (empty for H.265).
+    fn resolve_profile(&self) -> anyhow::Result<(u32, u32, u32, String)> {
+        let codec_str = self.encoder.codec.to_ascii_lowercase();
+        let is_rkmpp = self.encoder.backend.eq_ignore_ascii_case("rkmpp");
+
+        if is_rkmpp && !matches!(codec_str.as_str(), "h264" | "h265" | "hevc") {
+            anyhow::bail!(
+                "encoder backend 'rkmpp' supports only h264 and h265, got '{}'",
+                self.encoder.codec
+            );
+        }
+
+        // Resolve profile_idc / level_idc / tier_flag per codec.
+        // Rust is the sole parsing layer; C++ receives numeric values directly.
+        // rkmpp passes them to the encoder; every backend needs the H.265
+        // numerics for the SDP fmtp line.
+        let (profile_idc, level_idc, tier_flag) = match codec_str.as_str() {
+            "h264" if is_rkmpp => {
+                let (pidc, lidc) = self.encoder.h264_profile_level_id()?;
+                (u32::from(pidc), u32::from(lidc), 0u32)
+            }
+            "h265" | "hevc" => {
+                // h265_profile_params returns (profile_idc, tier_flag, level_idc)
+                let (pidc, tier, lidc) = self.encoder.h265_profile_params()?;
+                (u32::from(pidc), u32::from(lidc), u32::from(tier))
+            }
+            // v4l2-m2m / rdk H.264 and the other codecs: profile/level are
+            // resolved via string helpers; numeric fields are unused.
+            _ => (0u32, 0u32, 0u32),
+        };
+
+        // H.265 SDP fmtp is built from the numeric fields above; the
+        // H.264-style profile-level-id string does not apply.
+        let is_h265 = matches!(codec_str.as_str(), "h265" | "hevc");
+        let profile_string = if is_h265 {
+            String::new()
+        } else {
+            self.encoder.profile_level_id()?
+        };
+
+        Ok((profile_idc, level_idc, tier_flag, profile_string))
+    }
+}
+
+impl SourceSpec {
     /// Validate the source specification.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.stream_id.trim().is_empty() {
@@ -175,25 +224,11 @@ impl SourceSpec {
             );
         }
 
-        // Per-backend codec validation.
-        if self.encoder.backend.eq_ignore_ascii_case("rkmpp") {
-            match self.encoder.codec.to_ascii_lowercase().as_str() {
-                "h264" => {
-                    self.encoder.h264_profile_level_id()?;
-                }
-                "h265" | "hevc" => {
-                    self.encoder.h265_profile_params()?;
-                }
-                codec => anyhow::bail!(
-                    "encoder backend 'rkmpp' supports only h264 and h265, got '{}'",
-                    codec
-                ),
-            }
-        } else {
-            // v4l2-m2m / rdk: use existing profile-level-id validation
-            if let Err(e) = self.encoder.profile_level_id() {
-                anyhow::bail!("encoder.profile/level/tier: {}", e);
-            }
+        // Profile/level/tier are resolved with the same rules
+        // to_native_params() uses, so anything validate() accepts can be
+        // converted and vice versa.
+        if let Err(e) = self.resolve_profile() {
+            anyhow::bail!("encoder.profile/level/tier: {}", e);
         }
 
         // Validate pixel_format and codec strings early so config errors
@@ -467,36 +502,9 @@ impl SourceSpec {
             anyhow::bail!("unsupported capture backend: {}", self.capture.backend);
         }
         let capture_device = self.capture.device.clone().unwrap_or_default();
-        let codec_str = self.encoder.codec.to_ascii_lowercase();
 
-        // Resolve profile_idc / level_idc / tier_flag per codec.
-        // Rust is the sole parsing layer; C++ receives numeric values directly.
-        // rkmpp passes them to the encoder; every backend needs the H.265
-        // numerics for the SDP fmtp line.
-        let is_numeric_profile = self.encoder.backend.eq_ignore_ascii_case("rkmpp");
-        let (profile_idc, level_idc, tier_flag) = match codec_str.as_str() {
-            "h264" if is_numeric_profile => {
-                let (pidc, lidc) = self.encoder.h264_profile_level_id()?;
-                (u32::from(pidc), u32::from(lidc), 0u32)
-            }
-            "h265" | "hevc" => {
-                // h265_profile_params returns (profile_idc, tier_flag, level_idc)
-                let (pidc, tier, lidc) = self.encoder.h265_profile_params()?;
-                (u32::from(pidc), u32::from(lidc), u32::from(tier))
-            }
-            // v4l2-m2m / rdk H.264: profile/level are resolved via string
-            // helpers; numeric fields are unused by these backends.
-            _ => (0u32, 0u32, 0u32),
-        };
-
-        // H.265 SDP fmtp is built from the numeric fields above; the
-        // H.264-style profile-level-id string does not apply.
-        let is_h265 = matches!(codec_str.as_str(), "h265" | "hevc");
-        let profile_string = if is_h265 {
-            String::new()
-        } else {
-            self.encoder.profile_level_id()?
-        };
+        // Profile resolution is shared with validate() — see resolve_profile().
+        let (profile_idc, level_idc, tier_flag, profile_string) = self.resolve_profile()?;
 
         Ok(NativeSourceParams {
             capture_backend: self.capture.backend.clone(),
@@ -927,6 +935,42 @@ mod tests {
     fn test_rkmpp_invalid_codec_vp8() {
         let mut spec = rkmpp_h265_spec();
         spec.encoder.codec = "vp8".into();
+        assert!(spec.validate().is_err());
+    }
+
+    // --- validate() / to_native_params() consistency tests ---
+    // Both use resolve_profile(), so they must accept and reject the same
+    // profile/level combinations for every backend, not just rkmpp.
+
+    #[test]
+    fn test_validate_v4l2_h265_name_profile_without_level() {
+        // H.265 profile names do not require a separate level; validate()
+        // must accept what to_native_params() accepts.
+        let mut spec = v4l2_spec();
+        spec.encoder.codec = "h265".into();
+        spec.encoder.profile = "main".into();
+        spec.encoder.level = None;
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_v4l2_h265_hex_profile_rejected() {
+        // H.264-style hex profile-level-id is invalid for H.265 on every
+        // backend — to_native_params() rejects it, so validate() must too.
+        let mut spec = v4l2_spec();
+        spec.encoder.codec = "h265".into();
+        spec.encoder.profile = "42001f".into();
+        spec.encoder.level = None;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_v4l2_h265_h264_profile_name_rejected() {
+        // 'high' is an H.264 profile name; it must not pass H.265 validation.
+        let mut spec = v4l2_spec();
+        spec.encoder.codec = "h265".into();
+        spec.encoder.profile = "high".into();
+        spec.encoder.level = Some("4.0".into());
         assert!(spec.validate().is_err());
     }
 
