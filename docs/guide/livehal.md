@@ -280,6 +280,8 @@ cargo build --bin live777 --release \
 
 Requires the Rockchip MPP library (`librockchip_mpp`) and headers. Set `RKMPP_SYSROOT` to a sysroot containing them when cross-compiling. The rkmpp encoder accepts NV12 input only; pair it with `pixel_format = "nv12"` capture.
 
+> **Note:** rkmpp profile configuration is stricter than the other backends. For H.264, `profile` must be a 6-character profile-level-id hex string (e.g. `"420028"` = Baseline Level 4.0, `"640028"` = High Level 4.0) and a separate `level` field is not allowed — the level is encoded in the hex. For H.265, use `profile = "main"` with an optional `level` (`"3.0"`–`"5.1"`, default `"4.0"`); only Main profile / Main tier are supported.
+
 The Cross Images workflow publishes `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, an aarch64 cross image with the MPP sysroot baked in at `/opt/rkmpp-sysroot` (built from `docker/Dockerfile.cross-aarch64-rkmpp`). Point cross at it via `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`, or use `just rkmpp-pack-size`; `RKMPP_SYSROOT` overrides the baked sysroot with one pulled from a device.
 
 ### macOS (development / check only)

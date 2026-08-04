@@ -59,6 +59,7 @@ pub struct CaptureSpec {
 /// Encoder specification.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EncoderSpec {
+    /// Encoder backend: `"v4l2-m2m"`, `"rdk"`, or `"rkmpp"`.
     pub backend: String,
     /// Video codec: `"h264"` or `"h265"`.
     pub codec: String,
