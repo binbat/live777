@@ -658,7 +658,7 @@ loadtest-channel mode="all":
 
 # Rockchip RKMPP (RK3588, RV1126B): V4L2 capture, Rockchip MPP encoder
 # Uses the RKMPP cross image (sysroot baked at /opt/rkmpp-sysroot); set
-# RK_MPP_SYSROOT to override it with a sysroot pulled from a device.
+# RKMPP_SYSROOT to override it with a sysroot pulled from a device.
 [group('embedded')]
 rkmpp-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rkmpp_cross_image}} \

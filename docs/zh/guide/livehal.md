@@ -265,9 +265,9 @@ cargo build --bin live777 --release \
   --no-default-features --features native-rkmpp,webui
 ```
 
-需要 Rockchip MPP 库（`librockchip_mpp`）及头文件。交叉编译时设置 `RK_MPP_SYSROOT` 指向包含它们的 sysroot。rkmpp 编码器仅接受 NV12 输入，请搭配 `pixel_format = "nv12"` 采集。
+需要 Rockchip MPP 库（`librockchip_mpp`）及头文件。交叉编译时设置 `RKMPP_SYSROOT` 指向包含它们的 sysroot。rkmpp 编码器仅接受 NV12 输入，请搭配 `pixel_format = "nv12"` 采集。
 
-Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`，这是一个内置 MPP sysroot（位于 `/opt/rkmpp-sysroot`，由 `docker/Dockerfile.cross-aarch64-rkmpp` 构建）的 aarch64 交叉编译镜像。通过 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE` 指定给 cross 使用，或直接运行 `just rkmpp-pack-size`；设置 `RK_MPP_SYSROOT` 可改用从设备拉取的 sysroot。
+Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`，这是一个内置 MPP sysroot（位于 `/opt/rkmpp-sysroot`，由 `docker/Dockerfile.cross-aarch64-rkmpp` 构建）的 aarch64 交叉编译镜像。通过 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE` 指定给 cross 使用，或直接运行 `just rkmpp-pack-size`；设置 `RKMPP_SYSROOT` 可改用从设备拉取的 sysroot。
 
 ### macOS（仅开发 / 检查）
 
@@ -284,7 +284,7 @@ cargo check --features native-rpi,webui
 |----------|---------|
 | `RPI_SYSROOT` | 包含 `libcamera-dev` 的树莓派 sysroot 路径。在构建 `capture-libcamera` / `native-rpi` 时使用。 |
 | `RDK_SYSROOT` | 地平线 RDK X5 SDK sysroot 路径。在 aarch64 上构建 `encoder-rdk` / `native-rdk` 时**必须**设置。 |
-| `RK_MPP_SYSROOT` | 包含 Rockchip MPP 库和头文件的 sysroot 路径。在 aarch64 上构建 `encoder-rkmpp` / `native-rkmpp` 时使用。 |
+| `RKMPP_SYSROOT` | 包含 Rockchip MPP 库和头文件的 sysroot 路径。在 aarch64 上构建 `encoder-rkmpp` / `native-rkmpp` 时使用。 |
 | `LIVEHAL_CXX_STDLIB` | 覆盖要链接的 C++ 标准库（如 `stdc++`、`c++` 等），用于交叉编译工具链。 |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | 设为 `1` 可在 sysroot 不完整时允许 RDK 共享库存在未解析符号。 |
 

@@ -171,7 +171,7 @@ fn main() {
     // change.
     println!("cargo:rerun-if-env-changed=RPI_SYSROOT");
     println!("cargo:rerun-if-env-changed=RDK_SYSROOT");
-    println!("cargo:rerun-if-env-changed=RK_MPP_SYSROOT");
+    println!("cargo:rerun-if-env-changed=RKMPP_SYSROOT");
     println!("cargo:rerun-if-env-changed=LIVEHAL_CXX_STDLIB");
     println!("cargo:rerun-if-env-changed=LIVEHAL_RDK_ALLOW_UNDEFINED");
 
@@ -333,7 +333,7 @@ fn main() {
     } else if native_backend == "rkmpp" {
         // Rockchip MPP: link from a clean directory (no libc) to avoid
         // pulling in the sysroot's older libc instead of the toolchain's.
-        if let Ok(sysroot) = env::var("RK_MPP_SYSROOT") {
+        if let Ok(sysroot) = env::var("RKMPP_SYSROOT") {
             let sysroot = PathBuf::from(sysroot);
             println!(
                 "cargo:rustc-link-search=native={}",
@@ -408,9 +408,9 @@ fn main() {
         cmake_config.define("RDK_SYSROOT", sysroot);
     }
     if native_backend == "rkmpp"
-        && let Ok(sysroot) = env::var("RK_MPP_SYSROOT")
+        && let Ok(sysroot) = env::var("RKMPP_SYSROOT")
     {
-        cmake_config.define("RK_MPP_SYSROOT", sysroot);
+        cmake_config.define("RKMPP_SYSROOT", sysroot);
     }
 
     match native_backend.as_str() {
@@ -530,7 +530,7 @@ fn main() {
             println!("cargo:rustc-link-arg=-Wl,--unresolved-symbols=ignore-in-shared-libs");
         }
     } else if native_backend == "rkmpp" {
-        // Rockchip MPP: prefer RK_MPP_SYSROOT for cross-compilation,
+        // Rockchip MPP: prefer RKMPP_SYSROOT for cross-compilation,
         // otherwise assumes system-installed rockchip_mpp (e.g. Orange Pi).
         println!("cargo:rustc-link-lib=dylib=rockchip_mpp");
     } else if has_capture_libcamera && !libcamera_linked {

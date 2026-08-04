@@ -7,7 +7,7 @@
 # Debian 13 is required: the stock cross-rs aarch64 image is Ubuntu 20.04
 # (glibc 2.31) and cannot link librockchip_mpp.so (needs GLIBC_2.34+).
 #
-# Local override: set RK_MPP_SYSROOT to a sysroot pulled from a device and
+# Local override: set RKMPP_SYSROOT to a sysroot pulled from a device and
 # cross mounts it into the container at the same path (see Cross.toml).
 #
 # MPP source ref: a pinned develop commit, not a release tag — every 1.0.x
@@ -71,6 +71,6 @@ ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc-ar \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 
-ENV RK_MPP_SYSROOT=/opt/rkmpp-sysroot
+ENV RKMPP_SYSROOT=/opt/rkmpp-sysroot
 
 COPY --from=rkmpp-sysroot /rkmpp-sysroot/ /opt/rkmpp-sysroot/

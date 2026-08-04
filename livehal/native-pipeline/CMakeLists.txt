@@ -92,13 +92,13 @@ target_include_directories(native-pipeline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Rockchip MPP — use find_library/find_path (works without pkg-config cross-compilation)
 if(ENABLE_ENCODER_RKMPP)
-    if(DEFINED RK_MPP_SYSROOT)
+    if(DEFINED RKMPP_SYSROOT)
         set(ROCKCHIP_MPP_SEARCH_PATHS
-            ${RK_MPP_SYSROOT}/usr/lib/aarch64-linux-gnu
-            ${RK_MPP_SYSROOT}/usr/lib
+            ${RKMPP_SYSROOT}/usr/lib/aarch64-linux-gnu
+            ${RKMPP_SYSROOT}/usr/lib
         )
         set(ROCKCHIP_MPP_INCLUDE_SEARCH_PATHS
-            ${RK_MPP_SYSROOT}/usr/include
+            ${RKMPP_SYSROOT}/usr/include
         )
     else()
         set(ROCKCHIP_MPP_SEARCH_PATHS
@@ -120,7 +120,7 @@ if(ENABLE_ENCODER_RKMPP)
         NO_DEFAULT_PATH
     )
     if(NOT ROCKCHIP_MPP_LIB OR NOT ROCKCHIP_MPP_INCLUDE_DIR)
-        message(FATAL_ERROR "Rockchip MPP not found. Set RK_MPP_SYSROOT to the sysroot.")
+        message(FATAL_ERROR "Rockchip MPP not found. Set RKMPP_SYSROOT to the sysroot.")
     endif()
     target_include_directories(native-pipeline PRIVATE ${ROCKCHIP_MPP_INCLUDE_DIR})
 endif()

@@ -157,7 +157,7 @@ instead of `--all-features`.
 sysroot and `RPI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`; for
 Rockchip RKMPP (RK3588, RV1126B) builds use the RKMPP cross image
 (`ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, MPP sysroot baked at
-`/opt/rkmpp-sysroot`) or set `RK_MPP_SYSROOT` to override it with a sysroot
+`/opt/rkmpp-sysroot`) or set `RKMPP_SYSROOT` to override it with a sysroot
 pulled from a device. Example:
 
 ```bash
@@ -173,7 +173,7 @@ CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64
   --no-default-features --features native-rkmpp,webui
 ```
 
-`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RK_MPP_SYSROOT` to
+`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RKMPP_SYSROOT` to
 configure `pkg-config` and linker paths.
 
 ## Runtime Architecture
