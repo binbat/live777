@@ -11,3 +11,19 @@ fieldset {
 section {
     margin: 0.5rem;
 }
+
+.qr-latency {
+    font-weight: 600;
+}
+
+.qr-latency-live {
+    color: #15803d;
+}
+
+.qr-latency-stale {
+    color: #b45309;
+}
+
+.qr-latency-lost {
+    color: #b91c1c;
+}

@@ -41,6 +41,145 @@ build:
     pnpm run build
     cargo build --release --all-targets --all-features
 
+# Size-optimized build: fat LTO, 1 codegen unit, stripped, panic=abort
+# (same feature set as the release workflow)
+[group('build')]
+build-size:
+    cargo build --profile release-size --bins \
+        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip
+
+# Extreme size build: build-size + UPX LZMA (needs upx installed)
+[group('build')]
+pack-size: build-size
+    upx --best --lzma target/release-size/live777 target/release-size/liveman target/release-size/whepfrom target/release-size/whipinto target/release-size/net4mqtt
+
+# Examples:
+#   just cross-build-size aarch64-unknown-linux-gnu native-rpi,webui   # Raspberry Pi (needs RPI_SYSROOT)
+#   just cross-build-size armv7-unknown-linux-gnueabihf native-generic-v4l2,webui
+#   just cross-build-size aarch64-unknown-linux-musl webui             # static musl, no native capture
+# Cross-compile a size-optimized live777 for an embedded target
+# (needs cross <https://github.com/cross-rs/cross> and docker)
+[group('build')]
+cross-build-size target features="webui":
+    cross build --target {{target}} --bin live777 --profile release-size \
+        --no-default-features --features {{features}}
+
+# cross-build-size + UPX LZMA; UPX packs foreign-arch ELFs directly from the host
+[group('build')]
+cross-pack-size target features="webui": (cross-build-size target features)
+    upx --best --lzma target/{{target}}/release-size/live777 || echo "warning: UPX cannot pack {{target}}, leaving the binary unpacked"
+
+# Raspberry Pi (native-rpi: libcamera + V4L2 capture, V4L2 M2M encoder)
+[group('embedded')]
+rpi-sync-sysroot host="raspberrypi" sysroot="target/rpi-sysroot":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    remote="{{host}}"
+    sysroot="{{sysroot}}"
+    triplet="aarch64-linux-gnu"
+
+    if ! ssh "$remote" "pkg-config --exists libcamera"; then
+        echo "error: libcamera.pc was not found on $remote"
+        echo "install libcamera-dev on the Raspberry Pi, then run this recipe again"
+        exit 1
+    fi
+
+    rm -rf "$sysroot"
+    mkdir -p "$sysroot/usr/lib/$triplet" "$sysroot/usr/lib/$triplet/pkgconfig"
+    sysroot_abs=$(cd "$sysroot" && pwd)
+
+    pc_dir=$(ssh "$remote" "pkg-config --variable=pcfiledir libcamera")
+    mkdir -p "$sysroot$pc_dir"
+    pc_modules=$(ssh "$remote" "printf '%s\n' libcamera; pkg-config --print-requires --print-requires-private libcamera" | awk '{print $1}' | sort -u)
+    while read -r module; do
+        [[ -n "$module" ]] || continue
+        rsync -a "$remote:$pc_dir/$module.pc" "$sysroot$pc_dir/"
+    done <<< "$pc_modules"
+
+    ssh "$remote" "pkg-config --cflags-only-I libcamera" | tr ' ' '\n' | sed -n 's/^-I//p' | while read -r path; do
+        [[ -n "$path" ]] || continue
+        mkdir -p "$sysroot$(dirname "$path")"
+        rsync -a "$remote:$path/" "$sysroot$path/"
+    done
+
+    lib_dirs=$(ssh "$remote" "pkg-config --libs-only-L libcamera" | tr ' ' '\n' | sed -n 's/^-L//p')
+    if [[ -z "$lib_dirs" ]]; then
+        lib_dirs="/usr/lib/$triplet"
+    fi
+    ssh "$remote" "pkg-config --libs-only-l libcamera" | tr ' ' '\n' | sed -n 's/^-l//p' | while read -r lib; do
+        [[ -n "$lib" ]] || continue
+        copied=0
+        while read -r dir; do
+            [[ -n "$dir" ]] || continue
+            matches=$(ssh "$remote" "find '$dir' -maxdepth 1 -name 'lib$lib.so*' -print 2>/dev/null")
+            [[ -n "$matches" ]] || continue
+            mkdir -p "$sysroot$dir"
+            while read -r file; do
+                rsync -a --links "$remote:$file" "$sysroot$dir/"
+                copied=1
+            done <<< "$matches"
+        done <<< "$lib_dirs"
+        if [[ "$copied" -ne 1 ]]; then
+            echo "error: lib$lib.so was not found on $remote"
+            exit 1
+        fi
+    done
+
+    dep_files=$(ssh "$remote" "ldd /usr/lib/$triplet/libcamera.so /usr/lib/$triplet/libcamera-base.so 2>/dev/null" \
+        | awk '/=> \// { print $3 } /^\// { print $1 }' \
+        | sed 's/:$//' \
+        | sort -u)
+    while read -r file; do
+        [[ -n "$file" ]] || continue
+        mkdir -p "$sysroot$(dirname "$file")"
+        rsync -aL "$remote:$file" "$sysroot$(dirname "$file")/"
+    done <<< "$dep_files"
+
+    PKG_CONFIG_SYSROOT_DIR="$sysroot" \
+        PKG_CONFIG_PATH="$sysroot/usr/lib/$triplet/pkgconfig" \
+        PKG_CONFIG_ALLOW_CROSS=1 \
+        pkg-config --exists libcamera
+    find "$sysroot" -name 'libcamera.so*' -print -quit | grep -q .
+
+    echo "RPI_SYSROOT=$sysroot_abs"
+
+[group('embedded')]
+rpi-cross-build sysroot="target/rpi-sysroot":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ ! -d "{{sysroot}}" ]]; then
+        echo "error: {{sysroot}} does not exist"
+        echo "run: just rpi-sync-sysroot <pi-ssh-host> {{sysroot}}"
+        exit 1
+    fi
+    sysroot=$(cd "{{sysroot}}" && pwd)
+    RPI_SYSROOT="$sysroot" cross build --target aarch64-unknown-linux-gnu \
+        --bin live777 --release \
+        --no-default-features --features native-rpi,webui
+
+[group('embedded')]
+rpi-sync-and-cross-build host="raspberrypi" sysroot="target/rpi-sysroot":
+    just rpi-sync-sysroot {{host}} {{sysroot}}
+    just rpi-cross-build {{sysroot}}
+
+[group('embedded')]
+rpi-pack-size:
+    test -n "${RPI_SYSROOT:?set RPI_SYSROOT to the Raspberry Pi sysroot first (see AGENTS.md)}" && \
+        just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui
+
+# RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
+[group('embedded')]
+rdk-pack-size:
+    test -n "${RDK_SYSROOT:?set RDK_SYSROOT to the RDK sysroot first (see AGENTS.md)}" && \
+        just cross-pack-size aarch64-unknown-linux-gnu native-rdk,webui
+
+# Generic V4L2 device (native-generic-v4l2; override the target for 64-bit boards)
+[group('embedded')]
+v4l2-pack-size target="armv7-unknown-linux-gnueabihf":
+    just cross-pack-size {{target}} native-generic-v4l2,webui
+
 # MacOS:
 #   brew install gstreamer
 # Debian:
@@ -517,10 +656,10 @@ loadtest-channel mode="all":
     cargo run --release --features=source --bin datachannel_loadtest -- {{mode}}
 
 
-# Luckfox Aura / RV1126B (native-rk3588: V4L2 capture, Rockchip MPP encoder)
+# Rockchip RKMPP (RK3588, RV1126B): V4L2 capture, Rockchip MPP encoder
 # Uses the RKMPP cross image (sysroot baked at /opt/rkmpp-sysroot); set
 # RK_MPP_SYSROOT to override it with a sysroot pulled from a device.
 [group('embedded')]
 rkmpp-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rkmpp_cross_image}} \
-        just cross-pack-size aarch64-unknown-linux-gnu native-rk3588,webui
+        just cross-pack-size aarch64-unknown-linux-gnu native-rkmpp,webui

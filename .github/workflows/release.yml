@@ -270,12 +270,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
 
-  build-rk3588:
-    name: aarch64-unknown-linux-gnu-rk3588 (ubuntu-24.04)
+  build-rkmpp:
+    name: aarch64-unknown-linux-gnu-rkmpp (ubuntu-24.04)
     runs-on: ubuntu-24.04
     env:
       TARGET: aarch64-unknown-linux-gnu
-      VARIANT: rk3588
+      VARIANT: rkmpp
       RKMPP_CROSS_IMAGE: ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest
     steps:
       - name: Checkout source code
@@ -327,14 +327,14 @@ jobs:
         shell: bash
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build Rockchip RK3588 live777
+      - name: Build Rockchip RKMPP live777
         shell: bash
         run: |
           CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${RKMPP_CROSS_IMAGE} \
             cross build --locked --bin live777 --release --target=${TARGET} \
-            --no-default-features --features native-rk3588,webui
+            --no-default-features --features native-rkmpp,webui
 
-      - name: Create Rockchip RK3588 live777 tarball
+      - name: Create Rockchip RKMPP live777 tarball
         shell: bash
         run: |
           TAR_BASENAME=live777-${VERSION}-${TARGET}-${VARIANT}
@@ -346,17 +346,17 @@ jobs:
           cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
           tar czf "${TAR_NAME}" "${TAR_BASENAME}"/*
 
-          echo "TAR_RK3588_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
+          echo "TAR_RKMPP_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
 
-      - name: Artifact Upload Rockchip RK3588 live777
+      - name: Artifact Upload Rockchip RKMPP live777
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.VERSION }}_${{ env.TARGET }}_${{ env.VARIANT }}_live777
-          path: ${{ env.TAR_RK3588_LIVE777_NAME }}
+          path: ${{ env.TAR_RKMPP_LIVE777_NAME }}
 
-      - name: Upload Rockchip RK3588 release archive
+      - name: Upload Rockchip RKMPP release archive
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_RK3588_LIVE777_NAME }}
+        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_RKMPP_LIVE777_NAME }}
         env:
           GH_TOKEN: ${{ github.token }}

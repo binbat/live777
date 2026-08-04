@@ -1,6 +1,8 @@
 import { Encoder, Numeric, binarize, Decoder, Detector, grayscale } from '@nuintun/qrcode';
 import { TypedEventTarget } from 'typescript-event-target';
 
+import { decodeTimestampCandidates } from './qrcode-decode';
+
 function timestamp(value: number) {
     const date = new Date(value);
     const s = date.toLocaleString('zh-CN', {
@@ -229,13 +231,10 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
         const imageData = this.ctx.getImageData(0, 0, width, height);
         const luminances = grayscale(imageData);
         const binarized = binarize(luminances, width, height);
-        // assume only one QR Code per frame
-        const detected = this.detector.detect(binarized).next().value;
-        if (detected) {
-            const decoded = this.decoder.decode(detected.matrix);
-            return Number.parseInt(decoded.content, 10);
-        }
-        return null;
+        return decodeTimestampCandidates(
+            this.detector.detect(binarized),
+            matrix => this.decoder.decode(matrix)
+        );
     }
 
     private videoFrameCallback_unbound(_now: DOMHighResTimeStamp, metadata: VideoFrameCallbackMetadata) {
@@ -252,8 +251,8 @@ export class QRCodeStreamDecoder extends TypedEventTarget<QRCodeStreamDecoderEve
                 if (sentTimestamp !== null) {
                     this.emitLatencyEvent(frameReceiveTime - sentTimestamp);
                 }
-            } catch (e) {
-                console.log(e);
+            } catch (error) {
+                console.error('QR frame processing failed:', error);
             }
         }
         if (this.scheduled) {

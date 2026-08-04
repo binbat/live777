@@ -1,5 +1,5 @@
 import { WHEPClient } from "@binbat/whip-whep/whep.js";
-import { type Accessor, createSignal, onCleanup } from "solid-js";
+import { type Accessor, createEffect, createSignal, onCleanup } from "solid-js";
 
 type MaybeAccessor<T> = T | Accessor<T>;
 
@@ -21,6 +21,10 @@ export type WhepPlaybackOptions = {
     token?: Accessor<string>;
     reconnectMs?: Accessor<number>;
     createDataChannel?: boolean;
+    // When true, drop the receiver jitter buffer to zero so frames render as
+    // soon as they are decoded. This is required to reach high frame rates
+    // (e.g. 120fps) at the cost of smoothness on jittery networks.
+    lowLatency?: Accessor<boolean>;
     log?: (message: string) => void;
 };
 
@@ -49,6 +53,25 @@ function is404Error(error: unknown) {
     const maybe = error as { response?: { status?: number }; status?: number };
     const status = maybe?.response?.status ?? maybe?.status;
     return status === 404 || String(error).includes("404");
+}
+
+// Latency hints from the WebRTC Extensions spec (Chrome 125+). Both default
+// to null, which selects the browser's adaptive jitter buffer. Setting them
+// to 0 makes the receiver hand decoded frames to the renderer immediately;
+// setting them back to null restores the default buffering behavior.
+type RtpReceiverLatencyHints = RTCRtpReceiver & {
+    playoutDelayHint?: number | null;
+    jitterBufferTarget?: number | null;
+};
+
+function applyLatencyHints(receiver: RTCRtpReceiver, lowLatency: boolean) {
+    const hinted = receiver as RtpReceiverLatencyHints;
+    if ("jitterBufferTarget" in hinted) {
+        hinted.jitterBufferTarget = lowLatency ? 0 : null;
+    }
+    if ("playoutDelayHint" in hinted) {
+        hinted.playoutDelayHint = lowLatency ? 0 : null;
+    }
 }
 
 export function createWhepPlayback(options: WhepPlaybackOptions): WhepPlayback {
@@ -177,6 +200,10 @@ export function createWhepPlayback(options: WhepPlaybackOptions): WhepPlayback {
         pc.ontrack = (event) => {
             if (playToken !== nextPlayToken) return;
             log(`track: ${event.track.kind}`);
+            applyLatencyHints(
+                event.receiver,
+                resolve(options.lowLatency, false),
+            );
             ms.addTrack(event.track);
             syncTrackCounts();
             setStream(ms);
@@ -271,6 +298,19 @@ export function createWhepPlayback(options: WhepPlaybackOptions): WhepPlayback {
             log(String(e));
         });
     };
+
+    // Live-toggle the low-latency hints on every receiver of the active
+    // peer connection. Receivers that arrive later pick the flag up in
+    // `ontrack`.
+    createEffect(() => {
+        const enabled = resolve(options.lowLatency, false);
+        const pc = activePeerConnection;
+        if (!pc) return;
+        for (const receiver of pc.getReceivers()) {
+            applyLatencyHints(receiver, enabled);
+        }
+        log(`low latency (jitter buffer off): ${enabled}`);
+    });
 
     onCleanup(() => {
         clearDisconnectTimer();

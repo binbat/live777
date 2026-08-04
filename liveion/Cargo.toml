@@ -103,8 +103,8 @@ encoder-rkmpp = ["native-source", "livehal/encoder-rkmpp"]
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
 native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
-# native-rk3588: RK3588(S) boards (Orange Pi 5, etc.) — V4L2 capture + MPP encoder.
-native-rk3588 = ["capture-v4l2", "encoder-rkmpp"]
+# native-rkmpp: Rockchip MPP boards (RK3588, RV1126B, etc.) — V4L2 capture + MPP encoder.
+native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
 
 [dev-dependencies]
 tempfile = "3.26"

@@ -1,7 +1,7 @@
 //! Rockchip MPP (Media Process Platform) hardware encoder backend.
 //!
-//! Targets RK35xx-series SoCs (RK3588, RK3588S, RK3568, etc.)
-//! using the rockchip_mpp userspace library.
+//! Targets Rockchip SoCs with an MPP encoder (RK3588, RK3588S, RK3568,
+//! RV1126B, etc.) using the rockchip_mpp userspace library.
 //!
 //! Supported codecs:
 //!   - H.264 (Baseline / Main / High)

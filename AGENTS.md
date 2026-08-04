@@ -143,7 +143,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
 - Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
-  `native-rk3588`.
+  `native-rkmpp`.
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
@@ -154,26 +154,26 @@ instead of `--all-features`.
 
 `Cross.toml` configures `cross` images for `aarch64-unknown-linux-gnu` and
 `armv7-unknown-linux-gnueabihf`. For Raspberry Pi libcamera builds you need a
-sysroot and `PI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`; for
-Rockchip RK3588 (RKMPP) builds use the RKMPP cross image
+sysroot and `RPI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`; for
+Rockchip RKMPP (RK3588, RV1126B) builds use the RKMPP cross image
 (`ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, MPP sysroot baked at
 `/opt/rkmpp-sysroot`) or set `RK_MPP_SYSROOT` to override it with a sysroot
 pulled from a device. Example:
 
 ```bash
-export PI_SYSROOT=/path/to/pi-sysroot
+export RPI_SYSROOT=/path/to/rpi-sysroot
 cross build --target aarch64-unknown-linux-gnu \
   --bin live777 --release \
   --no-default-features --features native-rpi,webui
 
-# Rockchip RK3588 (RKMPP), using the published cross image
+# Rockchip RKMPP (RK3588, RV1126B), using the published cross image
 CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest \
   cross build --target aarch64-unknown-linux-gnu \
   --bin live777 --release \
-  --no-default-features --features native-rk3588,webui
+  --no-default-features --features native-rkmpp,webui
 ```
 
-`livehal/build.rs` reads `PI_SYSROOT`/`RDK_SYSROOT`/`RK_MPP_SYSROOT` to
+`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RK_MPP_SYSROOT` to
 configure `pkg-config` and linker paths.
 
 ## Runtime Architecture
@@ -370,6 +370,18 @@ carries the check.
   `conf/liveman.service`.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux
   packages; GitHub Actions upload them to releases.
+- **Size-optimized builds are opt-in**: official release binaries use the
+  default `release` profile. For size-sensitive deployments (embedded,
+  containers) use the `release-size` profile (`Cargo.toml`: fat LTO, 1
+  codegen unit, stripped, `panic=abort`, opt-level stays 3) plus
+  `upx --best --lzma` — via `just build-size` / `just pack-size` locally,
+  or `just cross-build-size <target> <features>` /
+  `just cross-pack-size <target> <features>` for cross-compiled embedded
+  targets (cross-rs; UPX packs foreign-arch ELFs from the host).
+  Device-pinned shortcuts cover the supported embedded presets:
+  `just rpi-pack-size` (needs `RPI_SYSROOT`), `just rdk-pack-size`
+  (needs `RDK_SYSROOT`), and `just v4l2-pack-size [target]`
+  (armv7 by default).
 - **Releases**: `.github/workflows/release.yml` builds for many targets
   including x86_64, aarch64, armv7, i686, riscv64, Android, Windows, and macOS.
 - **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.

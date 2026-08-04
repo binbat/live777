@@ -204,7 +204,7 @@ encoder-rkmpp = ["liveion/encoder-rkmpp", "native-source"]
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
 native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
-native-rk3588 = ["capture-v4l2", "encoder-rkmpp"]
+native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
 
 # Enables rsmpeg-based tools (whepprobe, whipsynth) and livetwo rsmpeg support
 rsmpeg = ["livetwo/rsmpeg", "dep:rsmpeg", "dep:cli"]

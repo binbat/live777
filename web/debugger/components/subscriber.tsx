@@ -1,6 +1,12 @@
 import { useSearchParams } from "@solidjs/router";
 import { createWhepPlayback } from "player-core";
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import {
+    createEffect,
+    createMemo,
+    createSignal,
+    onCleanup,
+    Show,
+} from "solid-js";
 import {
     DefaultQRCodeFrameRate,
     parseQRCodeFrameRate,
@@ -10,6 +16,10 @@ import {
 import { createLogger } from "../primitive/logger";
 import Datachannel from "./datachannel";
 import Player from "./player";
+import {
+    getQrLatencyDisplay,
+    type QrLatencySample,
+} from "./qr-latency-freshness";
 
 const WhepLayerOptions = [
     { value: "", text: "AUTO" },
@@ -24,10 +34,16 @@ export default function Subscriber() {
     const [disabled, setDisabled] = createSignal(true);
     const [disabledAudio, setDisabledAudio] = createSignal(false);
     const [disabledVideo, setDisabledVideo] = createSignal(false);
+    const [lowLatency, setLowLatency] = createSignal(false);
     const [logs, setLogs, clear] = createLogger();
 
-    const [latency, setLatency] = createSignal("");
     const [isMeasuringQrLatency, setIsMeasuringQrLatency] = createSignal(false);
+    const [measurementStartedAt, setMeasurementStartedAt] = createSignal<
+        number | null
+    >(null);
+    const [latestLatencySample, setLatestLatencySample] =
+        createSignal<QrLatencySample | null>(null);
+    const [freshnessNow, setFreshnessNow] = createSignal(0);
     const [expectedQrFrameRate, setExpectedQrFrameRate] =
         createSignal<QRCodeFrameRate>(
             parseQRCodeFrameRate(searchParams.qrfps ?? DefaultQRCodeFrameRate),
@@ -35,6 +51,19 @@ export default function Subscriber() {
 
     let videoRef: HTMLVideoElement | undefined;
     let decoder: QRCodeStreamDecoder | null = null;
+    let freshnessTimer: number | null = null;
+
+    const latencyDisplay = createMemo(() => {
+        const startedAt = measurementStartedAt();
+        if (startedAt === null) {
+            return null;
+        }
+        return getQrLatencyDisplay(
+            freshnessNow(),
+            startedAt,
+            latestLatencySample(),
+        );
+    });
 
     const playback = createWhepPlayback({
         url: () => {
@@ -43,6 +72,7 @@ export default function Subscriber() {
         },
         token: () => (searchParams.token as string) || "",
         createDataChannel: true,
+        lowLatency,
         log: setLogs,
     });
 
@@ -71,8 +101,14 @@ export default function Subscriber() {
             decoder.stop();
             decoder = null;
         }
+        if (freshnessTimer !== null) {
+            window.clearInterval(freshnessTimer);
+            freshnessTimer = null;
+        }
         setIsMeasuringQrLatency(false);
-        setLatency("");
+        setMeasurementStartedAt(null);
+        setLatestLatencySample(null);
+        setFreshnessNow(0);
     }
 
     function startQrLatencyMeasure() {
@@ -80,11 +116,21 @@ export default function Subscriber() {
             return;
         }
         stopQrLatencyMeasure();
+        const startedAt = performance.now();
         setIsMeasuringQrLatency(true);
-        setLatency("-- ms");
+        setMeasurementStartedAt(startedAt);
+        setFreshnessNow(startedAt);
+        freshnessTimer = window.setInterval(() => {
+            setFreshnessNow(performance.now());
+        }, 250);
         decoder = new QRCodeStreamDecoder(videoRef);
         decoder.addEventListener("latency", (e: CustomEvent<number>) => {
-            setLatency(`${e.detail} ms`);
+            const receivedAt = performance.now();
+            setLatestLatencySample({
+                latencyMs: e.detail,
+                receivedAtMs: receivedAt,
+            });
+            setFreshnessNow(receivedAt);
         });
         decoder.start();
     }
@@ -115,6 +161,16 @@ export default function Subscriber() {
                             <option value={o.value}>{o.text}</option>
                         ))}
                     </select>
+                </section>
+                <section>
+                    <label title="Disable the jitter buffer so decoded frames render immediately (lower latency, helps high-fps playback such as 120fps)">
+                        <input
+                            type="checkbox"
+                            checked={lowLatency()}
+                            onChange={(e) => setLowLatency(e.target.checked)}
+                        />
+                        Low Latency (No Jitter Buffer)
+                    </label>
                 </section>
                 <section>
                     <button
@@ -196,7 +252,16 @@ export default function Subscriber() {
                     </h5>
                     <h5>
                         QR Target FPS: {expectedQrFrameRate()}
-                        {latency() && ` | Latency: ${latency()}`}
+                        <Show when={latencyDisplay()}>
+                            {(display) => (
+                                <span
+                                    class={`qr-latency qr-latency-${display().state}`}
+                                >
+                                    {" | Latency: "}
+                                    {display().value} | {display().status}
+                                </span>
+                            )}
+                        </Show>
                     </h5>
                     <Show when={playback.stream()}>
                         {(s) => {

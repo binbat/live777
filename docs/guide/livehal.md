@@ -208,7 +208,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 | `native-rpi` | `capture-libcamera, capture-v4l2, encoder-v4l2-m2m` |
 | `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
 | `native-rdk` | `capture-v4l2, encoder-rdk` |
-| `native-rk3588` | `capture-v4l2, encoder-rkmpp` |
+| `native-rkmpp` | `capture-v4l2, encoder-rkmpp` |
 
 No additional `--features source` is needed — presets include autostart.
 
@@ -227,10 +227,10 @@ cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rdk,webui
 
-# Rockchip RK3588 (RKMPP)
+# Rockchip RKMPP (RK3588, RV1126B)
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
-  --no-default-features --features native-rk3588,webui
+  --no-default-features --features native-rkmpp,webui
 ```
 
 ## Build
@@ -249,7 +249,7 @@ cargo build --bin live777 --release \
   --no-default-features --features native-rpi,webui
 ```
 
-Requires the Pi sysroot with libcamera-dev. Set `PI_SYSROOT` if the sysroot is not at the default path.
+Requires the Raspberry Pi sysroot with libcamera-dev. Set `RPI_SYSROOT` if the sysroot is not at the default path.
 
 ### Generic Linux V4L2
 
@@ -270,12 +270,12 @@ Requires the RDK sysroot with `hb_media_codec` libraries. `RDK_SYSROOT` must be 
 
 > **Note:** The DMA-BUF zero-copy encode path is not yet implemented.  See the DMA-BUF notes in the Architecture section above.
 
-### Rockchip RK3588 (RKMPP)
+### Rockchip RKMPP (RK3588, RV1126B)
 
 ```bash
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
-  --no-default-features --features native-rk3588,webui
+  --no-default-features --features native-rkmpp,webui
 ```
 
 Requires the Rockchip MPP library (`librockchip_mpp`) and headers. Set `RK_MPP_SYSROOT` to a sysroot containing them when cross-compiling. The rkmpp encoder accepts NV12 input only; pair it with `pixel_format = "nv12"` capture.
@@ -295,9 +295,9 @@ cargo check --features native-rpi,webui
 
 | Variable | Purpose |
 |----------|---------|
-| `PI_SYSROOT` | Path to the Raspberry Pi sysroot containing `libcamera-dev`. Used when building `capture-libcamera` / `native-rpi`. |
+| `RPI_SYSROOT` | Path to the Raspberry Pi sysroot containing `libcamera-dev`. Used when building `capture-libcamera` / `native-rpi`. |
 | `RDK_SYSROOT` | Path to the Horizon RDK X5 SDK sysroot. **Required** when building `encoder-rdk` / `native-rdk` for aarch64. |
-| `RK_MPP_SYSROOT` | Path to a sysroot containing the Rockchip MPP library and headers. Used when building `encoder-rkmpp` / `native-rk3588` for aarch64. |
+| `RK_MPP_SYSROOT` | Path to a sysroot containing the Rockchip MPP library and headers. Used when building `encoder-rkmpp` / `native-rkmpp` for aarch64. |
 | `LIVEHAL_CXX_STDLIB` | Override the C++ standard library to link (`stdc++`, `c++`, etc.). Useful for cross-compilation toolchains. |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | Set to `1` to allow unresolved symbols in RDK shared libraries during cross-compilation with an incomplete sysroot. |
 
