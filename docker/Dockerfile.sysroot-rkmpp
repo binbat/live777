@@ -1,6 +1,0 @@
-# rkmpp cross image: u2204 base + baked Rockchip MPP sysroot (hermetic CI).
-# Build: just cross-image-rkmpp   (base: just cross-image-base,
-#        sysroot: just sysroot-pull-rkmpp)
-FROM ghcr.io/binbat/live777-cross-aarch64-u2204:latest
-COPY docker/sysroots/rkmpp /opt/sysroots/rkmpp
-ENV RK_MPP_SYSROOT=/opt/sysroots/rkmpp

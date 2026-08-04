@@ -269,3 +269,94 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+
+  build-rk3588:
+    name: aarch64-unknown-linux-gnu-rk3588 (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    env:
+      TARGET: aarch64-unknown-linux-gnu
+      VARIANT: rk3588
+      RKMPP_CROSS_IMAGE: ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Nodejs
+        uses: actions/setup-node@v6
+        with:
+          node-version: latest
+
+      - name: Install npm dependencies
+        run: pnpm install
+
+      - name: Build WebUI
+        run: pnpm -r build
+
+      - name: Get the release version from the tag
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
+            VERSION=`git describe --tags`
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "version is: ${VERSION}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Show version information
+        shell: bash
+        run: |
+          cross --version
+          rustup -V
+          cargo -V
+          rustc -V
+
+      - name: Login to GitHub Container Registry
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build Rockchip RK3588 live777
+        shell: bash
+        run: |
+          CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${RKMPP_CROSS_IMAGE} \
+            cross build --locked --bin live777 --release --target=${TARGET} \
+            --no-default-features --features native-rk3588,webui
+
+      - name: Create Rockchip RK3588 live777 tarball
+        shell: bash
+        run: |
+          TAR_BASENAME=live777-${VERSION}-${TARGET}-${VARIANT}
+          TAR_NAME=${TAR_BASENAME}.tar.gz
+          ARCHIVE_DIR="${TAR_BASENAME}/"
+
+          mkdir -p "${ARCHIVE_DIR}"
+          cp "target/${TARGET}/release/live777" "$ARCHIVE_DIR"
+          cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
+          tar czf "${TAR_NAME}" "${TAR_BASENAME}"/*
+
+          echo "TAR_RK3588_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
+
+      - name: Artifact Upload Rockchip RK3588 live777
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.VERSION }}_${{ env.TARGET }}_${{ env.VARIANT }}_live777
+          path: ${{ env.TAR_RK3588_LIVE777_NAME }}
+
+      - name: Upload Rockchip RK3588 release archive
+        shell: bash
+        if: github.ref_type == 'tag'
+        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_RK3588_LIVE777_NAME }}
+        env:
+          GH_TOKEN: ${{ github.token }}

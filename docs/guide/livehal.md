@@ -280,6 +280,8 @@ cargo build --bin live777 --release \
 
 Requires the Rockchip MPP library (`librockchip_mpp`) and headers. Set `RK_MPP_SYSROOT` to a sysroot containing them when cross-compiling. The rkmpp encoder accepts NV12 input only; pair it with `pixel_format = "nv12"` capture.
 
+The Cross Images workflow publishes `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, an aarch64 cross image with the MPP sysroot baked in at `/opt/rkmpp-sysroot` (built from `docker/Dockerfile.cross-aarch64-rkmpp`). Point cross at it via `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`, or use `just rkmpp-pack-size`; `RK_MPP_SYSROOT` overrides the baked sysroot with one pulled from a device.
+
 ### macOS (development / check only)
 
 ```bash

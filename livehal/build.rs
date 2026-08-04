@@ -84,6 +84,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PI_SYSROOT");
     println!("cargo:rerun-if-env-changed=RDK_SYSROOT");
     println!("cargo:rerun-if-env-changed=RK_MPP_SYSROOT");
+    println!("cargo:rerun-if-env-changed=LUCKFOX_SYSROOT");
+    println!("cargo:rerun-if-env-changed=LIVEHAL_RKMPP_ROCKIT");
     println!("cargo:rerun-if-env-changed=LIVEHAL_CXX_STDLIB");
     println!("cargo:rerun-if-env-changed=LIVEHAL_RDK_ALLOW_UNDEFINED");
 
@@ -125,8 +127,8 @@ fn main() {
         );
     }
 
-    // Rockchip MPP encoder also requires aarch64 Linux (RK35xx SoCs).
-    let rkmpp_available = has_encoder_rkmpp && target_arch == "aarch64";
+    // Rockchip MPP encoder requires aarch64 or armv7 Linux (RK35xx/RV110x SoCs).
+    let rkmpp_available = has_encoder_rkmpp && (target_arch == "aarch64" || target_arch == "arm");
     if has_encoder_rkmpp && !rkmpp_available {
         println!(
             "cargo:warning=encoder-rkmpp requires aarch64 (current: {target_arch}); \
@@ -137,7 +139,7 @@ fn main() {
     // Target triplet for sysroot pkg-config paths.
     let target_triplet = match target_arch.as_str() {
         "aarch64" => "aarch64-linux-gnu",
-        "arm" => "arm-linux-gnueabihf",
+        "arm" => "armv7-linux-gnueabihf",
         "x86_64" => "x86_64-linux-gnu",
         other => {
             println!(
@@ -212,6 +214,10 @@ fn main() {
     }
     if has_encoder_rkmpp {
         println!("cargo:rerun-if-changed=native-pipeline/encoder_rkmpp.cpp");
+        if target_arch == "arm" {
+            println!("cargo:rerun-if-changed=native-pipeline/encoder_rockit.cpp");
+            println!("cargo:rerun-if-changed=native-pipeline/uclibc_compat.c");
+        }
     }
     if has_capture_v4l2 && rdk_available {
         println!("cargo:rerun-if-changed=native-pipeline/v4l2_capture_rdk.cpp");
@@ -358,9 +364,57 @@ fn main() {
             cmake_config.define("ENABLE_ENCODER_V4L2_M2M", "OFF");
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
             cmake_config.define("ENABLE_ENCODER_RKMPP", "ON");
+            // Rockit/RKMPI VENC backend (RV110x) is opt-in via
+            // LIVEHAL_RKMPP_ROCKIT=1.  Default is the standard MPP encoder:
+            // its DRM+CACHABLE input buffers (aligned with mpi_enc_test)
+            // work on RV1106 and support the dmabuf zero-copy path, which
+            // the RKMPI VENC API cannot do (Fd2Handle rejects external fds).
+            if target_arch == "arm" && env::var("LIVEHAL_RKMPP_ROCKIT").is_ok() {
+                cmake_config.define("ENABLE_RKMPP_NO_BUFFER_GROUP", "ON");
+            }
             // Point cmake to the Rockchip MPP sysroot for pkg-config.
-            if let Ok(sysroot) = env::var("RK_MPP_SYSROOT") {
+            if let Ok(sysroot) = env::var("RK_MPP_SYSROOT").or_else(|_| env::var("LUCKFOX_SYSROOT"))
+            {
                 cmake_config.define("CMAKE_PREFIX_PATH", sysroot);
+            }
+            // RV110x uClibc cross builds (arm + Luckfox sysroot): compile
+            // the uClibc compat shims (getauxval, posix_spawnattr_*) into a
+            // static lib and link it with +whole-archive.  A plain archive
+            // member would NOT be pulled (the glibc symbols are only
+            // referenced by Rust std objects later in the link line), and
+            // cargo:rustc-link-arg does not propagate to other packages.
+            if target_arch == "arm" && env::var("LUCKFOX_SYSROOT").is_ok() {
+                let out_dir = env::var("OUT_DIR").unwrap();
+                let obj = format!("{out_dir}/uclibc_compat.o");
+                let arc = format!("{out_dir}/libuclibc_compat.a");
+                let cc_path = cc::Build::new().get_compiler().path().to_path_buf();
+                let ar_path = cc_path
+                    .parent()
+                    .map(|p| p.join(cc_path.file_name().unwrap()))
+                    .map(|p| {
+                        let name = p.file_name().unwrap().to_string_lossy();
+                        p.with_file_name(name.replace("-gcc", "-ar"))
+                    })
+                    .expect("cannot derive archiver path");
+                let status = std::process::Command::new(&cc_path)
+                    .args([
+                        "-O2",
+                        "-fPIC",
+                        "-c",
+                        "native-pipeline/uclibc_compat.c",
+                        "-o",
+                        &obj,
+                    ])
+                    .status()
+                    .expect("failed to run compiler for uclibc_compat.c");
+                assert!(status.success(), "uclibc_compat.c compile failed");
+                let status = std::process::Command::new(&ar_path)
+                    .args(["rcs", &arc, &obj])
+                    .status()
+                    .expect("failed to run archiver for uclibc_compat");
+                assert!(status.success(), "uclibc_compat archive failed");
+                println!("cargo:rustc-link-search=native={out_dir}");
+                println!("cargo:rustc-link-lib=static:+whole-archive=uclibc_compat");
             }
         }
         other => panic!(
@@ -413,11 +467,9 @@ fn main() {
             println!("cargo:rustc-link-arg=-Wl,--unresolved-symbols=ignore-in-shared-libs");
         }
     } else if native_backend == "rkmpp" {
-        // Rockchip MPP: prefer RK_MPP_SYSROOT for cross-compilation,
-        // otherwise assumes system-installed rockchip_mpp (e.g. Orange Pi).
-        // Link from a clean directory (no libc) to avoid pulling in
-        // the sysroot's older libc instead of the toolchain's.
-        if let Ok(sysroot) = env::var("RK_MPP_SYSROOT") {
+        // Rockchip MPP: prefer RK_MPP_SYSROOT or LUCKFOX_SYSROOT for
+        // cross-compilation, otherwise assumes system-installed rockchip_mpp.
+        if let Ok(sysroot) = env::var("RK_MPP_SYSROOT").or_else(|_| env::var("LUCKFOX_SYSROOT")) {
             let sysroot = PathBuf::from(sysroot);
             println!(
                 "cargo:rustc-link-search=native={}",
@@ -425,6 +477,12 @@ fn main() {
             );
         }
         println!("cargo:rustc-link-lib=dylib=rockchip_mpp");
+        // rockit/rga are only needed by the opt-in RKMPI VENC backend
+        // (LIVEHAL_RKMPP_ROCKIT); standard MPP builds must not require them.
+        if target_arch == "arm" && env::var("LIVEHAL_RKMPP_ROCKIT").is_ok() {
+            println!("cargo:rustc-link-lib=dylib=rockit");
+            println!("cargo:rustc-link-lib=dylib=rga");
+        }
     } else if has_capture_libcamera && !libcamera_linked {
         println!("cargo:rustc-link-lib=dylib=camera");
         println!("cargo:rustc-link-lib=dylib=camera-base");

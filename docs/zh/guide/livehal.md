@@ -267,6 +267,8 @@ cargo build --bin live777 --release \
 
 需要 Rockchip MPP 库（`librockchip_mpp`）及头文件。交叉编译时设置 `RK_MPP_SYSROOT` 指向包含它们的 sysroot。rkmpp 编码器仅接受 NV12 输入，请搭配 `pixel_format = "nv12"` 采集。
 
+Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`，这是一个内置 MPP sysroot（位于 `/opt/rkmpp-sysroot`，由 `docker/Dockerfile.cross-aarch64-rkmpp` 构建）的 aarch64 交叉编译镜像。通过 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE` 指定给 cross 使用，或直接运行 `just rkmpp-pack-size`；设置 `RK_MPP_SYSROOT` 可改用从设备拉取的 sysroot。
+
 ### macOS（仅开发 / 检查）
 
 ```bash

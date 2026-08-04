@@ -133,10 +133,13 @@ impl NativeEncodedSource {
             while let Some(data) = rtcp_rx.recv().await {
                 if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
                     for packet in packets {
-                        if packet
-                            .as_any()
+                        let any = packet.as_any();
+                        if any
                             .downcast_ref::<rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
                             .is_some()
+                            || any
+                                .downcast_ref::<rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
+                                .is_some()
                         {
                             kh.request_keyframe();
                         }
