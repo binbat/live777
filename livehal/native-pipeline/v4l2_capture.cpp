@@ -1,304 +1,646 @@
 #include "include/capture_backend.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <fcntl.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <unistd.h>
+#include <linux/videodev2.h>
+#include <string>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <linux/videodev2.h>
-#include <cstring>
-#include <cstdio>
-#include <string>
-#include <vector>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <thread>
-#include <atomic>
-#include <chrono>
+#include <unistd.h>
 #include <utility>
+#include <vector>
+
+namespace {
+
+constexpr uint32_t kBufferCount = 16;
+
+const char* fourcc_to_string(uint32_t fourcc, char (&text)[5]) {
+    text[0] = static_cast<char>(fourcc & 0xff);
+    text[1] = static_cast<char>((fourcc >> 8) & 0xff);
+    text[2] = static_cast<char>((fourcc >> 16) & 0xff);
+    text[3] = static_cast<char>((fourcc >> 24) & 0xff);
+    text[4] = '\0';
+    return text;
+}
+
+std::vector<uint32_t> requested_fourccs(RawPixelFormat format) {
+    switch (format) {
+    case RawPixelFormat::Yuyv422:
+        return {V4L2_PIX_FMT_YUYV};
+    case RawPixelFormat::Nv12:
+        return {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12M};
+    case RawPixelFormat::Yuv420p:
+        return {V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_YUV420M};
+    case RawPixelFormat::Mjpeg:
+        return {V4L2_PIX_FMT_MJPEG};
+    case RawPixelFormat::Rgb888:
+        return {V4L2_PIX_FMT_RGB24};
+    }
+    return {};
+}
+
+bool is_mplane_type(v4l2_buf_type type) {
+    return type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+}
+
+} // namespace
 
 struct V4L2CaptureImpl : public CaptureBackend {
-    int fd = -1;
-    int width = 0;
-    int height = 0;
-    int fps = 0;
-    bool use_mjpeg = false;
-    std::atomic<bool> running{false};
-
-    std::string error_msg;
-    std::atomic<bool> thread_alive{false};
-
-    CaptureFrameCallback capture_cb_;
-    uint64_t seq_ = 0;
+    struct MappedPlane {
+        void* start = nullptr;
+        size_t length = 0;
+        int dma_fd = -1;  // VIDIOC_EXPBUF export (only when prefer_dmabuf)
+    };
 
     struct Buffer {
-        void* start;
-        size_t length;
+        std::vector<MappedPlane> planes;
     };
+
+    int fd = -1;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t fps = 0;
+    uint32_t pixel_format = 0;
+    v4l2_buf_type buffer_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    bool prefer_dmabuf = false;
+    uint32_t memory_plane_count = 1;
+    std::array<uint32_t, VIDEO_MAX_PLANES> plane_strides{};
+    std::array<uint32_t, VIDEO_MAX_PLANES> plane_sizeimages{};
+    bool streaming = false;
+
+    std::atomic<bool> running{false};
+    std::atomic<bool> thread_alive{false};
+    CaptureFrameCallback capture_cb_;
+    uint64_t seq_ = 0;
     std::vector<Buffer> buffers;
-
-    // Pre-allocated YUV420P conversion buffer
     std::vector<uint8_t> yuv420_buf;
-
     std::thread capture_thread;
 
-    void capture_loop();
-    void release_resources();
-    bool is_healthy() const { return running.load() && thread_alive.load(); }
-    void yuyv_to_yuv420p(const uint8_t* src, uint8_t* dst, int w, int h);
-
-    // --- CaptureBackend overrides ---
     ~V4L2CaptureImpl() override { stop(); }
+
     bool init(const CaptureConfig& cfg, std::string* err) override;
     bool start(CaptureFrameCallback cb, std::string* err) override;
     void stop() override;
     bool isRunning() const override;
+    RawPixelFormat outputFormat() const override;
+
+    void capture_loop();
+    void release_resources();
+    bool select_format(uint32_t caps, RawPixelFormat requested, std::string* err);
+    bool supports_format(v4l2_buf_type type, uint32_t fourcc) const;
+    bool queue_buffer(uint32_t index, std::string* err);
+    void yuyv_to_yuv420p(const uint8_t* src, uint32_t src_stride);
+    bool make_frame(uint32_t index, const v4l2_buffer& buf,
+                    const v4l2_plane* dequeued_planes, RawFrame* frame,
+                    std::string* err);
 };
 
-// --- YUYV to YUV420P conversion ---
-// YUYV: 2 pixels = 4 bytes [Y0 U0 Y1 V0]
-// YUV420P: Y plane (w*h) + U plane (w*h/4) + V plane (w*h/4)
-void V4L2CaptureImpl::yuyv_to_yuv420p(const uint8_t* src, uint8_t* dst, int w, int h) {
-    uint8_t* y_plane = dst;
-    uint8_t* u_plane = dst + w * h;
-    uint8_t* v_plane = dst + w * h + (w * h / 4);
+bool V4L2CaptureImpl::supports_format(v4l2_buf_type type, uint32_t fourcc) const {
+    v4l2_fmtdesc desc{};
+    desc.type = type;
+    for (desc.index = 0; ioctl(fd, VIDIOC_ENUM_FMT, &desc) == 0; ++desc.index) {
+        if (desc.pixelformat == fourcc) {
+            return true;
+        }
+    }
+    return false;
+}
 
-    for (int row = 0; row < h; row++) {
-        const uint8_t* row_src = src + row * w * 2;
-        uint8_t* y_row = y_plane + row * w;
+// Maps the negotiated V4L2 fourcc to the RawPixelFormat that make_frame()
+// actually emits.  YUYV is converted to YUV420P; everything else keeps its
+// native layout.
+RawPixelFormat V4L2CaptureImpl::outputFormat() const {
+    switch (pixel_format) {
+    case V4L2_PIX_FMT_YUYV:
+        return RawPixelFormat::Yuv420p;
+    case V4L2_PIX_FMT_NV12:
+    case V4L2_PIX_FMT_NV12M:
+        return RawPixelFormat::Nv12;
+    case V4L2_PIX_FMT_YUV420:
+    case V4L2_PIX_FMT_YUV420M:
+        return RawPixelFormat::Yuv420p;
+    case V4L2_PIX_FMT_MJPEG:
+        return RawPixelFormat::Mjpeg;
+    case V4L2_PIX_FMT_RGB24:
+        return RawPixelFormat::Rgb888;
+    default:
+        return RawPixelFormat::Yuv420p;
+    }
+}
 
-        for (int col = 0; col < w; col += 2) {
-            int idx = col * 2;
-            y_row[col] = row_src[idx + 0]; // Y0
-            if (col + 1 < w) {
-                y_row[col + 1] = row_src[idx + 2]; // Y1
+bool V4L2CaptureImpl::select_format(
+    uint32_t caps, RawPixelFormat requested, std::string* err) {
+    std::vector<v4l2_buf_type> types;
+    if (caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE) {
+        types.push_back(V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+    }
+    if (caps & V4L2_CAP_VIDEO_CAPTURE) {
+        types.push_back(V4L2_BUF_TYPE_VIDEO_CAPTURE);
+    }
+
+    for (uint32_t fourcc : requested_fourccs(requested)) {
+        for (v4l2_buf_type type : types) {
+            if (!supports_format(type, fourcc)) {
+                continue;
             }
+            buffer_type = type;
+            pixel_format = fourcc;
+            return true;
+        }
+    }
 
-            // Subsample U and V: every 2x2 block shares one U and V
-            if (row % 2 == 0 && col + 1 < w) {
-                int uv_col = col / 2;
-                int uv_row = row / 2;
-                u_plane[uv_row * (w / 2) + uv_col] = row_src[idx + 1]; // U
-                v_plane[uv_row * (w / 2) + uv_col] = row_src[idx + 3]; // V
+    if (err) {
+        *err = "requested pixel format is not advertised by the V4L2 capture device";
+    }
+    return false;
+}
+
+void V4L2CaptureImpl::yuyv_to_yuv420p(const uint8_t* src, uint32_t src_stride) {
+    uint8_t* y_plane = yuv420_buf.data();
+    uint8_t* u_plane = y_plane + static_cast<size_t>(width) * height;
+    uint8_t* v_plane = u_plane + static_cast<size_t>(width) * height / 4;
+
+    for (uint32_t row = 0; row < height; ++row) {
+        const uint8_t* row_src = src + static_cast<size_t>(row) * src_stride;
+        uint8_t* y_row = y_plane + static_cast<size_t>(row) * width;
+        for (uint32_t col = 0; col < width; col += 2) {
+            const size_t source_offset = static_cast<size_t>(col) * 2;
+            y_row[col] = row_src[source_offset];
+            if (col + 1 < width) {
+                y_row[col + 1] = row_src[source_offset + 2];
+            }
+            if ((row & 1U) == 0 && col + 1 < width) {
+                const size_t chroma_offset =
+                    static_cast<size_t>(row / 2) * (width / 2) + col / 2;
+                u_plane[chroma_offset] = row_src[source_offset + 1];
+                v_plane[chroma_offset] = row_src[source_offset + 3];
             }
         }
     }
 }
 
+bool V4L2CaptureImpl::make_frame(
+    uint32_t index, const v4l2_buffer& buf, const v4l2_plane* dequeued_planes,
+    RawFrame* frame, std::string* err) {
+    if (index >= buffers.size() || buffers[index].planes.empty()) {
+        if (err) *err = "invalid capture buffer index";
+        return false;
+    }
+
+    const Buffer& mapped = buffers[index];
+    const bool mplane = is_mplane_type(buffer_type);
+    auto data_offset = [&](uint32_t plane) -> size_t {
+        return mplane ? dequeued_planes[plane].data_offset : 0;
+    };
+    auto bytes_used = [&](uint32_t plane) -> size_t {
+        if (mplane) {
+            const size_t used = dequeued_planes[plane].bytesused;
+            const size_t offset = data_offset(plane);
+            return used > offset ? used - offset : 0;
+        }
+        return buf.bytesused;
+    };
+    auto available_bytes = [&](uint32_t plane) -> size_t {
+        const size_t length = mapped.planes[plane].length;
+        const size_t offset = data_offset(plane);
+        return length > offset ? length - offset : 0;
+    };
+
+    frame->kind = BufferKind::Cpu;
+    frame->width = width;
+    frame->height = height;
+    frame->pts_us = static_cast<uint64_t>(buf.timestamp.tv_sec) * 1000000
+                    + buf.timestamp.tv_usec;
+    frame->seq = ++seq_;
+
+    if (pixel_format == V4L2_PIX_FMT_YUYV) {
+        const uint32_t stride = plane_strides[0] ? plane_strides[0] : width * 2;
+        const size_t required = static_cast<size_t>(stride) * height;
+        if (bytes_used(0) < required || available_bytes(0) < required) {
+            if (err) *err = "short YUYV capture buffer";
+            return false;
+        }
+        const auto* source =
+            static_cast<const uint8_t*>(mapped.planes[0].start) + data_offset(0);
+        yuyv_to_yuv420p(source, stride);
+        frame->format = RawPixelFormat::Yuv420p;
+        frame->plane_count = 1;
+        frame->planes[0] = {
+            yuv420_buf.data(), width,
+            static_cast<uint32_t>(yuv420_buf.size()), -1, 0};
+        return true;
+    }
+
+    if (pixel_format == V4L2_PIX_FMT_NV12M) {
+        if (mapped.planes.size() < 2 || memory_plane_count < 2) {
+            if (err) *err = "NV12M capture returned fewer than two planes";
+            return false;
+        }
+        frame->format = RawPixelFormat::Nv12;
+        frame->plane_count = 2;
+        if (prefer_dmabuf && mapped.planes[0].dma_fd >= 0
+            && mapped.planes[1].dma_fd >= 0) {
+            frame->kind = BufferKind::DmaBuf;
+        }
+        for (uint32_t plane = 0; plane < 2; ++plane) {
+            const size_t used = std::min(bytes_used(plane), available_bytes(plane));
+            frame->planes[plane] = {
+                static_cast<const uint8_t*>(mapped.planes[plane].start)
+                    + data_offset(plane),
+                plane_strides[plane] ? plane_strides[plane] : width,
+                static_cast<uint32_t>(used), mapped.planes[plane].dma_fd, 0};
+        }
+        return true;
+    }
+
+    if (pixel_format == V4L2_PIX_FMT_NV12) {
+        const uint32_t stride = plane_strides[0] ? plane_strides[0] : width;
+        const size_t y_bytes = static_cast<size_t>(stride) * height;
+        const size_t used = std::min(bytes_used(0), available_bytes(0));
+        const size_t expected = y_bytes + static_cast<size_t>(stride) * (height / 2);
+        if (used < expected) {
+            if (err) *err = "short contiguous NV12 capture buffer";
+            return false;
+        }
+        const auto* base =
+            static_cast<const uint8_t*>(mapped.planes[0].start) + data_offset(0);
+        const int dma_fd = mapped.planes[0].dma_fd;
+        if (prefer_dmabuf && dma_fd >= 0) {
+            frame->kind = BufferKind::DmaBuf;
+        }
+        frame->format = RawPixelFormat::Nv12;
+        frame->plane_count = 2;
+        frame->planes[0] = {
+            base, stride, static_cast<uint32_t>(y_bytes), dma_fd, 0};
+        frame->planes[1] = {
+            base + y_bytes, stride,
+            static_cast<uint32_t>(static_cast<size_t>(stride) * (height / 2)),
+            dma_fd, static_cast<uint32_t>(y_bytes)};
+        return true;
+    }
+
+    if (pixel_format == V4L2_PIX_FMT_YUV420
+        || pixel_format == V4L2_PIX_FMT_YUV420M) {
+        if (pixel_format == V4L2_PIX_FMT_YUV420M && mapped.planes.size() != 3) {
+            if (err) *err = "YUV420M capture returned an unexpected plane count";
+            return false;
+        }
+        frame->format = RawPixelFormat::Yuv420p;
+        frame->plane_count = static_cast<uint32_t>(mapped.planes.size());
+        for (uint32_t plane = 0; plane < frame->plane_count; ++plane) {
+            const size_t used = std::min(bytes_used(plane), available_bytes(plane));
+            frame->planes[plane] = {
+                static_cast<const uint8_t*>(mapped.planes[plane].start)
+                    + data_offset(plane),
+                plane_strides[plane],
+                static_cast<uint32_t>(used), -1, 0};
+        }
+        return true;
+    }
+
+    RawPixelFormat raw_format;
+    if (pixel_format == V4L2_PIX_FMT_MJPEG) {
+        raw_format = RawPixelFormat::Mjpeg;
+    } else if (pixel_format == V4L2_PIX_FMT_RGB24) {
+        raw_format = RawPixelFormat::Rgb888;
+    } else {
+        if (err) *err = "unsupported negotiated V4L2 pixel format";
+        return false;
+    }
+
+    frame->format = raw_format;
+    frame->plane_count = 1;
+    frame->planes[0] = {
+        static_cast<const uint8_t*>(mapped.planes[0].start) + data_offset(0),
+        plane_strides[0], static_cast<uint32_t>(
+            std::min(bytes_used(0), available_bytes(0))),
+        -1, 0};
+    return true;
+}
+
+bool V4L2CaptureImpl::queue_buffer(uint32_t index, std::string* err) {
+    v4l2_buffer buf{};
+    std::array<v4l2_plane, VIDEO_MAX_PLANES> planes{};
+    buf.type = buffer_type;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.index = index;
+    if (is_mplane_type(buffer_type)) {
+        buf.length = memory_plane_count;
+        buf.m.planes = planes.data();
+    }
+    if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
+        if (err) *err = std::string("QBUF failed: ") + strerror(errno);
+        return false;
+    }
+    return true;
+}
+
 void V4L2CaptureImpl::capture_loop() {
-    fprintf(stderr, "[V4L2Capture] Capture thread started\n");
+    fprintf(stderr, "[V4L2Capture] capture thread started\n");
     thread_alive.store(true);
 
     while (running.load()) {
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(fd, &fds);
+        timeval timeout{2, 0};
+        const int selected = select(fd + 1, &fds, nullptr, nullptr, &timeout);
+        if (selected < 0) {
+            if (errno == EINTR) continue;
+            fprintf(stderr, "[V4L2Capture] select failed: %s\n", strerror(errno));
+            break;
+        }
+        if (selected == 0) continue;
 
-        struct timeval tv;
-        tv.tv_sec = 2;
-        tv.tv_usec = 0;
-
-        int r = select(fd + 1, &fds, NULL, NULL, &tv);
-        if (r <= 0) continue;
-
-        struct v4l2_buffer buf = {};
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        v4l2_buffer buf{};
+        std::array<v4l2_plane, VIDEO_MAX_PLANES> planes{};
+        buf.type = buffer_type;
         buf.memory = V4L2_MEMORY_MMAP;
+        if (is_mplane_type(buffer_type)) {
+            buf.length = memory_plane_count;
+            buf.m.planes = planes.data();
+        }
 
         if (ioctl(fd, VIDIOC_DQBUF, &buf) < 0) {
-            if (errno == EAGAIN) continue;
+            if (errno == EAGAIN || errno == EINTR) continue;
             fprintf(stderr, "[V4L2Capture] DQBUF failed: %s\n", strerror(errno));
             break;
         }
 
-        if (buf.index >= buffers.size()) {
-            fprintf(stderr, "[V4L2Capture] invalid buffer index %u\n", buf.index);
+        RawFrame frame{};
+        std::string frame_error;
+        if (make_frame(buf.index, buf, planes.data(), &frame, &frame_error)) {
+            if (capture_cb_) capture_cb_(frame);
+        } else {
+            fprintf(stderr, "[V4L2Capture] dropped frame: %s\n", frame_error.c_str());
+        }
+
+        std::string queue_error;
+        if (!queue_buffer(buf.index, &queue_error)) {
+            fprintf(stderr, "[V4L2Capture] %s\n", queue_error.c_str());
             break;
-        }
-
-        uint64_t ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000 + buf.timestamp.tv_usec;
-
-        // Convert YUYV → YUV420P when CaptureBackend callback is set
-        bool need_yuv420 = !use_mjpeg && capture_cb_;
-        if (need_yuv420) {
-            yuyv_to_yuv420p(
-                static_cast<uint8_t*>(buffers[buf.index].start),
-                yuv420_buf.data(), width, height
-            );
-        }
-
-        // Dispatch to CaptureBackend callback
-        if (capture_cb_) {
-            RawFrame f{};
-            f.kind = BufferKind::Cpu;
-            f.format = use_mjpeg ? RawPixelFormat::Mjpeg : RawPixelFormat::Yuv420p;
-            f.width = static_cast<uint32_t>(width);
-            f.height = static_cast<uint32_t>(height);
-            f.pts_us = ts_us;
-            f.seq = ++seq_;
-            f.plane_count = 1;
-            if (!use_mjpeg) {
-                f.planes[0] = {
-                    yuv420_buf.data(),
-                    static_cast<uint32_t>(width),
-                    yuv420_buf.size(),
-                    -1,
-                    0
-                };
-            } else {
-                f.planes[0] = {
-                    static_cast<const uint8_t*>(buffers[buf.index].start),
-                    static_cast<uint32_t>(width),
-                    buf.bytesused,
-                    -1,
-                    0
-                };
-            }
-            capture_cb_(f);
-        }
-
-        // Re-queue buffer
-        if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
-            fprintf(stderr, "[V4L2Capture] QBUF failed: %s\n", strerror(errno));
         }
     }
 
+    running.store(false);
     thread_alive.store(false);
-    fprintf(stderr, "[V4L2Capture] Capture thread stopped\n");
+    fprintf(stderr, "[V4L2Capture] capture thread stopped\n");
 }
 
-// ---------------------------------------------------------------------------
-// CaptureBackend implementation
-// ---------------------------------------------------------------------------
 bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
-    width = static_cast<int>(cfg.width);
-    height = static_cast<int>(cfg.height);
-    fps = static_cast<int>(cfg.fps);
+    width = cfg.width;
+    height = cfg.height;
+    fps = cfg.fps;
+    prefer_dmabuf = cfg.prefer_dmabuf;
 
-    const char* dev = cfg.device.c_str();
-    fd = ::open(dev, O_RDWR | O_CLOEXEC);
+    fd = ::open(cfg.device.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
-        if (err) *err = std::string("Failed to open ") + dev + ": " + strerror(errno);
+        if (err) *err = "failed to open " + cfg.device + ": " + strerror(errno);
         return false;
     }
 
-    struct v4l2_capability cap = {};
+    v4l2_capability cap{};
     if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
         if (err) *err = std::string("QUERYCAP failed: ") + strerror(errno);
-        close(fd); fd = -1; return false;
+        release_resources();
+        return false;
     }
-
-    uint32_t caps = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) ? cap.device_caps : cap.capabilities;
+    const uint32_t caps =
+        (cap.capabilities & V4L2_CAP_DEVICE_CAPS) ? cap.device_caps : cap.capabilities;
     if (!(caps & (V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_CAPTURE_MPLANE))) {
-        if (err) *err = "Device does not support video capture";
-        close(fd); fd = -1; return false;
+        if (err) *err = "device does not support V4L2 video capture";
+        release_resources();
+        return false;
     }
-
-    struct v4l2_format fmt = {};
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(fd, VIDIOC_G_FMT, &fmt) < 0) {
-        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (!(caps & V4L2_CAP_STREAMING)) {
+        if (err) *err = "device does not support V4L2 streaming I/O";
+        release_resources();
+        return false;
     }
-    fmt.fmt.pix.width = static_cast<__u32>(cfg.width);
-    fmt.fmt.pix.height = static_cast<__u32>(cfg.height);
-    // NOTE: cfg.pixel_format is intentionally ignored for now.
-    // This backend always requests YUYV and converts to YUV420P internally.
-    // Pixel format selection from CaptureConfig will be added in a later cleanup.
-    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-    fmt.fmt.pix.field = V4L2_FIELD_ANY;
-
-    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
-        if (err) *err = std::string("S_FMT failed: ") + strerror(errno);
-        close(fd); fd = -1; return false;
-    }
-
-    width = fmt.fmt.pix.width;
-    height = fmt.fmt.pix.height;
-
-    struct v4l2_streamparm parm = {};
-    parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    parm.parm.capture.timeperframe.numerator = 1;
-    parm.parm.capture.timeperframe.denominator = static_cast<__u32>(fps);
-    ioctl(fd, VIDIOC_S_PARM, &parm);
-
-    yuv420_buf.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 3 / 2);
-
-    struct v4l2_requestbuffers req = {};
-    req.count = 16;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory = V4L2_MEMORY_MMAP;
-
-    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
-        if (err) *err = std::string("REQBUFS failed: ") + strerror(errno);
-        close(fd); fd = -1; return false;
-    }
-    if (req.count < 2) {
-        if (err) *err = std::string("REQBUFS returned too few buffers: ") + std::to_string(req.count);
+    if (!select_format(caps, cfg.pixel_format, err)) {
         release_resources();
         return false;
     }
 
-    for (unsigned int i = 0; i < req.count; i++) {
-        struct v4l2_buffer buf = {};
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    v4l2_format fmt{};
+    fmt.type = buffer_type;
+    if (is_mplane_type(buffer_type)) {
+        fmt.fmt.pix_mp.width = width;
+        fmt.fmt.pix_mp.height = height;
+        fmt.fmt.pix_mp.pixelformat = pixel_format;
+        fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
+    } else {
+        fmt.fmt.pix.width = width;
+        fmt.fmt.pix.height = height;
+        fmt.fmt.pix.pixelformat = pixel_format;
+        fmt.fmt.pix.field = V4L2_FIELD_ANY;
+    }
+    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+        if (err) *err = std::string("S_FMT failed: ") + strerror(errno);
+        release_resources();
+        return false;
+    }
+
+    if (is_mplane_type(buffer_type)) {
+        width = fmt.fmt.pix_mp.width;
+        height = fmt.fmt.pix_mp.height;
+        pixel_format = fmt.fmt.pix_mp.pixelformat;
+        memory_plane_count = fmt.fmt.pix_mp.num_planes;
+        if (memory_plane_count == 0 || memory_plane_count > VIDEO_MAX_PLANES) {
+            if (err) *err = "driver returned an invalid V4L2 plane count";
+            release_resources();
+            return false;
+        }
+        for (uint32_t plane = 0; plane < memory_plane_count; ++plane) {
+            plane_strides[plane] = fmt.fmt.pix_mp.plane_fmt[plane].bytesperline;
+            plane_sizeimages[plane] = fmt.fmt.pix_mp.plane_fmt[plane].sizeimage;
+        }
+    } else {
+        width = fmt.fmt.pix.width;
+        height = fmt.fmt.pix.height;
+        pixel_format = fmt.fmt.pix.pixelformat;
+        memory_plane_count = 1;
+        plane_strides[0] = fmt.fmt.pix.bytesperline;
+        plane_sizeimages[0] = fmt.fmt.pix.sizeimage;
+    }
+
+    const auto accepted = requested_fourccs(cfg.pixel_format);
+    if (std::find(accepted.begin(), accepted.end(), pixel_format) == accepted.end()) {
+        char actual[5];
+        if (err) {
+            *err = std::string("driver changed requested pixel format to unsupported ")
+                   + fourcc_to_string(pixel_format, actual);
+        }
+        release_resources();
+        return false;
+    }
+    if ((pixel_format == V4L2_PIX_FMT_NV12
+         || pixel_format == V4L2_PIX_FMT_NV12M
+         || pixel_format == V4L2_PIX_FMT_YUV420
+         || pixel_format == V4L2_PIX_FMT_YUV420M)
+        && ((width & 1U) != 0 || (height & 1U) != 0)) {
+        if (err) *err = "4:2:0 capture requires even width and height";
+        release_resources();
+        return false;
+    }
+
+    v4l2_streamparm parm{};
+    parm.type = buffer_type;
+    parm.parm.capture.timeperframe.numerator = 1;
+    parm.parm.capture.timeperframe.denominator = fps;
+    if (fps != 0 && ioctl(fd, VIDIOC_S_PARM, &parm) < 0) {
+        fprintf(stderr, "[V4L2Capture] S_PARM failed: %s\n", strerror(errno));
+    }
+    parm = {};
+    parm.type = buffer_type;
+    if (ioctl(fd, VIDIOC_G_PARM, &parm) == 0
+        && parm.parm.capture.timeperframe.numerator != 0) {
+        fps = parm.parm.capture.timeperframe.denominator
+              / parm.parm.capture.timeperframe.numerator;
+    }
+
+    char actual[5];
+    fprintf(stderr,
+            "[V4L2Capture] negotiated %ux%u %s at %u fps, memory planes=%u\n",
+            width, height, fourcc_to_string(pixel_format, actual), fps,
+            memory_plane_count);
+
+    if (pixel_format == V4L2_PIX_FMT_YUYV) {
+        yuv420_buf.resize(static_cast<size_t>(width) * height * 3 / 2);
+    }
+
+    v4l2_requestbuffers req{};
+    req.count = kBufferCount;
+    req.type = buffer_type;
+    req.memory = V4L2_MEMORY_MMAP;
+    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+        if (err) *err = std::string("REQBUFS failed: ") + strerror(errno);
+        release_resources();
+        return false;
+    }
+    if (req.count < 2) {
+        if (err) *err = "REQBUFS returned fewer than two buffers";
+        release_resources();
+        return false;
+    }
+
+    for (uint32_t index = 0; index < req.count; ++index) {
+        v4l2_buffer buf{};
+        std::array<v4l2_plane, VIDEO_MAX_PLANES> planes{};
+        buf.type = buffer_type;
         buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-
+        buf.index = index;
+        if (is_mplane_type(buffer_type)) {
+            buf.length = memory_plane_count;
+            buf.m.planes = planes.data();
+        }
         if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
-            if (err) *err = "QUERYBUF failed";
+            if (err) *err = std::string("QUERYBUF failed: ") + strerror(errno);
             release_resources();
             return false;
         }
 
-        void* start = mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
-                           MAP_SHARED, fd, buf.m.offset);
-        if (start == MAP_FAILED) {
-            if (err) *err = "mmap failed";
-            release_resources();
-            return false;
+        Buffer mapped;
+        mapped.planes.reserve(memory_plane_count);
+        for (uint32_t plane = 0; plane < memory_plane_count; ++plane) {
+            const size_t length =
+                is_mplane_type(buffer_type) ? planes[plane].length : buf.length;
+            const off_t offset =
+                is_mplane_type(buffer_type) ? planes[plane].m.mem_offset : buf.m.offset;
+            void* start = mmap(
+                nullptr, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
+            if (start == MAP_FAILED) {
+                if (err) *err = std::string("mmap failed: ") + strerror(errno);
+                for (MappedPlane& mapped_plane : mapped.planes) {
+                    munmap(mapped_plane.start, mapped_plane.length);
+                    if (mapped_plane.dma_fd >= 0) {
+                        close(mapped_plane.dma_fd);
+                    }
+                }
+                release_resources();
+                return false;
+            }
+            mapped.planes.push_back({start, length});
         }
-        buffers.push_back({start, buf.length});
+
+        // Zero-copy: export each buffer as a dmabuf (works for MMAP buffers;
+        // rkaiisp/rkcif support expbuf, mirroring what the vendor VI uses).
+        if (prefer_dmabuf) {
+            for (uint32_t plane = 0; plane < memory_plane_count; ++plane) {
+                v4l2_exportbuffer ebuf{};
+                ebuf.type = buffer_type;
+                ebuf.index = index;
+                ebuf.plane = plane;
+                ebuf.flags = O_RDWR | O_CLOEXEC;
+                if (ioctl(fd, VIDIOC_EXPBUF, &ebuf) == 0) {
+                    mapped.planes[plane].dma_fd = ebuf.fd;
+                } else {
+                    fprintf(stderr,
+                        "[V4L2Capture] EXPBUF failed for buffer %u plane %u: %s "
+                        "(zero-copy disabled, CPU path in use)\n",
+                        index, plane, strerror(errno));
+                    prefer_dmabuf = false;  // don't retry every buffer
+                    break;
+                }
+            }
+        }
+        buffers.push_back(std::move(mapped));
     }
     return true;
 }
 
 bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
+    if (fd < 0) {
+        if (err) *err = "capture backend is not initialised";
+        return false;
+    }
     if (running.load() || capture_thread.joinable()) {
         if (err) *err = "capture already running";
         return false;
     }
     capture_cb_ = std::move(cb);
 
-    for (unsigned int i = 0; i < buffers.size(); i++) {
-        struct v4l2_buffer buf = {};
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-        if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
-            if (err) *err = std::string("QBUF failed: ") + strerror(errno);
-            return false;
-        }
+    for (uint32_t index = 0; index < buffers.size(); ++index) {
+        if (!queue_buffer(index, err)) return false;
     }
-
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) {
+    if (ioctl(fd, VIDIOC_STREAMON, &buffer_type) < 0) {
         if (err) *err = std::string("STREAMON failed: ") + strerror(errno);
         return false;
     }
-
+    streaming = true;
     running.store(true);
     capture_thread = std::thread(&V4L2CaptureImpl::capture_loop, this);
     return true;
 }
 
 void V4L2CaptureImpl::release_resources() {
-    if (fd >= 0) {
-        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        ioctl(fd, VIDIOC_STREAMOFF, &type);
-
-        for (auto& buf : buffers) {
-            if (buf.start && buf.start != MAP_FAILED) munmap(buf.start, buf.length);
+    if (fd >= 0 && streaming) {
+        ioctl(fd, VIDIOC_STREAMOFF, &buffer_type);
+        streaming = false;
+    }
+    for (Buffer& buffer : buffers) {
+        for (MappedPlane& plane : buffer.planes) {
+            if (plane.start && plane.start != MAP_FAILED) {
+                munmap(plane.start, plane.length);
+                plane.start = nullptr;
+            }
+            if (plane.dma_fd >= 0) {
+                close(plane.dma_fd);
+                plane.dma_fd = -1;
+            }
         }
-        buffers.clear();
+    }
+    buffers.clear();
+    if (fd >= 0) {
         close(fd);
         fd = -1;
     }
@@ -315,10 +657,8 @@ bool V4L2CaptureImpl::isRunning() const {
     return running.load() && thread_alive.load();
 }
 
-// ---------------------------------------------------------------------------
-// Factory for CaptureBackend (generic V4L2)
-// ---------------------------------------------------------------------------
-std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg) {
+std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(
+    const CaptureConfig& cfg) {
     (void)cfg;
     return std::make_shared<V4L2CaptureImpl>();
 }

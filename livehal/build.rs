@@ -171,6 +171,7 @@ fn main() {
     // change.
     println!("cargo:rerun-if-env-changed=RPI_SYSROOT");
     println!("cargo:rerun-if-env-changed=RDK_SYSROOT");
+    println!("cargo:rerun-if-env-changed=RKMPP_SYSROOT");
     println!("cargo:rerun-if-env-changed=LIVEHAL_CXX_STDLIB");
     println!("cargo:rerun-if-env-changed=LIVEHAL_RDK_ALLOW_UNDEFINED");
 
@@ -178,6 +179,7 @@ fn main() {
     let has_capture_v4l2 = env::var("CARGO_FEATURE_CAPTURE_V4L2").is_ok();
     let has_encoder_v4l2_m2m = env::var("CARGO_FEATURE_ENCODER_V4L2_M2M").is_ok();
     let has_encoder_rdk = env::var("CARGO_FEATURE_ENCODER_RDK").is_ok();
+    let has_encoder_rkmpp = env::var("CARGO_FEATURE_ENCODER_RKMPP").is_ok();
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -186,7 +188,12 @@ fn main() {
     // kernel headers.  On non-Linux hosts (macOS, Windows), skip CMake
     // entirely to avoid compiling kernel-dependent code.
     if target_os != "linux" {
-        if has_capture_libcamera || has_capture_v4l2 || has_encoder_v4l2_m2m || has_encoder_rdk {
+        if has_capture_libcamera
+            || has_capture_v4l2
+            || has_encoder_v4l2_m2m
+            || has_encoder_rdk
+            || has_encoder_rkmpp
+        {
             println!(
                 "cargo:warning=native backend requires Linux (current: {target_os}); \
                  CMake build skipped. Use a Linux target or omit native features."
@@ -202,6 +209,15 @@ fn main() {
     if has_encoder_rdk && !rdk_available {
         println!(
             "cargo:warning=encoder-rdk requires aarch64 (current: {target_arch}); \
+             falling back to generic-v4l2."
+        );
+    }
+
+    // Rockchip MPP encoder also requires aarch64 Linux (RK35xx, RV11xx SoCs).
+    let rkmpp_available = has_encoder_rkmpp && target_arch == "aarch64";
+    if has_encoder_rkmpp && !rkmpp_available {
+        println!(
+            "cargo:warning=encoder-rkmpp requires aarch64 (current: {target_arch}); \
              falling back to generic-v4l2."
         );
     }
@@ -225,13 +241,13 @@ fn main() {
     // have no standalone pipeline.  Use a native-* preset or enable a
     // capture-* feature alongside the encoder.
     if !has_capture_libcamera && !has_capture_v4l2 {
-        if has_encoder_v4l2_m2m || has_encoder_rdk {
+        if has_encoder_v4l2_m2m || has_encoder_rdk || has_encoder_rkmpp {
             println!(
                 "cargo:warning=encoder feature(s) enabled without any capture-* feature; \
                  CMake build skipped."
             );
             println!(
-                "cargo:warning=Use a native-* preset (e.g. native-rdk) or enable \
+                "cargo:warning=Use a native-* preset (e.g. native-rdk, native-rkmpp) or enable \
                  capture-v4l2 / capture-libcamera alongside the encoder."
             );
         }
@@ -239,7 +255,8 @@ fn main() {
     }
 
     // Native backend selection — inferred from enabled capture/encoder features.
-    // libcamera is Pi-specific; rdk-x5 is aarch64-specific; otherwise generic-v4l2.
+    // libcamera is Pi-specific; rdk-x5 is aarch64-specific; rkmpp uses Rockchip
+    // MPP on aarch64; otherwise generic-v4l2.
     // capture-libcamera and encoder-rdk are mutually exclusive presets; if both
     // are enabled (e.g. `cargo --all-features`), prefer the libcamera backend and
     // ignore encoder-rdk instead of panicking.
@@ -250,9 +267,17 @@ fn main() {
                  encoder-rdk will be ignored for this build"
             );
         }
+        if has_encoder_rkmpp {
+            println!(
+                "cargo:warning=capture-libcamera and encoder-rkmpp are incompatible; \
+                 encoder-rkmpp will be ignored for this build"
+            );
+        }
         "rpi".to_string()
     } else if has_encoder_rdk && rdk_available {
         "rdk-x5".to_string()
+    } else if has_encoder_rkmpp && rkmpp_available {
+        "rkmpp".to_string()
     } else if has_capture_v4l2 || has_encoder_v4l2_m2m {
         "generic-v4l2".to_string()
     } else {
@@ -272,6 +297,9 @@ fn main() {
 
     if rdk_available {
         println!("cargo:rerun-if-changed=native-pipeline/encoder_rdk.cpp");
+    }
+    if has_encoder_rkmpp {
+        println!("cargo:rerun-if-changed=native-pipeline/encoder_rkmpp.cpp");
     }
     if has_capture_v4l2 && rdk_available {
         println!("cargo:rerun-if-changed=native-pipeline/v4l2_capture_rdk.cpp");
@@ -300,6 +328,16 @@ fn main() {
             println!(
                 "cargo:rustc-link-search=native={}",
                 sysroot.join("lib").display()
+            );
+        }
+    } else if native_backend == "rkmpp" {
+        // Rockchip MPP: link from a clean directory (no libc) to avoid
+        // pulling in the sysroot's older libc instead of the toolchain's.
+        if let Ok(sysroot) = env::var("RKMPP_SYSROOT") {
+            let sysroot = PathBuf::from(sysroot);
+            println!(
+                "cargo:rustc-link-search=native={}",
+                sysroot.join("mpp-lib").display()
             );
         }
     } else if native_backend == "rpi" {
@@ -369,6 +407,11 @@ fn main() {
     {
         cmake_config.define("RDK_SYSROOT", sysroot);
     }
+    if native_backend == "rkmpp"
+        && let Ok(sysroot) = env::var("RKMPP_SYSROOT")
+    {
+        cmake_config.define("RKMPP_SYSROOT", sysroot);
+    }
 
     match native_backend.as_str() {
         "rpi" => {
@@ -387,6 +430,7 @@ fn main() {
                 if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
             );
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
+            cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
         }
         "rdk-x5" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
@@ -407,6 +451,7 @@ fn main() {
                 "ENABLE_ENCODER_RDK_X5",
                 if rdk_available { "ON" } else { "OFF" },
             );
+            cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
         }
         "generic-v4l2" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
@@ -421,10 +466,23 @@ fn main() {
                 if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
             );
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
+            cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
+        }
+        "rkmpp" => {
+            cmake_config.define("ENABLE_BACKEND_PI", "OFF");
+            cmake_config.define("ENABLE_BACKEND_RDK_X5", "OFF");
+            cmake_config.define("ENABLE_CAPTURE_LIBCAMERA", "OFF");
+            cmake_config.define(
+                "ENABLE_CAPTURE_V4L2",
+                if has_capture_v4l2 { "ON" } else { "OFF" },
+            );
+            cmake_config.define("ENABLE_ENCODER_V4L2_M2M", "OFF");
+            cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
+            cmake_config.define("ENABLE_ENCODER_RKMPP", "ON");
         }
         other => panic!(
             "unsupported native backend '{other}'. \
-             Expected 'rpi', 'rdk-x5', or 'generic-v4l2'"
+             Expected 'rpi', 'rdk-x5', 'rkmpp', or 'generic-v4l2'"
         ),
     }
 
@@ -471,6 +529,10 @@ fn main() {
             println!("cargo:rustc-link-arg=-Wl,--allow-shlib-undefined");
             println!("cargo:rustc-link-arg=-Wl,--unresolved-symbols=ignore-in-shared-libs");
         }
+    } else if native_backend == "rkmpp" {
+        // Rockchip MPP: prefer RKMPP_SYSROOT for cross-compilation,
+        // otherwise assumes system-installed rockchip_mpp (e.g. Orange Pi).
+        println!("cargo:rustc-link-lib=dylib=rockchip_mpp");
     } else if has_capture_libcamera && !libcamera_linked {
         println!("cargo:rustc-link-lib=dylib=camera");
         println!("cargo:rustc-link-lib=dylib=camera-base");

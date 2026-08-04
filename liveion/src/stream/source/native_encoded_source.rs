@@ -309,9 +309,12 @@ impl NativeEncodedSource {
                 )
             }
             SourceVideoCodec::H265 => {
-                // H.265: default to Main profile / level 3.1.
-                // A future improvement can parse VPS/SPS for dynamic profile/level.
-                "profile-id=1;tier-flag=0;level-id=93".to_string()
+                // H.265: uses the profile_idc/level_idc/tier_flag resolved by
+                // source_config.rs — the same values the C++ encoder receives.
+                format!(
+                    "profile-id={};tier-flag={};level-id={}",
+                    self.params.profile_idc, self.params.tier_flag, self.params.level_idc,
+                )
             }
             // AV1, VP8, VP9: no fmtp required for basic negotiation.
             _ => String::new(),

@@ -158,7 +158,7 @@ clock_rate = 90000
 | Layer | Value |
 |-------|-------|
 | `capture.backend` | `"libcamera"`, `"v4l2"` |
-| `encoder.backend` | `"v4l2-m2m"`, `"rdk"` |
+| `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"` |
 
 ### pixel_format values
 
@@ -199,6 +199,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 |---------|---------|
 | `encoder-v4l2-m2m` | V4L2 Memory-to-Memory hardware encoder |
 | `encoder-rdk` | Horizon RDK X5 hardware encoder |
+| `encoder-rkmpp` | Rockchip MPP hardware encoder (aarch64 only) |
 
 ### Platform presets
 
@@ -207,6 +208,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 | `native-rpi` | `capture-libcamera, capture-v4l2, encoder-v4l2-m2m` |
 | `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
 | `native-rdk` | `capture-v4l2, encoder-rdk` |
+| `native-rkmpp` | `capture-v4l2, encoder-rkmpp` |
 
 No additional `--features source` is needed — presets include autostart.
 
@@ -224,6 +226,11 @@ cargo build --bin live777 --release \
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rdk,webui
+
+# Rockchip RKMPP (RK3588, RV1126B)
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rkmpp,webui
 ```
 
 ## Build
@@ -263,6 +270,20 @@ Requires the RDK sysroot with `hb_media_codec` libraries. `RDK_SYSROOT` must be 
 
 > **Note:** The DMA-BUF zero-copy encode path is not yet implemented.  See the DMA-BUF notes in the Architecture section above.
 
+### Rockchip RKMPP (RK3588, RV1126B)
+
+```bash
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rkmpp,webui
+```
+
+Requires the Rockchip MPP library (`librockchip_mpp`) and headers. Set `RKMPP_SYSROOT` to a sysroot containing them when cross-compiling. The rkmpp encoder accepts NV12 input only; pair it with `pixel_format = "nv12"` capture.
+
+> **Note:** rkmpp profile configuration is stricter than the other backends. For H.264, `profile` must be a 6-character profile-level-id hex string (e.g. `"420028"` = Baseline Level 4.0, `"640028"` = High Level 4.0) and a separate `level` field is not allowed — the level is encoded in the hex. For H.265, use `profile = "main"` with an optional `level` (`"3.0"`–`"5.1"`, default `"4.0"`); only Main profile / Main tier are supported.
+
+The Cross Images workflow publishes `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, an aarch64 cross image with the MPP sysroot baked in at `/opt/rkmpp-sysroot` (built from `docker/Dockerfile.cross-aarch64-rkmpp`). Point cross at it via `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`, or use `just rkmpp-pack-size`; `RKMPP_SYSROOT` overrides the baked sysroot with one pulled from a device.
+
 ### macOS (development / check only)
 
 ```bash
@@ -278,6 +299,7 @@ cargo check --features native-rpi,webui
 |----------|---------|
 | `RPI_SYSROOT` | Path to the Raspberry Pi sysroot containing `libcamera-dev`. Used when building `capture-libcamera` / `native-rpi`. |
 | `RDK_SYSROOT` | Path to the Horizon RDK X5 SDK sysroot. **Required** when building `encoder-rdk` / `native-rdk` for aarch64. |
+| `RKMPP_SYSROOT` | Path to a sysroot containing the Rockchip MPP library and headers. Used when building `encoder-rkmpp` / `native-rkmpp` for aarch64. |
 | `LIVEHAL_CXX_STDLIB` | Override the C++ standard library to link (`stdc++`, `c++`, etc.). Useful for cross-compilation toolchains. |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | Set to `1` to allow unresolved symbols in RDK shared libraries during cross-compilation with an incomplete sysroot. |
 
@@ -289,11 +311,12 @@ The CMake backend is inferred from the enabled capture/encoder features:
 |-------------------|------------------|-------------------|
 | `capture-libcamera` | `rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 | `encoder-rdk` on aarch64 | `rdk-x5` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
+| `encoder-rkmpp` on aarch64 | `rkmpp` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RKMPP` |
 | `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 
 When no `capture-*` feature is enabled, CMake is skipped entirely. Encoder-only features do **not** trigger a CMake build — the SourcePipeline requires a capture backend.
 
-`capture-libcamera` and `encoder-rdk` are mutually exclusive. If both are enabled, `encoder-rdk` is ignored with a build warning and the `rpi` (libcamera) backend is selected.
+`capture-libcamera` is mutually exclusive with `encoder-rdk` and `encoder-rkmpp`. If enabled together, the encoder feature is ignored with a build warning and the `rpi` (libcamera) backend is selected.
 
 ## Config examples
 

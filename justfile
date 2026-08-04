@@ -4,6 +4,7 @@ host := "127.0.0.1"
 port := "7777"
 server := "http://" + host + ":" + port
 stream := "test-stream"
+rkmpp_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest"
 
 isdp := "i.sdp"
 osdp := "o.sdp"
@@ -653,3 +654,12 @@ livewrk-whep sessions="100" duration="60" target_stream=stream:
 [group('loadtest')]
 loadtest-channel mode="all":
     cargo run --release --features=source --bin datachannel_loadtest -- {{mode}}
+
+
+# Rockchip RKMPP (RK3588, RV1126B): V4L2 capture, Rockchip MPP encoder
+# Uses the RKMPP cross image (sysroot baked at /opt/rkmpp-sysroot); set
+# RKMPP_SYSROOT to override it with a sysroot pulled from a device.
+[group('embedded')]
+rkmpp-pack-size:
+    CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rkmpp_cross_image}} \
+        just cross-pack-size aarch64-unknown-linux-gnu native-rkmpp,webui

@@ -59,12 +59,19 @@ public:
         }
         if (!capture_->init(ccfg, err)) return false;
 
-        encoder_ = create_encoder_backend(ecfg);
+        EncoderConfig encoder_cfg = ecfg;
+        // Use the format the capture backend actually delivers, not the
+        // requested one: the generic V4L2 backend converts YUYV to
+        // YUV420P, and libcamera always delivers YUV420P regardless of
+        // the configured pixel_format.
+        encoder_cfg.input_format = capture_->outputFormat();
+
+        encoder_ = create_encoder_backend(encoder_cfg);
         if (!encoder_) {
             if (err) *err = "failed to create encoder backend";
             return false;
         }
-        if (!encoder_->init(ecfg, err)) return false;
+        if (!encoder_->init(encoder_cfg, err)) return false;
 
         // Encoder backends call this lambda synchronously from their own
         // context.  We copy the payload and enqueue it; the worker thread will
@@ -261,6 +268,9 @@ static EncoderConfig to_encoder_config(const EncoderConfigFFI* ffi) {
     cfg.fps = ffi->fps;
     cfg.bitrate = ffi->bitrate;
     cfg.profile = ffi->profile ? ffi->profile : "42001f";
+    cfg.profile_idc = ffi->profile_idc;
+    cfg.level_idc = ffi->level_idc;
+    cfg.tier_flag = ffi->tier_flag;
     cfg.gop = ffi->gop;
     cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
     return cfg;

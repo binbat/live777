@@ -35,13 +35,16 @@ typedef struct {
 } CaptureConfigFFI;
 
 typedef struct {
-    const char* backend;     // "v4l2-m2m" or "rdk"
+    const char* backend;     // "v4l2-m2m", "rdk", or "rkmpp"
     uint32_t codec;          // VideoCodec enum value
     uint32_t width;
     uint32_t height;
     uint32_t fps;
     uint32_t bitrate;
-    const char* profile;     // "42001f"
+    const char* profile;     // "42001f" (H.264) or "main" (H.265)
+    uint32_t profile_idc;    // 66=baseline,77=main,100=high (H.264); 1=main (H.265)
+    uint32_t level_idc;      // 40=H.264 4.0, 120=H.265 4.0
+    uint32_t tier_flag;      // 0=main tier (H.265 only; always 0 for H.264)
     uint32_t gop;
     uint8_t prefer_dmabuf;   // 0 = false, 1 = true
 } EncoderConfigFFI;

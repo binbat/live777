@@ -147,7 +147,7 @@ clock_rate = 90000
 | 层级 | 取值 |
 |-------|-------|
 | `capture.backend` | `"libcamera"`, `"v4l2"` |
-| `encoder.backend` | `"v4l2-m2m"`, `"rdk"` |
+| `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"` |
 
 ### pixel_format 取值
 
@@ -186,6 +186,7 @@ clock_rate = 90000
 |---------|------|
 | `encoder-v4l2-m2m` | V4L2 Memory-to-Memory 硬件编码器 |
 | `encoder-rdk` | 地平线 RDK X5 硬件编码器 |
+| `encoder-rkmpp` | 瑞芯微 MPP 硬件编码器（仅 aarch64） |
 
 ### 平台预设
 
@@ -194,6 +195,7 @@ clock_rate = 90000
 | `native-rpi` | `capture-libcamera, capture-v4l2, encoder-v4l2-m2m` |
 | `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
 | `native-rdk` | `capture-v4l2, encoder-rdk` |
+| `native-rkmpp` | `capture-v4l2, encoder-rkmpp` |
 
 无需额外加 `--features source`——预设已经包含自动启动。
 
@@ -211,6 +213,11 @@ cargo build --bin live777 --release \
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
   --no-default-features --features native-rdk,webui
+
+# 瑞芯微 RKMPP（RK3588、RV1126B）
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rkmpp,webui
 ```
 
 ## 构建
@@ -250,6 +257,20 @@ cargo build --bin live777 --release \
 
 > **注意：** DMA-BUF 零拷贝编码路径尚未实现。详见上文“架构”章节中的 DMA-BUF 说明。
 
+### 瑞芯微 RKMPP（RK3588、RV1126B）
+
+```bash
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-rkmpp,webui
+```
+
+需要 Rockchip MPP 库（`librockchip_mpp`）及头文件。交叉编译时设置 `RKMPP_SYSROOT` 指向包含它们的 sysroot。rkmpp 编码器仅接受 NV12 输入，请搭配 `pixel_format = "nv12"` 采集。
+
+> **注意：** rkmpp 的 profile 配置比其他后端更严格。H.264 时 `profile` 必须是 6 位 profile-level-id 十六进制串（如 `"420028"` = Baseline Level 4.0，`"640028"` = High Level 4.0），且不允许单独的 `level` 字段——level 已编码在十六进制串中。H.265 时使用 `profile = "main"`，可选 `level`（`"3.0"`–`"5.1"`，默认 `"4.0"`）；仅支持 Main profile / Main tier。
+
+Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`，这是一个内置 MPP sysroot（位于 `/opt/rkmpp-sysroot`，由 `docker/Dockerfile.cross-aarch64-rkmpp` 构建）的 aarch64 交叉编译镜像。通过 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE` 指定给 cross 使用，或直接运行 `just rkmpp-pack-size`；设置 `RKMPP_SYSROOT` 可改用从设备拉取的 sysroot。
+
 ### macOS（仅开发 / 检查）
 
 ```bash
@@ -265,6 +286,7 @@ cargo check --features native-rpi,webui
 |----------|---------|
 | `RPI_SYSROOT` | 包含 `libcamera-dev` 的树莓派 sysroot 路径。在构建 `capture-libcamera` / `native-rpi` 时使用。 |
 | `RDK_SYSROOT` | 地平线 RDK X5 SDK sysroot 路径。在 aarch64 上构建 `encoder-rdk` / `native-rdk` 时**必须**设置。 |
+| `RKMPP_SYSROOT` | 包含 Rockchip MPP 库和头文件的 sysroot 路径。在 aarch64 上构建 `encoder-rkmpp` / `native-rkmpp` 时使用。 |
 | `LIVEHAL_CXX_STDLIB` | 覆盖要链接的 C++ 标准库（如 `stdc++`、`c++` 等），用于交叉编译工具链。 |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | 设为 `1` 可在 sysroot 不完整时允许 RDK 共享库存在未解析符号。 |
 
@@ -276,11 +298,12 @@ CMake 后端根据启用的采集/编码特性推断：
 |-------------------|------------------|-------------------|
 | `capture-libcamera` | `rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 | aarch64 上的 `encoder-rdk` | `rdk-x5` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
+| aarch64 上的 `encoder-rkmpp` | `rkmpp` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RKMPP` |
 | `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 
 当没有启用任何 `capture-*` 特性时，CMake 会被完全跳过。仅启用编码特性**不会**触发 CMake 构建——SourcePipeline 需要一个采集后端。
 
-`capture-libcamera` 和 `encoder-rdk` 互斥。如果同时启用，构建脚本会发出警告并忽略 `encoder-rdk`，选择 `rpi`（libcamera）后端。
+`capture-libcamera` 与 `encoder-rdk`、`encoder-rkmpp` 互斥。如果同时启用，构建脚本会发出警告并忽略对应的编码特性，选择 `rpi`（libcamera）后端。
 
 ## 配置示例
 

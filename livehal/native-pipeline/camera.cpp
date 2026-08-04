@@ -94,6 +94,10 @@ public:
     bool start(CaptureFrameCallback cb, std::string* err) override;
     void stop() override;
     bool isRunning() const override;
+    // libcamera frames are always converted to single-plane YUV420P.
+    RawPixelFormat outputFormat() const override {
+        return RawPixelFormat::Yuv420p;
+    }
 
 private:
     PiCameraImpl() = default;

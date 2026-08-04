@@ -141,8 +141,9 @@ Key feature groups defined in the root `Cargo.toml`:
 - `target-whip`    — WHIP push targets (static cascade-push).
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
-- `encoder-v4l2-m2m`, `encoder-rdk`   — encoder backends.
-- Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`.
+- `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
+- Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
+  `native-rkmpp`.
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
@@ -153,17 +154,27 @@ instead of `--all-features`.
 
 `Cross.toml` configures `cross` images for `aarch64-unknown-linux-gnu` and
 `armv7-unknown-linux-gnueabihf`. For Raspberry Pi libcamera builds you need a
-sysroot and `RPI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`. Example:
+sysroot and `RPI_SYSROOT` set; for RDK X5 builds use `RDK_SYSROOT`; for
+Rockchip RKMPP (RK3588, RV1126B) builds use the RKMPP cross image
+(`ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, MPP sysroot baked at
+`/opt/rkmpp-sysroot`) or set `RKMPP_SYSROOT` to override it with a sysroot
+pulled from a device. Example:
 
 ```bash
 export RPI_SYSROOT=/path/to/rpi-sysroot
 cross build --target aarch64-unknown-linux-gnu \
   --bin live777 --release \
   --no-default-features --features native-rpi,webui
+
+# Rockchip RKMPP (RK3588, RV1126B), using the published cross image
+CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest \
+  cross build --target aarch64-unknown-linux-gnu \
+  --bin live777 --release \
+  --no-default-features --features native-rkmpp,webui
 ```
 
-`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT` to configure `pkg-config`
-and linker paths.
+`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RKMPP_SYSROOT` to
+configure `pkg-config` and linker paths.
 
 ## Runtime Architecture
 

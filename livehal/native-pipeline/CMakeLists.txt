@@ -16,7 +16,7 @@ option(ENABLE_CAPTURE_V4L2 "Enable V4L2 capture backend" OFF)
 
 option(ENABLE_ENCODER_V4L2_M2M "Enable V4L2 M2M encoder backend" OFF)
 option(ENABLE_ENCODER_RDK_X5 "Enable RDK X5 encoder backend" OFF)
-
+option(ENABLE_ENCODER_RKMPP "Enable Rockchip MPP encoder backend" OFF)
 # --- Collect sources based on enabled options ---
 
 set(SOURCES "")
@@ -46,6 +46,11 @@ endif()
 if(ENABLE_ENCODER_RDK_X5)
     message(STATUS "native-pipeline: RDK X5 encoder enabled")
     list(APPEND SOURCES encoder_rdk.cpp)
+endif()
+
+if(ENABLE_ENCODER_RKMPP)
+    message(STATUS "native-pipeline: Rockchip MPP encoder enabled")
+    list(APPEND SOURCES encoder_rkmpp.cpp)
 endif()
 
 if(ENABLE_BACKEND_PI)
@@ -79,8 +84,46 @@ endif()
 if(ENABLE_ENCODER_RDK_X5)
     target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_RDK_X5=1)
 endif()
+if(ENABLE_ENCODER_RKMPP)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_RKMPP=1)
+endif()
 
 target_include_directories(native-pipeline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Rockchip MPP — use find_library/find_path (works without pkg-config cross-compilation)
+if(ENABLE_ENCODER_RKMPP)
+    if(DEFINED RKMPP_SYSROOT)
+        set(ROCKCHIP_MPP_SEARCH_PATHS
+            ${RKMPP_SYSROOT}/usr/lib/aarch64-linux-gnu
+            ${RKMPP_SYSROOT}/usr/lib
+        )
+        set(ROCKCHIP_MPP_INCLUDE_SEARCH_PATHS
+            ${RKMPP_SYSROOT}/usr/include
+        )
+    else()
+        set(ROCKCHIP_MPP_SEARCH_PATHS
+            /usr/lib/aarch64-linux-gnu
+            /usr/lib
+        )
+        set(ROCKCHIP_MPP_INCLUDE_SEARCH_PATHS
+            /usr/include
+        )
+    endif()
+    find_library(ROCKCHIP_MPP_LIB
+        NAMES rockchip_mpp
+        PATHS ${ROCKCHIP_MPP_SEARCH_PATHS}
+        NO_DEFAULT_PATH
+    )
+    find_path(ROCKCHIP_MPP_INCLUDE_DIR
+        NAMES rockchip/rk_mpi.h
+        PATHS ${ROCKCHIP_MPP_INCLUDE_SEARCH_PATHS}
+        NO_DEFAULT_PATH
+    )
+    if(NOT ROCKCHIP_MPP_LIB OR NOT ROCKCHIP_MPP_INCLUDE_DIR)
+        message(FATAL_ERROR "Rockchip MPP not found. Set RKMPP_SYSROOT to the sysroot.")
+    endif()
+    target_include_directories(native-pipeline PRIVATE ${ROCKCHIP_MPP_INCLUDE_DIR})
+endif()
 
 # Platform-specific include dirs
 if(ENABLE_CAPTURE_LIBCAMERA)
@@ -112,6 +155,11 @@ if(ENABLE_BACKEND_RDK_X5)
     endif()
     target_link_libraries(native-pipeline PRIVATE multimedia hbmem vpf)
 endif()
+
+if(ENABLE_ENCODER_RKMPP)
+    target_link_libraries(native-pipeline PRIVATE ${ROCKCHIP_MPP_LIB})
+endif()
+
 
 # --- Compile options ---
 target_compile_options(native-pipeline PRIVATE -Wall -Wextra)

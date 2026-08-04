@@ -73,6 +73,10 @@ public:
     bool init(const CaptureConfig& cfg, std::string* err) override;
     bool start(CaptureFrameCallback cb, std::string* err) override;
     bool isRunning() const override;
+    // RDK V4L2 capture delivers YUYV frames unchanged.
+    RawPixelFormat outputFormat() const override {
+        return RawPixelFormat::Yuyv422;
+    }
 };
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ capture-v4l2 = []
 # --- encoder backends (C++ native-pipeline) ---
 encoder-v4l2-m2m = []
 encoder-rdk = []
+encoder-rkmpp = []
 
 # future
 # encoded-source-waybeam-venc = []
