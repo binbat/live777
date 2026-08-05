@@ -91,3 +91,26 @@ struct RawFrame {
     CaptureBufferReleaseFn release = nullptr;
     void* release_ctx = nullptr;
 };
+
+// ---------------------------------------------------------------------------
+// FrameReleaseGuard — RAII helper honouring the release contract.
+//
+// Releases an armed capture buffer on destruction unless disarmed.  Every
+// encoder backend constructs one at submit() entry so that EVERY exit path
+// (validation failure, unsupported kind, put failure) returns the buffer to
+// the capture exactly once; a backend that retains the buffer asynchronously
+// (rkmpp zero-copy) disarms the guard once ownership moved to its in-flight
+// queue.  Backends that never retain (v4l2-m2m, rdk) simply never disarm.
+// ---------------------------------------------------------------------------
+struct FrameReleaseGuard {
+    const RawFrame& frame;
+    bool armed;
+    explicit FrameReleaseGuard(const RawFrame& f)
+        : frame(f), armed(f.release != nullptr) {}
+    ~FrameReleaseGuard() {
+        if (armed) frame.release(frame.release_ctx, frame.buffer_index);
+    }
+    FrameReleaseGuard(const FrameReleaseGuard&) = delete;
+    FrameReleaseGuard& operator=(const FrameReleaseGuard&) = delete;
+    void disarm() { armed = false; }
+};

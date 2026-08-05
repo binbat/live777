@@ -261,6 +261,13 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
 
 bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // This encoder never retains capture buffers (CPU frames are copied
+    // into its own pool synchronously, DmaBuf frames are rejected), so an
+    // armed frame is always handed back — the guard covers every exit path
+    // (media_types.h release contract).
+    FrameReleaseGuard release_guard(frame);
+
     if (fd < 0 || !running_.load()) {
         if (err) *err = "encoder not running";
         return false;

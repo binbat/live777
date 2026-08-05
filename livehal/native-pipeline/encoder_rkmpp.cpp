@@ -123,21 +123,6 @@ static inline bool resolve_h264_coding_tools(uint32_t pid, H264CodingTools& out)
 #include <algorithm>
 
 // ---------------------------------------------------------------------------
-// FrameReleaseGuard — returns an armed capture buffer to the capture layer
-// on destruction unless disarmed (i.e. ownership moved to in_flight_).
-// ---------------------------------------------------------------------------
-struct FrameReleaseGuard {
-    const RawFrame& frame;
-    bool armed;
-    explicit FrameReleaseGuard(const RawFrame& f)
-        : frame(f), armed(f.release != nullptr) {}
-    ~FrameReleaseGuard() {
-        if (armed) frame.release(frame.release_ctx, frame.buffer_index);
-    }
-    void disarm() { armed = false; }
-};
-
-// ---------------------------------------------------------------------------
 // RkMppEncoder — persistent buffer pool, round-robin model
 // ---------------------------------------------------------------------------
 
