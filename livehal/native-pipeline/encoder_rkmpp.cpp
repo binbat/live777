@@ -7,7 +7,8 @@
 //!   - H.264 (Baseline / Main / High)
 //!   - H.265 (Main)
 //!
-//! Input: NV12 only (CPU path, no DMA-BUF yet).
+//! Input: NV12 only (CPU copy path, or DMA-BUF zero-copy when both capture
+//! and encoder run with prefer_dmabuf).
 //! Profile/level/tier are resolved by Rust and passed as numeric values.
 //!
 //! Buffer model (persistent pool, partition aggregation):
@@ -17,6 +18,19 @@
 //!   (end-of-image) and dispatched as a single complete Access Unit.
 //!   This matches GStreamer mpph265enc behaviour and fixes screen tearing
 //!   caused by per-partition dispatch.
+//!
+//! Zero-copy lifetime (deferred V4L2 requeue, issue #410):
+//!   A DmaBuf input frame carries an armed release contract (see
+//!   media_types.h).  submit() takes ownership of the capture buffer and
+//!   pushes it onto `in_flight_` after a successful encode_put_frame().
+//!   MPP drains a single encoder context in submission order, so every
+//!   observed frame completion (EOI) releases the oldest held buffer back
+//!   to the capture for requeue — the camera driver can never overwrite a
+//!   buffer the encoder is still reading.  Every non-retaining path (input
+//!   validation failure, copy fallback, put failure) releases immediately
+//!   via an RAII guard, and stop() force-releases the remainder after
+//!   mpi_->reset() (the hardware no longer reads inputs at that point).
+//!   Invariant: in_flight_.size() == submitted - put_failures - completed.
 //!
 //! References:
 //!   https://github.com/rockchip-linux/mpp
@@ -101,11 +115,27 @@ static inline bool resolve_h264_coding_tools(uint32_t pid, H264CodingTools& out)
 
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <atomic>
 #include <memory>
 #include <vector>
 #include <algorithm>
+
+// ---------------------------------------------------------------------------
+// FrameReleaseGuard — returns an armed capture buffer to the capture layer
+// on destruction unless disarmed (i.e. ownership moved to in_flight_).
+// ---------------------------------------------------------------------------
+struct FrameReleaseGuard {
+    const RawFrame& frame;
+    bool armed;
+    explicit FrameReleaseGuard(const RawFrame& f)
+        : frame(f), armed(f.release != nullptr) {}
+    ~FrameReleaseGuard() {
+        if (armed) frame.release(frame.release_ctx, frame.buffer_index);
+    }
+    void disarm() { armed = false; }
+};
 
 // ---------------------------------------------------------------------------
 // RkMppEncoder — persistent buffer pool, round-robin model
@@ -351,6 +381,12 @@ public:
     bool submit(const RawFrame& frame, std::string* err) override {
         std::lock_guard<std::mutex> lock(mutex_);
 
+        // Deferred-requeue contract: an armed (zero-copy) frame transfers
+        // its capture buffer to us.  The guard hands it back on every early
+        // return; only a successful encode_put_frame moves ownership into
+        // in_flight_, released when the frame's EOI is observed.
+        FrameReleaseGuard release_guard(frame);
+
         if (!initialized_ || !running_) {
             if (err) *err = "encoder-rkmpp: not running";
             return false;
@@ -538,6 +574,15 @@ public:
             return false;
         }
 
+        // Track the frame until its EOI.  A zero-copy frame moves its
+        // capture-buffer ownership into the queue (released at completion);
+        // a pool-copy frame only keeps the 1:1 completion pairing — its
+        // guard releases the capture buffer on return (copy finished above).
+        in_flight_.push_back({use_dmabuf ? frame.release : nullptr,
+                              use_dmabuf ? frame.release_ctx : nullptr,
+                              frame.buffer_index});
+        if (use_dmabuf) release_guard.disarm();
+
         // Advance slot index only on successful submit
         next_input_idx_ = (next_input_idx_ + 1) % kInputPoolSize;
 
@@ -545,24 +590,9 @@ public:
         if (depth > peak_inflight_depth_)
             peak_inflight_depth_ = depth;
 
-        // --- Drain and dispatch (this frame may not be ready yet) ---
+        // --- Drain and dispatch (this frame may not be ready yet); each
+        // observed completion releases the oldest held capture buffer ---
         drain_and_dispatch(frame.pts_us);
-
-        // Zero-copy lifetime rule: the capture requeues this V4L2 dmabuf as
-        // soon as submit() returns, so the frame's AU must be fully drained
-        // here. MPP completes a frame per put in practice (depth peak=1);
-        // the bounded retry only covers transient encoder lag.
-        if (use_dmabuf) {
-            for (int retry = 0; retry < 3 && !pending_au_.empty(); ++retry) {
-                usleep(2000);
-                drain_and_dispatch(frame.pts_us);
-            }
-            if (!pending_au_.empty()) {
-                fprintf(stderr,
-                    "[RkMppEncoder] warn: dmabuf frame not drained in time "
-                    "(capture may requeue early)\n");
-            }
-        }
 
         // Periodic stats
         print_stats_if_due();
@@ -582,7 +612,16 @@ public:
         running_ = false;
 
         if (ctx_ && mpi_) {
-            // Flush
+            // Drain in-flight frames so their capture buffers come back
+            // through the normal completion path.  Bounded: a stalled
+            // encoder must not hang stop(); the remainder is force-released
+            // after reset below.
+            for (int i = 0; i < 50 && !in_flight_.empty(); ++i) {
+                drain_and_dispatch(0);
+                if (!in_flight_.empty()) usleep(2000);
+            }
+            // Flush (raw packet loop: EOS bookkeeping must not touch the
+            // in-flight completion pairing).
             MppFrame flush_frame = nullptr;
             if (mpp_frame_init(&flush_frame) == MPP_OK) {
                 mpp_frame_set_eos(flush_frame, 1);
@@ -599,6 +638,20 @@ public:
             mpp_destroy(ctx_);
             ctx_ = nullptr;
             mpi_ = nullptr;
+        }
+
+        // After reset the hardware no longer reads any input buffer, so
+        // anything still held is safe to hand back (only an encoder stall
+        // should ever reach this).
+        while (!in_flight_.empty()) {
+            HeldInput held = in_flight_.front();
+            in_flight_.pop_front();
+            if (held.release) {
+                std::fprintf(stderr,
+                    "[RkMppEncoder] warn: force-releasing undrained input "
+                    "buffer %u at stop\n", held.buffer_index);
+                held.release(held.ctx, held.buffer_index);
+            }
         }
 
         // Imported buffers wrap capture-owned dmabuf fds.  Release the MPP
@@ -721,6 +774,17 @@ private:
         // EOI is observed — whether or not the AU carried any data.
         completed_frames_++;
 
+        // Completions arrive in submission order (single encoder context):
+        // pair this one with the oldest in-flight input and hand its capture
+        // buffer back for requeue — only now may the camera reuse the
+        // memory.  A stalled encoder simply holds buffers (capture keeps
+        // running on the remaining pool); it can never corrupt them.
+        if (!in_flight_.empty()) {
+            HeldInput held = in_flight_.front();
+            in_flight_.pop_front();
+            if (held.release) held.release(held.ctx, held.buffer_index);
+        }
+
         if (au.empty()) return dispatched;
 
         // Merge with any pending partial AU from a previous drain
@@ -814,6 +878,18 @@ private:
     // and reused (the capture owns the memory; fds are stable per V4L2 slot).
     std::unordered_map<int, MppBuffer> dmabuf_cache_;
     int next_input_idx_ = 0;
+
+    // Submitted-but-not-yet-completed frames in submission order: one entry
+    // per successful encode_put_frame, popped once its EOI is observed in
+    // drain_and_dispatch().  Zero-copy frames carry their capture buffer
+    // release contract; pool-copy frames push a null-release marker so the
+    // completion pairing stays exactly 1:1.
+    struct HeldInput {
+        CaptureBufferReleaseFn release;
+        void* ctx;
+        uint32_t buffer_index;
+    };
+    std::deque<HeldInput> in_flight_;
 
     // Explicit output packet buffers (attached per-frame via meta) and a
     // motion-info buffer, mirroring mpi_enc_test; required on RV1126B.

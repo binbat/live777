@@ -32,6 +32,9 @@ struct CaptureConfig {
 // ---------------------------------------------------------------------------
 // Frame callback — invoked for every captured frame.
 // The RawFrame reference is valid only during the callback.
+// For DmaBuf frames carrying a release callback, the capture buffer itself
+// stays owned by the consumer until it calls RawFrame::release — see the
+// zero-copy lifetime contract in media_types.h.
 // ---------------------------------------------------------------------------
 using CaptureFrameCallback = std::function<void(const RawFrame&)>;
 
