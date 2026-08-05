@@ -1,9 +1,11 @@
 # Cross-rs image for Rockchip RK3588 (RKMPP) aarch64 builds, published as
 # ghcr.io/binbat/crossbuilder-aarch64-rkmpp by the Cross Images workflow.
 #
-# The sysroot stage builds librockchip_mpp from source (arm64, under QEMU)
-# and installs it into /rkmpp-sysroot. The final image is an amd64 Debian 13
-# (trixie) container with the aarch64 cross toolchain plus the baked sysroot.
+# The sysroot stage cross-compiles librockchip_mpp for arm64 natively on the
+# amd64 builder (an emulated arm64 build under QEMU gets the GitHub-hosted
+# runner killed mid-build) and installs it into /rkmpp-sysroot. The final
+# image is an amd64 Debian 13 (trixie) container with the aarch64 cross
+# toolchain plus the baked sysroot.
 # Debian 13 is required: the stock cross-rs aarch64 image is Ubuntu 20.04
 # (glibc 2.31) and cannot link librockchip_mpp.so (needs GLIBC_2.34+).
 #
@@ -17,14 +19,15 @@
 # self-consistent again; pin the commit for reproducibility.
 ARG MPP_REF=df4864bd1e907cbfd427c397348976c5b2b05ee9
 
-FROM --platform=linux/arm64 debian:trixie-slim AS rkmpp-sysroot
+FROM debian:trixie-slim AS rkmpp-sysroot
 ARG MPP_REF
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update; \
     apt-get install -y --no-install-recommends \
-        build-essential cmake ca-certificates; \
+        build-essential cmake ca-certificates \
+        gcc-aarch64-linux-gnu g++-aarch64-linux-gnu; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /mpp
@@ -32,7 +35,14 @@ WORKDIR /mpp
 ADD https://github.com/rockchip-linux/mpp/archive/${MPP_REF}.tar.gz mpp.tar.gz
 RUN tar -xf mpp.tar.gz --strip-components 1
 
-RUN cmake -B build \
+RUN printf '%s\n' \
+        'set(CMAKE_SYSTEM_NAME Linux)' \
+        'set(CMAKE_SYSTEM_PROCESSOR aarch64)' \
+        'set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)' \
+        'set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)' \
+        > aarch64-linux-gnu.cmake \
+    && cmake -B build \
+        -DCMAKE_TOOLCHAIN_FILE=aarch64-linux-gnu.cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DCMAKE_INSTALL_LIBDIR=lib/aarch64-linux-gnu \
