@@ -236,7 +236,9 @@ cargo build --bin live777 --release \
   --no-default-features --features native-rpi,webui
 ```
 
-需要带有 libcamera-dev 的 Raspberry Pi sysroot。如果 sysroot 不在默认路径，请设置 `RPI_SYSROOT`。
+交叉编译时，`just rpi-cross-build` 默认使用已内置 Raspberry Pi libcamera
+sysroot 的 GHCR cross 镜像。只有需要覆盖为从设备同步出的 sysroot 时才设置
+`RPI_SYSROOT`。
 
 ### 通用 Linux V4L2
 
@@ -284,7 +286,7 @@ cargo check --features native-rpi,webui
 
 | 变量 | 用途 |
 |----------|---------|
-| `RPI_SYSROOT` | 包含 `libcamera-dev` 的树莓派 sysroot 路径。在构建 `capture-libcamera` / `native-rpi` 时使用。 |
+| `RPI_SYSROOT` | 可选的树莓派 sysroot，需包含 `libcamera-dev`；会覆盖 RPi cross 镜像内置的 sysroot。 |
 | `RDK_SYSROOT` | 地平线 RDK X5 SDK sysroot 路径。在 aarch64 上构建 `encoder-rdk` / `native-rdk` 时**必须**设置。 |
 | `RKMPP_SYSROOT` | 包含 Rockchip MPP 库和头文件的 sysroot 路径。在 aarch64 上构建 `encoder-rkmpp` / `native-rkmpp` 时使用。 |
 | `LIVEHAL_CXX_STDLIB` | 覆盖要链接的 C++ 标准库（如 `stdc++`、`c++` 等），用于交叉编译工具链。 |

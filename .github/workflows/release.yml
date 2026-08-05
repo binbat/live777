@@ -270,13 +270,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
 
-  build-rkmpp:
-    name: aarch64-unknown-linux-gnu-rkmpp (ubuntu-24.04)
+  build-native:
+    name: aarch64-unknown-linux-gnu-${{ matrix.variant }} (ubuntu-24.04)
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [rkmpp, rpi]
     env:
       TARGET: aarch64-unknown-linux-gnu
-      VARIANT: rkmpp
-      RKMPP_CROSS_IMAGE: ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest
+      VARIANT: ${{ matrix.variant }}
+      CROSS_IMAGE: ghcr.io/binbat/crossbuilder-aarch64-${{ matrix.variant }}:latest
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6
@@ -327,14 +331,12 @@ jobs:
         shell: bash
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build Rockchip RKMPP live777
+      - name: Build ${{ matrix.variant }} live777
         shell: bash
         run: |
-          CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${RKMPP_CROSS_IMAGE} \
-            cross build --locked --bin live777 --release --target=${TARGET} \
-            --no-default-features --features native-rkmpp,webui
+          CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${CROSS_IMAGE}             cross build --locked --bin live777 --release --target=${TARGET}             --no-default-features --features native-${VARIANT},webui
 
-      - name: Create Rockchip RKMPP live777 tarball
+      - name: Create ${{ matrix.variant }} live777 tarball
         shell: bash
         run: |
           TAR_BASENAME=live777-${VERSION}-${TARGET}-${VARIANT}
@@ -346,17 +348,17 @@ jobs:
           cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
           tar czf "${TAR_NAME}" "${TAR_BASENAME}"/*
 
-          echo "TAR_RKMPP_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
+          echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
 
-      - name: Artifact Upload Rockchip RKMPP live777
+      - name: Artifact Upload ${{ matrix.variant }} live777
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.VERSION }}_${{ env.TARGET }}_${{ env.VARIANT }}_live777
-          path: ${{ env.TAR_RKMPP_LIVE777_NAME }}
+          path: ${{ env.TAR_LIVE777_NAME }}
 
-      - name: Upload Rockchip RKMPP release archive
+      - name: Upload ${{ matrix.variant }} release archive
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_RKMPP_LIVE777_NAME }}
+        run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }}
         env:
           GH_TOKEN: ${{ github.token }}
