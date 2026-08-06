@@ -202,7 +202,7 @@ void PiCameraImpl::on_request_completed(Request* request) {
         mapped = &it->second;
     }
 
-    // Copy each plane into the contiguous buffer.
+    // Copy each plane into the contiguous staging buffer.
     uint8_t* dst = mapped->contiguous.data();
     size_t offset = 0;
     const auto& planes = mapped->framebuffer->planes();
@@ -214,32 +214,20 @@ void PiCameraImpl::on_request_completed(Request* request) {
         offset += plane.length;
     }
 
-    // Copy frame data locally so we can invoke the callback without holding
-    // any PiCameraImpl lock.  This keeps the frame valid even if stop() runs
-    // concurrently.
-    std::vector<uint8_t> frame_data;
-    frame_data.assign(mapped->contiguous.data(),
-                      mapped->contiguous.data() + mapped->total_size);
-
     CaptureFrameCallback cb;
-    bool should_queue = false;
     std::chrono::steady_clock::time_point start_time;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         cb = capture_cb_;
-        should_queue = running.load() && camera != nullptr;
         start_time = start_time_;
     }
 
-    // Reuse and re-queue if still running.  Resources are still alive because
-    // stop() waits for callbacks_in_flight_ to reach zero before returning.
-    request->reuse(Request::ReuseFlag::ReuseBuffers);
-    if (should_queue) {
-        if (camera->queueRequest(request) < 0) {
-            fprintf(stderr, "[CameraInternal] queueRequest failed for req=%p\n", request);
-        }
-    }
-
+    // Deliver the frame pointing straight at the staging buffer — no second
+    // full-frame copy.  This is safe because the request has NOT been
+    // requeued yet: the ISP cannot overwrite the dma-buf, and no later
+    // completion of this request can touch `contiguous`, for the whole
+    // duration of the callback.  stop() waits for in-flight callbacks
+    // before resources are released, so the staging buffer outlives cb.
     if (cb) {
         auto now = std::chrono::steady_clock::now();
         uint64_t timestamp =
@@ -254,13 +242,28 @@ void PiCameraImpl::on_request_completed(Request* request) {
         f.seq = ++seq_;
         f.plane_count = 1;
         f.planes[0] = {
-            frame_data.data(),
+            mapped->contiguous.data(),
             static_cast<uint32_t>(width_),
-            static_cast<uint32_t>(frame_data.size()),
+            static_cast<uint32_t>(mapped->contiguous.size()),
             -1,
             0,
         };
         cb(f);
+    }
+
+    // Requeue only after the callback is done with the frame.  Re-read the
+    // state: stop() may have run while the callback executed (it blocks on
+    // callbacks_in_flight_, so `camera` is still alive here).
+    bool should_queue = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        should_queue = running.load() && camera != nullptr;
+    }
+    request->reuse(Request::ReuseFlag::ReuseBuffers);
+    if (should_queue) {
+        if (camera->queueRequest(request) < 0) {
+            fprintf(stderr, "[CameraInternal] queueRequest failed for req=%p\n", request);
+        }
     }
 }
 
