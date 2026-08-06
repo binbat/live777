@@ -238,6 +238,12 @@ bool RdkX5Encoder::init(const EncoderConfig& cfg, std::string* err) {
 bool RdkX5Encoder::submit(const RawFrame& frame, std::string* err) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // This encoder never retains capture buffers (CPU copy path only; the
+    // DMA-BUF path is not implemented and rejects), so an armed frame is
+    // always handed back — the guard covers every exit path (media_types.h
+    // release contract).
+    FrameReleaseGuard release_guard(frame);
+
     if (!context || !running_) {
         if (err) *err = "encoder not running";
         return false;

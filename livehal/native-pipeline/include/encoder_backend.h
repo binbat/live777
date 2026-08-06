@@ -76,7 +76,12 @@ public:
     virtual bool init(const EncoderConfig& cfg, std::string* err) = 0;
 
     /// Submit a raw frame for encoding.
-    /// The frame data must be valid for the duration of the call.
+    /// The frame struct and CPU plane pointers must be valid for the
+    /// duration of the call.  If the frame carries a release callback
+    /// (DmaBuf zero-copy), the implementation MUST invoke it exactly once:
+    /// immediately on any path that does not retain the buffer (including
+    /// every error return), or later once the hardware finished reading
+    /// it.  stop() must release all still-held frames.
     virtual bool submit(const RawFrame& frame, std::string* err) = 0;
 
     /// Request an IDR keyframe at the next opportunity.

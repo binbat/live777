@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <linux/videodev2.h>
+#include <mutex>
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -75,7 +76,10 @@ struct V4L2CaptureImpl : public CaptureBackend {
     uint32_t memory_plane_count = 1;
     std::array<uint32_t, VIDEO_MAX_PLANES> plane_strides{};
     std::array<uint32_t, VIDEO_MAX_PLANES> plane_sizeimages{};
+    // Guarded by release_mutex: shared between the capture thread and the
+    // encoder thread calling release_buffer() for held zero-copy buffers.
     bool streaming = false;
+    std::mutex release_mutex;
 
     std::atomic<bool> running{false};
     std::atomic<bool> thread_alive{false};
@@ -102,6 +106,14 @@ struct V4L2CaptureImpl : public CaptureBackend {
     bool make_frame(uint32_t index, const v4l2_buffer& buf,
                     const v4l2_plane* dequeued_planes, RawFrame* frame,
                     std::string* err);
+
+    // Zero-copy release entry point wired into RawFrame::release.  The
+    // encoder calls it (from any thread) once it finished reading a held
+    // capture buffer; becomes a no-op once streaming stopped.
+    static void release_trampoline(void* ctx, uint32_t buffer_index);
+    void release_buffer(uint32_t index);
+    // Attach the deferred-requeue contract to a DmaBuf frame.
+    void arm_release(RawFrame* frame, uint32_t index) const;
 };
 
 bool V4L2CaptureImpl::supports_format(v4l2_buf_type type, uint32_t fourcc) const {
@@ -250,6 +262,7 @@ bool V4L2CaptureImpl::make_frame(
         if (prefer_dmabuf && mapped.planes[0].dma_fd >= 0
             && mapped.planes[1].dma_fd >= 0) {
             frame->kind = BufferKind::DmaBuf;
+            arm_release(frame, index);
         }
         for (uint32_t plane = 0; plane < 2; ++plane) {
             const size_t used = std::min(bytes_used(plane), available_bytes(plane));
@@ -276,6 +289,7 @@ bool V4L2CaptureImpl::make_frame(
         const int dma_fd = mapped.planes[0].dma_fd;
         if (prefer_dmabuf && dma_fd >= 0) {
             frame->kind = BufferKind::DmaBuf;
+            arm_release(frame, index);
         }
         frame->format = RawPixelFormat::Nv12;
         frame->plane_count = 2;
@@ -344,6 +358,29 @@ bool V4L2CaptureImpl::queue_buffer(uint32_t index, std::string* err) {
     return true;
 }
 
+void V4L2CaptureImpl::arm_release(RawFrame* frame, uint32_t index) const {
+    frame->buffer_index = index;
+    frame->release = &V4L2CaptureImpl::release_trampoline;
+    frame->release_ctx = const_cast<V4L2CaptureImpl*>(this);
+}
+
+void V4L2CaptureImpl::release_trampoline(void* ctx, uint32_t buffer_index) {
+    static_cast<V4L2CaptureImpl*>(ctx)->release_buffer(buffer_index);
+}
+
+// Deferred requeue for a held zero-copy buffer.  Called by the encoder once
+// the hardware finished reading the buffer (or on its error/stop paths).
+// Races with stop() are fine: after STREAMOFF the driver has returned all
+// buffers to us, so a late release is a no-op under the lock.
+void V4L2CaptureImpl::release_buffer(uint32_t index) {
+    std::lock_guard<std::mutex> lock(release_mutex);
+    if (!streaming || index >= buffers.size()) return;
+    std::string err;
+    if (!queue_buffer(index, &err)) {
+        fprintf(stderr, "[V4L2Capture] deferred %s\n", err.c_str());
+    }
+}
+
 void V4L2CaptureImpl::capture_loop() {
     fprintf(stderr, "[V4L2Capture] capture thread started\n");
     thread_alive.store(true);
@@ -383,6 +420,11 @@ void V4L2CaptureImpl::capture_loop() {
         } else {
             fprintf(stderr, "[V4L2Capture] dropped frame: %s\n", frame_error.c_str());
         }
+
+        // Zero-copy frames with an armed release contract stay owned by the
+        // consumer (encoder); it requeues via release_buffer() once the
+        // hardware finished reading.  All other frames requeue immediately.
+        if (frame.release != nullptr) continue;
 
         std::string queue_error;
         if (!queue_buffer(buf.index, &queue_error)) {
@@ -616,16 +658,25 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
         if (err) *err = std::string("STREAMON failed: ") + strerror(errno);
         return false;
     }
-    streaming = true;
+    {
+        std::lock_guard<std::mutex> lock(release_mutex);
+        streaming = true;
+    }
     running.store(true);
     capture_thread = std::thread(&V4L2CaptureImpl::capture_loop, this);
     return true;
 }
 
 void V4L2CaptureImpl::release_resources() {
-    if (fd >= 0 && streaming) {
-        ioctl(fd, VIDIOC_STREAMOFF, &buffer_type);
-        streaming = false;
+    {
+        // Block deferred requeues before STREAMOFF: once streaming is off
+        // the driver returns all buffers (including held zero-copy ones),
+        // so any late release_buffer() must become a no-op.
+        std::lock_guard<std::mutex> lock(release_mutex);
+        if (fd >= 0 && streaming) {
+            ioctl(fd, VIDIOC_STREAMOFF, &buffer_type);
+            streaming = false;
+        }
     }
     for (Buffer& buffer : buffers) {
         for (MappedPlane& plane : buffer.planes) {
