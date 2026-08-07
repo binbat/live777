@@ -180,7 +180,9 @@ pub fn sender_track_codec_compatible(
     rtp_codecs_match(sender_track_codec, selected_codec)
         || (is_h264_codec(sender_track_codec) && is_h264_codec(selected_codec))
         || (h265_codecs_are_compatible(sender_track_codec, selected_codec)
-            && h265_candidate_level_sufficient(sender_track_codec, selected_codec))
+            // (receiver codec, publisher codec): the receiver's level-id is
+            // its max supported level, the publisher's is the stream's.
+            && h265_candidate_level_sufficient(selected_codec, sender_track_codec))
         || av1_codecs_are_compatible(sender_track_codec, selected_codec)
 }
 
