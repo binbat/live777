@@ -11,7 +11,7 @@ Unit) that uses the `WHIP`/`WHEP` protocols as its primary interface. It is
 designed for real-time audio/video streaming and interoperates with clients
 such as GStreamer, FFmpeg, OBS Studio, VLC, and browsers.
 
-The repository is a mixed Rust + TypeScript/Preact/Solid project. Rust provides
+The repository is a mixed Rust + TypeScript/Vue project. Rust provides
 the media server, protocol conversion, and command-line tools. TypeScript/Vite
 provides the embedded WebUIs.
 
@@ -28,7 +28,7 @@ provides the embedded WebUIs.
 - **WebRTC stack** — `webrtc`/`rtc-*` crates, pinned to upstream
   `https://github.com/webrtc-rs/rtc` at revision `de84c7c8` via
   `[patch.crates-io]` until the next tag is released.
-- **Web UI** — Vite, Preact, SolidJS, Tailwind CSS, DaisyUI, TypeScript.
+- **Web UI** — Vite, Vue 3, Tailwind CSS, DaisyUI, TypeScript.
 - **Package manager** — pnpm 10.20.0 (workspace covers `web/*`).
 - **Storage** — OpenDAL for object/FS storage; Sea-ORM + SQLite (or Postgres)
   in `liveman` for recording indexes.
@@ -79,9 +79,16 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 
 ### WebUI Packages (`web/*`)
 
-- `player-core`  — reusable WHEP player component.
-- `alone-player` — standalone player widget.
+- `player-core`  — WHEP player core: framework-agnostic playback engine
+  (`WhepPlaybackCore` in `whep-core.ts`) plus WebRTC stats helpers.
+- `player-vue`   — Vue WHEP player component library
+  (`@binbat/whep-player-vue`): `useWhepPlayback` composable, `WhepPlayer`,
+  `PlayerSurface`, `StatsForNerds`, `StandaloneWhepPlayer` (full-page,
+  query-param driven; serves `/tools/player.html` in both admin apps).
 - `debugger`     — debugging UI widget.
+- `shared`       — shared Vue components/composables for the two admin apps
+  (streams table, dialogs, SSE/refresh composables; consumed via the `@`
+  alias, no package.json).
 - `liveion`      — WebUI embedded by the `live777` binary.
 - `liveman`      — WebUI embedded by the `liveman` binary.
 

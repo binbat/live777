@@ -1,17 +1,24 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { onMounted, onUnmounted, ref, type Ref } from "vue";
 
-import { type AuthorizationCallbacks } from '../authorization-middleware';
+import { type AuthorizationCallbacks } from "../authorization-middleware";
 
-export function useNeedAuthorization(auth: Omit<AuthorizationCallbacks, 'setAuthorization'>) {
-    const needsAuthorizaiton = useState(false);
-    const cb = useCallback(() => {
-        needsAuthorizaiton[1](true);
-    }, []);
+export function useNeedAuthorization(
+    auth: Omit<AuthorizationCallbacks, "setAuthorization">
+): [Ref<boolean>, (value: boolean) => void] {
+    const needsAuthorization = ref(false);
+    const setNeedsAuthorization = (value: boolean) => {
+        needsAuthorization.value = value;
+    };
+    const cb = () => {
+        setNeedsAuthorization(true);
+    };
 
-    useEffect(() => {
+    onMounted(() => {
         auth.addUnauthorizedCallback(cb);
-        return () => auth.removeUnauthorizedCallback(cb);
-    }, []);
+    });
+    onUnmounted(() => {
+        auth.removeUnauthorizedCallback(cb);
+    });
 
-    return needsAuthorizaiton;
+    return [needsAuthorization, setNeedsAuthorization];
 }

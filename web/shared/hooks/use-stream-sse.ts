@@ -1,22 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import {
+    computed,
+    ref,
+    shallowRef,
+    toValue,
+    watchEffect,
+    type ComputedRef,
+    type MaybeRefOrGetter,
+    type Ref,
+    type ShallowRef,
+} from "vue";
 
 export interface StreamSSEEvent<T> {
     data: T;
 }
 
 export interface UseStreamSSEOptions<T> {
-    url: string | null;
-    token: string;
+    url: MaybeRefOrGetter<string | null>;
+    token: MaybeRefOrGetter<string>;
     parse: (data: string) => T;
-    enabled?: boolean;
+    enabled?: MaybeRefOrGetter<boolean>;
 }
 
 export interface UseStreamSSEReturn<T> {
-    data: T;
-    connected: boolean;
+    data: ShallowRef<T>;
+    connected: Ref<boolean>;
     /** Reconnecting after having connected at least once (clean close, in backoff). */
-    reconnecting: boolean;
-    error: Error | null;
+    reconnecting: ComputedRef<boolean>;
+    error: ShallowRef<Error | null>;
     reconnect: () => void;
 }
 
@@ -28,8 +38,8 @@ const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
 
 function parseSSEBuffer(buffer: string): { messages: SSEMessage[]; remaining: string } {
-    const parts = buffer.split('\n\n');
-    const remaining = parts.pop() ?? '';
+    const parts = buffer.split("\n\n");
+    const remaining = parts.pop() ?? "";
     const messages: SSEMessage[] = [];
 
     for (const part of parts) {
@@ -37,10 +47,10 @@ function parseSSEBuffer(buffer: string): { messages: SSEMessage[]; remaining: st
             continue;
         }
 
-        const lines = part.split('\n');
-        let data = '';
+        const lines = part.split("\n");
+        let data = "";
         for (const line of lines) {
-            if (line.startsWith('data:')) {
+            if (line.startsWith("data:")) {
                 const value = line.slice(5).trimStart();
                 data = data ? `${data}\n${value}` : value;
             }
@@ -57,18 +67,27 @@ export function useStreamSSE<T>(
     options: UseStreamSSEOptions<T>,
     initialData: T,
 ): UseStreamSSEReturn<T> {
-    const { url, token, parse, enabled = true } = options;
-    const [data, setData] = useState<T>(initialData);
-    const [connected, setConnected] = useState(false);
-    const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
-    const [error, setError] = useState<Error | null>(null);
-    const [retryCount, setRetryCount] = useState(0);
-    const reconnect = useCallback(() => setRetryCount(c => c + 1), []);
-    const abortControllerRef = useRef<AbortController | null>(null);
+    const { parse } = options;
+    const data = shallowRef(initialData) as ShallowRef<T>;
+    const connected = ref(false);
+    const hasConnectedOnce = ref(false);
+    const error = shallowRef<Error | null>(null);
+    const retryCount = ref(0);
+    const reconnect = () => {
+        retryCount.value += 1;
+    };
+    let abortController: AbortController | null = null;
 
-    useEffect(() => {
+    watchEffect((onCleanup) => {
+        // Read every reactive input synchronously so the effect tracks it;
+        // retryCount is only tracked to re-run on manual reconnects.
+        const url = toValue(options.url);
+        const token = toValue(options.token);
+        const enabled = toValue(options.enabled ?? true);
+        void retryCount.value;
+
         if (!url || !enabled) {
-            setConnected(false);
+            connected.value = false;
             return;
         }
 
@@ -77,24 +96,24 @@ export function useStreamSSE<T>(
         let backoffMs = INITIAL_BACKOFF_MS;
 
         const connect = async () => {
-            abortControllerRef.current?.abort();
-            const abortController = new AbortController();
-            abortControllerRef.current = abortController;
+            abortController?.abort();
+            const controller = new AbortController();
+            abortController = controller;
 
             try {
-                setError(null);
+                error.value = null;
 
                 const headers: Record<string, string> = {
-                    Accept: 'text/event-stream',
+                    Accept: "text/event-stream",
                 };
                 if (token) {
-                    headers.Authorization = token.includes(' ') ? token : `Bearer ${token}`;
+                    headers.Authorization = token.includes(" ") ? token : `Bearer ${token}`;
                 }
 
                 const response = await fetch(url, {
-                    method: 'GET',
+                    method: "GET",
                     headers,
-                    signal: abortController.signal,
+                    signal: controller.signal,
                 });
 
                 if (!response.ok) {
@@ -102,16 +121,16 @@ export function useStreamSSE<T>(
                 }
 
                 if (!response.body) {
-                    throw new Error('SSE response body is empty');
+                    throw new Error("SSE response body is empty");
                 }
 
-                setConnected(true);
-                setHasConnectedOnce(true);
+                connected.value = true;
+                hasConnectedOnce.value = true;
                 backoffMs = INITIAL_BACKOFF_MS;
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
-                let buffer = '';
+                let buffer = "";
 
                 while (!disposed) {
                     const { done, value } = await reader.read();
@@ -125,26 +144,26 @@ export function useStreamSSE<T>(
 
                     for (const message of messages) {
                         try {
-                            setData(parse(message.data));
+                            data.value = parse(message.data);
                         } catch (err) {
-                            console.error('Failed to parse SSE message data:', err);
+                            console.error("Failed to parse SSE message data:", err);
                         }
                     }
                 }
 
                 if (!disposed) {
-                    setConnected(false);
+                    connected.value = false;
                     retryTimeout = window.setTimeout(() => {
                         reconnect();
                     }, backoffMs);
                     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
                 }
             } catch (err) {
-                if (disposed || abortController.signal.aborted) {
+                if (disposed || controller.signal.aborted) {
                     return;
                 }
-                setConnected(false);
-                setError(err instanceof Error ? err : new Error(String(err)));
+                connected.value = false;
+                error.value = err instanceof Error ? err : new Error(String(err));
                 retryTimeout = window.setTimeout(() => {
                     reconnect();
                 }, backoffMs);
@@ -152,20 +171,20 @@ export function useStreamSSE<T>(
             }
         };
 
-        connect();
+        void connect();
 
-        return () => {
+        onCleanup(() => {
             disposed = true;
             window.clearTimeout(retryTimeout);
-            abortControllerRef.current?.abort();
-            abortControllerRef.current = null;
-        };
-    }, [url, token, enabled, retryCount, parse, reconnect]);
+            abortController?.abort();
+            abortController = null;
+        });
+    });
 
     return {
         data,
         connected,
-        reconnecting: !connected && !error && hasConnectedOnce,
+        reconnecting: computed(() => !connected.value && !error.value && hasConnectedOnce.value),
         error,
         reconnect,
     };

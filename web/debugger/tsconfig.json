@@ -13,8 +13,6 @@
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
     "noEmit": true,
-    "jsx": "preserve",
-    "jsxImportSource": "solid-js",
     "baseUrl": "../..",
     "paths": {
       "@/*": ["web/*"]
@@ -28,5 +26,10 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["components", "primitive", "main.tsx"]
+  "include": [
+    "main.ts",
+    "components/**/*.ts",
+    "components/**/*.vue",
+    "primitive/**/*.ts"
+  ]
 }

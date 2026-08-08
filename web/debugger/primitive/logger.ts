@@ -1,4 +1,4 @@
-import { type Accessor, createSignal } from "solid-js";
+import { type Ref, ref } from "vue";
 
 const formatTimestamp: (ts: number) => string = (ts) => {
     const ms = (ts % 1000).toString(10).padStart(3, "0");
@@ -15,17 +15,17 @@ const formatTimestamp: (ts: number) => string = (ts) => {
     }
 };
 
-export function createLogger(): [
-    Accessor<string[]>,
+export function useLogger(): [
+    Ref<string[]>,
     (text: string, time?: number) => void,
     () => void,
 ] {
-    const [logs, setLogs] = createSignal<string[]>([]);
+    const logs = ref<string[]>([]);
     let firstTimestamp: number | undefined;
 
     const clear = () => {
         firstTimestamp = undefined;
-        setLogs([]);
+        logs.value = [];
     };
 
     const log = (text: string, time = Date.now()) => {
@@ -36,7 +36,7 @@ export function createLogger(): [
             diff = time - firstTimestamp;
         }
         const line = `${formatTimestamp(diff)} ${text}`;
-        setLogs((l) => [...l, line]);
+        logs.value = [...logs.value, line];
     };
 
     return [logs, log, clear];

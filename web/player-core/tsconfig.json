@@ -12,8 +12,6 @@
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
     "noEmit": true,
-    "jsx": "preserve",
-    "jsxImportSource": "solid-js",
 
     "strict": true,
     "noUnusedLocals": true,
@@ -22,12 +20,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": [
-    "index.ts",
-    "player-surface.tsx",
-    "stats.tsx",
-    "types.ts",
-    "webrtc-stats.ts",
-    "whep-playback.ts"
-  ]
+  "include": ["index.ts", "types.ts", "webrtc-stats.ts", "whep-core.ts"]
 }
