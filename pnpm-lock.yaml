@@ -4,13 +4,18 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@binbat/whip-whep@1.1.1-sdp-trickle-throw':
+    hash: 81af8f18d20d44b1a88de702fa608bdf6a5daf31d68fece70c7972a6d10e39e0
+    path: patches/@binbat__whip-whep@1.1.1-sdp-trickle-throw.patch
+
 importers:
 
   .:
     dependencies:
       '@binbat/whip-whep':
         specifier: 1.1.1-sdp-trickle-throw
-        version: 1.1.1-sdp-trickle-throw
+        version: 1.1.1-sdp-trickle-throw(patch_hash=81af8f18d20d44b1a88de702fa608bdf6a5daf31d68fece70c7972a6d10e39e0)
       '@nuintun/qrcode':
         specifier: ^5.0.2
         version: 5.0.2
@@ -123,7 +128,7 @@ importers:
     dependencies:
       '@binbat/whip-whep':
         specifier: 1.1.1-sdp-trickle-throw
-        version: 1.1.1-sdp-trickle-throw
+        version: 1.1.1-sdp-trickle-throw(patch_hash=81af8f18d20d44b1a88de702fa608bdf6a5daf31d68fece70c7972a6d10e39e0)
 
   web/player-vue:
     dependencies:
@@ -2303,7 +2308,7 @@ snapshots:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
 
-  '@binbat/whip-whep@1.1.1-sdp-trickle-throw': {}
+  '@binbat/whip-whep@1.1.1-sdp-trickle-throw(patch_hash=81af8f18d20d44b1a88de702fa608bdf6a5daf31d68fece70c7972a6d10e39e0)': {}
 
   '@biomejs/biome@2.5.6':
     optionalDependencies:

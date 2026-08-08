@@ -1,2 +1,5 @@
 packages:
   - 'web/*'
+
+patchedDependencies:
+  '@binbat/whip-whep@1.1.1-sdp-trickle-throw': patches/@binbat__whip-whep@1.1.1-sdp-trickle-throw.patch
