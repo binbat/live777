@@ -45,7 +45,7 @@ export default defineConfig({
         emptyOutDir: true,
     },
     plugins: [
-        vue()
+        vue({ features: { vapor: true } })
     ],
     resolve: {
         alias: {

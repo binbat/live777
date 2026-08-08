@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { watch } from "vue";
-import { ArrowPathIcon, EllipsisHorizontalIcon } from "@heroicons/vue/24/outline";
+import ArrowPathIcon from "@/shared/components/icons/arrow-path.vue";
+import EllipsisHorizontalIcon from "@/shared/components/icons/ellipsis-horizontal.vue";
 
 import { useToken } from "@/shared/context";
 import { useRefreshTimer } from "@/shared/hooks/use-refresh-timer";
