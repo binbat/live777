@@ -49,7 +49,7 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 - 所有 FFI 细节在 `livehal` 内部都是 crate-private 的；`liveion` 只能通过通道看到 `EncodedPacket`。
 - **原生源的 RTP 路径**：`EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`。这避免了其他源所使用的 `Packet` → bytes → `Packet::unmarshal` 往返。
 - `MediaPacket::Rtp { data }` 字节路径仍由 `rtp_listener` / `rtsp_source` / `sdp_source` 使用。
-- **DMA-BUF 零拷贝尚未实现。** `prefer_dmabuf` 配置字段已存在于 schema 中，并已贯通到 C++ 层。RDK V4L2 采集在 `prefer_dmabuf=true` 时会导出 DMA-BUF fd，但 `encoder_rdk.cpp` 尚未实现 DMA-BUF fd 导入——它会拒绝 `BufferKind::DmaBuf`。默认值仍为 `false`。目前所有帧都通过 CPU 路径拷贝。完整的用户态零拷贝需要在 RDK 编码后端实现 DMA-BUF 导入，并处理好采集缓冲区生命周期。
+- **DMA-BUF 零拷贝**（通用 V4L2 → RKMPP）：已实现。采集和编码同时设 `prefer_dmabuf = true` 时，采集侧把每个 V4L2 缓冲区导出为 DMA-BUF（`VIDIOC_EXPBUF`），编码器直接导入使用——整帧不再经过 CPU 拷贝。缓冲区所有权是显式的：从 `VIDIOC_DQBUF` 到该帧编码完成期间缓冲区归编码器所有，待硬件读取完毕后才 requeue 回 V4L2（延迟 requeue 释放契约，摄像头不可能在编码中途覆盖缓冲区）。导出或导入失败时回退 CPU 拷贝路径。RDK 后端尚未实现 DMA-BUF 导入（`encoder_rdk.cpp` 会拒绝 `BufferKind::DmaBuf`），该路径仍以 CPU 拷贝为默认。
 
 ## 配置
 
@@ -387,3 +387,99 @@ gop = 60
 payload_type = 96
 clock_rate = 90000
 ```
+
+### 瑞芯微 RKMPP（RK3588 / RV1126B）
+
+```toml
+[stream.rk-cam]
+[[stream.rk-cam.sources]]
+
+[stream.rk-cam.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 1280
+height = 720
+fps = 60
+pixel_format = "nv12"
+prefer_dmabuf = true      # DMA-BUF 零拷贝（采集侧）
+
+[stream.rk-cam.sources.encoder]
+backend = "rkmpp"
+codec = "h264"
+bitrate = 4_000_000
+profile = "420028"
+gop = 120
+prefer_dmabuf = true      # DMA-BUF 零拷贝（编码侧）
+
+[stream.rk-cam.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+零拷贝路径需要**两侧都**设 `prefer_dmabuf`；任一侧未设置（或驱动无法导出/导入缓冲区）都会回退 CPU 拷贝路径。输入必须是 NV12。
+
+## 树莓派说明
+
+已在 Raspberry Pi Zero 2 W（Debian 13）+ OV5647（v1 摄像头）上实测验证。
+
+### Sensor 帧率上限
+
+采集配置里的 `fps` 是请求值：libcamera 会将其钳制到所选 sensor 模式允许的范围。实测各模式上限（OV5647；模式被选中时 `rpicam-hello` 启动日志也会打印该上限）：
+
+| 模式 | 最高 fps |
+|------|---------|
+| 640x480 | ~62.5 |
+| 1296x972 | ~46 |
+| 1920x1080 | ~33 |
+| 2592x1944 | ~15.6 |
+
+- **60fps 只有 640x480 能达到**；请求更高只会按上限运行。120fps 不可能。
+- Zero 2 W 上的大致 CPU 开销（libcamera → v4l2-m2m H.264）：640x480@30 约单核 20%，640x480@60 约 40%，1296x972@30 约 65%。
+
+## 低延时推流
+
+glass-to-glass 延时的主导因素是帧节拍而不是编码器速度：每一级（sensor 读出、采集队列、编码器输入、网络、播放器 jitter buffer）最多可以攒住一帧。帧率翻倍，每级的最坏等待减半——30→60fps（33.3 → 16.7ms）端到端通常能省 30–50ms。
+
+代价是曝光：单帧曝光预算是 `1/fps`（60fps 最多 16.7ms，120fps 最多 8.3ms）。暗光下画面会更暗、噪点更多。树莓派上 pipeline 按 `fps` 设置 `FrameDurationLimits`，帧率保持锁定——AE 只能缩短曝光、提高增益（画面变暗/变噪，但延时保住）。
+
+### 局域网延时预算（树莓派）
+
+目前还没公布树莓派的 glass-to-glass 实测值——可用二维码计时法自行测量（摄像头拍摄高刷屏上的毫秒计时器，拍照对比 WHEP 播放画面与计时器读数）。640x480@60 局域网下的预算构成：
+
+- **sensor 节拍 + ISP + 采集**：1~2 个帧周期（60fps 时 17~33ms)。
+- **v4l2-m2m 编码器**：每帧几 ms;VGA 60fps 在 Zero 2 W 上余量充足（约单核 40%)。
+- **局域网网络**：同网段 host 候选 ICE，几 ms。
+- **浏览器播放器**：通常占比最大——Chromium 的 jitter buffer、解码和渲染一般占去一半以上。
+
+所以在帧率之后，剩下的主要优化空间在**播放器侧**（解码/渲染路径和 jitter buffer)，而不是服务端。
+
+### 60fps 参考配置（树莓派）
+
+```toml
+[stream.cam]
+[[stream.cam.sources]]
+
+[stream.cam.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 640
+height = 480
+fps = 60            # OV5647 VGA 模式上限约 62.5
+pixel_format = "yuv420"
+
+[stream.cam.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 2_000_000
+profile = "baseline"
+level = "3.1"
+gop = 120           # 60fps 下 2 秒;GOP 越短,加入/恢复越快
+
+[stream.cam.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+- 用编码器统计行（`[V4l2M2mEncoder] stats: injected=…`）确认真实帧率：它按实际采集 fps 增长。
+- 播放器尽量与服务端同网段（host 候选 ICE，`ice_udp_addrs = ["auto"]`），避免中继绕行。
+- 浏览器 WHEP 客户端应在 POST 前完成 ICE 候选收集（完整 SDP offer）；纯 trickle 的客户端目前连不上——见 issue [#417](https://github.com/binbat/live777/issues/417)。
