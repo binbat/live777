@@ -49,7 +49,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 - All FFI details are crate-private in `livehal`; `liveion` only sees `EncodedPacket` through the channel.
 - **RTP path for native sources**: `EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`.  This avoids the `Packet` → bytes → `Packet::unmarshal` roundtrip that other sources use.
 - `MediaPacket::Rtp { data }` bytes path is still used by `rtp_listener` / `rtsp_source` / `sdp_source`.
-- **DMA-BUF zero-copy is not yet implemented.**  The `prefer_dmabuf` config field exists in the schema and is plumbed through to the C++ layer.  RDK V4L2 capture exports DMA-BUF fds when `prefer_dmabuf=true`, but `encoder_rdk.cpp` has not yet implemented DMA-BUF fd import — it rejects `BufferKind::DmaBuf`.  The default remains `false`.  Currently all frames are copied through the CPU path.  Full userspace zero-copy requires implementing DMA-BUF import in the RDK encoder backend and handling capture buffer lifetime.
+- **DMA-BUF zero-copy** (generic V4L2 → RKMPP): implemented.  With `prefer_dmabuf = true` on both capture and encoder, the capture exports each V4L2 buffer as a DMA-BUF (`VIDIOC_EXPBUF`) and the encoder imports it directly — no CPU copy of the frame.  Buffer ownership is explicit: the capture buffer is owned by the encoder between `VIDIOC_DQBUF` and the frame's encode completion, and is requeued only after the hardware has finished reading it (a deferred-requeue release contract, so the camera can never overwrite a buffer mid-encode).  If export or import fails the pipeline falls back to the CPU-copy path.  The RDK backend does not implement DMA-BUF import yet (`encoder_rdk.cpp` rejects `BufferKind::DmaBuf`); there everything is still copied through the CPU path.
 
 ## Config
 
@@ -400,3 +400,127 @@ gop = 60
 payload_type = 96
 clock_rate = 90000
 ```
+
+### Rockchip RKMPP (RK3588 / RV1126B)
+
+```toml
+[stream.rk-cam]
+[[stream.rk-cam.sources]]
+
+[stream.rk-cam.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 1280
+height = 720
+fps = 60
+pixel_format = "nv12"
+prefer_dmabuf = true      # DMA-BUF zero-copy (capture side)
+
+[stream.rk-cam.sources.encoder]
+backend = "rkmpp"
+codec = "h264"
+bitrate = 4_000_000
+profile = "420028"
+gop = 120
+prefer_dmabuf = true      # DMA-BUF zero-copy (encoder side)
+
+[stream.rk-cam.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+`prefer_dmabuf` must be set on **both** sides for the zero-copy path; with
+either side unset (or if the driver cannot export/import the buffer) the
+pipeline falls back to the CPU-copy path.  Input must be NV12.
+
+## Raspberry Pi notes
+
+Verified on a Raspberry Pi Zero 2 W (Debian 13) with the OV5647 (v1) camera.
+
+### Sensor frame-rate limits
+
+`fps` in the capture config is a request: libcamera clamps it to what the
+selected sensor mode allows.  Measured per-mode ceilings (OV5647; the
+selected mode's limit is also printed by `rpicam-hello` at startup):
+
+| Mode | Max fps |
+|------|---------|
+| 640x480 | ~62.5 |
+| 1296x972 | ~46 |
+| 1920x1080 | ~33 |
+| 2592x1944 | ~15.6 |
+
+- **60 fps is only reachable at 640x480** on this sensor; asking for more
+  simply runs at the ceiling.  120 fps is not possible.
+- Rough CPU cost on a Zero 2 W (libcamera → v4l2-m2m H.264): ~20% of one
+  core at 640x480@30, ~40% at 640x480@60, ~65% at 1296x972@30.
+
+## Low-latency streaming
+
+Glass-to-glass latency is dominated by frame cadence, not encoder speed:
+every stage (sensor readout, capture queue, encoder input, network, player
+jitter buffer) can hold a frame for up to one frame period.  Doubling the
+frame rate halves the per-stage worst case — 30→60 fps (33.3 → 16.7 ms) is
+typically worth 30–50 ms end-to-end.
+
+The trade-off is exposure: the per-frame exposure budget is `1/fps`
+(16.7 ms at 60 fps, 8.3 ms at 120 fps).  In low light the picture gets
+darker and noisier.  On Raspberry Pi the pipeline sets
+`FrameDurationLimits` from `fps`, so the frame rate stays locked — the AE
+can only shorten exposure and raise gain (a darker/noisier image, but
+latency is preserved).
+
+### Latency budget on a LAN (Raspberry Pi)
+
+No glass-to-glass number is published for the Pi yet — measure yours with
+the QR-code timer method (camera films a millisecond timer on a
+high-refresh display; photograph the WHEP playback next to the timer).
+The budget at 640x480@60 on a LAN looks like:
+
+- **Sensor cadence + ISP + capture**: 1–2 frame periods (17–33 ms at
+  60 fps).
+- **v4l2-m2m encoder**: a few ms per frame; it keeps up with 60 fps at VGA
+  with plenty of headroom on a Zero 2 W (~40% of one core).
+- **LAN network**: a few ms with host-candidate ICE on the same segment.
+- **Browser player**: typically the largest single share — Chromium jitter
+  buffering, decode and render usually account for half or more of the
+  total.
+
+So after frame rate, the remaining lever is the *player* (decode/render
+path and jitter buffer), not the server.
+
+### 60 fps reference config (Raspberry Pi)
+
+```toml
+[stream.cam]
+[[stream.cam.sources]]
+
+[stream.cam.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 640
+height = 480
+fps = 60            # OV5647 ceiling is ~62.5 at VGA
+pixel_format = "yuv420"
+
+[stream.cam.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 2_000_000
+profile = "baseline"
+level = "3.1"
+gop = 120           # 2 s at 60 fps; a shorter GOP joins/recovers faster
+
+[stream.cam.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+- Confirm the real rate from the encoder stats line
+  (`[V4l2M2mEncoder] stats: injected=…`): it advances at the actual capture
+  fps.
+- Keep players on the same LAN (host-candidate ICE,
+  `ice_udp_addrs = ["auto"]`) to avoid relay detours.
+- Browser WHEP clients should gather ICE candidates before POSTing
+  (full-SDP offer); trickle-only clients currently fail to connect — see
+  issue [#417](https://github.com/binbat/live777/issues/417).
