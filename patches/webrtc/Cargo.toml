@@ -1,0 +1,30 @@
+[package]
+name = "webrtc"
+version = "0.20.0-rc.2"
+authors = ["Rain Liu <yliu@webrtc.rs>"]
+edition = "2024"
+license = "MIT/Apache-2.0"
+homepage = "https://webrtc.rs"
+documentation = "https://docs.rs/webrtc"
+readme = "README.md"
+repository = "https://github.com/webrtc-rs/webrtc"
+keywords = ["sansio", "networking", "protocols"]
+categories = ["network-programming"]
+description = "Async-friendly WebRTC implementation in Rust"
+
+[features]
+default = ["runtime-tokio"]
+runtime-smol = ["dep:smol", "dep:async-broadcast"]
+runtime-tokio = ["dep:tokio"]
+
+[dependencies]
+async-broadcast = { version = "0.7.2", optional = true }
+async-trait = "0.1.89"
+bytes = "1.12.0"
+futures = "0.3.32"
+log = "0.4.33"
+rtc = "0.20.0-rc.2"
+smol = { version = "2.0.2", optional = true }
+tokio = { version = "1.52.3", features = ["net", "time", "sync", "rt", "rt-multi-thread"], optional = true }
+
+[workspace]

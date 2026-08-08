@@ -86,6 +86,7 @@ members = [
     "livetwo",
     "livehal",
 ]
+exclude = ["patches/webrtc"]
 
 [workspace.package]
 version = "0.9.0"
@@ -224,6 +225,7 @@ strip = "symbols"
 panic = "abort"
 
 [patch.crates-io]
+webrtc = { path = "patches/webrtc" }
 rtc = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
 rtc-ice = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
 rtc-interceptor = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
