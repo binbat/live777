@@ -44,6 +44,8 @@ use super::message::CascadeInfo;
 use super::publish::PublishRTCPeerConnection;
 use super::stats::{ByteDeltas, MediaStats};
 use super::subscribe::SubscribeRTCPeerConnection;
+#[cfg(feature = "source")]
+use super::subscribe_quality::{self, SubscribeQualityInterceptor};
 use super::track::{PublishTrackRemote, SharedManualTwccFeedback};
 
 const CLOSED_SESSION_TTL_MS: i64 = 30_000;
@@ -765,6 +767,12 @@ pub(crate) struct PeerForwardInternal {
     native_twcc_bound: Arc<AtomicBool>,
     /// Shared manual TWCC fallback for all tracks in a publish peer.
     manual_twcc_feedback: std::sync::Mutex<Option<SharedManualTwccFeedback>>,
+    /// Per-subscriber RTCP quality counters (adaptive-bitrate feedback,
+    /// issue #409).  Weak refs: a subscriber's stats die with its peer, so
+    /// no deregistration hook is needed — `subscribe_quality()` purges.
+    #[cfg(feature = "source")]
+    subscribe_quality:
+        std::sync::Mutex<Vec<std::sync::Weak<subscribe_quality::SubscribeRtcpStats>>>,
     media_generation_id: RwLock<u64>,
     last_publish_profile: RwLock<Option<MediaProfile>>,
     /// Stream-level media statistics. The manager's stats tick folds each
@@ -815,6 +823,8 @@ impl PeerForwardInternal {
             rtcp_egress_counters: std::sync::Mutex::new(None),
             native_twcc_bound: Arc::new(AtomicBool::new(false)),
             manual_twcc_feedback: std::sync::Mutex::new(None),
+            #[cfg(feature = "source")]
+            subscribe_quality: std::sync::Mutex::new(Vec::new()),
             media_generation_id: RwLock::new(0),
             last_publish_profile: RwLock::new(None),
             stats_publish: MediaStats::new(),
@@ -1652,6 +1662,22 @@ impl PeerForwardInternal {
         self.negotiated_twcc_ext_id.store(ext_id, Ordering::Relaxed);
     }
 
+    /// Live per-subscriber RTCP quality stats (adaptive-bitrate feedback).
+    /// Dead entries (dropped subscribe peers) are purged on access.
+    #[cfg(feature = "source")]
+    pub(crate) fn subscribe_quality(&self) -> Vec<Arc<subscribe_quality::SubscribeRtcpStats>> {
+        let mut registry = self.subscribe_quality.lock().unwrap();
+        let mut live = Vec::with_capacity(registry.len());
+        registry.retain(|weak| match weak.upgrade() {
+            Some(stats) => {
+                live.push(stats);
+                true
+            }
+            None => false,
+        });
+        live
+    }
+
     pub(crate) async fn publish_track_up(&self, track: Arc<dyn TrackRemote>) -> Result<()> {
         let generation_id = *self.media_generation_id.read().await;
         let twcc_ext_id = self.negotiated_twcc_ext_id.load(Ordering::Relaxed);
@@ -1756,6 +1782,20 @@ impl PeerForwardInternal {
         let registry = configure_rtcp_reports(registry);
         configure_simulcast_extension_headers(&mut m)?;
         let registry = configure_twcc_sender_only(registry, &mut m)?;
+
+        // Outermost layer: tap inbound subscriber feedback (NACK / RR /
+        // TWCC / PLI) into per-subscriber quality counters for the
+        // adaptive-bitrate controller (issue #409).  Pure observer — the
+        // packets continue down the chain untouched.
+        #[cfg(feature = "source")]
+        let registry = {
+            let stats = subscribe_quality::SubscribeRtcpStats::new();
+            self.subscribe_quality
+                .lock()
+                .unwrap()
+                .push(std::sync::Arc::downgrade(&stats));
+            registry.with(move |inner| SubscribeQualityInterceptor::new(inner, stats))
+        };
 
         let mut s = SettingEngine::default();
         s.set_multicast_dns_mode(MulticastDnsMode::Disabled);

@@ -90,6 +90,8 @@ mod publish;
 pub mod rtcp;
 pub(crate) mod stats;
 mod subscribe;
+#[cfg(feature = "source")]
+pub(crate) mod subscribe_quality;
 
 #[cfg(not(feature = "source"))]
 mod track;
