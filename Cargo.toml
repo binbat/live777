@@ -96,14 +96,14 @@ repository = "https://github.com/binbat/live777"
 
 [workspace.dependencies]
 async-trait = "0.1"
-webrtc = { version = "0.20.0-rc.2", features = ["runtime-tokio"] }
-rtc = "0.20.0-rc.2"
-rtc-ice = "0.20.0-rc.2"
-rtc-interceptor = "0.20.0-rc.2"
-rtc-rtcp = "0.20.0-rc.2"
-rtc-rtp = "0.20.0-rc.2"
-rtc-shared = "0.20.0-rc.2"
-sdp = "0.17.1"
+webrtc = { version = "0.20.1", features = ["runtime-tokio"] }
+rtc = "0.20.1"
+rtc-ice = "0.20.1"
+rtc-interceptor = "0.20.1"
+rtc-rtcp = "0.20.1"
+rtc-rtp = "0.20.1"
+rtc-shared = "0.20.1"
+sdp = "0.17.2"
 
 axum = "0.8"
 axum-extra = "0.12"
@@ -223,10 +223,3 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
-[patch.crates-io]
-rtc = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
-rtc-ice = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
-rtc-interceptor = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
-rtc-rtcp = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
-rtc-rtp = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
-rtc-shared = { git = "https://github.com/webrtc-rs/rtc", rev = "de84c7c872164ff6f473e814cb3b99afb3a5e422" }
