@@ -390,7 +390,12 @@ impl rtsp::server::SessionHandler for RtspHandler {
                                 tokio::select! {
                                     _ = task_cancel.cancelled() => break,
                                     _ = interval.tick() => {
-                                        if let Some(packet) = track.generate_sender_report() {
+                                        // RTSP forwarding keeps the publish
+                                        // track's SSRC on the wire, so the SR
+                                        // uses the track's own SSRC here.
+                                        if let Some(packet) =
+                                            track.generate_sender_report(track.publish_ssrc())
+                                        {
                                             match packet.marshal() {
                                                 Ok(buf) => {
                                                     if tx_clone

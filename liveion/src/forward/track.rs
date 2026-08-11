@@ -643,10 +643,22 @@ impl PublishTrackRemote {
     #[cfg(feature = "source")]
     pub(crate) fn generate_sender_report(
         &self,
+        ssrc: u32,
     ) -> Option<Box<dyn rtc_rtcp::packet::Packet + Send + Sync>> {
         match self {
-            Self::Virtual(v) => v.generate_sender_report(),
+            Self::Virtual(v) => v.generate_sender_report(ssrc),
             Self::Real { .. } => None,
+        }
+    }
+
+    /// SSRC of the published media as seen by passthrough consumers (the
+    /// RTSP server forwards packets with their original SSRC). 0 for real
+    /// remote tracks, whose SR is not synthesized.
+    #[cfg(feature = "source")]
+    pub(crate) fn publish_ssrc(&self) -> u32 {
+        match self {
+            Self::Virtual(v) => v.ssrc(),
+            Self::Real { .. } => 0,
         }
     }
 
@@ -691,6 +703,10 @@ pub struct VirtualPublishTrack {
     /// payload-only for the RTCP sender report octet count.
     stats: MediaStats,
     last_ntp_time_ms: Arc<AtomicU64>,
+    /// RTP timestamp of the latest forwarded packet, paired with
+    /// `last_ntp_time_ms` so a sender report can map the wall clock onto the
+    /// stream's actual (pts-based) RTP timestamp base.
+    last_rtp_ts: Arc<AtomicU32>,
     #[cfg(any(
         feature = "source-rtsp",
         feature = "source-sdp",
@@ -747,6 +763,7 @@ impl VirtualPublishTrack {
             bytes_sent: Arc::new(AtomicU64::new(0)),
             stats: MediaStats::new(),
             last_ntp_time_ms: Arc::new(AtomicU64::new(0)),
+            last_rtp_ts: Arc::new(AtomicU32::new(0)),
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
@@ -881,6 +898,8 @@ impl VirtualPublishTrack {
                 .unwrap_or_default()
                 .as_millis() as u64;
             self.last_ntp_time_ms.store(now_ms, Ordering::Relaxed);
+            self.last_rtp_ts
+                .store(pkt.header.timestamp, Ordering::Relaxed);
 
             if packet_count % 100 == 1 {
                 debug!(
@@ -919,10 +938,14 @@ impl VirtualPublishTrack {
         self.actual_ssrc.load(Ordering::Relaxed)
     }
 
+    /// Build an RTCP sender report stamped with `ssrc`. Subscribers receive
+    /// packets rewritten to their own sender-track SSRC (see subscribe.rs),
+    /// so the SR sent on a subscriber's track must carry that SSRC, not the
+    /// publish track's.
     pub fn generate_sender_report(
         &self,
+        ssrc: u32,
     ) -> Option<Box<dyn rtc_rtcp::packet::Packet + Send + Sync>> {
-        let ssrc = self.actual_ssrc.load(Ordering::Relaxed);
         if ssrc == 0 {
             return None;
         }
@@ -935,10 +958,19 @@ impl VirtualPublishTrack {
 
         let ntp_time = UNIX_EPOCH + std::time::Duration::from_millis(last_ntp_ms);
 
-        let elapsed = SystemTime::now()
-            .duration_since(self.start_time)
-            .unwrap_or_default();
-        let rtp_time = (elapsed.as_secs_f64() * self.clock_rate as f64) as u32;
+        // Map the wall clock to the *actual* RTP timestamp of the latest
+        // forwarded packet (the source's pts-based ts), not
+        // elapsed*clock_rate — the two bases differ for passthrough sources.
+        // Fall back to elapsed when no packet has been forwarded yet.
+        let last_ts = self.last_rtp_ts.load(Ordering::Relaxed);
+        let rtp_time = if last_ts != 0 {
+            last_ts
+        } else {
+            let elapsed = SystemTime::now()
+                .duration_since(self.start_time)
+                .unwrap_or_default();
+            (elapsed.as_secs_f64() * self.clock_rate as f64) as u32
+        };
 
         Some(Box::new(rtc_rtcp::sender_report::SenderReport {
             ssrc,
