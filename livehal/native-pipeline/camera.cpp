@@ -215,11 +215,9 @@ void PiCameraImpl::on_request_completed(Request* request) {
     }
 
     CaptureFrameCallback cb;
-    std::chrono::steady_clock::time_point start_time;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         cb = capture_cb_;
-        start_time = start_time_;
     }
 
     // Deliver the frame pointing straight at the staging buffer — no second
@@ -229,9 +227,13 @@ void PiCameraImpl::on_request_completed(Request* request) {
     // duration of the callback.  stop() waits for in-flight callbacks
     // before resources are released, so the staging buffer outlives cb.
     if (cb) {
+        // Absolute steady_clock (CLOCK_MONOTONIC epoch on Linux) — the same
+        // clock domain the V4L2 backends stamp buffer SOF in, so downstream
+        // [latency] stages measure true frame age on every capture backend.
         auto now = std::chrono::steady_clock::now();
         uint64_t timestamp =
-            std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count();
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                now.time_since_epoch()).count();
 
         RawFrame f{};
         f.kind = BufferKind::Cpu;

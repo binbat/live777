@@ -2576,6 +2576,7 @@ dependencies = [
  "anyhow",
  "cc",
  "cmake",
+ "libc",
  "pkg-config",
  "tokio",
 ]

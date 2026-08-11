@@ -1,4 +1,5 @@
 #include "include/capture_backend.h"
+#include "include/latency_stats.h"
 
 #include <algorithm>
 #include <array>
@@ -88,6 +89,10 @@ struct V4L2CaptureImpl : public CaptureBackend {
     std::vector<Buffer> buffers;
     std::vector<uint8_t> yuv420_buf;
     std::thread capture_thread;
+
+    // [latency] "capture" stage: driver timestamp (SOF) → DQBUF in userspace.
+    LatencyStats dqbuf_stats_{"capture"};
+    bool ts_domain_logged_ = false;
 
     ~V4L2CaptureImpl() override { stop(); }
 
@@ -412,6 +417,27 @@ void V4L2CaptureImpl::capture_loop() {
             fprintf(stderr, "[V4L2Capture] DQBUF failed: %s\n", strerror(errno));
             break;
         }
+
+        const uint64_t dqbuf_now_us = monotonic_now_us();
+        const uint64_t buf_ts_us =
+            static_cast<uint64_t>(buf.timestamp.tv_sec) * 1000000
+            + buf.timestamp.tv_usec;
+        if (!ts_domain_logged_) {
+            // One-time clock-domain sanity check: the [latency] deltas are
+            // only meaningful if the driver stamps buffers in the
+            // CLOCK_MONOTONIC domain (SOF).  If buf lands near boottime
+            // instead, expect a constant offset in all stages.
+            timespec boot{};
+            clock_gettime(CLOCK_BOOTTIME, &boot);
+            fprintf(stderr,
+                    "[latency] capture clock domain: buf=%llu mono=%llu boot=%llu (us)\n",
+                    static_cast<unsigned long long>(buf_ts_us),
+                    static_cast<unsigned long long>(dqbuf_now_us),
+                    static_cast<unsigned long long>(boot.tv_sec) * 1000000ULL
+                        + boot.tv_nsec / 1000ULL);
+            ts_domain_logged_ = true;
+        }
+        dqbuf_stats_.sample(buf_ts_us, dqbuf_now_us);
 
         RawFrame frame{};
         std::string frame_error;

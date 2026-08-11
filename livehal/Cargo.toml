@@ -11,6 +11,7 @@ crate-type = ["lib"]
 
 [dependencies]
 anyhow = { workspace = true }
+libc = "0.2"
 tokio = { workspace = true, features = ["sync"] }
 
 [build-dependencies]

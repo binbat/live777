@@ -36,6 +36,7 @@
 //!   https://github.com/rockchip-linux/mpp
 
 #include "include/encoder_backend.h"
+#include "include/latency_stats.h"
 
 #include <unordered_map>
 
@@ -798,6 +799,10 @@ private:
         if (partition_count > max_partitions_per_frame_)
             max_partitions_per_frame_ = partition_count;
 
+        // Includes the drain-on-next-submit queueing by design — that wait
+        // is part of the pipeline cost this instrumentation exists to show.
+        enc_stats_.sample(au_pts_us, monotonic_now_us());
+
         if (encoded_cb_) {
             EncodedPacket out;
             out.codec = codec_;
@@ -901,6 +906,9 @@ private:
     uint64_t au_log_count_ = 0;
     int peak_inflight_depth_ = 0;
     size_t max_partitions_per_frame_ = 0;
+
+    // [latency] "encode" stage: capture SOF → encoded AU retrieved.
+    LatencyStats enc_stats_{"encode"};
 
     // In-flight depth derived from counters: submitted minus put-failures
     // minus completed.  Deriving it (instead of maintaining a mutable
