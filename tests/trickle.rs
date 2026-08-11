@@ -123,12 +123,23 @@ fn build_trickle_frag(sdp: &str) -> String {
 /// answer before it is applied, so the client has no remote candidates at
 /// all: the session can then only connect through *server-initiated* checks
 /// towards the trickled client candidates — the exact server-side path
-/// issue #417 is about.
+/// issue #417 is about. That path only exists with a full-ICE server
+/// (`ice_lite = false`); an ICE Lite server never initiates checks by
+/// design (RFC 8445 section 2.7).
 async fn whep_trickle_session(
     stream_id: &str,
     strip_answer_candidates: bool,
+    ice_lite: bool,
 ) -> watch::Receiver<RTCPeerConnectionState> {
-    let cfg = liveion::config::Config::default();
+    let mut cfg = liveion::config::Config::default();
+    cfg.webrtc.ice_lite = ice_lite;
+    if ice_lite {
+        // The shipped sample config sets a STUN server, and ICE Lite agents
+        // gather host candidates only — liveion must drop the configured
+        // servers before they reach the agent, which rejects URLs it cannot
+        // use. Exercise exactly that path.
+        cfg.ice_servers = iceserver::default_ice_servers();
+    }
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
     let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
@@ -205,6 +216,14 @@ async fn whep_trickle_session(
         .to_string();
     let answer = res.text().await.unwrap();
 
+    // ICE Lite endpoints must mark the answer with `a=ice-lite` (RFC 8445
+    // section 2.7, RFC 9725); a full-ICE server must not.
+    assert_eq!(
+        ice_lite,
+        answer.lines().any(|line| line == "a=ice-lite"),
+        "answer SDP ice-lite marker does not match ice_lite={ice_lite}:\n{answer}"
+    );
+
     let answer = if strip_answer_candidates {
         strip_ice_candidates(&answer)
     } else {
@@ -261,11 +280,13 @@ async fn wait_connected(mut state_rx: watch::Receiver<RTCPeerConnectionState>) -
 }
 
 /// Issue #417 flow: zero-candidate offer, candidates trickled via PATCH.
+/// Runs against the default ICE Lite server: the client checks the server's
+/// answer candidates and nominates; the server only responds.
 #[tokio::test]
 async fn test_whep_trickle_ice_connects() {
     init_liveion_test_environment();
 
-    let state_rx = whep_trickle_session("trickle", false).await;
+    let state_rx = whep_trickle_session("trickle", false, true).await;
     assert!(
         wait_connected(state_rx.clone()).await,
         "WHEP trickle-ICE session did not reach Connected (issue #417); last state: {:?}",
@@ -275,12 +296,14 @@ async fn test_whep_trickle_ice_connects() {
 
 /// The pure server-side trickle path: the client never learns any server
 /// candidates, so only server-initiated checks towards the trickled client
-/// candidate can establish connectivity.
+/// candidate can establish connectivity. ICE Lite servers (the default)
+/// never initiate checks by design, so this scenario is exercised against a
+/// full-ICE server (`ice_lite = false`) to keep the path covered.
 #[tokio::test]
 async fn test_whep_trickle_ice_server_initiated_checks() {
     init_liveion_test_environment();
 
-    let state_rx = whep_trickle_session("trickle-server-checks", true).await;
+    let state_rx = whep_trickle_session("trickle-server-checks", true, false).await;
     assert!(
         wait_connected(state_rx.clone()).await,
         "server never used the trickled candidate for connectivity checks (issue #417); \

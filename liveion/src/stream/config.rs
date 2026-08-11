@@ -7,6 +7,7 @@ use webrtc::peer_connection::RTCIceServer;
 pub struct ManagerConfig {
     pub ice_servers: Vec<RTCIceServer>,
     pub ice_udp_addrs: Vec<SocketAddr>,
+    pub ice_lite: bool,
     pub stream: crate::config::StreamConfig,
     /// Global strategy (used directly and merged with per-stream overrides).
     pub strategy: api::strategy::Strategy,
@@ -20,6 +21,7 @@ impl ManagerConfig {
             ice_udp_addrs: api::webrtc::resolve_webrtc_ice_udp_addrs(Some(
                 cfg.webrtc.ice_udp_addrs.clone(),
             )),
+            ice_lite: cfg.webrtc.ice_lite,
             stream: cfg.stream,
             strategy: cfg.strategy,
         }

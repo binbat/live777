@@ -677,6 +677,7 @@ mod integration_tests {
             "av1-repacketizer-test",
             vec![],
             vec![],
+            true,
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),

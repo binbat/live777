@@ -17,6 +17,13 @@ urls = [
 # 0.0.0.0 can bind sockets, but it is not a usable advertised ICE candidate address and will be ignored.
 ice_udp_addrs = ["auto"]
 
+# Run server-side WHIP/WHEP sessions as an ICE Lite agent (RFC 8445 section 2.7),
+# as required of WHIP/WHEP endpoints by RFC 9725 / draft-ietf-wish-whep.
+# The server answers with a=ice-lite, responds to connectivity checks but never
+# initiates them, so trickled browser mDNS (*.local) candidates no longer break
+# session setup. Only set false if a peer requires a full-ICE server.
+# ice_lite = true
+
 [stream]
 
 # [[stream.<name>]]
