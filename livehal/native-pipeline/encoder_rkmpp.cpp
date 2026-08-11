@@ -593,6 +593,37 @@ public:
         }
     }
 
+    // Runtime bitrate retune (adaptive bitrate control, issue #409).
+    // MPP applies an MppEncCfg as a partial update — only the keys present
+    // are touched — so setting just the rc:bps_* triple is enough.  bps_max
+    // and bps_min must move together with the target: they were derived from
+    // the initial bitrate at init and would otherwise clamp the new target.
+    bool setBitrate(uint32_t bps) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ctx_ || !mpi_ || !running_) return false;
+
+        MppEncCfg cfg = nullptr;
+        if (mpp_enc_cfg_init(&cfg) != MPP_OK || !cfg) {
+            std::fprintf(stderr,
+                "[RkMppEncoder] setBitrate(%u): mpp_enc_cfg_init failed\n", bps);
+            return false;
+        }
+        mpp_enc_cfg_set_s32(cfg, "rc:bps_target", static_cast<RK_S32>(bps));
+        mpp_enc_cfg_set_s32(cfg, "rc:bps_max", static_cast<RK_S32>(bps * 2));
+        mpp_enc_cfg_set_s32(cfg, "rc:bps_min", static_cast<RK_S32>(bps / 2));
+        MPP_RET ret = mpi_->control(ctx_, MPP_ENC_SET_CFG, cfg);
+        mpp_enc_cfg_deinit(cfg);
+        if (ret != MPP_OK) {
+            std::fprintf(stderr,
+                "[RkMppEncoder] setBitrate(%u): MPP_ENC_SET_CFG failed"
+                " (ret=%d)\n", bps, static_cast<int>(ret));
+            return false;
+        }
+        bitrate_ = bps;
+        std::fprintf(stderr, "[RkMppEncoder] bitrate -> %u bps\n", bps);
+        return true;
+    }
+
     void stop() override {
         std::lock_guard<std::mutex> lock(mutex_);
         running_ = false;

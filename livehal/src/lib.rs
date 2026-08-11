@@ -10,7 +10,7 @@ mod native_ffi; // crate-private
 pub mod source_pipeline;
 pub mod types;
 
-pub use source_pipeline::{KeyframeHandle, NativePipeline};
+pub use source_pipeline::{BitrateHandle, KeyframeHandle, NativePipeline};
 pub use types::{EncodedPacket, NativeSourceParams};
 
 /// Monotonic clock (`CLOCK_MONOTONIC`) in microseconds — the same epoch the

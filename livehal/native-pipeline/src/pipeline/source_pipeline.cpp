@@ -156,6 +156,10 @@ public:
         if (encoder_) encoder_->requestKeyframe();
     }
 
+    bool setBitrate(uint32_t bps) {
+        return encoder_ && encoder_->setBitrate(bps);
+    }
+
     void setPacketCallback(EncodedPacketCallbackFFI cb, void* user_data) {
         std::lock_guard<std::mutex> lock(cb_mutex_);
         on_packet_ = cb;
@@ -382,6 +386,15 @@ void source_pipeline_request_keyframe(SourcePipelineHandle* h) noexcept {
         reinterpret_cast<SourcePipeline*>(h)->requestKeyframe();
     } catch (...) {
         // Best-effort keyframe request; ignore exceptions.
+    }
+}
+
+bool source_pipeline_set_bitrate(SourcePipelineHandle* h, uint32_t bps) noexcept {
+    if (!h || bps == 0) return false;
+    try {
+        return reinterpret_cast<SourcePipeline*>(h)->setBitrate(bps);
+    } catch (...) {
+        return false;
     }
 }
 

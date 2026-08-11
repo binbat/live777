@@ -105,5 +105,6 @@ unsafe extern "C" {
     #[allow(dead_code)]
     pub fn source_pipeline_is_running(h: *mut SourcePipelineHandle) -> bool;
     pub fn source_pipeline_request_keyframe(h: *mut SourcePipelineHandle);
+    pub fn source_pipeline_set_bitrate(h: *mut SourcePipelineHandle, bps: u32) -> bool;
     pub fn source_pipeline_free(h: *mut SourcePipelineHandle);
 }

@@ -102,6 +102,13 @@ bool source_pipeline_start(SourcePipelineHandle* h,
 void source_pipeline_stop(SourcePipelineHandle* h) noexcept;
 bool source_pipeline_is_running(SourcePipelineHandle* h) noexcept;
 void source_pipeline_request_keyframe(SourcePipelineHandle* h) noexcept;
+
+/// Change the encoder target bitrate at runtime (adaptive bitrate control).
+/// Returns false when the encoder backend does not support runtime retuning
+/// or the pipeline is not running; on success the new target applies within
+/// roughly one GOP (encoder rate-control reaction time).
+bool source_pipeline_set_bitrate(SourcePipelineHandle* h,
+                                 uint32_t bps) noexcept;
 void source_pipeline_free(SourcePipelineHandle* h) noexcept;
 
 #ifdef __cplusplus
