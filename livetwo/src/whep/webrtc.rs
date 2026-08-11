@@ -14,15 +14,99 @@ use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
     RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState,
-    RTCSessionDescription,
+    RTCSessionDescription, Registry,
 };
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
 use crate::utils;
 use crate::utils::stats::RtcpStats;
 
+use super::rtcp_forward;
+
 /// DataChannel label used to join liveion's WHEP group for bidirectional control messaging.
 const DATA_CHANNEL_LABEL: &str = "control";
+
+/// One-way-delay (OWD) tracker for a received track.
+///
+/// The sender's RTCP Sender Report carries an (NTP wall clock, RTP timestamp)
+/// pair; mapping each RTP packet through it yields the packet's send wall
+/// time, so `now - send_time` is the encoder→SFU→receiver one-way delay.
+/// Both ends must be NTP-synced (LAN ≈ ±1–2 ms).
+struct OwdTracker {
+    kind: RtpCodecKind,
+    clock_rate: u32,
+    /// Latest SR mapping: (raw NTP timestamp, RTP timestamp).
+    sr: Option<(u64, u32)>,
+    ema: Option<f64>,
+    min: f64,
+    max: f64,
+    n: u64,
+}
+
+impl OwdTracker {
+    fn new(kind: RtpCodecKind, clock_rate: u32) -> Self {
+        Self {
+            kind,
+            clock_rate,
+            sr: None,
+            ema: None,
+            min: f64::MAX,
+            max: f64::MIN,
+            n: 0,
+        }
+    }
+
+    fn update_sr(&mut self, ntp_time: u64, rtp_time: u32) {
+        self.sr = Some((ntp_time, rtp_time));
+    }
+
+    /// One-way delay in ms for a packet with RTP timestamp `rtp_ts` received
+    /// at wall time `now_unix_secs`, or None without a usable SR mapping.
+    fn owd_ms(&self, rtp_ts: u32, now_unix_secs: f64) -> Option<f64> {
+        let (ntp_raw, sr_rtp) = self.sr?;
+        // Wrap-aware delta from the SR reference timestamp.
+        let mut d = rtp_ts as i64 - sr_rtp as i64;
+        if d > (1i64 << 31) {
+            d -= 1i64 << 32;
+        } else if d < -(1i64 << 31) {
+            d += 1i64 << 32;
+        }
+        if d < 0 {
+            return None;
+        }
+        let sr_unix_secs = (ntp_raw >> 32) as f64
+            + (ntp_raw & 0xffff_ffff) as f64 / 4_294_967_296.0
+            - 2_208_988_800.0;
+        let packet_wall = sr_unix_secs + d as f64 / f64::from(self.clock_rate);
+        Some((now_unix_secs - packet_wall) * 1000.0)
+    }
+
+    /// Record one packet; logs an aggregate line every 120 packets.
+    fn record(&mut self, rtp_ts: u32) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let Some(lat) = self.owd_ms(rtp_ts, now) else {
+            return;
+        };
+        self.ema = Some(self.ema.map_or(lat, |e| 0.9 * e + 0.1 * lat));
+        self.min = self.min.min(lat);
+        self.max = self.max.max(lat);
+        self.n += 1;
+        if self.n % 120 == 1 && self.n > 1 {
+            info!(
+                "WHEP {} owd-latency: cur={:.1}ms ema={:.1}ms min={:.1}ms max={:.1}ms (n={})",
+                self.kind,
+                lat,
+                self.ema.unwrap_or(lat),
+                self.min,
+                self.max,
+                self.n
+            );
+        }
+    }
+}
 
 /// Connection-level options for an outgoing WHEP peer.
 #[derive(Clone)]
@@ -244,11 +328,19 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
             tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
                 let mut first_packet = true;
+                let mut owd = OwdTracker::new(
+                    kind,
+                    on_track_codec
+                        .as_ref()
+                        .map(|c| c.clock_rate)
+                        .unwrap_or(90000),
+                );
                 loop {
                     tokio::select! {
                         event = track_clone.poll() => {
                             match event {
                                 Some(TrackRemoteEvent::OnRtpPacket(rtp_packet)) => {
+                                    owd.record(rtp_packet.header.timestamp);
                                     if first_packet {
                                         let first_packet_codec = track_clone
                                             .codec(rtp_packet.header.ssrc)
@@ -317,7 +409,18 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
                                     break;
                                 }
                                 Some(TrackRemoteEvent::OnRtcpPacket(packets)) => {
-                                    debug!("WHEP: Received {} RTCP packets for {}", packets.len(), kind);
+                                    for pkt in &packets {
+                                        if let Some(sr) = pkt
+                                            .as_any()
+                                            .downcast_ref::<rtc_rtcp::sender_report::SenderReport>(
+                                        ) {
+                                            debug!(
+                                                "WHEP: RTCP SR for {} ssrc={} ntp={:#x} rtp={}",
+                                                kind, sr.ssrc, sr.ntp_time, sr.rtp_time
+                                            );
+                                            owd.update_sr(sr.ntp_time, sr.rtp_time);
+                                        }
+                                    }
                                 }
                                 None => {
                                     debug!("WHEP: {} track poll returned None", kind);
@@ -438,6 +541,13 @@ async fn create_peer(
         .with_ice_servers(options.ice_servers.clone())
         .build();
 
+    // The default interceptor chain (bare NoopInterceptor terminal) drops all
+    // inbound RTCP, so TrackRemote would never surface OnRtcpPacket. Register
+    // the RTCP forwarder as the outermost layer so Sender Reports reach the
+    // track readers for one-way-delay measurement.
+    let registry = Registry::new();
+    let registry = registry.with(rtcp_forward::RtcpForwarder::new);
+
     // Caller-provided UDP addrs win; otherwise fall back to the
     // LIVE777_WEBRTC_ICE_UDP_ADDRS resolution (env override or OS default).
     let udp_addrs = if options.ice_udp_addrs.is_empty() {
@@ -449,6 +559,7 @@ async fn create_peer(
     let peer: Arc<dyn PeerConnection> = Arc::new(
         PeerConnectionBuilder::<std::net::SocketAddr>::new()
             .with_media_engine(media_engine)
+            .with_interceptor_registry(registry)
             .with_handler(handler)
             .with_udp_addrs(udp_addrs)
             .with_configuration(config)
@@ -491,4 +602,54 @@ async fn create_peer(
     .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?;
 
     Ok(peer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // NTP timestamp for unix time 1_700_000_000.25s (seconds << 32 | fraction)
+    fn ntp(unix_secs: f64) -> u64 {
+        let ntp_secs = unix_secs + 2_208_988_800.0;
+        let secs = ntp_secs as u64;
+        let frac = ((ntp_secs - secs as f64) * 4_294_967_296.0) as u64;
+        (secs << 32) | frac
+    }
+
+    #[test]
+    fn owd_without_sr_is_none() {
+        let tracker = OwdTracker::new(RtpCodecKind::Video, 90000);
+        assert_eq!(tracker.owd_ms(12345, 1_700_000_000.0), None);
+    }
+
+    #[test]
+    fn owd_maps_rtp_delta_to_wall_clock() {
+        let mut tracker = OwdTracker::new(RtpCodecKind::Video, 90000);
+        // SR: wall 1_700_000_000.00 <-> rtp 900_000
+        tracker.update_sr(ntp(1_700_000_000.0), 900_000);
+        // Packet 900 ticks (10ms) later, received 25ms after that wall time.
+        let lat = tracker
+            .owd_ms(900_900, 1_700_000_000.035)
+            .expect("usable mapping");
+        assert!((lat - 25.0).abs() < 1.0, "lat={lat}");
+    }
+
+    #[test]
+    fn owd_handles_rtp_timestamp_wrap() {
+        let mut tracker = OwdTracker::new(RtpCodecKind::Video, 90000);
+        // SR reference near the u32 wrap point.
+        tracker.update_sr(ntp(1_700_000_000.0), u32::MAX - 44);
+        // Packet 90 ticks (1ms) after the SR point, across the wrap.
+        let lat = tracker
+            .owd_ms(45, 1_700_000_000.011)
+            .expect("wrapped mapping");
+        assert!((lat - 10.0).abs() < 1.0, "lat={lat}");
+    }
+
+    #[test]
+    fn owd_rejects_packets_older_than_sr() {
+        let mut tracker = OwdTracker::new(RtpCodecKind::Video, 90000);
+        tracker.update_sr(ntp(1_700_000_000.0), 900_000);
+        assert_eq!(tracker.owd_ms(899_000, 1_700_000_000.0), None);
+    }
 }

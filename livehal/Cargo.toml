@@ -11,8 +11,10 @@ crate-type = ["lib"]
 
 [dependencies]
 anyhow = { workspace = true }
-libc = "0.2"
 tokio = { workspace = true, features = ["sync"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 cc = "1.0"

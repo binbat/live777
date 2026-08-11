@@ -569,7 +569,26 @@ impl SourceBridge {
                                 for transceiver in peer.get_transceivers().await {
                                     if let Ok(Some(sender)) = transceiver.sender().await {
                                         let track_local = sender.track();
-                                        if let Some(sr) = track.generate_sender_report()
+                                        // A peer has one sender per media kind;
+                                        // send each track's SR only on the
+                                        // sender carrying the same kind.
+                                        if track_local.kind().await != track.kind() {
+                                            continue;
+                                        }
+                                        // The SR must carry the SSRC the
+                                        // subscriber actually sees on the wire:
+                                        // forwarded packets are rewritten to the
+                                        // sender track's SSRC (see subscribe.rs).
+                                        let Some(ssrc) =
+                                            sender.get_parameters().await.ok().and_then(|p| {
+                                                p.encodings
+                                                    .first()
+                                                    .and_then(|e| e.rtp_coding_parameters.ssrc)
+                                            })
+                                        else {
+                                            continue;
+                                        };
+                                        if let Some(sr) = track.generate_sender_report(ssrc)
                                             && track_local.write_rtcp(vec![sr]).await.is_err()
                                         {
                                             debug!(
