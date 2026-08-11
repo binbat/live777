@@ -26,8 +26,14 @@ impl NativeSource {
     pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
         spec.validate()?;
         let native_params = spec.to_native_params()?;
+        let adaptive = spec.encoder.adaptive_bitrate.then(|| {
+            super::adaptive_bitrate::AdaptiveBitrateConfig::new(
+                spec.encoder.bitrate,
+                spec.encoder.min_bitrate,
+            )
+        });
         Ok(Self {
-            inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params),
+            inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params, adaptive),
         })
     }
 }
@@ -72,5 +78,15 @@ impl StreamSource for NativeSource {
     #[cfg(feature = "source")]
     async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
         self.inner.get_rtcp_sender().await
+    }
+
+    #[cfg(feature = "source")]
+    fn adaptive_bitrate_config(&self) -> Option<super::adaptive_bitrate::AdaptiveBitrateConfig> {
+        self.inner.adaptive_bitrate_config()
+    }
+
+    #[cfg(feature = "source")]
+    async fn set_bitrate(&self, bps: u32) -> bool {
+        self.inner.set_bitrate(bps)
     }
 }

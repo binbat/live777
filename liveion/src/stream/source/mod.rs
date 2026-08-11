@@ -21,6 +21,8 @@ mod sdp_source;
 #[cfg(feature = "source-whep")]
 mod whep_source;
 
+#[cfg(feature = "source")]
+pub(crate) mod adaptive_bitrate;
 #[cfg(feature = "native-source")]
 pub mod native_encoded_source;
 #[cfg(feature = "native-source")]
@@ -259,6 +261,21 @@ pub trait StreamSource: Send + Sync {
     #[cfg(feature = "source")]
     async fn get_rtcp_sender(&self) -> Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>> {
         None
+    }
+
+    /// Adaptive-bitrate bounds when the source's encoder supports runtime
+    /// retuning (native sources only; issue #409).  `None` disables the
+    /// per-stream controller.
+    #[cfg(feature = "source")]
+    fn adaptive_bitrate_config(&self) -> Option<adaptive_bitrate::AdaptiveBitrateConfig> {
+        None
+    }
+
+    /// Apply a new encoder bitrate at runtime (adaptive bitrate control).
+    /// Returns false when the backend cannot retune a running encoder.
+    #[cfg(feature = "source")]
+    async fn set_bitrate(&self, _bps: u32) -> bool {
+        false
     }
 }
 
