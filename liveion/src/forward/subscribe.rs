@@ -1395,14 +1395,14 @@ mod tests {
             mime_type: "video/H265".to_string(),
             clock_rate: 90000,
             channels: 0,
-            sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            sdp_fmtp_line: "level-id=123;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
             rtcp_feedback: vec![],
         };
         let selected_codec = RTCRtpCodec {
             mime_type: "video/H265".to_string(),
             clock_rate: 90000,
             channels: 0,
-            sdp_fmtp_line: "level-id=123;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
             rtcp_feedback: vec![],
         };
 
@@ -1418,14 +1418,14 @@ mod tests {
             mime_type: "video/H265".to_string(),
             clock_rate: 90000,
             channels: 0,
-            sdp_fmtp_line: "level-id=93;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
             rtcp_feedback: vec![],
         };
         let selected_codec = RTCRtpCodec {
             mime_type: "video/H265".to_string(),
             clock_rate: 90000,
             channels: 0,
-            sdp_fmtp_line: "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
+            sdp_fmtp_line: "level-id=93;profile-id=1;tier-flag=0;tx-mode=SRST".to_string(),
             rtcp_feedback: vec![],
         };
 
