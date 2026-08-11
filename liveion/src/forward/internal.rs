@@ -742,6 +742,11 @@ pub(crate) struct PeerForwardInternal {
     data_channel_forward: DataChannelForward,
     ice_server: Vec<RTCIceServer>,
     ice_udp_addrs: Vec<SocketAddr>,
+    /// Server-side sessions run as an ICE Lite agent (RFC 8445 section 2.7):
+    /// answer with `a=ice-lite`, respond to connectivity checks but never
+    /// initiate them, so trickled client candidates the server cannot use
+    /// (browser mDNS `*.local`) no longer break session setup.
+    ice_lite: bool,
     /// Manager-wide lifecycle event bus; owned by `stream::manager::Manager`
     /// and shared with every forward.
     lifecycle_sender: broadcast::Sender<Event>,
@@ -779,6 +784,7 @@ impl PeerForwardInternal {
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
+        ice_lite: bool,
         #[cfg(feature = "source")] channel: Option<ChannelConfig>,
         strategy: api::strategy::Strategy,
         lifecycle_sender: broadcast::Sender<Event>,
@@ -801,6 +807,7 @@ impl PeerForwardInternal {
             },
             ice_server,
             ice_udp_addrs,
+            ice_lite,
             lifecycle_sender,
             publish_peer_ref: Mutex::new(None),
             publish_peer_state_rx: Mutex::new(None),
@@ -1567,8 +1574,16 @@ impl PeerForwardInternal {
 
         let mut s = SettingEngine::default();
         s.set_multicast_dns_mode(MulticastDnsMode::Disabled);
+        s.set_lite(self.ice_lite);
 
-        let ice_servers = self.ice_server.clone();
+        // ICE Lite agents gather host candidates only (RFC 8445 section 2.7),
+        // so configured ICE servers must not reach the agent: rtc rejects
+        // STUN/TURN URLs for a host-only candidate set.
+        let ice_servers = if self.ice_lite {
+            Vec::new()
+        } else {
+            self.ice_server.clone()
+        };
         info!(
             "ICE servers for publish: count={}, urls=[{}], has_username={}, has_credential={}",
             ice_servers.len(),
@@ -1744,8 +1759,16 @@ impl PeerForwardInternal {
 
         let mut s = SettingEngine::default();
         s.set_multicast_dns_mode(MulticastDnsMode::Disabled);
+        s.set_lite(self.ice_lite);
 
-        let ice_servers = self.ice_server.clone();
+        // ICE Lite agents gather host candidates only (RFC 8445 section 2.7),
+        // so configured ICE servers must not reach the agent: rtc rejects
+        // STUN/TURN URLs for a host-only candidate set.
+        let ice_servers = if self.ice_lite {
+            Vec::new()
+        } else {
+            self.ice_server.clone()
+        };
         info!(
             "ICE servers for subscribe: count={}, urls=[{}], has_username={}, has_credential={}",
             ice_servers.len(),

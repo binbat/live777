@@ -558,6 +558,7 @@ impl Manager {
             stream.to_string(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
+            self.config.ice_lite,
             #[cfg(feature = "source")]
             channel,
             strategy,

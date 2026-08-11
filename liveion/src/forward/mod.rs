@@ -168,6 +168,7 @@ impl PeerForward {
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
+        ice_lite: bool,
         #[cfg(feature = "source")] channel: Option<ChannelConfig>,
         strategy: api::strategy::Strategy,
         lifecycle_sender: broadcast::Sender<Event>,
@@ -179,6 +180,7 @@ impl PeerForward {
                 stream,
                 ice_server,
                 ice_udp_addrs,
+                ice_lite,
                 #[cfg(feature = "source")]
                 channel,
                 strategy,
@@ -1243,6 +1245,7 @@ a=end-of-candidates";
             "bwe-contract-test",
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
@@ -1328,6 +1331,7 @@ a=end-of-candidates";
             "lifecycle-test",
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
@@ -1468,6 +1472,7 @@ a=end-of-candidates";
             "orphan-empty",
             vec![],
             vec![],
+            true,
             #[cfg(feature = "source")]
             None,
             api::strategy::Strategy::default(),
@@ -1487,6 +1492,7 @@ a=end-of-candidates";
             "orphan-virtual",
             vec![],
             vec![],
+            true,
             None,
             api::strategy::Strategy::default(),
             tokio::sync::broadcast::channel(4).0,

@@ -102,16 +102,33 @@ pub struct WebRtc {
     /// LIVETWO_WEBRTC_ICE_UDP_ADDR.
     #[serde(default = "default_webrtc_ice_udp_addrs")]
     pub ice_udp_addrs: Vec<String>,
+    /// Run server-side WebRTC sessions as an ICE Lite agent (RFC 8445
+    /// section 2.7), as required of WHIP/WHEP endpoints by RFC 9725 and
+    /// draft-ietf-wish-whep: answer with `a=ice-lite`, only respond to
+    /// connectivity checks, never initiate them. This lets trickle-ICE
+    /// clients connect even when their candidates are unusable by the
+    /// server (e.g. browser mDNS `*.local` candidates, which liveion does
+    /// not resolve). Lite agents gather host candidates only, so
+    /// `[[ice_servers]]` are not used by server-side sessions in this mode;
+    /// set this to false if the server itself is behind NAT and needs
+    /// srflx/relay candidates, or if a peer requires a full-ICE server.
+    #[serde(default = "default_webrtc_ice_lite")]
+    pub ice_lite: bool,
 }
 
 fn default_webrtc_ice_udp_addrs() -> Vec<String> {
     vec![api::webrtc::DEFAULT_WEBRTC_ICE_UDP_ADDR.to_string()]
 }
 
+fn default_webrtc_ice_lite() -> bool {
+    true
+}
+
 impl Default for WebRtc {
     fn default() -> Self {
         Self {
             ice_udp_addrs: default_webrtc_ice_udp_addrs(),
+            ice_lite: default_webrtc_ice_lite(),
         }
     }
 }
@@ -254,6 +271,15 @@ mod webrtc_tests {
         .unwrap();
 
         assert_eq!(cfg.webrtc.ice_udp_addrs, vec!["127.0.0.1:0"]);
+    }
+
+    #[test]
+    fn webrtc_ice_lite_defaults_to_true() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.webrtc.ice_lite);
+
+        let cfg: Config = toml::from_str("[webrtc]\nice_lite = false\n").unwrap();
+        assert!(!cfg.webrtc.ice_lite);
     }
 }
 
