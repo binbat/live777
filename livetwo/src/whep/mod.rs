@@ -1,5 +1,6 @@
 mod channel;
 mod output;
+mod rtcp_forward;
 mod webrtc;
 
 use anyhow::{Result, anyhow};
