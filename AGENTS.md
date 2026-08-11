@@ -25,9 +25,8 @@ provides the embedded WebUIs.
 - **Rust** — edition 2024, workspace version `0.9.0`.
 - **Async runtime** — Tokio.
 - **HTTP/API layer** — Axum, `tower-http` (CORS, tracing).
-- **WebRTC stack** — `webrtc`/`rtc-*` crates, pinned to upstream
-  `https://github.com/webrtc-rs/rtc` at revision `de84c7c8` via
-  `[patch.crates-io]` until the next tag is released.
+- **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.20.1` from
+  crates.io.
 - **Web UI** — Vite, Vue 3, Tailwind CSS, DaisyUI, TypeScript.
 - **Package manager** — pnpm 10.20.0 (workspace covers `web/*`).
 - **Storage** — OpenDAL for object/FS storage; Sea-ORM + SQLite (or Postgres)
