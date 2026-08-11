@@ -23,12 +23,14 @@ const WhepLayerOptions = [
     { value: "f", text: "HIGH" },
 ];
 
-const [searchParams] = useSearchParams();
+const [searchParams, setSearchParams] = useSearchParams();
 
 const disabled = ref(true);
 const disabledAudio = ref(false);
 const disabledVideo = ref(false);
-const lowLatency = ref(false);
+// ?lowlatency pre-enables the no-jitter-buffer mode; toggling the checkbox
+// writes the param back so the link stays shareable.
+const lowLatency = ref(searchParams.lowlatency !== undefined);
 const [logs, setLogs, clear] = useLogger();
 
 const isMeasuringQrLatency = ref(false);
@@ -83,6 +85,10 @@ watch(stream, (currentStream) => {
     if (!currentStream) {
         stopQrLatencyMeasure();
     }
+});
+
+watch(lowLatency, (enabled) => {
+    setSearchParams({ lowlatency: enabled ? "1" : null });
 });
 
 watchEffect(() => {
