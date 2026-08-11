@@ -242,7 +242,7 @@ impl SourceManager {
 
         let mut bridge = SourceBridge::new(
             stream_id.to_string(),
-            forward,
+            forward.clone(),
             has_video,
             has_audio,
             #[cfg(any(
@@ -288,10 +288,27 @@ impl SourceManager {
         }
         drop(sources);
 
-        bridges.insert(
-            stream_id.to_string(),
-            Arc::new(tokio::sync::Mutex::new(bridge)),
-        );
+        let bridge_arc = Arc::new(tokio::sync::Mutex::new(bridge));
+        bridges.insert(stream_id.to_string(), bridge_arc.clone());
+        drop(bridges);
+
+        // Adaptive bitrate controller (issue #409): only when the source
+        // opted in via `encoder.adaptive_bitrate` and its backend supports
+        // runtime retuning.  The task exits when the bridge is dropped.
+        {
+            let source_guard = source.lock().await;
+            let adaptive_cfg = source_guard.adaptive_bitrate_config();
+            drop(source_guard);
+            if let Some(cfg) = adaptive_cfg {
+                super::adaptive_bitrate::spawn(
+                    stream_id.to_string(),
+                    forward,
+                    source.clone(),
+                    Arc::downgrade(&bridge_arc),
+                    cfg,
+                );
+            }
+        }
 
         info!("Bridge created for {}", stream_id);
 

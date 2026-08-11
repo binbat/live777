@@ -81,6 +81,17 @@ pub struct EncoderSpec {
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
     pub prefer_dmabuf: bool,
+    /// Enable RTCP-feedback-driven adaptive bitrate (issue #409).
+    /// `bitrate` becomes the ceiling: the controller lowers the running
+    /// encoder's target while subscribers report congestion and ramps it
+    /// back up when the links stay clean.  Only effective with encoder
+    /// backends that support runtime retuning (currently `rkmpp`).
+    #[serde(default)]
+    pub adaptive_bitrate: bool,
+    /// Adaptive-bitrate floor in bits per second
+    /// (default: `max(bitrate / 8, 300_000)`).
+    #[serde(default)]
+    pub min_bitrate: Option<u32>,
 }
 
 fn default_gop() -> u32 {
@@ -215,6 +226,11 @@ impl SourceSpec {
         }
         if self.encoder.gop == 0 {
             anyhow::bail!("encoder.gop must be non-zero");
+        }
+        if let Some(min) = self.encoder.min_bitrate
+            && min > self.encoder.bitrate
+        {
+            anyhow::bail!("encoder.min_bitrate must not exceed encoder.bitrate");
         }
 
         let encoder_backend = self.encoder.backend.to_lowercase();
@@ -561,6 +577,8 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
+                adaptive_bitrate: false,
+                min_bitrate: None,
             },
             output: OutputSpec::default(),
         }
@@ -587,6 +605,8 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
+                adaptive_bitrate: false,
+                min_bitrate: None,
             },
             output: OutputSpec::default(),
         }
@@ -613,6 +633,8 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
+                adaptive_bitrate: false,
+                min_bitrate: None,
             },
             output: OutputSpec::default(),
         }
@@ -639,6 +661,8 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
+                adaptive_bitrate: false,
+                min_bitrate: None,
             },
             output: OutputSpec::default(),
         }

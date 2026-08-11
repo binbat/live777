@@ -87,6 +87,14 @@ public:
     /// Request an IDR keyframe at the next opportunity.
     virtual void requestKeyframe() = 0;
 
+    /// Change the target bitrate of a running encoder (adaptive bitrate
+    /// control).  Returns false when the backend cannot retune a running
+    /// encoder; the default is "unsupported".
+    virtual bool setBitrate(uint32_t bps) {
+        (void)bps;
+        return false;
+    }
+
     /// Stop encoding and release hardware resources.
     virtual void stop() = 0;
 

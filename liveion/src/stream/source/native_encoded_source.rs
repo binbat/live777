@@ -80,12 +80,14 @@ impl WireLatencyStats {
 pub struct NativeEncodedSource {
     stream_id: String,
     params: livehal::NativeSourceParams,
+    adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     shutdown_tx: Option<broadcast::Sender<()>>,
     pipeline: Option<livehal::NativePipeline>,
     keyframe_handle: Option<livehal::KeyframeHandle>,
+    bitrate_handle: Option<livehal::BitrateHandle>,
     packetize_handle: Option<tokio::task::JoinHandle<()>>,
     rtcp_sender: Option<mpsc::UnboundedSender<Vec<u8>>>,
     rtcp_handle: Option<tokio::task::JoinHandle<()>>,
@@ -98,19 +100,25 @@ pub struct NativeEncodedSource {
 // pipeline/handle types).
 
 impl NativeEncodedSource {
-    pub fn new(stream_id: String, params: livehal::NativeSourceParams) -> Self {
+    pub fn new(
+        stream_id: String,
+        params: livehal::NativeSourceParams,
+        adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
+    ) -> Self {
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
 
         Self {
             stream_id,
             params,
+            adaptive,
             state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
             shutdown_tx: None,
             pipeline: None,
             keyframe_handle: None,
+            bitrate_handle: None,
             packetize_handle: None,
             rtcp_sender: None,
             rtcp_handle: None,
@@ -173,6 +181,7 @@ impl NativeEncodedSource {
 
         let mut pipeline = livehal::NativePipeline::new(&self.params)?;
         let keyframe_handle = pipeline.keyframe_handle();
+        self.bitrate_handle = Some(pipeline.bitrate_handle());
         let mut rx = pipeline.start()?;
 
         // Start a single RTCP task for this source.  It will exit when the
@@ -412,6 +421,21 @@ impl NativeEncodedSource {
     #[cfg(feature = "source")]
     pub async fn get_rtcp_sender(&self) -> Option<mpsc::UnboundedSender<Vec<u8>>> {
         self.rtcp_sender.clone()
+    }
+
+    /// Adaptive-bitrate bounds, when enabled in the source config.
+    pub fn adaptive_bitrate_config(
+        &self,
+    ) -> Option<super::adaptive_bitrate::AdaptiveBitrateConfig> {
+        self.adaptive
+    }
+
+    /// Retune the running encoder (adaptive bitrate control, issue #409).
+    /// False when the pipeline is not running or the backend cannot retune.
+    pub fn set_bitrate(&self, bps: u32) -> bool {
+        self.bitrate_handle
+            .as_ref()
+            .is_some_and(|h| h.set_bitrate(bps))
     }
 }
 

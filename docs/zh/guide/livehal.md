@@ -142,6 +142,25 @@ clock_rate = 90000
 
 `conf/live777.toml` 自带注释掉的 Pi / RDK 示例。复制它们到你自己的配置中即可启用摄像头源。
 
+### 自适应码率(实验性)
+
+在 encoder 段设置 `adaptive_bitrate = true` 后,运行中的编码器目标码率由
+WHEP 订阅端的 RTCP 反馈驱动(issue #409):每秒采样一次丢包(优先 TWCC,
+否则用 Receiver Report 的 `fraction_lost`),由 AIMD 控制器在运行时调整编码器。
+
+```toml
+[stream.pi-cam.sources.encoder]
+bitrate = 4_000_000        # 上限 —— 控制器只从这里往下调
+adaptive_bitrate = true
+min_bitrate = 500_000      # 下限(默认:max(bitrate / 8, 300_000))
+```
+
+语义:丢包连续两个窗口超过 5% 就把码率降 15%;持续 10 秒无丢包则回升目标
+码率的 5%。多个订阅者时按最差链路决定 —— 共享编码器会被一起拉低,单个弱网
+订阅者会拖累整条流(根本解法是 simulcast)。加入不到 5 秒的订阅者不纳入
+统计(解码器启动期的丢包属正常)。运行时调码率目前仅 `rkmpp` 后端支持;其他
+后端会打印警告并自动停用控制器。
+
 ### 后端命名
 
 | 层级 | 取值 |

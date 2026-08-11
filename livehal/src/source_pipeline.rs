@@ -86,6 +86,14 @@ impl SharedPipelineHandle {
             unsafe { source_pipeline_request_keyframe(h.0) };
         }
     }
+
+    fn set_bitrate(&self, bps: u32) -> bool {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(h) => unsafe { source_pipeline_set_bitrate(h.0, bps) },
+            None => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +286,14 @@ impl NativePipeline {
             handle: self.handle.clone(),
         }
     }
+
+    /// Return a cloneable handle for retuning the encoder bitrate from
+    /// other tasks (adaptive bitrate control).
+    pub fn bitrate_handle(&self) -> BitrateHandle {
+        BitrateHandle {
+            handle: self.handle.clone(),
+        }
+    }
 }
 
 /// Cloneable handle for requesting keyframes from other tasks.
@@ -289,6 +305,23 @@ pub struct KeyframeHandle {
 impl KeyframeHandle {
     pub fn request_keyframe(&self) {
         self.handle.request_keyframe();
+    }
+}
+
+/// Cloneable handle for changing the encoder bitrate at runtime.
+///
+/// Returns false from [`BitrateHandle::set_bitrate`] when the encoder
+/// backend does not support runtime retuning or the pipeline is not
+/// running; callers should treat that as "fixed bitrate" and stop
+/// adjusting.
+#[derive(Clone)]
+pub struct BitrateHandle {
+    handle: SharedPipelineHandle,
+}
+
+impl BitrateHandle {
+    pub fn set_bitrate(&self, bps: u32) -> bool {
+        self.handle.set_bitrate(bps)
     }
 }
 
