@@ -1,4 +1,5 @@
 #include "include/encoder_backend.h"
+#include "include/latency_stats.h"
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -45,6 +46,9 @@ public:
     int frames_injected = 0;
     int frames_dropped = 0;
     std::atomic<bool> running_{false};
+
+    // [latency] "encode" stage: capture SOF → encoded frame dequeued.
+    LatencyStats enc_stats_{"encode"};
 
     // Serialises submit() with stop()/cleanup() so that buffers/fd are not
     // released while a frame is being processed.
@@ -290,6 +294,10 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
             fprintf(stderr, "[V4l2M2mEncoder] invalid output buffer index %u\n", buf_out.index);
             break;
         }
+        enc_stats_.sample(
+            static_cast<uint64_t>(buf_out.timestamp.tv_sec) * 1000000
+                + buf_out.timestamp.tv_usec,
+            monotonic_now_us());
         if (encoded_cb_) {
             uint8_t* raw = static_cast<uint8_t*>(outputBuffers[buf_out.index].start);
             size_t len = planes_out[0].bytesused;

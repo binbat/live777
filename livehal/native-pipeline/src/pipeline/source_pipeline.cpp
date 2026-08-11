@@ -16,6 +16,7 @@
 
 #include "include/capture_backend.h"
 #include "include/encoder_backend.h"
+#include "include/latency_stats.h"
 #include "include/source_pipeline_ffi.h"
 #include <atomic>
 #include <condition_variable>
@@ -179,6 +180,9 @@ private:
     std::thread worker_thread_;
     std::atomic<bool> stopped_{false};
 
+    // [latency] "dispatch" stage: capture SOF → FFI callback (worker thread).
+    LatencyStats dispatch_stats_{"dispatch"};
+
     void submit_job(const EncodedPacket& pkt) {
         CallbackJob job;
         if (pkt.data && pkt.size > 0) {
@@ -230,6 +234,7 @@ private:
             }
 
             if (cb) {
+                dispatch_stats_.sample(job.pts_us, monotonic_now_us());
                 EncodedPacketFFI ffi_pkt{};
                 ffi_pkt.codec = job.codec;
                 ffi_pkt.data = job.payload.data();

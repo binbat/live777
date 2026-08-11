@@ -24,6 +24,56 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{RwLock, broadcast, mpsc};
 
 // ---------------------------------------------------------------------------
+// Capture-to-wire latency sampler — the Rust end of the P0 pipeline
+// instrumentation; mirrors the C++ LatencyStats in
+// livehal/native-pipeline/include/latency_stats.h ("wire" stage).
+// ---------------------------------------------------------------------------
+
+struct WireLatencyStats {
+    window_start_us: u64,
+    count: u64,
+    sum_us: i64,
+    max_us: i64,
+}
+
+impl WireLatencyStats {
+    fn new() -> Self {
+        Self {
+            window_start_us: 0,
+            count: 0,
+            sum_us: 0,
+            max_us: 0,
+        }
+    }
+
+    fn sample(&mut self, pts_us: u64, now_us: u64, stream_id: &str) {
+        if pts_us == 0 {
+            return; // no usable origin timestamp
+        }
+        if self.window_start_us == 0 {
+            self.window_start_us = now_us;
+        }
+        let delta = now_us as i64 - pts_us as i64;
+        self.sum_us += delta;
+        self.max_us = self.max_us.max(delta);
+        self.count += 1;
+        if now_us - self.window_start_us >= 1_000_000 {
+            tracing::info!(
+                "[{}] [latency] wire: n={} avg={:.2}ms max={:.2}ms",
+                stream_id,
+                self.count,
+                self.sum_us as f64 / 1000.0 / self.count as f64,
+                self.max_us as f64 / 1000.0
+            );
+            self.window_start_us = now_us;
+            self.count = 0;
+            self.sum_us = 0;
+            self.max_us = 0;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // NativeEncodedSource
 // ---------------------------------------------------------------------------
 
@@ -152,6 +202,7 @@ impl NativeEncodedSource {
         let clock_rate = self.params.clock_rate;
         let codec = self.params.codec;
         let fallback_delta = clock_rate / self.params.fps.max(1);
+        let stream_id = self.stream_id.clone();
         #[cfg(feature = "source")]
         let dynamic_profile = self.dynamic_profile.clone();
 
@@ -174,6 +225,7 @@ impl NativeEncodedSource {
             // Packetizer maintains an internal timestamp base and
             // wrapping-adds the `samples` parameter after each call.
             let mut last_rtp_ts: Option<u32> = None;
+            let mut wire_stats = WireLatencyStats::new();
 
             static DBG_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -239,6 +291,11 @@ impl NativeEncodedSource {
                                         std::sync::Arc::new(packet),
                                     ));
                                 }
+                                wire_stats.sample(
+                                    pkt.pts_us,
+                                    livehal::monotonic_us(),
+                                    &stream_id,
+                                );
                             }
                             Err(e) => {
                                 tracing::warn!("RTP packetize error: {}", e);
