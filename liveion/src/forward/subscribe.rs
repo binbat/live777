@@ -2,17 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
-use rtc::media_stream::MediaStreamTrack;
 use rtc::rtp_transceiver::PayloadType;
-use rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
-};
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RtpCodecKind};
 use rtc::shared::marshal::MarshalSize;
 use tokio::sync::{RwLock, broadcast, watch};
 use tokio::time::{Duration, Instant, sleep};
 use tracing::{debug, info, warn};
 use webrtc::media_stream::track_local::TrackLocal;
-use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 use webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
 use webrtc::rtp_transceiver::RtpSender;
 
@@ -235,9 +231,22 @@ impl SubscribeRTCPeerConnection {
 
             let sender_track = sender.track();
             let sender_track_codec = sender_track.codec(sender_ssrc).await;
-            let track: Arc<dyn TrackLocal> = if sender_track_codec.as_ref().is_some_and(
-                |sender_track_codec| sender_track_codec_compatible(sender_track_codec, &codec),
-            ) {
+            // Always reuse the already-bound sender track, even when the
+            // selected codec differs from the track's declared codec.
+            // `RtpSender::replace_track` in webrtc-rs 0.20 swaps only the
+            // core track descriptor and never `bind()`s the new
+            // TrackLocalStaticRTP, so every write to it fails with
+            // "track is not binding yet" and the subscriber stays muted
+            // forever (issue #406). The core validates outgoing packets
+            // against the sender's *negotiated* codec set and SSRC, not the
+            // track's declared codec, so reusing the bound track while
+            // rewriting the payload type per packet is safe.
+            if sender_track_codec
+                .as_ref()
+                .is_some_and(|sender_track_codec| {
+                    sender_track_codec_compatible(sender_track_codec, &codec)
+                })
+            {
                 info!(
                     "[{}] [{}] {} subscribe reusing bound sender track: sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
                     stream,
@@ -248,30 +257,9 @@ impl SubscribeRTCPeerConnection {
                     payload_type,
                     sender_ssrc,
                 );
-                sender_track.clone()
             } else {
-                let new_track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
-                    "webrtc".to_string(),
-                    format!("{}-{}", "webrtc", kind),
-                    "webrtc".to_string(),
-                    kind,
-                    vec![RTCRtpEncodingParameters {
-                        rtp_coding_parameters: RTCRtpCodingParameters {
-                            ssrc: Some(sender_ssrc),
-                            ..Default::default()
-                        },
-                        codec: codec.clone(),
-                        ..Default::default()
-                    }],
-                )));
-
-                if let Err(e) = sender.replace_track(new_track.clone()).await {
-                    debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
-                    break;
-                }
-
                 info!(
-                    "[{}] [{}] {} subscribe replaced sender track: previous_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                    "[{}] [{}] {} subscribe codec switched; keeping bound sender track (replace_track would stay unbound): sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
                     stream,
                     id,
                     kind,
@@ -283,8 +271,8 @@ impl SubscribeRTCPeerConnection {
                     payload_type,
                     sender_ssrc,
                 );
-                new_track
-            };
+            }
+            let track: Arc<dyn TrackLocal> = sender_track.clone();
 
             let new_recv = publish_track.subscribe();
 
@@ -1075,12 +1063,17 @@ impl SubscribeRTCPeerConnection {
                             let (codec, new_payload_type) =
                                 Self::select_sender_codec(&stream, &id, kind, &sender, publisher_codec.clone()).await;
 
-                            // Reuse the already-bound sender track when the codec is
-                            // compatible to avoid webrtc-rs' replace_track, which does not
-                            // re-bind the new track and causes 'track is not binding yet'.
+                            // Always reuse the already-bound sender track, even
+                            // when the layer's codec differs from the track's
+                            // declared codec: webrtc-rs 0.20 `replace_track`
+                            // never re-binds the new track, so every write to
+                            // it fails with 'track is not binding yet' (issue
+                            // #406). The core validates outgoing packets
+                            // against the sender's *negotiated* codec set and
+                            // SSRC, not the track's declared codec.
                             let sender_track = sender.track();
                             let sender_track_codec = sender_track.codec(sender_ssrc).await;
-                            let track_to_use: Arc<dyn TrackLocal> = if sender_track_codec.as_ref().is_some_and(
+                            if sender_track_codec.as_ref().is_some_and(
                                 |sender_track_codec| {
                                     sender_track_codec_compatible(sender_track_codec, &codec)
                                 }
@@ -1095,32 +1088,9 @@ impl SubscribeRTCPeerConnection {
                                     new_payload_type,
                                     sender_ssrc,
                                 );
-                                sender_track.clone()
                             } else {
-                                let new_track = Arc::new(TrackLocalStaticRTP::new(
-                                    MediaStreamTrack::new(
-                                        "webrtc".to_string(),
-                                        format!("{}-{}", "webrtc", kind),
-                                        "webrtc".to_string(),
-                                        kind,
-                                        vec![RTCRtpEncodingParameters {
-                                            rtp_coding_parameters: RTCRtpCodingParameters {
-                                                ssrc: Some(sender_ssrc),
-                                                ..Default::default()
-                                            },
-                                            codec: codec.clone(),
-                                            ..Default::default()
-                                        }],
-                                    ),
-                                ));
-
-                                if let Err(e) = sender.replace_track(new_track.clone() as Arc<dyn webrtc::media_stream::track_local::TrackLocal>).await {
-                                    debug!("[{}] [{}] {} track replace err: {}", stream, id, kind, e);
-                                    continue;
-                                }
-
                                 info!(
-                                    "[{}] [{}] {} layer switch replaced sender track: previous_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
+                                    "[{}] [{}] {} layer switch codec changed; keeping bound sender track (replace_track would stay unbound): sender_codec={}, selected_codec={}, payload_type={:?}, ssrc={}",
                                     stream,
                                     id,
                                     kind,
@@ -1132,8 +1102,8 @@ impl SubscribeRTCPeerConnection {
                                     new_payload_type,
                                     sender_ssrc,
                                 );
-                                new_track
-                            };
+                            }
+                            let track_to_use: Arc<dyn TrackLocal> = sender_track.clone();
 
                             recv = publish_track.subscribe();
                             track = Some(track_to_use);
@@ -1191,8 +1161,10 @@ impl SubscribeRTCPeerConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rtc::media_stream::MediaStreamTrack;
     use rtc::rtp::packet::Packet;
     use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
+    use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 
     /// The unbind reset behind "closed publish channel → re-bind",
     /// "stale binding → re-bind" and "write budget exhausted → re-bind":
