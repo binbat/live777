@@ -17,13 +17,20 @@ runs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/vcpkg
-        key: vcpkg-master-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+        key: vcpkg-2026.07.29-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
 
     - name: Build vcpkg (Windows)
       if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        git clone https://github.com/microsoft/vcpkg --depth 1 --branch master
+        # Pin to the newest vcpkg tag still shipping FFmpeg 8.x (8.1.2):
+        # vcpkg master moved to FFmpeg 9.0, which privatized AVCodec's
+        # public fields (supported_framerates, pix_fmts, ...), so bindgen
+        # emits accessor methods and rsmpeg 0.18.0 no longer compiles
+        # (E0615 "method, not a field"). Mirrors the Linux job's n8.0
+        # source-build pin. 2026.07.29 is required over 2026.06.24 because
+        # the port's svt-av1 feature only exists since 2026-07-08.
+        git clone https://github.com/microsoft/vcpkg --depth 1 --branch 2026.07.29
         ./vcpkg/bootstrap-vcpkg.bat
 
     - name: Install FFmpeg via vcpkg (Windows)
