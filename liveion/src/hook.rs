@@ -60,6 +60,7 @@ fn session_reason_str(reason: SessionStopReason) -> &'static str {
     match reason {
         SessionStopReason::PeerClosed => "peer-closed",
         SessionStopReason::ApiDeleted => "api-deleted",
+        SessionStopReason::Replaced => "replaced",
         SessionStopReason::IdleTimeout => "idle-timeout",
     }
 }

@@ -255,7 +255,14 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   judged by the source *bridge* (`SourceManager::has_bridge`), not source
   existence, and starts/stops serialize on a per-stream lock
   (`on_demand_locks`). A WHIP publish onto a stream with an active source
-  bridge is rejected (409) to avoid mixing two publishers' tracks.
+  bridge is rejected (409) to avoid mixing two publishers' tracks. A second
+  WHIP publish on an already-published stream instead *displaces* the
+  incumbent (mediamtx-style override): the old session is torn down with
+  `PublishStopped`/`SessionStopReason::Replaced`, and same-codec takeovers
+  are seamless to subscribers via the media-generation machinery. Streams
+  opt out with `strategy.override_publisher = false` (global or per-stream),
+  restoring the 409; cascade-pull publishers are never displaced and always
+  conflict (409), since their supervisor would reconnect and fight.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

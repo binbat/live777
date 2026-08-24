@@ -10,6 +10,12 @@ pub struct Strategy {
     pub auto_create_whip: bool,
     #[serde(default = "default_true")]
     pub auto_create_whep: bool,
+    /// mediamtx-style publisher override: a new WHIP publish displaces the
+    /// stream's current publisher instead of being rejected with a 409
+    /// conflict. Cascade-pull publishers are never displaced. Set to
+    /// `false` on streams that must never be preempted.
+    #[serde(default = "default_true")]
+    pub override_publisher: bool,
     #[serde(default)]
     pub auto_delete_whip: AutoDestrayTime,
     #[serde(default)]
@@ -36,6 +42,7 @@ impl Default for Strategy {
             cascade_push_close_sub: false,
             auto_create_whip: true,
             auto_create_whep: true,
+            override_publisher: true,
             auto_delete_whip: Default::default(),
             auto_delete_whep: Default::default(),
         }
@@ -58,6 +65,7 @@ impl Strategy {
             cascade_push_close_sub: other.cascade_push_close_sub,
             auto_create_whip: other.auto_create_whip,
             auto_create_whep: other.auto_create_whep,
+            override_publisher: other.override_publisher,
             auto_delete_whip: if other.auto_delete_whip != AutoDestrayTime::default() {
                 other.auto_delete_whip.clone()
             } else {
@@ -103,6 +111,7 @@ mod tests {
             cascade_push_close_sub: false,
             auto_create_whip: true,
             auto_create_whep: true,
+            override_publisher: true,
             auto_delete_whip: AutoDestrayTime(-1),
             auto_delete_whep: AutoDestrayTime(-1),
         }
@@ -115,6 +124,7 @@ mod tests {
         assert!(!default.cascade_push_close_sub);
         assert!(default.auto_create_whip);
         assert!(default.auto_create_whep);
+        assert!(default.override_publisher);
         assert_eq!(default.auto_delete_whip, AutoDestrayTime(-1));
         assert_eq!(default.auto_delete_whep, AutoDestrayTime(-1));
     }
@@ -140,6 +150,7 @@ mod tests {
             cascade_push_close_sub: true,
             auto_create_whip: false,
             auto_create_whep: false,
+            override_publisher: false,
             auto_delete_whip: AutoDestrayTime(0),
             auto_delete_whep: AutoDestrayTime(1000),
         };
@@ -148,6 +159,7 @@ mod tests {
         assert!(merged.cascade_push_close_sub);
         assert!(!merged.auto_create_whip);
         assert!(!merged.auto_create_whep);
+        assert!(!merged.override_publisher);
         assert_eq!(merged.auto_delete_whip, AutoDestrayTime(0));
         assert_eq!(merged.auto_delete_whep, AutoDestrayTime(1000));
     }

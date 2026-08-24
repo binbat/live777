@@ -57,6 +57,7 @@ mod tests {
             cascade_push_close_sub,
             auto_create_whip,
             auto_create_whep,
+            override_publisher: true,
             auto_delete_whip: api::strategy::AutoDestrayTime(auto_delete_whip),
             auto_delete_whep: api::strategy::AutoDestrayTime(auto_delete_whep),
         }

@@ -6,6 +6,12 @@
 
 Response: [201]
 
+If the stream already has a WHIP publisher, the new publish displaces it
+(mediamtx-style override): the old session is closed with reason
+`replaced`. Set `strategy.override_publisher = false` (globally or per
+stream) to reject duplicate publishes with [409] instead. A cascade-pull
+publisher is never displaced and always conflicts with [409].
+
 `POST` `/whep/:streamId`
 
 Response: [201]
