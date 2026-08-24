@@ -17,6 +17,7 @@ option(ENABLE_CAPTURE_V4L2 "Enable V4L2 capture backend" OFF)
 option(ENABLE_ENCODER_V4L2_M2M "Enable V4L2 M2M encoder backend" OFF)
 option(ENABLE_ENCODER_RDK_X5 "Enable RDK X5 encoder backend" OFF)
 option(ENABLE_ENCODER_RKMPP "Enable Rockchip MPP encoder backend" OFF)
+option(BUILD_NATIVE_PIPELINE_TESTS "Build native-pipeline unit tests" OFF)
 # --- Collect sources based on enabled options ---
 
 set(SOURCES "")
@@ -173,3 +174,10 @@ install(TARGETS native-pipeline
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
 )
+
+if(BUILD_NATIVE_PIPELINE_TESTS)
+    enable_testing()
+    add_executable(v4l2-m2m-format-test tests/v4l2_m2m_format_test.cpp)
+    target_include_directories(v4l2-m2m-format-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME v4l2-m2m-format-test COMMAND v4l2-m2m-format-test)
+endif()

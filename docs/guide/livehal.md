@@ -192,6 +192,7 @@ itself.
 | `yuv420`, `yuv420p` | Yuv420p | 2 |
 | `mjpeg` | Mjpeg | 3 |
 | `rgb888`, `rgb` | Rgb888 | 4 |
+| `uyvy`, `uyvy422` | Uyvy422 | 5 |
 
 ### codec values
 
@@ -373,6 +374,10 @@ clock_rate = 90000
 ```
 
 ### Raspberry Pi USB V4L2
+
+Packed UYVY capture devices can use `pixel_format = "uyvy"` (`uyvy422` is
+an alias). The generic V4L2 path preserves the capture stride and passes UYVY
+unchanged to V4L2 M2M, so the encoder device must advertise UYVY input.
 
 ```toml
 [stream.usb-cam]

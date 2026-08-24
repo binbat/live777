@@ -36,6 +36,22 @@ jobs:
       - name: Cargo format
         run: cargo fmt --all -- --check
 
+  native-pipeline-test:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+      - name: Configure native pipeline tests
+        run: >-
+          cmake -S livehal/native-pipeline -B target/native-pipeline-tests
+          -DBUILD_NATIVE_PIPELINE_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build native pipeline tests
+        run: cmake --build target/native-pipeline-tests --target v4l2-m2m-format-test
+      - name: Run native pipeline tests
+        run: ctest --test-dir target/native-pipeline-tests --output-on-failure
+
   clippy:
     runs-on: ubuntu-26.04
     permissions:
@@ -73,4 +89,3 @@ jobs:
         run: pnpm -r build
       - name: Cargo clippy --all-features
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
-

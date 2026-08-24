@@ -294,6 +294,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native-pipeline/include/capture_backend.h");
     println!("cargo:rerun-if-changed=native-pipeline/include/encoder_backend.h");
     println!("cargo:rerun-if-changed=native-pipeline/include/media_types.h");
+    println!("cargo:rerun-if-changed=native-pipeline/include/v4l2_m2m_format.h");
 
     if rdk_available {
         println!("cargo:rerun-if-changed=native-pipeline/encoder_rdk.cpp");

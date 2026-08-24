@@ -129,7 +129,7 @@ ice_udp_addrs = ["auto"]
 # width = 640
 # height = 480
 # fps = 30
-# pixel_format = "yuyv"
+# pixel_format = "yuyv"          # use "uyvy" for packed UYVY422 devices
 # [stream.usb-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"

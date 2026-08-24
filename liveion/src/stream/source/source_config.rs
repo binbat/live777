@@ -49,7 +49,7 @@ pub struct CaptureSpec {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    /// Raw pixel format: `"yuyv"`, `"nv12"`, `"yuv420"`, `"mjpeg"`.
+    /// Raw pixel format: `"yuyv"`, `"uyvy"`, `"nv12"`, `"yuv420"`, `"mjpeg"`.
     pub pixel_format: String,
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
@@ -270,6 +270,7 @@ pub enum PixelFormat {
     Yuv420p = 2,
     Mjpeg = 3,
     Rgb888 = 4,
+    Uyvy422 = 5,
 }
 
 impl From<PixelFormat> for u32 {
@@ -325,8 +326,9 @@ pub fn pixel_format_from_str(s: &str) -> anyhow::Result<PixelFormat> {
         "yuv420" | "yuv420p" => Ok(PixelFormat::Yuv420p),
         "mjpeg" => Ok(PixelFormat::Mjpeg),
         "rgb888" | "rgb" => Ok(PixelFormat::Rgb888),
+        "uyvy" | "uyvy422" => Ok(PixelFormat::Uyvy422),
         other => anyhow::bail!(
-            "unsupported pixel_format: '{}'. Supported: yuyv, nv12, yuv420, mjpeg, rgb888",
+            "unsupported pixel_format: '{}'. Supported: yuyv, nv12, yuv420, mjpeg, rgb888, uyvy",
             other
         ),
     }
@@ -721,6 +723,8 @@ mod tests {
         assert_eq!(pixel_format_to_u32("mjpeg").unwrap(), 3);
         assert_eq!(pixel_format_to_u32("rgb888").unwrap(), 4);
         assert_eq!(pixel_format_to_u32("rgb").unwrap(), 4);
+        assert_eq!(pixel_format_to_u32("uyvy").unwrap(), 5);
+        assert_eq!(pixel_format_to_u32("UYVY422").unwrap(), 5);
     }
 
     #[test]
