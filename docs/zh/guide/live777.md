@@ -226,7 +226,7 @@ on_publish_stopped = ["/etc/live777/hooks/cam1-power-off.sh"]
 | ----------------- | ----------------- | ---------------------------------------------------------------------------------------- |
 | `$1`              | `LIVE777_EVENT`   | `stream-created` / `stream-deleted` / `publish-started` / `publish-stopped`              |
 | `$2`              | `LIVE777_STREAM`  | 流名                                                                                     |
-| `$3`（仅删除/停止时）| `LIVE777_REASON` | stream-deleted:`api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` / `reset`;publish-stopped:`peer-closed` / `api-deleted` / `idle-timeout` |
+| `$3`（仅删除/停止时）| `LIVE777_REASON` | stream-deleted:`api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` / `reset`;publish-stopped:`peer-closed` / `api-deleted` / `replaced` / `idle-timeout` |
 | —                 | `LIVE777_SESSION` | （仅推流事件）推流会话 ID；配置源为 `virtual-source`                                       |
 
 注意事项：

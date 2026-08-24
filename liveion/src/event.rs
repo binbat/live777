@@ -45,6 +45,9 @@ pub enum SessionStopReason {
     /// gracefully hanging up (WHIP/WHEP session delete) or an admin kick; both
     /// share the endpoint and are indistinguishable at this layer.
     ApiDeleted,
+    /// The publisher was displaced by a newer WHIP publish taking over the
+    /// stream (`strategy.override_publisher`, mediamtx-style override).
+    Replaced,
     /// An on-demand source was stopped because the stream had no consumers
     /// for `on_demand_close_after_ms` (no subscribers, no RTSP pull clients).
     #[cfg_attr(not(feature = "source"), allow(dead_code))]

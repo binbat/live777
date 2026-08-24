@@ -1293,6 +1293,14 @@ impl PeerForwardInternal {
 }
 
 // publish
+/// Whether a new WHIP publish may displace the incumbent publisher:
+/// override must be enabled for the stream and the incumbent must be a
+/// plain WHIP session — a cascade pull is supervised and would fight the
+/// displacer by reconnecting, so it always conflicts instead.
+fn override_allowed(strategy: &api::strategy::Strategy, incumbent_is_cascade: bool) -> bool {
+    strategy.override_publisher && !incumbent_is_cascade
+}
+
 impl PeerForwardInternal {
     pub(crate) async fn publish_is_some(&self) -> bool {
         let publish = self.publish.read().await;
@@ -1369,6 +1377,52 @@ impl PeerForwardInternal {
         }
 
         Ok(())
+    }
+
+    /// Displace the current publisher so a new WHIP publish can take over
+    /// (mediamtx-style override, `strategy.override_publisher`). Returns
+    /// `Ok(None)` when no publisher is attached. A cascade-pull incumbent
+    /// is never displaced, and a stream can opt out of override entirely;
+    /// both surface as the same conflict a duplicate publish got before.
+    pub(crate) async fn replace_publish(&self) -> Result<Option<String>> {
+        // Fast path for the common first-publish case: skip the stats
+        // aggregation entirely when no publisher is attached.
+        if self.publish.read().await.is_none() {
+            return Ok(None);
+        }
+        // Aggregated before the `publish` write lock: the lock order is
+        // `publish_tracks` before `publish` (see `info`).
+        let stats = self.current_publish_stats().await;
+        let (old_peer, session_info) = {
+            let mut publish = self.publish.write().await;
+            let Some(current) = publish.as_ref() else {
+                return Ok(None);
+            };
+            if !override_allowed(&self.strategy, current.cascade.is_some()) {
+                return Err(AppError::stream_already_exists(
+                    "A connection has already been established",
+                ));
+            }
+            let mut session_info = current.info(stats).await;
+            session_info.state = RTCPeerConnectionState::Closed;
+            session_info.leave_at = Utc::now().timestamp_millis();
+            let old = publish.take().unwrap();
+            (old.peer, session_info)
+        };
+        let session_id = session_info.id.clone();
+        info!(
+            "[{}] [publish] {} displaced by a new WHIP publish (override)",
+            self.stream, session_id
+        );
+        // Close before cleanup, mirroring `remove_peer`: the publish read
+        // loops stop here, so the final stats fold inside the cleanup is
+        // exact. The close re-enters `remove_publish` via the state
+        // handler, which is a no-op because the session is already out of
+        // `publish`.
+        let _ = old_peer.close().await;
+        self.do_remove_publish_cleanup(session_info, SessionStopReason::Replaced)
+            .await;
+        Ok(Some(session_id))
     }
 
     /// Register a publish session. Returns the new session ID on success.

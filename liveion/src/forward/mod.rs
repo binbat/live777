@@ -320,19 +320,16 @@ impl PeerForward {
         &self,
         mut offer: RTCSessionDescription,
     ) -> Result<(RTCSessionDescription, String)> {
-        if self.internal.publish_is_some().await {
-            return Err(AppError::stream_already_exists(
-                "A connection has already been established",
-            ));
-        }
+        // Held for the whole displace-and-handshake: serializes publishes
+        // against each other and keeps `publish_setup_in_progress` true, so
+        // stream teardown is vetoed while a new publisher is mid-flight.
+        // (This must bind: `let _ =` would drop the guard immediately.)
+        let _publish_guard = self.publish_lock.lock().await;
 
-        let _ = self.publish_lock.lock().await;
-
-        if self.internal.publish_is_some().await {
-            return Err(AppError::stream_already_exists(
-                "A connection has already been established",
-            ));
-        }
+        // mediamtx-style override: the new publish displaces the incumbent
+        // (`strategy.override_publisher`), unless the incumbent is a cascade
+        // pull or the stream opted out — those still conflict.
+        self.internal.replace_publish().await?;
 
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
         let media_info = MediaInfo::try_from(unmarshal_sdp(&offer.sdp)?)?;
@@ -382,7 +379,10 @@ impl PeerForward {
             ));
         }
 
-        let _ = self.publish_lock.lock().await;
+        // Held for the whole handshake, as in `set_publish`. A cascade pull
+        // never displaces an incumbent: it is supervised and would fight its
+        // way back, so any existing publisher is a hard conflict.
+        let _publish_guard = self.publish_lock.lock().await;
 
         if self.internal.publish_is_some().await {
             return Err(AppError::stream_already_exists(
@@ -1517,5 +1517,222 @@ a=end-of-candidates";
             .unwrap();
 
         assert!(!forward.confirm_orphan_teardown().await);
+    }
+
+    /// Build a loopback offer peer with a single VP8 video track and return
+    /// the peer plus its SDP offer (the shared setup of the publish tests).
+    async fn new_offer_peer(
+        tag: &str,
+    ) -> crate::result::Result<(
+        std::sync::Arc<dyn PeerConnection>,
+        webrtc::peer_connection::RTCSessionDescription,
+    )> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+        let offer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(media_engine)
+                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        let media_track = MediaStreamTrack::new(
+            tag.to_owned(),
+            "video".to_owned(),
+            "video".to_owned(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(1),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                ..Default::default()
+            }],
+        );
+        offer_peer
+            .add_track(std::sync::Arc::new(TrackLocalStaticRTP::new(media_track)))
+            .await?;
+        let offer = offer_peer.create_offer(None).await?;
+        Ok((offer_peer, offer))
+    }
+
+    /// mediamtx-style override: a second WHIP publish displaces the
+    /// incumbent, emitting `PublishStopped` with `SessionStopReason::Replaced`
+    /// before the successor's `PublishStarted`.
+    #[tokio::test]
+    async fn publish_replace_displaces_incumbent() -> crate::result::Result<()> {
+        let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(16);
+        let forward = PeerForward::new(
+            "replace-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
+            event_tx,
+        );
+
+        let (peer_a, offer_a) = new_offer_peer("replace-a").await?;
+        let (_answer_a, session_a) = forward.set_publish(offer_a).await?;
+
+        let (peer_b, offer_b) = new_offer_peer("replace-b").await?;
+        let (_answer_b, session_b) = forward.set_publish(offer_b).await?;
+        assert_ne!(session_a, session_b);
+
+        // The displacement event precedes the successor's PublishStarted:
+        // `replace_publish` runs before the new session registers.
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(crate::event::Event::PublishStopped {
+                        stream,
+                        session,
+                        reason,
+                    }) => break (stream, session, reason),
+                    Ok(_) => continue,
+                    Err(err) => panic!("event bus error before PublishStopped: {err}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for PublishStopped");
+        assert_eq!(stopped.0, "replace-test");
+        assert_eq!(stopped.1, session_a);
+        assert_eq!(stopped.2, crate::event::SessionStopReason::Replaced);
+
+        let started = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(crate::event::Event::PublishStarted { stream, session }) => {
+                        break (stream, session);
+                    }
+                    Ok(_) => continue,
+                    Err(err) => panic!("event bus error before PublishStarted: {err}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for successor PublishStarted");
+        assert_eq!(started, ("replace-test".to_owned(), session_b.clone()));
+
+        // The displaced session is gone for good (removing it is a no-op);
+        // the successor is the registered publisher.
+        assert!(matches!(
+            forward.remove_peer(session_a).await?,
+            super::RemovePeerOutcome::None
+        ));
+        assert!(matches!(
+            forward.remove_peer(session_b).await?,
+            super::RemovePeerOutcome::PublisherRemoved
+        ));
+
+        peer_a.close().await?;
+        peer_b.close().await?;
+        Ok(())
+    }
+
+    /// With `strategy.override_publisher = false` a duplicate WHIP publish
+    /// keeps the pre-override behavior: conflict, incumbent untouched.
+    #[tokio::test]
+    async fn publish_replace_rejected_when_stream_opts_out() -> crate::result::Result<()> {
+        let strategy = api::strategy::Strategy {
+            override_publisher: false,
+            ..Default::default()
+        };
+        let forward = PeerForward::new(
+            "no-override-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
+            #[cfg(feature = "source")]
+            None,
+            strategy,
+            tokio::sync::broadcast::channel(4).0,
+        );
+
+        let (peer_a, offer_a) = new_offer_peer("no-override-a").await?;
+        let (_answer, session_a) = forward.set_publish(offer_a).await?;
+
+        let (peer_b, offer_b) = new_offer_peer("no-override-b").await?;
+        let err = forward.set_publish(offer_b).await;
+        let is_conflict = matches!(&err, Err(crate::AppError::StreamAlreadyExists(_)));
+        assert!(
+            is_conflict,
+            "duplicate publish must conflict when override is disabled: {err:?}"
+        );
+
+        // The incumbent is still the registered publisher.
+        assert!(matches!(
+            forward.remove_peer(session_a).await?,
+            super::RemovePeerOutcome::PublisherRemoved
+        ));
+
+        peer_a.close().await?;
+        peer_b.close().await?;
+        Ok(())
+    }
+
+    /// A cascade-pull incumbent is supervised (it reconnects on its own), so
+    /// a WHIP publish never displaces it — that conflict stays a 409.
+    #[cfg(feature = "cascade")]
+    #[tokio::test]
+    async fn cascade_pull_incumbent_is_not_displaced() -> crate::result::Result<()> {
+        let forward = PeerForward::new(
+            "cascade-incumbent-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
+        );
+
+        // Register the incumbent by hand as a cascade pull.
+        let (peer_a, offer_a) = new_offer_peer("cascade-incumbent").await?;
+        let media_info = super::media::MediaInfo::try_from(super::unmarshal_sdp(&offer_a.sdp)?)?;
+        let (peer, gather_complete, connection_state_rx) =
+            forward.new_publish_peer(media_info).await?;
+        let _description = super::peer_complete(offer_a, peer.clone(), gather_complete).await?;
+        let session_a = forward
+            .internal
+            .set_publish(
+                peer.clone(),
+                Some(super::message::CascadeInfo {
+                    source_url: None,
+                    target_url: None,
+                    token: None,
+                    session_url: None,
+                }),
+                connection_state_rx,
+            )
+            .await?;
+
+        let (peer_b, offer_b) = new_offer_peer("whip-challenger").await?;
+        let err = forward.set_publish(offer_b).await;
+        let is_conflict = matches!(&err, Err(crate::AppError::StreamAlreadyExists(_)));
+        assert!(
+            is_conflict,
+            "WHIP publish must not displace a cascade-pull incumbent: {err:?}"
+        );
+
+        assert!(matches!(
+            forward.remove_peer(session_a).await?,
+            super::RemovePeerOutcome::PublisherRemoved
+        ));
+
+        peer_a.close().await?;
+        peer_b.close().await?;
+        Ok(())
     }
 }

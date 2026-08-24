@@ -240,7 +240,7 @@ as argv and as environment variables:
 | ------------------- | ----------------- | ----------------------------------------------------------------------------------------- |
 | `$1`                | `LIVE777_EVENT`   | `stream-created` / `stream-deleted` / `publish-started` / `publish-stopped`               |
 | `$2`                | `LIVE777_STREAM`  | stream name                                                                               |
-| `$3` (deleted/stopped only) | `LIVE777_REASON` | stream-deleted: `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` / `reset`; publish-stopped: `peer-closed` / `api-deleted` / `idle-timeout` |
+| `$3` (deleted/stopped only) | `LIVE777_REASON` | stream-deleted: `api-deleted` / `publish-leave-timeout` / `subscribe-leave-timeout` / `orphaned` / `reset`; publish-stopped: `peer-closed` / `api-deleted` / `replaced` / `idle-timeout` |
 | —                   | `LIVE777_SESSION` | (publish events only) publisher session id; `virtual-source` for configured sources       |
 
 Notes:

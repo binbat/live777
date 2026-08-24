@@ -6,6 +6,11 @@
 
 Response: [201]
 
+如果该流已有 WHIP 推流，新推流会顶掉旧推流（mediamtx 式覆盖）：旧会话以
+`replaced` 原因关闭。将 `strategy.override_publisher = false`（全局或按流）
+可改回重复推流返回 [409] 的行为。cascade 拉流的发布者永远不会被顶掉，
+冲突时始终返回 [409]。
+
 `POST` `/whep/:streamId`
 
 Response: [201]

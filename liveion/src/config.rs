@@ -373,9 +373,9 @@ impl Config {
                 target.validate().map_err(|e| {
                     anyhow::anyhow!("stream[{}] target config error: {}", stream_id, e)
                 })?;
-                // Duplicate targets would race on the downstream ("A
-                // connection has already been established") and retry
-                // forever; reject them at startup instead.
+                // Duplicate targets would keep displacing each other on
+                // the downstream and flap forever; reject them at startup
+                // instead.
                 if !seen_urls.insert(target.url.trim().to_string()) {
                     anyhow::bail!("stream[{}] duplicate target url", stream_id);
                 }
