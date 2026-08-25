@@ -46,6 +46,8 @@ std::vector<uint32_t> requested_fourccs(RawPixelFormat format) {
         return {V4L2_PIX_FMT_MJPEG};
     case RawPixelFormat::Rgb888:
         return {V4L2_PIX_FMT_RGB24};
+    case RawPixelFormat::Uyvy422:
+        return {V4L2_PIX_FMT_UYVY};
     }
     return {};
 }
@@ -149,6 +151,8 @@ RawPixelFormat V4L2CaptureImpl::outputFormat() const {
         return RawPixelFormat::Mjpeg;
     case V4L2_PIX_FMT_RGB24:
         return RawPixelFormat::Rgb888;
+    case V4L2_PIX_FMT_UYVY:
+        return RawPixelFormat::Uyvy422;
     default:
         return RawPixelFormat::Yuv420p;
     }
@@ -238,6 +242,22 @@ bool V4L2CaptureImpl::make_frame(
     frame->pts_us = static_cast<uint64_t>(buf.timestamp.tv_sec) * 1000000
                     + buf.timestamp.tv_usec;
     frame->seq = ++seq_;
+
+    if (pixel_format == V4L2_PIX_FMT_UYVY) {
+        const uint32_t stride = plane_strides[0] ? plane_strides[0] : width * 2;
+        const size_t required = static_cast<size_t>(stride) * height;
+        if ((width & 1U) != 0 || stride < width * 2
+            || bytes_used(0) < required || available_bytes(0) < required) {
+            if (err) *err = "invalid or short UYVY capture buffer";
+            return false;
+        }
+        frame->format = RawPixelFormat::Uyvy422;
+        frame->plane_count = 1;
+        frame->planes[0] = {
+            static_cast<const uint8_t*>(mapped.planes[0].start) + data_offset(0),
+            stride, static_cast<uint32_t>(required), -1, 0};
+        return true;
+    }
 
     if (pixel_format == V4L2_PIX_FMT_YUYV) {
         const uint32_t stride = plane_strides[0] ? plane_strides[0] : width * 2;
@@ -557,6 +577,11 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
          || pixel_format == V4L2_PIX_FMT_YUV420M)
         && ((width & 1U) != 0 || (height & 1U) != 0)) {
         if (err) *err = "4:2:0 capture requires even width and height";
+        release_resources();
+        return false;
+    }
+    if (pixel_format == V4L2_PIX_FMT_UYVY && (width & 1U) != 0) {
+        if (err) *err = "UYVY capture requires an even width";
         release_resources();
         return false;
     }

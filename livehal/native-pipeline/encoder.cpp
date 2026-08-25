@@ -1,5 +1,6 @@
 #include "include/encoder_backend.h"
 #include "include/latency_stats.h"
+#include "include/v4l2_m2m_format.h"
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -29,6 +30,7 @@ public:
     VideoCodec codec_ = VideoCodec::H264;
     RawPixelFormat input_format_ = RawPixelFormat::Yuv420p;
     uint32_t input_stride_ = 0;
+    size_t input_frame_bytes_ = 0;
 
     std::string errorMsg;
 
@@ -96,15 +98,8 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     input_format_ = cfg.input_format;
 
     uint32_t input_fourcc = 0;
-    switch (input_format_) {
-    case RawPixelFormat::Nv12:
-        input_fourcc = V4L2_PIX_FMT_NV12;
-        break;
-    case RawPixelFormat::Yuv420p:
-        input_fourcc = V4L2_PIX_FMT_YUV420;
-        break;
-    default:
-        if (err) *err = "V4L2 M2M encoder supports only NV12 or YUV420P input";
+    if (!v4l2_m2m_input_fourcc(input_format_, &input_fourcc)) {
+        if (err) *err = "V4L2 M2M encoder supports only NV12, YUV420P or UYVY input";
         return false;
     }
 
@@ -135,12 +130,18 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
         return false;
     }
     input_stride_ = fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
-    if (input_stride_ == 0) input_stride_ = width;
-    if ((width & 1U) != 0 || (height & 1U) != 0 || input_stride_ < width) {
-        if (err) *err = "encoder returned an invalid 4:2:0 input layout";
+    if (input_stride_ == 0) {
+        input_stride_ = input_format_ == RawPixelFormat::Uyvy422
+            ? width * 2 : width;
+    }
+    V4l2M2mInputLayout input_layout{};
+    if (!resolve_v4l2_m2m_input_layout(
+            input_format_, width, height, input_stride_, &input_layout)) {
+        if (err) *err = "encoder returned an invalid input layout";
         cleanup();
         return false;
     }
+    input_frame_bytes_ = input_layout.frame_bytes;
 
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     fmt.fmt.pix_mp.pixelformat = codec_to_v4l2_pixelformat(codec_);
@@ -387,6 +388,31 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
                        frame.planes[1].data
                            + static_cast<size_t>(row) * frame.planes[1].stride,
                        width);
+            }
+        } else if (input_format_ == RawPixelFormat::Uyvy422) {
+            if (frame.format != RawPixelFormat::Uyvy422
+                || frame.plane_count != 1
+                || frame.planes[0].data == nullptr) {
+                return fail_input("UYVY encoder input requires one packed plane");
+            }
+            const uint32_t row_bytes = width * 2;
+            const uint32_t source_stride = frame.planes[0].stride
+                ? frame.planes[0].stride : row_bytes;
+            src_size = input_frame_bytes_;
+            if (source_stride < row_bytes
+                || frame.planes[0].bytes
+                       < static_cast<size_t>(source_stride) * height) {
+                return fail_input("UYVY frame plane is shorter than its declared stride");
+            }
+            if (src_size > inputBuffers[idx].length) {
+                return fail_input("UYVY frame exceeds encoder input buffer");
+            }
+            memset(destination, 0, src_size);
+            for (uint32_t row = 0; row < height; ++row) {
+                memcpy(destination + static_cast<size_t>(row) * input_stride_,
+                       frame.planes[0].data
+                           + static_cast<size_t>(row) * source_stride,
+                       row_bytes);
             }
         } else {
             if (frame.format != RawPixelFormat::Yuv420p

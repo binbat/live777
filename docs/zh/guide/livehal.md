@@ -177,6 +177,7 @@ min_bitrate = 500_000      # 下限(默认:max(bitrate / 8, 300_000))
 | `yuv420`, `yuv420p` | Yuv420p | 2 |
 | `mjpeg` | Mjpeg | 3 |
 | `rgb888`, `rgb` | Rgb888 | 4 |
+| `uyvy`, `uyvy422` | Uyvy422 | 5 |
 
 ### codec 取值
 
@@ -356,6 +357,10 @@ clock_rate = 90000
 ```
 
 ### 树莓派 USB V4L2
+
+使用打包 UYVY 格式的采集设备时，可以设置 `pixel_format = "uyvy"`
+（`uyvy422` 是其别名）。generic V4L2 路径会保留采集 stride，并将 UYVY
+原样传递给 V4L2 M2M，因此编码器设备也必须声明支持 UYVY 输入。
 
 ```toml
 [stream.usb-cam]
