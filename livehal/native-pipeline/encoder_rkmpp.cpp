@@ -38,6 +38,8 @@
 #include "include/encoder_backend.h"
 #include "include/latency_stats.h"
 
+#include <chrono>
+#include <thread>
 #include <unordered_map>
 
 #include <unistd.h>
@@ -358,6 +360,14 @@ public:
 
         running_ = true;
         initialized_ = true;
+
+        // Independent drain driver: completions (and with them the zero-copy
+        // capture-buffer releases) must not depend on new input arriving.
+        // Without this, a transient encoder slowdown lets in_flight_ pin all
+        // driver buffers; capture then starves, no new submit ever calls
+        // drain_and_dispatch(), and the pipeline wedges permanently.
+        drain_running_ = true;
+        drain_thread_ = std::thread(&RkMppEncoder::drain_loop, this);
         return true;
     }
 
@@ -625,6 +635,11 @@ public:
     }
 
     void stop() override {
+        // Stop the independent drain driver first — it acquires mutex_, so
+        // joining must happen before this function takes the lock.
+        drain_running_ = false;
+        if (drain_thread_.joinable()) drain_thread_.join();
+
         std::lock_guard<std::mutex> lock(mutex_);
         running_ = false;
 
@@ -729,8 +744,23 @@ private:
     // ------------------------------------------------------------------
     // Drain output — aggregate partitions to EOI, dispatch one AU/frame
     // ------------------------------------------------------------------
-    int drain_and_dispatch(uint64_t input_pts_us) {
-        int dispatched = 0;
+    // Periodic drain driver (drain_thread_): pops completed frames and
+    // releases their zero-copy capture buffers independently of new input.
+    // Serialized with submit()/stop() via mutex_; cheap when idle because
+    // it skips straight past an empty in_flight_ queue.
+    void drain_loop() {
+        while (drain_running_.load()) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (running_ && ctx_ && mpi_ && !in_flight_.empty()) {
+                    drain_and_dispatch(0);
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    int drain_and_dispatch(uint64_t input_pts_us) {        int dispatched = 0;
         std::vector<uint8_t> au;
         uint32_t au_flags = 0;
         size_t partition_count = 0;
@@ -955,6 +985,10 @@ private:
 
     EncodedPacketCallback encoded_cb_;
     mutable std::mutex mutex_;
+
+    // Independent drain driver (see drain_loop / init / stop).
+    std::thread drain_thread_;
+    std::atomic<bool> drain_running_{false};
 };
 
 // ---------------------------------------------------------------------------
