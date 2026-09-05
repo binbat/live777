@@ -155,8 +155,30 @@ public:
         fps_ = cfg.fps;
         bitrate_ = cfg.bitrate;
         codec_ = cfg.codec;
+        cfg_ = cfg;
 
-        // --- MPP context ---
+        if (!open_encoder_(err)) return false;
+
+        running_ = true;
+        initialized_ = true;
+
+        // Independent drain driver: completions (and with them the zero-copy
+        // capture-buffer releases) must not depend on new input arriving.
+        // Without this, a transient encoder slowdown lets in_flight_ pin all
+        // driver buffers; capture then starves, no new submit ever calls
+        // drain_and_dispatch(), and the pipeline wedges permanently.
+        drain_running_ = true;
+        drain_thread_ = std::thread(&RkMppEncoder::drain_loop, this);
+        monitor_running_ = true;
+        monitor_thread_ = std::thread(&RkMppEncoder::monitor_loop, this);
+        return true;
+    }
+
+    // Create and configure the whole MPP encoder context and its buffer
+    // pools.  Extracted from init() so the stall-recovery path can rebuild
+    // the encoder in place (see check_encoder_stall_).  Uses the config
+    // stored in cfg_.
+    bool open_encoder_(std::string* err) {
         MPP_RET ret = mpp_create(&ctx_, &mpi_);
         if (ret != MPP_OK) {
             if (err) *err = "encoder-rkmpp: mpp_create failed (ret="
@@ -164,7 +186,7 @@ public:
             return false;
         }
 
-        MppCodingType coding = (cfg.codec == VideoCodec::H265)
+        MppCodingType coding = (cfg_.codec == VideoCodec::H265)
             ? MPP_VIDEO_CodingHEVC : MPP_VIDEO_CodingAVC;
         ret = mpp_init(ctx_, MPP_CTX_ENC, coding);
         if (ret != MPP_OK) {
@@ -173,6 +195,11 @@ public:
                 + std::to_string(ret) + ")";
             return false;
         }
+
+        // (No MPP_SET_OUTPUT_TIMEOUT here: setting it wedges this kmpp-era
+        // mpp's output path — the encoder jams after the first frames with
+        // encode_put_frame stuck in _mpp_port_poll.  The stall detector
+        // instead relies on mpp reset() waking a parked get_packet.)
 
         // --- Encoder config ---
         MppEncCfg enc_cfg = nullptr;
@@ -218,7 +245,7 @@ public:
         // Rate control (CBR, tolerates older MPP versions)
         if (!set_required("rc:mode", MPP_ENC_RC_MODE_CBR)) return false;
         if (!set_required("rc:bps_target", static_cast<RK_S32>(bitrate_))) return false;
-        if (!set_required("rc:gop", static_cast<RK_S32>(cfg.gop))) return false;
+        if (!set_required("rc:gop", static_cast<RK_S32>(cfg_.gop))) return false;
         if (!set_required("rc:fps_in_num", static_cast<RK_S32>(fps_))) return false;
         if (!set_required("rc:fps_out_num", static_cast<RK_S32>(fps_))) return false;
         // Older MPP versions reject denom/flex — make optional
@@ -233,23 +260,23 @@ public:
         set_optional("rc:qp_max", 40);
 
         // Codec-specific
-        if (cfg.codec == VideoCodec::H264) {
+        if (cfg_.codec == VideoCodec::H264) {
             H264CodingTools tools{};
-            if (!resolve_h264_coding_tools(cfg.profile_idc, tools)) {
+            if (!resolve_h264_coding_tools(cfg_.profile_idc, tools)) {
                 if (err) *err = "encoder-rkmpp: unsupported H.264 profile_idc "
-                    + std::to_string(cfg.profile_idc);
+                    + std::to_string(cfg_.profile_idc);
                 return false;
             }
-            if (!set_required("h264:profile", static_cast<RK_S32>(cfg.profile_idc))) return false;
-            if (!set_required("h264:level",   static_cast<RK_S32>(cfg.level_idc)))   return false;
+            if (!set_required("h264:profile", static_cast<RK_S32>(cfg_.profile_idc))) return false;
+            if (!set_required("h264:level",   static_cast<RK_S32>(cfg_.level_idc)))   return false;
             if (!set_required("h264:cabac_en", tools.cabac_en)) return false;
             if (!set_required("h264:cabac_idc", 0)) return false;
             if (!set_required("h264:trans8x8", tools.trans8x8)) return false;
         } else {
-            RK_S32 h265_level_val = static_cast<RK_S32>(cfg.level_idc);
-            if (!set_required("h265:profile", static_cast<RK_S32>(cfg.profile_idc))) return false;
+            RK_S32 h265_level_val = static_cast<RK_S32>(cfg_.level_idc);
+            if (!set_required("h265:profile", static_cast<RK_S32>(cfg_.profile_idc))) return false;
             if (!set_required("h265:level",   h265_level_val)) return false;
-            set_optional("h265:tier", static_cast<RK_S32>(cfg.tier_flag));
+            set_optional("h265:tier", static_cast<RK_S32>(cfg_.tier_flag));
             set_optional("h265:qp_init", 26);
             set_optional("h265:scaling_list", 0);
         }
@@ -262,11 +289,11 @@ public:
             "profile=%d level=%d tier=%d\n",
             static_cast<int>(width_), static_cast<int>(height_),
             static_cast<int>(fps_), static_cast<int>(bitrate_),
-            static_cast<int>(cfg.gop),
-            (cfg.codec == VideoCodec::H265) ? "h265" : "h264",
-            static_cast<int>(cfg.profile_idc),
-            static_cast<int>(cfg.level_idc),
-            static_cast<int>(cfg.tier_flag));
+            static_cast<int>(cfg_.gop),
+            (cfg_.codec == VideoCodec::H265) ? "h265" : "h264",
+            static_cast<int>(cfg_.profile_idc),
+            static_cast<int>(cfg_.level_idc),
+            static_cast<int>(cfg_.tier_flag));
 
         ret = mpi_->control(ctx_, MPP_ENC_SET_CFG, enc_cfg);
         mpp_enc_cfg_deinit(enc_cfg);
@@ -355,19 +382,20 @@ public:
             return false;
         }
 
-        // Pre-RTP debug file (uncomment to debug encoding output):
-        // debug_file_ = std::fopen("/tmp/live777-pre-rtp.h265", "wb");
-
-        running_ = true;
-        initialized_ = true;
-
-        // Independent drain driver: completions (and with them the zero-copy
-        // capture-buffer releases) must not depend on new input arriving.
-        // Without this, a transient encoder slowdown lets in_flight_ pin all
-        // driver buffers; capture then starves, no new submit ever calls
-        // drain_and_dispatch(), and the pipeline wedges permanently.
-        drain_running_ = true;
-        drain_thread_ = std::thread(&RkMppEncoder::drain_loop, this);
+        // Fresh context: restart per-context counters so inflight_depth()
+        // (submitted - put_failures - completed) stays exact, and reset the
+        // stall detector's baseline.
+        submitted_frames_ = 0;
+        encoded_frames_ = 0;
+        completed_frames_ = 0;
+        put_frame_failures_ = 0;
+        get_packet_failures_ = 0;
+        next_input_idx_ = 0;
+        next_pkt_idx_ = 0;
+        pending_au_.clear();
+        pending_au_flags_ = 0;
+        mon_last_progress_us_ = monotonic_now_us();
+        mon_last_completed_ = 0;
         return true;
     }
 
@@ -635,14 +663,36 @@ public:
     }
 
     void stop() override {
-        // Stop the independent drain driver first — it acquires mutex_, so
-        // joining must happen before this function takes the lock.
+        // Stop the monitor first so it cannot reset mid-teardown, then wake
+        // a possibly parked drain thread via mpp reset (the blocking
+        // get_packet returns with an error) before joining it — joining
+        // without the reset can hang forever on a halted encoder.
+        monitor_running_ = false;
+        if (monitor_thread_.joinable()) monitor_thread_.join();
         drain_running_ = false;
+        if (ctx_ && mpi_) mpi_->reset(ctx_);
         if (drain_thread_.joinable()) drain_thread_.join();
 
         std::lock_guard<std::mutex> lock(mutex_);
         running_ = false;
 
+        close_encoder_();
+
+        std::fprintf(stderr,
+            "[RkMppEncoder] Final: subm=%llu enc=%llu put_fail=%llu "
+            "get_fail=%llu\n",
+            static_cast<unsigned long long>(submitted_frames_),
+            static_cast<unsigned long long>(encoded_frames_),
+            static_cast<unsigned long long>(put_frame_failures_),
+            static_cast<unsigned long long>(get_packet_failures_));
+
+        initialized_ = false;
+    }
+
+    // Tear the MPP context down and hand every zero-copy capture buffer back
+    // to the capture.  Called from stop() (pipeline teardown) and from the
+    // stall-recovery path (followed by open_encoder_()).
+    void close_encoder_() {
         if (ctx_ && mpi_) {
             // Drain in-flight frames so their capture buffers come back
             // through the normal completion path.  Bounded: a stalled
@@ -719,16 +769,6 @@ public:
             std::fclose(debug_file_);
             debug_file_ = nullptr;
         }
-
-        std::fprintf(stderr,
-            "[RkMppEncoder] Final: subm=%llu enc=%llu put_fail=%llu "
-            "get_fail=%llu\n",
-            static_cast<unsigned long long>(submitted_frames_),
-            static_cast<unsigned long long>(encoded_frames_),
-            static_cast<unsigned long long>(put_frame_failures_),
-            static_cast<unsigned long long>(get_packet_failures_));
-
-        initialized_ = false;
     }
 
     bool isRunning() const override { return running_; }
@@ -752,11 +792,78 @@ private:
         while (drain_running_.load()) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
+                if (reset_requested_.exchange(false)) {
+                    // The monitor thread woke us out of a halt: rebuild the
+                    // encoder, serialized against submit() via mutex_.
+                    std::fprintf(stderr,
+                        "[RkMppEncoder] rebuilding encoder after stall reset\n");
+                    close_encoder_();
+                    std::string err;
+                    if (!open_encoder_(&err)) {
+                        std::fprintf(stderr,
+                            "[RkMppEncoder] FATAL: re-init after stall "
+                            "failed: %s — encoder disabled until pipeline "
+                            "restart\n", err.c_str());
+                        running_ = false;  // submit() now fails
+                    } else {
+                        std::fprintf(stderr,
+                            "[RkMppEncoder] encoder re-initialized after "
+                            "stall\n");
+                    }
+                }
                 if (running_ && ctx_ && mpi_ && !in_flight_.empty()) {
                     drain_and_dispatch(0);
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    // Encoder stall monitor (separate thread).
+    //
+    // The Rockchip MPP can halt permanently (no completions ever again) on
+    // malformed input or driver-level faults — observed on RV1126B after
+    // MIPI CRC errors reached the hardware.  Zero-copy capture buffers are
+    // only handed back at completion, so a halted encoder pins all v4l2
+    // driver buffers and starves capture forever.
+    //
+    // Detection runs OUTSIDE the drain thread: on a halt, drain_loop is
+    // itself parked inside the blocking encode_get_packet, so no in-loop
+    // check could ever fire.  This monitor only watches counters (lock-free)
+    // and calls mpi_->reset() — mpp's documented way to wake parked calls —
+    // then flags reset_requested_; drain_loop performs the actual teardown
+    // and rebuild under mutex_ once its get_packet returns with an error.
+    //
+    // (Setting MPP_SET_OUTPUT_TIMEOUT would be the obvious alternative, but
+    // that control wedges this kmpp-era mpp's output path — encode_put_frame
+    // then jams in _mpp_port_poll.  Verified on RV1126B.)
+    void monitor_loop() {
+        while (monitor_running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            const uint64_t now = monotonic_now_us();
+            const uint64_t completed = completed_frames_;
+            if (completed != mon_last_completed_) {
+                mon_last_completed_ = completed;
+                mon_last_progress_us_ = now;
+                continue;
+            }
+            if (!running_ || !ctx_ || !mpi_) continue;
+            const int64_t depth = static_cast<int64_t>(submitted_frames_)
+                - static_cast<int64_t>(put_frame_failures_)
+                - static_cast<int64_t>(completed);
+            if (depth <= 0 || mon_last_progress_us_ == 0) continue;
+            if (now - mon_last_progress_us_ < kEncoderStallUs) continue;
+            if (now - last_reset_us_ < kEncoderResetCooldownUs) continue;
+            last_reset_us_ = now;
+
+            std::fprintf(stderr,
+                "[RkMppEncoder] ENCODER STALLED: no completion for %llums "
+                "with %lld in flight — resetting\n",
+                static_cast<unsigned long long>(
+                    (now - mon_last_progress_us_) / 1000),
+                static_cast<long long>(depth));
+            reset_requested_ = true;
+            mpi_->reset(ctx_);  // wakes the drain thread's parked get_packet
         }
     }
 
@@ -989,6 +1096,20 @@ private:
     // Independent drain driver (see drain_loop / init / stop).
     std::thread drain_thread_;
     std::atomic<bool> drain_running_{false};
+
+    // Stall monitor thread + its wake-the-halt flag (see monitor_loop).
+    std::thread monitor_thread_;
+    std::atomic<bool> monitor_running_{false};
+    std::atomic<bool> reset_requested_{false};
+    uint64_t mon_last_completed_ = 0;
+    uint64_t mon_last_progress_us_ = 0;
+
+    // Whole init config, kept so open_encoder_() can rebuild the context
+    // after a stall (see monitor_loop).
+    EncoderConfig cfg_{};
+    uint64_t last_reset_us_ = 0;
+    static constexpr uint64_t kEncoderStallUs = 3000000;        // 3 s
+    static constexpr uint64_t kEncoderResetCooldownUs = 5000000; // 5 s
 };
 
 // ---------------------------------------------------------------------------
