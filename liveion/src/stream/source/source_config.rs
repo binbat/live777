@@ -49,7 +49,8 @@ pub struct CaptureSpec {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    /// Raw pixel format: `"yuyv"`, `"uyvy"`, `"nv12"`, `"yuv420"`, `"mjpeg"`.
+    /// Raw pixel format: `"yuyv"`, `"uyvy"`, `"nv12"`, `"yuv420"`,
+    /// `"rgb888"` (compressed `"mjpeg"` is rejected end-to-end).
     pub pixel_format: String,
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
@@ -193,6 +194,21 @@ impl SourceSpec {
 }
 
 impl SourceSpec {
+    /// Native capture feeds raw frames straight into the encoder, so
+    /// compressed MJPEG is unsupported end-to-end in the livehal pipeline
+    /// (the V4L2 backend rejects it at runtime too).  Surface it here, at
+    /// configuration time, instead of failing on the device.
+    fn ensure_supported_pixel_format(&self) -> anyhow::Result<()> {
+        if pixel_format_from_str(&self.capture.pixel_format)? == PixelFormat::Mjpeg {
+            anyhow::bail!(
+                "capture.pixel_format: MJPEG capture is not supported by \
+                 the livehal pipeline; use yuyv, uyvy, nv12, yuv420 or \
+                 rgb888"
+            );
+        }
+        Ok(())
+    }
+
     /// Validate the source specification.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.stream_id.trim().is_empty() {
@@ -250,6 +266,8 @@ impl SourceSpec {
 
         // Validate pixel_format and codec strings early so config errors
         // surface during validation rather than at source creation time.
+        self.ensure_supported_pixel_format()
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         pixel_format_to_u32(&self.capture.pixel_format)
             .map_err(|e| anyhow::anyhow!("capture.pixel_format: {}", e))?;
         codec_to_u32(&self.encoder.codec).map_err(|e| anyhow::anyhow!("encoder.codec: {}", e))?;
@@ -324,11 +342,11 @@ pub fn pixel_format_from_str(s: &str) -> anyhow::Result<PixelFormat> {
         "yuyv" | "yuyv422" => Ok(PixelFormat::Yuyv422),
         "nv12" => Ok(PixelFormat::Nv12),
         "yuv420" | "yuv420p" => Ok(PixelFormat::Yuv420p),
-        "mjpeg" => Ok(PixelFormat::Mjpeg),
+        "mjpeg" => Ok(PixelFormat::Mjpeg), // kept for the FFI mapping; SourceSpec rejects it
         "rgb888" | "rgb" => Ok(PixelFormat::Rgb888),
         "uyvy" | "uyvy422" => Ok(PixelFormat::Uyvy422),
         other => anyhow::bail!(
-            "unsupported pixel_format: '{}'. Supported: yuyv, nv12, yuv420, mjpeg, rgb888, uyvy",
+            "unsupported pixel_format: '{}'. Supported: yuyv, nv12, yuv420, rgb888, uyvy",
             other
         ),
     }
@@ -522,6 +540,10 @@ impl SourceSpec {
         }
         let capture_device = self.capture.device.clone().unwrap_or_default();
 
+        // Same early rejection as validate(): MJPEG cannot reach the
+        // native capture/encoder pipeline.
+        self.ensure_supported_pixel_format()?;
+
         // Profile resolution is shared with validate() — see resolve_profile().
         let (profile_idc, level_idc, tier_flag, profile_string) = self.resolve_profile()?;
 
@@ -708,6 +730,13 @@ mod tests {
         let mut spec = v4l2_spec();
         spec.capture.width = 0;
         spec.capture.height = 0;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_source_spec_rejects_mjpeg() {
+        let mut spec = v4l2_spec();
+        spec.capture.pixel_format = "mjpeg".into();
         assert!(spec.validate().is_err());
     }
 

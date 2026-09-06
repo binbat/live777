@@ -1,5 +1,6 @@
 #include "include/capture_backend.h"
 #include "include/latency_stats.h"
+#include "include/v4l2_capture_integrity.h"
 
 #include <algorithm>
 #include <array>
@@ -21,10 +22,21 @@
 #include <utility>
 #include <vector>
 
+#if defined(__linux__)
+#include <pthread.h>
+#endif
+
 namespace {
 
 constexpr uint32_t kBufferCount = 16;
 
+#if defined(__linux__)
+void set_thread_name(const char* name) {
+    pthread_setname_np(pthread_self(), name);
+}
+#else
+void set_thread_name(const char*) {}
+#endif
 const char* fourcc_to_string(uint32_t fourcc, char (&text)[5]) {
     text[0] = static_cast<char>(fourcc & 0xff);
     text[1] = static_cast<char>((fourcc >> 8) & 0xff);
@@ -42,8 +54,6 @@ std::vector<uint32_t> requested_fourccs(RawPixelFormat format) {
         return {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12M};
     case RawPixelFormat::Yuv420p:
         return {V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_YUV420M};
-    case RawPixelFormat::Mjpeg:
-        return {V4L2_PIX_FMT_MJPEG};
     case RawPixelFormat::Rgb888:
         return {V4L2_PIX_FMT_RGB24};
     case RawPixelFormat::Uyvy422:
@@ -88,6 +98,10 @@ struct V4L2CaptureImpl : public CaptureBackend {
     std::atomic<bool> thread_alive{false};
     CaptureFrameCallback capture_cb_;
     uint64_t seq_ = 0;
+    IntegrityTracker integrity_;
+    // Sustained all-malformed escalation (capture thread only; see the
+    // integrity gate in capture_loop()).
+    ConsecutiveBadWindow bad_window_;
     std::vector<Buffer> buffers;
     std::vector<uint8_t> yuv420_buf;
     std::thread capture_thread;
@@ -147,8 +161,6 @@ RawPixelFormat V4L2CaptureImpl::outputFormat() const {
     case V4L2_PIX_FMT_YUV420:
     case V4L2_PIX_FMT_YUV420M:
         return RawPixelFormat::Yuv420p;
-    case V4L2_PIX_FMT_MJPEG:
-        return RawPixelFormat::Mjpeg;
     case V4L2_PIX_FMT_RGB24:
         return RawPixelFormat::Rgb888;
     case V4L2_PIX_FMT_UYVY:
@@ -160,6 +172,13 @@ RawPixelFormat V4L2CaptureImpl::outputFormat() const {
 
 bool V4L2CaptureImpl::select_format(
     uint32_t caps, RawPixelFormat requested, std::string* err) {
+    if (requested == RawPixelFormat::Mjpeg) {
+        if (err) {
+            *err = "MJPEG capture is not supported by the livehal pipeline";
+        }
+        return false;
+    }
+
     std::vector<v4l2_buf_type> types;
     if (caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE) {
         types.push_back(V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
@@ -347,9 +366,7 @@ bool V4L2CaptureImpl::make_frame(
     }
 
     RawPixelFormat raw_format;
-    if (pixel_format == V4L2_PIX_FMT_MJPEG) {
-        raw_format = RawPixelFormat::Mjpeg;
-    } else if (pixel_format == V4L2_PIX_FMT_RGB24) {
+    if (pixel_format == V4L2_PIX_FMT_RGB24) {
         raw_format = RawPixelFormat::Rgb888;
     } else {
         if (err) *err = "unsupported negotiated V4L2 pixel format";
@@ -407,6 +424,7 @@ void V4L2CaptureImpl::release_buffer(uint32_t index) {
 }
 
 void V4L2CaptureImpl::capture_loop() {
+    set_thread_name("v4l2-capture");
     fprintf(stderr, "[V4L2Capture] capture thread started\n");
     thread_alive.store(true);
 
@@ -458,6 +476,57 @@ void V4L2CaptureImpl::capture_loop() {
             ts_domain_logged_ = true;
         }
         dqbuf_stats_.sample(buf_ts_us, dqbuf_now_us);
+
+        // Malformed frames must not reach the encoder: the Rockchip MPP
+        // halts permanently on such input.  Drop + requeue here and count
+        // them; see plane_malformed() for the exact criteria.
+        bool bad = false;
+        uint32_t bad_plane = 0, bad_got = 0, bad_want = 0;
+        if (is_mplane_type(buffer_type)) {
+            for (uint32_t i = 0; i < memory_plane_count; ++i) {
+                if (plane_malformed(planes[i].bytesused,
+                                    plane_sizeimages[i])) {
+                    bad = true;
+                    bad_plane = i;
+                    bad_got = planes[i].bytesused;
+                    bad_want = plane_sizeimages[i];
+                    break;
+                }
+            }
+        } else if (plane_malformed(buf.bytesused, plane_sizeimages[0])) {
+            bad = true;
+            bad_got = buf.bytesused;
+            bad_want = plane_sizeimages[0];
+        }
+        if (bad) {
+            const bool fatal = bad_window_.on_bad_frame(dqbuf_now_us);
+            integrity_.record_bad_frame(bad_plane, bad_got, bad_want);
+            std::string queue_error;
+            if (!queue_buffer(buf.index, &queue_error)) {
+                fprintf(stderr, "[V4L2Capture] %s\n", queue_error.c_str());
+                break;
+            }
+            integrity_.flush(dqbuf_now_us);
+            // Escalate when the stream has been all-malformed for a
+            // sustained window: nothing reaches the encoder and silently
+            // dropping frames forever hides the fault.  Stop the capture
+            // thread so the pipeline/watchdog can recover.
+            if (fatal) {
+                fprintf(stderr,
+                        "[V4L2Capture] FATAL: %llu malformed frames over "
+                        "%llu ms — stopping capture\n",
+                        static_cast<unsigned long long>(bad_window_.frames),
+                        static_cast<unsigned long long>(
+                            (dqbuf_now_us - bad_window_.window_start_us) / 1000));
+                break;
+            }
+            continue;
+        }
+        bad_window_.on_good_frame();
+
+        // Driver-side frame loss shows up as sequence gaps. Count only.
+        integrity_.record_sequence(buf.sequence);
+        integrity_.flush(dqbuf_now_us);
 
         RawFrame frame{};
         std::string frame_error;
@@ -701,6 +770,8 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
         return false;
     }
     capture_cb_ = std::move(cb);
+    integrity_.reset();
+    bad_window_.reset();
 
     for (uint32_t index = 0; index < buffers.size(); ++index) {
         if (!queue_buffer(index, err)) return false;
@@ -752,6 +823,7 @@ void V4L2CaptureImpl::release_resources() {
 void V4L2CaptureImpl::stop() {
     running.store(false);
     if (capture_thread.joinable()) capture_thread.join();
+    integrity_.flush(monotonic_now_us(), true);
     release_resources();
 }
 

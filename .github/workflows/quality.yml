@@ -48,7 +48,7 @@ jobs:
           cmake -S livehal/native-pipeline -B target/native-pipeline-tests
           -DBUILD_NATIVE_PIPELINE_TESTS=ON -DCMAKE_BUILD_TYPE=Release
       - name: Build native pipeline tests
-        run: cmake --build target/native-pipeline-tests --target v4l2-m2m-format-test
+        run: cmake --build target/native-pipeline-tests
       - name: Run native pipeline tests
         run: ctest --test-dir target/native-pipeline-tests --output-on-failure
 
