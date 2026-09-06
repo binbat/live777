@@ -415,7 +415,7 @@ public:
         next_pkt_idx_ = 0;
         pending_au_.clear();
         pending_au_flags_ = 0;
-        reset_requested_.store(false, std::memory_order_release);
+        reset_requested_.store(false, std::memory_order_seq_cst);
         mon_last_progress_us_.store(monotonic_now_us(), std::memory_order_relaxed);
         mon_last_completed_.store(0, std::memory_order_relaxed);
         last_reset_us_.store(0, std::memory_order_relaxed);
@@ -624,7 +624,17 @@ public:
         }
 
         // --- Submit to encoder ---
+        // Guarded: a context reload may be in progress (see
+        // request_context_reload_ / begin_mpp_call_); back off instead of
+        // touching a context that is about to be reset or rebuilt.
+        if (!begin_mpp_call_()) {
+            mpp_frame_deinit(&mpp_frame);
+            if (err) *err = "encoder-rkmpp: context reload in progress, "
+                "frame dropped";
+            return false;
+        }
         ret = mpi_->encode_put_frame(ctx_, mpp_frame);
+        end_mpp_call_();
         mpp_frame_deinit(&mpp_frame);
 
         if (ret != MPP_OK) {
@@ -670,8 +680,9 @@ public:
     // Force a keyframe at the next opportunity (H.264/H.265: IDR).
     void requestKeyframe() override {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (ctx_ && mpi_ && running_) {
+        if (ctx_ && mpi_ && running_ && begin_mpp_call_()) {
             mpi_->control(ctx_, MPP_ENC_SET_IDR_FRAME, nullptr);
+            end_mpp_call_();
         }
     }
 
@@ -698,7 +709,12 @@ public:
         mpp_enc_cfg_set_s32(cfg, "rc:bps_target", static_cast<RK_S32>(bps));
         mpp_enc_cfg_set_s32(cfg, "rc:bps_max", static_cast<RK_S32>(bps * 2));
         mpp_enc_cfg_set_s32(cfg, "rc:bps_min", static_cast<RK_S32>(bps / 2));
+        if (!begin_mpp_call_()) {
+            mpp_enc_cfg_deinit(cfg);
+            return false;  // reload in progress; caller may retry
+        }
         MPP_RET ret = mpi_->control(ctx_, MPP_ENC_SET_CFG, cfg);
+        end_mpp_call_();
         mpp_enc_cfg_deinit(cfg);
         if (ret != MPP_OK) {
             std::fprintf(stderr,
@@ -736,7 +752,7 @@ public:
         drain_running_ = false;
         {
             std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-            if (ctx_ && mpi_) mpi_->reset(ctx_);
+            if (ctx_ && mpi_) request_context_reload_();
         }
         if (drain_thread_.joinable()) drain_thread_.join();
 
@@ -917,6 +933,16 @@ private:
                 if (!monitor_running_.load() || !running_ || !ctx_ || !mpi_) {
                     continue;
                 }
+                // Re-check progress under the lock: a completion may have
+                // landed while we waited for lifecycle_mutex_.  Resetting
+                // then would tear down an encoder that just recovered.
+                const uint64_t completed_now =
+                    completed_frames_.load(std::memory_order_relaxed);
+                if (completed_now != completed) {
+                    mon_last_completed_.store(completed_now, std::memory_order_relaxed);
+                    mon_last_progress_us_.store(now, std::memory_order_relaxed);
+                    continue;
+                }
                 if (now - last_reset_us_.load(std::memory_order_relaxed) < kEncoderResetCooldownUs) continue;
                 last_reset_us_.store(now, std::memory_order_relaxed);
 
@@ -941,8 +967,47 @@ private:
     // dynamic resolution/framerate reloads grow this into a parameterized
     // request (reason + target config); the wake-up protocol stays the same.
     void request_context_reload_() {
-        reset_requested_.store(true, std::memory_order_release);
+        reset_requested_.store(true, std::memory_order_seq_cst);
+        // Serialize against non-preemptible MPP calls (encode_put_frame /
+        // control): any call that already passed begin_mpp_call_() runs to
+        // completion on the old context before we reset it; any later caller
+        // sees reset_requested_ in begin_mpp_call_() and backs off.  The
+        // parked encode_get_packet is not counted and is woken by the reset.
+        // The wait is bounded: if an MPP call is itself wedged (this mpp is
+        // known to jam put_frame in some states) the reload gives up and
+        // resets anyway rather than hanging monitor_loop / stop() forever.
+        const uint64_t wait_until = monotonic_now_us() + kReloadWaitUs;
+        while (mpp_callers_.load(std::memory_order_seq_cst) != 0
+               && monotonic_now_us() < wait_until) {
+            std::this_thread::yield();
+        }
+        if (mpp_callers_.load(std::memory_order_seq_cst) != 0) {
+            std::fprintf(stderr,
+                "[RkMppEncoder] warn: MPP call still in flight after %llu ms "
+                "— resetting anyway\n",
+                static_cast<unsigned long long>(kReloadWaitUs / 1000));
+        }
         mpi_->reset(ctx_);  // wakes the drain thread's parked get_packet
+    }
+
+    // Enter/leave guard for a non-preemptible MPP call (encode_put_frame,
+    // control).  Returns false when a context reload is pending: the caller
+    // must skip its MPP call (the context is about to be reset or rebuilt).
+    // Double-checked with seq_cst so a reload that lands between the first
+    // check and the increment still makes the caller back off instead of
+    // racing the reset — and so the reload's counter wait cannot miss an
+    // increment on weakly-ordered platforms.
+    bool begin_mpp_call_() {
+        if (reset_requested_.load(std::memory_order_seq_cst)) return false;
+        mpp_callers_.fetch_add(1, std::memory_order_seq_cst);
+        if (reset_requested_.load(std::memory_order_seq_cst)) {
+            mpp_callers_.fetch_sub(1, std::memory_order_seq_cst);
+            return false;
+        }
+        return true;
+    }
+    void end_mpp_call_() {
+        mpp_callers_.fetch_sub(1, std::memory_order_seq_cst);
     }
 
     int drain_and_dispatch(uint64_t input_pts_us) {        int dispatched = 0;
@@ -1182,6 +1247,13 @@ private:
     std::thread monitor_thread_;
     std::atomic<bool> monitor_running_{false};
     std::atomic<bool> reset_requested_{false};
+    // Non-preemptible MPP calls (encode_put_frame / control) currently in
+    // flight.  A context reset waits for this to drain to zero before
+    // calling mpi_->reset(), so reset can never race a put/control.  The
+    // blocking encode_get_packet is deliberately NOT counted — it is
+    // preemptible by design (reset wakes it).  Protocol: begin_mpp_call_()
+    // / end_mpp_call_().
+    std::atomic<uint32_t> mpp_callers_{0};
     std::atomic<uint64_t> mon_last_completed_{0};
     std::atomic<uint64_t> mon_last_progress_us_{0};
 
@@ -1199,6 +1271,8 @@ private:
     // cleared by reset_runtime_state_() — a rebuild IS a new context.
     std::atomic<uint64_t> generation_{0};
     std::atomic<uint64_t> last_reset_us_{0};
+    // Upper bound for the mpp_callers_ drain in request_context_reload_().
+    static constexpr uint64_t kReloadWaitUs = 200000;       // 200 ms
     static constexpr uint64_t kEncoderStallUs = 3000000;        // 3 s
     static constexpr uint64_t kEncoderResetCooldownUs = 5000000; // 5 s
 };
