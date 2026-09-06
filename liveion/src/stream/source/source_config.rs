@@ -199,9 +199,7 @@ impl SourceSpec {
     /// (the V4L2 backend rejects it at runtime too).  Surface it here, at
     /// configuration time, instead of failing on the device.
     fn ensure_supported_pixel_format(&self) -> anyhow::Result<()> {
-        if pixel_format_from_str(&self.capture.pixel_format)?
-            == PixelFormat::Mjpeg
-        {
+        if pixel_format_from_str(&self.capture.pixel_format)? == PixelFormat::Mjpeg {
             anyhow::bail!(
                 "capture.pixel_format: MJPEG capture is not supported by \
                  the livehal pipeline; use yuyv, uyvy, nv12, yuv420 or \
@@ -344,7 +342,7 @@ pub fn pixel_format_from_str(s: &str) -> anyhow::Result<PixelFormat> {
         "yuyv" | "yuyv422" => Ok(PixelFormat::Yuyv422),
         "nv12" => Ok(PixelFormat::Nv12),
         "yuv420" | "yuv420p" => Ok(PixelFormat::Yuv420p),
-        "mjpeg" => Ok(PixelFormat::Mjpeg),  // kept for the FFI mapping; SourceSpec rejects it
+        "mjpeg" => Ok(PixelFormat::Mjpeg), // kept for the FFI mapping; SourceSpec rejects it
         "rgb888" | "rgb" => Ok(PixelFormat::Rgb888),
         "uyvy" | "uyvy422" => Ok(PixelFormat::Uyvy422),
         other => anyhow::bail!(
