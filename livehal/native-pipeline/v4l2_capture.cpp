@@ -42,8 +42,6 @@ std::vector<uint32_t> requested_fourccs(RawPixelFormat format) {
         return {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12M};
     case RawPixelFormat::Yuv420p:
         return {V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_YUV420M};
-    case RawPixelFormat::Mjpeg:
-        return {V4L2_PIX_FMT_MJPEG};
     case RawPixelFormat::Rgb888:
         return {V4L2_PIX_FMT_RGB24};
     case RawPixelFormat::Uyvy422:
@@ -59,6 +57,70 @@ bool is_mplane_type(v4l2_buf_type type) {
 } // namespace
 
 struct V4L2CaptureImpl : public CaptureBackend {
+    struct IntegrityTracker {
+        uint64_t bad_frames = 0;
+        uint64_t seq_gaps = 0;
+        uint64_t seq_gap_frames = 0;
+        uint32_t last_bad_plane = 0;
+        uint32_t last_bad_got = 0;
+        uint32_t last_bad_want = 0;
+        uint32_t expected_seq = 0;
+        bool seq_valid = false;
+        uint64_t window_start_us = 0;
+
+        void reset() {
+            bad_frames = 0;
+            seq_gaps = 0;
+            seq_gap_frames = 0;
+            last_bad_plane = 0;
+            last_bad_got = 0;
+            last_bad_want = 0;
+            expected_seq = 0;
+            seq_valid = false;
+            window_start_us = 0;
+        }
+
+        void record_bad_frame(uint32_t plane, uint32_t got, uint32_t want) {
+            ++bad_frames;
+            last_bad_plane = plane;
+            last_bad_got = got;
+            last_bad_want = want;
+        }
+
+        void record_sequence(uint32_t sequence) {
+            if (seq_valid && sequence != expected_seq) {
+                ++seq_gaps;
+                seq_gap_frames += sequence - expected_seq;
+            }
+            expected_seq = sequence + 1;
+            seq_valid = true;
+        }
+
+        void flush(uint64_t now_us, bool force = false) {
+            if (!bad_frames && !seq_gaps) return;
+            if (window_start_us == 0) {
+                window_start_us = now_us;
+            }
+            if (!force && now_us - window_start_us < 1000000ULL) return;
+
+            fprintf(stderr,
+                    "[V4L2Capture] BAD-FRAME: count=%llu (last: plane%u "
+                    "bytesused=%u want=%u), driver seq gaps=%llu "
+                    "(~%llu frames lost)\n",
+                    static_cast<unsigned long long>(bad_frames),
+                    last_bad_plane, last_bad_got, last_bad_want,
+                    static_cast<unsigned long long>(seq_gaps),
+                    static_cast<unsigned long long>(seq_gap_frames));
+            bad_frames = 0;
+            seq_gaps = 0;
+            seq_gap_frames = 0;
+            last_bad_plane = 0;
+            last_bad_got = 0;
+            last_bad_want = 0;
+            window_start_us = now_us;
+        }
+    };
+
     struct MappedPlane {
         void* start = nullptr;
         size_t length = 0;
@@ -88,6 +150,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     std::atomic<bool> thread_alive{false};
     CaptureFrameCallback capture_cb_;
     uint64_t seq_ = 0;
+    IntegrityTracker integrity_;
     std::vector<Buffer> buffers;
     std::vector<uint8_t> yuv420_buf;
     std::thread capture_thread;
@@ -95,23 +158,6 @@ struct V4L2CaptureImpl : public CaptureBackend {
     // [latency] "capture" stage: driver timestamp (SOF) → DQBUF in userspace.
     LatencyStats dqbuf_stats_{"capture"};
     bool ts_domain_logged_ = false;
-
-    // Frame-integrity gate (see capture_loop): frames whose plane bytesused
-    // does not match the negotiated sizeimage are dropped+requeued before
-    // they can reach the encoder — hardware drivers that halt on malformed
-    // input never see them.  Sequence gaps are counted (not dropped) so
-    // driver-side frame loss is visible too.  Both classes are logged once
-    // per second in aggregate to keep a hardware-design error trail without
-    // flooding the journal.
-    uint64_t bad_frames_ = 0;
-    uint64_t seq_gaps_ = 0;
-    uint64_t seq_gap_frames_ = 0;
-    uint32_t last_bad_plane_ = 0;
-    uint32_t last_bad_got_ = 0;
-    uint32_t last_bad_want_ = 0;
-    uint32_t expected_seq_ = 0;
-    bool seq_valid_ = false;
-    uint64_t integrity_window_start_us_ = 0;
 
     ~V4L2CaptureImpl() override { stop(); }
 
@@ -130,7 +176,6 @@ struct V4L2CaptureImpl : public CaptureBackend {
     bool make_frame(uint32_t index, const v4l2_buffer& buf,
                     const v4l2_plane* dequeued_planes, RawFrame* frame,
                     std::string* err);
-    void log_integrity_stats(uint64_t now_us, bool force = false);
 
     // Zero-copy release entry point wired into RawFrame::release.  The
     // encoder calls it (from any thread) once it finished reading a held
@@ -165,8 +210,6 @@ RawPixelFormat V4L2CaptureImpl::outputFormat() const {
     case V4L2_PIX_FMT_YUV420:
     case V4L2_PIX_FMT_YUV420M:
         return RawPixelFormat::Yuv420p;
-    case V4L2_PIX_FMT_MJPEG:
-        return RawPixelFormat::Mjpeg;
     case V4L2_PIX_FMT_RGB24:
         return RawPixelFormat::Rgb888;
     case V4L2_PIX_FMT_UYVY:
@@ -372,9 +415,7 @@ bool V4L2CaptureImpl::make_frame(
     }
 
     RawPixelFormat raw_format;
-    if (pixel_format == V4L2_PIX_FMT_MJPEG) {
-        raw_format = RawPixelFormat::Mjpeg;
-    } else if (pixel_format == V4L2_PIX_FMT_RGB24) {
+    if (pixel_format == V4L2_PIX_FMT_RGB24) {
         raw_format = RawPixelFormat::Rgb888;
     } else {
         if (err) *err = "unsupported negotiated V4L2 pixel format";
@@ -412,29 +453,6 @@ void V4L2CaptureImpl::arm_release(RawFrame* frame, uint32_t index) const {
     frame->buffer_index = index;
     frame->release = &V4L2CaptureImpl::release_trampoline;
     frame->release_ctx = const_cast<V4L2CaptureImpl*>(this);
-}
-
-void V4L2CaptureImpl::log_integrity_stats(uint64_t now_us, bool force) {
-    if (!bad_frames_ && !seq_gaps_) return;
-    if (integrity_window_start_us_ == 0) {
-        integrity_window_start_us_ = now_us;
-    }
-    if (!force && now_us - integrity_window_start_us_ < 1000000ULL) return;
-
-    fprintf(stderr,
-            "[V4L2Capture] BAD-FRAME: count=%llu (last: plane%u bytesused=%u want=%u), "
-            "driver seq gaps=%llu (~%llu frames lost)\n",
-            static_cast<unsigned long long>(bad_frames_),
-            last_bad_plane_, last_bad_got_, last_bad_want_,
-            static_cast<unsigned long long>(seq_gaps_),
-            static_cast<unsigned long long>(seq_gap_frames_));
-    bad_frames_ = 0;
-    seq_gaps_ = 0;
-    seq_gap_frames_ = 0;
-    last_bad_plane_ = 0;
-    last_bad_got_ = 0;
-    last_bad_want_ = 0;
-    integrity_window_start_us_ = now_us;
 }
 
 void V4L2CaptureImpl::release_trampoline(void* ctx, uint32_t buffer_index) {
@@ -507,10 +525,8 @@ void V4L2CaptureImpl::capture_loop() {
         }
         dqbuf_stats_.sample(buf_ts_us, dqbuf_now_us);
 
-        // --- Frame-integrity gate ---
-        // Malformed frames (MIPI CRC truncation shows up as a size mismatch)
-        // must not reach the encoder: the Rockchip MPP halts permanently on
-        // such input (observed wedge).  Drop+requeue here and count it.
+        // Malformed frames must not reach the encoder: the Rockchip MPP
+        // halts permanently on such input. Drop+requeue here and count it.
         bool bad = false;
         uint32_t bad_plane = 0, bad_got = 0, bad_want = 0;
         if (is_mplane_type(buffer_type)) {
@@ -529,28 +545,19 @@ void V4L2CaptureImpl::capture_loop() {
             bad_want = plane_sizeimages[0];
         }
         if (bad) {
-            bad_frames_++;
-            last_bad_plane_ = bad_plane;
-            last_bad_got_ = bad_got;
-            last_bad_want_ = bad_want;
+            integrity_.record_bad_frame(bad_plane, bad_got, bad_want);
             std::string queue_error;
             if (!queue_buffer(buf.index, &queue_error)) {
                 fprintf(stderr, "[V4L2Capture] %s\n", queue_error.c_str());
                 break;
             }
-            log_integrity_stats(dqbuf_now_us);
+            integrity_.flush(dqbuf_now_us);
             continue;
         }
 
-        // Driver-side frame loss shows up as sequence gaps.  Count only —
-        // a gap itself is not a corrupt frame.
-        if (seq_valid_ && buf.sequence != expected_seq_) {
-            seq_gaps_++;
-            seq_gap_frames_ += buf.sequence - expected_seq_;
-        }
-        expected_seq_ = buf.sequence + 1;
-        seq_valid_ = true;
-        log_integrity_stats(dqbuf_now_us);
+        // Driver-side frame loss shows up as sequence gaps. Count only.
+        integrity_.record_sequence(buf.sequence);
+        integrity_.flush(dqbuf_now_us);
 
         RawFrame frame{};
         std::string frame_error;
@@ -794,15 +801,7 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
         return false;
     }
     capture_cb_ = std::move(cb);
-    bad_frames_ = 0;
-    seq_gaps_ = 0;
-    seq_gap_frames_ = 0;
-    last_bad_plane_ = 0;
-    last_bad_got_ = 0;
-    last_bad_want_ = 0;
-    expected_seq_ = 0;
-    seq_valid_ = false;
-    integrity_window_start_us_ = 0;
+    integrity_.reset();
 
     for (uint32_t index = 0; index < buffers.size(); ++index) {
         if (!queue_buffer(index, err)) return false;
@@ -854,7 +853,7 @@ void V4L2CaptureImpl::release_resources() {
 void V4L2CaptureImpl::stop() {
     running.store(false);
     if (capture_thread.joinable()) capture_thread.join();
-    log_integrity_stats(monotonic_now_us(), true);
+    integrity_.flush(monotonic_now_us(), true);
     release_resources();
 }
 
