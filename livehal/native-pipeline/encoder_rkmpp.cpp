@@ -30,7 +30,10 @@
 //!   validation failure, copy fallback, put failure) releases immediately
 //!   via an RAII guard, and stop() force-releases the remainder after
 //!   mpi_->reset() (the hardware no longer reads inputs at that point).
-//!   Invariant: in_flight_.size() == submitted - put_failures - completed.
+//!   Invariant: in_flight_.size() == submitted - completed.  submitted
+//!   counts only frames that successfully entered the encoder
+//!   (encode_put_frame returned MPP_OK); validation/copy/put failures
+//!   never reach it, so depth cannot leak from a failing encoder.
 //!
 //! References:
 //!   https://github.com/rockchip-linux/mpp
@@ -149,12 +152,12 @@ public:
             return false;
         }
 
-        width_ = config.width;
-        prefer_dmabuf_ = config.prefer_dmabuf;
-        height_ = config.height;
-        fps_ = config.fps;
-        bitrate_ = config.bitrate;
-        codec_ = config.codec;
+        // cfg_ is the single source of truth for the encoder parameters:
+        // written here from the init config, updated in place by runtime
+        // retunes (setBitrate, and later dynamic resolution/framerate
+        // changes), and read by every open_encoder_() — including the
+        // stall-recovery rebuild — so a rebuild always re-applies the
+        // latest values instead of a stale init snapshot.
         cfg_ = config;
 
         if (!open_encoder_(err)) return false;
@@ -175,9 +178,10 @@ public:
     }
 
     // Create and configure the whole MPP encoder context and its buffer
-    // pools.  Extracted from init() so the stall-recovery path can rebuild
-    // the encoder in place (see check_encoder_stall_).  Uses the config
-    // stored in cfg_.
+    // pools.  Extracted from init() so the stall-recovery path (see
+    // monitor_loop / rebuild_after_stall_) and future dynamic reconfigures
+    // can rebuild the encoder in place.  Parameters come exclusively from
+    // cfg_, the single runtime source of truth.
     bool open_encoder_(std::string* err) {
         std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
         MPP_RET ret = mpp_create(&ctx_, &mpi_);
@@ -233,29 +237,29 @@ public:
         };
 
         // Prep
-        hor_stride_ = MPP_ALIGN(width_, 16);
-        ver_stride_ = MPP_ALIGN(height_, 16);
+        hor_stride_ = MPP_ALIGN(cfg_.width, 16);
+        ver_stride_ = MPP_ALIGN(cfg_.height, 16);
         frame_size_ = static_cast<size_t>(hor_stride_) * ver_stride_ * 3 / 2;
 
-        if (!set_required("prep:width", static_cast<RK_S32>(width_))) return false;
-        if (!set_required("prep:height", static_cast<RK_S32>(height_))) return false;
+        if (!set_required("prep:width", static_cast<RK_S32>(cfg_.width))) return false;
+        if (!set_required("prep:height", static_cast<RK_S32>(cfg_.height))) return false;
         if (!set_required("prep:hor_stride", static_cast<RK_S32>(hor_stride_))) return false;
         if (!set_required("prep:ver_stride", static_cast<RK_S32>(ver_stride_))) return false;
         if (!set_required("prep:format", MPP_FMT_YUV420SP)) return false;
 
         // Rate control (CBR, tolerates older MPP versions)
         if (!set_required("rc:mode", MPP_ENC_RC_MODE_CBR)) return false;
-        if (!set_required("rc:bps_target", static_cast<RK_S32>(bitrate_))) return false;
+        if (!set_required("rc:bps_target", static_cast<RK_S32>(cfg_.bitrate))) return false;
         if (!set_required("rc:gop", static_cast<RK_S32>(cfg_.gop))) return false;
-        if (!set_required("rc:fps_in_num", static_cast<RK_S32>(fps_))) return false;
-        if (!set_required("rc:fps_out_num", static_cast<RK_S32>(fps_))) return false;
+        if (!set_required("rc:fps_in_num", static_cast<RK_S32>(cfg_.fps))) return false;
+        if (!set_required("rc:fps_out_num", static_cast<RK_S32>(cfg_.fps))) return false;
         // Older MPP versions reject denom/flex — make optional
         set_optional("rc:fps_in_flex", 0);
         set_optional("rc:fps_in_denorm", 1);
         set_optional("rc:fps_out_flex", 0);
         set_optional("rc:fps_out_denorm", 1);
-        set_optional("rc:bps_max", static_cast<RK_S32>(bitrate_ * 2));
-        set_optional("rc:bps_min", static_cast<RK_S32>(bitrate_ / 2));
+        set_optional("rc:bps_max", static_cast<RK_S32>(cfg_.bitrate * 2));
+        set_optional("rc:bps_min", static_cast<RK_S32>(cfg_.bitrate / 2));
         set_optional("rc:qp_init", 26);
         set_optional("rc:qp_min", 18);
         set_optional("rc:qp_max", 40);
@@ -288,8 +292,8 @@ public:
         std::fprintf(stderr,
             "[RkMppEncoder] %dx%d fps=%d bps=%d gop=%d codec=%s "
             "profile=%d level=%d tier=%d\n",
-            static_cast<int>(width_), static_cast<int>(height_),
-            static_cast<int>(fps_), static_cast<int>(bitrate_),
+            static_cast<int>(cfg_.width), static_cast<int>(cfg_.height),
+            static_cast<int>(cfg_.fps), static_cast<int>(cfg_.bitrate),
             static_cast<int>(cfg_.gop),
             (cfg_.codec == VideoCodec::H265) ? "h265" : "h264",
             static_cast<int>(cfg_.profile_idc),
@@ -384,6 +388,20 @@ public:
         }
 
         reset_runtime_state_();
+
+        // Publish the new context before returning: consumers watching
+        // contextGeneration() see the bump and know the codec state was
+        // reset (see encoder_backend.h).  Force the first output frame to
+        // be a keyframe — an IDR carrying SPS/PPS for H.264/H.265, thanks
+        // to MPP_ENC_HEADER_MODE_EACH_IDR — so a mid-stream rebuild stays
+        // decodable immediately instead of waiting for the next GOP
+        // boundary.  Best-effort: a fresh context normally starts on a
+        // keyframe anyway.
+        generation_.fetch_add(1, std::memory_order_relaxed);
+        if (mpi_->control(ctx_, MPP_ENC_SET_IDR_FRAME, nullptr) != MPP_OK) {
+            std::fprintf(stderr,
+                "[RkMppEncoder] warn: forcing first keyframe failed\n");
+        }
         return true;
     }
 
@@ -442,7 +460,7 @@ public:
             return false;
         }
         if (frame.kind != BufferKind::Cpu
-            && !(frame.kind == BufferKind::DmaBuf && prefer_dmabuf_)) {
+            && !(frame.kind == BufferKind::DmaBuf && cfg_.prefer_dmabuf)) {
             if (err) *err = "encoder-rkmpp: only CPU buffers are supported"
                 " (or dmabuf without prefer_dmabuf)";
             return false;
@@ -451,8 +469,6 @@ public:
             if (err) *err = "encoder-rkmpp: NV12 requires >= 2 planes";
             return false;
         }
-
-        submitted_frames_.fetch_add(1, std::memory_order_relaxed);
 
         // --- Drain pending output from previous frame ---
         // Aggregates partitions to EOI, dispatches one complete AU per frame.
@@ -465,12 +481,12 @@ public:
         uint32_t src_w = frame.width;
         uint32_t src_h = frame.height;
 
-        if (src_w != width_ || src_h != height_) {
+        if (src_w != cfg_.width || src_h != cfg_.height) {
             if (err) {
                 *err = "encoder-rkmpp: V4L2 negotiated "
                     + std::to_string(src_w) + "x" + std::to_string(src_h)
                     + " but encoder configured for "
-                    + std::to_string(width_) + "x" + std::to_string(height_)
+                    + std::to_string(cfg_.width) + "x" + std::to_string(cfg_.height)
                     + ". Update TOML capture width/height to match.";
             }
             return false;
@@ -482,7 +498,7 @@ public:
         uint32_t frame_hor_stride = hor_stride_;
         uint32_t frame_ver_stride = ver_stride_;
         bool use_dmabuf = false;
-        if (prefer_dmabuf_ && frame.kind == BufferKind::DmaBuf
+        if (cfg_.prefer_dmabuf && frame.kind == BufferKind::DmaBuf
             && frame.planes[0].dma_fd >= 0 && frame.planes[1].offset > 0) {
             const int fd = frame.planes[0].dma_fd;
             auto it = dmabuf_cache_.find(fd);
@@ -581,8 +597,8 @@ public:
         }
 
         mpp_frame_set_buffer(mpp_frame, buf);
-        mpp_frame_set_width(mpp_frame, width_);
-        mpp_frame_set_height(mpp_frame, height_);
+        mpp_frame_set_width(mpp_frame, cfg_.width);
+        mpp_frame_set_height(mpp_frame, cfg_.height);
         mpp_frame_set_hor_stride(mpp_frame, frame_hor_stride);
         mpp_frame_set_ver_stride(mpp_frame, frame_ver_stride);
         mpp_frame_set_fmt(mpp_frame, MPP_FMT_YUV420SP);
@@ -618,6 +634,13 @@ public:
             return false;
         }
 
+        // The frame is now genuinely in the encoder: count it only here,
+        // after every earlier failure return.  A frame rejected by the
+        // validation/copy paths above never reaches this point, so the
+        // derived depth (submitted - completed) stays exact and a failing
+        // encoder cannot leak in-flight depth into the stall detector.
+        submitted_frames_.fetch_add(1, std::memory_order_relaxed);
+
         // Track the frame until its EOI.  A zero-copy frame moves its
         // capture-buffer ownership into the queue (released at completion);
         // a pool-copy frame only keeps the 1:1 completion pairing — its
@@ -644,11 +667,17 @@ public:
         return true;
     }
 
+    // Force a keyframe at the next opportunity (H.264/H.265: IDR).
     void requestKeyframe() override {
         std::lock_guard<std::mutex> lock(mutex_);
         if (ctx_ && mpi_ && running_) {
             mpi_->control(ctx_, MPP_ENC_SET_IDR_FRAME, nullptr);
         }
+    }
+
+    // Monotonic codec-context generation; see encoder_backend.h.
+    uint64_t contextGeneration() const override {
+        return generation_.load(std::memory_order_relaxed);
     }
 
     // Runtime bitrate retune (adaptive bitrate control, issue #409).
@@ -677,21 +706,31 @@ public:
                 " (ret=%d)\n", bps, static_cast<int>(ret));
             return false;
         }
-        bitrate_ = bps;
+        // Keep cfg_ (the single source of truth) in sync: a later
+        // stall-recovery rebuild must re-apply this bitrate, not the
+        // init-time value.
+        cfg_.bitrate = bps;
         std::fprintf(stderr, "[RkMppEncoder] bitrate -> %u bps\n", bps);
         return true;
     }
 
     void stop() override {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            running_ = false;
-        }
+        // Lock order matters: drain_loop() parks inside the blocking
+        // encode_get_packet *while holding mutex_* when the encoder stalls,
+        // so stop() must not take mutex_ before waking it — doing so would
+        // deadlock the teardown on the very stall this class recovers from.
+        // running_/drain_running_ are atomics and stop lock-free; the mpp
+        // reset below wakes the parked get_packet (it returns with an
+        // error); only after the drain thread has exited is mutex_ taken,
+        // for the final close_encoder_().
+        running_.store(false, std::memory_order_relaxed);
 
         // Stop the monitor first so it cannot reset mid-teardown, then wake
         // a possibly parked drain thread via mpp reset (the blocking
         // get_packet returns with an error) before joining it — joining
-        // without the reset can hang forever on a halted encoder.
+        // without the reset can hang forever on a halted encoder.  After the
+        // wake-up the drain thread re-checks running_ and skips any rebuild,
+        // so a teardown never tears a rebuilt context down again.
         monitor_running_ = false;
         if (monitor_thread_.joinable()) monitor_thread_.join();
         drain_running_ = false;
@@ -869,7 +908,6 @@ private:
             if (reset_requested_.load(std::memory_order_acquire)) continue;
             const int64_t depth = static_cast<int64_t>(
                 submitted_frames_.load(std::memory_order_relaxed))
-                - static_cast<int64_t>(put_frame_failures_.load(std::memory_order_relaxed))
                 - static_cast<int64_t>(completed);
             if (depth <= 0
                 || mon_last_progress_us_.load(std::memory_order_relaxed) == 0) continue;
@@ -888,10 +926,23 @@ private:
                     static_cast<unsigned long long>(
                         (now - mon_last_progress_us_.load(std::memory_order_relaxed)) / 1000),
                     static_cast<long long>(depth));
-                reset_requested_.store(true, std::memory_order_release);
-                mpi_->reset(ctx_);  // wakes the drain thread's parked get_packet
+                request_context_reload_();
             }
         }
+    }
+
+    // Single place that submits a context reload to the drain thread.
+    // Preconditions: caller must hold lifecycle_mutex_ (this is where the
+    // reload is serialized against teardown/rebuild) and must NOT hold
+    // mutex_ (drain_loop may be parked on it inside the blocking
+    // encode_get_packet).  Sets reset_requested_ — consumed by drain_loop,
+    // which performs the actual close_encoder_()/open_encoder_() under
+    // mutex_ — then wakes a possibly parked drain via mpp reset.  Future
+    // dynamic resolution/framerate reloads grow this into a parameterized
+    // request (reason + target config); the wake-up protocol stays the same.
+    void request_context_reload_() {
+        reset_requested_.store(true, std::memory_order_release);
+        mpi_->reset(ctx_);  // wakes the drain thread's parked get_packet
     }
 
     int drain_and_dispatch(uint64_t input_pts_us) {        int dispatched = 0;
@@ -931,7 +982,7 @@ private:
 
                 au.insert(au.end(), pkt_data, pkt_data + pkt_size);
 
-                NalFlags nf = (codec_ == VideoCodec::H265)
+                NalFlags nf = (cfg_.codec == VideoCodec::H265)
                     ? detect_h265_flags(pkt_data, pkt_size)
                     : detect_h264_flags(pkt_data, pkt_size);
                 if (nf.keyframe) au_flags |= EncodedKeyframe;
@@ -1000,7 +1051,7 @@ private:
 
         if (encoded_cb_) {
             EncodedPacket out;
-            out.codec = codec_;
+            out.codec = cfg_.codec;
             out.data = au.data();
             out.size = au.size();
             out.pts_us = au_pts_us;      // from actual MPP packet, not caller
@@ -1046,12 +1097,9 @@ private:
     MppCtx ctx_ = nullptr;
     MppApi* mpi_ = nullptr;
 
-    uint32_t width_ = 0, height_ = 0, fps_ = 0, bitrate_ = 0;
-    VideoCodec codec_ = VideoCodec::H264;
+    // Layout caches derived from cfg_ and recomputed by open_encoder_().
     uint32_t hor_stride_ = 0, ver_stride_ = 0;
     size_t frame_size_ = 0;
-
-    bool prefer_dmabuf_ = false;
 
     // Persistent buffer pool: kInputPoolSize buffers cycled round-robin.
     // See the allocation site for why DRM+CACHABLE is preferred on RV1126B.
@@ -1090,7 +1138,10 @@ private:
     // Pre-RTP debug file
     FILE* debug_file_ = nullptr;
 
-    // Stats
+    // Stats.  submitted_frames_ counts only frames that entered the encoder;
+    // put_frame_failures_ counts encode_put_frame rejections, which never
+    // entered the encoder and are therefore not part of submitted_frames_
+    // or the in-flight depth (diagnostic only).
     std::atomic<uint64_t> submitted_frames_{0};
     uint64_t encoded_frames_ = 0;
     std::atomic<uint64_t> put_frame_failures_{0};
@@ -1105,14 +1156,14 @@ private:
     // [latency] "encode" stage: capture SOF → encoded AU retrieved.
     LatencyStats enc_stats_{"encode"};
 
-    // In-flight depth derived from counters: submitted minus put-failures
-    // minus completed.  Deriving it (instead of maintaining a mutable
-    // counter across the drain exit paths) makes double-decrement bugs
-    // impossible by construction.
+    // In-flight depth derived from counters: submitted minus completed
+    // (submitted counts only frames successfully entered via
+    // encode_put_frame, see submit()).  Deriving it (instead of maintaining
+    // a mutable counter across the drain exit paths) makes double-decrement
+    // bugs impossible by construction.
     int inflight_depth() const {
         return static_cast<int>(
             submitted_frames_.load(std::memory_order_relaxed)
-            - put_frame_failures_.load(std::memory_order_relaxed)
             - completed_frames_.load(std::memory_order_relaxed));
     }
 
@@ -1134,9 +1185,19 @@ private:
     std::atomic<uint64_t> mon_last_completed_{0};
     std::atomic<uint64_t> mon_last_progress_us_{0};
 
-    // Whole init config, kept so open_encoder_() can rebuild the context
-    // after a stall (see monitor_loop).
+    // Runtime encoder parameters — the single source of truth for every
+    // open_encoder_() (initial init and stall-recovery rebuild alike).
+    // Written from init(), updated in place by runtime retunes
+    // (setBitrate; future resolution/framerate changes), and only ever
+    // read/written under mutex_ (or lifecycle_mutex_ inside
+    // open_encoder_()).  No shadowing scalar members exist, so a rebuild
+    // cannot resurrect stale values.
     EncoderConfig cfg_{};
+
+    // Monotonic codec-context generation: bumped by each successful
+    // open_encoder_(), exposed via contextGeneration().  Deliberately not
+    // cleared by reset_runtime_state_() — a rebuild IS a new context.
+    std::atomic<uint64_t> generation_{0};
     std::atomic<uint64_t> last_reset_us_{0};
     static constexpr uint64_t kEncoderStallUs = 3000000;        // 3 s
     static constexpr uint64_t kEncoderResetCooldownUs = 5000000; // 5 s
