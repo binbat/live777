@@ -130,6 +130,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     bool make_frame(uint32_t index, const v4l2_buffer& buf,
                     const v4l2_plane* dequeued_planes, RawFrame* frame,
                     std::string* err);
+    void log_integrity_stats(uint64_t now_us, bool force = false);
 
     // Zero-copy release entry point wired into RawFrame::release.  The
     // encoder calls it (from any thread) once it finished reading a held
@@ -177,6 +178,13 @@ RawPixelFormat V4L2CaptureImpl::outputFormat() const {
 
 bool V4L2CaptureImpl::select_format(
     uint32_t caps, RawPixelFormat requested, std::string* err) {
+    if (requested == RawPixelFormat::Mjpeg) {
+        if (err) {
+            *err = "MJPEG capture is not supported by the livehal pipeline";
+        }
+        return false;
+    }
+
     std::vector<v4l2_buf_type> types;
     if (caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE) {
         types.push_back(V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
@@ -406,6 +414,29 @@ void V4L2CaptureImpl::arm_release(RawFrame* frame, uint32_t index) const {
     frame->release_ctx = const_cast<V4L2CaptureImpl*>(this);
 }
 
+void V4L2CaptureImpl::log_integrity_stats(uint64_t now_us, bool force) {
+    if (!bad_frames_ && !seq_gaps_) return;
+    if (integrity_window_start_us_ == 0) {
+        integrity_window_start_us_ = now_us;
+    }
+    if (!force && now_us - integrity_window_start_us_ < 1000000ULL) return;
+
+    fprintf(stderr,
+            "[V4L2Capture] BAD-FRAME: count=%llu (last: plane%u bytesused=%u want=%u), "
+            "driver seq gaps=%llu (~%llu frames lost)\n",
+            static_cast<unsigned long long>(bad_frames_),
+            last_bad_plane_, last_bad_got_, last_bad_want_,
+            static_cast<unsigned long long>(seq_gaps_),
+            static_cast<unsigned long long>(seq_gap_frames_));
+    bad_frames_ = 0;
+    seq_gaps_ = 0;
+    seq_gap_frames_ = 0;
+    last_bad_plane_ = 0;
+    last_bad_got_ = 0;
+    last_bad_want_ = 0;
+    integrity_window_start_us_ = now_us;
+}
+
 void V4L2CaptureImpl::release_trampoline(void* ctx, uint32_t buffer_index) {
     static_cast<V4L2CaptureImpl*>(ctx)->release_buffer(buffer_index);
 }
@@ -507,6 +538,7 @@ void V4L2CaptureImpl::capture_loop() {
                 fprintf(stderr, "[V4L2Capture] %s\n", queue_error.c_str());
                 break;
             }
+            log_integrity_stats(dqbuf_now_us);
             continue;
         }
 
@@ -518,27 +550,7 @@ void V4L2CaptureImpl::capture_loop() {
         }
         expected_seq_ = buf.sequence + 1;
         seq_valid_ = true;
-
-        // Aggregate integrity log, once per second when non-zero.
-        if (bad_frames_ || seq_gaps_) {
-            const uint64_t now_us = monotonic_now_us();
-            if (integrity_window_start_us_ == 0)
-                integrity_window_start_us_ = now_us;
-            if (now_us - integrity_window_start_us_ >= 1000000ULL) {
-                fprintf(stderr,
-                        "[V4L2Capture] BAD-FRAME: count=%llu (last: plane%u "
-                        "bytesused=%u want=%u), driver seq gaps=%llu "
-                        "(~%llu frames lost)\n",
-                        static_cast<unsigned long long>(bad_frames_),
-                        last_bad_plane_, last_bad_got_, last_bad_want_,
-                        static_cast<unsigned long long>(seq_gaps_),
-                        static_cast<unsigned long long>(seq_gap_frames_));
-                bad_frames_ = 0;
-                seq_gaps_ = 0;
-                seq_gap_frames_ = 0;
-                integrity_window_start_us_ = now_us;
-            }
-        }
+        log_integrity_stats(dqbuf_now_us);
 
         RawFrame frame{};
         std::string frame_error;
@@ -782,6 +794,15 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
         return false;
     }
     capture_cb_ = std::move(cb);
+    bad_frames_ = 0;
+    seq_gaps_ = 0;
+    seq_gap_frames_ = 0;
+    last_bad_plane_ = 0;
+    last_bad_got_ = 0;
+    last_bad_want_ = 0;
+    expected_seq_ = 0;
+    seq_valid_ = false;
+    integrity_window_start_us_ = 0;
 
     for (uint32_t index = 0; index < buffers.size(); ++index) {
         if (!queue_buffer(index, err)) return false;
@@ -833,6 +854,7 @@ void V4L2CaptureImpl::release_resources() {
 void V4L2CaptureImpl::stop() {
     running.store(false);
     if (capture_thread.joinable()) capture_thread.join();
+    log_integrity_stats(monotonic_now_us(), true);
     release_resources();
 }
 

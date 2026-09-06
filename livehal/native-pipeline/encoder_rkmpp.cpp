@@ -179,6 +179,7 @@ public:
     // the encoder in place (see check_encoder_stall_).  Uses the config
     // stored in cfg_.
     bool open_encoder_(std::string* err) {
+        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
         MPP_RET ret = mpp_create(&ctx_, &mpi_);
         if (ret != MPP_OK) {
             if (err) *err = "encoder-rkmpp: mpp_create failed (ret="
@@ -394,8 +395,10 @@ public:
         next_pkt_idx_ = 0;
         pending_au_.clear();
         pending_au_flags_ = 0;
-        mon_last_progress_us_ = monotonic_now_us();
-        mon_last_completed_ = 0;
+        reset_requested_.store(false, std::memory_order_release);
+        mon_last_progress_us_.store(monotonic_now_us(), std::memory_order_relaxed);
+        mon_last_completed_.store(0, std::memory_order_relaxed);
+        last_reset_us_.store(0, std::memory_order_relaxed);
         return true;
     }
 
@@ -432,7 +435,7 @@ public:
             return false;
         }
 
-        submitted_frames_++;
+        submitted_frames_.fetch_add(1, std::memory_order_relaxed);
 
         // --- Drain pending output from previous frame ---
         // Aggregates partitions to EOI, dispatches one complete AU per frame.
@@ -592,7 +595,7 @@ public:
         mpp_frame_deinit(&mpp_frame);
 
         if (ret != MPP_OK) {
-            put_frame_failures_++;
+            put_frame_failures_.fetch_add(1, std::memory_order_relaxed);
             if (err) *err = "encoder-rkmpp: encode_put_frame failed (ret="
                 + std::to_string(ret) + ")";
             return false;
@@ -663,6 +666,11 @@ public:
     }
 
     void stop() override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            running_ = false;
+        }
+
         // Stop the monitor first so it cannot reset mid-teardown, then wake
         // a possibly parked drain thread via mpp reset (the blocking
         // get_packet returns with an error) before joining it — joining
@@ -670,20 +678,21 @@ public:
         monitor_running_ = false;
         if (monitor_thread_.joinable()) monitor_thread_.join();
         drain_running_ = false;
-        if (ctx_ && mpi_) mpi_->reset(ctx_);
+        {
+            std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+            if (ctx_ && mpi_) mpi_->reset(ctx_);
+        }
         if (drain_thread_.joinable()) drain_thread_.join();
 
         std::lock_guard<std::mutex> lock(mutex_);
-        running_ = false;
-
         close_encoder_();
 
         std::fprintf(stderr,
             "[RkMppEncoder] Final: subm=%llu enc=%llu put_fail=%llu "
             "get_fail=%llu\n",
-            static_cast<unsigned long long>(submitted_frames_),
+            static_cast<unsigned long long>(submitted_frames_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(encoded_frames_),
-            static_cast<unsigned long long>(put_frame_failures_),
+            static_cast<unsigned long long>(put_frame_failures_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(get_packet_failures_));
 
         initialized_ = false;
@@ -693,6 +702,7 @@ public:
     // to the capture.  Called from stop() (pipeline teardown) and from the
     // stall-recovery path (followed by open_encoder_()).
     void close_encoder_() {
+        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
         if (ctx_ && mpi_) {
             // Drain in-flight frames so their capture buffers come back
             // through the normal completion path.  Bounded: a stalled
@@ -793,6 +803,9 @@ private:
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (reset_requested_.exchange(false)) {
+                    if (!running_) {
+                        continue;
+                    }
                     // The monitor thread woke us out of a halt: rebuild the
                     // encoder, serialized against submit() via mutex_.
                     std::fprintf(stderr,
@@ -829,10 +842,10 @@ private:
     //
     // Detection runs OUTSIDE the drain thread: on a halt, drain_loop is
     // itself parked inside the blocking encode_get_packet, so no in-loop
-    // check could ever fire.  This monitor only watches counters (lock-free)
-    // and calls mpi_->reset() — mpp's documented way to wake parked calls —
-    // then flags reset_requested_; drain_loop performs the actual teardown
-    // and rebuild under mutex_ once its get_packet returns with an error.
+    // check could ever fire.  This monitor only watches counters and uses
+    // the lifecycle mutex to serialize the reset with teardown/rebuild;
+    // then it flags reset_requested_ so drain_loop can perform the actual
+    // teardown and rebuild under mutex_ once its get_packet returns.
     //
     // (Setting MPP_SET_OUTPUT_TIMEOUT would be the obvious alternative, but
     // that control wedges this kmpp-era mpp's output path — encode_put_frame
@@ -840,30 +853,40 @@ private:
     void monitor_loop() {
         while (monitor_running_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (!monitor_running_.load()) break;
             const uint64_t now = monotonic_now_us();
-            const uint64_t completed = completed_frames_;
-            if (completed != mon_last_completed_) {
-                mon_last_completed_ = completed;
-                mon_last_progress_us_ = now;
+            const uint64_t completed = completed_frames_.load(std::memory_order_relaxed);
+            if (completed != mon_last_completed_.load(std::memory_order_relaxed)) {
+                mon_last_completed_.store(completed, std::memory_order_relaxed);
+                mon_last_progress_us_.store(now, std::memory_order_relaxed);
                 continue;
             }
-            if (!running_ || !ctx_ || !mpi_) continue;
-            const int64_t depth = static_cast<int64_t>(submitted_frames_)
-                - static_cast<int64_t>(put_frame_failures_)
+            if (!running_) continue;
+            if (reset_requested_.load(std::memory_order_acquire)) continue;
+            const int64_t depth = static_cast<int64_t>(
+                submitted_frames_.load(std::memory_order_relaxed))
+                - static_cast<int64_t>(put_frame_failures_.load(std::memory_order_relaxed))
                 - static_cast<int64_t>(completed);
-            if (depth <= 0 || mon_last_progress_us_ == 0) continue;
-            if (now - mon_last_progress_us_ < kEncoderStallUs) continue;
-            if (now - last_reset_us_ < kEncoderResetCooldownUs) continue;
-            last_reset_us_ = now;
+            if (depth <= 0
+                || mon_last_progress_us_.load(std::memory_order_relaxed) == 0) continue;
+            if (now - mon_last_progress_us_.load(std::memory_order_relaxed) < kEncoderStallUs) continue;
+            {
+                std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+                if (!monitor_running_.load() || !running_ || !ctx_ || !mpi_) {
+                    continue;
+                }
+                if (now - last_reset_us_.load(std::memory_order_relaxed) < kEncoderResetCooldownUs) continue;
+                last_reset_us_.store(now, std::memory_order_relaxed);
 
-            std::fprintf(stderr,
-                "[RkMppEncoder] ENCODER STALLED: no completion for %llums "
-                "with %lld in flight — resetting\n",
-                static_cast<unsigned long long>(
-                    (now - mon_last_progress_us_) / 1000),
-                static_cast<long long>(depth));
-            reset_requested_ = true;
-            mpi_->reset(ctx_);  // wakes the drain thread's parked get_packet
+                std::fprintf(stderr,
+                    "[RkMppEncoder] ENCODER STALLED: no completion for %llums "
+                    "with %lld in flight — resetting\n",
+                    static_cast<unsigned long long>(
+                        (now - mon_last_progress_us_.load(std::memory_order_relaxed)) / 1000),
+                    static_cast<long long>(depth));
+                reset_requested_.store(true, std::memory_order_release);
+                mpi_->reset(ctx_);  // wakes the drain thread's parked get_packet
+            }
         }
     }
 
@@ -926,7 +949,7 @@ private:
 
         // One completion per submitted frame, counted exactly once when its
         // EOI is observed — whether or not the AU carried any data.
-        completed_frames_++;
+        completed_frames_.fetch_add(1, std::memory_order_relaxed);
 
         // Completions arrive in submission order (single encoder context):
         // pair this one with the oldest in-flight input and hand its capture
@@ -992,7 +1015,7 @@ private:
     // ------------------------------------------------------------------
     void print_stats_if_due() {
         constexpr uint64_t kInterval = 150;
-        if (submitted_frames_ % kInterval != 0) return;
+        if (submitted_frames_.load(std::memory_order_relaxed) % kInterval != 0) return;
 
         RK_S32 group_unused = (buf_group_)
             ? mpp_buffer_group_unused(buf_group_) : -1;
@@ -1004,10 +1027,10 @@ private:
             "grp_unused=%d grp_usage=%zu "
             "put_fail=%llu get_fail=%llu "
             "depth=%d peak=%d max_parts=%zu\n",
-            static_cast<unsigned long long>(submitted_frames_),
+            static_cast<unsigned long long>(submitted_frames_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(encoded_frames_),
             group_unused, group_usage,
-            static_cast<unsigned long long>(put_frame_failures_),
+            static_cast<unsigned long long>(put_frame_failures_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(get_packet_failures_),
             inflight_depth(), peak_inflight_depth_,
             max_partitions_per_frame_);
@@ -1064,13 +1087,13 @@ private:
     FILE* debug_file_ = nullptr;
 
     // Stats
-    uint64_t submitted_frames_ = 0;
+    std::atomic<uint64_t> submitted_frames_{0};
     uint64_t encoded_frames_ = 0;
-    uint64_t put_frame_failures_ = 0;
+    std::atomic<uint64_t> put_frame_failures_{0};
     uint64_t get_packet_failures_ = 0;
     // Frames whose EOI was observed in drain_and_dispatch(); each submitted
     // frame completes exactly once, so in-flight depth can be derived.
-    uint64_t completed_frames_ = 0;
+    std::atomic<uint64_t> completed_frames_{0};
     uint64_t au_log_count_ = 0;
     int peak_inflight_depth_ = 0;
     size_t max_partitions_per_frame_ = 0;
@@ -1084,7 +1107,9 @@ private:
     // impossible by construction.
     int inflight_depth() const {
         return static_cast<int>(
-            submitted_frames_ - put_frame_failures_ - completed_frames_);
+            submitted_frames_.load(std::memory_order_relaxed)
+            - put_frame_failures_.load(std::memory_order_relaxed)
+            - completed_frames_.load(std::memory_order_relaxed));
     }
 
     std::atomic<bool> running_{false};
@@ -1092,6 +1117,7 @@ private:
 
     EncodedPacketCallback encoded_cb_;
     mutable std::mutex mutex_;
+    mutable std::mutex lifecycle_mutex_;
 
     // Independent drain driver (see drain_loop / init / stop).
     std::thread drain_thread_;
@@ -1101,13 +1127,13 @@ private:
     std::thread monitor_thread_;
     std::atomic<bool> monitor_running_{false};
     std::atomic<bool> reset_requested_{false};
-    uint64_t mon_last_completed_ = 0;
-    uint64_t mon_last_progress_us_ = 0;
+    std::atomic<uint64_t> mon_last_completed_{0};
+    std::atomic<uint64_t> mon_last_progress_us_{0};
 
     // Whole init config, kept so open_encoder_() can rebuild the context
     // after a stall (see monitor_loop).
     EncoderConfig cfg_{};
-    uint64_t last_reset_us_ = 0;
+    std::atomic<uint64_t> last_reset_us_{0};
     static constexpr uint64_t kEncoderStallUs = 3000000;        // 3 s
     static constexpr uint64_t kEncoderResetCooldownUs = 5000000; // 5 s
 };
