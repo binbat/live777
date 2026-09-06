@@ -83,7 +83,14 @@ runs:
           || { echo "ERROR: ffmpeg.exe not available on PATH after install"; exit 1; }
 
     # ── macOS ─────────────────────────────────────────────────────────────
-    # ── macOS ─────────────────────────────────────────────────────────────
+    - name: Resolve macOS FFmpeg cache fingerprint
+      if: runner.os == 'macOS'
+      id: macos-ffmpeg-fingerprint
+      shell: bash
+      run: |
+        brew untap aws/tap 2>/dev/null || true
+        echo "digest=$(brew info --json=v2 --formula pkg-config nasm yasm libvpx x264 x265 svt-av1 opus | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
     # Homebrew's ffmpeg formula moved to 9.x, which privatized AVCodec's
     # public fields (supported_framerates, pix_fmts, ...), so bindgen emits
     # accessor methods and rsmpeg 0.18.0 no longer compiles (E0615 "method,
@@ -99,7 +106,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/ffmpeg-install
-        key: ffmpeg-n8.1.2-macos-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+        key: ffmpeg-n8.1.2-macos-${{ runner.arch }}-${{ steps.macos-ffmpeg-fingerprint.outputs.digest }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
 
     - name: Install build dependencies (macOS)
       if: runner.os == 'macOS' && steps.cache-ffmpeg-macos.outputs.cache-hit != 'true'
