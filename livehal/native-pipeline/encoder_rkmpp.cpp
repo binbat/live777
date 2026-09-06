@@ -39,9 +39,11 @@
 //!   https://github.com/rockchip-linux/mpp
 
 #include "include/encoder_backend.h"
+#include "include/encoder_stall_detector.h"
 #include "include/latency_stats.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <thread>
 #include <unordered_map>
 
@@ -179,10 +181,9 @@ public:
         initialized_ = true;
 
         // Independent drain driver: completions (and with them the zero-copy
-        // capture-buffer releases) must not depend on new input arriving.
-        // Without this, a transient encoder slowdown lets in_flight_ pin all
-        // driver buffers; capture then starves, no new submit ever calls
-        // drain_and_dispatch(), and the pipeline wedges permanently.
+        // capture-buffer releases) must not depend on new input arriving —
+        // without it, a transient encoder slowdown lets in_flight_ pin all
+        // driver buffers and starves capture forever (see drain_loop).
         drain_running_ = true;
         drain_thread_ = std::thread(&RkMppEncoder::drain_loop, this);
         monitor_running_ = true;
@@ -194,9 +195,8 @@ public:
     // pools.  Extracted from init() so the stall-recovery path (see
     // monitor_loop / rebuild_after_stall_) and future dynamic reconfigures
     // can rebuild the encoder in place.  Parameters come exclusively from
-    // cfg_, the single runtime source of truth.
+    // cfg_, the single runtime source of truth.  Caller must hold mutex_.
     bool open_encoder_(std::string* err) {
-        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
         MPP_RET ret = mpp_create(&ctx_, &mpi_);
         if (ret != MPP_OK) {
             if (err) *err = "encoder-rkmpp: mpp_create failed (ret="
@@ -404,11 +404,12 @@ public:
         // fixed window would false-positive on a healthy encoder whose
         // frame period approaches it (a 1 fps source completes once per
         // second — well inside a 3 s window, but a 0.1 fps source would
-        // look "stalled").  Floor at kMinEncoderStallUs.
-        stall_us_.store(
+        // look "stalled").  Floor at kMinEncoderStallUs.  Written under
+        // mutex_, read by monitor_loop() under the same lock.
+        detector_.stall_us =
             std::max<uint64_t>(kMinEncoderStallUs,
-                               20ull * 1000000ull / (cfg_.fps ? cfg_.fps : 30u)),
-            std::memory_order_relaxed);
+                               20ull * 1000000ull / (cfg_.fps ? cfg_.fps : 30u));
+        detector_.cooldown_us = kEncoderResetCooldownUs;
 
         reset_runtime_state_();
 
@@ -436,13 +437,9 @@ public:
         completed_frames_.store(0, std::memory_order_relaxed);
         next_input_idx_ = 0;
         next_pkt_idx_ = 0;
-        pending_au_.clear();
-        pending_au_flags_ = 0;
-        reset_requested_.store(false, std::memory_order_seq_cst);
-        mon_last_progress_us_.store(monotonic_now_us(), std::memory_order_relaxed);
-        mon_last_completed_.store(0, std::memory_order_relaxed);
-        last_reset_us_.store(0, std::memory_order_relaxed);
-        last_cooldown_log_us_.store(0, std::memory_order_relaxed);
+        reset_requested_ = false;
+        detector_.reset();
+        last_cooldown_log_us_ = 0;
     }
 
     bool rebuild_after_stall_(std::string* err) {
@@ -465,7 +462,7 @@ public:
     // submit — round-robin buffer pool model
     // ------------------------------------------------------------------
     bool submit(const RawFrame& frame, std::string* err) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
 
         // Deferred-requeue contract: an armed (zero-copy) frame transfers
         // its capture buffer to us.  The guard hands it back on every early
@@ -494,11 +491,27 @@ public:
             return false;
         }
 
-        // --- Drain pending output from previous frame ---
-        // Aggregates partitions to EOI, dispatches one complete AU per frame.
-        drain_and_dispatch(frame.pts_us);
+        // --- Admission control ---
+        // The CPU pool has only kInputPoolSize rotating buffers; a slot may
+        // only be rewritten once the frame that used it has completed (EOI,
+        // in submission order).  With drain now fully async, throttle here
+        // instead of relying on a blocking drain inside submit: wait until
+        // fewer than kInputPoolSize frames are in flight (a slot is free).
+        // Zero-copy frames share the same modest pipeline depth — it is also
+        // the backpressure signal that keeps capture buffers from piling up
+        // while the encoder is slower than the source.  The drain thread
+        // notifies on every completion and after a rebuild.
+        drain_cv_.wait(lock, [this] {
+            return !running_.load() || !initialized_
+                || inflight_depth() < kInputPoolSize;
+        });
+        if (!running_.load() || !initialized_) {
+            if (err) *err = "encoder-rkmpp: not running";
+            return false;
+        }
 
-        // --- Select buffer from pool (index advanced only on success) ---
+        // --- Drain is driven exclusively by the drain thread; nothing here
+        // blocks on encoder output (see drain_loop).  Select the buffer.
         MppBuffer buf = input_bufs_[next_input_idx_];
 
         // Use V4L2-negotiated frame dimensions for copy (not TOML config).
@@ -648,17 +661,7 @@ public:
         }
 
         // --- Submit to encoder ---
-        // Guarded: a context reload may be in progress (see
-        // request_context_reload_ / begin_mpp_call_); back off instead of
-        // touching a context that is about to be reset or rebuilt.
-        if (!begin_mpp_call_()) {
-            mpp_frame_deinit(&mpp_frame);
-            if (err) *err = "encoder-rkmpp: context reload in progress, "
-                "frame dropped";
-            return false;
-        }
         ret = mpi_->encode_put_frame(ctx_, mpp_frame);
-        end_mpp_call_();
         mpp_frame_deinit(&mpp_frame);
 
         if (ret != MPP_OK) {
@@ -691,9 +694,9 @@ public:
         if (depth > peak_inflight_depth_)
             peak_inflight_depth_ = depth;
 
-        // --- Drain and dispatch (this frame may not be ready yet); each
-        // observed completion releases the oldest held capture buffer ---
-        drain_and_dispatch(frame.pts_us);
+        // Wake the drain thread: it may be parked in the condition wait
+        // (empty in-flight queue) and this is the only work signal it gets.
+        drain_cv_.notify_all();
 
         // Periodic stats
         print_stats_if_due();
@@ -704,9 +707,8 @@ public:
     // Force a keyframe at the next opportunity (H.264/H.265: IDR).
     void requestKeyframe() override {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (ctx_ && mpi_ && running_ && begin_mpp_call_()) {
+        if (ctx_ && mpi_ && running_) {
             mpi_->control(ctx_, MPP_ENC_SET_IDR_FRAME, nullptr);
-            end_mpp_call_();
         }
     }
 
@@ -733,12 +735,7 @@ public:
         mpp_enc_cfg_set_s32(cfg, "rc:bps_target", static_cast<RK_S32>(bps));
         mpp_enc_cfg_set_s32(cfg, "rc:bps_max", static_cast<RK_S32>(bps * 2));
         mpp_enc_cfg_set_s32(cfg, "rc:bps_min", static_cast<RK_S32>(bps / 2));
-        if (!begin_mpp_call_()) {
-            mpp_enc_cfg_deinit(cfg);
-            return false;  // reload in progress; caller may retry
-        }
         MPP_RET ret = mpi_->control(ctx_, MPP_ENC_SET_CFG, cfg);
-        end_mpp_call_();
         mpp_enc_cfg_deinit(cfg);
         if (ret != MPP_OK) {
             std::fprintf(stderr,
@@ -759,55 +756,53 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             if (finalized_) return;  // stop() runs from the pipeline and
             finalized_ = true;       // again from the destructor
+            running_ = false;
         }
-        // Lock order matters: drain_loop() parks inside the blocking
-        // encode_get_packet *while holding mutex_* when the encoder stalls,
-        // so stop() must not take mutex_ before waking it — doing so would
-        // deadlock the teardown on the very stall this class recovers from.
-        // running_/drain_running_ are atomics and stop lock-free; the mpp
-        // reset below wakes the parked get_packet (it returns with an
-        // error); only after the drain thread has exited is mutex_ taken,
-        // for the final close_encoder_().
-        running_.store(false, std::memory_order_relaxed);
 
-        // Stop the monitor first so it cannot reset mid-teardown, then wake
-        // a possibly parked drain thread via mpp reset (the blocking
-        // get_packet returns with an error) before joining it — joining
-        // without the reset can hang forever on a halted encoder.  After the
-        // wake-up the drain thread re-checks running_ and skips any rebuild,
-        // so a teardown never tears a rebuilt context down again.
+        // The drain thread parks OUTSIDE mutex_ inside the blocking
+        // encode_get_packet, so taking mutex_ here cannot deadlock: stop
+        // the monitor first (it must not reset mid-teardown), then wake
+        // the drain via notify + mpp reset and join it — joining without
+        // the reset can hang forever on a halted encoder.  Only after the
+        // drain thread has exited is mutex_ taken again, for the final
+        // close_encoder_().
         monitor_running_ = false;
         if (monitor_thread_.joinable()) monitor_thread_.join();
-        drain_running_ = false;
         {
-            std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-            if (ctx_ && mpi_) request_context_reload_();
+            std::lock_guard<std::mutex> lock(mutex_);
+            drain_running_ = false;
+            drain_cv_.notify_all();             // drain parked in the wait
+            if (ctx_ && mpi_) mpi_->reset(ctx_);  // drain parked in get_packet
         }
         if (drain_thread_.joinable()) drain_thread_.join();
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        close_encoder_();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            close_encoder_();
 
-        const uint64_t gen = generation_.load(std::memory_order_relaxed);
-        const unsigned long long rebuilds =
-            gen > 0 ? static_cast<unsigned long long>(gen - 1) : 0;
-        std::fprintf(stderr,
-            "[RkMppEncoder] Final (lifetime): subm=%llu enc=%llu "
-            "put_fail=%llu get_fail=%llu rebuilds=%llu\n",
-            static_cast<unsigned long long>(lifetime_submitted_),
-            static_cast<unsigned long long>(lifetime_encoded_),
-            static_cast<unsigned long long>(lifetime_put_fail_),
-            static_cast<unsigned long long>(lifetime_get_fail_),
-            rebuilds);
+            const uint64_t gen = generation_.load(std::memory_order_relaxed);
+            const unsigned long long rebuilds =
+                gen > 0 ? static_cast<unsigned long long>(gen - 1) : 0;
+            std::fprintf(stderr,
+                "[RkMppEncoder] Final (lifetime): subm=%llu enc=%llu "
+                "put_fail=%llu get_fail=%llu rebuilds=%llu\n",
+                static_cast<unsigned long long>(lifetime_submitted_),
+                static_cast<unsigned long long>(lifetime_encoded_),
+                static_cast<unsigned long long>(lifetime_put_fail_),
+                static_cast<unsigned long long>(lifetime_get_fail_),
+                rebuilds);
 
-        initialized_ = false;
+            initialized_ = false;
+        }
     }
 
     // Tear the MPP context down and hand every zero-copy capture buffer back
     // to the capture.  Called from stop() (pipeline teardown) and from the
-    // stall-recovery path (followed by open_encoder_()).
+    // stall-recovery path (followed by open_encoder_()).  Caller holds
+    // mutex_.  Deliberately does NOT drain in-flight output here: any
+    // blocking encode_get_packet under mutex_ would wedge the monitor,
+    // which needs mutex_ to issue the very reset that would wake it.
     void close_encoder_() {
-        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
         // Fold the current epoch's counters into the lifetime totals — both
         // the stall-recovery rebuild and the final stop funnel through here.
         lifetime_submitted_ += submitted_frames_.load(std::memory_order_relaxed);
@@ -821,29 +816,7 @@ public:
         put_frame_failures_.store(0, std::memory_order_relaxed);
         get_packet_failures_ = 0;
         if (ctx_ && mpi_) {
-            // Drain in-flight frames so their capture buffers come back
-            // through the normal completion path.  Bounded: a stalled
-            // encoder must not hang stop(); the remainder is force-released
-            // after reset below.
-            for (int i = 0; i < 50 && !in_flight_.empty(); ++i) {
-                drain_and_dispatch(0);
-                if (!in_flight_.empty()) usleep(2000);
-            }
-            // Flush (raw packet loop: EOS bookkeeping must not touch the
-            // in-flight completion pairing).
-            MppFrame flush_frame = nullptr;
-            if (mpp_frame_init(&flush_frame) == MPP_OK) {
-                mpp_frame_set_eos(flush_frame, 1);
-                mpi_->encode_put_frame(ctx_, flush_frame);
-                mpp_frame_deinit(&flush_frame);
-                MppPacket pkt = nullptr;
-                while (mpi_->encode_get_packet(ctx_, &pkt) == MPP_OK
-                       && pkt) {
-                    mpp_packet_deinit(&pkt);
-                    pkt = nullptr;
-                }
-            }
-            mpi_->reset(ctx_);
+            mpi_->reset(ctx_);   // hardware no longer reads inputs after this
             mpp_destroy(ctx_);
             ctx_ = nullptr;
             mpi_ = nullptr;
@@ -915,25 +888,184 @@ private:
     // releases their zero-copy capture buffers independently of new input.
     // Serialized with submit()/stop() via mutex_; cheap when idle because
     // it skips straight past an empty in_flight_ queue.
+    // Drain driver (drain_thread_).  Completions — and with them the
+    // zero-copy capture-buffer releases — must not depend on new input
+    // arriving, and submit() must never block on encoder output.
+    //
+    // Locking: the drain thread owns the ONE blocking MPP call,
+    // encode_get_packet(), and makes it with mutex_ RELEASED.  mpp's async
+    // interface is explicitly designed for separate input/output threads
+    // (put on one, get on another), and mpi_->reset() from the monitor /
+    // stop() wakes a parked get_packet with an error.  Every other MPP call
+    // (put_frame, control, reset, open/close) runs under mutex_, so a reset
+    // can never race a put/control.  The context cannot be destroyed while
+    // the drain parks on it: destruction happens either in this thread
+    // (rebuild) or in stop() only after this thread has been joined.
+    //
+    // The Access-Unit aggregation state (au*) belongs to this thread and
+    // survives across park/unpark cycles; it is discarded on any reset.
     void drain_loop() {
         set_thread_name("rkmpp-drain");
-        while (drain_running_.load()) {
+        std::vector<uint8_t> au;
+        uint32_t au_flags = 0;
+        uint64_t au_pts_us = 0;
+        size_t partition_count = 0;
+        bool frame_open = false;
+
+        for (;;) {
             {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (reset_requested_.exchange(false)) {
-                    if (!running_) {
-                        continue;
-                    }
+                std::unique_lock<std::mutex> lock(mutex_);
+                drain_cv_.wait(lock, [this] {
+                    return !drain_running_.load() || reset_requested_
+                        || (!in_flight_.empty() && running_.load()
+                            && ctx_ && mpi_);
+                });
+                if (!drain_running_.load()) break;
+                if (reset_requested_) {
+                    reset_requested_ = false;
+                    if (!running_.load()) continue;  // teardown: exit loop
+                    // Discard any partial AU from the old context, then
+                    // rebuild the encoder in place.
+                    au.clear(); au_flags = 0; au_pts_us = 0;
+                    partition_count = 0; frame_open = false;
                     std::string err;
                     if (!rebuild_after_stall_(&err)) {
                         running_ = false;  // submit() now fails
                     }
-                }
-                if (running_ && ctx_ && mpi_ && !in_flight_.empty()) {
-                    drain_and_dispatch(0);
+                    // In-flight depth reset to zero by the rebuild (or the
+                    // encoder is now stopped): release any submit() parked
+                    // in the admission-control wait.
+                    drain_cv_.notify_all();
+                    continue;
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+            // Park here with the lock released until a packet is ready.
+            MppPacket packet = nullptr;
+            const MPP_RET ret = mpi_->encode_get_packet(ctx_, &packet);
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (ret != MPP_OK) {
+                // Woken by a reset (or a genuine error).  Discard the
+                // partial AU — it belongs to a context that is being torn
+                // down or rebuilt — and re-evaluate at the wait.
+                if (packet) mpp_packet_deinit(&packet);
+                get_packet_failures_++;
+                au.clear(); au_flags = 0; au_pts_us = 0;
+                partition_count = 0; frame_open = false;
+                continue;
+            }
+            if (!packet) continue;
+            if (!running_.load()) {             // teardown raced us: drop it
+                mpp_packet_deinit(&packet);
+                continue;
+            }
+
+            const auto* pkt_data =
+                static_cast<const uint8_t*>(mpp_packet_get_data(packet));
+            const size_t pkt_size = mpp_packet_get_length(packet);
+            const bool is_partition = mpp_packet_is_partition(packet);
+            const bool is_eoi = mpp_packet_is_eoi(packet);
+
+            if (pkt_data && pkt_size > 0) {
+                if (au.size() > kMaxEncodedAccessUnitSize - pkt_size) {
+                    // Absurd payload (the AU would exceed the cap).  Drop
+                    // the data but still count this as the frame's
+                    // completion — the encoder did finish a frame (this is
+                    // its output) — so the EOI/held-input pairing stays 1:1
+                    // and the in-flight depth cannot leak.
+                    mpp_packet_deinit(&packet);
+                    au.clear(); au_flags = 0; au_pts_us = 0;
+                    partition_count = 0; frame_open = false;
+                    completed_frames_.fetch_add(1, std::memory_order_relaxed);
+                    if (!in_flight_.empty()) {
+                        HeldInput held = in_flight_.front();
+                        in_flight_.pop_front();
+                        if (held.release) held.release(held.ctx, held.buffer_index);
+                    }
+                    drain_cv_.notify_all();
+                    continue;
+                }
+                // PTS from the first MPP packet of the AU (actual encoded
+                // frame PTS, µs).
+                if (!frame_open) {
+                    au_pts_us = static_cast<uint64_t>(
+                        mpp_packet_get_pts(packet));
+                    frame_open = true;
+                }
+                au.insert(au.end(), pkt_data, pkt_data + pkt_size);
+
+                NalFlags nf = (cfg_.codec == VideoCodec::H265)
+                    ? detect_h265_flags(pkt_data, pkt_size)
+                    : detect_h264_flags(pkt_data, pkt_size);
+                if (nf.keyframe) au_flags |= EncodedKeyframe;
+                if (nf.config)   au_flags |= EncodedConfig;
+            }
+            partition_count++;
+            const bool frame_complete = !is_partition || is_eoi;
+            mpp_packet_deinit(&packet);
+
+            if (!frame_complete) continue;  // keep aggregating next round
+
+            // One completion per submitted frame, counted exactly once when
+            // its EOI is observed — whether or not the AU carried any data.
+            completed_frames_.fetch_add(1, std::memory_order_relaxed);
+
+            // Completions arrive in submission order (single encoder
+            // context): pair this one with the oldest in-flight input and
+            // hand its capture buffer back for requeue — only now may the
+            // camera reuse the memory.  A stalled encoder simply holds
+            // buffers (capture keeps running on the remaining pool); it can
+            // never corrupt them.
+            if (!in_flight_.empty()) {
+                HeldInput held = in_flight_.front();
+                in_flight_.pop_front();
+                if (held.release) held.release(held.ctx, held.buffer_index);
+            }
+            // A slot just freed up: wake any submit() waiting in the
+            // admission-control wait.
+            drain_cv_.notify_all();
+
+            if (au.empty()) {
+                au_flags = 0; au_pts_us = 0;
+                partition_count = 0; frame_open = false;
+                continue;
+            }
+
+            if (debug_file_) {
+                std::fwrite(au.data(), 1, au.size(), debug_file_);
+                std::fflush(debug_file_);
+            }
+
+            // Per-frame AU log throttled to stats interval (not hot path)
+            if (++au_log_count_ % 150 == 0) {
+                std::fprintf(stderr,
+                    "rkmpp-au: pts=%llu size=%zu parts=%zu key=%d cfg=%d\n",
+                    static_cast<unsigned long long>(au_pts_us),
+                    au.size(), partition_count,
+                    (au_flags & EncodedKeyframe) != 0,
+                    (au_flags & EncodedConfig) != 0);
+            }
+
+            if (partition_count > max_partitions_per_frame_)
+                max_partitions_per_frame_ = partition_count;
+
+            enc_stats_.sample(au_pts_us, monotonic_now_us());
+
+            if (encoded_cb_) {
+                EncodedPacket out;
+                out.codec = cfg_.codec;
+                out.data = au.data();
+                out.size = au.size();
+                out.pts_us = au_pts_us;      // from actual MPP packet
+                out.dts_us = au_pts_us;
+                out.flags = au_flags;
+                encoded_cb_(out);
+            }
+            encoded_frames_++;
+
+            au.clear(); au_flags = 0; au_pts_us = 0;
+            partition_count = 0; frame_open = false;
         }
     }
 
@@ -945,12 +1077,13 @@ private:
     // only handed back at completion, so a halted encoder pins all v4l2
     // driver buffers and starves capture forever.
     //
-    // Detection runs OUTSIDE the drain thread: on a halt, drain_loop is
-    // itself parked inside the blocking encode_get_packet, so no in-loop
-    // check could ever fire.  This monitor only watches counters and uses
-    // the lifecycle mutex to serialize the reset with teardown/rebuild;
-    // then it flags reset_requested_ so drain_loop can perform the actual
-    // teardown and rebuild under mutex_ once its get_packet returns.
+    // Detection must live outside the drain thread: on a halt the drain is
+    // parked inside the blocking encode_get_packet, so no in-loop check
+    // would ever fire.  The decision is delegated to the pure
+    // StallDetector (unit-tested in tests/encoder_stall_test.cpp) and the
+    // whole tick runs under mutex_ — short critical sections now that the
+    // drain never parks while holding the lock — so the observation is
+    // race-free by construction (no TOCTOU re-check needed).
     //
     // (Setting MPP_SET_OUTPUT_TIMEOUT would be the obvious alternative, but
     // that control wedges this kmpp-era mpp's output path — encode_put_frame
@@ -961,234 +1094,53 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             if (!monitor_running_.load()) break;
             const uint64_t now = monotonic_now_us();
-            const uint64_t completed = completed_frames_.load(std::memory_order_relaxed);
-            if (completed != mon_last_completed_.load(std::memory_order_relaxed)) {
-                mon_last_completed_.store(completed, std::memory_order_relaxed);
-                mon_last_progress_us_.store(now, std::memory_order_relaxed);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!monitor_running_.load() || !running_.load()
+                || !ctx_ || !mpi_) {
                 continue;
             }
-            if (!running_) continue;
-            if (reset_requested_.load(std::memory_order_acquire)) continue;
-            const int64_t depth = static_cast<int64_t>(
-                submitted_frames_.load(std::memory_order_relaxed))
-                - static_cast<int64_t>(completed);
-            if (depth <= 0
-                || mon_last_progress_us_.load(std::memory_order_relaxed) == 0) continue;
-            if (now - mon_last_progress_us_.load(std::memory_order_relaxed) < stall_us_.load(std::memory_order_relaxed)) continue;
-            {
-                std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-                if (!monitor_running_.load() || !running_ || !ctx_ || !mpi_) {
-                    continue;
+            const uint64_t completed =
+                completed_frames_.load(std::memory_order_relaxed);
+            if (detector_.observe(now, completed)) continue;
+            const int64_t depth = inflight_depth();
+            if (depth <= 0) continue;
+            if (detector_.in_cooldown(now)) {
+                // Still stalled, but the reset is in cooldown — say so
+                // (rate-limited) instead of silently deferring while the
+                // stream stays dead.
+                if (now - last_cooldown_log_us_ >= kCooldownLogIntervalUs) {
+                    last_cooldown_log_us_ = now;
+                    std::fprintf(stderr,
+                        "[RkMppEncoder] encoder still stalled; reset "
+                        "deferred (cooldown)\n");
                 }
-                // Re-check progress under the lock: a completion may have
-                // landed while we waited for lifecycle_mutex_.  Resetting
-                // then would tear down an encoder that just recovered.
-                const uint64_t completed_now =
-                    completed_frames_.load(std::memory_order_relaxed);
-                if (completed_now != completed) {
-                    mon_last_completed_.store(completed_now, std::memory_order_relaxed);
-                    mon_last_progress_us_.store(now, std::memory_order_relaxed);
-                    continue;
-                }
-                if (now - last_reset_us_.load(std::memory_order_relaxed)
-                    < kEncoderResetCooldownUs) {
-                    // Still stalled, but the reset is in cooldown — say so
-                    // (rate-limited) instead of silently deferring while
-                    // the stream stays dead.
-                    const uint64_t last_log =
-                        last_cooldown_log_us_.load(std::memory_order_relaxed);
-                    if (now - last_log >= kCooldownLogIntervalUs) {
-                        last_cooldown_log_us_.store(now, std::memory_order_relaxed);
-                        std::fprintf(stderr,
-                            "[RkMppEncoder] encoder still stalled; reset "
-                            "deferred (cooldown)\n");
-                    }
-                    continue;
-                }
-                last_reset_us_.store(now, std::memory_order_relaxed);
-
-                std::fprintf(stderr,
-                    "[RkMppEncoder] ENCODER STALLED: no completion for %llums "
-                    "with %lld in flight — resetting\n",
-                    static_cast<unsigned long long>(
-                        (now - mon_last_progress_us_.load(std::memory_order_relaxed)) / 1000),
-                    static_cast<long long>(depth));
-                request_context_reload_();
+                continue;
             }
+            if (!detector_.due(now, depth)) continue;
+            detector_.mark_reset(now);
+            std::fprintf(stderr,
+                "[RkMppEncoder] ENCODER STALLED: no completion for %llums "
+                "with %lld in flight — resetting\n",
+                static_cast<unsigned long long>(
+                    detector_.stall_duration_us(now) / 1000),
+                static_cast<long long>(depth));
+            request_context_reload_();
         }
     }
 
     // Single place that submits a context reload to the drain thread.
-    // Preconditions: caller must hold lifecycle_mutex_ (this is where the
-    // reload is serialized against teardown/rebuild) and must NOT hold
-    // mutex_ (drain_loop may be parked on it inside the blocking
-    // encode_get_packet).  Sets reset_requested_ — consumed by drain_loop,
-    // which performs the actual close_encoder_()/open_encoder_() under
-    // mutex_ — then wakes a possibly parked drain via mpp reset.  Future
-    // dynamic resolution/framerate reloads grow this into a parameterized
-    // request (reason + target config); the wake-up protocol stays the same.
+    // Caller must hold mutex_ — that is what serializes the reload against
+    // every other MPP call (put/control) and against the rebuild itself,
+    // which the drain thread performs under the same lock.  Sets
+    // reset_requested_, wakes the drain if it is parked in the condition
+    // wait, and resets the context to wake it if it is parked inside the
+    // blocking encode_get_packet.  Future dynamic resolution/framerate
+    // reloads grow this into a parameterized request (reason + target
+    // config); the wake-up protocol stays the same.
     void request_context_reload_() {
-        reset_requested_.store(true, std::memory_order_seq_cst);
-        // Serialize against non-preemptible MPP calls (encode_put_frame /
-        // control): any call that already passed begin_mpp_call_() runs to
-        // completion on the old context before we reset it; any later caller
-        // sees reset_requested_ in begin_mpp_call_() and backs off.  The
-        // parked encode_get_packet is not counted and is woken by the reset.
-        // The wait is bounded: if an MPP call is itself wedged (this mpp is
-        // known to jam put_frame in some states) the reload gives up and
-        // resets anyway rather than hanging monitor_loop / stop() forever.
-        const uint64_t wait_until = monotonic_now_us() + kReloadWaitUs;
-        while (mpp_callers_.load(std::memory_order_seq_cst) != 0
-               && monotonic_now_us() < wait_until) {
-            std::this_thread::yield();
-        }
-        if (mpp_callers_.load(std::memory_order_seq_cst) != 0) {
-            std::fprintf(stderr,
-                "[RkMppEncoder] warn: MPP call still in flight after %llu ms "
-                "— resetting anyway\n",
-                static_cast<unsigned long long>(kReloadWaitUs / 1000));
-        }
-        mpi_->reset(ctx_);  // wakes the drain thread's parked get_packet
-    }
-
-    // Enter/leave guard for a non-preemptible MPP call (encode_put_frame,
-    // control).  Returns false when a context reload is pending: the caller
-    // must skip its MPP call (the context is about to be reset or rebuilt).
-    // Double-checked with seq_cst so a reload that lands between the first
-    // check and the increment still makes the caller back off instead of
-    // racing the reset — and so the reload's counter wait cannot miss an
-    // increment on weakly-ordered platforms.
-    bool begin_mpp_call_() {
-        if (reset_requested_.load(std::memory_order_seq_cst)) return false;
-        mpp_callers_.fetch_add(1, std::memory_order_seq_cst);
-        if (reset_requested_.load(std::memory_order_seq_cst)) {
-            mpp_callers_.fetch_sub(1, std::memory_order_seq_cst);
-            return false;
-        }
-        return true;
-    }
-    void end_mpp_call_() {
-        mpp_callers_.fetch_sub(1, std::memory_order_seq_cst);
-    }
-
-    int drain_and_dispatch(uint64_t input_pts_us) {        int dispatched = 0;
-        std::vector<uint8_t> au;
-        uint32_t au_flags = 0;
-        size_t partition_count = 0;
-        uint64_t au_pts_us = input_pts_us; // default, overridden by first pkt
-        bool frame_complete = false;
-
-        while (!frame_complete) {
-            MppPacket packet = nullptr;
-            MPP_RET ret = mpi_->encode_get_packet(ctx_, &packet);
-            if (ret != MPP_OK) {
-                if (packet) mpp_packet_deinit(&packet);
-                get_packet_failures_++;
-                au.clear();
-                return dispatched;
-            }
-            if (!packet) break;
-
-            const auto* pkt_data =
-                static_cast<const uint8_t*>(mpp_packet_get_data(packet));
-            size_t pkt_size = mpp_packet_get_length(packet);
-            bool is_partition = mpp_packet_is_partition(packet);
-            bool is_eoi = mpp_packet_is_eoi(packet);
-
-            if (pkt_data && pkt_size > 0) {
-                if (au.size() > kMaxEncodedAccessUnitSize - pkt_size) {
-                    mpp_packet_deinit(&packet);
-                    au.clear();
-                    return dispatched;
-                }
-                // Use PTS from first MPP packet (actual encoded frame PTS, µs)
-                if (au.empty())
-                    au_pts_us = static_cast<uint64_t>(
-                        mpp_packet_get_pts(packet));
-
-                au.insert(au.end(), pkt_data, pkt_data + pkt_size);
-
-                NalFlags nf = (cfg_.codec == VideoCodec::H265)
-                    ? detect_h265_flags(pkt_data, pkt_size)
-                    : detect_h264_flags(pkt_data, pkt_size);
-                if (nf.keyframe) au_flags |= EncodedKeyframe;
-                if (nf.config)   au_flags |= EncodedConfig;
-            }
-            partition_count++;
-
-            frame_complete = !is_partition || is_eoi;
-            mpp_packet_deinit(&packet);
-        }
-
-        // If we got a partition without EOI and then ran out of packets,
-        // buffer the partial AU for the next drain call.
-        if (!frame_complete) {
-            pending_au_ = std::move(au);
-            pending_au_flags_ = au_flags;
-            return dispatched;
-        }
-
-        // One completion per submitted frame, counted exactly once when its
-        // EOI is observed — whether or not the AU carried any data.
-        completed_frames_.fetch_add(1, std::memory_order_relaxed);
-
-        // Completions arrive in submission order (single encoder context):
-        // pair this one with the oldest in-flight input and hand its capture
-        // buffer back for requeue — only now may the camera reuse the
-        // memory.  A stalled encoder simply holds buffers (capture keeps
-        // running on the remaining pool); it can never corrupt them.
-        if (!in_flight_.empty()) {
-            HeldInput held = in_flight_.front();
-            in_flight_.pop_front();
-            if (held.release) held.release(held.ctx, held.buffer_index);
-        }
-
-        if (au.empty()) return dispatched;
-
-        // Merge with any pending partial AU from a previous drain
-        if (!pending_au_.empty()) {
-            au.insert(au.begin(), pending_au_.begin(), pending_au_.end());
-            au_flags |= pending_au_flags_;
-            pending_au_.clear();
-            pending_au_flags_ = 0;
-        }
-
-        if (debug_file_) {
-            std::fwrite(au.data(), 1, au.size(), debug_file_);
-            std::fflush(debug_file_);
-        }
-
-        // Per-frame AU log throttled to stats interval (not hot path)
-        if (++au_log_count_ % 150 == 0) {
-            std::fprintf(stderr,
-                "rkmpp-au: pts=%llu size=%zu parts=%zu key=%d cfg=%d\n",
-                static_cast<unsigned long long>(au_pts_us),
-                au.size(), partition_count,
-                (au_flags & EncodedKeyframe) != 0,
-                (au_flags & EncodedConfig) != 0);
-        }
-
-        if (partition_count > max_partitions_per_frame_)
-            max_partitions_per_frame_ = partition_count;
-
-        // Includes the drain-on-next-submit queueing by design — that wait
-        // is part of the pipeline cost this instrumentation exists to show.
-        enc_stats_.sample(au_pts_us, monotonic_now_us());
-
-        if (encoded_cb_) {
-            EncodedPacket out;
-            out.codec = cfg_.codec;
-            out.data = au.data();
-            out.size = au.size();
-            out.pts_us = au_pts_us;      // from actual MPP packet, not caller
-            out.dts_us = au_pts_us;
-            out.flags = au_flags;
-            encoded_cb_(out);
-            dispatched = 1;
-        }
-
-        encoded_frames_++;
-        return dispatched;
+        reset_requested_ = true;
+        drain_cv_.notify_all();
+        if (ctx_ && mpi_) mpi_->reset(ctx_);
     }
 
     // ------------------------------------------------------------------
@@ -1239,10 +1191,10 @@ private:
     int next_input_idx_ = 0;
 
     // Submitted-but-not-yet-completed frames in submission order: one entry
-    // per successful encode_put_frame, popped once its EOI is observed in
-    // drain_and_dispatch().  Zero-copy frames carry their capture buffer
-    // release contract; pool-copy frames push a null-release marker so the
-    // completion pairing stays exactly 1:1.
+    // per successful encode_put_frame, popped once its EOI is observed by
+    // the drain thread (drain_loop).  Zero-copy frames carry their capture
+    // buffer release contract; pool-copy frames push a null-release marker
+    // so the completion pairing stays exactly 1:1.
     struct HeldInput {
         CaptureBufferReleaseFn release;
         void* ctx;
@@ -1256,10 +1208,6 @@ private:
     MppBuffer pkt_bufs_[kPacketPoolSize] = {};
     int next_pkt_idx_ = 0;
     MppBuffer md_info_ = nullptr;
-
-    // Partial AU buffered across drain calls (partition without EOI)
-    std::vector<uint8_t> pending_au_;
-    uint32_t pending_au_flags_ = 0;
 
     // Pre-RTP debug file
     FILE* debug_file_ = nullptr;
@@ -1279,7 +1227,7 @@ private:
     uint64_t lifetime_encoded_ = 0;
     uint64_t lifetime_put_fail_ = 0;
     uint64_t lifetime_get_fail_ = 0;
-    // Frames whose EOI was observed in drain_and_dispatch(); each submitted
+    // Frames whose EOI was observed by the drain thread; each submitted
     // frame completes exactly once, so in-flight depth can be derived.
     std::atomic<uint64_t> completed_frames_{0};
     uint64_t au_log_count_ = 0;
@@ -1306,50 +1254,38 @@ private:
 
     EncodedPacketCallback encoded_cb_;
     mutable std::mutex mutex_;
-    mutable std::mutex lifecycle_mutex_;
+    // Wakes the drain thread on new input (submit), or on reload/teardown.
+    mutable std::condition_variable drain_cv_;
 
     // Independent drain driver (see drain_loop / init / stop).
     std::thread drain_thread_;
     std::atomic<bool> drain_running_{false};
 
-    // Stall monitor thread + its wake-the-halt flag (see monitor_loop).
+    // Stall monitor thread + its reload flag (see monitor_loop).  The flag
+    // is only read/written under mutex_ (drain_loop consumes it inside the
+    // condition wait; monitor_loop/stop set it), so it is a plain bool.
     std::thread monitor_thread_;
     std::atomic<bool> monitor_running_{false};
-    std::atomic<bool> reset_requested_{false};
-    // Non-preemptible MPP calls (encode_put_frame / control) currently in
-    // flight.  A context reset waits for this to drain to zero before
-    // calling mpi_->reset(), so reset can never race a put/control.  The
-    // blocking encode_get_packet is deliberately NOT counted — it is
-    // preemptible by design (reset wakes it).  Protocol: begin_mpp_call_()
-    // / end_mpp_call_().
-    std::atomic<uint32_t> mpp_callers_{0};
-    std::atomic<uint64_t> mon_last_completed_{0};
-    std::atomic<uint64_t> mon_last_progress_us_{0};
-    // Stall window (µs), derived from the configured fps in
-    // open_encoder_() — a fixed window would false-positive on low-fps
-    // sources.  Written under lifecycle_mutex_ (open_encoder_), read by
-    // monitor_loop().
-    std::atomic<uint64_t> stall_us_{kMinEncoderStallUs};
-    // Rate-limiter for the "reset deferred (cooldown)" log line.
-    std::atomic<uint64_t> last_cooldown_log_us_{0};
+    bool reset_requested_ = false;
+    // Stall detection state machine (see encoder_stall_detector.h); every
+    // access happens under mutex_ (monitor_loop / open_encoder_).
+    StallDetector detector_;
+    // Rate-limiter for the "reset deferred (cooldown)" log line (monitor).
+    uint64_t last_cooldown_log_us_ = 0;
 
     // Runtime encoder parameters — the single source of truth for every
     // open_encoder_() (initial init and stall-recovery rebuild alike).
     // Written from init(), updated in place by runtime retunes
     // (setBitrate; future resolution/framerate changes), and only ever
-    // read/written under mutex_ (or lifecycle_mutex_ inside
-    // open_encoder_()).  No shadowing scalar members exist, so a rebuild
-    // cannot resurrect stale values.
+    // read/written under mutex_.  No shadowing scalar members exist, so a
+    // rebuild cannot resurrect stale values.
     EncoderConfig cfg_{};
 
     // Monotonic codec-context generation: bumped by each successful
     // open_encoder_(), exposed via contextGeneration().  Deliberately not
     // cleared by reset_runtime_state_() — a rebuild IS a new context.
     std::atomic<uint64_t> generation_{0};
-    std::atomic<uint64_t> last_reset_us_{0};
-    // Upper bound for the mpp_callers_ drain in request_context_reload_().
-    static constexpr uint64_t kReloadWaitUs = 200000;       // 200 ms
-    // Floor for the fps-scaled stall window (see stall_us_).
+    // Floor for the fps-scaled stall window (see StallDetector::stall_us).
     static constexpr uint64_t kMinEncoderStallUs = 3000000; // 3 s
     static constexpr uint64_t kEncoderResetCooldownUs = 5000000; // 5 s
     // Rate-limit for the "reset deferred (cooldown)" log line.
