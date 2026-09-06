@@ -25,6 +25,28 @@ namespace {
 
 constexpr uint32_t kBufferCount = 16;
 
+// If every frame is malformed for this long, the sensor/driver link is
+// dead — stop the capture thread so the pipeline/watchdog can recover.
+constexpr uint64_t kConsecutiveBadFatalUs = 2000000;  // 2 s
+// A longer quiet gap between malformed frames starts a fresh window: sparse
+// glitches (e.g. one bad frame after a seconds-long outage) must not trip
+// the sustained-failure escalation.
+constexpr uint64_t kConsecutiveBadGapUs = 1000000;    // 1 s
+
+// Malformed-frame test for the capture integrity gate.  A plane is
+// malformed when bytesused is out of the expected range for the negotiated
+// sizeimage: zero (driver error flag), larger than the buffer, or far
+// shorter than sizeimage (truncated write — the MIPI CRC pattern observed
+// on RV1126B).  Small shortfalls are tolerated because some drivers report
+// bytesused excluding padding rows; want == 0 means the driver did not
+// populate sizeimage, so nothing can be validated.
+inline bool plane_malformed(uint32_t got, uint32_t want) {
+    if (want == 0) return false;
+    if (got == 0 || got > want) return true;
+    return static_cast<uint64_t>(got)
+        < static_cast<uint64_t>(want) * 9 / 10;
+}
+
 const char* fourcc_to_string(uint32_t fourcc, char (&text)[5]) {
     text[0] = static_cast<char>(fourcc & 0xff);
     text[1] = static_cast<char>((fourcc >> 8) & 0xff);
@@ -89,8 +111,14 @@ struct V4L2CaptureImpl : public CaptureBackend {
 
         void record_sequence(uint32_t sequence) {
             if (seq_valid && sequence != expected_seq) {
-                ++seq_gaps;
-                seq_gap_frames += sequence - expected_seq;
+                if (sequence > expected_seq) {
+                    // Forward jump: the driver dropped frames.
+                    ++seq_gaps;
+                    seq_gap_frames += sequence - expected_seq;
+                }
+                // sequence < expected_seq: the driver re-armed/reset its
+                // counter or returned buffers out of order.  Re-sync
+                // instead of accumulating a wrapped ~2^32 frame "gap".
             }
             expected_seq = sequence + 1;
             seq_valid = true;
@@ -151,6 +179,10 @@ struct V4L2CaptureImpl : public CaptureBackend {
     CaptureFrameCallback capture_cb_;
     uint64_t seq_ = 0;
     IntegrityTracker integrity_;
+    // Sustained all-malformed escalation (capture thread only; see the
+    // integrity gate in capture_loop()).
+    uint64_t consecutive_bad_frames_ = 0;
+    uint64_t consecutive_bad_start_us_ = 0;
     std::vector<Buffer> buffers;
     std::vector<uint8_t> yuv420_buf;
     std::thread capture_thread;
@@ -526,12 +558,14 @@ void V4L2CaptureImpl::capture_loop() {
         dqbuf_stats_.sample(buf_ts_us, dqbuf_now_us);
 
         // Malformed frames must not reach the encoder: the Rockchip MPP
-        // halts permanently on such input. Drop+requeue here and count it.
+        // halts permanently on such input.  Drop + requeue here and count
+        // them; see plane_malformed() for the exact criteria.
         bool bad = false;
         uint32_t bad_plane = 0, bad_got = 0, bad_want = 0;
         if (is_mplane_type(buffer_type)) {
             for (uint32_t i = 0; i < memory_plane_count; ++i) {
-                if (planes[i].bytesused != plane_sizeimages[i]) {
+                if (plane_malformed(planes[i].bytesused,
+                                    plane_sizeimages[i])) {
                     bad = true;
                     bad_plane = i;
                     bad_got = planes[i].bytesused;
@@ -539,12 +573,21 @@ void V4L2CaptureImpl::capture_loop() {
                     break;
                 }
             }
-        } else if (buf.bytesused != plane_sizeimages[0]) {
+        } else if (plane_malformed(buf.bytesused, plane_sizeimages[0])) {
             bad = true;
             bad_got = buf.bytesused;
             bad_want = plane_sizeimages[0];
         }
         if (bad) {
+            ++consecutive_bad_frames_;
+            // A gap longer than kConsecutiveBadGapUs since the last
+            // malformed frame starts a fresh window (the fault is not
+            // sustained).  A good frame also clears the window below.
+            if (consecutive_bad_start_us_ == 0
+                || dqbuf_now_us - consecutive_bad_start_us_
+                       > kConsecutiveBadGapUs) {
+                consecutive_bad_start_us_ = dqbuf_now_us;
+            }
             integrity_.record_bad_frame(bad_plane, bad_got, bad_want);
             std::string queue_error;
             if (!queue_buffer(buf.index, &queue_error)) {
@@ -552,8 +595,24 @@ void V4L2CaptureImpl::capture_loop() {
                 break;
             }
             integrity_.flush(dqbuf_now_us);
+            // Escalate when the stream has been all-malformed for a
+            // sustained window: nothing reaches the encoder and silently
+            // dropping frames forever hides the fault.  Stop the capture
+            // thread so the pipeline/watchdog can recover.
+            if (dqbuf_now_us - consecutive_bad_start_us_
+                >= kConsecutiveBadFatalUs) {
+                fprintf(stderr,
+                        "[V4L2Capture] FATAL: %llu malformed frames over "
+                        "%llu ms — stopping capture\n",
+                        static_cast<unsigned long long>(consecutive_bad_frames_),
+                        static_cast<unsigned long long>(
+                            (dqbuf_now_us - consecutive_bad_start_us_) / 1000));
+                break;
+            }
             continue;
         }
+        consecutive_bad_frames_ = 0;
+        consecutive_bad_start_us_ = 0;
 
         // Driver-side frame loss shows up as sequence gaps. Count only.
         integrity_.record_sequence(buf.sequence);
@@ -802,6 +861,8 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
     }
     capture_cb_ = std::move(cb);
     integrity_.reset();
+    consecutive_bad_frames_ = 0;
+    consecutive_bad_start_us_ = 0;
 
     for (uint32_t index = 0; index < buffers.size(); ++index) {
         if (!queue_buffer(index, err)) return false;
