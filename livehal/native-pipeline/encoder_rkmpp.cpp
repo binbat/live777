@@ -137,25 +137,25 @@ public:
         stop();
     }
 
-    bool init(const EncoderConfig& cfg, std::string* err) override {
+    bool init(const EncoderConfig& config, std::string* err) override {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        if (cfg.codec != VideoCodec::H264 && cfg.codec != VideoCodec::H265) {
+        if (config.codec != VideoCodec::H264 && config.codec != VideoCodec::H265) {
             if (err) *err = "encoder-rkmpp: only H.264 and H.265 are supported";
             return false;
         }
-        if (cfg.input_format != RawPixelFormat::Nv12) {
+        if (config.input_format != RawPixelFormat::Nv12) {
             if (err) *err = "encoder-rkmpp: only NV12 input is supported";
             return false;
         }
 
-        width_ = cfg.width;
-        prefer_dmabuf_ = cfg.prefer_dmabuf;
-        height_ = cfg.height;
-        fps_ = cfg.fps;
-        bitrate_ = cfg.bitrate;
-        codec_ = cfg.codec;
-        cfg_ = cfg;
+        width_ = config.width;
+        prefer_dmabuf_ = config.prefer_dmabuf;
+        height_ = config.height;
+        fps_ = config.fps;
+        bitrate_ = config.bitrate;
+        codec_ = config.codec;
+        config_ = config;
 
         if (!open_encoder_(err)) return false;
 
@@ -177,7 +177,7 @@ public:
     // Create and configure the whole MPP encoder context and its buffer
     // pools.  Extracted from init() so the stall-recovery path can rebuild
     // the encoder in place (see check_encoder_stall_).  Uses the config
-    // stored in cfg_.
+    // stored in config_.
     bool open_encoder_(std::string* err) {
         std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
         MPP_RET ret = mpp_create(&ctx_, &mpi_);
@@ -187,7 +187,7 @@ public:
             return false;
         }
 
-        MppCodingType coding = (cfg_.codec == VideoCodec::H265)
+        MppCodingType coding = (config_.codec == VideoCodec::H265)
             ? MPP_VIDEO_CodingHEVC : MPP_VIDEO_CodingAVC;
         ret = mpp_init(ctx_, MPP_CTX_ENC, coding);
         if (ret != MPP_OK) {
@@ -246,7 +246,7 @@ public:
         // Rate control (CBR, tolerates older MPP versions)
         if (!set_required("rc:mode", MPP_ENC_RC_MODE_CBR)) return false;
         if (!set_required("rc:bps_target", static_cast<RK_S32>(bitrate_))) return false;
-        if (!set_required("rc:gop", static_cast<RK_S32>(cfg_.gop))) return false;
+        if (!set_required("rc:gop", static_cast<RK_S32>(config_.gop))) return false;
         if (!set_required("rc:fps_in_num", static_cast<RK_S32>(fps_))) return false;
         if (!set_required("rc:fps_out_num", static_cast<RK_S32>(fps_))) return false;
         // Older MPP versions reject denom/flex — make optional
@@ -261,23 +261,23 @@ public:
         set_optional("rc:qp_max", 40);
 
         // Codec-specific
-        if (cfg_.codec == VideoCodec::H264) {
+        if (config_.codec == VideoCodec::H264) {
             H264CodingTools tools{};
-            if (!resolve_h264_coding_tools(cfg_.profile_idc, tools)) {
+            if (!resolve_h264_coding_tools(config_.profile_idc, tools)) {
                 if (err) *err = "encoder-rkmpp: unsupported H.264 profile_idc "
-                    + std::to_string(cfg_.profile_idc);
+                    + std::to_string(config_.profile_idc);
                 return false;
             }
-            if (!set_required("h264:profile", static_cast<RK_S32>(cfg_.profile_idc))) return false;
-            if (!set_required("h264:level",   static_cast<RK_S32>(cfg_.level_idc)))   return false;
+            if (!set_required("h264:profile", static_cast<RK_S32>(config_.profile_idc))) return false;
+            if (!set_required("h264:level",   static_cast<RK_S32>(config_.level_idc)))   return false;
             if (!set_required("h264:cabac_en", tools.cabac_en)) return false;
             if (!set_required("h264:cabac_idc", 0)) return false;
             if (!set_required("h264:trans8x8", tools.trans8x8)) return false;
         } else {
-            RK_S32 h265_level_val = static_cast<RK_S32>(cfg_.level_idc);
-            if (!set_required("h265:profile", static_cast<RK_S32>(cfg_.profile_idc))) return false;
+            RK_S32 h265_level_val = static_cast<RK_S32>(config_.level_idc);
+            if (!set_required("h265:profile", static_cast<RK_S32>(config_.profile_idc))) return false;
             if (!set_required("h265:level",   h265_level_val)) return false;
-            set_optional("h265:tier", static_cast<RK_S32>(cfg_.tier_flag));
+            set_optional("h265:tier", static_cast<RK_S32>(config_.tier_flag));
             set_optional("h265:qp_init", 26);
             set_optional("h265:scaling_list", 0);
         }
@@ -290,11 +290,11 @@ public:
             "profile=%d level=%d tier=%d\n",
             static_cast<int>(width_), static_cast<int>(height_),
             static_cast<int>(fps_), static_cast<int>(bitrate_),
-            static_cast<int>(cfg_.gop),
-            (cfg_.codec == VideoCodec::H265) ? "h265" : "h264",
-            static_cast<int>(cfg_.profile_idc),
-            static_cast<int>(cfg_.level_idc),
-            static_cast<int>(cfg_.tier_flag));
+            static_cast<int>(config_.gop),
+            (config_.codec == VideoCodec::H265) ? "h265" : "h264",
+            static_cast<int>(config_.profile_idc),
+            static_cast<int>(config_.level_idc),
+            static_cast<int>(config_.tier_flag));
 
         ret = mpi_->control(ctx_, MPP_ENC_SET_CFG, enc_cfg);
         mpp_enc_cfg_deinit(enc_cfg);
@@ -1132,7 +1132,7 @@ private:
 
     // Whole init config, kept so open_encoder_() can rebuild the context
     // after a stall (see monitor_loop).
-    EncoderConfig cfg_{};
+    EncoderConfig config_{};
     std::atomic<uint64_t> last_reset_us_{0};
     static constexpr uint64_t kEncoderStallUs = 3000000;        // 3 s
     static constexpr uint64_t kEncoderResetCooldownUs = 5000000; // 5 s
